@@ -151,6 +151,26 @@ export function tooManyRequests(message: string = "Too many requests. Please try
 }
 
 /**
+ * Test email domain patterns that bypass rate limiting
+ * SECURITY: Only use for automated testing domains that you control
+ * These emails should NOT be used for production user accounts
+ */
+const RATE_LIMIT_BYPASS_DOMAINS = [
+  '@test.vettid.dev',  // Automated test emails
+];
+
+/**
+ * Check if an email should bypass rate limiting (for testing)
+ * @param email Email address to check
+ * @returns true if email should bypass rate limits
+ */
+export function shouldBypassRateLimit(email: string): boolean {
+  if (!email) return false;
+  const lowerEmail = email.toLowerCase().trim();
+  return RATE_LIMIT_BYPASS_DOMAINS.some(domain => lowerEmail.endsWith(domain));
+}
+
+/**
  * Rate limiting using DynamoDB atomic counters
  * Uses conditional writes to prevent race conditions (TOCTOU attacks)
  * Each window gets its own counter that atomically increments
@@ -158,14 +178,20 @@ export function tooManyRequests(message: string = "Too many requests. Please try
  * @param action The action being rate limited (e.g., 'register', 'waitlist')
  * @param maxRequests Maximum requests allowed in the window
  * @param windowMinutes Time window in minutes
+ * @param bypassEmail Optional email to check for rate limit bypass (test emails)
  * @returns true if request is allowed, false if rate limited
  */
 export async function checkRateLimit(
   identifier: string,
   action: string,
   maxRequests: number = 5,
-  windowMinutes: number = 60
+  windowMinutes: number = 60,
+  bypassEmail?: string
 ): Promise<boolean> {
+  // Allow test emails to bypass rate limiting
+  if (bypassEmail && shouldBypassRateLimit(bypassEmail)) {
+    return true;
+  }
   const now = Date.now();
   // Use fixed time windows (e.g., every 60 minutes from epoch)
   const windowId = Math.floor(now / (windowMinutes * 60 * 1000));

@@ -91,14 +91,6 @@ export const handler = async (
     return badRequest('Missing request body', origin);
   }
 
-  // Rate limiting by IP address
-  const clientIp = getClientIp(event);
-  const ipHash = hashIdentifier(clientIp);
-  const isAllowed = await checkRateLimit(ipHash, 'waitlist', RATE_LIMIT_MAX_REQUESTS, RATE_LIMIT_WINDOW_MINUTES);
-  if (!isAllowed) {
-    return jsonResponse(429, { message: 'Too many requests. Please try again later.' }, origin);
-  }
-
   let payload: WaitlistRequest;
   try {
     payload = JSON.parse(event.body);
@@ -116,6 +108,14 @@ export const handler = async (
     email = validateEmail(payload.email || '');
   } catch (error: any) {
     return badRequest(error.message || 'Invalid input', origin);
+  }
+
+  // Rate limiting by IP address (test emails bypass rate limiting)
+  const clientIp = getClientIp(event);
+  const ipHash = hashIdentifier(clientIp);
+  const isAllowed = await checkRateLimit(ipHash, 'waitlist', RATE_LIMIT_MAX_REQUESTS, RATE_LIMIT_WINDOW_MINUTES, email);
+  if (!isAllowed) {
+    return jsonResponse(429, { message: 'Too many requests. Please try again later.' }, origin);
   }
 
   // Check for duplicate email

@@ -13,7 +13,7 @@ import { SESClient, VerifyEmailIdentityCommand, GetIdentityVerificationAttribute
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import { randomUUID } from 'crypto';
 import { CognitoIdentityProviderClient, AdminCreateUserCommand, AdminAddUserToGroupCommand, AdminGetUserCommand } from '@aws-sdk/client-cognito-identity-provider';
-import { validateEmail, validateName, validateInviteCode, sanitizeInput, checkRateLimit, hashIdentifier, getClientIp } from '../../common/util';
+import { validateEmail, validateName, validateInviteCode, sanitizeInput, checkRateLimit, hashIdentifier, getClientIp, shouldBypassRateLimit } from '../../common/util';
 
 // Rate limit: 10 registration attempts per IP per hour
 const RATE_LIMIT_MAX_REQUESTS = 10;
@@ -137,14 +137,6 @@ export const handler = async (
     return badRequest('Missing request body', origin);
   }
 
-  // Rate limiting by IP address
-  const clientIp = getClientIp(event);
-  const ipHash = hashIdentifier(clientIp);
-  const isAllowed = await checkRateLimit(ipHash, 'register', RATE_LIMIT_MAX_REQUESTS, RATE_LIMIT_WINDOW_MINUTES);
-  if (!isAllowed) {
-    return jsonResponse(429, { message: 'Too many requests. Please try again later.' }, origin);
-  }
-
   let payload: RegistrationRequest;
   try {
     payload = JSON.parse(event.body);
@@ -163,6 +155,14 @@ export const handler = async (
     code = validateInviteCode(payload.invite_code || '');
   } catch (error: any) {
     return badRequest(error.message || 'Invalid input', origin);
+  }
+
+  // Rate limiting by IP address (test emails bypass rate limiting)
+  const clientIp = getClientIp(event);
+  const ipHash = hashIdentifier(clientIp);
+  const isAllowed = await checkRateLimit(ipHash, 'register', RATE_LIMIT_MAX_REQUESTS, RATE_LIMIT_WINDOW_MINUTES, email);
+  if (!isAllowed) {
+    return jsonResponse(429, { message: 'Too many requests. Please try again later.' }, origin);
   }
 
   // 1) Look up invite
