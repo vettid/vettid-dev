@@ -1,0 +1,19 @@
+# VettID Security Policy
+# RFC 9116 Compliant Security Contact Information
+
+Contact: mailto:security@vettid.dev
+Contact: https://vettid.dev/security
+Expires: 2026-11-20T00:00:00.000Z
+Preferred-Languages: en
+Canonical: https://vettid.dev/.well-known/security.txt
+
+# Security Disclosure Policy
+Policy: https://vettid.dev/security-policy
+
+# Our security acknowledgments page
+Acknowledgments: https://vettid.dev/security-acknowledgments
+
+# Scope
+# In scope: All VettID domains (*.vettid.dev)
+# Please report security vulnerabilities responsibly
+# We aim to respond within 48 hours

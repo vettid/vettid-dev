@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1" name="viewport"/>
+<title>Authenticating • VettID</title>
+<link rel="icon" type="image/jpeg" href="/assets/favicon.ico"/>
+<link rel="stylesheet" href="/assets/styles.css"/>
+<style>
+    body {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: linear-gradient(135deg, #000 0%, #0a0a0a 50%, #1a1a1a 100%);
+    }
+    .auth-container {
+      max-width: 480px;
+      width: 100%;
+      padding: 20px;
+    }
+    .card {
+      background: rgba(255, 255, 255, 0.05);
+      backdrop-filter: blur(10px);
+      border-radius: 16px;
+      padding: 40px;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+      border: 1px solid rgba(255, 193, 37, 0.1);
+      text-align: center;
+    }
+    h1 {
+      color: #ffc125;
+      margin-top: 0;
+      font-size: 2rem;
+      margin-bottom: 0.5rem;
+    }
+    .message {
+      color: #e0e0e0;
+      margin-bottom: 2rem;
+      font-size: 1rem;
+    }
+    .spinner {
+      border: 3px solid rgba(255, 193, 37, 0.1);
+      border-top: 3px solid #ffc125;
+      border-radius: 50%;
+      width: 40px;
+      height: 40px;
+      animation: spin 1s linear infinite;
+      margin: 20px auto;
+    }
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    .error {
+      color: #f87171;
+    }
+    .success {
+      color: #4ade80;
+    }
+    .pin-prompt {
+      display: none;
+      margin-top: 24px;
+    }
+    .pin-prompt.show {
+      display: block;
+    }
+    .pin-input {
+      width: 100%;
+      padding: 14px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 2px solid rgba(255, 193, 37, 0.3);
+      border-radius: 8px;
+      color: #fff;
+      font-size: 1.2rem;
+      letter-spacing: 0.3em;
+      text-align: center;
+      margin: 16px 0;
+      font-family: monospace;
+    }
+    .pin-input:focus {
+      outline: none;
+      border-color: #ffc125;
+      box-shadow: 0 0 0 3px rgba(255, 193, 37, 0.1);
+    }
+    .btn {
+      padding: 12px 24px;
+      background: linear-gradient(135deg, #ffc125 0%, #ff8c00 100%);
+      color: #000;
+      border: none;
+      border-radius: 8px;
+      font-weight: 600;
+      cursor: pointer;
+      width: 100%;
+      font-size: 1rem;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+    .btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(255, 193, 37, 0.3);
+    }
+    .btn:active {
+      transform: translateY(0);
+    }
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.1);
+      color: #e0e0e0;
+      margin-top: 8px;
+    }
+    .btn-secondary:hover {
+      background: rgba(255, 255, 255, 0.15);
+    }
+    .helper-text {
+      font-size: 0.85rem;
+      color: #999;
+      margin-top: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="auth-container">
+    <div class="card">
+      <h1>VettID</h1>
+      <div class="spinner" id="spinner"></div>
+      <p class="message" id="message">Verifying your magic link...</p>
+
+      <div class="pin-prompt" id="pinPrompt">
+        <p style="margin-bottom: 8px; color: #ffc125; font-weight: 600;">Enter your PIN</p>
+        <p class="helper-text" style="margin-top: 0;">If you have PIN authentication enabled, enter your PIN to continue.</p>
+        <input type="password" id="pinInput" class="pin-input"
+               maxlength="6" pattern="[0-9]*" inputmode="numeric"
+               placeholder="••••••" autocomplete="off" />
+        <button class="btn" id="submitPinBtn">Continue</button>
+        <button class="btn btn-secondary" id="skipPinBtn">Continue without PIN</button>
+      </div>
+    </div>
+  </div>
+
+<script src="https://cdn.jsdelivr.net/npm/amazon-cognito-identity-js@6.3.7/dist/amazon-cognito-identity.min.js"></script>
+<script src="https://vettid.dev/shared/config.js"></script>
+<script>
+// Load configuration from centralized config file
+const USER_POOL_ID = window.VettIDConfig.userPoolId;
+const CLIENT_ID = window.VettIDConfig.member.clientId;
+
+// Setup Cognito
+const poolData = { UserPoolId: USER_POOL_ID, ClientId: CLIENT_ID };
+const userPool = new AmazonCognitoIdentity.CognitoUserPool(poolData);
+
+function saveTokens(idToken, accessToken, refreshToken) {
+  localStorage.setItem('tokens', JSON.stringify({
+    id_token: idToken,
+    access_token: accessToken,
+    refresh_token: refreshToken
+  }));
+}
+
+function showMessage(text, type) {
+  const messageEl = document.getElementById('message');
+  messageEl.textContent = text;
+  messageEl.className = 'message ' + (type || '');
+
+  if (type === 'error' || type === 'success') {
+    document.getElementById('spinner').style.display = 'none';
+  }
+}
+
+async function validateMagicLink() {
+  console.log('[AUTH] Page loaded, validating magic link');
+
+  // Get token and email from URL fragment (more secure than query params)
+  // Fragment (#token=...&email=...) is not sent to server or logged
+  const fragment = location.hash.substring(1); // Remove the '#'
+  const params = new URLSearchParams(fragment);
+  const token = params.get('token');
+  const email = params.get('email');
+
+  console.log('[AUTH] Token present:', !!token, 'Email:', email);
+
+  if (!token || !email) {
+    console.error('[AUTH] Missing token or email in URL fragment');
+    showMessage('Invalid magic link. Please request a new one.', 'error');
+    setTimeout(() => { window.location.href = '/signin'; }, 3000);
+    return;
+  }
+
+  // Clear URL fragment for security
+  history.replaceState(null, '', location.pathname);
+
+  try {
+    console.log('[AUTH] Creating Cognito user for:', email);
+    const userData = { Username: email, Pool: userPool };
+    const cognitoUser = new AmazonCognitoIdentity.CognitoUser(userData);
+    cognitoUser.setAuthenticationFlowType('CUSTOM_AUTH');
+
+    // Start auth flow to get the challenge
+    const authDetails = new AmazonCognitoIdentity.AuthenticationDetails({
+      Username: email
+    });
+
+    console.log('[AUTH] Calling initiateAuth to start validation flow');
+
+    cognitoUser.initiateAuth(authDetails, {
+      onSuccess: (result) => {
+        // Shouldn't happen on first call, but handle it
+        console.log('[AUTH] Unexpected immediate success');
+        saveTokens(
+          result.getIdToken().getJwtToken(),
+          result.getAccessToken().getJwtToken(),
+          result.getRefreshToken().getToken()
+        );
+        showMessage('Successfully authenticated! Redirecting...', 'success');
+        setTimeout(() => { window.location.href = '/account'; }, 1000);
+      },
+      onFailure: (err) => {
+        console.error('[AUTH] Auth failed:', err);
+        showMessage('Authentication failed: ' + (err.message || 'Invalid or expired link'), 'error');
+        setTimeout(() => { window.location.href = '/signin'; }, 3000);
+      },
+      customChallenge: (challengeParameters) => {
+        // We got the challenge, check if PIN is required
+        console.log('[AUTH] Received challenge:', challengeParameters);
+        const pinRequired = challengeParameters.pinRequired === 'true';
+        console.log('[AUTH] PIN required:', pinRequired);
+
+        // If PIN is not required, auto-submit without prompting
+        if (!pinRequired) {
+          console.log('[AUTH] PIN not required, auto-submitting token');
+          cognitoUser.sendCustomChallengeAnswer(token, {
+            onSuccess: (result) => {
+              console.log('[AUTH] Authentication successful');
+              saveTokens(
+                result.getIdToken().getJwtToken(),
+                result.getAccessToken().getJwtToken(),
+                result.getRefreshToken().getToken()
+              );
+              showMessage('Successfully authenticated! Redirecting...', 'success');
+              setTimeout(() => { window.location.href = '/account'; }, 1000);
+            },
+            onFailure: (err) => {
+              console.error('[AUTH] Auth failed after auto-submit:', err);
+              showMessage('Authentication failed: ' + (err.message || 'Unknown error'), 'error');
+              setTimeout(() => { window.location.href = '/signin'; }, 3000);
+            }
+          });
+          return;
+        }
+
+        // PIN is required - show PIN prompt
+        document.getElementById('spinner').style.display = 'none';
+        document.getElementById('message').textContent = 'Magic link verified! Please enter your PIN.';
+        document.getElementById('pinPrompt').classList.add('show');
+        document.getElementById('skipPinBtn').style.display = 'none';
+        document.getElementById('pinInput').required = true;
+        document.getElementById('pinInput').focus();
+
+        // Function to submit challenge answer
+        function submitChallengeAnswer(answerValue) {
+          // Hide PIN prompt, show spinner
+          document.getElementById('pinPrompt').classList.remove('show');
+          document.getElementById('spinner').style.display = 'block';
+          showMessage('Authenticating...');
+
+          cognitoUser.sendCustomChallengeAnswer(answerValue, {
+            onSuccess: (result) => {
+              console.log('[AUTH] Challenge answered successfully');
+              saveTokens(
+                result.getIdToken().getJwtToken(),
+                result.getAccessToken().getJwtToken(),
+                result.getRefreshToken().getToken()
+              );
+              showMessage('Successfully authenticated! Redirecting...', 'success');
+              setTimeout(() => { window.location.href = '/account'; }, 1000);
+            },
+            onFailure: (err) => {
+              console.error('[AUTH] Challenge answer failed:', err);
+              let errorMsg = 'Authentication failed: ';
+              if (err.message && err.message.includes('Pin')) {
+                errorMsg = 'Invalid PIN. Please try again with a new magic link.';
+              } else {
+                errorMsg += (err.message || 'Invalid or expired link');
+              }
+              showMessage(errorMsg, 'error');
+              setTimeout(() => { window.location.href = '/signin'; }, 3000);
+            },
+            customChallenge: () => {
+              console.error('[AUTH] Unexpected additional challenge');
+              showMessage('Authentication failed. Please try again.', 'error');
+              setTimeout(() => { window.location.href = '/signin'; }, 3000);
+            }
+          });
+        }
+
+        // Handle PIN submission
+        document.getElementById('submitPinBtn').onclick = () => {
+          const pin = document.getElementById('pinInput').value.trim();
+
+          // If PIN is required, validate it's entered
+          if (pinRequired && !pin) {
+            alert('PIN is required for your account. Please enter your PIN.');
+            return;
+          }
+
+          if (pin) {
+            // Send token:pin format
+            console.log('[AUTH] Submitting with PIN');
+            submitChallengeAnswer(token + ':' + pin);
+          } else {
+            // No PIN entered, just send token
+            console.log('[AUTH] No PIN entered, submitting token only');
+            submitChallengeAnswer(token);
+          }
+        };
+
+        // Handle skip PIN button
+        document.getElementById('skipPinBtn').onclick = () => {
+          console.log('[AUTH] Skipping PIN, submitting token only');
+          submitChallengeAnswer(token);
+        };
+
+        // Allow Enter key to submit
+        document.getElementById('pinInput').onkeypress = (e) => {
+          if (e.key === 'Enter') {
+            document.getElementById('submitPinBtn').click();
+          }
+        };
+      }
+    });
+
+  } catch (error) {
+    console.error('[AUTH] Unexpected error:', error);
+    showMessage('An error occurred. Please try again.', 'error');
+    setTimeout(() => { window.location.href = '/signin'; }, 3000);
+  }
+}
+
+// Start validation immediately
+validateMagicLink();
+</script>
+</body>
+</html>

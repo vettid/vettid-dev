@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1" name="viewport"/>
+<title>Sign In • VettID</title>
+<link rel="icon" type="image/jpeg" href="/assets/favicon.ico"/>
+<link rel="stylesheet" href="/assets/styles.css"/>
+<style>
+    body {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: linear-gradient(135deg, #000 0%, #0a0a0a 50%, #1a1a1a 100%);
+    }
+    .signin-container {
+      max-width: 480px;
+      width: 100%;
+      padding: 20px;
+    }
+    .card {
+      background: rgba(255, 255, 255, 0.05);
+      backdrop-filter: blur(10px);
+      border-radius: 16px;
+      padding: 40px;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+      border: 1px solid rgba(255, 193, 37, 0.1);
+    }
+    h1 {
+      color: #ffc125;
+      margin-top: 0;
+      text-align: center;
+      font-size: 2rem;
+      margin-bottom: 0.5rem;
+    }
+    .subtitle {
+      text-align: center;
+      color: #a0a0a0;
+      margin-bottom: 2rem;
+      font-size: 0.95rem;
+    }
+    label {
+      display: block;
+      margin-bottom: 0.5rem;
+      color: #e0e0e0;
+      font-weight: 500;
+    }
+    input {
+      width: 100%;
+      padding: 12px;
+      margin-bottom: 16px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 6px;
+      background: rgba(0, 0, 0, 0.3);
+      color: #fff;
+      font-size: 16px;
+      box-sizing: border-box;
+    }
+    input:focus {
+      outline: none;
+      border-color: #ffc125;
+      box-shadow: 0 0 0 2px rgba(255, 193, 37, 0.1);
+    }
+    .btn {
+      width: 100%;
+      padding: 14px;
+      background: linear-gradient(135deg, #ffd940 0%, #ffc125 100%);
+      color: #000;
+      border: none;
+      border-radius: 6px;
+      font-weight: 700;
+      cursor: pointer;
+      font-size: 16px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      transition: all 0.2s;
+    }
+    .btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba(255, 217, 64, 0.4);
+    }
+    .btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none;
+    }
+    #loginStatus {
+      margin-top: 16px;
+      padding: 12px;
+      border-radius: 6px;
+      display: none;
+    }
+    #loginStatus.info {
+      display: block;
+      background: rgba(96, 165, 250, 0.1);
+      border-left: 3px solid #60a5fa;
+      color: #60a5fa;
+    }
+    #loginStatus.success {
+      display: block;
+      background: rgba(74, 222, 128, 0.1);
+      border-left: 3px solid #4ade80;
+      color: #4ade80;
+    }
+    #loginStatus.error {
+      display: block;
+      background: rgba(248, 113, 113, 0.1);
+      border-left: 3px solid #f87171;
+      color: #f87171;
+    }
+    .help-text {
+      text-align: center;
+      margin-top: 1.5rem;
+      color: #a0a0a0;
+      font-size: 0.85rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="signin-container">
+    <div class="card">
+      <h1>VettID</h1>
+      <p class="subtitle">Sign in to your account</p>
+
+      <form id="signinForm">
+        <label for="emailInput">Email Address</label>
+        <input type="email" id="emailInput" placeholder="your@email.com" required autocomplete="email" />
+
+        <button type="submit" class="btn" id="sendLinkBtn">Send Magic Link</button>
+      </form>
+
+      <div id="loginStatus"></div>
+
+      <p class="help-text">We'll send you a secure link to sign in.<br>No password needed.</p>
+    </div>
+  </div>
+
+<script src="https://cdn.jsdelivr.net/npm/amazon-cognito-identity-js@6.3.7/dist/amazon-cognito-identity.min.js"></script>
+<script src="https://vettid.dev/shared/config.js"></script>
+<script>
+// ====== CONFIG ======
+// Load configuration from centralized config file
+const USER_POOL_ID = window.VettIDConfig.userPoolId;
+const CLIENT_ID = window.VettIDConfig.member.clientId;
+const AWS_REGION = window.VettIDConfig.region;
+// ====================
+
+// Setup Cognito
+const poolData = { UserPoolId: USER_POOL_ID, ClientId: CLIENT_ID };
+const userPool = new AmazonCognitoIdentity.CognitoUserPool(poolData);
+
+// Check if SDK has any cached user
+const currentUser = userPool.getCurrentUser();
+console.log('[SIGNIN] Cognito SDK getCurrentUser:', currentUser ? currentUser.getUsername() : 'null');
+
+// If there's a cached user, clear it immediately to prevent auto-auth
+if (currentUser) {
+  console.log('[SIGNIN] WARNING: Found cached Cognito user, signing them out to prevent auto-auth');
+  currentUser.signOut();
+  console.log('[SIGNIN] Cached user signed out');
+}
+
+// ---- Token storage ----
+function saveTokens(idToken, accessToken, refreshToken) {
+  localStorage.setItem('tokens', JSON.stringify({ id_token: idToken, access_token: accessToken, refresh_token: refreshToken }));
+}
+
+// ---- JWT helpers ----
+function b64urlDecode(str) {
+  str = str.replace(/-/g, '+').replace(/_/g, '/');
+  const pad = str.length % 4 ? 4 - (str.length % 4) : 0;
+  return atob(str + '='.repeat(pad));
+}
+function parseJwt(idt) {
+  try {
+    const [h, p, s] = idt.split('.');
+    return { header: JSON.parse(b64urlDecode(h)), payload: JSON.parse(b64urlDecode(p)), signature: s };
+  } catch { return { header: {}, payload: {}, signature: '' }; }
+}
+
+// ---- UI helpers ----
+function showStatus(message, type) {
+  const statusDiv = document.getElementById('loginStatus');
+  statusDiv.textContent = message;
+  statusDiv.className = type;
+}
+
+// ---- Magic link authentication ----
+async function sendMagicLink(e) {
+  e.preventDefault();
+
+  const email = document.getElementById('emailInput').value.trim();
+  if (!email) {
+    showStatus('Please enter your email address', 'error');
+    return;
+  }
+
+  console.log('[SIGNIN] User requesting magic link for:', email);
+
+  const sendBtn = document.getElementById('sendLinkBtn');
+  sendBtn.disabled = true;
+  showStatus('Sending magic link...', 'info');
+
+  const authDetails = new AmazonCognitoIdentity.AuthenticationDetails({
+    Username: email
+  });
+
+  const userData = { Username: email, Pool: userPool };
+  const cognitoUser = new AmazonCognitoIdentity.CognitoUser(userData);
+
+  cognitoUser.setAuthenticationFlowType('CUSTOM_AUTH');
+
+  console.log('[SIGNIN] Calling initiateAuth (send magic link)');
+  cognitoUser.initiateAuth(authDetails, {
+    onSuccess: (result) => {
+      console.log('Unexpected success on initiateAuth');
+    },
+    onFailure: (err) => {
+      console.error('Auth error:', err);
+      showStatus('Error: ' + (err.message || 'Failed to send magic link'), 'error');
+      sendBtn.disabled = false;
+    },
+    customChallenge: (challengeParameters) => {
+      // Magic link email sent
+      localStorage.setItem('authEmail', email);
+      showStatus('✓ Magic link sent! Check your email and click the link to sign in.', 'success');
+      sendBtn.disabled = false;
+    }
+  });
+}
+
+// Event listeners
+document.getElementById('signinForm').addEventListener('submit', sendMagicLink);
+
+// Initialize
+console.log('[SIGNIN] Page loaded. Current URL:', window.location.href);
+console.log('[SIGNIN] LocalStorage tokens:', !!localStorage.getItem('tokens'));
+</script>
+</body>
+</html>

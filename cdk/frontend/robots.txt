@@ -1,0 +1,11 @@
+# VettID Robots.txt
+# Updated: 2025-11-26
+
+User-agent: *
+Allow: /
+Disallow: /account
+Disallow: /admin
+Disallow: /auth
+
+# Sitemap location
+Sitemap: https://vettid.dev/sitemap.xml

@@ -1,0 +1,57 @@
+{
+  "Comment": "SES verification and DKIM records for auth.vettid.dev",
+  "Changes": [
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "_amazonses.auth.vettid.dev",
+        "Type": "TXT",
+        "TTL": 1800,
+        "ResourceRecords": [
+          {
+            "Value": "\"rzfvrzDZA60Ah1BShUHQIvpjBOIFSls8f+U8fR3WHOY=\""
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "t5uhr4vhlg2ks5afvgbnbsalw72apff6._domainkey.auth.vettid.dev",
+        "Type": "CNAME",
+        "TTL": 1800,
+        "ResourceRecords": [
+          {
+            "Value": "t5uhr4vhlg2ks5afvgbnbsalw72apff6.dkim.amazonses.com"
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "icyxene6msz6a3polfp7oe5hrpfpjaxe._domainkey.auth.vettid.dev",
+        "Type": "CNAME",
+        "TTL": 1800,
+        "ResourceRecords": [
+          {
+            "Value": "icyxene6msz6a3polfp7oe5hrpfpjaxe.dkim.amazonses.com"
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "jg3wspd27nez4z25w6frbulujqdm4jkz._domainkey.auth.vettid.dev",
+        "Type": "CNAME",
+        "TTL": 1800,
+        "ResourceRecords": [
+          {
+            "Value": "jg3wspd27nez4z25w6frbulujqdm4jkz.dkim.amazonses.com"
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1" name="viewport"/>
+<title>Sign Out • VettID</title>
+<link rel="icon" type="image/jpeg" href="/assets/favicon.ico"/>
+<link rel="stylesheet" href="/assets/styles.css"/>
+<style>
+    body {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: linear-gradient(135deg, #000 0%, #0a0a0a 50%, #1a1a1a 100%);
+    }
+    .signout-container {
+      max-width: 480px;
+      width: 100%;
+      padding: 20px;
+    }
+    .card {
+      background: rgba(255, 255, 255, 0.05);
+      backdrop-filter: blur(10px);
+      border-radius: 16px;
+      padding: 40px;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+      border: 1px solid rgba(255, 193, 37, 0.1);
+      text-align: center;
+    }
+    h1 {
+      color: #ffc125;
+      margin-top: 0;
+      font-size: 2rem;
+      margin-bottom: 0.5rem;
+    }
+    .message {
+      color: #e0e0e0;
+      margin-bottom: 2rem;
+      font-size: 1rem;
+    }
+    .spinner {
+      border: 3px solid rgba(255, 193, 37, 0.1);
+      border-top: 3px solid #ffc125;
+      border-radius: 50%;
+      width: 40px;
+      height: 40px;
+      animation: spin 1s linear infinite;
+      margin: 20px auto;
+    }
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+  </style>
+</head>
+<body>
+  <div class="signout-container">
+    <div class="card">
+      <h1>VettID</h1>
+      <div class="spinner"></div>
+      <p class="message" id="message">Signing out...</p>
+    </div>
+  </div>
+
+<script src="https://cdn.jsdelivr.net/npm/amazon-cognito-identity-js@6.3.7/dist/amazon-cognito-identity.min.js"></script>
+<script src="https://vettid.dev/shared/config.js"></script>
+<script>
+// Load configuration from centralized config file
+const USER_POOL_ID = window.VettIDConfig.userPoolId;
+const CLIENT_ID = window.VettIDConfig.member.clientId;
+
+// Clear all authentication data
+function clearAllAuthData() {
+  console.log('[SIGNOUT] Starting comprehensive sign out');
+
+  // DON'T use Cognito SDK signOut - it might trigger auth flows
+  // Just clear storage directly
+  console.log('[SIGNOUT] Skipping Cognito SDK signOut() - clearing storage manually instead');
+
+  // Clear tokens
+  localStorage.removeItem('tokens');
+  localStorage.removeItem('authEmail');
+
+  // Clear any Cognito SDK data
+  localStorage.removeItem('CognitoIdentityServiceProvider.' + CLIENT_ID + '.LastAuthUser');
+
+  // Clear all keys that might be related to Cognito
+  const keysToRemove = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (key && key.startsWith('CognitoIdentityServiceProvider')) {
+      keysToRemove.push(key);
+    }
+  }
+  keysToRemove.forEach(key => {
+    console.log('[SIGNOUT] Removing localStorage key:', key);
+    localStorage.removeItem(key);
+  });
+
+  // Clear session storage as well
+  sessionStorage.clear();
+
+  console.log('[SIGNOUT] All authentication data cleared');
+}
+
+// Perform sign out
+async function signOut() {
+  try {
+    // Clear all auth data
+    clearAllAuthData();
+
+    // Show success message
+    document.getElementById('message').textContent = 'Successfully signed out';
+
+    // Wait a moment, then redirect
+    setTimeout(() => {
+      console.log('Redirecting to signin page');
+      window.location.href = '/signin';
+    }, 1000);
+  } catch (error) {
+    console.error('Sign out error:', error);
+    document.getElementById('message').textContent = 'Signed out (with errors)';
+    setTimeout(() => {
+      window.location.href = '/signin';
+    }, 1000);
+  }
+}
+
+// Execute sign out immediately
+signOut();
+</script>
+</body>
+</html>

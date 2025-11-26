@@ -1,0 +1,39 @@
+{
+  "name": "vettid-scaffold",
+  "version": "0.2.0",
+  "private": true,
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "watch": "tsc -w",
+    "cdk": "cdk",
+    "bootstrap": "./node_modules/.bin/cdk bootstrap",
+    "deploy": "npm run build && ./node_modules/.bin/cdk deploy --all",
+    "synth": "npm run build && ./node_modules/.bin/cdk synth",
+    "destroy": "cdk destroy --all"
+  },
+  "devDependencies": {
+    "@aws-sdk/client-s3": "^3.939.0",
+    "@aws-sdk/s3-request-presigner": "^3.939.0",
+    "@types/aws-lambda": "^8.10.159",
+    "@types/node": "^24.10.1",
+    "@types/pdfkit": "^0.17.3",
+    "aws-cdk": "2.1033.0",
+    "esbuild": "0.27.0",
+    "pdfkit": "^0.17.2",
+    "typescript": "5.9.3"
+  },
+  "dependencies": {
+    "@aws-cdk/cloud-assembly-schema": "48.20.0",
+    "@aws-sdk/client-cloudwatch": "^3.939.0",
+    "@aws-sdk/client-cognito-identity-provider": "^3.939.0",
+    "@aws-sdk/client-dynamodb": "^3.939.0",
+    "@aws-sdk/client-ses": "^3.939.0",
+    "@aws-sdk/util-dynamodb": "^3.939.0",
+    "aws-cdk-lib": "2.229.1",
+    "constructs": "10.4.3",
+    "jsonwebtoken": "^9.0.2",
+    "source-map-support": "^0.5.21",
+    "ulid": "^3.0.1"
+  }
+}

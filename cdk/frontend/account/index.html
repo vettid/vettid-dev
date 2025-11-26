@@ -1,0 +1,2312 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1" name="viewport"/>
+<title>VettID • Account</title>
+<link rel="icon" type="image/jpeg" href="/assets/favicon.ico"/>
+<link rel="stylesheet" href="/assets/styles.css"/>
+<style>
+    *{box-sizing:border-box;}
+    body{display:flex;flex-direction:column;height:100vh;margin:0;overflow:hidden;}
+    header{display:flex;justify-content:space-between;align-items:center;padding:16px 24px;background:linear-gradient(135deg,#1a1a1a 0%,#0a0a0a 100%);border-bottom:2px solid var(--accent);box-shadow:0 2px 8px rgba(0,0,0,0.3);flex-shrink:0;}
+    .main-container{display:flex;flex:1;overflow:hidden;}
+    .sidebar{width:220px;background:linear-gradient(180deg,#0f0f0f 0%,#050505 100%);border-right:2px solid #222;display:flex;flex-direction:column;overflow-y:auto;transition:transform 0.3s ease;}
+    .wrap{padding:20px 32px;flex:1;overflow-y:auto;max-width:none;width:100%;}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+    .card{padding:24px;background:#0a0a0a;border-radius:8px;border:2px solid var(--border);margin-bottom:20px;}
+    .card.double-width{grid-column:span 2;}
+    .tabs{display:flex;flex-direction:column;gap:0;padding:12px 0;}
+    .tab{background:none;color:var(--gray);border:none;padding:14px 20px;cursor:pointer;transition:all .2s;border-left:3px solid transparent;text-align:left;font-weight:600;font-size:0.9rem;width:100%;}
+    .tab:hover:not(.locked){color:var(--text);background:rgba(255,193,37,0.08)}
+    .tab.active{color:var(--accent);border-left-color:var(--accent);background:rgba(255,193,37,0.12)}
+    .tab.locked{opacity:0.5;cursor:not-allowed;position:relative}
+    .tab.locked::after{content:'🔒';margin-left:6px;font-size:0.7rem}
+    .tab-content{display:none;height:100%;width:100%;}
+    .tab-content.active{display:block;width:100%;}
+    @keyframes slideIn{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}
+    @keyframes slideOut{from{transform:translateX(0);opacity:1}to{transform:translateX(100%);opacity:0}}
+    @keyframes spin{0%{transform:rotate(0deg)}100%{transform:rotate(360deg)}}
+    /* Toggle Switch Styles */
+    .toggle-switch{position:relative;display:inline-block;width:50px;height:24px;}
+    .toggle-switch input{opacity:0;width:0;height:0;}
+    .toggle-slider{position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:#4b5563;transition:.3s;border-radius:24px;}
+    .toggle-slider:before{position:absolute;content:"";height:18px;width:18px;left:3px;bottom:3px;background:#fff;transition:.3s;border-radius:50%;}
+    input:checked+.toggle-slider{background:linear-gradient(135deg,#4caf50 0%,#2e7d32 100%);}
+    input:checked+.toggle-slider:before{transform:translateX(26px);}
+    input:disabled+.toggle-slider{opacity:0.5;cursor:not-allowed;}
+    .skeleton{background:linear-gradient(90deg,#0a0a0a 25%,#1a1a1a 50%,#0a0a0a 75%);background-size:200% 100%;animation:shimmer 1.5s infinite;}
+    @keyframes shimmer{0%{background-position:200% 0;}100%{background-position:-200% 0;}}
+
+    @media (max-width: 768px){
+      .grid{grid-template-columns:1fr}
+      .main-container{flex-direction:column;}
+      .sidebar{width:100%;border-right:none;border-bottom:2px solid #222;}
+      .tabs{flex-direction:row;flex-wrap:wrap;}
+      .tab{flex:1;min-width:100px;font-size:0.75rem;padding:12px 16px;border-left:none;border-bottom:3px solid transparent;}
+      .tab.active{border-left-color:transparent;border-bottom-color:var(--accent);}
+      header{flex-direction:column;gap:12px}
+    }
+  </style>
+</head>
+<body>
+<header><div style="display:flex;align-items:center;gap:12px;"><img alt="VettID logo" src="/assets/logo.jpg" style="height:36px;width:36px;border-radius:6px;"/><h1>VettID • Account</h1></div>
+<div style="display:flex;align-items:center;gap:16px;">
+<span id="userEmail" style="color:var(--accent);font-weight:600;"></span>
+<button class="btn" id="signout">Sign out</button>
+</div>
+</header>
+
+<div class="main-container">
+  <div class="sidebar">
+    <div class="tabs">
+      <button class="tab active" data-tab="getting-started">Getting Started</button>
+      <button class="tab" data-tab="account">Account</button>
+      <button class="tab" data-tab="subscription" style="display:none;">Subscription</button>
+      <button class="tab" data-tab="voting" style="display:none;">Voting</button>
+      <button class="tab" data-tab="deploy-vault" style="display:none;">Vault Services</button>
+    </div>
+  </div>
+
+  <div class="wrap">
+
+<div id="getting-started" class="tab-content card active">
+  <h3>Getting Started with VettID</h3>
+  <p style="margin-bottom:16px;">Follow these steps to set up your VettID account and start using our secure services.</p>
+
+  <!-- Overall Progress Bar -->
+  <div id="overallProgress" style="margin-bottom:24px;padding:16px;background:#0a0a0a;border-radius:8px;border:2px solid var(--border);">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+      <span style="font-weight:600;font-size:0.9rem;">Overall Progress</span>
+      <span id="progressText" style="font-weight:600;font-size:0.9rem;color:var(--accent);">Loading...</span>
+    </div>
+    <div style="background:#1a1a1a;border-radius:8px;height:12px;overflow:hidden;box-shadow:inset 0 2px 4px rgba(0,0,0,0.3);">
+      <div id="progressBar" style="background:linear-gradient(90deg,var(--accent) 0%,#ffc125 100%);height:100%;width:0%;transition:width 0.5s ease;box-shadow:0 0 10px rgba(255,193,37,0.5);"></div>
+    </div>
+  </div>
+
+  <div id="gettingStartedSteps" style="display:flex;flex-direction:column;gap:16px;margin-bottom:24px;">
+    <!-- Loading indicator shown initially -->
+    <div style="padding:40px;background:#0a0a0a;border-radius:8px;border:2px solid var(--border);text-align:center;">
+      <div style="display:inline-block;width:40px;height:40px;border:3px solid rgba(255,193,37,0.1);border-top:3px solid var(--accent);border-radius:50%;animation:spin 1s linear infinite;"></div>
+      <p style="margin-top:16px;color:var(--gray);font-size:1rem;">Loading your getting started steps...</p>
+    </div>
+  </div>
+
+  <button id="gotItBtn" class="btn" style="background:linear-gradient(135deg,#4caf50 0%,#2e7d32 100%);color:#fff;padding:14px 24px;font-size:1rem;font-weight:600;">Got It!</button>
+</div>
+
+<div id="account" class="tab-content">
+  <div class="grid">
+    <!-- Membership Card (First) -->
+    <div class="card" id="membershipCard">
+      <h3>Membership</h3>
+      <p style="margin-bottom:16px;">VettID is a cooperative dedicated to our member's online security and privacy. In order to become a member you must read and accept our membership terms. Members must have an active trial or subscription in order to use the service. Members with active subscriptions have voting rights in the cooperative. You may cancel a subscription and maintain your membership without service access or voting rights. If you wish to cancel your membership you must cancel the account you registered. Upon cancellation your account data will be held for 7 days and may be recovered by contacting <a href="mailto:restore@vettid.dev" style="color:var(--accent);text-decoration:underline;">restore@vettid.dev</a>. Cancelled accounts will be permanently deleted 7 days after cancellation.</p>
+
+      <!-- Membership Terms Section (shown for non-members) -->
+      <div id="membershipTermsSection" style="display:none;">
+        <hr style="margin:20px 0;border:none;border-top:1px solid #222" />
+        <h4 style="margin:0 0 12px;">Membership Terms of Service</h4>
+        <p class="muted" style="font-size:0.9rem;margin-bottom:16px;">
+          Please review and accept the membership terms to become a full member. You'll be granted immediate access after accepting.
+        </p>
+
+        <div id="termsTextBox" style="padding:16px;background:#0a0a0a;border-radius:4px;border:1px solid var(--border);max-height:400px;overflow-y:auto;margin-bottom:16px;">
+          <p class="muted">Loading terms...</p>
+        </div>
+
+        <div style="margin-bottom:16px;">
+          <a id="termsDownloadLink" href="#" target="_blank" class="btn" style="display:inline-block;">Download Membership Terms</a>
+        </div>
+
+        <div style="margin-bottom:16px;padding:12px;background:#0f0f0f;border-radius:4px;border:1px solid var(--border);">
+          <label style="display:flex;align-items:start;cursor:pointer;">
+            <input type="checkbox" id="acceptTermsCheckbox" style="margin-right:12px;margin-top:4px;">
+            <span>I have read and agree to the VettID Membership Terms of Service</span>
+          </label>
+        </div>
+
+        <button id="requestMembershipBtn" class="btn btn-primary" style="width:100%;opacity:0.5;" disabled onclick="requestMembership()">
+          Accept Terms and Request Membership
+        </button>
+        <p id="requestMembershipMsg" style="margin-top:12px;font-size:0.9rem;"></p>
+      </div>
+
+      <!-- Member Details Section (shown for approved members) -->
+      <div id="memberInfoSection" style="display:none;">
+        <hr style="margin:20px 0;border:none;border-top:1px solid #222" />
+        <h4 style="margin:0 0 12px;">Membership Details</h4>
+        <div style="padding:16px;background:#0a0a0a;border-radius:4px;border:1px solid var(--border);margin-bottom:16px;">
+          <p id="memberDetailsText"></p>
+        </div>
+        <div>
+          <a id="memberTermsDownloadLink" href="#" target="_blank" class="btn" style="display:inline-block;">Download Membership Terms</a>
+        </div>
+      </div>
+    </div>
+
+    <!-- Profile Card (includes membership and subscription status) -->
+    <div class="card">
+      <h3>Your profile</h3>
+      <div>
+        <p><strong>First name</strong><br/><span id="firstName">—</span></p>
+        <p><strong>Last name</strong><br/><span id="lastName">—</span></p>
+        <p><strong>Email</strong><br/><span id="email">—</span></p>
+        <p><strong>User GUID</strong><br/><code id="userGuid">—</code></p>
+      </div>
+
+      <hr style="margin:20px 0;border:none;border-top:1px solid #222" />
+
+      <h4 style="margin:0 0 12px;">Membership Status</h4>
+      <div id="membershipStatusBox" style="padding:12px;background:#0a0a0a;border-radius:4px;margin-bottom:16px;">
+        <p style="margin:0;"><strong>Status:</strong> <span id="membershipStatus">Loading...</span></p>
+        <p id="membershipDetails" style="margin:8px 0 0;"></p>
+      </div>
+
+      <h4 style="margin:0 0 12px;">Subscription Status</h4>
+      <div id="profileSubscriptionStatus" style="padding:12px;background:#0a0a0a;border-radius:4px;">
+        <p style="margin:0;">Loading...</p>
+      </div>
+    </div>
+
+    <!-- PIN Code Card -->
+    <div class="card" id="pinCodeCard">
+      <h3>PIN Code</h3>
+      <p class="muted" style="font-size:0.9rem;margin-bottom:16px;">
+        Add an extra layer of security to your account by requiring a 4-6 digit PIN code when logging in with magic links.
+      </p>
+
+      <div id="pinStatusBox" style="padding:16px;background:#0a0a0a;border-radius:4px;margin-bottom:16px;">
+        <p><strong>Status:</strong> <span id="pinStatus">Loading...</span></p>
+        <p id="pinUpdatedAt" style="margin-top:8px;"></p>
+      </div>
+
+      <div id="pinActions" style="display:flex;gap:12px;flex-wrap:wrap;">
+        <button class="btn" id="enablePinBtn" style="display:none;background:linear-gradient(135deg,#4caf50 0%,#2e7d32 100%);color:#fff;">Enable PIN</button>
+        <button class="btn" id="updatePinBtn" style="display:none;">Change PIN</button>
+        <button class="btn" id="disablePinBtn" style="display:none;background:linear-gradient(135deg,#d32f2f 0%,#a00 100%);color:#fff;">Disable PIN</button>
+      </div>
+    </div>
+
+    <!-- Email Preferences Card -->
+    <div class="card">
+      <h3>Email Preferences</h3>
+      <p class="muted" style="font-size:0.9rem;margin-bottom:16px;">
+        Control whether you receive system emails such as account notifications, security alerts, and service updates.
+      </p>
+
+      <div id="emailPrefsBox" style="padding:16px;background:#0a0a0a;border-radius:4px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <div>
+            <strong style="display:block;margin-bottom:4px;">System Emails</strong>
+            <span id="emailPrefsStatus" class="muted" style="font-size:0.85rem;">Loading...</span>
+          </div>
+          <label class="toggle-switch">
+            <input type="checkbox" id="systemEmailsToggle" disabled>
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+    </div>
+
+
+    <!-- Account Actions Card -->
+    <div class="card">
+      <h3>Account actions</h3>
+      <button class="btn" id="cancelAccountBtn" style="background:linear-gradient(135deg,#d32f2f 0%,#a00 100%);color:#fff;box-shadow:0 4px 12px rgba(211,47,47,0.3);">Cancel account</button>
+      <p class="muted" style="font-size:0.85rem;margin-top:8px;">Canceling your account will disable your access. Your data will be held for 7 days before being permanently deleted. If you would like to restore your account or immediately delete your data please contact <a href="mailto:restore@vettid.dev" style="color:#4fc3f7;text-decoration:none;">restore@vettid.dev</a>.</p>
+    </div>
+  </div>
+</div>
+
+<!-- PIN Modals -->
+<div id="enablePinModal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.8);z-index:1000;align-items:center;justify-content:center;">
+  <div style="background:#1a1a1a;padding:32px;border-radius:8px;max-width:400px;width:90%;border:2px solid var(--accent);">
+    <h3 style="margin-top:0;">Enable PIN Code</h3>
+    <p class="muted" style="margin-bottom:20px;">Create a 4-6 digit PIN code for additional security.</p>
+    <div>
+      <label for="newPinInput" style="display:block;margin-bottom:8px;font-weight:600;">Enter PIN (4-6 digits)</label>
+      <input type="password" id="newPinInput" maxlength="6" pattern="[0-9]*" inputmode="numeric"
+             style="width:100%;padding:12px;background:#0a0a0a;border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:1.1rem;letter-spacing:0.2em;text-align:center;"
+             placeholder="••••••" />
+      <label for="confirmPinInput" style="display:block;margin:16px 0 8px;font-weight:600;">Confirm PIN</label>
+      <input type="password" id="confirmPinInput" maxlength="6" pattern="[0-9]*" inputmode="numeric"
+             style="width:100%;padding:12px;background:#0a0a0a;border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:1.1rem;letter-spacing:0.2em;text-align:center;"
+             placeholder="••••••" />
+    </div>
+    <div style="display:flex;gap:12px;margin-top:24px;">
+      <button class="btn" id="confirmEnablePinBtn" style="flex:1;background:linear-gradient(135deg,#4caf50 0%,#2e7d32 100%);color:#fff;">Enable</button>
+      <button class="btn" id="cancelEnablePinBtn" style="flex:1;">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div id="updatePinModal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.8);z-index:1000;align-items:center;justify-content:center;">
+  <div style="background:#1a1a1a;padding:32px;border-radius:8px;max-width:400px;width:90%;border:2px solid var(--accent);">
+    <h3 style="margin-top:0;">Change PIN Code</h3>
+    <p class="muted" style="margin-bottom:20px;">Enter your current PIN and new 4-6 digit PIN code.</p>
+    <div>
+      <label for="currentPinInput" style="display:block;margin-bottom:8px;font-weight:600;">Current PIN</label>
+      <input type="password" id="currentPinInput" maxlength="6" pattern="[0-9]*" inputmode="numeric"
+             style="width:100%;padding:12px;background:#0a0a0a;border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:1.1rem;letter-spacing:0.2em;text-align:center;"
+             placeholder="••••••" />
+      <label for="updatePinInput" style="display:block;margin:16px 0 8px;font-weight:600;">New PIN (4-6 digits)</label>
+      <input type="password" id="updatePinInput" maxlength="6" pattern="[0-9]*" inputmode="numeric"
+             style="width:100%;padding:12px;background:#0a0a0a;border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:1.1rem;letter-spacing:0.2em;text-align:center;"
+             placeholder="••••••" />
+      <label for="confirmUpdatePinInput" style="display:block;margin:16px 0 8px;font-weight:600;">Confirm New PIN</label>
+      <input type="password" id="confirmUpdatePinInput" maxlength="6" pattern="[0-9]*" inputmode="numeric"
+             style="width:100%;padding:12px;background:#0a0a0a;border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:1.1rem;letter-spacing:0.2em;text-align:center;"
+             placeholder="••••••" />
+    </div>
+    <div style="display:flex;gap:12px;margin-top:24px;">
+      <button class="btn" id="confirmUpdatePinBtn" style="flex:1;">Update PIN</button>
+      <button class="btn" id="cancelUpdatePinBtn" style="flex:1;">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div id="subscription" class="tab-content">
+  <div class="grid">
+    <!-- Current Subscription Card -->
+    <div class="card">
+      <h3>Current Subscription</h3>
+      <div id="currentSubscriptionDetails">
+        <p class="muted">Loading subscription status...</p>
+      </div>
+      <p id="subscriptionMessage" style="display:none;margin-top:16px;padding:16px;border-radius:4px;"></p>
+    </div>
+
+    <!-- Change Subscription Card -->
+    <div class="card">
+      <h3>Change Subscription</h3>
+      <p class="muted" style="font-size:0.9rem;margin-bottom:16px;">Select a subscription plan to activate or change your current subscription.</p>
+
+      <div id="subscriptionOptionsSection">
+        <p class="muted" style="text-align:center;">Loading subscription options...</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// Subscription type state
+let availableSubscriptionTypes = [];
+
+// Load subscription types
+async function loadSubscriptionTypes() {
+  const container = document.getElementById('subscriptionOptionsSection');
+
+  try {
+    const res = await fetch(API_URL + '/account/subscription-types', {
+      method: 'GET',
+      headers: { 'Authorization': 'Bearer ' + idToken() }
+    });
+
+    if (!res.ok) {
+      container.innerHTML = '<p class="muted" style="text-align:center;">Unable to load subscription options. Please try again later.</p>';
+      return;
+    }
+
+    const data = await res.json();
+    let subscriptionTypes = data.subscription_types || [];
+
+    if (subscriptionTypes.length === 0) {
+      container.innerHTML = '<p class="muted" style="text-align:center;">No subscription options are currently available.</p>';
+      return;
+    }
+
+    // Filter out one-time offers that have already been used
+    // Check subscription status for used one-time offers
+    if (subscriptionStatus && subscriptionStatus.has_used_trial) {
+      subscriptionTypes = subscriptionTypes.filter(st => {
+        // If it's a one-time offer and user has used trial, filter it out
+        // Assuming free trials are marked as one-time offers
+        if (st.is_one_time_offer && parseFloat(st.price) === 0) {
+          return false;
+        }
+        return true;
+      });
+    }
+
+    // Sort: one-time offers first, then by price (free first, then ascending)
+    subscriptionTypes.sort((a, b) => {
+      if (a.is_one_time_offer && !b.is_one_time_offer) return -1;
+      if (!a.is_one_time_offer && b.is_one_time_offer) return 1;
+      const priceA = parseFloat(a.price) || 0;
+      const priceB = parseFloat(b.price) || 0;
+      return priceA - priceB;
+    });
+
+    availableSubscriptionTypes = subscriptionTypes;
+
+    if (subscriptionTypes.length === 0) {
+      container.innerHTML = '<p class="muted" style="text-align:center;">No subscription options are currently available.</p>';
+      return;
+    }
+
+    container.innerHTML = '<div style="display:flex;flex-direction:column;gap:16px;">' + subscriptionTypes.map((st, index) => {
+      const isFree = parseFloat(st.price) === 0;
+      const priceDisplay = isFree
+        ? '<div style="font-size:2rem;font-weight:700;color:#10b981;">FREE</div>'
+        : `<div style="font-size:2rem;font-weight:700;color:var(--text);">${st.currency} ${parseFloat(st.price).toFixed(2)}</div>`;
+
+      // Handle pluralization - remove trailing 's' for singular, keep for plural
+      let termUnit = st.term_unit;
+      if (st.term_value === 1 && termUnit.endsWith('s')) {
+        termUnit = termUnit.slice(0, -1); // Remove trailing 's' for singular
+      }
+      const termDisplay = `${st.term_value} ${termUnit}`;
+      const isPopular = index === 0; // First one is popular
+      const borderColor = isPopular ? 'var(--accent)' : '#333';
+      const boxShadow = isPopular ? '0 0 20px rgba(255,193,37,0.2)' : 'none';
+
+      // Brighter button colors for all subscribe buttons
+      let buttonBg;
+      let buttonColor;
+      if (isFree) {
+        buttonBg = 'linear-gradient(135deg,#4caf50 0%,#2e7d32 100%)';
+        buttonColor = '#fff';
+      } else if (isPopular) {
+        buttonBg = 'linear-gradient(135deg,var(--accent) 0%,#ffc125 100%)';
+        buttonColor = '#000';
+      } else {
+        buttonBg = 'linear-gradient(135deg,#2196f3 0%,#1976d2 100%)';
+        buttonColor = '#fff';
+      }
+
+      return `
+        <div style="padding:20px;background:#050505;border-radius:8px;border:2px solid ${borderColor};box-shadow:${boxShadow};transition:all 0.2s;position:relative;display:flex;align-items:center;justify-content:space-between;gap:20px;">
+          ${isPopular ? '<div style="position:absolute;top:-12px;left:20px;background:var(--accent);color:#000;padding:4px 12px;border-radius:12px;font-size:0.7rem;font-weight:700;text-transform:uppercase;">Popular</div>' : ''}
+
+          <div style="flex:1;">
+            <h4 style="margin:0 0 4px;color:${isPopular ? 'var(--accent)' : 'var(--text)'};font-size:1.2rem;">${st.name}</h4>
+            <p style="color:var(--gray);font-size:0.85rem;margin:0 0 8px;">${st.description}</p>
+            ${st.is_one_time_offer ? '<span style="display:inline-block;background:#fbbf24;color:#000;padding:3px 10px;border-radius:8px;font-size:0.7rem;font-weight:700;text-transform:uppercase;">One-Time Offer</span>' : ''}
+          </div>
+
+          <div style="text-align:center;min-width:120px;">
+            ${priceDisplay}
+            <div style="color:var(--gray);font-size:0.8rem;margin-top:2px;">${termDisplay}</div>
+          </div>
+
+          <button class="btn" onclick="selectSubscriptionType('${st.subscription_type_id}')" style="background:${buttonBg};color:${buttonColor};padding:12px 24px;font-size:0.95rem;font-weight:700;white-space:nowrap;">
+            ${isFree ? 'Start Free' : 'Subscribe'}
+          </button>
+        </div>
+      `;
+    }).join('') + '</div>';
+  } catch (err) {
+    console.error('Error loading subscription types:', err);
+    container.innerHTML = '<p class="muted" style="text-align:center;color:#f44336;">Failed to load subscription options. Please try again later.</p>';
+  }
+}
+
+// Select and subscribe to a subscription type
+async function selectSubscriptionType(subscriptionTypeId) {
+  await createSubscription(subscriptionTypeId);
+}
+</script>
+
+<div id="deploy-vault" class="tab-content">
+  <div class="card">
+    <h3>Vault Services</h3>
+    <p>Secure storage for your sensitive data and credentials.</p>
+  </div>
+
+  <div class="grid">
+    <!-- Deploy a Vault Card -->
+    <div class="card">
+      <h4 style="margin-top:0;margin-bottom:16px;color:var(--accent);">Deploy a Vault</h4>
+      <p class="muted" style="margin-bottom:20px;font-size:0.95rem;">Deploy an encrypted vault for storing API keys, deployment tokens, and other sensitive credentials needed for automated deployments.</p>
+
+      <div style="margin-top:24px;padding:24px;background:#050505;border-radius:4px;border:1px solid #333;text-align:center;">
+        <p style="color:var(--gray);font-size:1rem;">Coming soon</p>
+        <p style="color:var(--gray);margin-top:8px;font-size:0.85rem;">Secure credential management</p>
+      </div>
+    </div>
+
+    <!-- Bring Your Own Vault Card -->
+    <div class="card">
+      <h4 style="margin-top:0;margin-bottom:16px;color:var(--accent);">Bring Your Own Vault</h4>
+      <p class="muted" style="margin-bottom:20px;font-size:0.95rem;">Connect your existing Vaultwarden or Bitwarden instance to VettID for seamless integration with your current password management setup.</p>
+
+      <div style="margin-top:24px;padding:24px;background:#050505;border-radius:4px;border:1px solid #333;text-align:center;">
+        <p style="color:var(--gray);font-size:1rem;">Coming soon</p>
+        <p style="color:var(--gray);margin-top:8px;font-size:0.85rem;">Self-hosted vault integration</p>
+      </div>
+    </div>
+
+    <!-- Backup Services Card -->
+    <div class="card">
+      <h4 style="margin-top:0;margin-bottom:16px;color:var(--accent);">Backup Services</h4>
+      <p class="muted" style="margin-bottom:20px;font-size:0.95rem;">Automated backup services for your critical data. Schedule regular backups and restore your data when needed.</p>
+
+      <div style="margin-top:24px;padding:24px;background:#050505;border-radius:4px;border:1px solid #333;text-align:center;">
+        <p style="color:var(--gray);font-size:1rem;">Coming soon</p>
+        <p style="color:var(--gray);margin-top:8px;font-size:0.85rem;">Automated backup solutions</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="voting" class="tab-content card">
+  <h3>Voting</h3>
+  <p class="muted">Participate in VettID community voting and governance.</p>
+
+  <!-- Filter Buttons -->
+  <div style="display:flex;gap:12px;margin-top:24px;margin-bottom:20px;flex-wrap:wrap;">
+    <button id="filterActiveProposals" class="btn proposal-filter active" data-filter="active" style="background:linear-gradient(135deg,#10b981 0%,#059669 100%);padding:10px 20px;font-weight:600;">
+      Active <span id="activeProposalsCount" style="background:#065f46;color:#fff;border-radius:12px;padding:2px 8px;margin-left:8px;font-size:0.75rem;">0</span>
+    </button>
+    <button id="filterCompletedProposals" class="btn proposal-filter" data-filter="completed" style="background:linear-gradient(135deg,#6366f1 0%,#4f46e5 100%);padding:10px 20px;font-weight:600;">
+      Completed <span id="completedProposalsCount" style="background:#4338ca;color:#fff;border-radius:12px;padding:2px 8px;margin-left:8px;font-size:0.75rem;">0</span>
+    </button>
+  </div>
+
+  <!-- Single Container for All Proposals -->
+  <div id="proposalsContainer" style="margin-top:16px;display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px;">
+    <p class="muted" style="grid-column:1/-1;">Loading proposals...</p>
+  </div>
+</div>
+
+  </div><!-- end .wrap -->
+</div><!-- end .main-container -->
+
+<script src="https://vettid.dev/shared/config.js"></script>
+<script>
+// ====== CONFIG ======
+// Load configuration from centralized config file
+const API_URL = window.VettIDConfig.apiUrl;
+// ====================
+
+// ---- Token storage ----
+function loadTokens() {
+  try { return JSON.parse(localStorage.getItem('tokens') || 'null'); } catch { return null; }
+}
+function clearTokens() { localStorage.removeItem('tokens'); localStorage.removeItem('authEmail'); }
+function idToken() { return (loadTokens() || {}).id_token; }
+function signedIn() { return !!idToken(); }
+
+// ---- Toast Notifications ----
+function showToast(message, type = 'info') {
+  const toast = document.createElement('div');
+  const bgColor = type === 'error' ? '#f44336' : type === 'success' ? '#4caf50' : type === 'warning' ? '#ff9800' : '#2196f3';
+  toast.style.cssText = `position:fixed;top:20px;right:20px;padding:16px 24px;background:${bgColor};color:#fff;border-radius:4px;box-shadow:0 4px 12px rgba(0,0,0,0.5);z-index:9999;animation:slideIn 0.3s;max-width:400px;word-wrap:break-word;`;
+  toast.textContent = message;
+  document.body.appendChild(toast);
+  setTimeout(() => {
+    toast.style.animation = 'slideOut 0.3s';
+    setTimeout(() => toast.remove(), 300);
+  }, 4000);
+}
+
+// ---- Loading State Helpers ----
+function setLoading(button, loading = true) {
+  if (loading) {
+    button.dataset.originalText = button.textContent;
+    button.disabled = true;
+    button.textContent = 'Processing...';
+    button.style.opacity = '0.7';
+  } else {
+    button.disabled = false;
+    button.textContent = button.dataset.originalText || button.textContent;
+    button.style.opacity = '1';
+  }
+}
+
+function showGridLoadingSkeleton(containerId, count = 3) {
+  const container = document.getElementById(containerId);
+  let skeletonHTML = '';
+  for (let i = 0; i < count; i++) {
+    skeletonHTML += `
+      <div style="padding:20px;background:#0a0a0a;border-radius:8px;border:1px solid var(--border);">
+        <div class="skeleton" style="height:24px;margin-bottom:12px;border-radius:4px;width:60%;"></div>
+        <div class="skeleton" style="height:16px;margin-bottom:8px;border-radius:4px;width:80%;"></div>
+        <div class="skeleton" style="height:16px;margin-bottom:8px;border-radius:4px;width:70%;"></div>
+        <div class="skeleton" style="height:36px;margin-top:16px;border-radius:4px;width:100%;"></div>
+      </div>
+    `;
+  }
+  container.innerHTML = skeletonHTML;
+}
+
+// ---- JWT helpers ----
+function b64urlDecode(str) {
+  str = str.replace(/-/g, '+').replace(/_/g, '/');
+  const pad = str.length % 4 ? 4 - (str.length % 4) : 0;
+  return atob(str + '='.repeat(pad));
+}
+/* SECURITY NOTE: Frontend JWT parsing is for display/UX purposes only.
+ * JWT signature validation is performed server-side by API Gateway's Cognito authorizer.
+ * Never trust client-side JWT claims for authorization - they can be tampered with.
+ * All protected API endpoints validate the JWT signature and claims on the backend. */
+function parseJwt(idt) {
+  try {
+    const [h, p, s] = idt.split('.');
+    return { header: JSON.parse(b64urlDecode(h)), payload: JSON.parse(b64urlDecode(p)), signature: s };
+  } catch { return { header: {}, payload: {}, signature: '' }; }
+}
+
+// Check if JWT token is expired
+function isTokenExpired(token) {
+  if (!token) return true;
+  try {
+    const { payload } = parseJwt(token);
+    if (!payload.exp) return true;
+    // exp is in seconds, Date.now() is in milliseconds
+    const expiryTime = payload.exp * 1000;
+    const now = Date.now();
+    // Add 60 second buffer to account for clock skew
+    return expiryTime < (now + 60000);
+  } catch {
+    return true;
+  }
+}
+
+// ---- Auth check ----
+function checkAuth() {
+  if (!signedIn()) {
+    // Redirect to signin page
+    window.location.href = '/signin';
+    return false;
+  }
+
+  // Check if token is expired
+  const token = idToken();
+  if (isTokenExpired(token)) {
+    console.log('[AUTH] Token expired, redirecting to signin');
+    clearTokens();
+    window.location.href = '/signin';
+    return false;
+  }
+
+  return true;
+}
+
+function signOut() {
+  // Redirect to dedicated signout page
+  window.location.href = '/signout';
+}
+
+function populateProfile() {
+  if (!signedIn()) return;
+  const { payload } = parseJwt(idToken());
+  document.getElementById('firstName').textContent = payload.given_name || '—';
+  document.getElementById('lastName').textContent = payload.family_name || '—';
+  document.getElementById('email').textContent = payload.email || '—';
+  document.getElementById('userGuid').textContent = payload['custom:user_guid'] || '—';
+  // Also populate email in header
+  document.getElementById('userEmail').textContent = payload.email || '';
+}
+
+async function cancelAccount() {
+  if (!confirm('Are you sure you want to cancel your account? This will disable your access. An administrator can reactivate or permanently delete it.')) {
+    return;
+  }
+
+  const btn = document.getElementById('cancelAccountBtn');
+  setLoading(btn, true);
+
+  try {
+    const res = await fetch(API_URL + '/account/cancel', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + idToken() }
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      showToast('Error: ' + (err.message || 'Failed to cancel account'), 'error');
+      setLoading(btn, false);
+      return;
+    }
+    const data = await res.json();
+    showToast(data.message || 'Account canceled successfully', 'success');
+    setTimeout(() => signOut(), 2000);
+  } catch (err) {
+    showToast('Error: ' + (err.message || 'Failed to cancel account'), 'error');
+    setLoading(btn, false);
+  }
+}
+
+// Tab switching
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.onclick = () => {
+    const target = tab.getAttribute('data-tab');
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById(target).classList.add('active');
+
+    // Load voting data when voting tab is clicked
+    if (target === 'voting' && signedIn()) {
+      loadAllProposals();
+    }
+  };
+});
+
+// Keyboard shortcuts for tab navigation (1-6)
+document.addEventListener('keydown', (e) => {
+  // Only trigger if not typing in an input field
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+  const tabMap = {
+    '1': 'getting-started',
+    '2': 'account',
+    '3': 'membership',
+    '4': 'subscription',
+    '5': 'voting',
+    '6': 'deploy-vault'
+  };
+
+  const tabName = tabMap[e.key];
+  if (tabName) {
+    const tabButton = document.querySelector(`.tab[data-tab="${tabName}"]`);
+    // Check if tab is visible and not locked
+    if (tabButton && tabButton.style.display !== 'none' && !tabButton.classList.contains('locked')) {
+      e.preventDefault();
+      switchToTab(tabName);
+    }
+  }
+});
+
+// ---- PIN Management ----
+async function loadPinStatus() {
+  try {
+    const token = idToken();
+    if (!token) {
+      console.error('[PIN] No ID token found');
+      throw new Error('No authentication token found');
+    }
+    console.log('[PIN] Fetching status from:', API_URL + '/account/security/pin/status');
+    const res = await fetch(API_URL + '/account/security/pin/status', {
+      method: 'GET',
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+    console.log('[PIN] Response status:', res.status);
+    if (!res.ok) {
+      const errorText = await res.text();
+      console.error('[PIN] Error response:', errorText);
+      throw new Error(`Failed to load PIN status: ${res.status} ${errorText}`);
+    }
+    const data = await res.json();
+
+    const statusSpan = document.getElementById('pinStatus');
+    const updatedAtP = document.getElementById('pinUpdatedAt');
+    const enableBtn = document.getElementById('enablePinBtn');
+    const updateBtn = document.getElementById('updatePinBtn');
+    const disableBtn = document.getElementById('disablePinBtn');
+
+    if (data.pin_enabled) {
+      statusSpan.textContent = 'Enabled';
+      statusSpan.style.color = '#4caf50';
+      statusSpan.style.fontWeight = '600';
+      if (data.pin_updated_at) {
+        updatedAtP.innerHTML = '<span class="muted" style="font-size:0.85rem;">Last updated: ' + new Date(data.pin_updated_at).toLocaleString() + '</span>';
+      }
+      enableBtn.style.display = 'none';
+      updateBtn.style.display = 'inline-block';
+      disableBtn.style.display = 'inline-block';
+    } else {
+      statusSpan.textContent = 'Disabled';
+      statusSpan.style.color = '#f44336';
+      statusSpan.style.fontWeight = '600';
+      updatedAtP.innerHTML = '';
+      enableBtn.style.display = 'inline-block';
+      updateBtn.style.display = 'none';
+      disableBtn.style.display = 'none';
+    }
+  } catch (err) {
+    console.error('Error loading PIN status:', err);
+    document.getElementById('pinStatus').textContent = 'Error loading status';
+  }
+}
+
+function validatePin(pin) {
+  return /^\d{4,6}$/.test(pin);
+}
+
+function showEnablePinModal() {
+  document.getElementById('enablePinModal').style.display = 'flex';
+  document.getElementById('newPinInput').value = '';
+  document.getElementById('confirmPinInput').value = '';
+  document.getElementById('newPinInput').focus();
+}
+
+function hideEnablePinModal() {
+  document.getElementById('enablePinModal').style.display = 'none';
+}
+
+function showUpdatePinModal() {
+  document.getElementById('updatePinModal').style.display = 'flex';
+  document.getElementById('currentPinInput').value = '';
+  document.getElementById('updatePinInput').value = '';
+  document.getElementById('confirmUpdatePinInput').value = '';
+  document.getElementById('currentPinInput').focus();
+}
+
+function hideUpdatePinModal() {
+  document.getElementById('updatePinModal').style.display = 'none';
+}
+
+async function confirmEnablePin() {
+  const pin = document.getElementById('newPinInput').value;
+  const confirmPin = document.getElementById('confirmPinInput').value;
+
+  if (!validatePin(pin)) {
+    showToast('PIN must be 4-6 digits', 'error');
+    return;
+  }
+
+  if (pin !== confirmPin) {
+    showToast('PINs do not match', 'error');
+    return;
+  }
+
+  const btn = document.getElementById('confirmEnablePinBtn');
+  setLoading(btn, true);
+
+  try {
+    const res = await fetch(API_URL + '/account/security/pin/enable', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + idToken(),
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ pin: pin })
+    });
+
+    if (!res.ok) {
+      const err = await res.json();
+      showToast('Error: ' + (err.message || 'Failed to enable PIN'), 'error');
+      setLoading(btn, false);
+      return;
+    }
+
+    const data = await res.json();
+    showToast(data.message || 'PIN enabled successfully', 'success');
+    hideEnablePinModal();
+    setLoading(btn, false);
+    await loadPinStatus();
+
+    // Redirect to getting started tab and refresh steps
+    await populateGettingStartedSteps();
+    switchToTab('getting-started');
+  } catch (err) {
+    console.error('Error enabling PIN:', err);
+    showToast('Error: ' + (err.message || 'Failed to enable PIN'), 'error');
+    setLoading(btn, false);
+  }
+}
+
+async function confirmUpdatePin() {
+  const currentPin = document.getElementById('currentPinInput').value;
+  const newPin = document.getElementById('updatePinInput').value;
+  const confirmPin = document.getElementById('confirmUpdatePinInput').value;
+
+  if (!validatePin(currentPin)) {
+    showToast('Current PIN must be 4-6 digits', 'error');
+    return;
+  }
+
+  if (!validatePin(newPin)) {
+    showToast('New PIN must be 4-6 digits', 'error');
+    return;
+  }
+
+  if (newPin !== confirmPin) {
+    showToast('New PINs do not match', 'error');
+    return;
+  }
+
+  if (currentPin === newPin) {
+    showToast('New PIN must be different from current PIN', 'error');
+    return;
+  }
+
+  const btn = document.getElementById('confirmUpdatePinBtn');
+  setLoading(btn, true);
+
+  try {
+    const res = await fetch(API_URL + '/account/security/pin/update', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + idToken(),
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ currentPin: currentPin, newPin: newPin })
+    });
+
+    if (!res.ok) {
+      const err = await res.json();
+      showToast('Error: ' + (err.message || 'Failed to update PIN'), 'error');
+      setLoading(btn, false);
+      return;
+    }
+
+    const data = await res.json();
+    showToast(data.message || 'PIN updated successfully', 'success');
+    hideUpdatePinModal();
+    setLoading(btn, false);
+    await loadPinStatus();
+  } catch (err) {
+    console.error('Error updating PIN:', err);
+    showToast('Error: ' + (err.message || 'Failed to update PIN'), 'error');
+    setLoading(btn, false);
+  }
+}
+
+async function disablePin() {
+  if (!confirm('Are you sure you want to disable PIN authentication? You will only need your magic link to sign in.')) {
+    return;
+  }
+
+  const btn = document.getElementById('disablePinBtn');
+  setLoading(btn, true);
+
+  try {
+    const res = await fetch(API_URL + '/account/security/pin/disable', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + idToken() }
+    });
+
+    if (!res.ok) {
+      const err = await res.json();
+      showToast('Error: ' + (err.message || 'Failed to disable PIN'), 'error');
+      setLoading(btn, false);
+      return;
+    }
+
+    const data = await res.json();
+    showToast(data.message || 'PIN disabled successfully', 'success');
+    setLoading(btn, false);
+    await loadPinStatus();
+  } catch (err) {
+    console.error('Error disabling PIN:', err);
+    showToast('Error: ' + (err.message || 'Failed to disable PIN'), 'error');
+    setLoading(btn, false);
+  }
+}
+
+// ---- Email Preferences Management ----
+async function loadEmailPreferences() {
+  try {
+    const token = idToken();
+    if (!token) {
+      console.error('[Email Prefs] No ID token found');
+      throw new Error('No authentication token found');
+    }
+
+    const res = await fetch(API_URL + '/account/email-preferences', {
+      method: 'GET',
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+
+    if (!res.ok) {
+      const errorText = await res.text();
+      console.error('[Email Prefs] Error response:', errorText);
+      throw new Error(`Failed to load email preferences: ${res.status}`);
+    }
+
+    const data = await res.json();
+    const toggle = document.getElementById('systemEmailsToggle');
+    const statusSpan = document.getElementById('emailPrefsStatus');
+
+    // Set toggle state
+    toggle.checked = data.system_emails_enabled;
+    toggle.disabled = false;
+
+    // Update status text
+    if (data.system_emails_enabled) {
+      statusSpan.textContent = 'Enabled - You will receive system emails';
+      statusSpan.style.color = '#4caf50';
+      if (data.opted_in_at) {
+        statusSpan.textContent += ' (since ' + new Date(data.opted_in_at).toLocaleDateString() + ')';
+      }
+    } else {
+      statusSpan.textContent = 'Disabled - You will not receive system emails';
+      statusSpan.style.color = '#f44336';
+      if (data.opted_out_at) {
+        statusSpan.textContent += ' (since ' + new Date(data.opted_out_at).toLocaleDateString() + ')';
+      }
+    }
+  } catch (err) {
+    console.error('Error loading email preferences:', err);
+    document.getElementById('emailPrefsStatus').textContent = 'Error loading preferences';
+    document.getElementById('emailPrefsStatus').style.color = '#f44336';
+  }
+}
+
+async function toggleEmailPreferences(event) {
+  const toggle = event.target;
+  const newValue = toggle.checked;
+
+  // Show confirmation dialog based on action
+  let confirmMessage;
+  if (newValue) {
+    confirmMessage = 'By enabling system emails, you agree to receive account notifications, security alerts, and service updates from VettID. Do you want to continue?';
+  } else {
+    confirmMessage = 'If you disable system emails, you will stop receiving important account notifications, security alerts, and service updates. Are you sure you want to continue?';
+  }
+
+  if (!confirm(confirmMessage)) {
+    // User cancelled, revert toggle
+    toggle.checked = !newValue;
+    return;
+  }
+
+  // Disable toggle during update
+  toggle.disabled = true;
+
+  try {
+    const res = await fetch(API_URL + '/account/email-preferences', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + idToken(),
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        system_emails_enabled: newValue
+      })
+    });
+
+    if (!res.ok) {
+      const err = await res.json();
+      showToast('Error: ' + (err.message || 'Failed to update email preferences'), 'error');
+      // Revert toggle on error
+      toggle.checked = !newValue;
+      toggle.disabled = false;
+      return;
+    }
+
+    const data = await res.json();
+    showToast(data.message || 'Email preferences updated successfully', 'success');
+
+    // Reload preferences to update status text
+    await loadEmailPreferences();
+  } catch (err) {
+    console.error('Error updating email preferences:', err);
+    showToast('Error: ' + (err.message || 'Failed to update email preferences'), 'error');
+    // Revert toggle on error
+    toggle.checked = !newValue;
+    toggle.disabled = false;
+  }
+}
+
+// ---- Membership Management ----
+let currentTermsData = null;
+
+async function loadMembershipTerms() {
+  try {
+    const res = await fetch(API_URL + '/account/membership/terms', {
+      method: 'GET',
+      headers: { 'Authorization': 'Bearer ' + idToken() }
+    });
+    if (!res.ok) {
+      throw new Error('Failed to load membership terms');
+    }
+    currentTermsData = await res.json();
+
+    // Display terms text
+    const termsBox = document.getElementById('termsTextBox');
+    termsBox.innerHTML = '<pre style="white-space:pre-wrap;font-family:inherit;margin:0;line-height:1.6;">' + currentTermsData.terms_text + '</pre>';
+
+    // Set all download links
+    document.getElementById('termsDownloadLink').href = currentTermsData.download_url;
+    document.getElementById('memberTermsDownloadLink').href = currentTermsData.download_url;
+
+  } catch (err) {
+    console.error('Error loading membership terms:', err);
+    const termsBox = document.getElementById('termsTextBox');
+    if (err.message && err.message.includes('404')) {
+      termsBox.innerHTML = '<p class="muted">Membership terms have not been configured yet. Please contact an administrator.</p>';
+    } else {
+      termsBox.innerHTML = '<p class="muted">Failed to load membership terms. Error: ' + (err.message || 'Unknown error') + '</p>';
+    }
+    // Disable the request button if terms can't be loaded
+    const requestBtn = document.getElementById('requestMembershipBtn');
+    if (requestBtn) {
+      requestBtn.disabled = true;
+      requestBtn.style.opacity = '0.5';
+    }
+  }
+}
+
+async function loadMembershipStatus() {
+  try {
+    const token = idToken();
+    if (!token) {
+      console.error('[MEMBERSHIP] No ID token found');
+      throw new Error('No authentication token found');
+    }
+    console.log('[MEMBERSHIP] Fetching status from:', API_URL + '/account/membership/status');
+    const res = await fetch(API_URL + '/account/membership/status', {
+      method: 'GET',
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+    console.log('[MEMBERSHIP] Response status:', res.status);
+    if (!res.ok) {
+      const errorText = await res.text();
+      console.error('[MEMBERSHIP] Error response:', errorText);
+      throw new Error(`Failed to load membership status: ${res.status} ${errorText}`);
+    }
+    const data = await res.json();
+
+    const statusSpan = document.getElementById('membershipStatus');
+    const detailsP = document.getElementById('membershipDetails');
+    const termsSection = document.getElementById('membershipTermsSection');
+    const memberInfoSection = document.getElementById('memberInfoSection');
+    const membershipCard = document.getElementById('membershipCard');
+
+    switch (data.membership_status) {
+      case 'none':
+        statusSpan.textContent = 'Registered User';
+        statusSpan.style.color = '#ffc125';
+        statusSpan.style.fontWeight = '600';
+        detailsP.innerHTML = '<span class="muted" style="font-size:0.85rem;">You are a registered user. Review and accept the membership terms below to request full membership.</span>';
+        termsSection.style.display = 'block';
+        memberInfoSection.style.display = 'none';
+        membershipCard.classList.add('double-width');
+        await loadMembershipTerms();
+        break;
+      case 'pending':
+        statusSpan.textContent = 'Registered User';
+        statusSpan.style.color = '#ffc125';
+        statusSpan.style.fontWeight = '600';
+        detailsP.innerHTML = '<span class="muted" style="font-size:0.85rem;">You are a registered user. Review and accept the membership terms below to become a full member.</span>';
+        termsSection.style.display = 'block';
+        memberInfoSection.style.display = 'none';
+        membershipCard.classList.add('double-width');
+        await loadMembershipTerms();
+        break;
+      case 'approved':
+        statusSpan.textContent = 'Member';
+        statusSpan.style.color = '#4caf50';
+        statusSpan.style.fontWeight = '600';
+        // Only show "Activate a subscription" if user doesn't have an active subscription
+        if (!isSubscriber()) {
+          detailsP.innerHTML = '<span class="muted" style="font-size:0.85rem;"><a href="#" onclick="switchToTab(\'subscription\'); return false;" style="color:var(--accent);text-decoration:underline;font-weight:600;">Activate a subscription</a> to unlock all features.</span>';
+        } else {
+          detailsP.innerHTML = '<span class="muted" style="font-size:0.85rem;">You have an active subscription with access to all features.</span>';
+        }
+        termsSection.style.display = 'none';
+        memberInfoSection.style.display = 'block';
+        membershipCard.classList.remove('double-width');
+
+        let memberDetails = '';
+        if (data.membership_approved_at) {
+          memberDetails += '<strong>Approved:</strong> ' + new Date(data.membership_approved_at).toLocaleString() + '<br>';
+        }
+        if (data.terms_accepted_at) {
+          memberDetails += '<strong>Terms Accepted:</strong> ' + new Date(data.terms_accepted_at).toLocaleString() + '<br>';
+        }
+        if (data.terms_version_id) {
+          memberDetails += '<strong>Terms Version:</strong> ' + data.terms_version_id;
+        }
+        document.getElementById('memberDetailsText').innerHTML = memberDetails;
+        await loadMembershipTerms();
+
+        // Check if JWT token has member group - if not, need to sign out/in to get fresh token
+        const { payload } = parseJwt(token);
+        const groups = payload['cognito:groups'] || [];
+        if (!groups.includes('member')) {
+          detailsP.innerHTML += '<br><br><div style="padding:12px;background:#ff9800;color:#000;border-radius:4px;margin-top:12px;"><strong>Action Required:</strong> Your membership has been approved! Please <a href="#" onclick="signOut(); return false;" style="color:#000;text-decoration:underline;font-weight:700;">sign out and sign back in</a> to update your account and gain access to member features.</div>';
+        }
+        break;
+      default:
+        statusSpan.textContent = 'Unknown';
+        detailsP.innerHTML = '';
+        termsSection.style.display = 'none';
+        memberInfoSection.style.display = 'none';
+        membershipCard.classList.remove('double-width');
+    }
+  } catch (err) {
+    console.error('Error loading membership status:', err);
+    const statusSpan = document.getElementById('membershipStatus');
+    const detailsP = document.getElementById('membershipDetails');
+    const membershipCard = document.getElementById('membershipCard');
+    statusSpan.textContent = 'Error loading status';
+    statusSpan.style.color = '#f44336';
+    detailsP.innerHTML = '<span class="muted" style="font-size:0.85rem;">Unable to load membership status. Please try refreshing the page. Error: ' + (err.message || 'Unknown error') + '</span>';
+
+    // Try to load terms anyway in case that works
+    const termsSection = document.getElementById('membershipTermsSection');
+    termsSection.style.display = 'block';
+    membershipCard.classList.add('double-width');
+    await loadMembershipTerms().catch(termsErr => {
+      console.error('Also failed to load terms:', termsErr);
+    });
+  }
+}
+
+async function requestMembership() {
+  if (!currentTermsData || !currentTermsData.version_id) {
+    showToast('Unable to process request: Terms data not loaded', 'error');
+    return;
+  }
+
+  const checkbox = document.getElementById('acceptTermsCheckbox');
+  if (!checkbox.checked) {
+    showToast('You must accept the membership terms before requesting membership', 'warning');
+    return;
+  }
+
+  if (!confirm('Accept membership terms and become a full member? You will need to sign in again after acceptance.')) {
+    return;
+  }
+
+  const btn = document.getElementById('requestMembershipBtn');
+  const msgEl = document.getElementById('requestMembershipMsg');
+  setLoading(btn, true);
+
+  try {
+    const res = await fetch(API_URL + '/account/membership/request', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + idToken(),
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        terms_version_id: currentTermsData.version_id
+      })
+    });
+
+    if (!res.ok) {
+      const err = await res.json();
+      msgEl.textContent = 'Error: ' + (err.message || 'Failed to request membership');
+      msgEl.style.color = '#f44336';
+      showToast('Error: ' + (err.message || 'Failed to request membership'), 'error');
+      setLoading(btn, false);
+      return;
+    }
+
+    const data = await res.json();
+    msgEl.textContent = data.message || 'Membership approved successfully';
+    msgEl.style.color = '#4caf50';
+    showToast(data.message || 'Membership approved successfully', 'success');
+
+    // If response indicates user needs to sign in again, redirect after short delay
+    if (data.requires_signin) {
+      setTimeout(() => {
+        signOut();
+      }, 2000);
+    } else {
+      setLoading(btn, false);
+      await loadMembershipStatus();
+    }
+
+    // Redirect to getting started tab and refresh steps
+    await populateGettingStartedSteps();
+    switchToTab('getting-started');
+  } catch (err) {
+    console.error('Error requesting membership:', err);
+    showToast('Error: ' + (err.message || 'Failed to request membership'), 'error');
+    setLoading(btn, false);
+  }
+}
+
+// Subscription functions
+async function createSubscription(subscription_type_id) {
+  const msgEl = document.getElementById('subscriptionMessage');
+
+  try {
+    const res = await fetch(API_URL + '/account/subscriptions', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + idToken(),
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ subscription_type_id })
+    });
+
+    const data = await res.json();
+
+    if (!res.ok) {
+      msgEl.style.display = 'block';
+      msgEl.style.background = '#3d0a0a';
+      msgEl.style.border = '1px solid #f44336';
+      msgEl.innerHTML = '<strong>Error</strong><br/>' + (data.message || 'Failed to create subscription');
+      msgEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      return;
+    }
+
+    msgEl.style.display = 'block';
+    msgEl.style.background = '#0a3d0a';
+    msgEl.style.border = '1px solid #4caf50';
+
+    const expiresDate = new Date(data.subscription.expires_at).toLocaleDateString();
+    msgEl.innerHTML = '<strong>Subscription Activated!</strong><br/>' + data.message + ' (Expires: ' + expiresDate + ')';
+    msgEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+    // Check if this was the user's first subscription
+    const wasFirstSubscription = !subscriptionStatus || !subscriptionStatus.has_subscription;
+
+    // Reload tab visibility to show subscriber tabs
+    await loadSubscriptionStatus();
+    updateTabVisibility();
+
+    // Only redirect to getting started for first subscription
+    if (wasFirstSubscription) {
+      await populateGettingStartedSteps();
+      switchToTab('getting-started');
+    } else {
+      // Just refresh the steps but stay on current tab
+      await populateGettingStartedSteps();
+    }
+
+    console.log('[SUBSCRIPTION] Subscription created:', data);
+  } catch (err) {
+    console.error('Error creating subscription:', err);
+    msgEl.style.display = 'block';
+    msgEl.style.background = '#3d0a0a';
+    msgEl.style.border = '1px solid #f44336';
+    msgEl.innerHTML = '<strong>Error</strong><br/>Failed to create subscription. Please try again.';
+    msgEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+}
+
+// Load subscription status
+let subscriptionStatus = null;
+
+async function loadSubscriptionStatus() {
+  try {
+    const res = await fetch(API_URL + '/account/subscriptions/status', {
+      method: 'GET',
+      headers: { 'Authorization': 'Bearer ' + idToken() }
+    });
+
+    if (!res.ok) {
+      console.error('[SUBSCRIPTION] Failed to load subscription status');
+      return;
+    }
+
+    subscriptionStatus = await res.json();
+    console.log('[SUBSCRIPTION] Subscription status:', subscriptionStatus);
+
+    // Update UI based on subscription status
+    updateSubscriptionUI();
+  } catch (err) {
+    console.error('[SUBSCRIPTION] Error loading subscription status:', err);
+  }
+}
+
+function updateSubscriptionUI() {
+  const detailsDiv = document.getElementById('currentSubscriptionDetails');
+  const profileSubDiv = document.getElementById('profileSubscriptionStatus');
+  const msgEl = document.getElementById('subscriptionMessage');
+
+  if (subscriptionStatus && subscriptionStatus.is_active) {
+    // User has active subscription - show subscription details
+    let plan = subscriptionStatus.plan || 'Unknown';
+    let expiresAt = subscriptionStatus.expires_at ? new Date(subscriptionStatus.expires_at).toLocaleString() : 'N/A';
+    let status = subscriptionStatus.status || 'Unknown';
+    let statusColor = '#4caf50';
+    let statusText = status;
+
+    // Better status display for cancelled subscriptions
+    if (status === 'cancelled') {
+      statusColor = '#ff9800';
+      statusText = 'Cancelled (Active until expiry)';
+    } else if (status === 'active') {
+      statusColor = '#4caf50';
+      statusText = 'Active';
+    } else if (status === 'expired') {
+      statusColor = '#f44336';
+      statusText = 'Expired';
+    }
+
+    detailsDiv.innerHTML = `
+      <div style="padding:16px;background:#0a0a0a;border-radius:4px;border:2px solid var(--accent);margin-bottom:16px;">
+        <p><strong>Plan:</strong> ${plan}</p>
+        <p><strong>Status:</strong> <span style="color:${statusColor};font-weight:600;">${statusText}</span></p>
+        <p style="margin-bottom:0;"><strong>Expires:</strong> ${expiresAt}</p>
+      </div>
+      ${status === 'cancelled' ? '<p style="color:#ff9800;font-size:0.9rem;margin-top:8px;"><strong>Note:</strong> Your subscription has been cancelled but you retain access until the expiration date above.</p>' : ''}
+      ${status === 'active' ? '<button class="btn" onclick="cancelSubscription()" style="background:linear-gradient(135deg,#d32f2f 0%,#a00 100%);color:#fff;">Cancel Subscription</button>' : ''}
+    `;
+
+    // Update profile subscription status
+    if (profileSubDiv) {
+      profileSubDiv.innerHTML = `
+        <p style="margin:0;"><strong>Plan:</strong> ${plan}</p>
+        <p style="margin:8px 0 0;"><strong>Status:</strong> <span style="color:${statusColor};font-weight:600;">${statusText}</span></p>
+      `;
+    }
+  } else {
+    // No active subscription - clear any success messages
+    if (msgEl) {
+      msgEl.style.display = 'none';
+      msgEl.innerHTML = '';
+    }
+
+    detailsDiv.innerHTML = `
+      <div style="padding:24px;background:#0a0a0a;border-radius:4px;text-align:center;">
+        <p class="muted" style="font-size:1rem;margin:0;">No active subscription</p>
+        <p class="muted" style="font-size:0.85rem;margin-top:8px;margin-bottom:0;">Select a plan from the options to get started.</p>
+      </div>
+    `;
+
+    // Update profile subscription status
+    if (profileSubDiv) {
+      profileSubDiv.innerHTML = `
+        <p style="margin:0;color:#999;">No active subscription</p>
+      `;
+    }
+  }
+}
+
+function isSubscriber() {
+  return subscriptionStatus && subscriptionStatus.is_active === true;
+}
+
+function isPaidSubscriber() {
+  return subscriptionStatus && subscriptionStatus.is_active === true && subscriptionStatus.amount > 0;
+}
+
+
+async function cancelSubscription() {
+  if (!confirm('Are you sure you want to cancel your subscription? You will lose access when your current period ends.')) return;
+
+  // Create a temporary button reference for loading state
+  const tempBtn = document.createElement('button');
+  tempBtn.textContent = 'Cancel Subscription';
+
+  try {
+    const res = await fetch(API_URL + '/account/subscriptions/cancel', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + idToken(),
+        'Content-Type': 'application/json'
+      }
+    });
+
+    if (!res.ok) {
+      const err = await res.json();
+      showToast('Error: ' + (err.message || 'Failed to cancel subscription'), 'error');
+      return;
+    }
+
+    const data = await res.json();
+    showToast(data.message || 'Your subscription has been cancelled. You will retain access until the end of your billing period.', 'success');
+    await loadSubscriptionStatus();
+  } catch (err) {
+    console.error('Error cancelling subscription:', err);
+    showToast('Failed to cancel subscription. Please try again.', 'error');
+  }
+}
+
+// Event listeners
+document.getElementById('signout').onclick = signOut;
+document.getElementById('cancelAccountBtn').onclick = cancelAccount;
+
+// Membership Management event listeners
+document.getElementById('requestMembershipBtn').onclick = requestMembership;
+
+// Terms acceptance checkbox handler
+document.getElementById('acceptTermsCheckbox').onchange = function() {
+  const btn = document.getElementById('requestMembershipBtn');
+  if (this.checked) {
+    btn.disabled = false;
+    btn.style.opacity = '1';
+  } else {
+    btn.disabled = true;
+    btn.style.opacity = '0.5';
+  }
+};
+
+// PIN Management event listeners
+document.getElementById('enablePinBtn').onclick = showEnablePinModal;
+document.getElementById('updatePinBtn').onclick = showUpdatePinModal;
+document.getElementById('disablePinBtn').onclick = disablePin;
+document.getElementById('cancelEnablePinBtn').onclick = hideEnablePinModal;
+document.getElementById('confirmEnablePinBtn').onclick = confirmEnablePin;
+document.getElementById('cancelUpdatePinBtn').onclick = hideUpdatePinModal;
+document.getElementById('confirmUpdatePinBtn').onclick = confirmUpdatePin;
+
+// Email Preferences event listener
+document.getElementById('systemEmailsToggle').onchange = toggleEmailPreferences;
+
+// Close modals on background click
+document.getElementById('enablePinModal').onclick = (e) => {
+  if (e.target === e.currentTarget) hideEnablePinModal();
+};
+document.getElementById('updatePinModal').onclick = (e) => {
+  if (e.target === e.currentTarget) hideUpdatePinModal();
+};
+
+// ---- Voting Functions ----
+let userVotesCache = null;
+let allProposalsData = { active: [], upcoming: [], completed: [] };
+let currentProposalFilter = 'active';
+
+async function loadAllProposals() {
+  // Show skeleton loading
+  showGridLoadingSkeleton('proposalsContainer', 3);
+
+  try {
+    const token = idToken();
+    if (!token) throw new Error('No authentication token');
+
+    const res = await fetch(API_URL + '/proposals', {
+      method: 'GET',
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+
+    if (!res.ok) throw new Error('Failed to load proposals');
+    const data = await res.json();
+
+    // Store proposals data
+    allProposalsData = {
+      active: data.active || [],
+      upcoming: data.upcoming || [],
+      completed: data.closed || []  // Using closed data as completed
+    };
+
+    // Load user's existing votes
+    await loadUserVotes();
+
+    // Update all count badges
+    updateProposalCounts();
+
+    // Render proposals based on current filter
+    renderProposals(currentProposalFilter);
+
+    // Set up filter button handlers
+    setupProposalFilters();
+
+  } catch (error) {
+    console.error('Error loading proposals:', error);
+    document.getElementById('proposalsContainer').innerHTML = '<p style="color:#f44336;text-align:center;padding:20px;grid-column:1/-1;">Failed to load proposals</p>';
+  }
+}
+
+function updateProposalCounts() {
+  document.getElementById('activeProposalsCount').textContent = allProposalsData.active.length;
+  document.getElementById('completedProposalsCount').textContent = allProposalsData.completed.length;
+}
+
+function setupProposalFilters() {
+  const filters = document.querySelectorAll('.proposal-filter');
+  filters.forEach(filter => {
+    filter.addEventListener('click', () => {
+      const filterType = filter.dataset.filter;
+      currentProposalFilter = filterType;
+
+      // Update active state
+      filters.forEach(f => f.classList.remove('active'));
+      filter.classList.add('active');
+
+      // Render filtered proposals
+      renderProposals(filterType);
+    });
+  });
+}
+
+async function renderProposals(filter) {
+  const container = document.getElementById('proposalsContainer');
+
+  let proposalsToRender = [];
+
+  if (filter === 'active') {
+    proposalsToRender = [...allProposalsData.active].sort((a, b) => new Date(a.closes_at) - new Date(b.closes_at));
+
+    if (proposalsToRender.length === 0) {
+      container.innerHTML = '<p class="muted" style="text-align:center;padding:40px;grid-column:1/-1;">No active proposals at this time.</p>';
+      return;
+    }
+  } else if (filter === 'completed') {
+    proposalsToRender = [...allProposalsData.completed].sort((a, b) => new Date(b.closes_at) - new Date(a.closes_at));
+
+    if (proposalsToRender.length === 0) {
+      container.innerHTML = '<p class="muted" style="text-align:center;padding:40px;grid-column:1/-1;">No completed proposals yet.</p>';
+      return;
+    }
+
+    // Render completed proposals in tiled grid
+    renderCompletedProposals(proposalsToRender);
+    return;
+  }
+
+  container.innerHTML = proposalsToRender.map(proposal => {
+    const proposalId = proposal.proposal_id;
+    const hasVoted = userVotesCache && userVotesCache.some(v => v.proposal_id === proposalId);
+    const userVote = userVotesCache && userVotesCache.find(v => v.proposal_id === proposalId);
+
+    // Render active proposal
+      const closesAt = new Date(proposal.closes_at);
+      const now = new Date();
+      const diff = closesAt - now;
+      const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+      const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+      const timeRemaining = days > 0 ? `${days}d ${hours}h` : hours > 0 ? `${hours}h` : 'Closing soon';
+
+      return `
+        <div style="background:#0a0a0a;border:1px solid #333;border-radius:8px;padding:12px;">
+          <h4 style="margin:0 0 6px 0;font-weight:700;font-size:0.95rem;">${proposal.proposal_title || 'Untitled Proposal'}</h4>
+          <div style="margin-bottom:8px;">
+            <span style="display:inline-block;background:linear-gradient(135deg,#10b981 0%,#059669 100%);color:#fff;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;">Active</span>
+          </div>
+          <div style="margin-bottom:8px;padding:8px;background:#1a1a1a;border-radius:6px;text-align:center;">
+            <span style="font-size:0.85rem;color:var(--accent);font-weight:600;">Closes in ${timeRemaining}</span>
+          </div>
+          <button onclick="toggleProposalText('proposal-text-${proposalId}')" class="btn" style="width:100%;padding:8px 12px;font-size:0.8rem;background:linear-gradient(135deg,#ffd93d 0%,#ffc125 100%);color:#000;font-weight:600;margin-bottom:8px;">View Proposal</button>
+          <div id="proposal-text-${proposalId}" style="display:none;padding:10px;background:#050505;border-left:3px solid var(--accent);border-radius:4px;margin-bottom:8px;line-height:1.6;font-size:0.85rem;">${proposal.proposal_text}</div>
+          ${hasVoted ? `
+            <div style="margin-bottom:8px;padding:10px;background:#050505;border-left:3px solid ${userVote && userVote.vote ? (userVote.vote.toLowerCase() === 'yes' ? '#10b981' : userVote.vote.toLowerCase() === 'no' ? '#ef4444' : '#6b7280') : '#4caf50'};border-radius:4px;">
+              <div style="display:flex;justify-content:space-between;align-items:center;">
+                <span style="font-size:0.8rem;color:var(--gray);">Your vote:</span>
+                <span style="font-size:0.85rem;font-weight:700;color:${userVote && userVote.vote ? (userVote.vote.toLowerCase() === 'yes' ? '#10b981' : userVote.vote.toLowerCase() === 'no' ? '#ef4444' : '#6b7280') : '#4caf50'};text-transform:uppercase;">${userVote && userVote.vote ? userVote.vote : 'UNKNOWN'}</span>
+              </div>
+            </div>
+          ` : `
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:8px;">
+              <button class="btn" onclick="selectVote('${proposalId}', 'yes')" id="vote-${proposalId}-yes" style="padding:10px 8px;font-size:0.8rem;background:#16a34a;color:#fff;border:2px solid transparent;font-weight:600;">Yes</button>
+              <button class="btn" onclick="selectVote('${proposalId}', 'no')" id="vote-${proposalId}-no" style="padding:10px 8px;font-size:0.8rem;background:#dc2626;color:#fff;border:2px solid transparent;font-weight:600;">No</button>
+              <button class="btn" onclick="selectVote('${proposalId}', 'abstain')" id="vote-${proposalId}-abstain" style="padding:10px 8px;font-size:0.8rem;background:#6b7280;color:#fff;border:2px solid transparent;font-weight:600;">Abstain</button>
+            </div>
+            <button class="btn" onclick="submitVote('${proposalId}')" id="submit-${proposalId}" style="width:100%;display:none;padding:10px;font-size:0.85rem;background:var(--accent);color:#000;font-weight:600;">Submit Vote</button>
+          `}
+          <div id="results-${proposalId}" style="margin-top:8px;"></div>
+        </div>
+      `;
+  }).join('');
+
+  // Load results for active proposals
+  for (const proposal of proposalsToRender) {
+    const proposalId = proposal.proposal_id;
+    await loadCompactVoteResults(proposalId, 'results-' + proposalId);
+  }
+}
+
+let selectedVotes = {};
+
+function selectVote(proposalId, choice) {
+  selectedVotes[proposalId] = choice;
+
+  // Update button styles
+  ['yes', 'no', 'abstain'].forEach(c => {
+    const btn = document.getElementById(`vote-${proposalId}-${c}`);
+    if (c === choice) {
+      btn.style.borderColor = 'var(--accent)';
+      btn.style.fontWeight = '600';
+    } else {
+      btn.style.borderColor = 'transparent';
+      btn.style.fontWeight = '400';
+    }
+  });
+
+  // Show submit button
+  document.getElementById(`submit-${proposalId}`).style.display = 'block';
+}
+
+async function submitVote(proposalId) {
+  const choice = selectedVotes[proposalId];
+  if (!choice) return;
+
+  const confirmed = confirm('⚠️ WARNING: Your vote is permanent and cannot be changed once submitted.\n\nAre you sure you want to submit your vote?');
+  if (!confirmed) return;
+
+  try {
+    const token = idToken();
+    if (!token) throw new Error('No authentication token');
+
+    const res = await fetch(API_URL + '/votes', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        proposal_id: proposalId,
+        vote: choice
+      })
+    });
+
+    if (!res.ok) {
+      const error = await res.json();
+      throw new Error(error.message || 'Failed to submit vote');
+    }
+
+    alert('✓ Your vote has been recorded successfully!');
+
+    // Clear cache and reload
+    userVotesCache = null;
+    delete selectedVotes[proposalId];
+    await loadAllProposals();
+  } catch (error) {
+    console.error('Error submitting vote:', error);
+    alert('Failed to submit vote: ' + error.message);
+  }
+}
+
+async function loadUserVotes() {
+  if (userVotesCache) return;
+
+  try {
+    const token = idToken();
+    if (!token) throw new Error('No authentication token');
+
+    const res = await fetch(API_URL + '/votes/history', {
+      method: 'GET',
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+
+    if (!res.ok) throw new Error('Failed to load vote history');
+    const data = await res.json();
+
+    userVotesCache = data.votes || [];
+  } catch (error) {
+    console.error('Error loading user votes:', error);
+    userVotesCache = [];
+  }
+}
+
+// Render completed proposals in a tiled grid
+async function renderCompletedProposals(proposals) {
+  const container = document.getElementById('proposalsContainer');
+
+  container.innerHTML = proposals.map(proposal => {
+    const proposalId = proposal.proposal_id;
+    const userVote = userVotesCache && userVotesCache.find(v => v.proposal_id === proposalId);
+
+    // Prepare vote badge colors
+    const voteColors = {
+      yes: '#10b981',
+      no: '#ef4444',
+      abstain: '#6b7280'
+    };
+
+    const userVoteText = userVote ? userVote.vote : 'Not Voted';
+    const userVoteColor = userVote && voteColors[userVote.vote.toLowerCase()] ? voteColors[userVote.vote.toLowerCase()] : '#6b7280';
+
+    return `
+      <div id="completed-${proposalId}" style="background:#0a0a0a;border:1px solid #333;border-radius:8px;padding:16px;display:flex;flex-direction:column;position:relative;min-height:280px;">
+        <h4 style="margin:0 0 12px 0;font-weight:700;font-size:1rem;line-height:1.4;">${proposal.proposal_title || 'Untitled Proposal'}</h4>
+
+        <!-- Pass/Fail Badge -->
+        <div id="result-badge-${proposalId}" style="margin-bottom:12px;height:24px;">
+          <div class="skeleton" style="height:24px;width:80px;border-radius:12px;"></div>
+        </div>
+
+        <!-- User Vote -->
+        <div style="margin-bottom:16px;padding:10px;background:#050505;border-left:3px solid ${userVoteColor};border-radius:4px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <span style="font-size:0.8rem;color:var(--gray);">Your vote:</span>
+            <span style="font-size:0.85rem;font-weight:700;color:${userVoteColor};text-transform:uppercase;">${userVoteText}</span>
+          </div>
+        </div>
+
+        <!-- Vote Results -->
+        <div id="results-${proposalId}" style="flex:1;min-height:140px;">
+          <div style="padding:10px;background:#050505;border-radius:6px;">
+            <div class="skeleton" style="height:16px;margin-bottom:12px;border-radius:4px;width:40%;"></div>
+            <div class="skeleton" style="height:12px;margin-bottom:8px;border-radius:4px;width:100%;"></div>
+            <div class="skeleton" style="height:4px;margin-bottom:16px;border-radius:4px;width:100%;"></div>
+            <div class="skeleton" style="height:12px;margin-bottom:8px;border-radius:4px;width:100%;"></div>
+            <div class="skeleton" style="height:4px;margin-bottom:16px;border-radius:4px;width:100%;"></div>
+            <div class="skeleton" style="height:12px;margin-bottom:8px;border-radius:4px;width:100%;"></div>
+            <div class="skeleton" style="height:4px;border-radius:4px;width:100%;"></div>
+          </div>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  // Load results for each completed proposal in parallel
+  await Promise.all(proposals.map(proposal => loadCompletedProposalResults(proposal.proposal_id)));
+}
+
+// Load results for completed proposals
+async function loadCompletedProposalResults(proposalId) {
+  try {
+    const token = idToken();
+    if (!token) throw new Error('No authentication token');
+
+    const res = await fetch(API_URL + '/proposals/' + proposalId + '/results', {
+      method: 'GET',
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+
+    if (!res.ok) throw new Error('Failed to load results');
+    const data = await res.json();
+
+    const yes = data.results.yes || 0;
+    const no = data.results.no || 0;
+    const abstain = data.results.abstain || 0;
+    const total = yes + no + abstain;
+
+    const yesPercent = total > 0 ? Math.round((yes / total) * 100) : 0;
+    const noPercent = total > 0 ? Math.round((no / total) * 100) : 0;
+    const abstainPercent = total > 0 ? Math.round((abstain / total) * 100) : 0;
+
+    const passed = yes > no;
+
+    // Update result badge
+    const badgeEl = document.getElementById('result-badge-' + proposalId);
+    if (badgeEl) {
+      badgeEl.innerHTML = passed
+        ? '<span style="display:inline-block;background:linear-gradient(135deg,#10b981 0%,#059669 100%);color:#fff;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;">✅ PASSED</span>'
+        : '<span style="display:inline-block;background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);color:#fff;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;">❌ FAILED</span>';
+    }
+
+    // Update card border color
+    const cardEl = document.getElementById('completed-' + proposalId);
+    if (cardEl) {
+      cardEl.style.borderColor = passed ? '#10b981' : '#ef4444';
+      cardEl.style.borderWidth = '2px';
+    }
+
+    // Update results
+    const resultsEl = document.getElementById('results-' + proposalId);
+    if (resultsEl) {
+      resultsEl.innerHTML = `
+        <div style="padding:10px;background:#050505;border-radius:6px;">
+          <div style="margin-bottom:6px;font-size:0.75rem;color:var(--gray);">
+            Total votes: ${total}
+          </div>
+          <div style="margin-bottom:8px;">
+            <div style="display:flex;justify-content:space-between;margin-bottom:2px;">
+              <span style="font-size:0.7rem;color:#10b981;font-weight:600;">Yes</span>
+              <span style="font-size:0.7rem;font-weight:600;">${yes} (${yesPercent}%)</span>
+            </div>
+            <div style="background:#1a1a1a;border-radius:4px;height:4px;overflow:hidden;">
+              <div style="background:#10b981;height:100%;width:${yesPercent}%;"></div>
+            </div>
+          </div>
+          <div style="margin-bottom:8px;">
+            <div style="display:flex;justify-content:space-between;margin-bottom:2px;">
+              <span style="font-size:0.7rem;color:#ef4444;font-weight:600;">No</span>
+              <span style="font-size:0.7rem;font-weight:600;">${no} (${noPercent}%)</span>
+            </div>
+            <div style="background:#1a1a1a;border-radius:4px;height:4px;overflow:hidden;">
+              <div style="background:#ef4444;height:100%;width:${noPercent}%;"></div>
+            </div>
+          </div>
+          <div>
+            <div style="display:flex;justify-content:space-between;margin-bottom:2px;">
+              <span style="font-size:0.7rem;color:#6b7280;font-weight:600;">Abstain</span>
+              <span style="font-size:0.7rem;font-weight:600;">${abstain} (${abstainPercent}%)</span>
+            </div>
+            <div style="background:#1a1a1a;border-radius:4px;height:4px;overflow:hidden;">
+              <div style="background:#6b7280;height:100%;width:${abstainPercent}%;"></div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+  } catch (error) {
+    console.error('Error loading results for proposal', proposalId, error);
+    const resultsEl = document.getElementById('results-' + proposalId);
+    if (resultsEl) {
+      resultsEl.innerHTML = '<p class="muted" style="font-size:0.8rem;text-align:center;">Failed to load results</p>';
+    }
+  }
+}
+
+// Load compact live results for active proposals
+async function loadCompactVoteResults(proposalId, containerId) {
+  try {
+    const token = idToken();
+    if (!token) return;
+
+    const res = await fetch(API_URL + '/proposals/' + proposalId + '/vote-counts', {
+      method: 'GET',
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+
+    if (!res.ok) return;
+    const data = await res.json();
+
+    const total = data.yes + data.no + data.abstain;
+    const yesPercent = total > 0 ? Math.round((data.yes / total) * 100) : 0;
+    const noPercent = total > 0 ? Math.round((data.no / total) * 100) : 0;
+    const abstainPercent = total > 0 ? Math.round((data.abstain / total) * 100) : 0;
+
+    const resultsContainer = document.getElementById(containerId);
+    if (resultsContainer) {
+      resultsContainer.innerHTML = `
+        <div style="padding:12px;background:#050505;border-radius:4px;border:1px solid #333;">
+          <p style="margin:0 0 8px 0;font-size:0.85rem;color:#999;font-weight:600;">Live Results (${total} votes)</p>
+          <div style="display:flex;flex-direction:column;gap:8px;">
+            <div>
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px;">
+                <span style="color:#4caf50;font-size:0.8rem;font-weight:600;">Yes</span>
+                <span style="color:#4caf50;font-size:0.8rem;font-weight:600;">${data.yes} (${yesPercent}%)</span>
+              </div>
+              <div style="background:#1a1a1a;border-radius:3px;height:6px;overflow:hidden;">
+                <div style="background:linear-gradient(90deg,#4caf50 0%,#66bb6a 100%);height:100%;width:${yesPercent}%;"></div>
+              </div>
+            </div>
+            <div>
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px;">
+                <span style="color:#f44336;font-size:0.8rem;font-weight:600;">No</span>
+                <span style="color:#f44336;font-size:0.8rem;font-weight:600;">${data.no} (${noPercent}%)</span>
+              </div>
+              <div style="background:#1a1a1a;border-radius:3px;height:6px;overflow:hidden;">
+                <div style="background:linear-gradient(90deg,#f44336 0%,#ef5350 100%);height:100%;width:${noPercent}%;"></div>
+              </div>
+            </div>
+            <div>
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px;">
+                <span style="color:#999;font-size:0.8rem;font-weight:600;">Abstain</span>
+                <span style="color:#999;font-size:0.8rem;font-weight:600;">${data.abstain} (${abstainPercent}%)</span>
+              </div>
+              <div style="background:#1a1a1a;border-radius:3px;height:6px;overflow:hidden;">
+                <div style="background:linear-gradient(90deg,#999 0%,#aaa 100%);height:100%;width:${abstainPercent}%;"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+  } catch (error) {
+    // Silently fail for live results
+    console.error('Error loading compact vote results:', error);
+  }
+}
+
+function toggleProposalText(elementId) {
+  const element = document.getElementById(elementId);
+  const button = element.previousElementSibling;
+  if (element.style.display === 'none') {
+    element.style.display = 'block';
+    button.textContent = 'Hide Proposal';
+  } else {
+    element.style.display = 'none';
+    button.textContent = 'View Proposal';
+  }
+}
+
+async function loadProposalResultsInline(proposalId) {
+  try {
+    const token = idToken();
+    if (!token) throw new Error('No authentication token');
+
+    const res = await fetch(API_URL + '/proposals/' + proposalId + '/results', {
+      method: 'GET',
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+
+    if (!res.ok) throw new Error('Failed to load proposal results');
+    const data = await res.json();
+
+    const total = data.results.yes + data.results.no + data.results.abstain;
+    const yesPercent = total > 0 ? Math.round((data.results.yes / total) * 100) : 0;
+    const noPercent = total > 0 ? Math.round((data.results.no / total) * 100) : 0;
+    const abstainPercent = total > 0 ? Math.round((data.results.abstain / total) * 100) : 0;
+
+    const resultsContainer = document.getElementById(`results-${proposalId}`);
+    if (resultsContainer) {
+      resultsContainer.innerHTML = `
+        <div style="margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid #333;">
+          <p style="margin:0 0 4px 0;font-weight:600;font-size:0.9rem;">Voting Results</p>
+          <p class="muted" style="margin:0;font-size:0.85rem;">Total Votes: ${total}</p>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:12px;">
+          <div>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+              <span style="color:#4caf50;font-weight:600;font-size:0.9rem;">Yes</span>
+              <span style="color:#4caf50;font-weight:600;font-size:0.9rem;">${data.results.yes} (${yesPercent}%)</span>
+            </div>
+            <div style="background:#1a1a1a;border-radius:4px;height:8px;overflow:hidden;">
+              <div style="background:linear-gradient(90deg,#4caf50 0%,#66bb6a 100%);height:100%;width:${yesPercent}%;transition:width 0.3s;"></div>
+            </div>
+          </div>
+          <div>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+              <span style="color:#f44336;font-weight:600;font-size:0.9rem;">No</span>
+              <span style="color:#f44336;font-weight:600;font-size:0.9rem;">${data.results.no} (${noPercent}%)</span>
+            </div>
+            <div style="background:#1a1a1a;border-radius:4px;height:8px;overflow:hidden;">
+              <div style="background:linear-gradient(90deg,#f44336 0%,#ef5350 100%);height:100%;width:${noPercent}%;transition:width 0.3s;"></div>
+            </div>
+          </div>
+          <div>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+              <span style="color:#999;font-weight:600;font-size:0.9rem;">Abstain</span>
+              <span style="color:#999;font-weight:600;font-size:0.9rem;">${data.results.abstain} (${abstainPercent}%)</span>
+            </div>
+            <div style="background:#1a1a1a;border-radius:4px;height:8px;overflow:hidden;">
+              <div style="background:linear-gradient(90deg,#999 0%,#aaa 100%);height:100%;width:${abstainPercent}%;transition:width 0.3s;"></div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+  } catch (error) {
+    console.error('Error loading proposal results:', error);
+    const resultsContainer = document.getElementById(`results-${proposalId}`);
+    if (resultsContainer) {
+      resultsContainer.innerHTML = '<p style="margin:0;color:#f44336;text-align:center;font-size:0.9rem;">Failed to load results</p>';
+    }
+  }
+}
+
+async function viewProposalResults(proposalId) {
+  try {
+    const token = idToken();
+    if (!token) throw new Error('No authentication token');
+
+    const res = await fetch(API_URL + '/proposals/' + proposalId + '/results', {
+      method: 'GET',
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+
+    if (!res.ok) throw new Error('Failed to load proposal results');
+    const data = await res.json();
+
+    const total = data.results.yes + data.results.no + data.results.abstain;
+    const yesPercent = total > 0 ? Math.round((data.results.yes / total) * 100) : 0;
+    const noPercent = total > 0 ? Math.round((data.results.no / total) * 100) : 0;
+    const abstainPercent = total > 0 ? Math.round((data.results.abstain / total) * 100) : 0;
+
+    const message = `
+Proposal: ${data.proposal.proposal_title || 'Untitled'}
+${data.proposal.proposal_text}
+
+Status: ${data.proposal.status}
+Closed: ${new Date(data.proposal.closes_at).toLocaleDateString()}
+
+RESULTS:
+Total Votes: ${total}
+
+Yes: ${data.results.yes} (${yesPercent}%)
+No: ${data.results.no} (${noPercent}%)
+Abstain: ${data.results.abstain} (${abstainPercent}%)
+    `.trim();
+
+    alert(message);
+  } catch (error) {
+    console.error('Error loading proposal results:', error);
+    alert('Failed to load proposal results: ' + error.message);
+  }
+}
+
+// Update tab visibility based on user groups and subscription status
+function updateTabVisibility() {
+  if (!signedIn()) return;
+  const { payload } = parseJwt(idToken());
+  const groups = payload['cognito:groups'] || [];
+  const isMember = groups.includes('member');
+  const hasSubscription = isSubscriber();
+  const hasPaidSubscription = isPaidSubscriber();
+
+  // Show subscription tab to members (but voting only to paid subscribers, vault to any subscriber)
+  const subscriptionTab = document.querySelector('.tab[data-tab="subscription"]');
+  const votingTab = document.querySelector('.tab[data-tab="voting"]');
+  const deployVaultTab = document.querySelector('.tab[data-tab="deploy-vault"]');
+
+  if (isMember) {
+    // Show subscription tab to all members
+    if (subscriptionTab) subscriptionTab.style.display = 'inline-block';
+
+    // Show voting tab only to paid subscribers
+    if (hasPaidSubscription) {
+      if (votingTab) votingTab.style.display = 'inline-block';
+    } else {
+      if (votingTab) votingTab.style.display = 'none';
+    }
+
+    // Show vault tab to any active subscriber (free or paid)
+    if (hasSubscription) {
+      if (deployVaultTab) deployVaultTab.style.display = 'inline-block';
+    } else {
+      if (deployVaultTab) deployVaultTab.style.display = 'none';
+    }
+  } else {
+    // Hide all tabs for non-members
+    if (subscriptionTab) subscriptionTab.style.display = 'none';
+    if (votingTab) votingTab.style.display = 'none';
+    if (deployVaultTab) deployVaultTab.style.display = 'none';
+  }
+}
+
+// ---- Getting Started Functions ----
+function isGettingStartedComplete() {
+  if (!signedIn()) return false;
+  const { payload } = parseJwt(idToken());
+  const email = payload.email;
+  if (!email) return false;
+  return localStorage.getItem(`vettid_getting_started_complete_${email}`) === 'true';
+}
+
+function markGettingStartedComplete() {
+  if (!signedIn()) return;
+  const { payload } = parseJwt(idToken());
+  const email = payload.email;
+  if (!email) return;
+  localStorage.setItem(`vettid_getting_started_complete_${email}`, 'true');
+}
+
+function switchToTab(tabName) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+  const tab = document.querySelector(`.tab[data-tab="${tabName}"]`);
+  const content = document.getElementById(tabName);
+  if (tab) tab.classList.add('active');
+  if (content) content.classList.add('active');
+
+  // Load voting data if switching to voting tab
+  if (tabName === 'voting' && signedIn()) {
+    loadAllProposals();
+    loadVotingHistory();
+  }
+}
+
+function navigateToStep(tabName, cardId) {
+  // Switch to the tab
+  switchToTab(tabName);
+
+  // If there's a specific card to focus on
+  if (cardId && cardId !== 'null') {
+    // Wait for tab switch to complete, then scroll to and highlight the card
+    setTimeout(() => {
+      const card = document.getElementById(cardId);
+      if (card) {
+        // Scroll to the card with some offset
+        card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+        // Add highlight effect
+        const originalBorder = card.style.border;
+        const originalBoxShadow = card.style.boxShadow;
+        card.style.border = '2px solid var(--accent)';
+        card.style.boxShadow = '0 0 20px rgba(255,193,37,0.6)';
+        card.style.transition = 'all 0.3s ease';
+
+        // Remove highlight after 2 seconds
+        setTimeout(() => {
+          card.style.border = originalBorder;
+          card.style.boxShadow = originalBoxShadow;
+        }, 2000);
+      } else {
+        console.error('Card not found:', cardId);
+      }
+    }, 300);
+  }
+}
+
+async function checkStepCompletion() {
+  const steps = {
+    pinEnabled: false,
+    isMember: false,
+    membershipPending: false,
+    hasSubscription: false,
+    vaultDeployed: false, // Future feature
+    hasVoted: false,
+    backupsConfigured: false // Future feature
+  };
+
+  if (signedIn()) {
+    const token = idToken();
+    const { payload } = parseJwt(token);
+    const groups = payload['cognito:groups'] || [];
+    steps.isMember = groups.includes('member');
+
+    // Check PIN status
+    try {
+      const pinRes = await fetch(API_URL + '/account/security/pin/status', {
+        method: 'GET',
+        headers: { 'Authorization': 'Bearer ' + token }
+      });
+      if (pinRes.ok) {
+        const pinData = await pinRes.json();
+        steps.pinEnabled = pinData.pin_enabled || false;
+      }
+    } catch (e) {
+      console.error('Error checking PIN status:', e);
+    }
+
+    // Check membership status for pending state
+    try {
+      const membershipRes = await fetch(API_URL + '/account/membership/status', {
+        method: 'GET',
+        headers: { 'Authorization': 'Bearer ' + token }
+      });
+      if (membershipRes.ok) {
+        const membershipData = await membershipRes.json();
+        steps.membershipPending = membershipData.membership_status === 'pending';
+      }
+    } catch (e) {
+      console.error('Error checking membership status:', e);
+    }
+
+    // Check subscription status
+    if (subscriptionStatus && subscriptionStatus.is_active) {
+      steps.hasSubscription = true;
+    }
+
+    // Check if user has voted
+    try {
+      const votesRes = await fetch(API_URL + '/votes/history', {
+        method: 'GET',
+        headers: { 'Authorization': 'Bearer ' + token }
+      });
+      if (votesRes.ok) {
+        const votesData = await votesRes.json();
+        steps.hasVoted = votesData.votes && votesData.votes.length > 0;
+      }
+    } catch (e) {
+      console.error('Error checking voting history:', e);
+    }
+  }
+
+  return steps;
+}
+
+async function populateGettingStartedSteps() {
+  const steps = await checkStepCompletion();
+  const { payload } = parseJwt(idToken());
+  const groups = payload['cognito:groups'] || [];
+  const isMember = groups.includes('member');
+  const hasSubscription = subscriptionStatus && subscriptionStatus.is_active;
+  const hasPaidSubscription = isPaidSubscriber();
+
+  const stepsData = [
+    {
+      number: 1,
+      title: 'Add a PIN Code',
+      description: 'Add a PIN code to your account for better security.',
+      completed: steps.pinEnabled,
+      accessible: true,
+      tab: 'account',
+      cardId: 'pinCodeCard',
+      note: null
+    },
+    {
+      number: 2,
+      title: 'Become a VettID Member',
+      description: 'Read and accept the VettID Membership Terms.',
+      completed: steps.isMember,
+      pending: steps.membershipPending,
+      accessible: true,
+      tab: 'account',
+      cardId: 'membershipCard',
+      note: steps.membershipPending ? 'Membership Pending' : null
+    },
+    {
+      number: 3,
+      title: 'Subscribe',
+      description: 'Select a free or paid subscription to gain access to voting rights and the VettID service.',
+      completed: steps.hasSubscription,
+      accessible: isMember,
+      tab: 'subscription',
+      cardId: null,
+      note: isMember ? null : 'Complete step 2 to unlock'
+    },
+    {
+      number: 4,
+      title: 'Deploy Your Vault',
+      description: 'Deploy a secure Vault under your complete control and connect it to the VettID app on your phone.',
+      completed: steps.vaultDeployed,
+      accessible: hasSubscription,
+      tab: 'deploy-vault',
+      cardId: null,
+      note: hasSubscription ? 'Coming soon' : 'Complete step 3 to unlock'
+    },
+    {
+      number: 5,
+      title: 'Vote on Proposals',
+      description: 'Review open proposals related to the operation of VettID and cast your vote as a paying member.',
+      completed: steps.hasVoted,
+      accessible: hasPaidSubscription,
+      tab: 'voting',
+      cardId: null,
+      note: hasPaidSubscription ? null : 'Upgrade to a paid subscription to unlock'
+    },
+    {
+      number: 6,
+      title: 'Configure Data Backups',
+      description: 'Have VettID securely store encrypted backups of your critical data.',
+      completed: steps.backupsConfigured,
+      accessible: hasSubscription,
+      tab: 'deploy-vault',
+      cardId: null,
+      note: hasSubscription ? 'Coming soon' : 'Complete step 3 to unlock'
+    }
+  ];
+
+  const container = document.getElementById('gettingStartedSteps');
+  container.innerHTML = stepsData.map(step => {
+    const isAccessible = step.accessible;
+    const isCompleted = step.completed;
+    const isPending = step.pending || false;
+    const opacity = isAccessible ? '1' : '0.5';
+    const cursor = isAccessible && !isCompleted && !isPending ? 'pointer' : 'default';
+    const borderColor = isCompleted ? '#4caf50' : isPending ? '#ff9800' : isAccessible ? 'var(--accent)' : '#333';
+    const iconBg = isCompleted ? '#4caf50' : isPending ? '#ff9800' : isAccessible ? 'var(--accent)' : '#333';
+
+    return `
+      <div ${isAccessible && !isCompleted && !isPending && step.tab ? `onclick="navigateToStep('${step.tab}','${step.cardId || 'null'}')"` : ''} style="padding:20px;background:#0a0a0a;border-radius:8px;border:2px solid ${borderColor};opacity:${opacity};cursor:${cursor};position:relative;">
+        <div style="display:flex;align-items:start;gap:16px;">
+          <div style="flex-shrink:0;width:40px;height:40px;border-radius:50%;background:${iconBg};display:flex;align-items:center;justify-content:center;font-weight:700;font-size:1.2rem;color:${isCompleted || isPending || isAccessible ? '#000' : '#666'};">
+            ${isCompleted ? '✓' : step.number}
+          </div>
+          <div style="flex:1;">
+            <h4 style="margin:0 0 8px 0;color:${isAccessible ? 'var(--text)' : '#666'};">${step.title}</h4>
+            <p style="margin:0 0 8px 0;color:${isAccessible ? 'var(--gray)' : '#555'};font-size:0.95rem;">${step.description}</p>
+            ${step.note ? `<p style="margin:0;color:#fbbf24;font-size:0.85rem;font-weight:600;">${step.note}</p>` : ''}
+          </div>
+          ${isCompleted ? `<div style="position:absolute;top:16px;right:16px;padding:4px 12px;background:#4caf50;color:#000;border-radius:12px;font-size:0.75rem;font-weight:700;">COMPLETE</div>` : ''}
+          ${isPending && !isCompleted ? `<div style="position:absolute;top:16px;right:16px;padding:4px 12px;background:#ff9800;color:#000;border-radius:12px;font-size:0.75rem;font-weight:700;">PENDING</div>` : ''}
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  // Update progress bar
+  const completedCount = stepsData.filter(s => s.completed).length;
+  const totalCount = stepsData.length;
+  const progressPercent = Math.round((completedCount / totalCount) * 100);
+
+  const progressBar = document.getElementById('progressBar');
+  const progressText = document.getElementById('progressText');
+  if (progressBar) progressBar.style.width = progressPercent + '%';
+  if (progressText) progressText.textContent = `${completedCount} of ${totalCount} complete`;
+}
+
+document.getElementById('gotItBtn').onclick = () => {
+  markGettingStartedComplete();
+  switchToTab('account');
+};
+
+// Initialize
+if (checkAuth()) {
+  // Debug: Log JWT payload to console
+  const token = idToken();
+  if (token) {
+    const { payload } = parseJwt(token);
+    console.log('[AUTH] JWT Payload:', payload);
+    console.log('[AUTH] Groups type:', typeof payload['cognito:groups']);
+    console.log('[AUTH] Groups value:', payload['cognito:groups']);
+    console.log('[AUTH] Groups JSON:', JSON.stringify(payload['cognito:groups']));
+  }
+  populateProfile();
+
+  // Load membership status first to determine if user is truly new
+  Promise.all([
+    loadMembershipStatus(),
+    loadSubscriptionStatus(),
+    loadSubscriptionTypes(),
+    loadPinStatus(),
+    loadEmailPreferences()
+  ]).then(() => {
+    updateTabVisibility();
+    populateGettingStartedSteps();
+
+    // Check if user is truly new (not a member yet)
+    // If they're not a member, always show getting started regardless of localStorage
+    const { payload } = parseJwt(idToken());
+    const groups = payload['cognito:groups'] || [];
+    const isMember = groups.includes('member');
+
+    // Show Getting Started if: (1) not completed OR (2) not yet a member
+    if (!isGettingStartedComplete() || !isMember) {
+      switchToTab('getting-started');
+    } else {
+      switchToTab('account');
+    }
+  });
+}
+</script>
+</body>
+</html>
