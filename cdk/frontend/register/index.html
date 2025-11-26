@@ -174,13 +174,23 @@ form.addEventListener('submit', async (e) => {
       // Show prominent verification notice if email verification was sent
       if (data.email_verification_sent) {
         const verifyNotice = document.createElement('div');
-        verifyNotice.style.background = '#ff9800';
-        verifyNotice.style.color = '#000';
-        verifyNotice.style.padding = '12px';
-        verifyNotice.style.borderRadius = '4px';
-        verifyNotice.style.marginTop = '12px';
-        verifyNotice.style.fontSize = '0.9rem';
-        verifyNotice.innerHTML = '<strong>⚠️ Important:</strong> Check your inbox for a verification email from <strong>AWS</strong> and click the link to confirm your email address. This step is required to receive future communications.';
+        verifyNotice.style.background = 'linear-gradient(135deg, #1a1a2e 0%, #16213e 100%)';
+        verifyNotice.style.color = '#fff';
+        verifyNotice.style.padding = '20px';
+        verifyNotice.style.borderRadius = '8px';
+        verifyNotice.style.marginTop = '16px';
+        verifyNotice.style.fontSize = '1rem';
+        verifyNotice.style.border = '2px solid #ffc125';
+        verifyNotice.style.boxShadow = '0 4px 12px rgba(255, 193, 37, 0.3)';
+        verifyNotice.style.lineHeight = '1.6';
+        verifyNotice.innerHTML = `
+          <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+            <span style="font-size:1.5rem;">📧</span>
+            <strong style="color:#ffc125;font-size:1.1rem;">Email Verification Required</strong>
+          </div>
+          <p style="margin:0 0 12px 0;">Check your inbox for a verification email from <strong style="color:#ffc125;">Amazon Web Services</strong> and click the link to confirm your email address.</p>
+          <p style="margin:0;color:#ccc;font-size:0.9rem;">This step is required to receive future communications from VettID. The email may take a few minutes to arrive.</p>
+        `;
         msgEl.appendChild(verifyNotice);
       }
 
@@ -280,22 +290,31 @@ document.getElementById('waitlistForm').addEventListener('submit', async (e) => 
       // Show verification notice if email verification was sent
       if (data.email_verification_sent) {
         const verifyNotice = document.createElement('div');
-        verifyNotice.style.background = '#ff9800';
-        verifyNotice.style.color = '#000';
-        verifyNotice.style.padding = '10px';
-        verifyNotice.style.borderRadius = '4px';
-        verifyNotice.style.marginTop = '8px';
-        verifyNotice.style.fontSize = '0.9rem';
-        verifyNotice.innerHTML = '<strong>Important:</strong> Check your inbox for a verification email from <strong>AWS</strong> and click the link to confirm your email address.';
+        verifyNotice.style.background = 'linear-gradient(135deg, #1a1a2e 0%, #16213e 100%)';
+        verifyNotice.style.color = '#fff';
+        verifyNotice.style.padding = '16px';
+        verifyNotice.style.borderRadius = '8px';
+        verifyNotice.style.marginTop = '12px';
+        verifyNotice.style.fontSize = '0.95rem';
+        verifyNotice.style.border = '2px solid #ffc125';
+        verifyNotice.style.boxShadow = '0 4px 12px rgba(255, 193, 37, 0.3)';
+        verifyNotice.style.lineHeight = '1.5';
+        verifyNotice.innerHTML = `
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
+            <span style="font-size:1.3rem;">📧</span>
+            <strong style="color:#ffc125;">Email Verification Required</strong>
+          </div>
+          <p style="margin:0;">Check your inbox for a verification email from <strong style="color:#ffc125;">Amazon Web Services</strong> and click the link to confirm your email address.</p>
+        `;
         messageEl.appendChild(verifyNotice);
       }
 
       document.getElementById('waitlistForm').reset();
 
-      // Close modal after longer delay if verification sent
+      // Close modal after longer delay if verification sent (15 seconds to read the message)
       setTimeout(() => {
         closeWaitlistModal();
-      }, data.email_verification_sent ? 5000 : 2000);
+      }, data.email_verification_sent ? 15000 : 3000);
     }
   } catch (err) {
     messageEl.textContent = 'Network error: ' + err.message;

@@ -3,51 +3,623 @@
 <head>
 <meta charset="utf-8"/>
 <meta content="width=device-width, initial-scale=1" name="viewport"/>
-<title>VettID</title>
+<title>VettID - Secure. Private. Trusted.</title>
 <link rel="icon" type="image/jpeg" href="/assets/favicon.ico"/>
-<link rel="stylesheet" href="/assets/styles.css"/>
 <style>
-    header{display:flex;justify-content:space-between;align-items:center;padding:18px 24px;background:#000}
-    header h1{margin:0;font-size:1.5rem;letter-spacing:1.5px}
-    body{display:flex;flex-direction:column;min-height:100vh;margin:0}
-    .content{display:flex;flex-direction:column;flex:1;justify-content:center;align-items:center}
-    .logo{width:150px;height:150px;border-radius:20px;margin-bottom:2rem;box-shadow:0 8px 24px rgba(255,193,37,0.3)}
-    .logo-link{display:block;transition:all 0.2s}
-    .logo-link:hover{transform:scale(1.05)}
-    .nav-links{display:flex;flex-direction:column;gap:1rem;align-items:center}
-    a.big-link{color:var(--accent);font-size:2.5rem;margin:0;text-transform:uppercase;letter-spacing:2px;font-weight:800;text-align:center;text-decoration:none;transition:all 0.2s}
-    a.big-link:hover{color:#ffb000;transform:scale(1.05)}
-    .waitlist-btn{background:linear-gradient(135deg,#ffd940 0%,#ffc125 100%);color:#000;border:none;border-radius:4px;padding:16px 32px;font-size:1.2rem;font-weight:700;cursor:pointer;text-transform:uppercase;letter-spacing:1px;margin-top:2rem;box-shadow:0 4px 14px rgba(255,217,64,0.5);transition:all 0.2s}
-    .waitlist-btn:hover{transform:translateY(-2px);box-shadow:0 6px 20px rgba(255,217,64,0.6)}
-    .modal{display:none;position:fixed;z-index:1000;left:0;top:0;width:100%;height:100%;background:rgba(0,0,0,0.8);justify-content:center;align-items:center}
-    .modal-content{background:#0a0a0a;border:2px solid var(--accent);border-radius:4px;padding:32px;max-width:500px;width:90%;box-shadow:0 8px 24px rgba(0,0,0,0.5)}
-    .modal-content h2{margin-top:0;color:var(--accent);border-bottom:2px solid var(--accent);padding-bottom:12px}
-    .modal-content label{display:block;margin:1rem 0 .4rem;color:var(--accent);text-transform:uppercase;font-size:0.85rem;letter-spacing:0.5px;font-weight:600}
-    .modal-content input{width:100%;padding:.85rem;border-radius:2px;border:1px solid var(--border);background:#050505;color:var(--text);font-size:1rem;box-sizing:border-box}
-    .modal-content input:focus{outline:none;border-color:var(--accent)}
-    .modal-content .checkbox-label{display:flex;align-items:center;cursor:pointer;margin:1.5rem 0;}
-    .modal-content .checkbox-label input{width:auto;margin-right:8px;}
-    .modal-content .checkbox-label span{color:var(--text);text-transform:none;font-weight:400;}
-    .close-btn{color:var(--gray);float:right;font-size:28px;font-weight:bold;cursor:pointer;line-height:20px}
-    .close-btn:hover{color:var(--accent)}
-    .btn-group{display:flex;gap:12px;margin-top:1.5rem}
-    .btn-group button{flex:1}
-  </style>
+  :root {
+    --accent: #ffc125;
+    --accent-dark: #e6a800;
+    --bg-dark: #000;
+    --bg-card: #0a0a0a;
+    --text: #e0e0e0;
+    --text-muted: #888;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+    background: var(--bg-dark);
+    color: var(--text);
+    line-height: 1.6;
+  }
+
+  /* Header */
+  header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 16px 32px;
+    background: rgba(0,0,0,0.9);
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 100;
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid rgba(255,193,37,0.1);
+  }
+
+  .header-logo {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .header-logo img {
+    height: 40px;
+    width: 40px;
+    border-radius: 8px;
+  }
+
+  .header-logo span {
+    font-size: 1.4rem;
+    font-weight: 700;
+    color: var(--accent);
+    letter-spacing: 2px;
+  }
+
+  .header-buttons {
+    display: flex;
+    gap: 12px;
+  }
+
+  .btn {
+    padding: 10px 24px;
+    border-radius: 6px;
+    font-weight: 600;
+    text-decoration: none;
+    transition: all 0.2s;
+    cursor: pointer;
+    border: none;
+    font-size: 0.95rem;
+  }
+
+  .btn-outline {
+    background: transparent;
+    color: var(--accent);
+    border: 2px solid var(--accent);
+  }
+
+  .btn-outline:hover {
+    background: var(--accent);
+    color: #000;
+  }
+
+  .btn-primary {
+    background: linear-gradient(135deg, #ffd940 0%, #ffc125 100%);
+    color: #000;
+    border: 2px solid transparent;
+  }
+
+  .btn-primary:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 20px rgba(255,193,37,0.4);
+  }
+
+  /* Hero Section */
+  .hero {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    text-align: center;
+    padding: 120px 24px 80px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .hero::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: radial-gradient(ellipse at center top, rgba(255,193,37,0.08) 0%, transparent 60%);
+    pointer-events: none;
+  }
+
+  .hero-logo {
+    width: 140px;
+    height: 140px;
+    border-radius: 20px;
+    margin-bottom: 32px;
+    box-shadow: 0 8px 32px rgba(255,193,37,0.3);
+    animation: float 6s ease-in-out infinite;
+  }
+
+  @keyframes float {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-10px); }
+  }
+
+  .hero h1 {
+    font-size: 3.5rem;
+    font-weight: 800;
+    margin-bottom: 16px;
+    background: linear-gradient(135deg, #fff 0%, var(--accent) 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .hero .tagline {
+    font-size: 1.4rem;
+    color: var(--accent);
+    font-weight: 600;
+    letter-spacing: 4px;
+    text-transform: uppercase;
+    margin-bottom: 24px;
+  }
+
+  .hero .subtitle {
+    font-size: 1.25rem;
+    color: var(--text-muted);
+    max-width: 600px;
+    margin-bottom: 40px;
+  }
+
+  .hero-buttons {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+
+  .hero-buttons .btn {
+    padding: 14px 32px;
+    font-size: 1.1rem;
+  }
+
+  /* Floating Tower Graphics */
+  .tower-bg {
+    position: absolute;
+    opacity: 0.03;
+    z-index: 0;
+  }
+
+  .tower-bg.left { left: 5%; top: 20%; }
+  .tower-bg.right { right: 5%; bottom: 20%; }
+
+  /* Features Section */
+  .features {
+    padding: 100px 24px;
+    background: linear-gradient(180deg, var(--bg-dark) 0%, #0a0a0a 100%);
+  }
+
+  .features h2 {
+    text-align: center;
+    font-size: 2.5rem;
+    margin-bottom: 16px;
+    color: #fff;
+  }
+
+  .features .section-subtitle {
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 1.1rem;
+    max-width: 600px;
+    margin: 0 auto 60px;
+  }
+
+  .features-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 32px;
+    max-width: 1200px;
+    margin: 0 auto;
+  }
+
+  .feature-card {
+    background: linear-gradient(135deg, #0f0f0f 0%, #0a0a0a 100%);
+    border: 1px solid rgba(255,193,37,0.1);
+    border-radius: 16px;
+    padding: 32px;
+    text-align: center;
+    transition: all 0.3s;
+  }
+
+  .feature-card:hover {
+    border-color: rgba(255,193,37,0.3);
+    transform: translateY(-4px);
+    box-shadow: 0 12px 40px rgba(255,193,37,0.1);
+  }
+
+  .feature-icon {
+    width: 80px;
+    height: 80px;
+    margin: 0 auto 24px;
+  }
+
+  .feature-card h3 {
+    font-size: 1.3rem;
+    color: var(--accent);
+    margin-bottom: 12px;
+  }
+
+  .feature-card p {
+    color: var(--text-muted);
+    font-size: 0.95rem;
+  }
+
+  /* How It Works Section */
+  .how-it-works {
+    padding: 100px 24px;
+    background: var(--bg-dark);
+  }
+
+  .how-it-works h2 {
+    text-align: center;
+    font-size: 2.5rem;
+    margin-bottom: 60px;
+    color: #fff;
+  }
+
+  .steps {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 40px;
+    max-width: 1000px;
+    margin: 0 auto;
+  }
+
+  .step {
+    flex: 1;
+    min-width: 250px;
+    max-width: 300px;
+    text-align: center;
+    position: relative;
+  }
+
+  .step-number {
+    width: 60px;
+    height: 60px;
+    background: linear-gradient(135deg, var(--accent) 0%, var(--accent-dark) 100%);
+    color: #000;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.5rem;
+    font-weight: 800;
+    margin: 0 auto 20px;
+  }
+
+  .step h3 {
+    color: #fff;
+    margin-bottom: 12px;
+    font-size: 1.2rem;
+  }
+
+  .step p {
+    color: var(--text-muted);
+    font-size: 0.95rem;
+  }
+
+  /* Cooperative Section */
+  .cooperative {
+    padding: 100px 24px;
+    background: linear-gradient(180deg, #0a0a0a 0%, var(--bg-dark) 100%);
+    position: relative;
+    overflow: hidden;
+  }
+
+  .cooperative::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 600px;
+    height: 600px;
+    background: radial-gradient(circle, rgba(255,193,37,0.05) 0%, transparent 70%);
+    pointer-events: none;
+  }
+
+  .cooperative-content {
+    max-width: 800px;
+    margin: 0 auto;
+    text-align: center;
+    position: relative;
+    z-index: 1;
+  }
+
+  .cooperative h2 {
+    font-size: 2.5rem;
+    margin-bottom: 24px;
+    color: #fff;
+  }
+
+  .cooperative .highlight {
+    color: var(--accent);
+  }
+
+  .cooperative p {
+    color: var(--text-muted);
+    font-size: 1.1rem;
+    margin-bottom: 20px;
+  }
+
+  .cooperative-icon {
+    width: 120px;
+    height: 120px;
+    margin: 0 auto 32px;
+  }
+
+  /* Values Grid */
+  .values-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 24px;
+    margin-top: 50px;
+  }
+
+  .value-item {
+    background: rgba(255,193,37,0.03);
+    border: 1px solid rgba(255,193,37,0.1);
+    border-radius: 12px;
+    padding: 24px;
+  }
+
+  .value-item h4 {
+    color: var(--accent);
+    margin-bottom: 8px;
+    font-size: 1.1rem;
+  }
+
+  .value-item p {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+    margin: 0;
+  }
+
+  /* CTA Section */
+  .cta {
+    padding: 80px 24px;
+    text-align: center;
+    background: linear-gradient(135deg, rgba(255,193,37,0.1) 0%, transparent 100%);
+    border-top: 1px solid rgba(255,193,37,0.1);
+  }
+
+  .cta h2 {
+    font-size: 2rem;
+    margin-bottom: 16px;
+    color: #fff;
+  }
+
+  .cta p {
+    color: var(--text-muted);
+    margin-bottom: 32px;
+    font-size: 1.1rem;
+  }
+
+  .cta-buttons {
+    display: flex;
+    gap: 16px;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+
+  /* Footer */
+  footer {
+    padding: 40px 24px;
+    text-align: center;
+    border-top: 1px solid rgba(255,193,37,0.1);
+    background: #050505;
+  }
+
+  footer p {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+  }
+
+  footer a {
+    color: var(--accent);
+    text-decoration: none;
+  }
+
+  footer a:hover {
+    text-decoration: underline;
+  }
+
+  /* Responsive */
+  @media (max-width: 768px) {
+    .hero h1 { font-size: 2.5rem; }
+    .hero .tagline { font-size: 1rem; letter-spacing: 2px; }
+    .header-logo span { display: none; }
+    .features h2, .how-it-works h2, .cooperative h2 { font-size: 2rem; }
+    .tower-bg { display: none; }
+  }
+</style>
 </head>
 <body>
+
+<!-- Header -->
 <header>
-  <div style="margin-left:auto;">
-    <a href="/signin" class="btn">Sign In</a>
+  <div class="header-logo">
+    <img src="/assets/logo.jpg" alt="VettID">
+    <span>VETTID</span>
+  </div>
+  <div class="header-buttons">
+    <a href="/signin" class="btn btn-outline">Sign In</a>
+    <a href="/register" class="btn btn-primary">Register</a>
   </div>
 </header>
-<div class="content">
-<a href="https://www.vettid.org" class="logo-link" target="_blank" rel="noopener noreferrer">
-<img alt="VettID logo" src="/assets/logo.jpg" class="logo"/>
-</a>
-<div class="nav-links">
-  <a href="/register" class="big-link">Have an invite?</a>
-</div>
-</div>
+
+<!-- Hero Section -->
+<section class="hero">
+  <!-- Background Tower Graphics -->
+  <svg class="tower-bg left" width="300" height="400" viewBox="0 0 100 140">
+    <path d="M25 30 L25 20 L30 20 L30 10 L35 10 L35 20 L45 20 L45 10 L50 10 L50 20 L55 20 L55 10 L60 10 L60 20 L65 20 L65 10 L70 10 L70 20 L75 20 L75 30 L75 35 L25 35 Z" fill="#ffc125"/>
+    <path d="M28 35 L72 35 L75 130 L25 130 Z" fill="#ffc125"/>
+    <ellipse cx="50" cy="70" rx="10" ry="12" fill="#000"/>
+    <path d="M45 82 L45 95 L55 95 L55 82 Q50 78 45 82" fill="#000"/>
+  </svg>
+
+  <svg class="tower-bg right" width="250" height="350" viewBox="0 0 100 140">
+    <path d="M25 30 L25 20 L30 20 L30 10 L35 10 L35 20 L45 20 L45 10 L50 10 L50 20 L55 20 L55 10 L60 10 L60 20 L65 20 L65 10 L70 10 L70 20 L75 20 L75 30 L75 35 L25 35 Z" fill="#ffc125"/>
+    <path d="M28 35 L72 35 L75 130 L25 130 Z" fill="#ffc125"/>
+    <ellipse cx="50" cy="70" rx="10" ry="12" fill="#000"/>
+    <path d="M45 82 L45 95 L55 95 L55 82 Q50 78 45 82" fill="#000"/>
+  </svg>
+
+  <img src="/assets/logo.jpg" alt="VettID" class="hero-logo">
+  <h1>VettID</h1>
+  <p class="tagline">Secure. Private. Trusted.</p>
+  <p class="subtitle">A member-owned cooperative dedicated to protecting your online security and privacy. Join a community that puts you first.</p>
+  <div class="hero-buttons">
+    <a href="/signin" class="btn btn-outline">Sign In</a>
+    <a href="/register" class="btn btn-primary">Register with Invite</a>
+  </div>
+</section>
+
+<!-- Features Section -->
+<section class="features">
+  <h2>Why VettID?</h2>
+  <p class="section-subtitle">We believe your digital identity should be protected by people who share your values, not corporations seeking profit.</p>
+
+  <div class="features-grid">
+    <div class="feature-card">
+      <svg class="feature-icon" viewBox="0 0 100 100">
+        <!-- Shield with Tower -->
+        <path d="M50 5 L90 20 L90 50 Q90 80 50 95 Q10 80 10 50 L10 20 Z" fill="none" stroke="#ffc125" stroke-width="3"/>
+        <path d="M35 45 L35 38 L38 38 L38 32 L42 32 L42 38 L48 38 L48 32 L52 32 L52 38 L58 38 L58 32 L62 32 L62 38 L65 38 L65 45 L65 48 L35 48 Z" fill="#ffc125"/>
+        <path d="M37 48 L63 48 L65 75 L35 75 Z" fill="#ffc125"/>
+        <ellipse cx="50" cy="58" rx="5" ry="6" fill="#000"/>
+        <path d="M47 64 L47 70 L53 70 L53 64 Q50 62 47 64" fill="#000"/>
+      </svg>
+      <h3>Member-Owned Security</h3>
+      <p>As a cooperative, every member has a voice. Your security decisions are made by people like you, not shareholders.</p>
+    </div>
+
+    <div class="feature-card">
+      <svg class="feature-icon" viewBox="0 0 100 100">
+        <!-- Lock with keyhole -->
+        <rect x="20" y="40" width="60" height="50" rx="8" fill="none" stroke="#ffc125" stroke-width="3"/>
+        <path d="M30 40 L30 30 Q30 10 50 10 Q70 10 70 30 L70 40" fill="none" stroke="#ffc125" stroke-width="3"/>
+        <circle cx="50" cy="60" r="8" fill="#ffc125"/>
+        <rect x="47" y="60" width="6" height="15" fill="#ffc125"/>
+      </svg>
+      <h3>Zero-Knowledge Privacy</h3>
+      <p>We can't see your data because we designed it that way. True privacy means even we can't access your information.</p>
+    </div>
+
+    <div class="feature-card">
+      <svg class="feature-icon" viewBox="0 0 100 100">
+        <!-- Connected towers -->
+        <g transform="translate(10, 20) scale(0.6)">
+          <path d="M15 30 L15 22 L18 22 L18 15 L22 15 L22 22 L28 22 L28 15 L32 15 L32 22 L35 22 L35 30 L35 33 L15 33 Z" fill="#ffc125"/>
+          <path d="M16 33 L34 33 L35 60 L15 60 Z" fill="#ffc125"/>
+          <ellipse cx="25" cy="42" rx="4" ry="5" fill="#000"/>
+        </g>
+        <g transform="translate(50, 20) scale(0.6)">
+          <path d="M15 30 L15 22 L18 22 L18 15 L22 15 L22 22 L28 22 L28 15 L32 15 L32 22 L35 22 L35 30 L35 33 L15 33 Z" fill="#ffc125"/>
+          <path d="M16 33 L34 33 L35 60 L15 60 Z" fill="#ffc125"/>
+          <ellipse cx="25" cy="42" rx="4" ry="5" fill="#000"/>
+        </g>
+        <!-- Connection line -->
+        <line x1="38" y1="50" x2="62" y2="50" stroke="#ffc125" stroke-width="3" stroke-dasharray="4"/>
+        <circle cx="50" cy="50" r="6" fill="#ffc125"/>
+      </svg>
+      <h3>Trusted Community</h3>
+      <p>Join through invitation from existing members. Our vetting process ensures a community built on trust and shared values.</p>
+    </div>
+  </div>
+</section>
+
+<!-- How It Works Section -->
+<section class="how-it-works">
+  <h2>How It Works</h2>
+  <div class="steps">
+    <div class="step">
+      <div class="step-number">1</div>
+      <h3>Get Invited</h3>
+      <p>Receive an invitation from an existing VettID member who can vouch for your commitment to privacy.</p>
+    </div>
+    <div class="step">
+      <div class="step-number">2</div>
+      <h3>Register</h3>
+      <p>Complete your registration with your invite code. Your information is encrypted from day one.</p>
+    </div>
+    <div class="step">
+      <div class="step-number">3</div>
+      <h3>Join the Co-op</h3>
+      <p>Become a member with voting rights. Help shape the future of online privacy and security.</p>
+    </div>
+  </div>
+</section>
+
+<!-- Cooperative Section -->
+<section class="cooperative">
+  <div class="cooperative-content">
+    <svg class="cooperative-icon" viewBox="0 0 100 100">
+      <!-- Multiple towers forming a circle/community -->
+      <g transform="translate(50, 15) scale(0.5)">
+        <path d="M-12 25 L-12 18 L-9 18 L-9 12 L-5 12 L-5 18 L5 18 L5 12 L9 12 L9 18 L12 18 L12 25 L-12 25 Z" fill="#ffc125"/>
+        <path d="M-10 25 L10 25 L12 50 L-12 50 Z" fill="#ffc125"/>
+        <ellipse cx="0" cy="34" rx="4" ry="5" fill="#000"/>
+      </g>
+      <g transform="translate(20, 55) scale(0.45)">
+        <path d="M-12 25 L-12 18 L-9 18 L-9 12 L-5 12 L-5 18 L5 18 L5 12 L9 12 L9 18 L12 18 L12 25 L-12 25 Z" fill="#ffc125"/>
+        <path d="M-10 25 L10 25 L12 50 L-12 50 Z" fill="#ffc125"/>
+        <ellipse cx="0" cy="34" rx="4" ry="5" fill="#000"/>
+      </g>
+      <g transform="translate(80, 55) scale(0.45)">
+        <path d="M-12 25 L-12 18 L-9 18 L-9 12 L-5 12 L-5 18 L5 18 L5 12 L9 12 L9 18 L12 18 L12 25 L-12 25 Z" fill="#ffc125"/>
+        <path d="M-10 25 L10 25 L12 50 L-12 50 Z" fill="#ffc125"/>
+        <ellipse cx="0" cy="34" rx="4" ry="5" fill="#000"/>
+      </g>
+      <g transform="translate(50, 80) scale(0.45)">
+        <path d="M-12 25 L-12 18 L-9 18 L-9 12 L-5 12 L-5 18 L5 18 L5 12 L9 12 L9 18 L12 18 L12 25 L-12 25 Z" fill="#ffc125"/>
+        <path d="M-10 25 L10 25 L12 50 L-12 50 Z" fill="#ffc125"/>
+        <ellipse cx="0" cy="34" rx="4" ry="5" fill="#000"/>
+      </g>
+      <!-- Connecting circle -->
+      <circle cx="50" cy="50" r="35" fill="none" stroke="#ffc125" stroke-width="1" stroke-dasharray="4" opacity="0.5"/>
+    </svg>
+
+    <h2>A <span class="highlight">Cooperative</span> Built for You</h2>
+    <p>VettID is not a corporation. We are a member-owned cooperative where every voice matters. Our governance is transparent, our priorities are aligned with yours, and our mission is simple: protect our members.</p>
+    <p>When you join VettID, you're not just a customer &mdash; you're an owner with voting rights on how we operate, what services we offer, and how we protect our community.</p>
+
+    <div class="values-grid">
+      <div class="value-item">
+        <h4>Democratic Governance</h4>
+        <p>One member, one vote. Major decisions are made by the community.</p>
+      </div>
+      <div class="value-item">
+        <h4>Transparent Operations</h4>
+        <p>See how your membership fees are used to protect the community.</p>
+      </div>
+      <div class="value-item">
+        <h4>No Profit Motive</h4>
+        <p>We exist to serve members, not shareholders seeking returns.</p>
+      </div>
+      <div class="value-item">
+        <h4>Shared Values</h4>
+        <p>Built by privacy advocates, for people who value their digital freedom.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- CTA Section -->
+<section class="cta">
+  <h2>Ready to Take Control of Your Privacy?</h2>
+  <p>Join a community that believes your data belongs to you.</p>
+  <div class="cta-buttons">
+    <a href="/signin" class="btn btn-outline">Sign In</a>
+    <a href="/register" class="btn btn-primary">Register with Invite</a>
+  </div>
+</section>
+
+<!-- Footer -->
+<footer>
+  <p>&copy; 2025 VettID Cooperative. All rights reserved. | <a href="https://www.vettid.org" target="_blank" rel="noopener noreferrer">vettid.org</a></p>
+</footer>
 
 </body>
 </html>

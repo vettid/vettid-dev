@@ -31,6 +31,13 @@ function generateToken(): string {
 /**
  * Cognito CreateAuthChallenge trigger
  * Generates magic link and sends email
+ *
+ * IMPORTANT: This Lambda is called TWICE during magic link authentication:
+ * 1. When user requests a magic link on /signin → should send email
+ * 2. When user clicks magic link and /auth calls initiateAuth → should NOT send email
+ *
+ * To prevent duplicate emails, we check if a valid unexpired token already exists
+ * and reuse it without sending another email.
  */
 export const handler: CreateAuthChallengeTriggerHandler = async (event) => {
   // SECURITY: Only log user hash, not full event with PII
@@ -75,12 +82,11 @@ export const handler: CreateAuthChallengeTriggerHandler = async (event) => {
     // Continue with pinRequired = false
   }
 
-  // Check if a valid unexpired token exists for this user
+  // Check if a valid unexpired token already exists for this user
   // Rate limiting: Query recent tokens for this email to prevent abuse
   const now = Math.floor(Date.now() / 1000);
   const ONE_HOUR_AGO = now - 3600;
   const RATE_LIMIT_MAX_REQUESTS = 5; // Max 5 magic link requests per hour
-  const REUSE_TOKEN_WINDOW = 30; // SECURITY: Reduced from 60s to 30s to limit token reuse window
 
   try {
     const { QueryCommand } = await import('@aws-sdk/client-dynamodb');
@@ -116,17 +122,19 @@ export const handler: CreateAuthChallengeTriggerHandler = async (event) => {
       }
     }
 
-    // Check for recent valid token to reuse (prevent duplicate emails within 60s)
-    const validRecentTokens = recentTokens.filter(t =>
-      t.expiresAt > now &&
-      (now - t.createdAtTimestamp) < REUSE_TOKEN_WINDOW
-    );
+    // Check for ANY valid unexpired token to reuse
+    // This prevents sending duplicate emails when:
+    // 1. User clicks magic link (auth page calls initiateAuth)
+    // 2. User requests a new link before the old one expires
+    // Only create a new token if no valid token exists
+    const validTokens = recentTokens.filter(t => t.expiresAt > now);
 
-    if (validRecentTokens.length > 0) {
-      const existingToken = validRecentTokens[0].token;
-      const ageSeconds = now - validRecentTokens[0].createdAtTimestamp;
+    if (validTokens.length > 0) {
+      const existingToken = validTokens[0].token;
+      const ageSeconds = now - validTokens[0].createdAtTimestamp;
+      const minutesRemaining = Math.round((validTokens[0].expiresAt - now) / 60);
 
-      console.log(`Found existing valid token for user ${hashForLog(email)}, age: ${ageSeconds}s, reusing without sending email`);
+      console.log(`Found existing valid token for user ${hashForLog(email)}, age: ${ageSeconds}s, expires in ${minutesRemaining}m, reusing without sending email`);
       event.response.publicChallengeParameters = { email, pinRequired: pinRequired.toString() };
       event.response.privateChallengeParameters = { token: existingToken };
       event.response.challengeMetadata = 'MAGIC_LINK';
