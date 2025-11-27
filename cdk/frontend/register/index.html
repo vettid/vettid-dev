@@ -17,71 +17,100 @@
     button{margin-top:1.5rem;width:100%;padding:1rem;background:linear-gradient(135deg,#ffd940 0%,#ffc125 100%);color:#000;border:none;border-radius:4px;font-weight:700;cursor:pointer;text-transform:uppercase;letter-spacing:0.5px;box-shadow:0 4px 14px rgba(255,217,64,0.5);transition:all 0.2s;font-size:0.95rem}
     button:hover{transform:translateY(-2px);box-shadow:0 6px 20px rgba(255,217,64,0.6)}
     .msg{margin-top:1.5rem;padding:12px;border-radius:2px;border-left:3px solid var(--accent);background:#050505}
+
+    /* Tab styles */
+    .tabs{display:flex;gap:8px;margin-bottom:24px;border-bottom:2px solid var(--border)}
+    .tab{flex:1;padding:12px 20px;background:transparent;border:none;color:var(--gray);cursor:pointer;font-size:0.95rem;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;transition:all 0.2s;border-bottom:3px solid transparent;margin-bottom:-2px}
+    .tab:hover{color:var(--text);background:rgba(255,193,37,0.05)}
+    .tab.active{color:var(--accent);border-bottom-color:var(--accent)}
+    .tab-content{display:none}
+    .tab-content.active{display:block}
+
+    @media (max-width: 600px) {
+      .tabs{flex-direction:column;gap:0;border-bottom:none}
+      .tab{border-bottom:1px solid var(--border);margin-bottom:0;text-align:left}
+      .tab.active{border-left:3px solid var(--accent);border-bottom:1px solid var(--border);background:rgba(255,193,37,0.05)}
+    }
   </style>
 </head>
 <body>
   <div class="wrap">
     <div class="card">
       <h1>Request Access</h1>
-      <p>Have an invite code? Enter your details.</p>
-      <form id="regForm">
-        <label for="first">First name</label>
-        <input id="first" autocomplete="given-name" required />
-        <label for="last">Last name</label>
-        <input id="last" autocomplete="family-name" required />
-        <label for="email">Email</label>
-        <input id="email" type="email" autocomplete="email" required />
-        <label for="code">Invite code</label>
-        <input id="code" autocomplete="off" required />
-        <div style="margin-top:1.5rem;">
-          <label style="display:flex;align-items:center;cursor:pointer;margin:0;">
-            <input type="checkbox" id="emailConsent" style="width:auto;margin-right:8px;" required />
-            <span style="color:var(--text);text-transform:none;font-weight:400;font-size:0.9rem;">I agree to receive emails from VettID</span>
-          </label>
-        </div>
-        <button type="submit">Submit</button>
-      </form>
-      <div class="msg" id="msg"></div>
-      <div style="text-align:center;margin-top:24px;padding-top:20px;border-top:1px solid var(--border);">
-        <p style="color:var(--gray);margin-bottom:12px;font-size:0.9rem;">Don't have an invite code?</p>
-        <button type="button" class="btn" onclick="openWaitlistModal()" style="background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);width:100%;">Join the Wait List</button>
+
+      <!-- Tab Navigation -->
+      <div class="tabs">
+        <button class="tab active" onclick="switchTab('invite')">Have an Invite</button>
+        <button class="tab" onclick="switchTab('waitlist')">Join Waitlist</button>
+      </div>
+
+      <!-- Invite Tab Content -->
+      <div id="inviteTab" class="tab-content active">
+        <p>Have an invite code? Enter your details below.</p>
+        <form id="regForm">
+          <label for="first">First name</label>
+          <input id="first" autocomplete="given-name" required />
+          <label for="last">Last name</label>
+          <input id="last" autocomplete="family-name" required />
+          <label for="email">Email</label>
+          <input id="email" type="email" autocomplete="email" required />
+          <label for="code">Invite code</label>
+          <input id="code" autocomplete="off" required />
+          <div style="margin-top:1.5rem;">
+            <label style="display:flex;align-items:center;cursor:pointer;margin:0;">
+              <input type="checkbox" id="emailConsent" style="width:auto;margin-right:8px;" required />
+              <span style="color:var(--text);text-transform:none;font-weight:400;font-size:0.9rem;">I agree to receive emails from VettID</span>
+            </label>
+          </div>
+          <button type="submit">Submit</button>
+        </form>
+        <div class="msg" id="msg"></div>
+      </div>
+
+      <!-- Waitlist Tab Content -->
+      <div id="waitlistTab" class="tab-content">
+        <p>Be the first to know when new invites are available.</p>
+        <form id="waitlistForm">
+          <label for="waitlistFirst">First Name</label>
+          <input id="waitlistFirst" type="text" autocomplete="given-name" required />
+          <label for="waitlistLast">Last Name</label>
+          <input id="waitlistLast" type="text" autocomplete="family-name" required />
+          <label for="waitlistEmail">Email</label>
+          <input id="waitlistEmail" type="email" autocomplete="email" required />
+          <div style="margin-top:1.5rem;">
+            <label style="display:flex;align-items:center;cursor:pointer;margin:0;">
+              <input type="checkbox" id="waitlistEmailConsent" style="width:auto;margin-right:8px;" required />
+              <span style="color:var(--text);text-transform:none;font-weight:400;font-size:0.9rem;">I agree to receive emails from VettID</span>
+            </label>
+          </div>
+          <button type="submit">Join Wait List</button>
+        </form>
+        <div class="msg" id="waitlistMessage"></div>
       </div>
     </div>
   </div>
-
-<!-- Waitlist Modal -->
-<div id="waitlistModal" class="modal" style="display:none;position:fixed;z-index:1000;left:0;top:0;width:100%;height:100%;background:rgba(0,0,0,0.8);justify-content:center;align-items:center;">
-  <div class="modal-content" style="background:#0a0a0a;border:2px solid var(--accent);border-radius:4px;padding:32px;max-width:500px;width:90%;box-shadow:0 8px 24px rgba(0,0,0,0.5);">
-    <span class="close-btn" onclick="closeWaitlistModal()" style="color:var(--gray);float:right;font-size:28px;font-weight:bold;cursor:pointer;line-height:20px;">&times;</span>
-    <h2 style="margin-top:0;color:var(--accent);border-bottom:2px solid var(--accent);padding-bottom:12px;">Join the Wait List</h2>
-    <p style="color:var(--gray);margin-bottom:1.5rem;">Be the first to know when new invites are available.</p>
-    <form id="waitlistForm">
-      <label style="display:block;margin:1rem 0 .4rem;color:var(--accent);text-transform:uppercase;font-size:0.85rem;letter-spacing:0.5px;font-weight:600;">First Name</label>
-      <input id="waitlistFirst" type="text" required style="width:100%;padding:.85rem;border-radius:2px;border:1px solid var(--border);background:#050505;color:var(--text);font-size:1rem;box-sizing:border-box;" />
-
-      <label style="display:block;margin:1rem 0 .4rem;color:var(--accent);text-transform:uppercase;font-size:0.85rem;letter-spacing:0.5px;font-weight:600;">Last Name</label>
-      <input id="waitlistLast" type="text" required style="width:100%;padding:.85rem;border-radius:2px;border:1px solid var(--border);background:#050505;color:var(--text);font-size:1rem;box-sizing:border-box;" />
-
-      <label style="display:block;margin:1rem 0 .4rem;color:var(--accent);text-transform:uppercase;font-size:0.85rem;letter-spacing:0.5px;font-weight:600;">Email</label>
-      <input id="waitlistEmail" type="email" required style="width:100%;padding:.85rem;border-radius:2px;border:1px solid var(--border);background:#050505;color:var(--text);font-size:1rem;box-sizing:border-box;" />
-
-      <label style="display:flex;align-items:center;cursor:pointer;margin:1.5rem 0;">
-        <input type="checkbox" id="waitlistEmailConsent" required style="width:auto;margin-right:8px;" />
-        <span style="color:var(--text);text-transform:none;font-weight:400;">I agree to be emailed by VettID</span>
-      </label>
-
-      <div style="display:flex;gap:12px;margin-top:1.5rem;">
-        <button type="button" class="btn" onclick="closeWaitlistModal()" style="flex:1;background:linear-gradient(135deg,#374151 0%,#1f2937 100%);">Cancel</button>
-        <button type="submit" class="btn" style="flex:1;">Join Wait List</button>
-      </div>
-    </form>
-    <div id="waitlistMessage" style="margin-top:1rem;padding:12px;border-radius:4px;display:none;"></div>
-  </div>
-</div>
 <script src="https://vettid.dev/shared/config.js"></script>
 <script>
 // Load configuration from centralized config file
 const API = window.VettIDConfig.apiUrl;
+
+// Tab switching function
+function switchTab(tabName) {
+  // Update tab buttons
+  const tabs = document.querySelectorAll('.tab');
+  tabs.forEach(tab => tab.classList.remove('active'));
+  event.target.classList.add('active');
+
+  // Update tab content
+  document.getElementById('inviteTab').classList.remove('active');
+  document.getElementById('waitlistTab').classList.remove('active');
+
+  if (tabName === 'invite') {
+    document.getElementById('inviteTab').classList.add('active');
+  } else {
+    document.getElementById('waitlistTab').classList.add('active');
+  }
+}
 
 const form = document.getElementById('regForm');
 const msgEl = document.getElementById('msg');
@@ -206,25 +235,6 @@ form.addEventListener('submit', async (e) => {
   }
 });
 
-// Waitlist modal functions
-function openWaitlistModal() {
-  document.getElementById('waitlistModal').style.display = 'flex';
-}
-
-function closeWaitlistModal() {
-  document.getElementById('waitlistModal').style.display = 'none';
-  document.getElementById('waitlistForm').reset();
-  document.getElementById('waitlistMessage').style.display = 'none';
-}
-
-// Close modal when clicking outside
-window.onclick = function(event) {
-  const modal = document.getElementById('waitlistModal');
-  if (event.target === modal) {
-    closeWaitlistModal();
-  }
-}
-
 // Set custom validation message for waitlist email consent checkbox
 const waitlistEmailConsent = document.getElementById('waitlistEmailConsent');
 waitlistEmailConsent.addEventListener('invalid', function() {
@@ -247,9 +257,7 @@ document.getElementById('waitlistForm').addEventListener('submit', async (e) => 
 
   const messageEl = document.getElementById('waitlistMessage');
   messageEl.textContent = 'Submitting...';
-  messageEl.style.display = 'block';
-  messageEl.style.background = '#333';
-  messageEl.style.color = 'var(--text)';
+  messageEl.classList.remove('error');
 
   const payload = {
     first_name: document.getElementById('waitlistFirst').value.trim(),
@@ -269,23 +277,22 @@ document.getElementById('waitlistForm').addEventListener('submit', async (e) => 
 
     if (!res.ok) {
       messageEl.textContent = 'Error: ' + (data.message || 'Failed to join waitlist');
-      messageEl.style.background = '#d32f2f';
-      messageEl.style.color = '#fff';
+      messageEl.classList.add('error');
       // Re-enable submit button on error
       waitlistSubmitBtn.disabled = false;
       waitlistSubmitBtn.textContent = 'Join Wait List';
       waitlistSubmitBtn.style.opacity = '1';
     } else {
-      messageEl.innerHTML = '';
-      messageEl.style.background = '#4caf50';
-      messageEl.style.color = '#fff';
+      // Clear previous content
+      messageEl.textContent = '';
+      messageEl.style.background = '#050505';
 
-      // Show success message
-      const successText = document.createElement('div');
-      successText.textContent = 'Successfully joined the wait list!';
-      successText.style.fontWeight = '600';
-      successText.style.marginBottom = '8px';
-      messageEl.appendChild(successText);
+      // Container for main message
+      const mainMessage = document.createElement('div');
+      mainMessage.textContent = 'Successfully joined the wait list!';
+      mainMessage.style.fontWeight = '600';
+      mainMessage.style.marginBottom = '8px';
+      messageEl.appendChild(mainMessage);
 
       // Show verification notice if email verification was sent
       if (data.email_verification_sent) {
@@ -310,16 +317,10 @@ document.getElementById('waitlistForm').addEventListener('submit', async (e) => 
       }
 
       document.getElementById('waitlistForm').reset();
-
-      // Close modal after longer delay if verification sent (15 seconds to read the message)
-      setTimeout(() => {
-        closeWaitlistModal();
-      }, data.email_verification_sent ? 15000 : 3000);
     }
   } catch (err) {
     messageEl.textContent = 'Network error: ' + err.message;
-    messageEl.style.background = '#d32f2f';
-    messageEl.style.color = '#fff';
+    messageEl.classList.add('error');
     // Re-enable submit button on error
     waitlistSubmitBtn.disabled = false;
     waitlistSubmitBtn.textContent = 'Join Wait List';
