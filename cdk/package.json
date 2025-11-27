@@ -10,7 +10,8 @@
     "bootstrap": "./node_modules/.bin/cdk bootstrap",
     "deploy": "npm run build && ./node_modules/.bin/cdk deploy --all",
     "synth": "npm run build && ./node_modules/.bin/cdk synth",
-    "destroy": "cdk destroy --all"
+    "destroy": "cdk destroy --all",
+    "ensure-default-terms": "./node_modules/.bin/cdk deploy --outputs-file cdk-outputs.json && aws lambda invoke --function-name $(cat cdk-outputs.json | grep EnsureDefaultTermsLambdaArn | awk '{print $2}' | tr -d '\",' | awk -F: '{print $NF}') /tmp/ensure-terms-response.json && cat /tmp/ensure-terms-response.json"
   },
   "devDependencies": {
     "@aws-sdk/client-s3": "^3.939.0",

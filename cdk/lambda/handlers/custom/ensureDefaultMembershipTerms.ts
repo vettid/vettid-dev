@@ -1,11 +1,9 @@
-import { CloudFormationCustomResourceEvent, Context } from "aws-lambda";
+import { Handler } from "aws-lambda";
 import { DynamoDBClient, PutItemCommand, QueryCommand } from "@aws-sdk/client-dynamodb";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
 import { randomUUID } from "crypto";
 import PDFDocument from "pdfkit";
-import https from "https";
-import url from "url";
 
 const ddb = new DynamoDBClient({});
 const s3 = new S3Client({});
@@ -106,69 +104,15 @@ async function generateTermsPDF(termsText: string, versionId: string): Promise<B
   });
 }
 
-// Send response to CloudFormation
-async function sendResponse(
-  event: CloudFormationCustomResourceEvent,
-  status: 'SUCCESS' | 'FAILED',
-  data?: Record<string, any>,
-  reason?: string
-): Promise<void> {
-  const responseBody = JSON.stringify({
-    Status: status,
-    Reason: reason || `See CloudWatch Log Stream: ${process.env.AWS_LAMBDA_LOG_STREAM_NAME}`,
-    PhysicalResourceId: event.LogicalResourceId,
-    StackId: event.StackId,
-    RequestId: event.RequestId,
-    LogicalResourceId: event.LogicalResourceId,
-    Data: data || {}
-  });
-
-  const parsedUrl = url.parse(event.ResponseURL);
-  const options = {
-    hostname: parsedUrl.hostname,
-    port: 443,
-    path: parsedUrl.path,
-    method: 'PUT',
-    headers: {
-      'Content-Type': '',
-      'Content-Length': responseBody.length
-    }
-  };
-
-  return new Promise((resolve, reject) => {
-    const request = https.request(options, (response) => {
-      console.log(`Status code: ${response.statusCode}`);
-      console.log(`Status message: ${response.statusMessage}`);
-      resolve();
-    });
-
-    request.on('error', (error) => {
-      console.log(`sendResponse Error: ${error}`);
-      reject(error);
-    });
-
-    request.write(responseBody);
-    request.end();
-  });
-}
-
 /**
- * Custom Resource Lambda to ensure default membership terms exist
- * Runs on CloudFormation stack create/update
+ * Lambda function to ensure default membership terms exist
+ * Invoked manually after stack deployment
  */
-export const handler = async (event: CloudFormationCustomResourceEvent, context: Context): Promise<void> => {
-  console.log('Event:', JSON.stringify(event, null, 2));
+export const handler: Handler = async () => {
+  console.log('Checking for current membership terms...');
 
-  const tableName = event.ResourceProperties.TableName;
-  const bucketName = event.ResourceProperties.BucketName;
-
-  if (event.RequestType === 'Delete') {
-    // Never delete membership terms - just acknowledge deletion
-    await sendResponse(event, 'SUCCESS', {
-      Message: 'Membership terms are preserved (not deleted)'
-    });
-    return;
-  }
+  const tableName = process.env.TABLE_MEMBERSHIP_TERMS!;
+  const bucketName = process.env.TERMS_BUCKET!;
 
   try {
     // Check if any current membership terms exist
@@ -181,11 +125,12 @@ export const handler = async (event: CloudFormationCustomResourceEvent, context:
     }));
 
     if (queryRes.Items && queryRes.Items.length > 0) {
-      console.log('Current membership terms already exist, skipping creation');
-      await sendResponse(event, 'SUCCESS', {
-        Message: 'Current membership terms already exist'
-      });
-      return;
+      console.log('✓ Current membership terms already exist, skipping creation');
+      return {
+        statusCode: 200,
+        message: 'Current membership terms already exist',
+        existing: true
+      };
     }
 
     // No current terms found - create default terms
@@ -227,20 +172,17 @@ export const handler = async (event: CloudFormationCustomResourceEvent, context:
       Item: marshall(termsItem)
     }));
 
-    console.log('Default membership terms created successfully:', versionId);
+    console.log('✓ Default membership terms created successfully:', versionId);
 
-    await sendResponse(event, 'SUCCESS', {
-      Message: 'Default membership terms created',
-      VersionId: versionId,
-      S3Key: s3Key
-    });
+    return {
+      statusCode: 200,
+      message: 'Default membership terms created',
+      versionId,
+      s3Key,
+      created: true
+    };
   } catch (error) {
     console.error('Failed to ensure default membership terms:', error);
-    await sendResponse(
-      event,
-      'FAILED',
-      {},
-      error instanceof Error ? error.message : 'Unknown error'
-    );
+    throw error;
   }
 };

@@ -304,10 +304,23 @@ VettID implements strict safeguards to ensure membership terms are always availa
 - Users see only the current version via `/account/membership/terms` (GET)
 - Admins can view all versions via `/admin/membership-terms` (GET)
 
-**Default terms:**
-- On first deployment, a custom resource Lambda (`ensureDefaultMembershipTerms.ts`) runs
-- If no current terms exist, it creates default cooperative membership terms
-- This ensures users can always access and accept terms
+**Ensuring current terms exist:**
+Due to AWS CloudFormation's 500 resource limit, there is no automated custom resource to create default terms. If no current terms exist after deployment, create them manually via the admin portal or AWS CLI:
+
+**Option 1: Via Admin Portal** (Recommended)
+1. Sign in to https://admin.vettid.dev as an admin user
+2. Navigate to Membership Terms section
+3. Create new membership terms with your organization's terms text
+
+**Option 2: Via AWS CLI**
+```bash
+# Set one existing terms version to current
+aws dynamodb update-item \
+  --table-name $(aws dynamodb list-tables | grep MembershipTerms | tr -d '", ') \
+  --key '{"version_id": {"S": "<VERSION_ID>"}}' \
+  --update-expression "SET is_current = :true" \
+  --expression-attribute-values '{":true": {"S": "true"}}'
+```
 
 **To create new membership terms:**
 ```bash
