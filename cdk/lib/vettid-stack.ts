@@ -566,6 +566,84 @@ removalPolicy: cdk.RemovalPolicy.DESTROY,
       pointInTimeRecovery: true,
     });
 
+    // ===== VAULT SERVICES TABLES =====
+
+    // Credentials table - stores encrypted credential blobs and metadata
+    // This is the core table for the Protean Credential system
+    const credentials = new dynamodb.Table(this, 'Credentials', {
+      partitionKey: { name: 'user_guid', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      pointInTimeRecovery: true,
+    });
+
+    // Credential Encryption Keys (CEK) - stores encrypted private keys for credential encryption
+    // Ledger owns these keys; mobile cannot decrypt credentials
+    const credentialKeys = new dynamodb.Table(this, 'CredentialKeys', {
+      partitionKey: { name: 'user_guid', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'version', type: dynamodb.AttributeType.NUMBER },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      pointInTimeRecovery: true,
+    });
+
+    // Transaction Keys - stores LTK (private) and UTK (public) pairs
+    // LTK stays on ledger, UTK sent to mobile for encrypting password hashes
+    const transactionKeys = new dynamodb.Table(this, 'TransactionKeys', {
+      partitionKey: { name: 'user_guid', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'key_id', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      pointInTimeRecovery: true,
+    });
+
+    // GSI for finding unused keys
+    transactionKeys.addGlobalSecondaryIndex({
+      indexName: 'status-index',
+      partitionKey: { name: 'user_guid', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'status', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // Ledger Auth Tokens (LAT) - for mutual authentication / phishing protection
+    const ledgerAuthTokens = new dynamodb.Table(this, 'LedgerAuthTokens', {
+      partitionKey: { name: 'user_guid', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'version', type: dynamodb.AttributeType.NUMBER },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      pointInTimeRecovery: true,
+    });
+
+    // Action Tokens - tracks single-use scoped action tokens
+    const actionTokens = new dynamodb.Table(this, 'ActionTokens', {
+      partitionKey: { name: 'token_id', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      timeToLiveAttribute: 'expires_at_ttl',
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    // GSI for querying tokens by user
+    actionTokens.addGlobalSecondaryIndex({
+      indexName: 'user-index',
+      partitionKey: { name: 'user_guid', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'issued_at', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // Enrollment Sessions - tracks multi-step enrollment progress
+    const enrollmentSessions = new dynamodb.Table(this, 'EnrollmentSessions', {
+      partitionKey: { name: 'session_id', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      timeToLiveAttribute: 'expires_at_ttl',
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    // GSI for querying sessions by invitation code
+    enrollmentSessions.addGlobalSecondaryIndex({
+      indexName: 'invitation-index',
+      partitionKey: { name: 'invitation_code', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
 
 // Enable PITR via L1 for audit
 (audit.node.defaultChild as dynamodb.CfnTable).pointInTimeRecoverySpecification = {
@@ -830,6 +908,17 @@ removalPolicy: cdk.RemovalPolicy.DESTROY,
       SES_FROM: 'no-reply@auth.vettid.dev',
       CORS_ORIGIN: 'https://vettid.dev,https://www.vettid.dev,https://admin.vettid.dev,https://account.vettid.dev,https://register.vettid.dev',
       ALLOWED_ORIGINS: 'https://vettid.dev,https://www.vettid.dev,https://admin.vettid.dev,https://account.vettid.dev,https://register.vettid.dev',
+    };
+
+    // Vault services environment variables
+    const vaultEnv = {
+      ...defaultEnv,
+      TABLE_CREDENTIALS: credentials.tableName,
+      TABLE_CREDENTIAL_KEYS: credentialKeys.tableName,
+      TABLE_TRANSACTION_KEYS: transactionKeys.tableName,
+      TABLE_LEDGER_AUTH_TOKENS: ledgerAuthTokens.tableName,
+      TABLE_ACTION_TOKENS: actionTokens.tableName,
+      TABLE_ENROLLMENT_SESSIONS: enrollmentSessions.tableName,
     };
 
     // Lambdas
@@ -1193,6 +1282,48 @@ removalPolicy: cdk.RemovalPolicy.DESTROY,
       environment: defaultEnv,
     });
 
+    // ===== VAULT SERVICE LAMBDAS =====
+
+    // Enrollment endpoints (public - no auth required)
+    const enrollStart = new lambdaNode.NodejsFunction(this, 'EnrollStartFn', {
+      entry: 'lambda/handlers/vault/enrollStart.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: vaultEnv,
+      timeout: cdk.Duration.seconds(30), // Key generation takes time
+    });
+
+    const enrollSetPassword = new lambdaNode.NodejsFunction(this, 'EnrollSetPasswordFn', {
+      entry: 'lambda/handlers/vault/enrollSetPassword.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: vaultEnv,
+      timeout: cdk.Duration.seconds(10),
+    });
+
+    const enrollFinalize = new lambdaNode.NodejsFunction(this, 'EnrollFinalizeFn', {
+      entry: 'lambda/handlers/vault/enrollFinalize.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: vaultEnv,
+      timeout: cdk.Duration.seconds(30), // Credential creation takes time
+    });
+
+    // Action request endpoint (member auth required)
+    // Note: JWT_SIGNING_KEY should be set in the handler code itself from AWS Secrets Manager
+    // The handler has a placeholder that should be replaced with Secrets Manager lookup in production
+    const actionRequest = new lambdaNode.NodejsFunction(this, 'ActionRequestFn', {
+      entry: 'lambda/handlers/vault/actionRequest.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: vaultEnv,
+      timeout: cdk.Duration.seconds(10),
+    });
+
+    // Auth execute endpoint (action token auth - Bearer token)
+    const authExecute = new lambdaNode.NodejsFunction(this, 'AuthExecuteFn', {
+      entry: 'lambda/handlers/vault/authExecute.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: vaultEnv,
+      timeout: cdk.Duration.seconds(30), // Credential rotation takes time
+    });
+
     // Grants
     invites.grantReadWriteData(submitRegistration);
     invites.grantReadWriteData(createInvite);
@@ -1318,6 +1449,42 @@ removalPolicy: cdk.RemovalPolicy.DESTROY,
     invites.grantReadWriteData(sendWaitlistInvites);
     audit.grantReadWriteData(sendWaitlistInvites);
     audit.grantReadWriteData(deleteWaitlistEntries);
+
+    // ===== VAULT SERVICE GRANTS =====
+    // enrollStart grants
+    invites.grantReadWriteData(enrollStart);
+    enrollmentSessions.grantReadWriteData(enrollStart);
+    transactionKeys.grantReadWriteData(enrollStart);
+    audit.grantReadWriteData(enrollStart);
+
+    // enrollSetPassword grants
+    enrollmentSessions.grantReadWriteData(enrollSetPassword);
+    transactionKeys.grantReadWriteData(enrollSetPassword);
+    audit.grantReadWriteData(enrollSetPassword);
+
+    // enrollFinalize grants
+    enrollmentSessions.grantReadWriteData(enrollFinalize);
+    invites.grantReadWriteData(enrollFinalize);
+    credentials.grantReadWriteData(enrollFinalize);
+    credentialKeys.grantReadWriteData(enrollFinalize);
+    ledgerAuthTokens.grantReadWriteData(enrollFinalize);
+    transactionKeys.grantReadData(enrollFinalize);
+    audit.grantReadWriteData(enrollFinalize);
+
+    // actionRequest grants
+    credentials.grantReadData(actionRequest);
+    ledgerAuthTokens.grantReadData(actionRequest);
+    transactionKeys.grantReadData(actionRequest);
+    actionTokens.grantReadWriteData(actionRequest);
+    audit.grantReadWriteData(actionRequest);
+
+    // authExecute grants
+    actionTokens.grantReadWriteData(authExecute);
+    credentials.grantReadWriteData(authExecute);
+    credentialKeys.grantReadWriteData(authExecute);
+    transactionKeys.grantReadWriteData(authExecute);
+    ledgerAuthTokens.grantReadWriteData(authExecute);
+    audit.grantReadWriteData(authExecute);
 
     // SES permissions scoped to specific identity and region
     const sesIdentityArn = `arn:aws:ses:${this.region}:${this.account}:identity/*`;
@@ -1893,6 +2060,44 @@ removalPolicy: cdk.RemovalPolicy.DESTROY,
       methods: [apigw.HttpMethod.GET],
       integration: new integrations.HttpLambdaIntegration('GetMemberProposalVoteCountsInt', getMemberProposalVoteCounts),
       authorizer: memberAuthorizer,
+    });
+
+    // ===== VAULT SERVICE ROUTES =====
+
+    // Enrollment endpoints (public - no auth required for device enrollment)
+    httpApi.addRoutes({
+      path: '/api/v1/enroll/start',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('EnrollStartInt', enrollStart),
+      // No authorizer - public endpoint for device enrollment with invitation code
+    });
+    httpApi.addRoutes({
+      path: '/api/v1/enroll/set-password',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('EnrollSetPasswordInt', enrollSetPassword),
+      // No authorizer - public endpoint, protected by enrollment session
+    });
+    httpApi.addRoutes({
+      path: '/api/v1/enroll/finalize',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('EnrollFinalizeInt', enrollFinalize),
+      // No authorizer - public endpoint, protected by enrollment session
+    });
+
+    // Action request endpoint (member auth required)
+    httpApi.addRoutes({
+      path: '/api/v1/action/request',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('ActionRequestInt', actionRequest),
+      authorizer: memberAuthorizer,
+    });
+
+    // Auth execute endpoint (action token auth via Bearer token in header)
+    httpApi.addRoutes({
+      path: '/api/v1/auth/execute',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('AuthExecuteInt', authExecute),
+      // No Cognito authorizer - uses scoped action token (Bearer) for auth
     });
 
     // API Gateway throttling (default stage)
