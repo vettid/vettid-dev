@@ -1,0 +1,805 @@
+import * as cdk from 'aws-cdk-lib';
+import { Construct } from 'constructs';
+import {
+  aws_lambda_nodejs as lambdaNode,
+  aws_lambda as lambda,
+  aws_apigatewayv2 as apigw,
+  aws_apigatewayv2_integrations as integrations,
+  aws_iam as iam,
+  aws_events as events,
+  aws_events_targets as targets_events,
+  aws_cognito as cognito,
+  aws_s3 as s3,
+} from 'aws-cdk-lib';
+import { InfrastructureStack } from './infrastructure-stack';
+
+export interface AdminStackProps extends cdk.StackProps {
+  infrastructure: InfrastructureStack;
+  httpApi: apigw.HttpApi;
+  jwtAuthorizer: apigw.IHttpRouteAuthorizer;
+  adminUserPool: cognito.UserPool;
+  memberUserPool: cognito.UserPool;
+  termsBucket: s3.Bucket;
+}
+
+/**
+ * VettID Admin Stack
+ *
+ * Contains admin functionality, proposal management, and scheduled tasks:
+ * - Admin Lambda functions
+ * - EventBridge scheduled tasks
+ * - API routes added to Core stack's API Gateway
+ *
+ * Depends on: Infrastructure Stack (for tables), Core Stack (for API Gateway)
+ */
+export class AdminStack extends cdk.Stack {
+  constructor(scope: Construct, id: string, props: AdminStackProps) {
+    super(scope, id, props);
+
+    const tables = props.infrastructure.tables;
+    const { httpApi, jwtAuthorizer, adminUserPool, memberUserPool, termsBucket } = props;
+
+    // Default environment variables for all admin functions
+    const defaultEnv = {
+      TABLE_INVITES: tables.invites.tableName,
+      TABLE_REGISTRATIONS: tables.registrations.tableName,
+      TABLE_AUDIT: tables.audit.tableName,
+      TABLE_MEMBERSHIP_TERMS: tables.membershipTerms.tableName,
+      TABLE_SUBSCRIPTIONS: tables.subscriptions.tableName,
+      TABLE_PROPOSALS: tables.proposals.tableName,
+      TABLE_VOTES: tables.votes.tableName,
+      TABLE_SUBSCRIPTION_TYPES: tables.subscriptionTypes.tableName,
+      TABLE_WAITLIST: tables.waitlist.tableName,
+    };
+
+    // ===== REGISTRATION MANAGEMENT =====
+
+    const listRegistrations = new lambdaNode.NodejsFunction(this, 'ListRegistrationsFn', {
+      entry: 'lambda/handlers/admin/listRegistrations.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: defaultEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const approveRegistration = new lambdaNode.NodejsFunction(this, 'ApproveRegistrationFn', {
+      entry: 'lambda/handlers/admin/approveRegistration.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+        USER_POOL_ID: memberUserPool.userPoolId,
+        MEMBER_GROUP: 'member',
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const rejectRegistration = new lambdaNode.NodejsFunction(this, 'RejectRegistrationFn', {
+      entry: 'lambda/handlers/admin/rejectRegistration.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: defaultEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    // ===== INVITE MANAGEMENT =====
+
+    const createInvite = new lambdaNode.NodejsFunction(this, 'CreateInviteFn', {
+      entry: 'lambda/handlers/admin/createInvite.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: defaultEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const listInvites = new lambdaNode.NodejsFunction(this, 'ListInvitesFn', {
+      entry: 'lambda/handlers/admin/listInvites.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: defaultEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const expireInvite = new lambdaNode.NodejsFunction(this, 'ExpireInviteFn', {
+      entry: 'lambda/handlers/admin/expireInvite.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: defaultEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const deleteInvite = new lambdaNode.NodejsFunction(this, 'DeleteInviteFn', {
+      entry: 'lambda/handlers/admin/deleteInvite.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: defaultEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    // ===== USER MANAGEMENT =====
+
+    const disableUser = new lambdaNode.NodejsFunction(this, 'DisableUserFn', {
+      entry: 'lambda/handlers/admin/disableUser.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+        USER_POOL_ID: memberUserPool.userPoolId,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const enableUser = new lambdaNode.NodejsFunction(this, 'EnableUserFn', {
+      entry: 'lambda/handlers/admin/enableUser.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+        USER_POOL_ID: memberUserPool.userPoolId,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const deleteUser = new lambdaNode.NodejsFunction(this, 'DeleteUserFn', {
+      entry: 'lambda/handlers/admin/deleteUser.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+        USER_POOL_ID: memberUserPool.userPoolId,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const permanentlyDeleteUser = new lambdaNode.NodejsFunction(this, 'PermanentlyDeleteUserFn', {
+      entry: 'lambda/handlers/admin/permanentlyDeleteUser.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+        USER_POOL_ID: memberUserPool.userPoolId,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    // ===== ADMIN MANAGEMENT =====
+
+    const listAdmins = new lambdaNode.NodejsFunction(this, 'ListAdminsFn', {
+      entry: 'lambda/handlers/admin/listAdmins.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+        ADMIN_USER_POOL_ID: adminUserPool.userPoolId,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const addAdmin = new lambdaNode.NodejsFunction(this, 'AddAdminFn', {
+      entry: 'lambda/handlers/admin/addAdmin.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+        ADMIN_USER_POOL_ID: adminUserPool.userPoolId,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const removeAdmin = new lambdaNode.NodejsFunction(this, 'RemoveAdminFn', {
+      entry: 'lambda/handlers/admin/removeAdmin.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+        ADMIN_USER_POOL_ID: adminUserPool.userPoolId,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const disableAdmin = new lambdaNode.NodejsFunction(this, 'DisableAdminFn', {
+      entry: 'lambda/handlers/admin/disableAdmin.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+        ADMIN_USER_POOL_ID: adminUserPool.userPoolId,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const enableAdmin = new lambdaNode.NodejsFunction(this, 'EnableAdminFn', {
+      entry: 'lambda/handlers/admin/enableAdmin.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+        ADMIN_USER_POOL_ID: adminUserPool.userPoolId,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const updateAdminType = new lambdaNode.NodejsFunction(this, 'UpdateAdminTypeFn', {
+      entry: 'lambda/handlers/admin/updateAdminType.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+        ADMIN_USER_POOL_ID: adminUserPool.userPoolId,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const resetAdminPassword = new lambdaNode.NodejsFunction(this, 'ResetAdminPasswordFn', {
+      entry: 'lambda/handlers/admin/resetAdminPassword.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+        ADMIN_USER_POOL_ID: adminUserPool.userPoolId,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    // ===== MEMBERSHIP MANAGEMENT =====
+
+    const listMembershipRequests = new lambdaNode.NodejsFunction(this, 'ListMembershipRequestsFn', {
+      entry: 'lambda/handlers/admin/listMembershipRequests.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: defaultEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const approveMembership = new lambdaNode.NodejsFunction(this, 'ApproveMembershipFn', {
+      entry: 'lambda/handlers/admin/approveMembership.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: defaultEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const denyMembership = new lambdaNode.NodejsFunction(this, 'DenyMembershipFn', {
+      entry: 'lambda/handlers/admin/denyMembership.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: defaultEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const createMembershipTerms = new lambdaNode.NodejsFunction(this, 'CreateMembershipTermsFn', {
+      entry: 'lambda/handlers/admin/createMembershipTerms.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+        TERMS_BUCKET: termsBucket.bucketName,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const getCurrentMembershipTerms = new lambdaNode.NodejsFunction(this, 'GetCurrentMembershipTermsFn', {
+      entry: 'lambda/handlers/admin/getCurrentMembershipTerms.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+        TERMS_BUCKET: termsBucket.bucketName,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const listMembershipTerms = new lambdaNode.NodejsFunction(this, 'ListMembershipTermsFn', {
+      entry: 'lambda/handlers/admin/listMembershipTerms.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+        TERMS_BUCKET: termsBucket.bucketName,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    // ===== PROPOSAL MANAGEMENT =====
+
+    const createProposal = new lambdaNode.NodejsFunction(this, 'CreateProposalFn', {
+      entry: 'lambda/handlers/admin/createProposal.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: defaultEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const listProposals = new lambdaNode.NodejsFunction(this, 'ListProposalsFn', {
+      entry: 'lambda/handlers/admin/listProposals.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: defaultEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const suspendProposal = new lambdaNode.NodejsFunction(this, 'SuspendProposalFn', {
+      entry: 'lambda/handlers/admin/suspendProposal.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: defaultEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const getProposalVoteCounts = new lambdaNode.NodejsFunction(this, 'GetProposalVoteCountsFn', {
+      entry: 'lambda/handlers/admin/getProposalVoteCounts.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: defaultEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    // ===== SUBSCRIPTION MANAGEMENT =====
+
+    const listSubscriptions = new lambdaNode.NodejsFunction(this, 'ListSubscriptionsFn', {
+      entry: 'lambda/handlers/admin/listSubscriptions.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: defaultEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const extendSubscription = new lambdaNode.NodejsFunction(this, 'ExtendSubscriptionFn', {
+      entry: 'lambda/handlers/admin/extendSubscription.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: defaultEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const reactivateSubscription = new lambdaNode.NodejsFunction(this, 'ReactivateSubscriptionFn', {
+      entry: 'lambda/handlers/admin/reactivateSubscription.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: defaultEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const createSubscriptionType = new lambdaNode.NodejsFunction(this, 'CreateSubscriptionTypeFn', {
+      entry: 'lambda/handlers/admin/createSubscriptionType.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: defaultEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const listSubscriptionTypes = new lambdaNode.NodejsFunction(this, 'ListSubscriptionTypesFn', {
+      entry: 'lambda/handlers/admin/listSubscriptionTypes.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: defaultEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const enableSubscriptionType = new lambdaNode.NodejsFunction(this, 'EnableSubscriptionTypeFn', {
+      entry: 'lambda/handlers/admin/enableSubscriptionType.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: defaultEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const disableSubscriptionType = new lambdaNode.NodejsFunction(this, 'DisableSubscriptionTypeFn', {
+      entry: 'lambda/handlers/admin/disableSubscriptionType.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: defaultEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    // ===== WAITLIST MANAGEMENT =====
+
+    const listWaitlist = new lambdaNode.NodejsFunction(this, 'ListWaitlistFn', {
+      entry: 'lambda/handlers/admin/listWaitlist.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: defaultEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const sendWaitlistInvites = new lambdaNode.NodejsFunction(this, 'SendWaitlistInvitesFn', {
+      entry: 'lambda/handlers/admin/sendWaitlistInvites.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+        SES_FROM: 'no-reply@auth.vettid.dev',
+      },
+      timeout: cdk.Duration.seconds(60),
+    });
+
+    const deleteWaitlistEntries = new lambdaNode.NodejsFunction(this, 'DeleteWaitlistEntriesFn', {
+      entry: 'lambda/handlers/admin/deleteWaitlistEntries.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: defaultEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    // ===== SCHEDULED TASKS =====
+
+    const cleanupExpiredAccounts = new lambdaNode.NodejsFunction(this, 'CleanupExpiredAccountsFn', {
+      entry: 'lambda/handlers/scheduled/cleanupExpiredAccounts.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+        USER_POOL_ID: memberUserPool.userPoolId,
+      },
+      timeout: cdk.Duration.seconds(60),
+    });
+
+    // ===== PERMISSIONS =====
+
+    // Grant table permissions
+    tables.invites.grantReadWriteData(createInvite);
+    tables.invites.grantReadData(listInvites);
+    tables.invites.grantReadWriteData(expireInvite);
+    tables.invites.grantReadWriteData(deleteInvite);
+
+    tables.registrations.grantReadWriteData(listRegistrations);
+    tables.registrations.grantReadWriteData(approveRegistration);
+    tables.registrations.grantReadWriteData(rejectRegistration);
+    tables.registrations.grantReadWriteData(disableUser);
+    tables.registrations.grantReadWriteData(deleteUser);
+    tables.registrations.grantReadWriteData(enableUser);
+    tables.registrations.grantReadWriteData(permanentlyDeleteUser);
+    tables.registrations.grantReadWriteData(cleanupExpiredAccounts);
+
+    tables.subscriptions.grantReadWriteData(permanentlyDeleteUser);
+    tables.subscriptions.grantReadWriteData(listSubscriptions);
+    tables.subscriptions.grantReadWriteData(extendSubscription);
+    tables.subscriptions.grantReadWriteData(reactivateSubscription);
+
+    tables.subscriptionTypes.grantReadWriteData(createSubscriptionType);
+    tables.subscriptionTypes.grantReadData(listSubscriptionTypes);
+    tables.subscriptionTypes.grantReadWriteData(enableSubscriptionType);
+    tables.subscriptionTypes.grantReadWriteData(disableSubscriptionType);
+
+    tables.membershipTerms.grantReadWriteData(listMembershipRequests);
+    tables.membershipTerms.grantReadWriteData(approveMembership);
+    tables.membershipTerms.grantReadWriteData(denyMembership);
+    tables.membershipTerms.grantReadWriteData(createMembershipTerms);
+    tables.membershipTerms.grantReadData(getCurrentMembershipTerms);
+    tables.membershipTerms.grantReadData(listMembershipTerms);
+
+    tables.proposals.grantReadWriteData(createProposal);
+    tables.proposals.grantReadData(listProposals);
+    tables.proposals.grantReadWriteData(suspendProposal);
+    tables.proposals.grantReadData(getProposalVoteCounts);
+
+    tables.votes.grantReadData(getProposalVoteCounts);
+
+    tables.waitlist.grantReadData(listWaitlist);
+    tables.waitlist.grantReadWriteData(sendWaitlistInvites);
+    tables.waitlist.grantReadWriteData(deleteWaitlistEntries);
+
+    tables.audit.grantReadWriteData(approveRegistration);
+    tables.audit.grantReadWriteData(rejectRegistration);
+    tables.audit.grantReadWriteData(disableUser);
+    tables.audit.grantReadWriteData(deleteUser);
+    tables.audit.grantReadWriteData(enableUser);
+    tables.audit.grantReadWriteData(permanentlyDeleteUser);
+
+    // Grant S3 permissions for membership terms
+    termsBucket.grantReadWrite(createMembershipTerms);
+    termsBucket.grantRead(getCurrentMembershipTerms);
+    termsBucket.grantRead(listMembershipTerms);
+
+    // Grant Cognito permissions
+    approveRegistration.addToRolePolicy(new iam.PolicyStatement({
+      actions: [
+        'cognito-idp:AdminCreateUser',
+        'cognito-idp:AdminGetUser',
+        'cognito-idp:AdminAddUserToGroup',
+        'cognito-idp:AdminSetUserPassword',
+      ],
+      resources: [memberUserPool.userPoolArn],
+    }));
+
+    disableUser.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['cognito-idp:AdminDisableUser'],
+      resources: [memberUserPool.userPoolArn],
+    }));
+
+    enableUser.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['cognito-idp:AdminEnableUser'],
+      resources: [memberUserPool.userPoolArn],
+    }));
+
+    deleteUser.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['cognito-idp:AdminDisableUser'],
+      resources: [memberUserPool.userPoolArn],
+    }));
+
+    permanentlyDeleteUser.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['cognito-idp:AdminDeleteUser'],
+      resources: [memberUserPool.userPoolArn],
+    }));
+
+    cleanupExpiredAccounts.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['cognito-idp:AdminDeleteUser'],
+      resources: [memberUserPool.userPoolArn],
+    }));
+
+    [listAdmins, addAdmin, removeAdmin, disableAdmin, enableAdmin, updateAdminType, resetAdminPassword].forEach(fn => {
+      fn.addToRolePolicy(new iam.PolicyStatement({
+        actions: [
+          'cognito-idp:AdminCreateUser',
+          'cognito-idp:AdminGetUser',
+          'cognito-idp:AdminDisableUser',
+          'cognito-idp:AdminEnableUser',
+          'cognito-idp:AdminDeleteUser',
+          'cognito-idp:AdminAddUserToGroup',
+          'cognito-idp:AdminRemoveUserFromGroup',
+          'cognito-idp:AdminListGroupsForUser',
+          'cognito-idp:AdminSetUserPassword',
+          'cognito-idp:AdminUpdateUserAttributes',
+          'cognito-idp:ListUsers',
+          'cognito-idp:ListUsersInGroup',
+        ],
+        resources: [adminUserPool.userPoolArn],
+      }));
+    });
+
+    // Grant SES permissions
+    const sesIdentityArn = `arn:aws:ses:${this.region}:${this.account}:identity/auth.vettid.dev`;
+    [sendWaitlistInvites].forEach(fn => {
+      fn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['ses:SendEmail', 'ses:SendTemplatedEmail'],
+        resources: [sesIdentityArn],
+      }));
+    });
+
+    // ===== API ROUTES =====
+
+    // Registration Management
+    httpApi.addRoutes({
+      path: '/admin/registrations',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('ListRegistrationsInt', listRegistrations),
+      authorizer: jwtAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/admin/registrations/{id}/approve',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('ApproveRegistrationInt', approveRegistration),
+      authorizer: jwtAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/admin/registrations/{id}/reject',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('RejectRegistrationInt', rejectRegistration),
+      authorizer: jwtAuthorizer,
+    });
+
+    // Invite Management
+    httpApi.addRoutes({
+      path: '/admin/invites',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('CreateInviteInt', createInvite),
+      authorizer: jwtAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/admin/invites',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('ListInvitesInt', listInvites),
+      authorizer: jwtAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/admin/invites/{code}/expire',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('ExpireInviteInt', expireInvite),
+      authorizer: jwtAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/admin/invites/{code}',
+      methods: [apigw.HttpMethod.DELETE],
+      integration: new integrations.HttpLambdaIntegration('DeleteInviteInt', deleteInvite),
+      authorizer: jwtAuthorizer,
+    });
+
+    // User Management
+    httpApi.addRoutes({
+      path: '/admin/users/{id}/disable',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('DisableUserInt', disableUser),
+      authorizer: jwtAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/admin/users/{id}/enable',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('EnableUserInt', enableUser),
+      authorizer: jwtAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/admin/users/{id}',
+      methods: [apigw.HttpMethod.DELETE],
+      integration: new integrations.HttpLambdaIntegration('DeleteUserInt', deleteUser),
+      authorizer: jwtAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/admin/users/{id}/permanently-delete',
+      methods: [apigw.HttpMethod.DELETE],
+      integration: new integrations.HttpLambdaIntegration('PermanentlyDeleteUserInt', permanentlyDeleteUser),
+      authorizer: jwtAuthorizer,
+    });
+
+    // Admin Management
+    httpApi.addRoutes({
+      path: '/admin/admins',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('ListAdminsInt', listAdmins),
+      authorizer: jwtAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/admin/admins',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('AddAdminInt', addAdmin),
+      authorizer: jwtAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/admin/admins/{username}',
+      methods: [apigw.HttpMethod.DELETE],
+      integration: new integrations.HttpLambdaIntegration('RemoveAdminInt', removeAdmin),
+      authorizer: jwtAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/admin/admins/{username}/disable',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('DisableAdminInt', disableAdmin),
+      authorizer: jwtAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/admin/admins/{username}/enable',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('EnableAdminInt', enableAdmin),
+      authorizer: jwtAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/admin/admins/{username}/type',
+      methods: [apigw.HttpMethod.PUT],
+      integration: new integrations.HttpLambdaIntegration('UpdateAdminTypeInt', updateAdminType),
+      authorizer: jwtAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/admin/admins/{username}/reset-password',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('ResetAdminPasswordInt', resetAdminPassword),
+      authorizer: jwtAuthorizer,
+    });
+
+    // Membership Management
+    httpApi.addRoutes({
+      path: '/admin/membership-requests',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('ListMembershipRequestsInt', listMembershipRequests),
+      authorizer: jwtAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/admin/membership-requests/{id}/approve',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('ApproveMembershipInt', approveMembership),
+      authorizer: jwtAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/admin/membership-requests/{id}/deny',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('DenyMembershipInt', denyMembership),
+      authorizer: jwtAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/admin/membership-terms',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('CreateMembershipTermsInt', createMembershipTerms),
+      authorizer: jwtAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/admin/membership-terms/current',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('GetCurrentMembershipTermsInt', getCurrentMembershipTerms),
+      authorizer: jwtAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/admin/membership-terms',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('ListMembershipTermsInt', listMembershipTerms),
+      authorizer: jwtAuthorizer,
+    });
+
+    // Proposal Management
+    httpApi.addRoutes({
+      path: '/admin/proposals',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('CreateProposalInt', createProposal),
+      authorizer: jwtAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/admin/proposals',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('ListProposalsInt', listProposals),
+      authorizer: jwtAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/admin/proposals/{id}/suspend',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('SuspendProposalInt', suspendProposal),
+      authorizer: jwtAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/admin/proposals/{id}/vote-counts',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('GetProposalVoteCountsInt', getProposalVoteCounts),
+      authorizer: jwtAuthorizer,
+    });
+
+    // Subscription Management
+    httpApi.addRoutes({
+      path: '/admin/subscriptions',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('ListSubscriptionsInt', listSubscriptions),
+      authorizer: jwtAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/admin/subscriptions/{id}/extend',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('ExtendSubscriptionInt', extendSubscription),
+      authorizer: jwtAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/admin/subscriptions/{id}/reactivate',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('ReactivateSubscriptionInt', reactivateSubscription),
+      authorizer: jwtAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/admin/subscription-types',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('CreateSubscriptionTypeInt', createSubscriptionType),
+      authorizer: jwtAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/admin/subscription-types',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('ListSubscriptionTypesInt', listSubscriptionTypes),
+      authorizer: jwtAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/admin/subscription-types/{id}/enable',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('EnableSubscriptionTypeInt', enableSubscriptionType),
+      authorizer: jwtAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/admin/subscription-types/{id}/disable',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('DisableSubscriptionTypeInt', disableSubscriptionType),
+      authorizer: jwtAuthorizer,
+    });
+
+    // Waitlist Management
+    httpApi.addRoutes({
+      path: '/admin/waitlist',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('ListWaitlistInt', listWaitlist),
+      authorizer: jwtAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/admin/waitlist/send-invites',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('SendWaitlistInvitesInt', sendWaitlistInvites),
+      authorizer: jwtAuthorizer,
+    });
+
+    httpApi.addRoutes({
+      path: '/admin/waitlist',
+      methods: [apigw.HttpMethod.DELETE],
+      integration: new integrations.HttpLambdaIntegration('DeleteWaitlistEntriesInt', deleteWaitlistEntries),
+      authorizer: jwtAuthorizer,
+    });
+
+    // ===== SCHEDULED TASKS =====
+
+    // Daily cleanup at 2 AM UTC
+    const dailyCleanupRule = new events.Rule(this, 'DailyCleanupRule', {
+      schedule: events.Schedule.cron({ minute: '0', hour: '2' }),
+      description: 'Delete soft-deleted accounts older than 30 days',
+    });
+    dailyCleanupRule.addTarget(new targets_events.LambdaFunction(cleanupExpiredAccounts));
+  }
+}

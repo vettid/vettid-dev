@@ -68,37 +68,154 @@ aws ses create-template --cli-input-json file://template-rejected.json
 
 ## Architecture
 
-### Infrastructure (CDK Stack)
+### Infrastructure (CDK Stacks)
 
-**Main Stack:** `lib/vettid-stack.ts` - Single CDK stack (`VettIdStack`) that provisions all resources:
+**Current Deployment Status:**
+- **VettID-Infrastructure** - ✅ Deployed (18 resources)
+- **VettIDStack** (Core) - ✅ Deployed (213 resources)
+- **VettID-Admin** - ❌ Code complete but not deployed (cyclic dependency during synthesis)
+- **VettID-Vault** - ❌ Code complete but not deployed (cyclic dependency during synthesis)
 
-1. **DynamoDB Tables** (PAY_PER_REQUEST, PITR enabled):
+**Note:** The application was refactored into a **4-stack architecture** to overcome CloudFormation's 500 resource per stack limit (the original monolithic stack had 507 resources). The Infrastructure and Core stacks have been successfully deployed. The Admin and Vault stacks are fully implemented but encounter a cyclic dependency error during CDK synthesis when all 4 stacks are present in bin/app.ts. This needs further investigation to resolve. For now, Admin and Vault functionality remains in the VettIDStack.
+
+The application is designed using a **4-stack architecture** to overcome CloudFormation's 500 resource per stack limit:
+
+#### 1. VettID-Infrastructure Stack (`lib/infrastructure-stack.ts`)
+**Purpose:** Database layer - DynamoDB tables only
+**Resources:** ~18 resources
+**Stack Name:** `VettID-Infrastructure`
+
+**DynamoDB Tables** (PAY_PER_REQUEST, PITR enabled):
    - `Invites` - PK: `code` (STRING)
    - `Registrations` - PK: `registration_id` (STRING), GSI: `status-index` (PK: `status`, SK: `created_at`)
    - `Audit` - PK: `id` (STRING)
+   - `MagicLinkTokens` - PK: `token_id` (STRING)
+   - `Waitlist` - PK: `email` (STRING)
+   - `MembershipTerms` - PK: `term_id` (STRING), GSI: `active-index`
+   - `Subscriptions` - PK: `subscription_id` (STRING), GSI: `user-index`
+   - `SubscriptionTypes` - PK: `type_id` (STRING)
+   - `Proposals` - PK: `proposal_id` (STRING), GSI: `status-index`, stream enabled
+   - `Votes` - PK: `vote_id` (STRING), GSI: `proposal-index`, `user-index`
+   - `Credentials` - PK: `credential_id` (STRING)
+   - `CredentialKeys` - PK: `key_id` (STRING)
+   - `TransactionKeys` - PK: `transaction_id` (STRING)
+   - `LedgerAuthTokens` - PK: `token_id` (STRING)
+   - `ActionTokens` - PK: `action_id` (STRING)
+   - `EnrollmentSessions` - PK: `session_id` (STRING)
 
-2. **Cognito:**
-   - User Pool with email sign-in, strict password policy
+**Export Strategy:** All tables are exported via CloudFormation exports and injected into dependent stacks via constructor props.
+
+#### 2. VettIDStack (Core Stack) (`lib/vettid-stack.ts`)
+**Purpose:** Core infrastructure - S3, CloudFront, Cognito, API Gateway, member Lambda functions
+**Resources:** ~213 resources
+**Stack Name:** `VettIDStack`
+**Depends on:** VettID-Infrastructure
+
+**Key Resources:**
+
+1. **S3 Buckets:**
+   - `SiteBucket` - Single bucket for all frontend content (root, admin, account, register via paths)
+   - `CloudFrontLogBucket` - CloudFront access logs
+   - `MembershipTermsBucket` - Stores membership terms documents
+
+2. **CloudFront Distributions:**
+   - `RootDist` - `vettid.dev` (root site with path-based routing)
+   - `AdminDist` - `admin.vettid.dev` (admin portal)
+   - `WwwDist` - `www.vettid.dev` (redirects to apex)
+
+3. **Cognito:**
+   - Admin User Pool (`AdminUserPool`) - For admin portal authentication
+   - Member User Pool (`MemberUserPool`) - For member portal authentication
    - Two separate app clients for RBAC:
-     - Admin app client: `admin.vettid.dev/admin.html` (for admin group)
+     - Admin app client: `admin.vettid.dev/index.html` (for admin group)
      - Member app client: `account.vettid.dev/index.html` (for member group)
    - Both use Authorization Code + PKCE (no client secret)
    - Groups: `admin`, `member`
-   - Hosted UI domain (auto-generated prefix)
+   - Hosted UI domains (auto-generated prefixes)
 
-3. **API Gateway (HTTP API):**
-   - `/register` (POST) - Public endpoint for registration submission
-   - `/admin/registrations` (GET) - List registrations (authorized)
-   - `/admin/registrations/{id}/approve` (POST) - Approve registration (authorized)
-   - `/admin/registrations/{id}/reject` (POST) - Reject registration (authorized)
-   - `/admin/invites` (POST) - Create invite code (authorized)
-   - CORS enabled for `*` (should be pinned to specific domains in production)
-   - JWT authorizer validates Cognito tokens for `/admin/*` routes
+4. **API Gateway (HTTP API):**
+   - HTTP API with two JWT authorizers (admin and member)
+   - Public routes: `/register`, `/waitlist`
+   - Member routes: `/member/*` (requires member JWT)
+   - Admin routes: `/admin/*` (requires admin JWT, handled in Admin stack)
+   - Vault routes: `/vault/*` (requires member JWT, handled in Vault stack)
+   - CORS enabled for specific domains (vettid.dev, admin.vettid.dev, etc.)
 
-4. **Lambda Functions:**
+5. **Member Lambda Functions (~30 functions):**
+   - Authentication: Custom auth challenge handlers
+   - Public: Registration submission, waitlist
+   - Member portal: PIN management, email preferences, membership requests, subscriptions, voting
+   - Stream processors: Registration and proposal streams
+   - Scheduled: Cleanup expired accounts, close expired proposals
    - Built with `NodejsFunction` (uses esbuild for bundling)
-   - Runtime: Node.js 20
-   - All handlers are in `lambda/handlers/{public|admin|streams}/`
+   - Runtime: Node.js 22
+
+**Exports:** httpApi, adminAuthorizer, memberAuthorizer, adminUserPool, memberUserPool, termsBucket
+
+#### 3. VettID-Admin Stack (`lib/admin-stack.ts`)
+**Purpose:** Admin portal Lambda functions and API routes
+**Resources:** ~80 resources (40 Lambda functions + IAM roles + permissions)
+**Stack Name:** `VettID-Admin`
+**Depends on:** VettID-Infrastructure, VettIDStack
+
+**Admin Lambda Functions (40 functions):**
+- **Registration Management:** List, approve, reject registrations
+- **Invite Management:** Create, list, expire, delete invite codes
+- **User Management:** Disable, enable, delete users; admin CRUD operations
+- **Membership Management:** Approve/deny membership requests, manage terms
+- **Proposal Management:** Create, list, suspend proposals; get vote counts
+- **Subscription Management:** List, extend, reactivate subscriptions; manage subscription types
+- **Waitlist Management:** List, send invites, delete waitlist entries
+
+**API Routes:** All `/admin/*` routes are added to the HTTP API from VettIDStack
+
+#### 4. VettID-Vault Stack (`lib/vault-stack.ts`)
+**Purpose:** Vault enrollment and authentication Lambda functions
+**Resources:** ~15 resources (5 Lambda functions + IAM roles + permissions)
+**Stack Name:** `VettID-Vault`
+**Depends on:** VettID-Infrastructure, VettIDStack
+
+**Vault Lambda Functions (5 functions):**
+- **Enrollment:** `enrollStart`, `enrollSetPassword`, `enrollFinalize`
+- **Authentication:** `actionRequest`, `authExecute`
+
+**API Routes:** All `/vault/*` routes are added to the HTTP API from VettIDStack
+
+### Stack Dependency Graph
+
+```
+VettID-Infrastructure (DynamoDB tables)
+         ↓
+    VettIDStack (Core: S3, CloudFront, Cognito, API Gateway, Member Lambdas)
+         ↓
+    ┌────┴────┐
+    ↓         ↓
+VettID-Admin  VettID-Vault
+(Admin Lambdas) (Vault Lambdas)
+```
+
+### Deployment Order
+
+**IMPORTANT:** Due to stack dependencies, stacks must be deployed in this order:
+
+1. `VettID-Infrastructure` - Deploy first (DynamoDB tables)
+2. `VettIDStack` - Deploy second (core infrastructure)
+3. `VettID-Admin` and `VettID-Vault` - Deploy last (can be deployed in parallel)
+
+**Deployment command:**
+```bash
+# Deploy all stacks (CDK will handle dependency order)
+npm run deploy
+
+# Or deploy individually in order:
+./node_modules/.bin/cdk deploy VettID-Infrastructure
+./node_modules/.bin/cdk deploy VettIDStack
+./node_modules/.bin/cdk deploy VettID-Admin VettID-Vault
+```
+
+**Note:** When synthesizing the CDK app, all 4 stacks are generated together. The Admin and Vault stacks reference resources from VettIDStack via constructor props (dependency injection pattern).
+
+### Lambda Handler Organization
 
 5. **CloudFront + S3:**
    - Five distributions with custom domains:

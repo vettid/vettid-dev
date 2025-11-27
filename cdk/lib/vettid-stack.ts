@@ -31,6 +31,14 @@ export interface VettIdStackProps extends cdk.StackProps {
 }
 
 export class VettIdStack extends cdk.Stack {
+  // Public properties for admin and vault stacks to access
+  public readonly httpApi: apigw.HttpApi;
+  public readonly adminAuthorizer: apigw.IHttpRouteAuthorizer;
+  public readonly memberAuthorizer: apigw.IHttpRouteAuthorizer;
+  public readonly adminUserPool: cognito.UserPool;
+  public readonly memberUserPool: cognito.UserPool;
+  public readonly termsBucket: s3.Bucket;
+
   constructor(scope: Construct, id: string, props: VettIdStackProps) {
     super(scope, id, props);
 
@@ -717,11 +725,6 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       environment: { ...defaultEnv, TABLE_WAITLIST: tables.waitlist.tableName },
       timeout: cdk.Duration.seconds(10),
     });
-    const listRegistrations = new lambdaNode.NodejsFunction(this, 'ListRegistrationsFn', {
-      entry: 'lambda/handlers/admin/listRegistrations.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: { ...defaultEnv, USER_POOL_ID: memberUserPool.userPoolId },
-    });
     const registrationStreamFn = new lambdaNode.NodejsFunction(this, 'RegistrationStreamFn', {
       entry: 'lambda/handlers/streams/registrationStream.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
@@ -736,105 +739,6 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
         TABLE_REGISTRATIONS: tables.registrations.tableName,
       },
       timeout: cdk.Duration.seconds(60), // Allow time to send multiple emails
-    });
-    const approveRegistration = new lambdaNode.NodejsFunction(this, 'ApproveRegistrationFn', {
-      entry: 'lambda/handlers/admin/approveRegistration.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: { ...defaultEnv, USER_POOL_ID: memberUserPool.userPoolId, MEMBER_GROUP: 'member' },
-      timeout: cdk.Duration.seconds(30), // Cognito operations can take time
-    });
-    const createInvite = new lambdaNode.NodejsFunction(this, 'CreateInviteFn', {
-      entry: 'lambda/handlers/admin/createInvite.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: defaultEnv,
-    });
-    const listInvites = new lambdaNode.NodejsFunction(this, 'ListInvitesFn', {
-      entry: 'lambda/handlers/admin/listInvites.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: defaultEnv,
-    });
-    const expireInvite = new lambdaNode.NodejsFunction(this, 'ExpireInviteFn', {
-      entry: 'lambda/handlers/admin/expireInvite.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: defaultEnv,
-    });
-    const rejectRegistration = new lambdaNode.NodejsFunction(this, 'RejectRegistrationFn', {
-      entry: 'lambda/handlers/admin/rejectRegistration.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: defaultEnv,
-    });
-    const disableUser = new lambdaNode.NodejsFunction(this, 'DisableUserFn', {
-      entry: 'lambda/handlers/admin/disableUser.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: { ...defaultEnv, USER_POOL_ID: memberUserPool.userPoolId },
-      timeout: cdk.Duration.seconds(30), // Cognito operations can take time
-    });
-    const deleteUser = new lambdaNode.NodejsFunction(this, 'DeleteUserFn', {
-      entry: 'lambda/handlers/admin/deleteUser.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: { ...defaultEnv, USER_POOL_ID: memberUserPool.userPoolId },
-      timeout: cdk.Duration.seconds(30), // Cognito operations can take time
-    });
-    const enableUser = new lambdaNode.NodejsFunction(this, 'EnableUserFn', {
-      entry: 'lambda/handlers/admin/enableUser.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: { ...defaultEnv, USER_POOL_ID: memberUserPool.userPoolId },
-      timeout: cdk.Duration.seconds(30), // Cognito operations can take time
-    });
-    const permanentlyDeleteUser = new lambdaNode.NodejsFunction(this, 'PermanentlyDeleteUserFn', {
-      entry: 'lambda/handlers/admin/permanentlyDeleteUser.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: { ...defaultEnv, USER_POOL_ID: memberUserPool.userPoolId, TABLE_SUBSCRIPTIONS: tables.subscriptions.tableName },
-      timeout: cdk.Duration.seconds(30), // Cognito operations can take time
-    });
-    const deleteInvite = new lambdaNode.NodejsFunction(this, 'DeleteInviteFn', {
-      entry: 'lambda/handlers/admin/deleteInvite.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: defaultEnv,
-    });
-    const listAdmins = new lambdaNode.NodejsFunction(this, 'ListAdminsFn', {
-      entry: 'lambda/handlers/admin/listAdmins.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: { ...defaultEnv, USER_POOL_ID: adminUserPool.userPoolId, ADMIN_GROUP: 'admin' },
-    });
-    const addAdmin = new lambdaNode.NodejsFunction(this, 'AddAdminFn', {
-      entry: 'lambda/handlers/admin/addAdmin.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: { ...defaultEnv, USER_POOL_ID: adminUserPool.userPoolId, ADMIN_GROUP: 'admin' },
-    });
-    const removeAdmin = new lambdaNode.NodejsFunction(this, 'RemoveAdminFn', {
-      entry: 'lambda/handlers/admin/removeAdmin.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: { ...defaultEnv, USER_POOL_ID: adminUserPool.userPoolId, ADMIN_GROUP: 'admin' },
-    });
-    const disableAdmin = new lambdaNode.NodejsFunction(this, 'DisableAdminFn', {
-      entry: 'lambda/handlers/admin/disableAdmin.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: { ...defaultEnv, USER_POOL_ID: adminUserPool.userPoolId },
-    });
-    const enableAdmin = new lambdaNode.NodejsFunction(this, 'EnableAdminFn', {
-      entry: 'lambda/handlers/admin/enableAdmin.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: { ...defaultEnv, USER_POOL_ID: adminUserPool.userPoolId },
-    });
-    const updateAdminType = new lambdaNode.NodejsFunction(this, 'UpdateAdminTypeFn', {
-      entry: 'lambda/handlers/admin/updateAdminType.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: { ...defaultEnv, USER_POOL_ID: adminUserPool.userPoolId },
-    });
-    const changePassword = new lambdaNode.NodejsFunction(this, 'ChangePasswordFn', {
-      entry: 'lambda/handlers/admin/changePassword.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: {
-        ...defaultEnv,
-        USER_POOL_ID: adminUserPool.userPoolId,
-        CLIENT_ID: adminAppClient.userPoolClientId
-      },
-    });
-    const resetAdminPassword = new lambdaNode.NodejsFunction(this, 'ResetAdminPasswordFn', {
-      entry: 'lambda/handlers/admin/resetAdminPassword.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: { ...defaultEnv, USER_POOL_ID: adminUserPool.userPoolId },
     });
     const cancelAccount = new lambdaNode.NodejsFunction(this, 'CancelAccountFn', {
       entry: 'lambda/handlers/member/cancelAccount.ts',
@@ -912,92 +816,6 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       runtime: lambda.Runtime.NODEJS_22_X,
       environment: defaultEnv,
     });
-    const listMembershipRequests = new lambdaNode.NodejsFunction(this, 'ListMembershipRequestsFn', {
-      entry: 'lambda/handlers/admin/listMembershipRequests.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: defaultEnv,
-    });
-    const approveMembership = new lambdaNode.NodejsFunction(this, 'ApproveMembershipFn', {
-      entry: 'lambda/handlers/admin/approveMembership.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: { ...defaultEnv, USER_POOL_ID: memberUserPool.userPoolId },
-      timeout: cdk.Duration.seconds(30), // Cognito operations can take time
-    });
-    const denyMembership = new lambdaNode.NodejsFunction(this, 'DenyMembershipFn', {
-      entry: 'lambda/handlers/admin/denyMembership.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: defaultEnv,
-    });
-    const createProposal = new lambdaNode.NodejsFunction(this, 'CreateProposalFn', {
-      entry: 'lambda/handlers/admin/createProposal.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: defaultEnv,
-    });
-    const listProposals = new lambdaNode.NodejsFunction(this, 'ListProposalsFn', {
-      entry: 'lambda/handlers/admin/listProposals.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: defaultEnv,
-    });
-    const suspendProposal = new lambdaNode.NodejsFunction(this, 'SuspendProposalFn', {
-      entry: 'lambda/handlers/admin/suspendProposal.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: defaultEnv,
-    });
-    const listSubscriptions = new lambdaNode.NodejsFunction(this, 'ListSubscriptionsFn', {
-      entry: 'lambda/handlers/admin/listSubscriptions.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: defaultEnv,
-    });
-    const extendSubscription = new lambdaNode.NodejsFunction(this, 'ExtendSubscriptionFn', {
-      entry: 'lambda/handlers/admin/extendSubscription.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: defaultEnv,
-    });
-    const reactivateSubscription = new lambdaNode.NodejsFunction(this, 'ReactivateSubscriptionFn', {
-      entry: 'lambda/handlers/admin/reactivateSubscription.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: defaultEnv,
-    });
-    const createSubscriptionType = new lambdaNode.NodejsFunction(this, 'CreateSubscriptionTypeFn', {
-      entry: 'lambda/handlers/admin/createSubscriptionType.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: defaultEnv,
-    });
-    const listSubscriptionTypes = new lambdaNode.NodejsFunction(this, 'ListSubscriptionTypesFn', {
-      entry: 'lambda/handlers/admin/listSubscriptionTypes.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: defaultEnv,
-    });
-    const enableSubscriptionType = new lambdaNode.NodejsFunction(this, 'EnableSubscriptionTypeFn', {
-      entry: 'lambda/handlers/admin/enableSubscriptionType.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: defaultEnv,
-    });
-    const disableSubscriptionType = new lambdaNode.NodejsFunction(this, 'DisableSubscriptionTypeFn', {
-      entry: 'lambda/handlers/admin/disableSubscriptionType.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: defaultEnv,
-    });
-    const listWaitlist = new lambdaNode.NodejsFunction(this, 'ListWaitlistFn', {
-      entry: 'lambda/handlers/admin/listWaitlist.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: { ...defaultEnv, TABLE_WAITLIST: tables.waitlist.tableName },
-    });
-    const sendWaitlistInvites = new lambdaNode.NodejsFunction(this, 'SendWaitlistInvitesFn', {
-      entry: 'lambda/handlers/admin/sendWaitlistInvites.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: {
-        ...defaultEnv,
-        TABLE_WAITLIST: tables.waitlist.tableName,
-        SES_FROM_EMAIL: 'noreply@vettid.dev',
-      },
-      timeout: cdk.Duration.seconds(30),
-    });
-    const deleteWaitlistEntries = new lambdaNode.NodejsFunction(this, 'DeleteWaitlistEntriesFn', {
-      entry: 'lambda/handlers/admin/deleteWaitlistEntries.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: { ...defaultEnv, TABLE_WAITLIST: tables.waitlist.tableName },
-    });
     const submitVote = new lambdaNode.NodejsFunction(this, 'SubmitVoteFn', {
       entry: 'lambda/handlers/member/submitVote.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
@@ -1028,106 +846,17 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       runtime: lambda.Runtime.NODEJS_22_X,
       environment: defaultEnv,
     });
-    const getProposalVoteCounts = new lambdaNode.NodejsFunction(this, 'GetProposalVoteCountsFn', {
-      entry: 'lambda/handlers/admin/getProposalVoteCounts.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: defaultEnv,
-    });
     const closeExpiredProposals = new lambdaNode.NodejsFunction(this, 'CloseExpiredProposalsFn', {
       entry: 'lambda/handlers/scheduled/closeExpiredProposals.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
       environment: defaultEnv,
       timeout: cdk.Duration.seconds(60), // Allow time for scanning and updating multiple proposals
     });
-    const checkSubscriptionExpiry = new lambdaNode.NodejsFunction(this, 'CheckSubscriptionExpiryFn', {
-      entry: 'lambda/handlers/admin/checkSubscriptionExpiry.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: defaultEnv,
-      timeout: cdk.Duration.seconds(60), // Allow time for processing multiple subscriptions
-    });
-    const createMembershipTerms = new lambdaNode.NodejsFunction(this, 'CreateMembershipTermsFn', {
-      entry: 'lambda/handlers/admin/createMembershipTerms.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: defaultEnv,
-      timeout: cdk.Duration.seconds(30), // PDF generation may take some time
-      bundling: {
-        nodeModules: ['pdfkit'], // Include pdfkit in bundle
-      },
-    });
-    const getCurrentMembershipTerms = new lambdaNode.NodejsFunction(this, 'GetCurrentMembershipTermsFn', {
-      entry: 'lambda/handlers/admin/getCurrentMembershipTerms.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: defaultEnv,
-    });
-    const listMembershipTerms = new lambdaNode.NodejsFunction(this, 'ListMembershipTermsFn', {
-      entry: 'lambda/handlers/admin/listMembershipTerms.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: defaultEnv,
-    });
-
-    // NOTE: Due to CloudFormation's 500 resource limit, we cannot include an automated
-    // default membership terms Lambda. Instead, use the admin portal to create terms via:
-    // https://admin.vettid.dev or POST to /admin/membership-terms with admin tables.credentials.
-    // See CLAUDE.md for details on membership terms management.
-
-    // ===== VAULT SERVICE LAMBDAS =====
-
-    // Enrollment endpoints (public - no auth required)
-    const enrollStart = new lambdaNode.NodejsFunction(this, 'EnrollStartFn', {
-      entry: 'lambda/handlers/vault/enrollStart.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: vaultEnv,
-      timeout: cdk.Duration.seconds(30), // Key generation takes time
-    });
-
-    const enrollSetPassword = new lambdaNode.NodejsFunction(this, 'EnrollSetPasswordFn', {
-      entry: 'lambda/handlers/vault/enrollSetPassword.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: vaultEnv,
-      timeout: cdk.Duration.seconds(10),
-    });
-
-    const enrollFinalize = new lambdaNode.NodejsFunction(this, 'EnrollFinalizeFn', {
-      entry: 'lambda/handlers/vault/enrollFinalize.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: vaultEnv,
-      timeout: cdk.Duration.seconds(30), // Credential creation takes time
-    });
-
-    // Action request endpoint (member auth required)
-    // Note: JWT_SIGNING_KEY should be set in the handler code itself from AWS Secrets Manager
-    // The handler has a placeholder that should be replaced with Secrets Manager lookup in production
-    const actionRequest = new lambdaNode.NodejsFunction(this, 'ActionRequestFn', {
-      entry: 'lambda/handlers/vault/actionRequest.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: vaultEnv,
-      timeout: cdk.Duration.seconds(10),
-    });
-
-    // Auth execute endpoint (action token auth - Bearer token)
-    const authExecute = new lambdaNode.NodejsFunction(this, 'AuthExecuteFn', {
-      entry: 'lambda/handlers/vault/authExecute.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: vaultEnv,
-      timeout: cdk.Duration.seconds(30), // Credential rotation takes time
-    });
 
     // Grants
     tables.invites.grantReadWriteData(submitRegistration);
-    tables.invites.grantReadWriteData(createInvite);
-    tables.invites.grantReadData(listInvites);
-    tables.invites.grantReadWriteData(expireInvite);
-    tables.invites.grantReadWriteData(deleteInvite);
     tables.registrations.grantReadWriteData(submitRegistration);
-    tables.registrations.grantReadWriteData(listRegistrations);
     tables.waitlist.grantReadWriteData(submitWaitlist);
-    tables.registrations.grantReadWriteData(approveRegistration);
-    tables.registrations.grantReadWriteData(rejectRegistration);
-    tables.registrations.grantReadWriteData(disableUser);
-    tables.registrations.grantReadWriteData(deleteUser);
-    tables.registrations.grantReadWriteData(enableUser);
-    tables.registrations.grantReadWriteData(permanentlyDeleteUser);
-    tables.subscriptions.grantReadWriteData(permanentlyDeleteUser);
     tables.registrations.grantReadWriteData(cancelAccount);
     tables.subscriptions.grantReadWriteData(cancelAccount);
     tables.registrations.grantReadWriteData(cleanupExpiredAccounts);
@@ -1143,22 +872,7 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
     tables.registrations.grantReadData(proposalStreamFn); // Get user emails
     tables.audit.grantReadData(proposalStreamFn); // Check email preferences
     tables.audit.grantReadWriteData(submitRegistration);
-    tables.audit.grantReadWriteData(approveRegistration);
-    tables.audit.grantReadWriteData(createInvite);
-    tables.audit.grantReadWriteData(listRegistrations);
     tables.audit.grantReadWriteData(registrationStreamFn);
-    tables.audit.grantReadWriteData(rejectRegistration);
-    tables.audit.grantReadWriteData(disableUser);
-    tables.audit.grantReadWriteData(deleteUser);
-    tables.audit.grantReadWriteData(enableUser);
-    tables.audit.grantReadWriteData(permanentlyDeleteUser);
-    tables.audit.grantReadWriteData(expireInvite);
-    tables.audit.grantReadWriteData(deleteInvite);
-    tables.audit.grantReadWriteData(addAdmin);
-    tables.audit.grantReadWriteData(removeAdmin);
-    tables.audit.grantReadWriteData(disableAdmin);
-    tables.audit.grantReadWriteData(enableAdmin);
-    tables.audit.grantReadWriteData(updateAdminType);
     tables.audit.grantReadWriteData(cancelAccount);
     tables.audit.grantReadWriteData(cleanupExpiredAccounts);
     tables.audit.grantReadWriteData(enablePin);
@@ -1166,19 +880,8 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
     tables.audit.grantReadWriteData(updatePin);
     tables.registrations.grantReadWriteData(requestMembership);
     tables.registrations.grantReadData(getMembershipStatus);
-    tables.registrations.grantReadData(listMembershipRequests);
-    tables.registrations.grantReadWriteData(approveMembership);
-    tables.registrations.grantReadWriteData(denyMembership);
     tables.audit.grantReadWriteData(requestMembership);
-    tables.audit.grantReadWriteData(approveMembership);
-    tables.audit.grantReadWriteData(denyMembership);
-    tables.membershipTerms.grantReadWriteData(createMembershipTerms);
-    tables.membershipTerms.grantReadData(getCurrentMembershipTerms);
-    tables.membershipTerms.grantReadData(listMembershipTerms);
     tables.membershipTerms.grantReadData(getMembershipTerms);
-    termsBucket.grantReadWrite(createMembershipTerms);
-    termsBucket.grantRead(getCurrentMembershipTerms);
-    termsBucket.grantRead(listMembershipTerms);
     termsBucket.grantRead(getMembershipTerms);
     tables.subscriptions.grantReadWriteData(createSubscription);
     tables.subscriptions.grantReadWriteData(getSubscriptionStatus);
@@ -1186,18 +889,6 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
     tables.subscriptionTypes.grantReadData(createSubscription);
     tables.audit.grantReadWriteData(createSubscription);
     tables.audit.grantReadWriteData(cancelSubscription);
-    tables.proposals.grantReadWriteData(createProposal);
-    tables.proposals.grantReadData(listProposals);
-    tables.proposals.grantReadWriteData(suspendProposal);
-    tables.audit.grantReadWriteData(createProposal);
-    tables.audit.grantReadWriteData(suspendProposal);
-    tables.subscriptions.grantReadData(listSubscriptions);
-    tables.registrations.grantReadData(listSubscriptions);
-    tables.audit.grantReadData(listSubscriptions);
-    tables.subscriptions.grantReadWriteData(extendSubscription);
-    tables.subscriptions.grantReadWriteData(reactivateSubscription);
-    tables.audit.grantReadWriteData(extendSubscription);
-    tables.audit.grantReadWriteData(reactivateSubscription);
     tables.votes.grantReadWriteData(submitVote);
     tables.proposals.grantReadData(submitVote);
     tables.registrations.grantReadData(submitVote);
@@ -1211,75 +902,16 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
     tables.proposals.grantReadData(getAllProposals);
     tables.votes.grantReadData(getMemberProposalVoteCounts);
     tables.proposals.grantReadData(getMemberProposalVoteCounts);
-    tables.votes.grantReadData(getProposalVoteCounts);
-    tables.proposals.grantReadData(getProposalVoteCounts);
     tables.proposals.grantReadWriteData(closeExpiredProposals); // Scheduled job to close expired proposals
-    tables.subscriptions.grantReadWriteData(checkSubscriptionExpiry); // For marking notifications sent
-    tables.registrations.grantReadData(checkSubscriptionExpiry); // For getting user details
-    tables.audit.grantReadWriteData(checkSubscriptionExpiry); // For checking email prefs and logging
-    checkSubscriptionExpiry.addToRolePolicy(new iam.PolicyStatement({
-      effect: iam.Effect.ALLOW,
-      actions: ['ses:SendTemplatedEmail'],
-      resources: ['*'],
-    }));
-    tables.subscriptionTypes.grantReadWriteData(createSubscriptionType);
-    tables.subscriptionTypes.grantReadData(listSubscriptionTypes);
     tables.subscriptionTypes.grantReadData(listEnabledSubscriptionTypes);
     tables.audit.grantReadData(listEnabledSubscriptionTypes);
-    tables.subscriptionTypes.grantReadWriteData(enableSubscriptionType);
-    tables.subscriptionTypes.grantReadWriteData(disableSubscriptionType);
-    tables.audit.grantReadWriteData(createSubscriptionType);
-    tables.audit.grantReadWriteData(enableSubscriptionType);
-    tables.audit.grantReadWriteData(disableSubscriptionType);
-    tables.waitlist.grantReadData(listWaitlist);
-    tables.waitlist.grantReadWriteData(sendWaitlistInvites);
-    tables.waitlist.grantReadWriteData(deleteWaitlistEntries);
-    tables.invites.grantReadWriteData(sendWaitlistInvites);
-    tables.audit.grantReadWriteData(sendWaitlistInvites);
-    tables.audit.grantReadWriteData(deleteWaitlistEntries);
-
-    // ===== VAULT SERVICE GRANTS =====
-    // enrollStart grants
-    tables.invites.grantReadWriteData(enrollStart);
-    tables.enrollmentSessions.grantReadWriteData(enrollStart);
-    tables.transactionKeys.grantReadWriteData(enrollStart);
-    tables.audit.grantReadWriteData(enrollStart);
-
-    // enrollSetPassword grants
-    tables.enrollmentSessions.grantReadWriteData(enrollSetPassword);
-    tables.transactionKeys.grantReadWriteData(enrollSetPassword);
-    tables.audit.grantReadWriteData(enrollSetPassword);
-
-    // enrollFinalize grants
-    tables.enrollmentSessions.grantReadWriteData(enrollFinalize);
-    tables.invites.grantReadWriteData(enrollFinalize);
-    tables.credentials.grantReadWriteData(enrollFinalize);
-    tables.credentialKeys.grantReadWriteData(enrollFinalize);
-    tables.ledgerAuthTokens.grantReadWriteData(enrollFinalize);
-    tables.transactionKeys.grantReadData(enrollFinalize);
-    tables.audit.grantReadWriteData(enrollFinalize);
-
-    // actionRequest grants
-    tables.credentials.grantReadData(actionRequest);
-    tables.ledgerAuthTokens.grantReadData(actionRequest);
-    tables.transactionKeys.grantReadData(actionRequest);
-    tables.actionTokens.grantReadWriteData(actionRequest);
-    tables.audit.grantReadWriteData(actionRequest);
-
-    // authExecute grants
-    tables.actionTokens.grantReadWriteData(authExecute);
-    tables.credentials.grantReadWriteData(authExecute);
-    tables.credentialKeys.grantReadWriteData(authExecute);
-    tables.transactionKeys.grantReadWriteData(authExecute);
-    tables.ledgerAuthTokens.grantReadWriteData(authExecute);
-    tables.audit.grantReadWriteData(authExecute);
 
     // SES permissions scoped to specific identity and region
     const sesIdentityArn = `arn:aws:ses:${this.region}:${this.account}:identity/*`;
     const sesConfigSetArn = `arn:aws:ses:${this.region}:${this.account}:configuration-set/*`;
     const sesTemplateArn = `arn:aws:ses:${this.region}:${this.account}:template/*`;
 
-    [submitRegistration, listRegistrations, approveRegistration, createInvite, registrationStreamFn, sendWaitlistInvites].forEach((fn) => {
+    [submitRegistration, registrationStreamFn].forEach((fn) => {
       fn.addToRolePolicy(new iam.PolicyStatement({
         actions: ['ses:SendTemplatedEmail', 'ses:SendEmail'],
         resources: [sesIdentityArn, sesTemplateArn, sesConfigSetArn]
@@ -1309,45 +941,9 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
         resources: ['*'], // VerifyEmailIdentity doesn't support resource-level permissions
       }),
     );
-    approveRegistration.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ['cognito-idp:AdminCreateUser', 'cognito-idp:AdminAddUserToGroup', 'cognito-idp:AdminGetUser', 'cognito-idp:AdminSetUserPassword'],
-        resources: [memberUserPoolArn],
-      }),
-    );
-    listRegistrations.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ['cognito-idp:AdminGetUser', 'cognito-idp:AdminListGroupsForUser'],
-        resources: [memberUserPoolArn],
-      }),
-    );
     requestMembership.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ['cognito-idp:AdminAddUserToGroup', 'cognito-idp:AdminGetUser'],
-        resources: [memberUserPoolArn],
-      }),
-    );
-    approveMembership.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ['cognito-idp:AdminAddUserToGroup'],
-        resources: [memberUserPoolArn],
-      }),
-    );
-    disableUser.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ['cognito-idp:AdminDisableUser', 'cognito-idp:AdminGetUser'],
-        resources: [memberUserPoolArn],
-      }),
-    );
-    deleteUser.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ['cognito-idp:AdminDeleteUser', 'cognito-idp:AdminDisableUser', 'cognito-idp:AdminGetUser'],
-        resources: [memberUserPoolArn],
-      }),
-    );
-    enableUser.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ['cognito-idp:AdminEnableUser', 'cognito-idp:AdminGetUser'],
         resources: [memberUserPoolArn],
       }),
     );
@@ -1361,66 +957,6 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       new iam.PolicyStatement({
         actions: ['cognito-idp:AdminDeleteUser'],
         resources: [memberUserPoolArn],
-      }),
-    );
-    permanentlyDeleteUser.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ['cognito-idp:AdminDeleteUser', 'cognito-idp:AdminGetUser'],
-        resources: [memberUserPoolArn],
-      }),
-    );
-    listAdmins.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ['cognito-idp:ListUsersInGroup'],
-        resources: [adminUserPoolArn],
-      }),
-    );
-    addAdmin.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ['cognito-idp:AdminCreateUser', 'cognito-idp:AdminAddUserToGroup', 'cognito-idp:AdminGetUser'],
-        resources: [adminUserPoolArn],
-      }),
-    );
-    removeAdmin.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ['cognito-idp:AdminRemoveUserFromGroup', 'cognito-idp:AdminGetUser', 'cognito-idp:AdminDeleteUser'],
-        resources: [adminUserPoolArn],
-      }),
-    );
-    disableAdmin.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ['cognito-idp:AdminDisableUser', 'cognito-idp:AdminGetUser'],
-        resources: [adminUserPoolArn],
-      }),
-    );
-    enableAdmin.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ['cognito-idp:AdminEnableUser', 'cognito-idp:AdminGetUser'],
-        resources: [adminUserPoolArn],
-      }),
-    );
-    updateAdminType.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ['cognito-idp:AdminUpdateUserAttributes', 'cognito-idp:AdminGetUser'],
-        resources: [adminUserPoolArn],
-      }),
-    );
-    changePassword.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ['cognito-idp:AdminInitiateAuth'],
-        resources: [adminUserPoolArn],
-      }),
-    );
-    resetAdminPassword.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ['cognito-idp:AdminSetUserPassword', 'cognito-idp:AdminGetUser'],
-        resources: [adminUserPoolArn],
-      }),
-    );
-    resetAdminPassword.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ['ses:SendEmail'],
-        resources: [sesIdentityArn],
       }),
     );
 
@@ -1489,120 +1025,6 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       integration: new integrations.HttpLambdaIntegration('SubmitWaitlistInt', submitWaitlist),
     });
 
-    httpApi.addRoutes({
-      path: '/admin/registrations',
-      methods: [apigw.HttpMethod.GET],
-      integration: new integrations.HttpLambdaIntegration('ListRegsInt', listRegistrations),
-      authorizer: adminAuthorizer,
-    });
-    httpApi.addRoutes({
-      path: '/admin/registrations/{id}/approve',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('ApproveRegInt', approveRegistration),
-      authorizer: adminAuthorizer,
-    });
-    httpApi.addRoutes({
-      path: '/admin/registrations/{id}/reject',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('RejectRegInt', rejectRegistration),
-      authorizer: adminAuthorizer,
-    });
-    httpApi.addRoutes({
-      path: '/admin/invites',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('CreateInviteInt', createInvite),
-      authorizer: adminAuthorizer,
-    });
-    httpApi.addRoutes({
-      path: '/admin/invites',
-      methods: [apigw.HttpMethod.GET],
-      integration: new integrations.HttpLambdaIntegration('ListInvitesInt', listInvites),
-      authorizer: adminAuthorizer,
-    });
-    httpApi.addRoutes({
-      path: '/admin/invites/{code}/expire',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('ExpireInviteInt', expireInvite),
-      authorizer: adminAuthorizer,
-    });
-    httpApi.addRoutes({
-      path: '/admin/invites/{code}',
-      methods: [apigw.HttpMethod.DELETE],
-      integration: new integrations.HttpLambdaIntegration('DeleteInviteInt', deleteInvite),
-      authorizer: adminAuthorizer,
-    });
-    httpApi.addRoutes({
-      path: '/admin/users/{id}/disable',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('DisableUserInt', disableUser),
-      authorizer: adminAuthorizer,
-    });
-    httpApi.addRoutes({
-      path: '/admin/users/{id}',
-      methods: [apigw.HttpMethod.DELETE],
-      integration: new integrations.HttpLambdaIntegration('DeleteUserInt', deleteUser),
-      authorizer: adminAuthorizer,
-    });
-    httpApi.addRoutes({
-      path: '/admin/users/{id}/enable',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('EnableUserInt', enableUser),
-      authorizer: adminAuthorizer,
-    });
-    httpApi.addRoutes({
-      path: '/admin/users/{id}/permanently-delete',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('PermanentlyDeleteUserInt', permanentlyDeleteUser),
-      authorizer: adminAuthorizer,
-    });
-    httpApi.addRoutes({
-      path: '/admin/admins',
-      methods: [apigw.HttpMethod.GET],
-      integration: new integrations.HttpLambdaIntegration('ListAdminsInt', listAdmins),
-      authorizer: adminAuthorizer,
-    });
-    httpApi.addRoutes({
-      path: '/admin/admins',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('AddAdminInt', addAdmin),
-      authorizer: adminAuthorizer,
-    });
-    httpApi.addRoutes({
-      path: '/admin/admins/{email}',
-      methods: [apigw.HttpMethod.DELETE],
-      integration: new integrations.HttpLambdaIntegration('RemoveAdminInt', removeAdmin),
-      authorizer: adminAuthorizer,
-    });
-    httpApi.addRoutes({
-      path: '/admin/admins/{email}/disable',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('DisableAdminInt', disableAdmin),
-      authorizer: adminAuthorizer,
-    });
-    httpApi.addRoutes({
-      path: '/admin/admins/{email}/enable',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('EnableAdminInt', enableAdmin),
-      authorizer: adminAuthorizer,
-    });
-    httpApi.addRoutes({
-      path: '/admin/admins/{email}/type',
-      methods: [apigw.HttpMethod.PUT],
-      integration: new integrations.HttpLambdaIntegration('UpdateAdminTypeInt', updateAdminType),
-      authorizer: adminAuthorizer,
-    });
-    httpApi.addRoutes({
-      path: '/admin/change-password',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('ChangePasswordInt', changePassword),
-      authorizer: adminAuthorizer,
-    });
-    httpApi.addRoutes({
-      path: '/admin/admins/{email}/reset-password',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('ResetAdminPasswordInt', resetAdminPassword),
-      authorizer: adminAuthorizer,
-    });
     httpApi.addRoutes({
       path: '/account/cancel',
       methods: [apigw.HttpMethod.POST],
@@ -1688,132 +1110,6 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       authorizer: memberAuthorizer,
     });
     httpApi.addRoutes({
-      path: '/admin/memberships',
-      methods: [apigw.HttpMethod.GET],
-      integration: new integrations.HttpLambdaIntegration('ListMembershipRequestsInt', listMembershipRequests),
-      authorizer: adminAuthorizer,
-    });
-    httpApi.addRoutes({
-      path: '/admin/memberships/{id}/approve',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('ApproveMembershipInt', approveMembership),
-      authorizer: adminAuthorizer,
-    });
-    httpApi.addRoutes({
-      path: '/admin/memberships/{id}/deny',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('DenyMembershipInt', denyMembership),
-      authorizer: adminAuthorizer,
-    });
-    httpApi.addRoutes({
-      path: '/admin/membership-terms',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('CreateMembershipTermsInt', createMembershipTerms),
-      authorizer: adminAuthorizer,
-    });
-    httpApi.addRoutes({
-      path: '/admin/membership-terms/current',
-      methods: [apigw.HttpMethod.GET],
-      integration: new integrations.HttpLambdaIntegration('GetCurrentMembershipTermsInt', getCurrentMembershipTerms),
-      authorizer: adminAuthorizer,
-    });
-    httpApi.addRoutes({
-      path: '/admin/membership-terms',
-      methods: [apigw.HttpMethod.GET],
-      integration: new integrations.HttpLambdaIntegration('ListMembershipTermsInt', listMembershipTerms),
-      authorizer: adminAuthorizer,
-    });
-    httpApi.addRoutes({
-      path: '/admin/proposals',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('CreateProposalInt', createProposal),
-      authorizer: adminAuthorizer,
-    });
-    httpApi.addRoutes({
-      path: '/admin/proposals',
-      methods: [apigw.HttpMethod.GET],
-      integration: new integrations.HttpLambdaIntegration('ListProposalsInt', listProposals),
-      authorizer: adminAuthorizer,
-    });
-    httpApi.addRoutes({
-      path: '/admin/proposals/{proposal_id}/suspend',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('SuspendProposalInt', suspendProposal),
-      authorizer: adminAuthorizer,
-    });
-    httpApi.addRoutes({
-      path: '/admin/proposals/{proposal_id}/votes',
-      methods: [apigw.HttpMethod.GET],
-      integration: new integrations.HttpLambdaIntegration('GetProposalVoteCountsInt', getProposalVoteCounts),
-      authorizer: adminAuthorizer,
-    });
-    httpApi.addRoutes({
-      path: '/admin/subscriptions',
-      methods: [apigw.HttpMethod.GET],
-      integration: new integrations.HttpLambdaIntegration('ListSubscriptionsInt', listSubscriptions),
-      authorizer: adminAuthorizer,
-    });
-    httpApi.addRoutes({
-      path: '/admin/subscription-types',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('CreateSubscriptionTypeInt', createSubscriptionType),
-      authorizer: adminAuthorizer,
-    });
-    httpApi.addRoutes({
-      path: '/admin/subscription-types',
-      methods: [apigw.HttpMethod.GET],
-      integration: new integrations.HttpLambdaIntegration('ListSubscriptionTypesInt', listSubscriptionTypes),
-      authorizer: adminAuthorizer,
-    });
-    httpApi.addRoutes({
-      path: '/admin/subscription-types/{subscription_type_id}/enable',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('EnableSubscriptionTypeInt', enableSubscriptionType),
-      authorizer: adminAuthorizer,
-    });
-    httpApi.addRoutes({
-      path: '/admin/subscription-types/{subscription_type_id}/disable',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('DisableSubscriptionTypeInt', disableSubscriptionType),
-      authorizer: adminAuthorizer,
-    });
-    httpApi.addRoutes({
-      path: '/admin/subscriptions/bulk-extend',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('BulkExtendSubscriptionsInt', extendSubscription),
-      authorizer: adminAuthorizer,
-    });
-    httpApi.addRoutes({
-      path: '/admin/subscriptions/{user_guid}/extend',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('ExtendSubscriptionInt', extendSubscription),
-      authorizer: adminAuthorizer,
-    });
-    httpApi.addRoutes({
-      path: '/admin/subscriptions/{user_guid}/reactivate',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('ReactivateSubscriptionInt', reactivateSubscription),
-      authorizer: adminAuthorizer,
-    });
-    httpApi.addRoutes({
-      path: '/admin/waitlist',
-      methods: [apigw.HttpMethod.GET],
-      integration: new integrations.HttpLambdaIntegration('ListWaitlistInt', listWaitlist),
-      authorizer: adminAuthorizer,
-    });
-    httpApi.addRoutes({
-      path: '/admin/waitlist/send-invites',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('SendWaitlistInvitesInt', sendWaitlistInvites),
-      authorizer: adminAuthorizer,
-    });
-    httpApi.addRoutes({
-      path: '/admin/waitlist/delete',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('DeleteWaitlistEntriesInt', deleteWaitlistEntries),
-      authorizer: adminAuthorizer,
-    });
-    httpApi.addRoutes({
       path: '/votes',
       methods: [apigw.HttpMethod.POST],
       integration: new integrations.HttpLambdaIntegration('SubmitVoteInt', submitVote),
@@ -1850,44 +1146,6 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       authorizer: memberAuthorizer,
     });
 
-    // ===== VAULT SERVICE ROUTES =====
-
-    // Enrollment endpoints (public - no auth required for device enrollment)
-    httpApi.addRoutes({
-      path: '/api/v1/enroll/start',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('EnrollStartInt', enrollStart),
-      // No authorizer - public endpoint for device enrollment with invitation code
-    });
-    httpApi.addRoutes({
-      path: '/api/v1/enroll/set-password',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('EnrollSetPasswordInt', enrollSetPassword),
-      // No authorizer - public endpoint, protected by enrollment session
-    });
-    httpApi.addRoutes({
-      path: '/api/v1/enroll/finalize',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('EnrollFinalizeInt', enrollFinalize),
-      // No authorizer - public endpoint, protected by enrollment session
-    });
-
-    // Action request endpoint (member auth required)
-    httpApi.addRoutes({
-      path: '/api/v1/action/request',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('ActionRequestInt', actionRequest),
-      authorizer: memberAuthorizer,
-    });
-
-    // Auth execute endpoint (action token auth via Bearer token in header)
-    httpApi.addRoutes({
-      path: '/api/v1/auth/execute',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('AuthExecuteInt', authExecute),
-      // No Cognito authorizer - uses scoped action token (Bearer) for auth
-    });
-
     // API Gateway throttling (default stage)
     // Note: HTTP API v2 has account-level throttling by default (10,000 RPS burst, 5,000 RPS steady)
     // Additional per-route throttling can be configured via CfnStage
@@ -1918,19 +1176,6 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       schedule: events.Schedule.rate(cdk.Duration.minutes(15)),
     });
     closeProposalsRule.addTarget(new targets_events.LambdaFunction(closeExpiredProposals));
-
-    // EventBridge scheduled rule to check for subscriptions expiring in 48 hours - runs daily at 9 AM UTC
-    const checkExpiryRule = new events.Rule(this, 'CheckSubscriptionExpiryRule', {
-      description: 'Send notifications for subscriptions expiring in 48 hours',
-      schedule: events.Schedule.cron({
-        minute: '0',
-        hour: '9', // 9 AM UTC
-        day: '*',
-        month: '*',
-        year: '*'
-      }),
-    });
-    checkExpiryRule.addTarget(new targets_events.LambdaFunction(checkSubscriptionExpiry));
 
     // SNS Topic for security alerts
     const securityAlertTopic = new sns.Topic(this, 'SecurityAlertTopic', {
@@ -2044,6 +1289,14 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
     new cdk.CfnOutput(this, 'OutRegisterUrl', { value: 'https://vettid.dev/register' });
     new cdk.CfnOutput(this, 'OutAccountUrl', { value: 'https://vettid.dev/account' });
     new cdk.CfnOutput(this, 'OutAdminUrl', { value: 'https://admin.vettid.dev' });
+
+    // Assign public properties for admin and vault stacks
+    this.httpApi = httpApi;
+    this.adminAuthorizer = adminAuthorizer;
+    this.memberAuthorizer = memberAuthorizer;
+    this.adminUserPool = adminUserPool;
+    this.memberUserPool = memberUserPool;
+    this.termsBucket = termsBucket;
   }
 }
 
