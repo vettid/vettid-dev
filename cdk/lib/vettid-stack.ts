@@ -23,6 +23,7 @@ import {
   aws_sns as sns,
   aws_events as events,
   aws_events_targets as targets_events,
+  custom_resources as cr,
 } from 'aws-cdk-lib';
 export class VettIdStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -1280,6 +1281,37 @@ removalPolicy: cdk.RemovalPolicy.DESTROY,
       entry: 'lambda/handlers/admin/listMembershipTerms.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
       environment: defaultEnv,
+    });
+
+    // Custom resource to ensure default membership terms exist
+    const ensureDefaultMembershipTerms = new lambdaNode.NodejsFunction(this, 'EnsureDefaultMembershipTermsFn', {
+      entry: 'lambda/handlers/custom/ensureDefaultMembershipTerms.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      timeout: cdk.Duration.minutes(2), // PDF generation may take time
+      environment: {
+        TABLE_MEMBERSHIP_TERMS: membershipTerms.tableName,
+        TERMS_BUCKET: termsBucket.bucketName,
+      },
+    });
+
+    // Grant permissions for custom resource
+    membershipTerms.grantReadWriteData(ensureDefaultMembershipTerms);
+    termsBucket.grantReadWrite(ensureDefaultMembershipTerms);
+
+    // Create custom resource provider
+    const defaultTermsProvider = new cr.Provider(this, 'DefaultMembershipTermsProvider', {
+      onEventHandler: ensureDefaultMembershipTerms,
+    });
+
+    // Trigger custom resource on stack create/update
+    new cdk.CustomResource(this, 'DefaultMembershipTermsResource', {
+      serviceToken: defaultTermsProvider.serviceToken,
+      properties: {
+        TableName: membershipTerms.tableName,
+        BucketName: termsBucket.bucketName,
+        // Update this timestamp to re-trigger the custom resource if needed
+        Timestamp: new Date().toISOString(),
+      },
     });
 
     // ===== VAULT SERVICE LAMBDAS =====

@@ -78,6 +78,16 @@ async function generateTermsPDF(termsText: string, versionId: string): Promise<B
   });
 }
 
+/**
+ * Creates a new version of membership terms and marks it as current.
+ *
+ * IMPORTANT SAFEGUARDS:
+ * - Membership terms are NEVER deleted - all versions are preserved
+ * - When a new version is created, the previous current version is marked as not current
+ * - The new version automatically becomes current
+ * - A custom resource ensures at least one current version always exists on stack deployment
+ * - There is NO delete endpoint - terms can only be created and superseded
+ */
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   // Validate admin group membership
   const authError = requireAdminGroup(event);

@@ -284,6 +284,41 @@ The config is frozen with `Object.freeze()` to prevent XSS modification at runti
 
 Templates must be created manually via AWS CLI or console.
 
+### Membership Terms Management
+
+**CRITICAL: Membership terms are permanently preserved**
+
+VettID implements strict safeguards to ensure membership terms are always available:
+
+**Safeguards:**
+1. **Never deleted** - All versions are permanently preserved in DynamoDB and S3
+2. **No delete endpoint** - There is NO API endpoint to delete membership terms
+3. **Always one current version** - A CDK custom resource ensures at least one current version exists on stack deployment
+4. **Automatic versioning** - When a new version is created, the old version is automatically archived (marked as `is_current = false`)
+
+**How it works:**
+- Admin creates new terms via `/admin/membership-terms` (POST)
+- New version is automatically marked as `is_current = true`
+- Previous current version is automatically marked as `is_current = false` (archived)
+- All versions are preserved for audit trail and reference
+- Users see only the current version via `/account/membership/terms` (GET)
+- Admins can view all versions via `/admin/membership-terms` (GET)
+
+**Default terms:**
+- On first deployment, a custom resource Lambda (`ensureDefaultMembershipTerms.ts`) runs
+- If no current terms exist, it creates default cooperative membership terms
+- This ensures users can always access and accept terms
+
+**To create new membership terms:**
+```bash
+# Via admin portal at https://admin.vettid.dev
+# Or via API:
+curl -X POST https://your-api.execute-api.region.amazonaws.com/admin/membership-terms \
+  -H "Authorization: Bearer <ADMIN_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"terms_text": "Your new terms text here..."}'
+```
+
 ## Development Notes
 
 - Lambda handlers use `NodejsFunction` construct which bundles with esbuild automatically
