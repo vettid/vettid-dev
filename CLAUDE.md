@@ -318,7 +318,7 @@ Templates must be created manually via AWS CLI or console.
 
 **Separate app clients for RBAC:**
 - Admin portal (`admin.vettid.dev`) uses `AdminWebClient`
-  - Callback URL: `https://admin.vettid.dev/admin.html`
+  - Callback URL: `https://admin.vettid.dev/index.html`
   - Intended for users in `admin` group
 - Member portal (`account.vettid.dev`) uses `MemberWebClient`
   - Callback URL: `https://account.vettid.dev/index.html`
@@ -348,3 +348,33 @@ After deployment, CDK outputs provide:
 - `CertValidationStatus` - ACM certificate status
 
 Use these values to configure frontends. Cognito callback URLs are pre-configured in the stack.
+
+## Testing Notes
+
+### Cognito Callback URL Configuration
+
+**IMPORTANT:** The test harness may modify Cognito app client callback URLs during testing. After running tests, verify and restore the correct callback URLs:
+
+**Admin Portal:**
+```bash
+aws cognito-idp update-user-pool-client \
+  --user-pool-id us-east-1_dL1z9ZjcC \
+  --client-id 4cesvt13gboup14elsi90fiete \
+  --callback-urls https://admin.vettid.dev/index.html \
+  --logout-urls https://admin.vettid.dev/index.html \
+  --allowed-o-auth-flows code \
+  --allowed-o-auth-scopes email openid profile \
+  --allowed-o-auth-flows-user-pool-client \
+  --supported-identity-providers COGNITO
+```
+
+**Symptoms of incorrect callback URL:**
+- Error: "Required String parameter 'redirect_uri' is not present"
+- Error: "An error was encountered with the requested page" on Cognito login
+- Unable to sign in to admin or member portals
+
+**Correct callback URLs:**
+- Admin: `https://admin.vettid.dev/index.html` (NOT callback.html or admin.html)
+- Member: `https://account.vettid.dev/index.html`
+
+**For test harness maintainers:** Please do not modify Cognito callback URLs during testing, or restore them after test completion.
