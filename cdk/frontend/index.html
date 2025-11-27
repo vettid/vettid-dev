@@ -425,6 +425,43 @@
     text-decoration: underline;
   }
 
+  /* Development Banner */
+  .dev-banner {
+    position: fixed;
+    top: 72px;
+    left: 0;
+    right: 0;
+    background: linear-gradient(135deg, rgba(255,193,37,0.15) 0%, rgba(255,193,37,0.08) 100%);
+    border-bottom: 2px solid rgba(255,193,37,0.3);
+    padding: 8px 24px;
+    text-align: center;
+    z-index: 99;
+    backdrop-filter: blur(10px);
+  }
+
+  .dev-banner p {
+    margin: 0;
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--accent);
+    letter-spacing: 0.5px;
+  }
+
+  .dev-banner a {
+    color: #fff;
+    text-decoration: underline;
+    font-weight: 700;
+  }
+
+  .dev-banner a:hover {
+    color: var(--accent);
+  }
+
+  /* Adjust hero padding to account for dev banner */
+  body:has(.dev-banner) .hero {
+    padding-top: 160px;
+  }
+
   /* Responsive */
   @media (max-width: 768px) {
     .hero h1 { font-size: 2.5rem; }
@@ -432,10 +469,25 @@
     .header-logo span { display: none; }
     .features h2, .how-it-works h2, .cooperative h2 { font-size: 2rem; }
     .tower-bg { display: none; }
+    .dev-banner {
+      top: 64px;
+      padding: 6px 16px;
+    }
+    .dev-banner p {
+      font-size: 0.8rem;
+    }
+    body:has(.dev-banner) .hero {
+      padding-top: 140px;
+    }
   }
 </style>
 </head>
 <body>
+
+<!-- Development Site Banner -->
+<div class="dev-banner">
+  <p>⚙️ Development Site - Testing environment for <a href="https://www.vettid.org" target="_blank" rel="noopener noreferrer">VettID.org</a></p>
+</div>
 
 <!-- Header -->
 <header>
