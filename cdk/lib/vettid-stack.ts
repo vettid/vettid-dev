@@ -24,13 +24,58 @@ import {
   aws_events as events,
   aws_events_targets as targets_events,
 } from 'aws-cdk-lib';
+import { InfrastructureStack } from './infrastructure-stack';
+
+export interface VettIdStackProps extends cdk.StackProps {
+  infrastructure: InfrastructureStack;
+}
+
 export class VettIdStack extends cdk.Stack {
-  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+  constructor(scope: Construct, id: string, props: VettIdStackProps) {
     super(scope, id, props);
 
-    
+    // Import tables from infrastructure stack
+    const tables = props.infrastructure.tables;
 
+    // ===== S3 BUCKETS =====
 
+    // S3 bucket for CloudFront access logs with 90-day retention
+    const logBucket = new s3.Bucket(this, 'CloudFrontLogBucket', {
+      blockPublicAccess: new s3.BlockPublicAccess({
+        blockPublicAcls: false,
+        blockPublicPolicy: true,
+        ignorePublicAcls: false,
+        restrictPublicBuckets: true,
+      }),
+      objectOwnership: s3.ObjectOwnership.BUCKET_OWNER_PREFERRED,
+      lifecycleRules: [
+        {
+          id: 'DeleteOldLogs',
+          enabled: true,
+          expiration: cdk.Duration.days(90),
+        },
+      ],
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: true,
+    });
+
+    // Main site bucket (CloudFront origin)
+    const siteBucket = new s3.Bucket(this, 'SiteBucket', {
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      versioned: true,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: true,
+    });
+
+    // S3 bucket for membership terms PDFs
+    const termsBucket = new s3.Bucket(this, 'MembershipTermsBucket', {
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      versioned: true,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: true,
+    });
 
 // CloudFront Function: redirect www.vettid.dev -> https://vettid.dev (preserve path and query)
 const wwwRedirectFn = new cloudfront.Function(this, 'WwwRedirectFn', {
@@ -133,32 +178,7 @@ const cert = new acm.Certificate(this, 'VettIdCert2025', {
   validation: acm.CertificateValidation.fromDns(zone),
 });
 
-// S3 bucket for CloudFront access logs with 90-day retention
-// CloudFront requires ACL access to write logs
-const logBucket = new s3.Bucket(this, 'CloudFrontLogBucket', {
-  blockPublicAccess: new s3.BlockPublicAccess({
-    blockPublicAcls: false,
-    blockPublicPolicy: true,
-    ignorePublicAcls: false,
-    restrictPublicBuckets: true,
-  }),
-  objectOwnership: s3.ObjectOwnership.BUCKET_OWNER_PREFERRED,
-  lifecycleRules: [
-    {
-      id: 'DeleteOldLogs',
-      enabled: true,
-      expiration: cdk.Duration.days(90), // Increased from 30 to 90 days for better forensics and compliance
-    },
-  ],
-  removalPolicy: cdk.RemovalPolicy.DESTROY,
-  autoDeleteObjects: true,
-});
-
-// Single site bucket for all content (vettid.dev)
-// Files will be organized by path: /register/*, /account/*, /admin/*
-const siteBucket = new s3.Bucket(this, 'SiteBucket', {
-  blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-});
+// Use S3 buckets from infrastructure stack
 const siteOrigin = origins.S3BucketOrigin.withOriginAccessControl(siteBucket);
 const adminOrigin = origins.S3BucketOrigin.withOriginAccessControl(siteBucket, {
   originPath: '/admin',
@@ -407,248 +427,11 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
   },
 });
 
-// DynamoDB tables
-    const invites = new dynamodb.Table(this, 'Invites', {
-      partitionKey: { name: 'code', type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-removalPolicy: cdk.RemovalPolicy.DESTROY,
-    });
-    
-// Enable PITR via L1 for invites
-(invites.node.defaultChild as dynamodb.CfnTable).pointInTimeRecoverySpecification = {
-  pointInTimeRecoveryEnabled: true,
-};
-const registrations = new dynamodb.Table(this, 'Registrations', {
-      partitionKey: { name: 'registration_id', type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-stream: dynamodb.StreamViewType.NEW_AND_OLD_IMAGES,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-    });
-    
-// Enable PITR via L1 for registrations
-(registrations.node.defaultChild as dynamodb.CfnTable).pointInTimeRecoverySpecification = {
-  pointInTimeRecoveryEnabled: true,
-};
-registrations.addGlobalSecondaryIndex({
-      indexName: 'status-index',
-      partitionKey: { name: 'status', type: dynamodb.AttributeType.STRING },
-      sortKey: { name: 'created_at', type: dynamodb.AttributeType.STRING },
-      projectionType: dynamodb.ProjectionType.ALL,
-    });
-    registrations.addGlobalSecondaryIndex({
-      indexName: 'email-index',
-      partitionKey: { name: 'email', type: dynamodb.AttributeType.STRING },
-      projectionType: dynamodb.ProjectionType.ALL,
-    });
-    const audit = new dynamodb.Table(this, 'Audit', {
-      partitionKey: { name: 'id', type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-removalPolicy: cdk.RemovalPolicy.DESTROY,
-    });
 
-    // Waitlist table for managing waitlist signups
-    const waitlist = new dynamodb.Table(this, 'Waitlist', {
-      partitionKey: { name: 'waitlist_id', type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-      pointInTimeRecovery: true,
-    });
+    // DynamoDB tables and S3 buckets are now imported from infrastructure stack
+    // Access via: tables.invites, tables.registrations, etc.
+    // Access via: siteBucket, logBucket, termsBucket
 
-    // Add GSI for email lookups to prevent duplicate waitlist entries
-    waitlist.addGlobalSecondaryIndex({
-      indexName: 'email-index',
-      partitionKey: { name: 'email', type: dynamodb.AttributeType.STRING },
-      projectionType: dynamodb.ProjectionType.ALL,
-    });
-
-    // Magic link tokens table for passwordless auth
-    const magicLinkTokens = new dynamodb.Table(this, 'MagicLinkTokens', {
-      partitionKey: { name: 'token', type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      timeToLiveAttribute: 'expiresAt',
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-    });
-
-    // Add GSI for email lookups to enable efficient rate limiting queries
-    magicLinkTokens.addGlobalSecondaryIndex({
-      indexName: 'email-index',
-      partitionKey: { name: 'email', type: dynamodb.AttributeType.STRING },
-      sortKey: { name: 'createdAtTimestamp', type: dynamodb.AttributeType.NUMBER },
-      projectionType: dynamodb.ProjectionType.ALL,
-    });
-
-    // Membership terms table for storing terms of service versions
-    const membershipTerms = new dynamodb.Table(this, 'MembershipTerms', {
-      partitionKey: { name: 'version_id', type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-      pointInTimeRecovery: true,
-    });
-
-    // Add GSI for getting current version
-    membershipTerms.addGlobalSecondaryIndex({
-      indexName: 'current-index',
-      partitionKey: { name: 'is_current', type: dynamodb.AttributeType.STRING },
-      sortKey: { name: 'created_at', type: dynamodb.AttributeType.STRING },
-      projectionType: dynamodb.ProjectionType.ALL,
-    });
-
-    // S3 bucket for membership terms PDFs
-    const termsBucket = new s3.Bucket(this, 'MembershipTermsBucket', {
-      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-      versioned: true,
-      encryption: s3.BucketEncryption.S3_MANAGED,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-      autoDeleteObjects: true,
-    });
-
-    // Subscriptions table for managing user subscriptions
-    const subscriptions = new dynamodb.Table(this, 'Subscriptions', {
-      partitionKey: { name: 'user_guid', type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-      pointInTimeRecovery: true,
-    });
-
-    // Add GSI for status queries
-    subscriptions.addGlobalSecondaryIndex({
-      indexName: 'status-index',
-      partitionKey: { name: 'status', type: dynamodb.AttributeType.STRING },
-      sortKey: { name: 'expires_at', type: dynamodb.AttributeType.STRING },
-      projectionType: dynamodb.ProjectionType.ALL,
-    });
-
-    // Proposals table for voting/governance
-    const proposals = new dynamodb.Table(this, 'Proposals', {
-      partitionKey: { name: 'proposal_id', type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-      pointInTimeRecovery: true,
-      stream: dynamodb.StreamViewType.NEW_AND_OLD_IMAGES, // Enable streams for proposal notifications
-    });
-
-    // Add GSI for status queries
-    proposals.addGlobalSecondaryIndex({
-      indexName: 'status-index',
-      partitionKey: { name: 'status', type: dynamodb.AttributeType.STRING },
-      sortKey: { name: 'opens_at', type: dynamodb.AttributeType.STRING },
-      projectionType: dynamodb.ProjectionType.ALL,
-    });
-
-    // Votes table for storing user votes on proposals
-    const votes = new dynamodb.Table(this, 'Votes', {
-      partitionKey: { name: 'vote_id', type: dynamodb.AttributeType.STRING }, // composite: user_guid#proposal_id
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-      pointInTimeRecovery: true,
-    });
-
-    // GSI for querying votes by user
-    votes.addGlobalSecondaryIndex({
-      indexName: 'user-votes-index',
-      partitionKey: { name: 'user_guid', type: dynamodb.AttributeType.STRING },
-      sortKey: { name: 'voted_at', type: dynamodb.AttributeType.STRING },
-      projectionType: dynamodb.ProjectionType.ALL,
-    });
-
-    // GSI for querying votes by proposal
-    votes.addGlobalSecondaryIndex({
-      indexName: 'proposal-votes-index',
-      partitionKey: { name: 'proposal_id', type: dynamodb.AttributeType.STRING },
-      projectionType: dynamodb.ProjectionType.ALL,
-    });
-
-    // Subscription Types table for managing subscription offerings
-    const subscriptionTypes = new dynamodb.Table(this, 'SubscriptionTypes', {
-      partitionKey: { name: 'subscription_type_id', type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-      pointInTimeRecovery: true,
-    });
-
-    // ===== VAULT SERVICES TABLES =====
-
-    // Credentials table - stores encrypted credential blobs and metadata
-    // This is the core table for the Protean Credential system
-    const credentials = new dynamodb.Table(this, 'Credentials', {
-      partitionKey: { name: 'user_guid', type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-      pointInTimeRecovery: true,
-    });
-
-    // Credential Encryption Keys (CEK) - stores encrypted private keys for credential encryption
-    // Ledger owns these keys; mobile cannot decrypt credentials
-    const credentialKeys = new dynamodb.Table(this, 'CredentialKeys', {
-      partitionKey: { name: 'user_guid', type: dynamodb.AttributeType.STRING },
-      sortKey: { name: 'version', type: dynamodb.AttributeType.NUMBER },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-      pointInTimeRecovery: true,
-    });
-
-    // Transaction Keys - stores LTK (private) and UTK (public) pairs
-    // LTK stays on ledger, UTK sent to mobile for encrypting password hashes
-    const transactionKeys = new dynamodb.Table(this, 'TransactionKeys', {
-      partitionKey: { name: 'user_guid', type: dynamodb.AttributeType.STRING },
-      sortKey: { name: 'key_id', type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-      pointInTimeRecovery: true,
-    });
-
-    // GSI for finding unused keys
-    transactionKeys.addGlobalSecondaryIndex({
-      indexName: 'status-index',
-      partitionKey: { name: 'user_guid', type: dynamodb.AttributeType.STRING },
-      sortKey: { name: 'status', type: dynamodb.AttributeType.STRING },
-      projectionType: dynamodb.ProjectionType.ALL,
-    });
-
-    // Ledger Auth Tokens (LAT) - for mutual authentication / phishing protection
-    const ledgerAuthTokens = new dynamodb.Table(this, 'LedgerAuthTokens', {
-      partitionKey: { name: 'user_guid', type: dynamodb.AttributeType.STRING },
-      sortKey: { name: 'version', type: dynamodb.AttributeType.NUMBER },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-      pointInTimeRecovery: true,
-    });
-
-    // Action Tokens - tracks single-use scoped action tokens
-    const actionTokens = new dynamodb.Table(this, 'ActionTokens', {
-      partitionKey: { name: 'token_id', type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      timeToLiveAttribute: 'expires_at_ttl',
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-    });
-
-    // GSI for querying tokens by user
-    actionTokens.addGlobalSecondaryIndex({
-      indexName: 'user-index',
-      partitionKey: { name: 'user_guid', type: dynamodb.AttributeType.STRING },
-      sortKey: { name: 'issued_at', type: dynamodb.AttributeType.STRING },
-      projectionType: dynamodb.ProjectionType.ALL,
-    });
-
-    // Enrollment Sessions - tracks multi-step enrollment progress
-    const enrollmentSessions = new dynamodb.Table(this, 'EnrollmentSessions', {
-      partitionKey: { name: 'session_id', type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      timeToLiveAttribute: 'expires_at_ttl',
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-    });
-
-    // GSI for querying sessions by invitation code
-    enrollmentSessions.addGlobalSecondaryIndex({
-      indexName: 'invitation-index',
-      partitionKey: { name: 'invitation_code', type: dynamodb.AttributeType.STRING },
-      projectionType: dynamodb.ProjectionType.ALL,
-    });
-
-// Enable PITR via L1 for audit
-(audit.node.defaultChild as dynamodb.CfnTable).pointInTimeRecoverySpecification = {
-  pointInTimeRecoveryEnabled: true,
-};
 
     // Custom auth Lambda functions for passwordless magic link authentication
     // These must be created before the user pool that references them
@@ -662,8 +445,8 @@ removalPolicy: cdk.RemovalPolicy.DESTROY,
       entry: 'lambda/handlers/auth/createAuthChallenge.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
       environment: {
-        MAGIC_LINK_TABLE: magicLinkTokens.tableName,
-        REGISTRATIONS_TABLE: registrations.tableName,
+        MAGIC_LINK_TABLE: tables.magicLinkTokens.tableName,
+        REGISTRATIONS_TABLE: tables.registrations.tableName,
         MAGIC_LINK_URL: 'https://vettid.dev/auth',
         SES_FROM: 'no-reply@auth.vettid.dev',
       },
@@ -674,8 +457,8 @@ removalPolicy: cdk.RemovalPolicy.DESTROY,
       entry: 'lambda/handlers/auth/verifyAuthChallenge.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
       environment: {
-        MAGIC_LINK_TABLE: magicLinkTokens.tableName,
-        REGISTRATIONS_TABLE: registrations.tableName,
+        MAGIC_LINK_TABLE: tables.magicLinkTokens.tableName,
+        REGISTRATIONS_TABLE: tables.registrations.tableName,
       },
       timeout: cdk.Duration.seconds(10),
     });
@@ -688,10 +471,10 @@ removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
     // Grant permissions to auth Lambda functions
-    magicLinkTokens.grantReadWriteData(createAuthChallenge);
-    magicLinkTokens.grantReadWriteData(verifyAuthChallenge);
-    registrations.grantReadData(createAuthChallenge); // For PIN status check
-    registrations.grantReadData(verifyAuthChallenge); // For PIN validation
+    tables.magicLinkTokens.grantReadWriteData(createAuthChallenge);
+    tables.magicLinkTokens.grantReadWriteData(verifyAuthChallenge);
+    tables.registrations.grantReadData(createAuthChallenge); // For PIN status check
+    tables.registrations.grantReadData(verifyAuthChallenge); // For PIN validation
 
     // Grant CloudWatch metrics permissions to verifyAuthChallenge for failed login tracking
     verifyAuthChallenge.addToRolePolicy(new iam.PolicyStatement({
@@ -896,14 +679,14 @@ removalPolicy: cdk.RemovalPolicy.DESTROY,
 
     // Lambda env
     const defaultEnv = {
-      TABLE_INVITES: invites.tableName,
-      TABLE_REGISTRATIONS: registrations.tableName,
-      TABLE_AUDIT: audit.tableName,
-      TABLE_MEMBERSHIP_TERMS: membershipTerms.tableName,
-      TABLE_SUBSCRIPTIONS: subscriptions.tableName,
-      TABLE_PROPOSALS: proposals.tableName,
-      TABLE_VOTES: votes.tableName,
-      TABLE_SUBSCRIPTION_TYPES: subscriptionTypes.tableName,
+      TABLE_INVITES: tables.invites.tableName,
+      TABLE_REGISTRATIONS: tables.registrations.tableName,
+      TABLE_AUDIT: tables.audit.tableName,
+      TABLE_MEMBERSHIP_TERMS: tables.membershipTerms.tableName,
+      TABLE_SUBSCRIPTIONS: tables.subscriptions.tableName,
+      TABLE_PROPOSALS: tables.proposals.tableName,
+      TABLE_VOTES: tables.votes.tableName,
+      TABLE_SUBSCRIPTION_TYPES: tables.subscriptionTypes.tableName,
       TERMS_BUCKET: termsBucket.bucketName,
       SES_FROM: 'no-reply@auth.vettid.dev',
       CORS_ORIGIN: 'https://vettid.dev,https://www.vettid.dev,https://admin.vettid.dev,https://account.vettid.dev,https://register.vettid.dev',
@@ -913,12 +696,12 @@ removalPolicy: cdk.RemovalPolicy.DESTROY,
     // Vault services environment variables
     const vaultEnv = {
       ...defaultEnv,
-      TABLE_CREDENTIALS: credentials.tableName,
-      TABLE_CREDENTIAL_KEYS: credentialKeys.tableName,
-      TABLE_TRANSACTION_KEYS: transactionKeys.tableName,
-      TABLE_LEDGER_AUTH_TOKENS: ledgerAuthTokens.tableName,
-      TABLE_ACTION_TOKENS: actionTokens.tableName,
-      TABLE_ENROLLMENT_SESSIONS: enrollmentSessions.tableName,
+      TABLE_CREDENTIALS: tables.credentials.tableName,
+      TABLE_CREDENTIAL_KEYS: tables.credentialKeys.tableName,
+      TABLE_TRANSACTION_KEYS: tables.transactionKeys.tableName,
+      TABLE_LEDGER_AUTH_TOKENS: tables.ledgerAuthTokens.tableName,
+      TABLE_ACTION_TOKENS: tables.actionTokens.tableName,
+      TABLE_ENROLLMENT_SESSIONS: tables.enrollmentSessions.tableName,
     };
 
     // Lambdas
@@ -931,7 +714,7 @@ removalPolicy: cdk.RemovalPolicy.DESTROY,
     const submitWaitlist = new lambdaNode.NodejsFunction(this, 'SubmitWaitlistFn', {
       entry: 'lambda/handlers/public/submitWaitlist.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
-      environment: { ...defaultEnv, TABLE_WAITLIST: waitlist.tableName },
+      environment: { ...defaultEnv, TABLE_WAITLIST: tables.waitlist.tableName },
       timeout: cdk.Duration.seconds(10),
     });
     const listRegistrations = new lambdaNode.NodejsFunction(this, 'ListRegistrationsFn', {
@@ -949,8 +732,8 @@ removalPolicy: cdk.RemovalPolicy.DESTROY,
       runtime: lambda.Runtime.NODEJS_22_X,
       environment: {
         ...defaultEnv,
-        TABLE_SUBSCRIPTIONS: subscriptions.tableName,
-        TABLE_REGISTRATIONS: registrations.tableName,
+        TABLE_SUBSCRIPTIONS: tables.subscriptions.tableName,
+        TABLE_REGISTRATIONS: tables.registrations.tableName,
       },
       timeout: cdk.Duration.seconds(60), // Allow time to send multiple emails
     });
@@ -1001,7 +784,7 @@ removalPolicy: cdk.RemovalPolicy.DESTROY,
     const permanentlyDeleteUser = new lambdaNode.NodejsFunction(this, 'PermanentlyDeleteUserFn', {
       entry: 'lambda/handlers/admin/permanentlyDeleteUser.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
-      environment: { ...defaultEnv, USER_POOL_ID: memberUserPool.userPoolId, TABLE_SUBSCRIPTIONS: subscriptions.tableName },
+      environment: { ...defaultEnv, USER_POOL_ID: memberUserPool.userPoolId, TABLE_SUBSCRIPTIONS: tables.subscriptions.tableName },
       timeout: cdk.Duration.seconds(30), // Cognito operations can take time
     });
     const deleteInvite = new lambdaNode.NodejsFunction(this, 'DeleteInviteFn', {
@@ -1056,7 +839,7 @@ removalPolicy: cdk.RemovalPolicy.DESTROY,
     const cancelAccount = new lambdaNode.NodejsFunction(this, 'CancelAccountFn', {
       entry: 'lambda/handlers/member/cancelAccount.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
-      environment: { ...defaultEnv, USER_POOL_ID: memberUserPool.userPoolId, TABLE_SUBSCRIPTIONS: subscriptions.tableName },
+      environment: { ...defaultEnv, USER_POOL_ID: memberUserPool.userPoolId, TABLE_SUBSCRIPTIONS: tables.subscriptions.tableName },
     });
     const cleanupExpiredAccounts = new lambdaNode.NodejsFunction(this, 'CleanupExpiredAccountsFn', {
       entry: 'lambda/handlers/scheduled/cleanupExpiredAccounts.ts',
@@ -1198,14 +981,14 @@ removalPolicy: cdk.RemovalPolicy.DESTROY,
     const listWaitlist = new lambdaNode.NodejsFunction(this, 'ListWaitlistFn', {
       entry: 'lambda/handlers/admin/listWaitlist.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
-      environment: { ...defaultEnv, TABLE_WAITLIST: waitlist.tableName },
+      environment: { ...defaultEnv, TABLE_WAITLIST: tables.waitlist.tableName },
     });
     const sendWaitlistInvites = new lambdaNode.NodejsFunction(this, 'SendWaitlistInvitesFn', {
       entry: 'lambda/handlers/admin/sendWaitlistInvites.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
       environment: {
         ...defaultEnv,
-        TABLE_WAITLIST: waitlist.tableName,
+        TABLE_WAITLIST: tables.waitlist.tableName,
         SES_FROM_EMAIL: 'noreply@vettid.dev',
       },
       timeout: cdk.Duration.seconds(30),
@@ -1213,7 +996,7 @@ removalPolicy: cdk.RemovalPolicy.DESTROY,
     const deleteWaitlistEntries = new lambdaNode.NodejsFunction(this, 'DeleteWaitlistEntriesFn', {
       entry: 'lambda/handlers/admin/deleteWaitlistEntries.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
-      environment: { ...defaultEnv, TABLE_WAITLIST: waitlist.tableName },
+      environment: { ...defaultEnv, TABLE_WAITLIST: tables.waitlist.tableName },
     });
     const submitVote = new lambdaNode.NodejsFunction(this, 'SubmitVoteFn', {
       entry: 'lambda/handlers/member/submitVote.ts',
@@ -1284,7 +1067,7 @@ removalPolicy: cdk.RemovalPolicy.DESTROY,
 
     // NOTE: Due to CloudFormation's 500 resource limit, we cannot include an automated
     // default membership terms Lambda. Instead, use the admin portal to create terms via:
-    // https://admin.vettid.dev or POST to /admin/membership-terms with admin credentials.
+    // https://admin.vettid.dev or POST to /admin/membership-terms with admin tables.credentials.
     // See CLAUDE.md for details on membership terms management.
 
     // ===== VAULT SERVICE LAMBDAS =====
@@ -1330,166 +1113,166 @@ removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
     // Grants
-    invites.grantReadWriteData(submitRegistration);
-    invites.grantReadWriteData(createInvite);
-    invites.grantReadData(listInvites);
-    invites.grantReadWriteData(expireInvite);
-    invites.grantReadWriteData(deleteInvite);
-    registrations.grantReadWriteData(submitRegistration);
-    registrations.grantReadWriteData(listRegistrations);
-    waitlist.grantReadWriteData(submitWaitlist);
-    registrations.grantReadWriteData(approveRegistration);
-    registrations.grantReadWriteData(rejectRegistration);
-    registrations.grantReadWriteData(disableUser);
-    registrations.grantReadWriteData(deleteUser);
-    registrations.grantReadWriteData(enableUser);
-    registrations.grantReadWriteData(permanentlyDeleteUser);
-    subscriptions.grantReadWriteData(permanentlyDeleteUser);
-    registrations.grantReadWriteData(cancelAccount);
-    subscriptions.grantReadWriteData(cancelAccount);
-    registrations.grantReadWriteData(cleanupExpiredAccounts);
-    registrations.grantReadWriteData(enablePin);
-    registrations.grantReadWriteData(disablePin);
-    registrations.grantReadWriteData(updatePin);
-    registrations.grantReadData(getPinStatus);
-    audit.grantReadData(getEmailPreferences);
-    audit.grantReadWriteData(updateEmailPreferences);
-    registrations.grantStreamRead(registrationStreamFn);
-    proposals.grantStreamRead(proposalStreamFn); // Read proposal stream events
-    subscriptions.grantReadData(proposalStreamFn); // Query active subscriptions
-    registrations.grantReadData(proposalStreamFn); // Get user emails
-    audit.grantReadData(proposalStreamFn); // Check email preferences
-    audit.grantReadWriteData(submitRegistration);
-    audit.grantReadWriteData(approveRegistration);
-    audit.grantReadWriteData(createInvite);
-    audit.grantReadWriteData(listRegistrations);
-    audit.grantReadWriteData(registrationStreamFn);
-    audit.grantReadWriteData(rejectRegistration);
-    audit.grantReadWriteData(disableUser);
-    audit.grantReadWriteData(deleteUser);
-    audit.grantReadWriteData(enableUser);
-    audit.grantReadWriteData(permanentlyDeleteUser);
-    audit.grantReadWriteData(expireInvite);
-    audit.grantReadWriteData(deleteInvite);
-    audit.grantReadWriteData(addAdmin);
-    audit.grantReadWriteData(removeAdmin);
-    audit.grantReadWriteData(disableAdmin);
-    audit.grantReadWriteData(enableAdmin);
-    audit.grantReadWriteData(updateAdminType);
-    audit.grantReadWriteData(cancelAccount);
-    audit.grantReadWriteData(cleanupExpiredAccounts);
-    audit.grantReadWriteData(enablePin);
-    audit.grantReadWriteData(disablePin);
-    audit.grantReadWriteData(updatePin);
-    registrations.grantReadWriteData(requestMembership);
-    registrations.grantReadData(getMembershipStatus);
-    registrations.grantReadData(listMembershipRequests);
-    registrations.grantReadWriteData(approveMembership);
-    registrations.grantReadWriteData(denyMembership);
-    audit.grantReadWriteData(requestMembership);
-    audit.grantReadWriteData(approveMembership);
-    audit.grantReadWriteData(denyMembership);
-    membershipTerms.grantReadWriteData(createMembershipTerms);
-    membershipTerms.grantReadData(getCurrentMembershipTerms);
-    membershipTerms.grantReadData(listMembershipTerms);
-    membershipTerms.grantReadData(getMembershipTerms);
+    tables.invites.grantReadWriteData(submitRegistration);
+    tables.invites.grantReadWriteData(createInvite);
+    tables.invites.grantReadData(listInvites);
+    tables.invites.grantReadWriteData(expireInvite);
+    tables.invites.grantReadWriteData(deleteInvite);
+    tables.registrations.grantReadWriteData(submitRegistration);
+    tables.registrations.grantReadWriteData(listRegistrations);
+    tables.waitlist.grantReadWriteData(submitWaitlist);
+    tables.registrations.grantReadWriteData(approveRegistration);
+    tables.registrations.grantReadWriteData(rejectRegistration);
+    tables.registrations.grantReadWriteData(disableUser);
+    tables.registrations.grantReadWriteData(deleteUser);
+    tables.registrations.grantReadWriteData(enableUser);
+    tables.registrations.grantReadWriteData(permanentlyDeleteUser);
+    tables.subscriptions.grantReadWriteData(permanentlyDeleteUser);
+    tables.registrations.grantReadWriteData(cancelAccount);
+    tables.subscriptions.grantReadWriteData(cancelAccount);
+    tables.registrations.grantReadWriteData(cleanupExpiredAccounts);
+    tables.registrations.grantReadWriteData(enablePin);
+    tables.registrations.grantReadWriteData(disablePin);
+    tables.registrations.grantReadWriteData(updatePin);
+    tables.registrations.grantReadData(getPinStatus);
+    tables.audit.grantReadData(getEmailPreferences);
+    tables.audit.grantReadWriteData(updateEmailPreferences);
+    tables.registrations.grantStreamRead(registrationStreamFn);
+    tables.proposals.grantStreamRead(proposalStreamFn); // Read proposal stream events
+    tables.subscriptions.grantReadData(proposalStreamFn); // Query active subscriptions
+    tables.registrations.grantReadData(proposalStreamFn); // Get user emails
+    tables.audit.grantReadData(proposalStreamFn); // Check email preferences
+    tables.audit.grantReadWriteData(submitRegistration);
+    tables.audit.grantReadWriteData(approveRegistration);
+    tables.audit.grantReadWriteData(createInvite);
+    tables.audit.grantReadWriteData(listRegistrations);
+    tables.audit.grantReadWriteData(registrationStreamFn);
+    tables.audit.grantReadWriteData(rejectRegistration);
+    tables.audit.grantReadWriteData(disableUser);
+    tables.audit.grantReadWriteData(deleteUser);
+    tables.audit.grantReadWriteData(enableUser);
+    tables.audit.grantReadWriteData(permanentlyDeleteUser);
+    tables.audit.grantReadWriteData(expireInvite);
+    tables.audit.grantReadWriteData(deleteInvite);
+    tables.audit.grantReadWriteData(addAdmin);
+    tables.audit.grantReadWriteData(removeAdmin);
+    tables.audit.grantReadWriteData(disableAdmin);
+    tables.audit.grantReadWriteData(enableAdmin);
+    tables.audit.grantReadWriteData(updateAdminType);
+    tables.audit.grantReadWriteData(cancelAccount);
+    tables.audit.grantReadWriteData(cleanupExpiredAccounts);
+    tables.audit.grantReadWriteData(enablePin);
+    tables.audit.grantReadWriteData(disablePin);
+    tables.audit.grantReadWriteData(updatePin);
+    tables.registrations.grantReadWriteData(requestMembership);
+    tables.registrations.grantReadData(getMembershipStatus);
+    tables.registrations.grantReadData(listMembershipRequests);
+    tables.registrations.grantReadWriteData(approveMembership);
+    tables.registrations.grantReadWriteData(denyMembership);
+    tables.audit.grantReadWriteData(requestMembership);
+    tables.audit.grantReadWriteData(approveMembership);
+    tables.audit.grantReadWriteData(denyMembership);
+    tables.membershipTerms.grantReadWriteData(createMembershipTerms);
+    tables.membershipTerms.grantReadData(getCurrentMembershipTerms);
+    tables.membershipTerms.grantReadData(listMembershipTerms);
+    tables.membershipTerms.grantReadData(getMembershipTerms);
     termsBucket.grantReadWrite(createMembershipTerms);
     termsBucket.grantRead(getCurrentMembershipTerms);
     termsBucket.grantRead(listMembershipTerms);
     termsBucket.grantRead(getMembershipTerms);
-    subscriptions.grantReadWriteData(createSubscription);
-    subscriptions.grantReadWriteData(getSubscriptionStatus);
-    subscriptions.grantReadWriteData(cancelSubscription);
-    subscriptionTypes.grantReadData(createSubscription);
-    audit.grantReadWriteData(createSubscription);
-    audit.grantReadWriteData(cancelSubscription);
-    proposals.grantReadWriteData(createProposal);
-    proposals.grantReadData(listProposals);
-    proposals.grantReadWriteData(suspendProposal);
-    audit.grantReadWriteData(createProposal);
-    audit.grantReadWriteData(suspendProposal);
-    subscriptions.grantReadData(listSubscriptions);
-    registrations.grantReadData(listSubscriptions);
-    audit.grantReadData(listSubscriptions);
-    subscriptions.grantReadWriteData(extendSubscription);
-    subscriptions.grantReadWriteData(reactivateSubscription);
-    audit.grantReadWriteData(extendSubscription);
-    audit.grantReadWriteData(reactivateSubscription);
-    votes.grantReadWriteData(submitVote);
-    proposals.grantReadData(submitVote);
-    registrations.grantReadData(submitVote);
-    audit.grantReadWriteData(submitVote);
-    votes.grantReadData(getVotingHistory);
-    proposals.grantReadData(getVotingHistory);
-    registrations.grantReadData(getVotingHistory);
-    votes.grantReadData(getProposalResults);
-    proposals.grantReadData(getProposalResults);
-    proposals.grantReadData(getActiveProposals);
-    proposals.grantReadData(getAllProposals);
-    votes.grantReadData(getMemberProposalVoteCounts);
-    proposals.grantReadData(getMemberProposalVoteCounts);
-    votes.grantReadData(getProposalVoteCounts);
-    proposals.grantReadData(getProposalVoteCounts);
-    proposals.grantReadWriteData(closeExpiredProposals); // Scheduled job to close expired proposals
-    subscriptions.grantReadWriteData(checkSubscriptionExpiry); // For marking notifications sent
-    registrations.grantReadData(checkSubscriptionExpiry); // For getting user details
-    audit.grantReadWriteData(checkSubscriptionExpiry); // For checking email prefs and logging
+    tables.subscriptions.grantReadWriteData(createSubscription);
+    tables.subscriptions.grantReadWriteData(getSubscriptionStatus);
+    tables.subscriptions.grantReadWriteData(cancelSubscription);
+    tables.subscriptionTypes.grantReadData(createSubscription);
+    tables.audit.grantReadWriteData(createSubscription);
+    tables.audit.grantReadWriteData(cancelSubscription);
+    tables.proposals.grantReadWriteData(createProposal);
+    tables.proposals.grantReadData(listProposals);
+    tables.proposals.grantReadWriteData(suspendProposal);
+    tables.audit.grantReadWriteData(createProposal);
+    tables.audit.grantReadWriteData(suspendProposal);
+    tables.subscriptions.grantReadData(listSubscriptions);
+    tables.registrations.grantReadData(listSubscriptions);
+    tables.audit.grantReadData(listSubscriptions);
+    tables.subscriptions.grantReadWriteData(extendSubscription);
+    tables.subscriptions.grantReadWriteData(reactivateSubscription);
+    tables.audit.grantReadWriteData(extendSubscription);
+    tables.audit.grantReadWriteData(reactivateSubscription);
+    tables.votes.grantReadWriteData(submitVote);
+    tables.proposals.grantReadData(submitVote);
+    tables.registrations.grantReadData(submitVote);
+    tables.audit.grantReadWriteData(submitVote);
+    tables.votes.grantReadData(getVotingHistory);
+    tables.proposals.grantReadData(getVotingHistory);
+    tables.registrations.grantReadData(getVotingHistory);
+    tables.votes.grantReadData(getProposalResults);
+    tables.proposals.grantReadData(getProposalResults);
+    tables.proposals.grantReadData(getActiveProposals);
+    tables.proposals.grantReadData(getAllProposals);
+    tables.votes.grantReadData(getMemberProposalVoteCounts);
+    tables.proposals.grantReadData(getMemberProposalVoteCounts);
+    tables.votes.grantReadData(getProposalVoteCounts);
+    tables.proposals.grantReadData(getProposalVoteCounts);
+    tables.proposals.grantReadWriteData(closeExpiredProposals); // Scheduled job to close expired proposals
+    tables.subscriptions.grantReadWriteData(checkSubscriptionExpiry); // For marking notifications sent
+    tables.registrations.grantReadData(checkSubscriptionExpiry); // For getting user details
+    tables.audit.grantReadWriteData(checkSubscriptionExpiry); // For checking email prefs and logging
     checkSubscriptionExpiry.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['ses:SendTemplatedEmail'],
       resources: ['*'],
     }));
-    subscriptionTypes.grantReadWriteData(createSubscriptionType);
-    subscriptionTypes.grantReadData(listSubscriptionTypes);
-    subscriptionTypes.grantReadData(listEnabledSubscriptionTypes);
-    audit.grantReadData(listEnabledSubscriptionTypes);
-    subscriptionTypes.grantReadWriteData(enableSubscriptionType);
-    subscriptionTypes.grantReadWriteData(disableSubscriptionType);
-    audit.grantReadWriteData(createSubscriptionType);
-    audit.grantReadWriteData(enableSubscriptionType);
-    audit.grantReadWriteData(disableSubscriptionType);
-    waitlist.grantReadData(listWaitlist);
-    waitlist.grantReadWriteData(sendWaitlistInvites);
-    waitlist.grantReadWriteData(deleteWaitlistEntries);
-    invites.grantReadWriteData(sendWaitlistInvites);
-    audit.grantReadWriteData(sendWaitlistInvites);
-    audit.grantReadWriteData(deleteWaitlistEntries);
+    tables.subscriptionTypes.grantReadWriteData(createSubscriptionType);
+    tables.subscriptionTypes.grantReadData(listSubscriptionTypes);
+    tables.subscriptionTypes.grantReadData(listEnabledSubscriptionTypes);
+    tables.audit.grantReadData(listEnabledSubscriptionTypes);
+    tables.subscriptionTypes.grantReadWriteData(enableSubscriptionType);
+    tables.subscriptionTypes.grantReadWriteData(disableSubscriptionType);
+    tables.audit.grantReadWriteData(createSubscriptionType);
+    tables.audit.grantReadWriteData(enableSubscriptionType);
+    tables.audit.grantReadWriteData(disableSubscriptionType);
+    tables.waitlist.grantReadData(listWaitlist);
+    tables.waitlist.grantReadWriteData(sendWaitlistInvites);
+    tables.waitlist.grantReadWriteData(deleteWaitlistEntries);
+    tables.invites.grantReadWriteData(sendWaitlistInvites);
+    tables.audit.grantReadWriteData(sendWaitlistInvites);
+    tables.audit.grantReadWriteData(deleteWaitlistEntries);
 
     // ===== VAULT SERVICE GRANTS =====
     // enrollStart grants
-    invites.grantReadWriteData(enrollStart);
-    enrollmentSessions.grantReadWriteData(enrollStart);
-    transactionKeys.grantReadWriteData(enrollStart);
-    audit.grantReadWriteData(enrollStart);
+    tables.invites.grantReadWriteData(enrollStart);
+    tables.enrollmentSessions.grantReadWriteData(enrollStart);
+    tables.transactionKeys.grantReadWriteData(enrollStart);
+    tables.audit.grantReadWriteData(enrollStart);
 
     // enrollSetPassword grants
-    enrollmentSessions.grantReadWriteData(enrollSetPassword);
-    transactionKeys.grantReadWriteData(enrollSetPassword);
-    audit.grantReadWriteData(enrollSetPassword);
+    tables.enrollmentSessions.grantReadWriteData(enrollSetPassword);
+    tables.transactionKeys.grantReadWriteData(enrollSetPassword);
+    tables.audit.grantReadWriteData(enrollSetPassword);
 
     // enrollFinalize grants
-    enrollmentSessions.grantReadWriteData(enrollFinalize);
-    invites.grantReadWriteData(enrollFinalize);
-    credentials.grantReadWriteData(enrollFinalize);
-    credentialKeys.grantReadWriteData(enrollFinalize);
-    ledgerAuthTokens.grantReadWriteData(enrollFinalize);
-    transactionKeys.grantReadData(enrollFinalize);
-    audit.grantReadWriteData(enrollFinalize);
+    tables.enrollmentSessions.grantReadWriteData(enrollFinalize);
+    tables.invites.grantReadWriteData(enrollFinalize);
+    tables.credentials.grantReadWriteData(enrollFinalize);
+    tables.credentialKeys.grantReadWriteData(enrollFinalize);
+    tables.ledgerAuthTokens.grantReadWriteData(enrollFinalize);
+    tables.transactionKeys.grantReadData(enrollFinalize);
+    tables.audit.grantReadWriteData(enrollFinalize);
 
     // actionRequest grants
-    credentials.grantReadData(actionRequest);
-    ledgerAuthTokens.grantReadData(actionRequest);
-    transactionKeys.grantReadData(actionRequest);
-    actionTokens.grantReadWriteData(actionRequest);
-    audit.grantReadWriteData(actionRequest);
+    tables.credentials.grantReadData(actionRequest);
+    tables.ledgerAuthTokens.grantReadData(actionRequest);
+    tables.transactionKeys.grantReadData(actionRequest);
+    tables.actionTokens.grantReadWriteData(actionRequest);
+    tables.audit.grantReadWriteData(actionRequest);
 
     // authExecute grants
-    actionTokens.grantReadWriteData(authExecute);
-    credentials.grantReadWriteData(authExecute);
-    credentialKeys.grantReadWriteData(authExecute);
-    transactionKeys.grantReadWriteData(authExecute);
-    ledgerAuthTokens.grantReadWriteData(authExecute);
-    audit.grantReadWriteData(authExecute);
+    tables.actionTokens.grantReadWriteData(authExecute);
+    tables.credentials.grantReadWriteData(authExecute);
+    tables.credentialKeys.grantReadWriteData(authExecute);
+    tables.transactionKeys.grantReadWriteData(authExecute);
+    tables.ledgerAuthTokens.grantReadWriteData(authExecute);
+    tables.audit.grantReadWriteData(authExecute);
 
     // SES permissions scoped to specific identity and region
     const sesIdentityArn = `arn:aws:ses:${this.region}:${this.account}:identity/*`;
@@ -1643,7 +1426,7 @@ removalPolicy: cdk.RemovalPolicy.DESTROY,
 
     // Streams → Lambda
     registrationStreamFn.addEventSource(
-      new lambdaEventSources.DynamoEventSource(registrations, {
+      new lambdaEventSources.DynamoEventSource(tables.registrations, {
         startingPosition: lambda.StartingPosition.LATEST,
         batchSize: 10,
         bisectBatchOnError: true,
@@ -1653,7 +1436,7 @@ removalPolicy: cdk.RemovalPolicy.DESTROY,
     );
 
     proposalStreamFn.addEventSource(
-      new lambdaEventSources.DynamoEventSource(proposals, {
+      new lambdaEventSources.DynamoEventSource(tables.proposals, {
         startingPosition: lambda.StartingPosition.LATEST,
         batchSize: 10,
         bisectBatchOnError: true,
