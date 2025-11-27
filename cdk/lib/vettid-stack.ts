@@ -25,6 +25,7 @@ import {
   aws_events_targets as targets_events,
 } from 'aws-cdk-lib';
 import { InfrastructureStack } from './infrastructure-stack';
+import { AdminStack } from './admin-stack';
 
 export interface VettIdStackProps extends cdk.StackProps {
   infrastructure: InfrastructureStack;
@@ -1298,5 +1299,239 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
     this.memberUserPool = memberUserPool;
     this.termsBucket = termsBucket;
   }
+  /**
+   * Add admin routes to the HTTP API
+   * Called after AdminStack is instantiated to wire up admin Lambda functions
+   */
+  public addAdminRoutes(adminStack: any): void {
+    // Registration Management
+    this.httpApi.addRoutes({
+      path: '/admin/registrations',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('ListRegistrationsInt', adminStack.listRegistrations),
+      authorizer: this.adminAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/admin/registrations/{id}/approve',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('ApproveRegistrationInt', adminStack.approveRegistration),
+      authorizer: this.adminAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/admin/registrations/{id}/reject',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('RejectRegistrationInt', adminStack.rejectRegistration),
+      authorizer: this.adminAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/admin/invites',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('CreateInviteInt', adminStack.createInvite),
+      authorizer: this.adminAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/admin/invites',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('ListInvitesInt', adminStack.listInvites),
+      authorizer: this.adminAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/admin/invites/{code}/expire',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('ExpireInviteInt', adminStack.expireInvite),
+      authorizer: this.adminAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/admin/invites/{code}',
+      methods: [apigw.HttpMethod.DELETE],
+      integration: new integrations.HttpLambdaIntegration('DeleteInviteInt', adminStack.deleteInvite),
+      authorizer: this.adminAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/admin/users/{id}/disable',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('DisableUserInt', adminStack.disableUser),
+      authorizer: this.adminAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/admin/users/{id}/enable',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('EnableUserInt', adminStack.enableUser),
+      authorizer: this.adminAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/admin/users/{id}',
+      methods: [apigw.HttpMethod.DELETE],
+      integration: new integrations.HttpLambdaIntegration('DeleteUserInt', adminStack.deleteUser),
+      authorizer: this.adminAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/admin/users/{id}/permanently-delete',
+      methods: [apigw.HttpMethod.DELETE],
+      integration: new integrations.HttpLambdaIntegration('PermanentlyDeleteUserInt', adminStack.permanentlyDeleteUser),
+      authorizer: this.adminAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/admin/admins',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('ListAdminsInt', adminStack.listAdmins),
+      authorizer: this.adminAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/admin/admins',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('AddAdminInt', adminStack.addAdmin),
+      authorizer: this.adminAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/admin/admins/{username}',
+      methods: [apigw.HttpMethod.DELETE],
+      integration: new integrations.HttpLambdaIntegration('RemoveAdminInt', adminStack.removeAdmin),
+      authorizer: this.adminAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/admin/admins/{username}/disable',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('DisableAdminInt', adminStack.disableAdmin),
+      authorizer: this.adminAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/admin/admins/{username}/enable',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('EnableAdminInt', adminStack.enableAdmin),
+      authorizer: this.adminAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/admin/admins/{username}/type',
+      methods: [apigw.HttpMethod.PUT],
+      integration: new integrations.HttpLambdaIntegration('UpdateAdminTypeInt', adminStack.updateAdminType),
+      authorizer: this.adminAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/admin/admins/{username}/reset-password',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('ResetAdminPasswordInt', adminStack.resetAdminPassword),
+      authorizer: this.adminAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/admin/membership-requests',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('ListMembershipRequestsInt', adminStack.listMembershipRequests),
+      authorizer: this.adminAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/admin/membership-requests/{id}/approve',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('ApproveMembershipInt', adminStack.approveMembership),
+      authorizer: this.adminAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/admin/membership-requests/{id}/deny',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('DenyMembershipInt', adminStack.denyMembership),
+      authorizer: this.adminAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/admin/membership-terms',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('CreateMembershipTermsInt', adminStack.createMembershipTerms),
+      authorizer: this.adminAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/admin/membership-terms/current',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('GetCurrentMembershipTermsInt', adminStack.getCurrentMembershipTerms),
+      authorizer: this.adminAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/admin/membership-terms',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('ListMembershipTermsInt', adminStack.listMembershipTerms),
+      authorizer: this.adminAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/admin/proposals',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('CreateProposalInt', adminStack.createProposal),
+      authorizer: this.adminAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/admin/proposals',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('ListProposalsInt', adminStack.listProposals),
+      authorizer: this.adminAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/admin/proposals/{id}/suspend',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('SuspendProposalInt', adminStack.suspendProposal),
+      authorizer: this.adminAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/admin/proposals/{id}/vote-counts',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('GetProposalVoteCountsInt', adminStack.getProposalVoteCounts),
+      authorizer: this.adminAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/admin/subscriptions',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('ListSubscriptionsInt', adminStack.listSubscriptions),
+      authorizer: this.adminAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/admin/subscriptions/{id}/extend',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('ExtendSubscriptionInt', adminStack.extendSubscription),
+      authorizer: this.adminAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/admin/subscriptions/{id}/reactivate',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('ReactivateSubscriptionInt', adminStack.reactivateSubscription),
+      authorizer: this.adminAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/admin/subscription-types',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('CreateSubscriptionTypeInt', adminStack.createSubscriptionType),
+      authorizer: this.adminAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/admin/subscription-types',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('ListSubscriptionTypesInt', adminStack.listSubscriptionTypes),
+      authorizer: this.adminAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/admin/subscription-types/{id}/enable',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('EnableSubscriptionTypeInt', adminStack.enableSubscriptionType),
+      authorizer: this.adminAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/admin/subscription-types/{id}/disable',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('DisableSubscriptionTypeInt', adminStack.disableSubscriptionType),
+      authorizer: this.adminAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/admin/waitlist',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('ListWaitlistInt', adminStack.listWaitlist),
+      authorizer: this.adminAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/admin/waitlist/send-invites',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('SendWaitlistInvitesInt', adminStack.sendWaitlistInvites),
+      authorizer: this.adminAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/admin/waitlist',
+      methods: [apigw.HttpMethod.DELETE],
+      integration: new integrations.HttpLambdaIntegration('DeleteWaitlistEntriesInt', adminStack.deleteWaitlistEntries),
+      authorizer: this.adminAuthorizer,
+    });
+  }
 }
-

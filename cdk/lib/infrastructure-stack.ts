@@ -2,13 +2,22 @@ import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import {
   aws_dynamodb as dynamodb,
+  aws_lambda_nodejs as lambdaNode,
+  aws_lambda as lambda,
+  aws_cognito as cognito,
+  aws_apigatewayv2 as apigw,
+  aws_apigatewayv2_authorizers as authorizers,
+  aws_iam as iam,
 } from 'aws-cdk-lib';
 
 /**
  * VettID Infrastructure Stack
  *
- * Contains foundational data storage resources that other stacks depend on:
+ * Contains foundational resources that other stacks depend on:
  * - All DynamoDB tables (16 tables)
+ * - Cognito User Pools (admin and member)
+ * - HTTP API Gateway
+ * - API Gateway authorizers
  *
  * This stack is deployed first and exports resources for use by other stacks.
  */
@@ -32,6 +41,19 @@ export class InfrastructureStack extends cdk.Stack {
     actionTokens: dynamodb.Table;
     enrollmentSessions: dynamodb.Table;
   };
+
+  // Cognito resources
+  public readonly memberUserPool!: cognito.UserPool;
+  public readonly adminUserPool!: cognito.UserPool;
+  public readonly memberAppClient!: cognito.UserPoolClient;
+  public readonly adminAppClient!: cognito.UserPoolClient;
+  public readonly memberPoolDomain!: cognito.UserPoolDomain;
+  public readonly adminPoolDomain!: cognito.UserPoolDomain;
+
+  // API Gateway resources
+  public readonly httpApi!: apigw.HttpApi;
+  public readonly adminAuthorizer!: apigw.IHttpRouteAuthorizer;
+  public readonly memberAuthorizer!: apigw.IHttpRouteAuthorizer;
 
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);

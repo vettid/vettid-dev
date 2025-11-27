@@ -15,8 +15,6 @@ import { InfrastructureStack } from './infrastructure-stack';
 
 export interface AdminStackProps extends cdk.StackProps {
   infrastructure: InfrastructureStack;
-  httpApi: apigw.HttpApi;
-  jwtAuthorizer: apigw.IHttpRouteAuthorizer;
   adminUserPool: cognito.UserPool;
   memberUserPool: cognito.UserPool;
   termsBucket: s3.Bucket;
@@ -33,11 +31,51 @@ export interface AdminStackProps extends cdk.StackProps {
  * Depends on: Infrastructure Stack (for tables), Core Stack (for API Gateway)
  */
 export class AdminStack extends cdk.Stack {
+  // Public Lambda functions to be used by VettIDStack for API routes
+  public readonly listRegistrations!: lambdaNode.NodejsFunction;
+  public readonly approveRegistration!: lambdaNode.NodejsFunction;
+  public readonly rejectRegistration!: lambdaNode.NodejsFunction;
+  public readonly createInvite!: lambdaNode.NodejsFunction;
+  public readonly listInvites!: lambdaNode.NodejsFunction;
+  public readonly expireInvite!: lambdaNode.NodejsFunction;
+  public readonly deleteInvite!: lambdaNode.NodejsFunction;
+  public readonly disableUser!: lambdaNode.NodejsFunction;
+  public readonly enableUser!: lambdaNode.NodejsFunction;
+  public readonly deleteUser!: lambdaNode.NodejsFunction;
+  public readonly permanentlyDeleteUser!: lambdaNode.NodejsFunction;
+  public readonly listAdmins!: lambdaNode.NodejsFunction;
+  public readonly addAdmin!: lambdaNode.NodejsFunction;
+  public readonly removeAdmin!: lambdaNode.NodejsFunction;
+  public readonly disableAdmin!: lambdaNode.NodejsFunction;
+  public readonly enableAdmin!: lambdaNode.NodejsFunction;
+  public readonly updateAdminType!: lambdaNode.NodejsFunction;
+  public readonly resetAdminPassword!: lambdaNode.NodejsFunction;
+  public readonly listMembershipRequests!: lambdaNode.NodejsFunction;
+  public readonly approveMembership!: lambdaNode.NodejsFunction;
+  public readonly denyMembership!: lambdaNode.NodejsFunction;
+  public readonly createMembershipTerms!: lambdaNode.NodejsFunction;
+  public readonly getCurrentMembershipTerms!: lambdaNode.NodejsFunction;
+  public readonly listMembershipTerms!: lambdaNode.NodejsFunction;
+  public readonly createProposal!: lambdaNode.NodejsFunction;
+  public readonly listProposals!: lambdaNode.NodejsFunction;
+  public readonly suspendProposal!: lambdaNode.NodejsFunction;
+  public readonly getProposalVoteCounts!: lambdaNode.NodejsFunction;
+  public readonly listSubscriptions!: lambdaNode.NodejsFunction;
+  public readonly extendSubscription!: lambdaNode.NodejsFunction;
+  public readonly reactivateSubscription!: lambdaNode.NodejsFunction;
+  public readonly createSubscriptionType!: lambdaNode.NodejsFunction;
+  public readonly listSubscriptionTypes!: lambdaNode.NodejsFunction;
+  public readonly enableSubscriptionType!: lambdaNode.NodejsFunction;
+  public readonly disableSubscriptionType!: lambdaNode.NodejsFunction;
+  public readonly listWaitlist!: lambdaNode.NodejsFunction;
+  public readonly sendWaitlistInvites!: lambdaNode.NodejsFunction;
+  public readonly deleteWaitlistEntries!: lambdaNode.NodejsFunction;
+
   constructor(scope: Construct, id: string, props: AdminStackProps) {
     super(scope, id, props);
 
     const tables = props.infrastructure.tables;
-    const { httpApi, jwtAuthorizer, adminUserPool, memberUserPool, termsBucket } = props;
+    const { adminUserPool, memberUserPool, termsBucket } = props;
 
     // Default environment variables for all admin functions
     const defaultEnv = {
@@ -517,281 +555,45 @@ export class AdminStack extends cdk.Stack {
       }));
     });
 
-    // ===== API ROUTES =====
-
-    // Registration Management
-    httpApi.addRoutes({
-      path: '/admin/registrations',
-      methods: [apigw.HttpMethod.GET],
-      integration: new integrations.HttpLambdaIntegration('ListRegistrationsInt', listRegistrations),
-      authorizer: jwtAuthorizer,
-    });
-
-    httpApi.addRoutes({
-      path: '/admin/registrations/{id}/approve',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('ApproveRegistrationInt', approveRegistration),
-      authorizer: jwtAuthorizer,
-    });
-
-    httpApi.addRoutes({
-      path: '/admin/registrations/{id}/reject',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('RejectRegistrationInt', rejectRegistration),
-      authorizer: jwtAuthorizer,
-    });
-
-    // Invite Management
-    httpApi.addRoutes({
-      path: '/admin/invites',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('CreateInviteInt', createInvite),
-      authorizer: jwtAuthorizer,
-    });
-
-    httpApi.addRoutes({
-      path: '/admin/invites',
-      methods: [apigw.HttpMethod.GET],
-      integration: new integrations.HttpLambdaIntegration('ListInvitesInt', listInvites),
-      authorizer: jwtAuthorizer,
-    });
-
-    httpApi.addRoutes({
-      path: '/admin/invites/{code}/expire',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('ExpireInviteInt', expireInvite),
-      authorizer: jwtAuthorizer,
-    });
-
-    httpApi.addRoutes({
-      path: '/admin/invites/{code}',
-      methods: [apigw.HttpMethod.DELETE],
-      integration: new integrations.HttpLambdaIntegration('DeleteInviteInt', deleteInvite),
-      authorizer: jwtAuthorizer,
-    });
-
-    // User Management
-    httpApi.addRoutes({
-      path: '/admin/users/{id}/disable',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('DisableUserInt', disableUser),
-      authorizer: jwtAuthorizer,
-    });
-
-    httpApi.addRoutes({
-      path: '/admin/users/{id}/enable',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('EnableUserInt', enableUser),
-      authorizer: jwtAuthorizer,
-    });
-
-    httpApi.addRoutes({
-      path: '/admin/users/{id}',
-      methods: [apigw.HttpMethod.DELETE],
-      integration: new integrations.HttpLambdaIntegration('DeleteUserInt', deleteUser),
-      authorizer: jwtAuthorizer,
-    });
-
-    httpApi.addRoutes({
-      path: '/admin/users/{id}/permanently-delete',
-      methods: [apigw.HttpMethod.DELETE],
-      integration: new integrations.HttpLambdaIntegration('PermanentlyDeleteUserInt', permanentlyDeleteUser),
-      authorizer: jwtAuthorizer,
-    });
-
-    // Admin Management
-    httpApi.addRoutes({
-      path: '/admin/admins',
-      methods: [apigw.HttpMethod.GET],
-      integration: new integrations.HttpLambdaIntegration('ListAdminsInt', listAdmins),
-      authorizer: jwtAuthorizer,
-    });
-
-    httpApi.addRoutes({
-      path: '/admin/admins',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('AddAdminInt', addAdmin),
-      authorizer: jwtAuthorizer,
-    });
-
-    httpApi.addRoutes({
-      path: '/admin/admins/{username}',
-      methods: [apigw.HttpMethod.DELETE],
-      integration: new integrations.HttpLambdaIntegration('RemoveAdminInt', removeAdmin),
-      authorizer: jwtAuthorizer,
-    });
-
-    httpApi.addRoutes({
-      path: '/admin/admins/{username}/disable',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('DisableAdminInt', disableAdmin),
-      authorizer: jwtAuthorizer,
-    });
-
-    httpApi.addRoutes({
-      path: '/admin/admins/{username}/enable',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('EnableAdminInt', enableAdmin),
-      authorizer: jwtAuthorizer,
-    });
-
-    httpApi.addRoutes({
-      path: '/admin/admins/{username}/type',
-      methods: [apigw.HttpMethod.PUT],
-      integration: new integrations.HttpLambdaIntegration('UpdateAdminTypeInt', updateAdminType),
-      authorizer: jwtAuthorizer,
-    });
-
-    httpApi.addRoutes({
-      path: '/admin/admins/{username}/reset-password',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('ResetAdminPasswordInt', resetAdminPassword),
-      authorizer: jwtAuthorizer,
-    });
-
-    // Membership Management
-    httpApi.addRoutes({
-      path: '/admin/membership-requests',
-      methods: [apigw.HttpMethod.GET],
-      integration: new integrations.HttpLambdaIntegration('ListMembershipRequestsInt', listMembershipRequests),
-      authorizer: jwtAuthorizer,
-    });
-
-    httpApi.addRoutes({
-      path: '/admin/membership-requests/{id}/approve',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('ApproveMembershipInt', approveMembership),
-      authorizer: jwtAuthorizer,
-    });
-
-    httpApi.addRoutes({
-      path: '/admin/membership-requests/{id}/deny',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('DenyMembershipInt', denyMembership),
-      authorizer: jwtAuthorizer,
-    });
-
-    httpApi.addRoutes({
-      path: '/admin/membership-terms',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('CreateMembershipTermsInt', createMembershipTerms),
-      authorizer: jwtAuthorizer,
-    });
-
-    httpApi.addRoutes({
-      path: '/admin/membership-terms/current',
-      methods: [apigw.HttpMethod.GET],
-      integration: new integrations.HttpLambdaIntegration('GetCurrentMembershipTermsInt', getCurrentMembershipTerms),
-      authorizer: jwtAuthorizer,
-    });
-
-    httpApi.addRoutes({
-      path: '/admin/membership-terms',
-      methods: [apigw.HttpMethod.GET],
-      integration: new integrations.HttpLambdaIntegration('ListMembershipTermsInt', listMembershipTerms),
-      authorizer: jwtAuthorizer,
-    });
-
-    // Proposal Management
-    httpApi.addRoutes({
-      path: '/admin/proposals',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('CreateProposalInt', createProposal),
-      authorizer: jwtAuthorizer,
-    });
-
-    httpApi.addRoutes({
-      path: '/admin/proposals',
-      methods: [apigw.HttpMethod.GET],
-      integration: new integrations.HttpLambdaIntegration('ListProposalsInt', listProposals),
-      authorizer: jwtAuthorizer,
-    });
-
-    httpApi.addRoutes({
-      path: '/admin/proposals/{id}/suspend',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('SuspendProposalInt', suspendProposal),
-      authorizer: jwtAuthorizer,
-    });
-
-    httpApi.addRoutes({
-      path: '/admin/proposals/{id}/vote-counts',
-      methods: [apigw.HttpMethod.GET],
-      integration: new integrations.HttpLambdaIntegration('GetProposalVoteCountsInt', getProposalVoteCounts),
-      authorizer: jwtAuthorizer,
-    });
-
-    // Subscription Management
-    httpApi.addRoutes({
-      path: '/admin/subscriptions',
-      methods: [apigw.HttpMethod.GET],
-      integration: new integrations.HttpLambdaIntegration('ListSubscriptionsInt', listSubscriptions),
-      authorizer: jwtAuthorizer,
-    });
-
-    httpApi.addRoutes({
-      path: '/admin/subscriptions/{id}/extend',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('ExtendSubscriptionInt', extendSubscription),
-      authorizer: jwtAuthorizer,
-    });
-
-    httpApi.addRoutes({
-      path: '/admin/subscriptions/{id}/reactivate',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('ReactivateSubscriptionInt', reactivateSubscription),
-      authorizer: jwtAuthorizer,
-    });
-
-    httpApi.addRoutes({
-      path: '/admin/subscription-types',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('CreateSubscriptionTypeInt', createSubscriptionType),
-      authorizer: jwtAuthorizer,
-    });
-
-    httpApi.addRoutes({
-      path: '/admin/subscription-types',
-      methods: [apigw.HttpMethod.GET],
-      integration: new integrations.HttpLambdaIntegration('ListSubscriptionTypesInt', listSubscriptionTypes),
-      authorizer: jwtAuthorizer,
-    });
-
-    httpApi.addRoutes({
-      path: '/admin/subscription-types/{id}/enable',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('EnableSubscriptionTypeInt', enableSubscriptionType),
-      authorizer: jwtAuthorizer,
-    });
-
-    httpApi.addRoutes({
-      path: '/admin/subscription-types/{id}/disable',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('DisableSubscriptionTypeInt', disableSubscriptionType),
-      authorizer: jwtAuthorizer,
-    });
-
-    // Waitlist Management
-    httpApi.addRoutes({
-      path: '/admin/waitlist',
-      methods: [apigw.HttpMethod.GET],
-      integration: new integrations.HttpLambdaIntegration('ListWaitlistInt', listWaitlist),
-      authorizer: jwtAuthorizer,
-    });
-
-    httpApi.addRoutes({
-      path: '/admin/waitlist/send-invites',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('SendWaitlistInvitesInt', sendWaitlistInvites),
-      authorizer: jwtAuthorizer,
-    });
-
-    httpApi.addRoutes({
-      path: '/admin/waitlist',
-      methods: [apigw.HttpMethod.DELETE],
-      integration: new integrations.HttpLambdaIntegration('DeleteWaitlistEntriesInt', deleteWaitlistEntries),
-      authorizer: jwtAuthorizer,
-    });
+    // Export Lambda functions for VettIDStack to use in API routes
+    this.listRegistrations = listRegistrations;
+    this.approveRegistration = approveRegistration;
+    this.rejectRegistration = rejectRegistration;
+    this.createInvite = createInvite;
+    this.listInvites = listInvites;
+    this.expireInvite = expireInvite;
+    this.deleteInvite = deleteInvite;
+    this.disableUser = disableUser;
+    this.enableUser = enableUser;
+    this.deleteUser = deleteUser;
+    this.permanentlyDeleteUser = permanentlyDeleteUser;
+    this.listAdmins = listAdmins;
+    this.addAdmin = addAdmin;
+    this.removeAdmin = removeAdmin;
+    this.disableAdmin = disableAdmin;
+    this.enableAdmin = enableAdmin;
+    this.updateAdminType = updateAdminType;
+    this.resetAdminPassword = resetAdminPassword;
+    this.listMembershipRequests = listMembershipRequests;
+    this.approveMembership = approveMembership;
+    this.denyMembership = denyMembership;
+    this.createMembershipTerms = createMembershipTerms;
+    this.getCurrentMembershipTerms = getCurrentMembershipTerms;
+    this.listMembershipTerms = listMembershipTerms;
+    this.createProposal = createProposal;
+    this.listProposals = listProposals;
+    this.suspendProposal = suspendProposal;
+    this.getProposalVoteCounts = getProposalVoteCounts;
+    this.listSubscriptions = listSubscriptions;
+    this.extendSubscription = extendSubscription;
+    this.reactivateSubscription = reactivateSubscription;
+    this.createSubscriptionType = createSubscriptionType;
+    this.listSubscriptionTypes = listSubscriptionTypes;
+    this.enableSubscriptionType = enableSubscriptionType;
+    this.disableSubscriptionType = disableSubscriptionType;
+    this.listWaitlist = listWaitlist;
+    this.sendWaitlistInvites = sendWaitlistInvites;
+    this.deleteWaitlistEntries = deleteWaitlistEntries;
 
     // ===== SCHEDULED TASKS =====
 
