@@ -357,9 +357,12 @@ Use these values to configure frontends. Cognito callback URLs are pre-configure
 
 **Admin Portal:**
 ```bash
+# Get the values from CDK stack outputs:
+# AdminUserPoolId and AdminClientId
+
 aws cognito-idp update-user-pool-client \
-  --user-pool-id us-east-1_dL1z9ZjcC \
-  --client-id 4cesvt13gboup14elsi90fiete \
+  --user-pool-id <ADMIN_USER_POOL_ID> \
+  --client-id <ADMIN_CLIENT_ID> \
   --callback-urls https://admin.vettid.dev/index.html \
   --logout-urls https://admin.vettid.dev/index.html \
   --allowed-o-auth-flows code \

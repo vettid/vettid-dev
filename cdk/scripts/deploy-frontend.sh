@@ -79,6 +79,14 @@ if grep -q "__API_URL__\|__REGION__\|__ADMIN_\|__MEMBER_" "$CONFIG_FILE"; then
     exit 1
 fi
 
+# Replace placeholders in admin/index.html for CSP header
+ADMIN_HTML="$TEMP_DIR/admin/index.html"
+if [[ -f "$ADMIN_HTML" ]]; then
+    sed -i "s|__API_URL__|$API_URL|g" "$ADMIN_HTML"
+    sed -i "s|__ADMIN_COGNITO_DOMAIN__|$ADMIN_COGNITO_DOMAIN|g" "$ADMIN_HTML"
+    echo -e "${GREEN}Admin HTML CSP header configured${NC}"
+fi
+
 # Upload to S3
 echo -e "${YELLOW}Uploading to S3...${NC}"
 aws s3 sync "$TEMP_DIR" "s3://$S3_BUCKET" \

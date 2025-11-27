@@ -6,6 +6,7 @@ import { CognitoIdentityProviderClient, AdminDeleteUserCommand, AdminGetUserComm
 
 const cognito = new CognitoIdentityProviderClient({});
 const USER_POOL_ID = process.env.USER_POOL_ID!;
+const TABLE_SUBSCRIPTIONS = process.env.TABLE_SUBSCRIPTIONS!;
 
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   // Validate admin group membership
@@ -48,6 +49,19 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     TableName: TABLES.registrations,
     Key: marshall({ registration_id: id })
   }));
+
+  // Delete user's subscription if it exists (using user_guid from registration)
+  if (reg.user_guid && TABLE_SUBSCRIPTIONS) {
+    try {
+      await ddb.send(new DeleteItemCommand({
+        TableName: TABLE_SUBSCRIPTIONS,
+        Key: marshall({ user_guid: reg.user_guid })
+      }));
+    } catch (subError) {
+      // Log but don't fail - subscription may not exist
+      console.log('No subscription to delete or delete failed:', subError);
+    }
+  }
 
   await putAudit({
     type: "user_permanently_deleted",

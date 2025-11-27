@@ -239,7 +239,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
         await ddb.send(new UpdateItemCommand({
           TableName: TABLE_WAITLIST,
           Key: marshall({ waitlist_id: waitlistId }),
-          UpdateExpression: 'SET invited_at = :invited_at, invite_code = :code, #st = :status',
+          UpdateExpression: 'SET invited_at = :invited_at, invite_code = :code, #st = :status, invited_by = :invited_by',
           ExpressionAttributeNames: {
             '#st': 'status',
           },
@@ -247,6 +247,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
             ':invited_at': now.toISOString(),
             ':code': inviteCode,
             ':status': 'invited',
+            ':invited_by': adminEmail || 'unknown',
           }),
         }));
 

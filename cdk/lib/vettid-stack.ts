@@ -912,7 +912,7 @@ removalPolicy: cdk.RemovalPolicy.DESTROY,
     const permanentlyDeleteUser = new lambdaNode.NodejsFunction(this, 'PermanentlyDeleteUserFn', {
       entry: 'lambda/handlers/admin/permanentlyDeleteUser.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
-      environment: { ...defaultEnv, USER_POOL_ID: memberUserPool.userPoolId },
+      environment: { ...defaultEnv, USER_POOL_ID: memberUserPool.userPoolId, TABLE_SUBSCRIPTIONS: subscriptions.tableName },
       timeout: cdk.Duration.seconds(30), // Cognito operations can take time
     });
     const deleteInvite = new lambdaNode.NodejsFunction(this, 'DeleteInviteFn', {
@@ -967,7 +967,7 @@ removalPolicy: cdk.RemovalPolicy.DESTROY,
     const cancelAccount = new lambdaNode.NodejsFunction(this, 'CancelAccountFn', {
       entry: 'lambda/handlers/member/cancelAccount.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
-      environment: { ...defaultEnv, USER_POOL_ID: memberUserPool.userPoolId },
+      environment: { ...defaultEnv, USER_POOL_ID: memberUserPool.userPoolId, TABLE_SUBSCRIPTIONS: subscriptions.tableName },
     });
     const cleanupExpiredAccounts = new lambdaNode.NodejsFunction(this, 'CleanupExpiredAccountsFn', {
       entry: 'lambda/handlers/scheduled/cleanupExpiredAccounts.ts',
@@ -1121,6 +1121,11 @@ removalPolicy: cdk.RemovalPolicy.DESTROY,
       },
       timeout: cdk.Duration.seconds(30),
     });
+    const deleteWaitlistEntries = new lambdaNode.NodejsFunction(this, 'DeleteWaitlistEntriesFn', {
+      entry: 'lambda/handlers/admin/deleteWaitlistEntries.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: { ...defaultEnv, TABLE_WAITLIST: waitlist.tableName },
+    });
     const submitVote = new lambdaNode.NodejsFunction(this, 'SubmitVoteFn', {
       entry: 'lambda/handlers/member/submitVote.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
@@ -1203,7 +1208,9 @@ removalPolicy: cdk.RemovalPolicy.DESTROY,
     registrations.grantReadWriteData(deleteUser);
     registrations.grantReadWriteData(enableUser);
     registrations.grantReadWriteData(permanentlyDeleteUser);
+    subscriptions.grantReadWriteData(permanentlyDeleteUser);
     registrations.grantReadWriteData(cancelAccount);
+    subscriptions.grantReadWriteData(cancelAccount);
     registrations.grantReadWriteData(cleanupExpiredAccounts);
     registrations.grantReadWriteData(enablePin);
     registrations.grantReadWriteData(disablePin);
@@ -1307,8 +1314,10 @@ removalPolicy: cdk.RemovalPolicy.DESTROY,
     audit.grantReadWriteData(disableSubscriptionType);
     waitlist.grantReadData(listWaitlist);
     waitlist.grantReadWriteData(sendWaitlistInvites);
+    waitlist.grantReadWriteData(deleteWaitlistEntries);
     invites.grantReadWriteData(sendWaitlistInvites);
     audit.grantReadWriteData(sendWaitlistInvites);
+    audit.grantReadWriteData(deleteWaitlistEntries);
 
     // SES permissions scoped to specific identity and region
     const sesIdentityArn = `arn:aws:ses:${this.region}:${this.account}:identity/*`;
@@ -1841,6 +1850,12 @@ removalPolicy: cdk.RemovalPolicy.DESTROY,
       path: '/admin/waitlist/send-invites',
       methods: [apigw.HttpMethod.POST],
       integration: new integrations.HttpLambdaIntegration('SendWaitlistInvitesInt', sendWaitlistInvites),
+      authorizer: adminAuthorizer,
+    });
+    httpApi.addRoutes({
+      path: '/admin/waitlist/delete',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('DeleteWaitlistEntriesInt', deleteWaitlistEntries),
       authorizer: adminAuthorizer,
     });
     httpApi.addRoutes({

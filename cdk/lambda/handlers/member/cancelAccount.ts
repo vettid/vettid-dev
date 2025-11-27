@@ -13,9 +13,11 @@ import {
   NotFoundError,
   requireRegisteredOrMemberGroup
 } from "../../common/util";
-import { UpdateItemCommand, QueryCommand } from "@aws-sdk/client-dynamodb";
+import { UpdateItemCommand, QueryCommand, DeleteItemCommand } from "@aws-sdk/client-dynamodb";
 import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
 import { AdminDisableUserCommand } from "@aws-sdk/client-cognito-identity-provider";
+
+const TABLE_SUBSCRIPTIONS = process.env.TABLE_SUBSCRIPTIONS!;
 
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   // Validate registered or member group membership
@@ -81,6 +83,20 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         ":deletion_date": scheduledDeletionIso
       })
     }));
+
+    // Delete user's subscription if it exists
+    const userGuid = (event.requestContext as any)?.authorizer?.jwt?.claims?.['custom:user_guid'];
+    if (userGuid && TABLE_SUBSCRIPTIONS) {
+      try {
+        await ddb.send(new DeleteItemCommand({
+          TableName: TABLE_SUBSCRIPTIONS,
+          Key: marshall({ user_guid: userGuid })
+        }));
+      } catch (subError) {
+        // Log but don't fail - subscription may not exist
+        console.log('No subscription to delete or delete failed:', subError);
+      }
+    }
 
     await putAudit({
       type: "account_canceled",

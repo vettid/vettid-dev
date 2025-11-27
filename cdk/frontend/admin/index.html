@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
   <meta http-equiv="X-Content-Type-Options" content="nosniff" />
   <meta http-equiv="Referrer-Policy" content="strict-origin-when-cross-origin" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://vettid.dev; style-src 'self' 'unsafe-inline' https://vettid.dev; img-src 'self' https://vettid.dev data:; font-src 'self' https://vettid.dev; connect-src 'self' https://cgccjd4djg.execute-api.us-east-1.amazonaws.com https://vettid-admin-vettidstac.auth.us-east-1.amazoncognito.com; base-uri 'self'; form-action 'self';" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://vettid.dev; style-src 'self' 'unsafe-inline' https://vettid.dev; img-src 'self' https://vettid.dev data:; font-src 'self' https://vettid.dev; connect-src 'self' __API_URL__ __ADMIN_COGNITO_DOMAIN__; base-uri 'self'; form-action 'self';" />
   <title>VettID • Admin</title>
   <link rel="icon" type="image/jpeg" href="https://vettid.dev/assets/favicon.ico" />
   <link rel="stylesheet" href="https://vettid.dev/assets/styles.css" />
@@ -205,9 +205,6 @@
           <button id="quickFilterRejected" class="btn waitlist-filter" style="background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);padding:10px 20px;font-weight:600;">
             Rejected <span id="rejectedWaitlistCount" style="background:#991b1b;color:#fff;border-radius:12px;padding:2px 8px;margin-left:8px;font-size:0.75rem;">0</span>
           </button>
-          <button id="quickFilterAllWaitlist" class="btn waitlist-filter" style="background:linear-gradient(135deg,#6b7280 0%,#4b5563 100%);padding:10px 20px;font-weight:600;">
-            All <span id="allWaitlistCount" style="background:#374151;color:#fff;border-radius:12px;padding:2px 8px;margin-left:8px;font-size:0.75rem;">0</span>
-          </button>
         </div>
 
         <!-- Filters and Search -->
@@ -226,6 +223,7 @@
           <button id="refreshWaitlist" class="btn">Refresh</button>
           <button id="sendInvitesBtn" class="btn" style="background:linear-gradient(135deg,#0e9e4d 0%,#0a7a3a 100%);" disabled>Invite</button>
           <button id="rejectWaitlistBtn" class="btn" style="background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);" disabled>Reject</button>
+          <button id="deleteWaitlistBtn" class="btn" style="background:linear-gradient(135deg,#7f1d1d 0%,#450a0a 100%);" disabled>Delete</button>
           <span id="selectedWaitlistCount" style="color:var(--gray);margin-left:auto;"></span>
         </div>
 
@@ -239,6 +237,7 @@
               <th>Status</th>
               <th>Created</th>
               <th>Invited</th>
+              <th>Invited By</th>
             </tr>
           </thead>
           <tbody></tbody>
@@ -318,7 +317,9 @@
         <div style="margin-bottom:16px;display:flex;gap:12px;align-items:center;">
           <button id="refreshUsers" class="btn">Refresh</button>
           <button id="bulkApproveReg" class="btn" style="background:linear-gradient(135deg,#0e9e4d 0%,#0a7a3a 100%);" disabled>Approve Registration</button>
+          <button id="bulkRejectReg" class="btn" style="background:linear-gradient(135deg,#f59e0b 0%,#d97706 100%);" disabled>Reject Registration</button>
           <button id="bulkDisableUsers" class="btn" style="background:linear-gradient(135deg,#ec3024 0%,#c4271e 100%);" disabled>Disable</button>
+          <button id="bulkDeleteUsers" class="btn" style="background:linear-gradient(135deg,#7f1d1d 0%,#450a0a 100%);" disabled>Permanently Delete</button>
           <span id="usersBulkCount" style="color:var(--gray);margin-left:auto;"></span>
         </div>
 
@@ -502,11 +503,6 @@
 
         <!-- Quick Filter Badges and Revenue -->
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;flex-wrap:wrap;gap:12px;">
-          <!-- Estimated Monthly Revenue -->
-          <div style="display:flex;align-items:center;gap:8px;padding:10px 16px;background:#0a0a0a;border-radius:8px;border:1px solid var(--border);">
-            <span style="font-size:0.85rem;color:var(--gray);">Est. Monthly Revenue:</span>
-            <span id="estimatedMonthlyRevenue" style="font-size:1.1rem;font-weight:700;color:#10b981;">$0.00</span>
-          </div>
           <!-- Filter Buttons -->
           <div style="display:flex;gap:12px;flex-wrap:wrap;">
             <button id="quickFilterAllSubs" class="btn filter-active" style="background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);padding:10px 20px;font-weight:600;">
@@ -518,6 +514,11 @@
             <button id="quickFilterFreeSubs" class="btn" style="background:linear-gradient(135deg,#8b5cf6 0%,#6d28d9 100%);padding:10px 20px;font-weight:600;">
               Free <span id="freeSubsCount" style="background:#4c1d95;color:#fff;border-radius:12px;padding:2px 8px;margin-left:8px;font-size:0.75rem;">0</span>
             </button>
+          </div>
+          <!-- Estimated Monthly Revenue -->
+          <div style="display:flex;align-items:center;gap:8px;padding:10px 16px;background:#0a0a0a;border-radius:8px;border:1px solid var(--border);">
+            <span style="font-size:0.85rem;color:var(--gray);">Est. Monthly Revenue:</span>
+            <span id="estimatedMonthlyRevenue" style="font-size:1.1rem;font-weight:700;color:#10b981;">$0.00</span>
           </div>
         </div>
 
@@ -967,8 +968,9 @@ async function loadUsers(resetPage=true){
         subMap.set(s.user_guid,s);
       });
 
-      // Combine all data
-      allUsersData=regData.map(r=>{
+      // Combine all data - regData returns {items: [...]} not a direct array
+      const registrations = regData.items || regData || [];
+      allUsersData=registrations.map(r=>{
         const member=memberMap.get(r.registration_id)||{};
         const sub=subMap.get(r.user_guid)||{};
         return{
@@ -1076,9 +1078,15 @@ function updateUsersSelectedCount(){
   // Check if any selected users are approved (for disable button)
   const hasApproved=Array.from(checkboxes).some(cb=>cb.dataset.status==='approved');
 
+  // Check if any selected users are disabled or rejected (for permanent delete button)
+  const hasDisabled=Array.from(checkboxes).some(cb=>cb.dataset.status==='disabled');
+  const hasRejected=Array.from(checkboxes).some(cb=>cb.dataset.status==='rejected');
+
   // Enable/disable buttons based on selection
   document.getElementById('bulkApproveReg').disabled=count===0||!hasPendingReg;
+  document.getElementById('bulkRejectReg').disabled=count===0||!hasPendingReg;
   document.getElementById('bulkDisableUsers').disabled=count===0||!hasApproved;
+  document.getElementById('bulkDeleteUsers').disabled=count===0||!(hasDisabled||hasRejected);
 }
 
 // Quick filter buttons
@@ -1151,6 +1159,30 @@ document.getElementById('bulkApproveReg').onclick=async()=>{
   await loadUsers();
 };
 
+document.getElementById('bulkRejectReg').onclick=async()=>{
+  const checkboxes=document.querySelectorAll('.user-checkbox:checked');
+  const items=Array.from(checkboxes).filter(cb=>cb.dataset.status==='pending');
+  if(items.length===0){showToast('No pending registrations selected','warning');return;}
+  const reason=prompt('Enter rejection reason (optional):');
+  if(reason===null)return; // User cancelled
+  if(!confirm(`Reject ${items.length} registration(s)?`))return;
+  const progressToast=showToast(`Processing 0 of ${items.length}...`,'info',0);
+  const results=await Promise.allSettled(items.map((cb,i)=>
+    api(`/admin/registrations/${cb.dataset.id}/reject`,{method:'POST',body:JSON.stringify({reason})}).then(()=>{
+      progressToast.querySelector('span').textContent=`Processing ${i+1} of ${items.length}...`;
+    })
+  ));
+  progressToast.remove();
+  const succeeded=results.filter(r=>r.status==='fulfilled').length;
+  const failed=results.filter(r=>r.status==='rejected').length;
+  if(failed>0){
+    showToast(`${succeeded} succeeded, ${failed} failed`,'warning');
+  }else{
+    showToast(`Rejected ${succeeded} registration(s) successfully`,'success');
+  }
+  await loadUsers();
+};
+
 document.getElementById('bulkDisableUsers').onclick=async()=>{
   const checkboxes=document.querySelectorAll('.user-checkbox:checked');
   const items=Array.from(checkboxes).filter(cb=>cb.dataset.status==='approved');
@@ -1169,6 +1201,29 @@ document.getElementById('bulkDisableUsers').onclick=async()=>{
     showToast(`${succeeded} succeeded, ${failed} failed`,'warning');
   }else{
     showToast(`Disabled ${succeeded} user(s) successfully`,'success');
+  }
+  await loadUsers();
+};
+
+document.getElementById('bulkDeleteUsers').onclick=async()=>{
+  const checkboxes=document.querySelectorAll('.user-checkbox:checked');
+  const items=Array.from(checkboxes).filter(cb=>cb.dataset.status==='disabled'||cb.dataset.status==='rejected');
+  if(items.length===0){showToast('No disabled or rejected users selected','warning');return;}
+  if(!confirm(`WARNING: This will PERMANENTLY DELETE ${items.length} user(s).\n\nThis action cannot be undone. All user data will be removed from the system.\n\nAre you sure you want to continue?`))return;
+  if(!confirm(`FINAL CONFIRMATION: Permanently delete ${items.length} user(s)?`))return;
+  const progressToast=showToast(`Deleting 0 of ${items.length}...`,'info',0);
+  const results=await Promise.allSettled(items.map((cb,i)=>
+    api(`/admin/users/${cb.dataset.id}/permanently-delete`,{method:'POST'}).then(()=>{
+      progressToast.querySelector('span').textContent=`Deleting ${i+1} of ${items.length}...`;
+    })
+  ));
+  progressToast.remove();
+  const succeeded=results.filter(r=>r.status==='fulfilled').length;
+  const failed=results.filter(r=>r.status==='rejected').length;
+  if(failed>0){
+    showToast(`${succeeded} deleted, ${failed} failed`,'warning');
+  }else{
+    showToast(`Permanently deleted ${succeeded} user(s)`,'success');
   }
   await loadUsers();
 };
@@ -3071,8 +3126,7 @@ async function loadWaitlist(resetPage = true) {
   if (resetPage) waitlistPaginationState.currentPage = 1;
 
   // Show loading state
-  const tbody = document.querySelector('#waitlistTable tbody');
-  tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:40px;color:#999;">Loading waitlist data...</td></tr>';
+  showLoadingSkeleton('waitlistTable');
 
   try {
     const token = idToken();
@@ -3085,7 +3139,8 @@ async function loadWaitlist(resetPage = true) {
     updateWaitlistCounts();
     renderWaitlist();
   } catch (err) {
-    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:40px;color:#f44;">Failed to load waitlist. Please refresh and try again.</td></tr>';
+    const tbody = document.querySelector('#waitlistTable tbody');
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:40px;color:#f44;">Failed to load waitlist. Please refresh and try again.</td></tr>';
     showToast(err.message || 'Failed to load waitlist', 'error');
   }
 }
@@ -3098,7 +3153,6 @@ function updateWaitlistCounts() {
   document.getElementById('pendingWaitlistCount').textContent = pending;
   document.getElementById('invitedWaitlistCount').textContent = invited;
   document.getElementById('rejectedWaitlistCount').textContent = rejected;
-  document.getElementById('allWaitlistCount').textContent = allWaitlistData.length;
 }
 
 function renderWaitlist() {
@@ -3143,6 +3197,7 @@ function renderWaitlist() {
     const name = `${w.first_name || ''} ${w.last_name || ''}`.trim() || '—';
     const createdDate = w.created_at ? new Date(w.created_at).toLocaleString() : '—';
     const invitedDate = w.invited_at ? new Date(w.invited_at).toLocaleString() : '—';
+    const invitedBy = w.invited_by ? escapeHtml(w.invited_by) : '—';
 
     let statusBadge = '<span style="display:inline-block;background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);color:#fff;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;">Pending</span>';
     if (w.status === 'invited') {
@@ -3152,7 +3207,7 @@ function renderWaitlist() {
     }
 
     const isDisabled = w.status === 'invited' || w.status === 'rejected';
-    tr.innerHTML = `<td><input type='checkbox' class='waitlist-checkbox' data-id='${escapeHtml(w.waitlist_id)}' ${isDisabled ? 'disabled title="Already processed"' : ''} /></td><td>${escapeHtml(name)}</td><td>${escapeHtml(w.email)}</td><td>${statusBadge}</td><td>${createdDate}</td><td>${invitedDate}</td>`;
+    tr.innerHTML = `<td><input type='checkbox' class='waitlist-checkbox' data-id='${escapeHtml(w.waitlist_id)}' ${isDisabled ? 'disabled title="Already processed"' : ''} /></td><td>${escapeHtml(name)}</td><td>${escapeHtml(w.email)}</td><td>${statusBadge}</td><td>${createdDate}</td><td>${invitedDate}</td><td>${invitedBy}</td>`;
     tbody.appendChild(tr);
   });
 
@@ -3166,6 +3221,7 @@ function updateWaitlistSelectedCount() {
   document.getElementById('selectedWaitlistCount').textContent = countText;
   document.getElementById('sendInvitesBtn').disabled = count === 0;
   document.getElementById('rejectWaitlistBtn').disabled = count === 0;
+  document.getElementById('deleteWaitlistBtn').disabled = count === 0;
 }
 
 document.getElementById('selectAllWaitlist').onchange = function() {
@@ -3284,14 +3340,6 @@ document.getElementById('quickFilterRejected').onclick = () => {
   renderWaitlist();
 };
 
-document.getElementById('quickFilterAllWaitlist').onclick = () => {
-  waitlistQuickFilter = 'all';
-  document.querySelectorAll('.waitlist-filter').forEach(btn => btn.classList.remove('active'));
-  document.getElementById('quickFilterAllWaitlist').classList.add('active');
-  waitlistPaginationState.currentPage = 1;
-  renderWaitlist();
-};
-
 // Reject waitlist functionality
 document.getElementById('rejectWaitlistBtn').onclick = async () => {
   const checkboxes = document.querySelectorAll('.waitlist-checkbox:checked');
@@ -3320,6 +3368,49 @@ document.getElementById('rejectWaitlistBtn').onclick = async () => {
   showToast(`Rejected ${waitlist_ids.length} ${waitlist_ids.length === 1 ? 'entry' : 'entries'}`, 'success');
   updateWaitlistCounts();
   renderWaitlist();
+};
+
+document.getElementById('deleteWaitlistBtn').onclick = async () => {
+  const checkboxes = document.querySelectorAll('.waitlist-checkbox:checked');
+  if (checkboxes.length === 0) {
+    showToast('Please select at least one waitlist entry', 'warning');
+    return;
+  }
+
+  if (!confirm(`Permanently delete ${checkboxes.length} waitlist ${checkboxes.length === 1 ? 'entry' : 'entries'}? This cannot be undone.`)) return;
+
+  const waitlist_ids = Array.from(checkboxes).map(cb => cb.getAttribute('data-id'));
+
+  try {
+    const token = idToken();
+    const res = await fetch(`${API_URL}/admin/waitlist/delete`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify({ waitlist_ids })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.message || 'Failed to delete waitlist entries');
+
+    // Remove deleted entries from local data
+    data.deleted.forEach(id => {
+      const idx = allWaitlistData.findIndex(w => w.waitlist_id === id);
+      if (idx !== -1) allWaitlistData.splice(idx, 1);
+    });
+
+    const successMsg = `Deleted ${data.deleted.length} ${data.deleted.length === 1 ? 'entry' : 'entries'}`;
+    if (data.failed && data.failed.length > 0) {
+      showToast(`${successMsg}. ${data.failed.length} failed.`, 'warning');
+    } else {
+      showToast(successMsg, 'success');
+    }
+    updateWaitlistCounts();
+    renderWaitlist();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
 };
 
 </script>
