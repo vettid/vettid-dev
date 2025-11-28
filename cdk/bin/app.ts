@@ -26,21 +26,16 @@ const core = new VettIdStack(app, 'VettIDStack', {
 const admin = new AdminStack(app, 'VettID-Admin', {
   env,
   infrastructure,
-  termsBucket: core.termsBucket,
 });
 
 // 4. Add admin routes to VettIDStack API
 core.addAdminRoutes(admin);
 
-// 4. Deploy vault stack (vault Lambda functions and routes)
-// TODO: Commented out due to cyclic dependency during synthesis - needs investigation
-// Vault functionality currently remains in VettIDStack
-/*
-new VaultStack(app, 'VettID-Vault', {
+// 5. Deploy vault stack (vault Lambda functions only, routes added by VettIDStack)
+const vault = new VaultStack(app, 'VettID-Vault', {
   env,
   infrastructure,
-  httpApi: core.httpApi,
-  jwtAuthorizer: core.memberAuthorizer,
-  memberUserPool: core.memberUserPool,
 });
-*/
+
+// 6. Add vault routes to VettIDStack API
+core.addVaultRoutes(vault);

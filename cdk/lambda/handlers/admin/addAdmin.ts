@@ -1,14 +1,16 @@
 import { APIGatewayProxyHandlerV2 } from "aws-lambda";
-import { ok, badRequest, putAudit, requireAdminGroup, validateOrigin, validateEmail, validateName, checkRateLimit, hashIdentifier, tooManyRequests, getAdminEmail } from "../../common/util";
+import { ok, badRequest, putAudit, requireAdminGroup, validateOrigin, validateEmail, validateName, checkRateLimit, hashIdentifier, tooManyRequests, getAdminEmail, internalError } from "../../common/util";
 import { CognitoIdentityProviderClient, AdminCreateUserCommand, AdminAddUserToGroupCommand, AdminGetUserCommand, AdminUpdateUserAttributesCommand } from "@aws-sdk/client-cognito-identity-provider";
 
 const cognito = new CognitoIdentityProviderClient({});
-const USER_POOL_ID = process.env.USER_POOL_ID!;
+const USER_POOL_ID = process.env.ADMIN_USER_POOL_ID!;
 const ADMIN_GROUP = process.env.ADMIN_GROUP || "admin";
 
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
+  const requestOrigin = event.headers?.origin || event.headers?.Origin;
+
   // Validate admin group membership
-  const authError = requireAdminGroup(event);
+  const authError = requireAdminGroup(event, requestOrigin);
   if (authError) return authError;
 
   // CSRF protection: Validate request origin
@@ -20,7 +22,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   const callerHash = hashIdentifier(callerEmail);
   const isAllowed = await checkRateLimit(callerHash, 'add_admin', 10, 60);
   if (!isAllowed) {
-    return tooManyRequests("Too many admin creation requests. Please try again later.");
+    return tooManyRequests("Too many admin creation requests. Please try again later.", requestOrigin);
   }
 
   // Validate and sanitize inputs with proper error handling
@@ -39,7 +41,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       throw new Error('Invalid admin type. Must be one of: admin, user_admin, subscriber_admin, vote_admin');
     }
   } catch (error: any) {
-    return badRequest(error.message || 'Invalid input');
+    return badRequest(error.message || 'Invalid input', requestOrigin);
   }
 
   const adminEmail = (event.requestContext as any)?.authorizer?.jwt?.claims?.email || "unknown@vettid.dev";
@@ -104,12 +106,12 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     return ok({
       message: userExists ? "User added to admin group" : "Admin user created successfully",
       email
-    });
+    }, requestOrigin);
   } catch (error: any) {
     console.error('Error adding admin user:', error);
     if (error.name === 'UsernameExistsException') {
-      return badRequest("User already exists");
+      return badRequest("User already exists", requestOrigin);
     }
-    throw error;
+    return internalError('Failed to add admin user', requestOrigin);
   }
 };

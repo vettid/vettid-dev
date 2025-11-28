@@ -1,5 +1,5 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
-import { DynamoDBClient, GetItemCommand, PutItemCommand, QueryCommand } from '@aws-sdk/client-dynamodb';
+import { DynamoDBClient, GetItemCommand, PutItemCommand } from '@aws-sdk/client-dynamodb';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import {
   ok,
@@ -13,7 +13,6 @@ import {
 const ddb = new DynamoDBClient({});
 const TABLE_VOTES = process.env.TABLE_VOTES!;
 const TABLE_PROPOSALS = process.env.TABLE_PROPOSALS!;
-const TABLE_REGISTRATIONS = process.env.TABLE_REGISTRATIONS!;
 
 /**
  * Submit a vote on a proposal
@@ -24,33 +23,17 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
   const requestId = getRequestId(event);
 
   try {
-    // Get user_guid from JWT claims
+    // Get user_guid and email from JWT claims
     const claims = (event.requestContext as any)?.authorizer?.jwt?.claims;
     const email = claims?.email;
+    const user_guid = claims?.['custom:user_guid'];
 
     if (!email) {
       return badRequest('Email not found in token');
     }
 
-    // Get user_guid from registrations table using email-index GSI
-    const registrationsResult = await ddb.send(new QueryCommand({
-      TableName: TABLE_REGISTRATIONS,
-      IndexName: 'email-index',
-      KeyConditionExpression: 'email = :email',
-      ExpressionAttributeValues: marshall({
-        ':email': email,
-      }),
-    }));
-
-    if (!registrationsResult.Items || registrationsResult.Items.length === 0) {
-      return badRequest('User registration not found');
-    }
-
-    const registration = unmarshall(registrationsResult.Items[0]);
-    const user_guid = registration.user_guid;
-
     if (!user_guid) {
-      return badRequest('User GUID not found');
+      return badRequest('User GUID not found in token');
     }
 
     // Parse request body
@@ -95,10 +78,12 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     }
 
     // Check if user has already voted
-    const voteId = `${user_guid}#${proposal_id}`;
     const existingVoteResult = await ddb.send(new GetItemCommand({
       TableName: TABLE_VOTES,
-      Key: marshall({ vote_id: voteId }),
+      Key: marshall({
+        proposal_id: proposal_id,
+        user_guid: user_guid,
+      }),
     }));
 
     if (existingVoteResult.Item) {
@@ -107,9 +92,8 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
 
     // Create vote record
     const voteRecord = {
-      vote_id: voteId,
-      user_guid: user_guid,
       proposal_id: proposal_id,
+      user_guid: user_guid,
       vote: vote,
       voted_at: now.toISOString(),
     };

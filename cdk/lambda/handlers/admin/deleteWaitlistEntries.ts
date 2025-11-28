@@ -1,7 +1,7 @@
 import { APIGatewayProxyHandlerV2 } from "aws-lambda";
 import { ddb, ok, badRequest, putAudit, requireAdminGroup } from "../../common/util";
-import { DeleteItemCommand, BatchWriteItemCommand } from "@aws-sdk/client-dynamodb";
-import { marshall } from "@aws-sdk/util-dynamodb";
+import { DeleteItemCommand, BatchWriteItemCommand, ScanCommand } from "@aws-sdk/client-dynamodb";
+import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
 
 const TABLE_WAITLIST = process.env.TABLE_WAITLIST!;
 
@@ -26,12 +26,29 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   const deleted: string[] = [];
   const failed: { id: string; error: string }[] = [];
 
-  // Delete items one by one (could use BatchWriteItem for better performance)
+  // Delete items one by one (scan for waitlist_id to get email, then delete by email)
   for (const id of waitlist_ids) {
     try {
+      // Find the waitlist entry by waitlist_id to get the email (partition key)
+      const scanResult = await ddb.send(new ScanCommand({
+        TableName: TABLE_WAITLIST,
+        FilterExpression: 'waitlist_id = :wid',
+        ExpressionAttributeValues: marshall({ ':wid': id }),
+        Limit: 1,
+      }));
+
+      if (!scanResult.Items || scanResult.Items.length === 0) {
+        failed.push({ id, error: "Waitlist entry not found" });
+        continue;
+      }
+
+      const entry = unmarshall(scanResult.Items[0]);
+      const email = entry.email;
+
+      // Delete using email as partition key
       await ddb.send(new DeleteItemCommand({
         TableName: TABLE_WAITLIST,
-        Key: marshall({ waitlist_id: id })
+        Key: marshall({ email })
       }));
       deleted.push(id);
     } catch (error: any) {

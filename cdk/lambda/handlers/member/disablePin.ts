@@ -8,10 +8,26 @@ import {
   internalError,
   putAudit,
   requireRegisteredOrMemberGroup,
-  getRequestId
+  getRequestId,
+  parseJsonBody
 } from "../../common/util";
-import { UpdateItemCommand, QueryCommand } from "@aws-sdk/client-dynamodb";
+import { UpdateItemCommand, QueryCommand, ScanCommand } from "@aws-sdk/client-dynamodb";
 import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
+import { createHash } from "crypto";
+
+/**
+ * Hash PIN using SHA-256
+ */
+function hashPin(pin: string): string {
+  return createHash('sha256').update(pin).digest('hex');
+}
+
+/**
+ * Validate PIN format (4-6 digits)
+ */
+function isValidPin(pin: string): boolean {
+  return /^\d{4,6}$/.test(pin);
+}
 
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   // Validate registered or member group membership
@@ -27,12 +43,22 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       return badRequest("Unable to identify user");
     }
 
-    // Find the user's registration by email using GSI
-    const queryResult = await ddb.send(new QueryCommand({
+    // Parse request body to get current PIN
+    const body = parseJsonBody(event);
+    const currentPin = body.currentPin;
+
+    if (!currentPin || typeof currentPin !== 'string') {
+      return badRequest("Current PIN is required");
+    }
+
+    if (!isValidPin(currentPin)) {
+      return badRequest("Current PIN must be 4-6 digits");
+    }
+
+    // Find the user's registration by email using Scan
+    const queryResult = await ddb.send(new ScanCommand({
       TableName: TABLES.registrations,
-      IndexName: 'email-index',
-      KeyConditionExpression: "email = :email",
-      FilterExpression: "#s = :approved",
+      FilterExpression: "email = :email AND #s = :approved",
       ExpressionAttributeNames: {
         "#s": "status"
       },
@@ -48,6 +74,25 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     }
 
     const reg = unmarshall(queryResult.Items[0]) as any;
+
+    // Check if PIN is enabled
+    if (!reg.pin_enabled) {
+      return badRequest("PIN is not enabled");
+    }
+
+    // Verify current PIN matches stored hash
+    const currentPinHash = hashPin(currentPin);
+    if (currentPinHash !== reg.pin_hash) {
+      // SECURITY: Log failed PIN verification attempts for security monitoring
+      await putAudit({
+        type: "pin_verification_failed_on_disable",
+        registration_id: reg.registration_id,
+        email: userEmail,
+        failed_at: new Date().toISOString()
+      }, requestId);
+      return badRequest("Current PIN is incorrect");
+    }
+
     const now = new Date().toISOString();
 
     // Disable PIN (remove hash and set enabled to false)

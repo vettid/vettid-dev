@@ -8,6 +8,7 @@ import {
   PutItemCommand,
   UpdateItemCommand,
   QueryCommand,
+  ScanCommand,
 } from '@aws-sdk/client-dynamodb';
 import { SESClient, VerifyEmailIdentityCommand, GetIdentityVerificationAttributesCommand } from '@aws-sdk/client-ses';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
@@ -197,13 +198,11 @@ export const handler = async (
     return badRequest('Invite is invalid, expired, or exhausted.', origin);
   }
 
-  // Check for duplicate email using GSI (exclude deleted and rejected registrations)
+  // Check for duplicate email using Scan (exclude deleted and rejected registrations)
   const existingRegs = await ddb.send(
-    new QueryCommand({
+    new ScanCommand({
       TableName: TABLE_REGISTRATIONS,
-      IndexName: 'email-index',
-      KeyConditionExpression: 'email = :email',
-      FilterExpression: '#s <> :deleted AND #s <> :rejected',
+      FilterExpression: 'email = :email AND #s <> :deleted AND #s <> :rejected',
       ExpressionAttributeNames: {
         '#s': 'status',
       },

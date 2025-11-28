@@ -1,5 +1,5 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
-import { DynamoDBClient, GetItemCommand, PutItemCommand, UpdateItemCommand } from '@aws-sdk/client-dynamodb';
+import { DynamoDBClient, ScanCommand, PutItemCommand, UpdateItemCommand } from '@aws-sdk/client-dynamodb';
 import { SESClient, SendEmailCommand, GetIdentityVerificationAttributesCommand, VerifyEmailIdentityCommand } from '@aws-sdk/client-ses';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import { randomBytes } from 'crypto';
@@ -95,13 +95,17 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     for (const waitlistId of payload.waitlist_ids) {
       let email = 'unknown';
       try {
-        // Get waitlist entry
-        const waitlistResult = await ddb.send(new GetItemCommand({
+        // Get waitlist entry by scanning for waitlist_id (since email is the partition key)
+        const waitlistResult = await ddb.send(new ScanCommand({
           TableName: TABLE_WAITLIST,
-          Key: marshall({ waitlist_id: waitlistId }),
+          FilterExpression: 'waitlist_id = :wid',
+          ExpressionAttributeValues: marshall({
+            ':wid': waitlistId,
+          }),
+          Limit: 1,
         }));
 
-        if (!waitlistResult.Item) {
+        if (!waitlistResult.Items || waitlistResult.Items.length === 0) {
           results.failed.push({
             waitlist_id: waitlistId,
             email: 'unknown',
@@ -110,7 +114,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
           continue;
         }
 
-        const waitlistEntry = unmarshall(waitlistResult.Item);
+        const waitlistEntry = unmarshall(waitlistResult.Items[0]);
         email = waitlistEntry.email || 'unknown';
         const first_name = waitlistEntry.first_name || '';
         const last_name = waitlistEntry.last_name || '';
@@ -235,10 +239,10 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
 
         await ses.send(new SendEmailCommand(emailParams));
 
-        // Mark waitlist entry as invited
+        // Mark waitlist entry as invited (using email as partition key)
         await ddb.send(new UpdateItemCommand({
           TableName: TABLE_WAITLIST,
-          Key: marshall({ waitlist_id: waitlistId }),
+          Key: marshall({ email }),
           UpdateExpression: 'SET invited_at = :invited_at, invite_code = :code, #st = :status, invited_by = :invited_by',
           ExpressionAttributeNames: {
             '#st': 'status',

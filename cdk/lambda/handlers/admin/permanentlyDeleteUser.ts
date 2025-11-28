@@ -13,8 +13,8 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   const authError = requireAdminGroup(event);
   if (authError) return authError;
 
-  const id = event.pathParameters?.id;
-  if (!id) return badRequest("id required");
+  const id = event.pathParameters?.user_id;
+  if (!id) return badRequest("user_id required");
 
   const regRes = await ddb.send(new GetItemCommand({
     TableName: TABLES.registrations,

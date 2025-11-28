@@ -15,7 +15,7 @@ const TABLE_SUBSCRIPTION_TYPES = process.env.TABLE_SUBSCRIPTION_TYPES!;
 
 /**
  * Enable a subscription type
- * POST /admin/subscription-types/{subscription_type_id}/enable
+ * POST /admin/subscription-types/{id}/enable
  */
 export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   // Require admin group membership
@@ -33,7 +33,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       return badRequest('Email not found in token');
     }
 
-    const subscriptionTypeId = event.pathParameters?.subscription_type_id;
+    const subscriptionTypeId = event.pathParameters?.id;
 
     if (!subscriptionTypeId) {
       return badRequest('Subscription type ID is required');

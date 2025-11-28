@@ -263,8 +263,8 @@
           <button id="quickFilterActive" class="btn" style="background:linear-gradient(135deg,#10b981 0%,#059669 100%);padding:10px 20px;font-weight:600;">
             Active <span id="activeCount" style="background:#065f46;color:#fff;border-radius:12px;padding:2px 8px;margin-left:8px;font-size:0.75rem;">0</span>
           </button>
-          <button id="quickFilterAll" class="btn" style="background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);padding:10px 20px;font-weight:600;">
-            All Users <span id="allCount" style="background:#1e40af;color:#fff;border-radius:12px;padding:2px 8px;margin-left:8px;font-size:0.75rem;">0</span>
+          <button id="quickFilterDisabled" class="btn" style="background:linear-gradient(135deg,#ec4899 0%,#be185d 100%);padding:10px 20px;font-weight:600;">
+            Disabled <span id="disabledCount" style="background:#9f1239;color:#fff;border-radius:12px;padding:2px 8px;margin-left:8px;font-size:0.75rem;">0</span>
           </button>
         </div>
 
@@ -316,10 +316,11 @@
         <!-- Action Buttons -->
         <div style="margin-bottom:16px;display:flex;gap:12px;align-items:center;">
           <button id="refreshUsers" class="btn">Refresh</button>
-          <button id="bulkApproveReg" class="btn" style="background:linear-gradient(135deg,#0e9e4d 0%,#0a7a3a 100%);" disabled>Approve Registration</button>
-          <button id="bulkRejectReg" class="btn" style="background:linear-gradient(135deg,#f59e0b 0%,#d97706 100%);" disabled>Reject Registration</button>
+          <button id="bulkApproveReg" class="btn" style="background:linear-gradient(135deg,#0e9e4d 0%,#0a7a3a 100%);" disabled>Approve</button>
+          <button id="bulkRejectReg" class="btn" style="background:linear-gradient(135deg,#f59e0b 0%,#d97706 100%);" disabled>Reject</button>
           <button id="bulkDisableUsers" class="btn" style="background:linear-gradient(135deg,#ec3024 0%,#c4271e 100%);" disabled>Disable</button>
-          <button id="bulkDeleteUsers" class="btn" style="background:linear-gradient(135deg,#7f1d1d 0%,#450a0a 100%);" disabled>Permanently Delete</button>
+          <button id="bulkEnableUsers" class="btn" style="background:linear-gradient(135deg,#0e9e4d 0%,#0a7a3a 100%);" disabled>Enable</button>
+          <button id="bulkDeleteUsers" class="btn" style="background:linear-gradient(135deg,#7f1d1d 0%,#450a0a 100%);" disabled>Delete</button>
           <span id="usersBulkCount" style="color:var(--gray);margin-left:auto;"></span>
         </div>
 
@@ -400,9 +401,6 @@
           </button>
           <button id="quickFilterDisabledAdmins" class="btn" style="background:linear-gradient(135deg,#6b7280 0%,#4b5563 100%);padding:10px 20px;font-weight:600;">
             Disabled <span id="disabledAdminsCount" style="background:#374151;color:#fff;border-radius:12px;padding:2px 8px;margin-left:8px;font-size:0.75rem;">0</span>
-          </button>
-          <button id="quickFilterAllAdmins" class="btn" style="background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);padding:10px 20px;font-weight:600;">
-            All
           </button>
         </div>
 
@@ -788,6 +786,7 @@ function saveTokens(t){localStorage.setItem('tokens',JSON.stringify(t));}
 function loadTokens(){try{return JSON.parse(localStorage.getItem('tokens')||'null')}catch{return null}}
 function clearTokens(){localStorage.removeItem('tokens');}
 function idToken(){return (loadTokens()||{}).id_token;}
+function accessToken(){return (loadTokens()||{}).access_token;}
 function refreshToken(){return (loadTokens()||{}).refresh_token;}
 function signedIn(){return !!idToken();}
 function b64urlDecode(str){str=str.replace(/-/g,'+').replace(/_/g,'/');const pad=str.length%4?4-(str.length%4):0;return atob(str+'='.repeat(pad));}
@@ -952,7 +951,7 @@ async function loadUsers(resetPage=true){
     if(resetPage||allUsersData.length===0){
       const [regData,memberData,subData]=await Promise.all([
         api('/admin/registrations'),
-        api('/admin/memberships'),
+        api('/admin/membership-requests'),
         api('/admin/subscriptions?status=active')
       ]);
 
@@ -1015,6 +1014,9 @@ async function loadUsers(resetPage=true){
       }else if(userFilters.quickFilter==='active'){
         const isActive=u.status==='approved'&&u.subscription_status==='active';
         if(!isActive)return false;
+      }else if(userFilters.quickFilter==='disabled'){
+        const isDisabled=u.status==='disabled';
+        if(!isDisabled)return false;
       }
 
       return true;
@@ -1028,9 +1030,10 @@ async function loadUsers(resetPage=true){
     // Update counts
     const actionCount=allUsersData.filter(u=>u.status==='pending'||u.membership_status==='pending').length;
     const activeCount=allUsersData.filter(u=>u.status==='approved'&&u.subscription_status==='active').length;
+    const disabledCount=allUsersData.filter(u=>u.status==='disabled').length;
     document.getElementById('actionCount').textContent=actionCount;
     document.getElementById('activeCount').textContent=activeCount;
-    document.getElementById('allCount').textContent=allUsersData.length;
+    document.getElementById('disabledCount').textContent=disabledCount;
 
     // Pagination
     const page=updatePagination('users',filtered);
@@ -1086,6 +1089,7 @@ function updateUsersSelectedCount(){
   document.getElementById('bulkApproveReg').disabled=count===0||!hasPendingReg;
   document.getElementById('bulkRejectReg').disabled=count===0||!hasPendingReg;
   document.getElementById('bulkDisableUsers').disabled=count===0||!hasApproved;
+  document.getElementById('bulkEnableUsers').disabled=count===0||!hasDisabled;
   document.getElementById('bulkDeleteUsers').disabled=count===0||!(hasDisabled||hasRejected);
 }
 
@@ -1106,12 +1110,12 @@ document.getElementById('quickFilterActive').onclick=()=>{
   document.getElementById('quickFilterActive').classList.add('filter-active');
   loadUsers(false);
 };
-document.getElementById('quickFilterAll').onclick=()=>{
-  userFilters.quickFilter='all';
+document.getElementById('quickFilterDisabled').onclick=()=>{
+  userFilters.quickFilter='disabled';
   document.querySelectorAll('#users .btn').forEach(btn => {
     if(btn.id && btn.id.startsWith('quickFilter')) btn.classList.remove('filter-active');
   });
-  document.getElementById('quickFilterAll').classList.add('filter-active');
+  document.getElementById('quickFilterDisabled').classList.add('filter-active');
   loadUsers(false);
 };
 
@@ -1201,6 +1205,28 @@ document.getElementById('bulkDisableUsers').onclick=async()=>{
     showToast(`${succeeded} succeeded, ${failed} failed`,'warning');
   }else{
     showToast(`Disabled ${succeeded} user(s) successfully`,'success');
+  }
+  await loadUsers();
+};
+
+document.getElementById('bulkEnableUsers').onclick=async()=>{
+  const checkboxes=document.querySelectorAll('.user-checkbox:checked');
+  const items=Array.from(checkboxes).filter(cb=>cb.dataset.status==='disabled');
+  if(items.length===0){showToast('No disabled users selected','warning');return;}
+  if(!confirm(`Enable ${items.length} user(s)?`))return;
+  const progressToast=showToast(`Processing 0 of ${items.length}...`,'info',0);
+  const results=await Promise.allSettled(items.map((cb,i)=>
+    api(`/admin/users/${cb.dataset.id}/enable`,{method:'POST'}).then(()=>{
+      progressToast.querySelector('span').textContent=`Processing ${i+1} of ${items.length}...`;
+    })
+  ));
+  progressToast.remove();
+  const succeeded=results.filter(r=>r.status==='fulfilled').length;
+  const failed=results.filter(r=>r.status==='rejected').length;
+  if(failed>0){
+    showToast(`${succeeded} succeeded, ${failed} failed`,'warning');
+  }else{
+    showToast(`Enabled ${succeeded} user(s) successfully`,'success');
   }
   await loadUsers();
 };
@@ -1545,15 +1571,6 @@ document.getElementById('quickFilterDisabledAdmins').onclick=()=>{
   paginationState.admins.page=0;
   loadAdmins(false);
 };
-document.getElementById('quickFilterAllAdmins').onclick=()=>{
-  adminQuickFilter='all';
-  document.querySelectorAll('#admins .btn').forEach(btn => {
-    if(btn.id && btn.id.includes('Admins')) btn.classList.remove('filter-active');
-  });
-  document.getElementById('quickFilterAllAdmins').classList.add('filter-active');
-  paginationState.admins.page=0;
-  loadAdmins(false);
-};
 
 document.getElementById('refreshInvites').onclick=loadInvites;
 document.getElementById('refreshAdmins').onclick=loadAdmins;
@@ -1834,17 +1851,31 @@ if(submitPasswordChange){
 }
 
 // Change Password via Backend API
-// More secure approach: Backend re-authenticates with current password
-// to get fresh access token before changing password
+// Uses access token (required by Cognito ChangePasswordCommand)
 async function changePassword(oldPassword,newPassword){
-  const result=await api('/admin/change-password',{
-    method:'POST',
-    body:JSON.stringify({
-      currentPassword:oldPassword,
-      newPassword:newPassword
+  const token = accessToken();
+  if (!token) {
+    throw new Error('No access token available');
+  }
+
+  const res = await fetch(API_URL + '/admin/change-password', {
+    method: 'POST',
+    headers: {
+      'Authorization': 'Bearer ' + token,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      currentPassword: oldPassword,
+      newPassword: newPassword
     })
   });
-  return result;
+
+  if (!res.ok) {
+    const errorText = await res.text();
+    throw new Error(errorText || 'Password change failed');
+  }
+
+  return res.json();
 }
 
 document.getElementById('selectAllInvites').onchange=(e)=>{
@@ -2036,7 +2067,7 @@ document.getElementById('createSubscriptionTypeBtn').onclick=async()=>{
         currency:currency,
         price:price,
         is_one_time_offer:isOneTime,
-        enabled:enabled
+        enable_immediately:enabled
       })
     });
     showToast('Subscription type created successfully!','success');
@@ -2046,7 +2077,7 @@ document.getElementById('createSubscriptionTypeBtn').onclick=async()=>{
     document.getElementById('subTypeFree').checked=false;
     document.getElementById('subTypePrice').value='';
     document.getElementById('subTypeOneTime').checked=false;
-    document.getElementById('subTypeEnabled').checked=true;
+    document.getElementById('subTypeEnabled').checked=false;
     document.getElementById('pricingFields').style.opacity='1';
     document.getElementById('subTypeCurrency').disabled=false;
     document.getElementById('subTypePrice').disabled=false;
@@ -2185,7 +2216,7 @@ async function toggleProposalResults(proposalId){
   try{
     button.textContent='Loading...';
     button.disabled=true;
-    const data=await api(`/admin/proposals/${proposalId}/votes`);
+    const data=await api(`/admin/proposals/${proposalId}/vote-counts`);
     const total=data.totalVotes||0;
     const yes=data.results.yes||0;
     const no=data.results.no||0;
@@ -2325,7 +2356,7 @@ async function renderActiveTile(p){
 
   let voteStatsHtml='';
   try{
-    const voteData=await api(`/admin/proposals/${p.proposal_id}/votes`);
+    const voteData=await api(`/admin/proposals/${p.proposal_id}/vote-counts`);
     const total=voteData.totalVotes||0;
     const yes=voteData.results.yes||0;
     const no=voteData.results.no||0;
@@ -2426,7 +2457,7 @@ async function renderClosedTile(p){
   let resultsHtml='';
   let passFailBadge='';
   try{
-    const voteData=await api(`/admin/proposals/${p.proposal_id}/votes`);
+    const voteData=await api(`/admin/proposals/${p.proposal_id}/vote-counts`);
     const total=voteData.totalVotes||0;
     const yes=voteData.results.yes||0;
     const no=voteData.results.no||0;

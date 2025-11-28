@@ -4,6 +4,9 @@
 <head>
 <meta charset="utf-8"/>
 <meta content="width=device-width, initial-scale=1" name="viewport"/>
+<meta http-equiv="X-Content-Type-Options" content="nosniff"/>
+<meta http-equiv="Referrer-Policy" content="strict-origin-when-cross-origin"/>
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' __API_URL__ __MEMBER_COGNITO_DOMAIN__; base-uri 'self'; form-action 'self';"/>
 <title>VettID • Account</title>
 <link rel="icon" type="image/jpeg" href="/assets/favicon.ico"/>
 <link rel="stylesheet" href="/assets/styles.css"/>
@@ -391,7 +394,7 @@ async function loadSubscriptionTypes() {
             <div style="color:var(--gray);font-size:0.8rem;margin-top:2px;">${termDisplay}</div>
           </div>
 
-          <button class="btn" onclick="selectSubscriptionType('${st.subscription_type_id}')" style="background:${buttonBg};color:${buttonColor};padding:12px 24px;font-size:0.95rem;font-weight:700;white-space:nowrap;">
+          <button class="btn subscription-btn" id="sub-btn-${st.subscription_type_id}" data-subscription-id="${st.subscription_type_id}" onclick="selectSubscriptionType('${st.subscription_type_id}')" style="background:${buttonBg};color:${buttonColor};padding:12px 24px;font-size:0.95rem;font-weight:700;white-space:nowrap;">
             ${isFree ? 'Start Free' : 'Subscribe'}
           </button>
         </div>
@@ -405,7 +408,41 @@ async function loadSubscriptionTypes() {
 
 // Select and subscribe to a subscription type
 async function selectSubscriptionType(subscriptionTypeId) {
-  await createSubscription(subscriptionTypeId);
+  const btn = document.getElementById('sub-btn-' + subscriptionTypeId);
+  if (!btn) return;
+
+  // Store original button content
+  const originalContent = btn.innerHTML;
+  const originalStyle = btn.style.cssText;
+
+  // Disable all subscription buttons and show loading on clicked button
+  const allButtons = document.querySelectorAll('.subscription-btn');
+  allButtons.forEach(b => {
+    b.disabled = true;
+    b.style.opacity = '0.6';
+    b.style.cursor = 'not-allowed';
+  });
+
+  // Show processing state on clicked button
+  btn.innerHTML = 'Processing...';
+  btn.style.opacity = '1';
+
+  try {
+    await createSubscription(subscriptionTypeId);
+  } finally {
+    // Re-enable all buttons
+    allButtons.forEach(b => {
+      b.disabled = false;
+      b.style.opacity = '1';
+      b.style.cursor = 'pointer';
+    });
+
+    // Restore original content if button still exists
+    if (document.getElementById('sub-btn-' + subscriptionTypeId)) {
+      btn.innerHTML = originalContent;
+      btn.style.cssText = originalStyle;
+    }
+  }
 }
 </script>
 
@@ -861,13 +898,29 @@ async function disablePin() {
     return;
   }
 
+  // Prompt for current PIN
+  const currentPin = prompt('Please enter your current PIN to confirm:');
+  if (!currentPin) {
+    return;
+  }
+
+  // Validate PIN format
+  if (!/^\d{4,6}$/.test(currentPin)) {
+    showToast('PIN must be 4-6 digits', 'error');
+    return;
+  }
+
   const btn = document.getElementById('disablePinBtn');
   setLoading(btn, true);
 
   try {
     const res = await fetch(API_URL + '/account/security/pin/disable', {
       method: 'POST',
-      headers: { 'Authorization': 'Bearer ' + idToken() }
+      headers: {
+        'Authorization': 'Bearer ' + idToken(),
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ currentPin })
     });
 
     if (!res.ok) {

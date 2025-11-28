@@ -1,6 +1,6 @@
 // lambda/handlers/auth/verifyAuthChallenge.ts
 import { VerifyAuthChallengeResponseTriggerHandler } from 'aws-lambda';
-import { DynamoDBClient, GetItemCommand, DeleteItemCommand, QueryCommand } from '@aws-sdk/client-dynamodb';
+import { DynamoDBClient, GetItemCommand, DeleteItemCommand, QueryCommand, ScanCommand } from '@aws-sdk/client-dynamodb';
 import { CloudWatchClient, PutMetricDataCommand } from '@aws-sdk/client-cloudwatch';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import { createHash, timingSafeEqual } from 'crypto';
@@ -95,11 +95,9 @@ export const handler: VerifyAuthChallengeResponseTriggerHandler = async (event) 
   try {
     // First, check if user has PIN enabled
     const userEmail = event.request.userAttributes.email;
-    const regQuery = await ddb.send(new QueryCommand({
+    const regQuery = await ddb.send(new ScanCommand({
       TableName: REGISTRATIONS_TABLE,
-      IndexName: 'email-index',
-      KeyConditionExpression: "email = :email",
-      FilterExpression: "#s = :approved",
+      FilterExpression: "email = :email AND #s = :approved",
       ExpressionAttributeNames: {
         "#s": "status"
       },

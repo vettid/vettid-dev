@@ -15,7 +15,6 @@ import { InfrastructureStack } from './infrastructure-stack';
 
 export interface AdminStackProps extends cdk.StackProps {
   infrastructure: InfrastructureStack;
-  termsBucket: s3.Bucket;
 }
 
 /**
@@ -48,6 +47,7 @@ export class AdminStack extends cdk.Stack {
   public readonly enableAdmin!: lambdaNode.NodejsFunction;
   public readonly updateAdminType!: lambdaNode.NodejsFunction;
   public readonly resetAdminPassword!: lambdaNode.NodejsFunction;
+  public readonly changePassword!: lambdaNode.NodejsFunction;
   public readonly listMembershipRequests!: lambdaNode.NodejsFunction;
   public readonly approveMembership!: lambdaNode.NodejsFunction;
   public readonly denyMembership!: lambdaNode.NodejsFunction;
@@ -75,7 +75,7 @@ export class AdminStack extends cdk.Stack {
     const tables = props.infrastructure.tables;
     const adminUserPool = props.infrastructure.adminUserPool;
     const memberUserPool = props.infrastructure.memberUserPool;
-    const { termsBucket } = props;
+    const termsBucket = props.infrastructure.termsBucket;
 
     // Default environment variables for all admin functions
     const defaultEnv = {
@@ -88,6 +88,7 @@ export class AdminStack extends cdk.Stack {
       TABLE_VOTES: tables.votes.tableName,
       TABLE_SUBSCRIPTION_TYPES: tables.subscriptionTypes.tableName,
       TABLE_WAITLIST: tables.waitlist.tableName,
+      ALLOWED_ORIGINS: 'https://admin.vettid.dev,http://localhost:3000,http://localhost:5173',
     };
 
     // ===== REGISTRATION MANAGEMENT =====
@@ -253,6 +254,16 @@ export class AdminStack extends cdk.Stack {
 
     const resetAdminPassword = new lambdaNode.NodejsFunction(this, 'ResetAdminPasswordFn', {
       entry: 'lambda/handlers/admin/resetAdminPassword.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+        ADMIN_USER_POOL_ID: adminUserPool.userPoolId,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const changePassword = new lambdaNode.NodejsFunction(this, 'ChangePasswordFn', {
+      entry: 'lambda/handlers/admin/changePassword.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
       environment: {
         ...defaultEnv,
@@ -452,6 +463,8 @@ export class AdminStack extends cdk.Stack {
 
     tables.subscriptions.grantReadWriteData(permanentlyDeleteUser);
     tables.subscriptions.grantReadWriteData(listSubscriptions);
+    tables.registrations.grantReadData(listSubscriptions); // Need to join registration data
+    tables.audit.grantReadData(listSubscriptions); // Need to fetch email preferences
     tables.subscriptions.grantReadWriteData(extendSubscription);
     tables.subscriptions.grantReadWriteData(reactivateSubscription);
 
@@ -459,8 +472,12 @@ export class AdminStack extends cdk.Stack {
     tables.subscriptionTypes.grantReadData(listSubscriptionTypes);
     tables.subscriptionTypes.grantReadWriteData(enableSubscriptionType);
     tables.subscriptionTypes.grantReadWriteData(disableSubscriptionType);
+    tables.audit.grantReadWriteData(createSubscriptionType); // Audit logging
+    tables.audit.grantReadWriteData(enableSubscriptionType); // Audit logging
+    tables.audit.grantReadWriteData(disableSubscriptionType); // Audit logging
 
     tables.membershipTerms.grantReadWriteData(listMembershipRequests);
+    tables.registrations.grantReadData(listMembershipRequests); // Need to scan for approved registrations
     tables.membershipTerms.grantReadWriteData(approveMembership);
     tables.membershipTerms.grantReadWriteData(denyMembership);
     tables.membershipTerms.grantReadWriteData(createMembershipTerms);
@@ -476,7 +493,10 @@ export class AdminStack extends cdk.Stack {
 
     tables.waitlist.grantReadData(listWaitlist);
     tables.waitlist.grantReadWriteData(sendWaitlistInvites);
+    tables.invites.grantReadWriteData(sendWaitlistInvites); // Create invite codes
+    tables.audit.grantReadWriteData(sendWaitlistInvites); // Audit logging
     tables.waitlist.grantReadWriteData(deleteWaitlistEntries);
+    tables.audit.grantReadWriteData(deleteWaitlistEntries); // Audit logging
 
     tables.audit.grantReadWriteData(approveRegistration);
     tables.audit.grantReadWriteData(rejectRegistration);
@@ -484,6 +504,22 @@ export class AdminStack extends cdk.Stack {
     tables.audit.grantReadWriteData(deleteUser);
     tables.audit.grantReadWriteData(enableUser);
     tables.audit.grantReadWriteData(permanentlyDeleteUser);
+    tables.audit.grantReadWriteData(listRegistrations); // Audit logging
+    tables.audit.grantReadWriteData(addAdmin); // Audit logging and rate limiting
+    tables.audit.grantReadWriteData(resetAdminPassword); // Audit logging
+    tables.audit.grantReadWriteData(changePassword); // Audit logging
+
+    // Grant SES permissions for resetAdminPassword
+    resetAdminPassword.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['ses:SendEmail'],
+      resources: ['*'], // Need wildcard to send from noreply@vettid.dev
+    }));
+
+    // Grant Cognito permissions for resetAdminPassword
+    resetAdminPassword.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['cognito-idp:AdminGetUser', 'cognito-idp:AdminSetUserPassword'],
+      resources: [adminUserPool.userPoolArn],
+    }));
 
     // Grant S3 permissions for membership terms
     termsBucket.grantReadWrite(createMembershipTerms);
@@ -546,14 +582,16 @@ export class AdminStack extends cdk.Stack {
       }));
     });
 
-    // Grant SES permissions
-    const sesIdentityArn = `arn:aws:ses:${this.region}:${this.account}:identity/auth.vettid.dev`;
-    [sendWaitlistInvites].forEach(fn => {
-      fn.addToRolePolicy(new iam.PolicyStatement({
-        actions: ['ses:SendEmail', 'ses:SendTemplatedEmail'],
-        resources: [sesIdentityArn],
-      }));
-    });
+    // Grant SES permissions for sending and verifying emails
+    sendWaitlistInvites.addToRolePolicy(new iam.PolicyStatement({
+      actions: [
+        'ses:SendEmail',
+        'ses:SendTemplatedEmail',
+        'ses:GetIdentityVerificationAttributes',
+        'ses:VerifyEmailIdentity',
+      ],
+      resources: ['*'], // Need wildcard to verify any email and send from noreply@vettid.dev
+    }));
 
     // Export Lambda functions for VettIDStack to use in API routes
     this.listRegistrations = listRegistrations;
@@ -574,6 +612,7 @@ export class AdminStack extends cdk.Stack {
     this.enableAdmin = enableAdmin;
     this.updateAdminType = updateAdminType;
     this.resetAdminPassword = resetAdminPassword;
+    this.changePassword = changePassword;
     this.listMembershipRequests = listMembershipRequests;
     this.approveMembership = approveMembership;
     this.denyMembership = denyMembership;

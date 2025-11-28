@@ -12,9 +12,6 @@ import { InfrastructureStack } from './infrastructure-stack';
 
 export interface VaultStackProps extends cdk.StackProps {
   infrastructure: InfrastructureStack;
-  httpApi: apigw.HttpApi;
-  jwtAuthorizer: apigw.IHttpRouteAuthorizer;
-  memberUserPool: cognito.UserPool;
 }
 
 /**
@@ -23,16 +20,23 @@ export interface VaultStackProps extends cdk.StackProps {
  * Contains vault enrollment and authentication services:
  * - Vault enrollment Lambda functions
  * - Vault authentication Lambda functions
- * - API routes added to Core stack's API Gateway
+ * - API routes added by VettIDStack after instantiation
  *
- * Depends on: Infrastructure Stack (for tables), Core Stack (for API Gateway)
+ * Depends on: Infrastructure Stack (for tables, user pool)
  */
 export class VaultStack extends cdk.Stack {
+  // Public Lambda functions to be used by VettIDStack for route creation
+  public readonly enrollStart!: lambdaNode.NodejsFunction;
+  public readonly enrollSetPassword!: lambdaNode.NodejsFunction;
+  public readonly enrollFinalize!: lambdaNode.NodejsFunction;
+  public readonly actionRequest!: lambdaNode.NodejsFunction;
+  public readonly authExecute!: lambdaNode.NodejsFunction;
+
   constructor(scope: Construct, id: string, props: VaultStackProps) {
     super(scope, id, props);
 
     const tables = props.infrastructure.tables;
-    const { httpApi, jwtAuthorizer, memberUserPool } = props;
+    const memberUserPool = props.infrastructure.memberUserPool;
 
     // Default environment variables for vault functions
     const defaultEnv = {
@@ -47,7 +51,7 @@ export class VaultStack extends cdk.Stack {
 
     // ===== VAULT ENROLLMENT =====
 
-    const enrollStart = new lambdaNode.NodejsFunction(this, 'EnrollStartFn', {
+    this.enrollStart = new lambdaNode.NodejsFunction(this, 'EnrollStartFn', {
       entry: 'lambda/handlers/vault/enrollStart.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
       environment: {
@@ -57,14 +61,14 @@ export class VaultStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(30),
     });
 
-    const enrollSetPassword = new lambdaNode.NodejsFunction(this, 'EnrollSetPasswordFn', {
+    this.enrollSetPassword = new lambdaNode.NodejsFunction(this, 'EnrollSetPasswordFn', {
       entry: 'lambda/handlers/vault/enrollSetPassword.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
       environment: defaultEnv,
       timeout: cdk.Duration.seconds(30),
     });
 
-    const enrollFinalize = new lambdaNode.NodejsFunction(this, 'EnrollFinalizeFn', {
+    this.enrollFinalize = new lambdaNode.NodejsFunction(this, 'EnrollFinalizeFn', {
       entry: 'lambda/handlers/vault/enrollFinalize.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
       environment: {
@@ -76,7 +80,7 @@ export class VaultStack extends cdk.Stack {
 
     // ===== VAULT AUTHENTICATION =====
 
-    const actionRequest = new lambdaNode.NodejsFunction(this, 'ActionRequestFn', {
+    this.actionRequest = new lambdaNode.NodejsFunction(this, 'ActionRequestFn', {
       entry: 'lambda/handlers/vault/actionRequest.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
       environment: {
@@ -86,7 +90,7 @@ export class VaultStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(30),
     });
 
-    const authExecute = new lambdaNode.NodejsFunction(this, 'AuthExecuteFn', {
+    this.authExecute = new lambdaNode.NodejsFunction(this, 'AuthExecuteFn', {
       entry: 'lambda/handlers/vault/authExecute.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
       environment: defaultEnv,
@@ -96,31 +100,38 @@ export class VaultStack extends cdk.Stack {
     // ===== PERMISSIONS =====
 
     // Grant table permissions
-    tables.enrollmentSessions.grantReadWriteData(enrollStart);
-    tables.enrollmentSessions.grantReadWriteData(enrollSetPassword);
-    tables.enrollmentSessions.grantReadWriteData(enrollFinalize);
+    tables.enrollmentSessions.grantReadWriteData(this.enrollStart);
+    tables.enrollmentSessions.grantReadWriteData(this.enrollSetPassword);
+    tables.enrollmentSessions.grantReadWriteData(this.enrollFinalize);
 
-    tables.credentials.grantReadWriteData(enrollFinalize);
-    tables.credentials.grantReadData(actionRequest);
-    tables.credentials.grantReadData(authExecute);
+    tables.credentials.grantReadWriteData(this.enrollFinalize);
+    tables.credentials.grantReadData(this.actionRequest);
+    tables.credentials.grantReadData(this.authExecute);
 
-    tables.credentialKeys.grantReadWriteData(enrollFinalize);
-    tables.credentialKeys.grantReadData(actionRequest);
-    tables.credentialKeys.grantReadData(authExecute);
+    tables.credentialKeys.grantReadWriteData(this.enrollFinalize);
+    tables.credentialKeys.grantReadData(this.actionRequest);
+    tables.credentialKeys.grantReadData(this.authExecute);
 
-    tables.transactionKeys.grantReadWriteData(actionRequest);
-    tables.transactionKeys.grantReadWriteData(authExecute);
+    tables.transactionKeys.grantReadWriteData(this.actionRequest);
+    tables.transactionKeys.grantReadWriteData(this.authExecute);
 
-    tables.ledgerAuthTokens.grantReadWriteData(authExecute);
+    tables.ledgerAuthTokens.grantReadWriteData(this.authExecute);
 
-    tables.actionTokens.grantReadWriteData(actionRequest);
-    tables.actionTokens.grantReadWriteData(authExecute);
+    tables.actionTokens.grantReadWriteData(this.actionRequest);
+    tables.actionTokens.grantReadWriteData(this.authExecute);
 
-    tables.registrations.grantReadData(enrollStart);
-    tables.registrations.grantReadData(enrollFinalize);
+    tables.registrations.grantReadData(this.enrollStart);
+    tables.registrations.grantReadData(this.enrollFinalize);
+
+    // Grant audit table permissions for all vault functions
+    tables.audit.grantReadWriteData(this.enrollStart);
+    tables.audit.grantReadWriteData(this.enrollSetPassword);
+    tables.audit.grantReadWriteData(this.enrollFinalize);
+    tables.audit.grantReadWriteData(this.actionRequest);
+    tables.audit.grantReadWriteData(this.authExecute);
 
     // Grant Cognito permissions for enrollment finalization
-    enrollFinalize.addToRolePolicy(new iam.PolicyStatement({
+    this.enrollFinalize.addToRolePolicy(new iam.PolicyStatement({
       actions: [
         'cognito-idp:AdminGetUser',
         'cognito-idp:AdminUpdateUserAttributes',
@@ -130,48 +141,11 @@ export class VaultStack extends cdk.Stack {
 
     // Grant SES permissions for email sending
     const sesIdentityArn = `arn:aws:ses:${this.region}:${this.account}:identity/auth.vettid.dev`;
-    [enrollStart, actionRequest].forEach(fn => {
+    [this.enrollStart, this.actionRequest].forEach(fn => {
       fn.addToRolePolicy(new iam.PolicyStatement({
         actions: ['ses:SendEmail', 'ses:SendTemplatedEmail'],
         resources: [sesIdentityArn],
       }));
-    });
-
-    // ===== API ROUTES =====
-
-    httpApi.addRoutes({
-      path: '/vault/enroll/start',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('EnrollStartInt', enrollStart),
-      authorizer: jwtAuthorizer,
-    });
-
-    httpApi.addRoutes({
-      path: '/vault/enroll/set-password',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('EnrollSetPasswordInt', enrollSetPassword),
-      authorizer: jwtAuthorizer,
-    });
-
-    httpApi.addRoutes({
-      path: '/vault/enroll/finalize',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('EnrollFinalizeInt', enrollFinalize),
-      authorizer: jwtAuthorizer,
-    });
-
-    httpApi.addRoutes({
-      path: '/vault/action/request',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('ActionRequestInt', actionRequest),
-      authorizer: jwtAuthorizer,
-    });
-
-    httpApi.addRoutes({
-      path: '/vault/auth/execute',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('AuthExecuteInt', authExecute),
-      authorizer: jwtAuthorizer,
     });
   }
 }

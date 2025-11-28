@@ -38,7 +38,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
 
     // Parse request body
     const body = parseJsonBody(event);
-    const { name, description, term_value, term_unit, currency, price, is_one_time_offer } = body;
+    const { name, description, term_value, term_unit, currency, price, is_one_time_offer, enable_immediately } = body;
 
     if (!name || !description || !term_value || !term_unit || !currency || price === undefined || price === null) {
       return badRequest('Missing required fields: name, description, term_value, term_unit, currency, price');
@@ -73,7 +73,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       currency: currency,
       price: price,
       is_one_time_offer: is_one_time_offer || false,
-      is_enabled: false, // Disabled by default - must be manually enabled
+      is_enabled: enable_immediately === true, // Enable if checkbox was checked
       created_by: email,
       created_at: now,
       updated_at: now,

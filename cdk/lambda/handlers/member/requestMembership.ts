@@ -12,7 +12,7 @@ import {
   cognito,
   USER_POOL_ID
 } from "../../common/util";
-import { UpdateItemCommand, QueryCommand } from "@aws-sdk/client-dynamodb";
+import { UpdateItemCommand, QueryCommand, ScanCommand } from "@aws-sdk/client-dynamodb";
 import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
 import { AdminAddUserToGroupCommand } from "@aws-sdk/client-cognito-identity-provider";
 
@@ -45,12 +45,10 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       return badRequest("Unable to identify user");
     }
 
-    // Find the user's registration by email using GSI
-    const queryResult = await ddb.send(new QueryCommand({
+    // Find the user's registration by email using Scan
+    const queryResult = await ddb.send(new ScanCommand({
       TableName: TABLES.registrations,
-      IndexName: 'email-index',
-      KeyConditionExpression: "email = :email",
-      FilterExpression: "#s = :approved",
+      FilterExpression: "email = :email AND #s = :approved",
       ExpressionAttributeNames: {
         "#s": "status"
       },

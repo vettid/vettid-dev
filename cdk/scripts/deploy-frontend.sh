@@ -87,6 +87,14 @@ if [[ -f "$ADMIN_HTML" ]]; then
     echo -e "${GREEN}Admin HTML CSP header configured${NC}"
 fi
 
+# Replace placeholders in account/index.html for CSP header
+ACCOUNT_HTML="$TEMP_DIR/account/index.html"
+if [[ -f "$ACCOUNT_HTML" ]]; then
+    sed -i "s|__API_URL__|$API_URL|g" "$ACCOUNT_HTML"
+    sed -i "s|__MEMBER_COGNITO_DOMAIN__|$MEMBER_COGNITO_DOMAIN|g" "$ACCOUNT_HTML"
+    echo -e "${GREEN}Account HTML CSP header configured${NC}"
+fi
+
 # Upload to S3
 echo -e "${YELLOW}Uploading to S3...${NC}"
 aws s3 sync "$TEMP_DIR" "s3://$S3_BUCKET" \
@@ -106,6 +114,17 @@ aws s3 sync "$TEMP_DIR" "s3://$S3_BUCKET" \
 
 # Set correct content types
 aws s3 cp "s3://$S3_BUCKET/shared/config.js" "s3://$S3_BUCKET/shared/config.js" \
+    --content-type "application/javascript" \
+    --metadata-directive REPLACE \
+    --cache-control "no-cache, no-store, must-revalidate"
+
+# Copy shared and assets into admin directory (admin.vettid.dev uses OriginPath /admin)
+echo -e "${YELLOW}Copying shared resources to admin directory...${NC}"
+aws s3 cp "s3://$S3_BUCKET/shared/" "s3://$S3_BUCKET/admin/shared/" --recursive
+aws s3 cp "s3://$S3_BUCKET/assets/" "s3://$S3_BUCKET/admin/assets/" --recursive
+
+# Set correct content type for admin config.js
+aws s3 cp "s3://$S3_BUCKET/admin/shared/config.js" "s3://$S3_BUCKET/admin/shared/config.js" \
     --content-type "application/javascript" \
     --metadata-directive REPLACE \
     --cache-control "no-cache, no-store, must-revalidate"

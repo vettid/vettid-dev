@@ -1,14 +1,16 @@
 import { APIGatewayProxyHandlerV2 } from "aws-lambda";
-import { ok, requireAdminGroup } from "../../common/util";
+import { ok, internalError, requireAdminGroup } from "../../common/util";
 import { CognitoIdentityProviderClient, ListUsersInGroupCommand } from "@aws-sdk/client-cognito-identity-provider";
 
 const cognito = new CognitoIdentityProviderClient({});
-const USER_POOL_ID = process.env.USER_POOL_ID!;
+const USER_POOL_ID = process.env.ADMIN_USER_POOL_ID!;
 const ADMIN_GROUP = process.env.ADMIN_GROUP || "admin";
 
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
+  const requestOrigin = event.headers?.origin || event.headers?.Origin;
+
   // Validate admin group membership
-  const authError = requireAdminGroup(event);
+  const authError = requireAdminGroup(event, requestOrigin);
   if (authError) return authError;
 
   try {
@@ -34,9 +36,9 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       };
     });
 
-    return ok(admins);
+    return ok(admins, requestOrigin);
   } catch (error) {
     console.error('Error listing admin users:', error);
-    throw error;
+    return internalError('Failed to list admin users', requestOrigin);
   }
 };

@@ -1,6 +1,6 @@
 // lambda/handlers/auth/createAuthChallenge.ts
 import { CreateAuthChallengeTriggerHandler } from 'aws-lambda';
-import { DynamoDBClient, PutItemCommand, QueryCommand } from '@aws-sdk/client-dynamodb';
+import { DynamoDBClient, PutItemCommand, QueryCommand, ScanCommand } from '@aws-sdk/client-dynamodb';
 import { SESClient, SendEmailCommand } from '@aws-sdk/client-ses';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import { randomBytes, createHash } from 'crypto';
@@ -57,11 +57,9 @@ export const handler: CreateAuthChallengeTriggerHandler = async (event) => {
   // Check if user has PIN enabled FIRST (needed for all code paths)
   let pinRequired = false;
   try {
-    const regQuery = await ddb.send(new QueryCommand({
+    const regQuery = await ddb.send(new ScanCommand({
       TableName: REGISTRATIONS_TABLE,
-      IndexName: 'email-index',
-      KeyConditionExpression: "email = :email",
-      FilterExpression: "#s = :approved",
+      FilterExpression: "email = :email AND #s = :approved",
       ExpressionAttributeNames: {
         "#s": "status"
       },
@@ -89,19 +87,16 @@ export const handler: CreateAuthChallengeTriggerHandler = async (event) => {
   const RATE_LIMIT_MAX_REQUESTS = 5; // Max 5 magic link requests per hour
 
   try {
-    const { QueryCommand } = await import('@aws-sdk/client-dynamodb');
     const { unmarshall } = await import('@aws-sdk/util-dynamodb');
 
-    // Query using email GSI to get all tokens for this email within the last hour
-    const queryResult = await ddb.send(new QueryCommand({
+    // Scan MagicLink table to get all tokens for this email within the last hour
+    const queryResult = await ddb.send(new ScanCommand({
       TableName: MAGIC_LINK_TABLE,
-      IndexName: 'email-index',
-      KeyConditionExpression: 'email = :email AND createdAtTimestamp > :oneHourAgo',
+      FilterExpression: 'email = :email AND createdAtTimestamp > :oneHourAgo',
       ExpressionAttributeValues: {
         ':email': { S: email },
         ':oneHourAgo': { N: ONE_HOUR_AGO.toString() }
       },
-      ScanIndexForward: false, // Most recent first
     }));
 
     const recentTokens = (queryResult.Items || []).map(item => unmarshall(item));

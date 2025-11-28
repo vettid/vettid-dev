@@ -1,5 +1,5 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
-import { DynamoDBClient, QueryCommand, GetItemCommand } from '@aws-sdk/client-dynamodb';
+import { DynamoDBClient, QueryCommand, GetItemCommand, ScanCommand } from '@aws-sdk/client-dynamodb';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import {
   ok,
@@ -43,11 +43,10 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
 
     const proposal = unmarshall(proposalResult.Item);
 
-    // Query all votes for this proposal using GSI
-    const votesResult = await ddb.send(new QueryCommand({
+    // Scan all votes for this proposal
+    const votesResult = await ddb.send(new ScanCommand({
       TableName: TABLE_VOTES,
-      IndexName: 'proposal-votes-index',
-      KeyConditionExpression: 'proposal_id = :proposal_id',
+      FilterExpression: 'proposal_id = :proposal_id',
       ExpressionAttributeValues: marshall({
         ':proposal_id': proposal_id,
       }),

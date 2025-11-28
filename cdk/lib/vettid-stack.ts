@@ -32,10 +32,7 @@ export interface VettIdStackProps extends cdk.StackProps {
 }
 
 export class VettIdStack extends cdk.Stack {
-  // Public properties for admin and vault stacks to access
-  public readonly termsBucket: s3.Bucket;
-
-  // Private properties for internal use (imported from infrastructure)
+  // Private properties for internal use
   private readonly httpApi: apigw.HttpApi;
   private readonly adminAuthorizer: apigw.IHttpRouteAuthorizer;
   private readonly memberAuthorizer: apigw.IHttpRouteAuthorizer;
@@ -45,7 +42,6 @@ export class VettIdStack extends cdk.Stack {
 
     // Import resources from infrastructure stack
     const tables = props.infrastructure.tables;
-    this.httpApi = props.infrastructure.httpApi;
     this.adminAuthorizer = props.infrastructure.adminAuthorizer;
     this.memberAuthorizer = props.infrastructure.memberAuthorizer;
     const adminUserPool = props.infrastructure.adminUserPool;
@@ -86,14 +82,8 @@ export class VettIdStack extends cdk.Stack {
       autoDeleteObjects: true,
     });
 
-    // S3 bucket for membership terms PDFs
-    const termsBucket = new s3.Bucket(this, 'MembershipTermsBucket', {
-      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-      versioned: true,
-      encryption: s3.BucketEncryption.S3_MANAGED,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-      autoDeleteObjects: true,
-    });
+    // S3 buckets imported from infrastructure
+    const termsBucket = props.infrastructure.termsBucket;
 
 // CloudFront Function: redirect www.vettid.dev -> https://vettid.dev (preserve path and query)
 const wwwRedirectFn = new cloudfront.Function(this, 'WwwRedirectFn', {
@@ -141,46 +131,7 @@ function handler(event) {
 });
 
 // CloudFront Function: Add security headers to all responses
-const securityHeadersFn = new cloudfront.Function(this, 'SecurityHeadersFn', {
-  code: cloudfront.FunctionCode.fromInline(`
-function handler(event) {
-  var response = event.response;
-  var headers = response.headers;
-
-  // Content Security Policy - restricts resource loading
-  // Note: 'unsafe-inline' for scripts is needed for inline JS in HTML files
-  // TODO: Migrate inline scripts to external files for better security
-  // TODO: Bundle amazon-cognito-identity-js locally to remove cdn.jsdelivr.net dependency
-  // SECURITY NOTE: cdn.jsdelivr.net is temporarily allowed for Cognito library
-  // This should be replaced with local bundling in production
-  // Allow resources from vettid.dev and all subdomains for cross-subdomain asset loading
-  headers['content-security-policy'] = {
-    value: "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://vettid.dev https://*.vettid.dev; style-src 'self' 'unsafe-inline' https://vettid.dev https://*.vettid.dev; img-src 'self' data: https://vettid.dev https://*.vettid.dev; font-src 'self' https://vettid.dev https://*.vettid.dev; connect-src 'self' https://cgccjd4djg.execute-api.us-east-1.amazonaws.com https://*.amazoncognito.com https://cognito-idp.us-east-1.amazonaws.com; frame-ancestors 'none'; form-action 'self' https://*.amazoncognito.com; base-uri 'self'; object-src 'none'; upgrade-insecure-requests;"
-  };
-
-  // Prevent clickjacking
-  headers['x-frame-options'] = { value: 'DENY' };
-
-  // Prevent MIME type sniffing
-  headers['x-content-type-options'] = { value: 'nosniff' };
-
-  // Control referrer information
-  headers['referrer-policy'] = { value: 'strict-origin-when-cross-origin' };
-
-  // Enable browser XSS protection
-  headers['x-xss-protection'] = { value: '1; mode=block' };
-
-  // Enforce HTTPS
-  headers['strict-transport-security'] = { value: 'max-age=31536000; includeSubDomains; preload' };
-
-  // Permissions Policy - restrict browser features
-  // Disables camera, microphone, geolocation, etc. as they're not needed
-  headers['permissions-policy'] = { value: 'camera=(), microphone=(), geolocation=(), payment=(), usb=(), magnetometer=(), gyroscope=(), accelerometer=()' };
-
-  return response;
-}
-`),
-});
+// Security headers function will be defined after HTTP API creation to inject specific API URL
 
 
 // Route 53 hosted zone (existing)
@@ -282,6 +233,66 @@ const webAcl = new wafv2.CfnWebACL(this, 'WebAcl', {
       },
     },
   ],
+});
+
+    // ===== API GATEWAY (created early so security headers can reference endpoint) =====
+
+    // HTTP API with CORS configuration
+    this.httpApi = new apigw.HttpApi(this, 'Api', {
+      corsPreflight: {
+        allowMethods: [apigw.CorsHttpMethod.GET, apigw.CorsHttpMethod.POST, apigw.CorsHttpMethod.PUT, apigw.CorsHttpMethod.DELETE, apigw.CorsHttpMethod.OPTIONS],
+        allowOrigins: [
+          'https://vettid.dev',
+          'https://www.vettid.dev',
+          'https://admin.vettid.dev',
+          'https://account.vettid.dev',
+          'https://register.vettid.dev'
+        ],
+        allowHeaders: ['Authorization', 'Content-Type', 'X-Amz-Date', 'X-Api-Key', 'X-Amz-Security-Token'],
+      },
+    });
+
+// CloudFront Function: Add security headers to all responses with specific API URL
+const securityHeadersFn = new cloudfront.Function(this, 'SecurityHeadersFn', {
+  code: cloudfront.FunctionCode.fromInline(`
+function handler(event) {
+  var response = event.response;
+  var headers = response.headers;
+
+  // Content Security Policy - restricts resource loading
+  // Note: 'unsafe-inline' for scripts is needed for inline JS in HTML files
+  // TODO: Migrate inline scripts to external files for better security
+  // TODO: Bundle amazon-cognito-identity-js locally to remove cdn.jsdelivr.net dependency
+  // SECURITY NOTE: cdn.jsdelivr.net is temporarily allowed for Cognito library
+  // This should be replaced with local bundling in production
+  // Allow resources from vettid.dev and all subdomains for cross-subdomain asset loading
+  // Specific API endpoint injected at synthesis time (no wildcard - security best practice)
+  headers['content-security-policy'] = {
+    value: "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://vettid.dev https://*.vettid.dev; style-src 'self' 'unsafe-inline' https://vettid.dev https://*.vettid.dev; img-src 'self' data: https://vettid.dev https://*.vettid.dev; font-src 'self' https://vettid.dev https://*.vettid.dev; connect-src 'self' ${this.httpApi.apiEndpoint} https://*.amazoncognito.com https://cognito-idp.us-east-1.amazonaws.com; frame-ancestors 'none'; form-action 'self' https://*.amazoncognito.com; base-uri 'self'; object-src 'none'; upgrade-insecure-requests;"
+  };
+
+  // Prevent clickjacking
+  headers['x-frame-options'] = { value: 'DENY' };
+
+  // Prevent MIME type sniffing
+  headers['x-content-type-options'] = { value: 'nosniff' };
+
+  // Control referrer information
+  headers['referrer-policy'] = { value: 'strict-origin-when-cross-origin' };
+
+  // Enable browser XSS protection
+  headers['x-xss-protection'] = { value: '1; mode=block' };
+
+  // Enforce HTTPS
+  headers['strict-transport-security'] = { value: 'max-age=31536000; includeSubDomains; preload' };
+
+  // Permissions Policy - restrict browser features
+  // Disables camera, microphone, geolocation, etc. as they're not needed
+  headers['permissions-policy'] = { value: 'camera=(), microphone=(), geolocation=(), payment=(), usb=(), magnetometer=(), gyroscope=(), accelerometer=()' };
+
+  return response;
+}
+`),
 });
 
 // CloudFront distribution for vettid.dev with path-based routing
@@ -449,6 +460,9 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
     // DynamoDB tables and S3 buckets are now imported from infrastructure stack
     // Access via: tables.invites, tables.registrations, etc.
     // Access via: siteBucket, logBucket, termsBucket
+    // HTTP API is created early in the stack (before CloudFront) to allow CSP header injection
+
+    // ===== LAMBDA FUNCTIONS =====
 
     // Lambda env
     const defaultEnv = {
@@ -622,6 +636,7 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
     tables.invites.grantReadWriteData(submitRegistration);
     tables.registrations.grantReadWriteData(submitRegistration);
     tables.waitlist.grantReadWriteData(submitWaitlist);
+    tables.audit.grantReadWriteData(submitWaitlist); // For rate limiting
     tables.registrations.grantReadWriteData(cancelAccount);
     tables.subscriptions.grantReadWriteData(cancelAccount);
     tables.registrations.grantReadWriteData(cleanupExpiredAccounts);
@@ -1031,9 +1046,6 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
     new cdk.CfnOutput(this, 'OutRegisterUrl', { value: 'https://vettid.dev/register' });
     new cdk.CfnOutput(this, 'OutAccountUrl', { value: 'https://vettid.dev/account' });
     new cdk.CfnOutput(this, 'OutAdminUrl', { value: 'https://admin.vettid.dev' });
-
-    // Assign public properties for admin and vault stacks
-    this.termsBucket = termsBucket;
   }
   /**
    * Add admin routes to the HTTP API
@@ -1048,13 +1060,13 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       authorizer: this.adminAuthorizer,
     });
     this.httpApi.addRoutes({
-      path: '/admin/registrations/{id}/approve',
+      path: '/admin/registrations/{registration_id}/approve',
       methods: [apigw.HttpMethod.POST],
       integration: new integrations.HttpLambdaIntegration('ApproveRegistrationInt', adminStack.approveRegistration),
       authorizer: this.adminAuthorizer,
     });
     this.httpApi.addRoutes({
-      path: '/admin/registrations/{id}/reject',
+      path: '/admin/registrations/{registration_id}/reject',
       methods: [apigw.HttpMethod.POST],
       integration: new integrations.HttpLambdaIntegration('RejectRegistrationInt', adminStack.rejectRegistration),
       authorizer: this.adminAuthorizer,
@@ -1084,25 +1096,25 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       authorizer: this.adminAuthorizer,
     });
     this.httpApi.addRoutes({
-      path: '/admin/users/{id}/disable',
+      path: '/admin/users/{user_id}/disable',
       methods: [apigw.HttpMethod.POST],
       integration: new integrations.HttpLambdaIntegration('DisableUserInt', adminStack.disableUser),
       authorizer: this.adminAuthorizer,
     });
     this.httpApi.addRoutes({
-      path: '/admin/users/{id}/enable',
+      path: '/admin/users/{user_id}/enable',
       methods: [apigw.HttpMethod.POST],
       integration: new integrations.HttpLambdaIntegration('EnableUserInt', adminStack.enableUser),
       authorizer: this.adminAuthorizer,
     });
     this.httpApi.addRoutes({
-      path: '/admin/users/{id}',
+      path: '/admin/users/{user_id}',
       methods: [apigw.HttpMethod.DELETE],
       integration: new integrations.HttpLambdaIntegration('DeleteUserInt', adminStack.deleteUser),
       authorizer: this.adminAuthorizer,
     });
     this.httpApi.addRoutes({
-      path: '/admin/users/{id}/permanently-delete',
+      path: '/admin/users/{user_id}/permanently-delete',
       methods: [apigw.HttpMethod.DELETE],
       integration: new integrations.HttpLambdaIntegration('PermanentlyDeleteUserInt', adminStack.permanentlyDeleteUser),
       authorizer: this.adminAuthorizer,
@@ -1147,6 +1159,12 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       path: '/admin/admins/{username}/reset-password',
       methods: [apigw.HttpMethod.POST],
       integration: new integrations.HttpLambdaIntegration('ResetAdminPasswordInt', adminStack.resetAdminPassword),
+      authorizer: this.adminAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/admin/change-password',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('ChangePasswordInt', adminStack.changePassword),
       authorizer: this.adminAuthorizer,
     });
     this.httpApi.addRoutes({
@@ -1204,7 +1222,7 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       authorizer: this.adminAuthorizer,
     });
     this.httpApi.addRoutes({
-      path: '/admin/proposals/{id}/vote-counts',
+      path: '/admin/proposals/{proposal_id}/vote-counts',
       methods: [apigw.HttpMethod.GET],
       integration: new integrations.HttpLambdaIntegration('GetProposalVoteCountsInt', adminStack.getProposalVoteCounts),
       authorizer: this.adminAuthorizer,
@@ -1268,6 +1286,46 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       methods: [apigw.HttpMethod.DELETE],
       integration: new integrations.HttpLambdaIntegration('DeleteWaitlistEntriesInt', adminStack.deleteWaitlistEntries),
       authorizer: this.adminAuthorizer,
+    });
+  }
+
+  /**
+   * Add vault routes to the HTTP API
+   * Called after VaultStack is instantiated to wire up vault Lambda functions
+   */
+  public addVaultRoutes(vaultStack: any): void {
+    // Vault Enrollment
+    this.httpApi.addRoutes({
+      path: '/vault/enroll/start',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('EnrollStartInt', vaultStack.enrollStart),
+      authorizer: this.memberAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/vault/enroll/set-password',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('EnrollSetPasswordInt', vaultStack.enrollSetPassword),
+      authorizer: this.memberAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/vault/enroll/finalize',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('EnrollFinalizeInt', vaultStack.enrollFinalize),
+      authorizer: this.memberAuthorizer,
+    });
+
+    // Vault Authentication
+    this.httpApi.addRoutes({
+      path: '/vault/action/request',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('ActionRequestInt', vaultStack.actionRequest),
+      authorizer: this.memberAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/vault/auth/execute',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('AuthExecuteInt', vaultStack.authExecute),
+      authorizer: this.memberAuthorizer,
     });
   }
 }

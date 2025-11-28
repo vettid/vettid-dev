@@ -48,8 +48,8 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     return tooManyRequests("Too many delete requests. Please try again later.");
   }
 
-  const id = event.pathParameters?.id;
-  if (!id) return badRequest("id required");
+  const id = event.pathParameters?.user_id;
+  if (!id) return badRequest("user_id required");
 
   try {
     const reg = await getRegistration(id);

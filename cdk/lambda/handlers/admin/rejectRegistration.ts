@@ -16,8 +16,8 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   const csrfError = validateOrigin(event);
   if (csrfError) return csrfError;
 
-  const id = event.pathParameters?.id;
-  if (!id) return badRequest("id required");
+  const id = event.pathParameters?.registration_id;
+  if (!id) return badRequest("registration_id required");
 
   const requestId = getRequestId(event);
 

@@ -111,43 +111,42 @@ export async function sendTemplateEmail(to: string, template: string, data: any)
 
 /**
  * HTTP Response helpers
- * Note: These helpers don't accept requestOrigin parameter because
- * the CORS headers are set by API Gateway. These are for Lambda responses.
+ * Accepts optional requestOrigin to enable proper CORS headers for the requesting domain
  */
-export function ok(body: any): APIGatewayProxyResultV2 {
-  return { statusCode: 200, headers: cors(), body: JSON.stringify(body) };
+export function ok(body: any, requestOrigin?: string): APIGatewayProxyResultV2 {
+  return { statusCode: 200, headers: cors(requestOrigin), body: JSON.stringify(body) };
 }
 
-export function created(body: any): APIGatewayProxyResultV2 {
-  return { statusCode: 201, headers: cors(), body: JSON.stringify(body) };
+export function created(body: any, requestOrigin?: string): APIGatewayProxyResultV2 {
+  return { statusCode: 201, headers: cors(requestOrigin), body: JSON.stringify(body) };
 }
 
-export function badRequest(message: string): APIGatewayProxyResultV2 {
-  return { statusCode: 400, headers: cors(), body: JSON.stringify({ message }) };
+export function badRequest(message: string, requestOrigin?: string): APIGatewayProxyResultV2 {
+  return { statusCode: 400, headers: cors(requestOrigin), body: JSON.stringify({ message }) };
 }
 
-export function unauthorized(message: string = "Unauthorized"): APIGatewayProxyResultV2 {
-  return { statusCode: 401, headers: cors(), body: JSON.stringify({ message }) };
+export function unauthorized(message: string = "Unauthorized", requestOrigin?: string): APIGatewayProxyResultV2 {
+  return { statusCode: 401, headers: cors(requestOrigin), body: JSON.stringify({ message }) };
 }
 
-export function forbidden(message: string = "Forbidden"): APIGatewayProxyResultV2 {
-  return { statusCode: 403, headers: cors(), body: JSON.stringify({ message }) };
+export function forbidden(message: string = "Forbidden", requestOrigin?: string): APIGatewayProxyResultV2 {
+  return { statusCode: 403, headers: cors(requestOrigin), body: JSON.stringify({ message }) };
 }
 
-export function notFound(message: string = "Not found"): APIGatewayProxyResultV2 {
-  return { statusCode: 404, headers: cors(), body: JSON.stringify({ message }) };
+export function notFound(message: string = "Not found", requestOrigin?: string): APIGatewayProxyResultV2 {
+  return { statusCode: 404, headers: cors(requestOrigin), body: JSON.stringify({ message }) };
 }
 
-export function conflict(message: string): APIGatewayProxyResultV2 {
-  return { statusCode: 409, headers: cors(), body: JSON.stringify({ message }) };
+export function conflict(message: string, requestOrigin?: string): APIGatewayProxyResultV2 {
+  return { statusCode: 409, headers: cors(requestOrigin), body: JSON.stringify({ message }) };
 }
 
-export function internalError(message: string = "Internal server error"): APIGatewayProxyResultV2 {
-  return { statusCode: 500, headers: cors(), body: JSON.stringify({ message }) };
+export function internalError(message: string = "Internal server error", requestOrigin?: string): APIGatewayProxyResultV2 {
+  return { statusCode: 500, headers: cors(requestOrigin), body: JSON.stringify({ message }) };
 }
 
-export function tooManyRequests(message: string = "Too many requests. Please try again later."): APIGatewayProxyResultV2 {
-  return { statusCode: 429, headers: cors(), body: JSON.stringify({ message }) };
+export function tooManyRequests(message: string = "Too many requests. Please try again later.", requestOrigin?: string): APIGatewayProxyResultV2 {
+  return { statusCode: 429, headers: cors(requestOrigin), body: JSON.stringify({ message }) };
 }
 
 /**
@@ -294,11 +293,9 @@ export function getClientIp(event: APIGatewayProxyEventV2): string {
  * Never allow wildcard (*) in production for security
  */
 const ALLOWED_ORIGINS = [
-  'https://register.vettid.dev',
-  'https://account.vettid.dev',
-  'https://admin.vettid.dev',
   'https://vettid.dev',
   'https://www.vettid.dev',
+  'https://admin.vettid.dev',
   // Development origins (should be removed in production)
   'http://localhost:3000',
   'http://localhost:5173',
@@ -424,9 +421,9 @@ export function hasRequiredGroup(event: APIGatewayProxyEventV2, requiredGroup: s
  * Require admin group membership or return 403
  * Call this at the start of admin handlers
  */
-export function requireAdminGroup(event: APIGatewayProxyEventV2): APIGatewayProxyResultV2 | null {
+export function requireAdminGroup(event: APIGatewayProxyEventV2, requestOrigin?: string): APIGatewayProxyResultV2 | null {
   if (!hasRequiredGroup(event, 'admin')) {
-    return forbidden("Admin group membership required");
+    return forbidden("Admin group membership required", requestOrigin);
   }
   return null;
 }
@@ -435,9 +432,9 @@ export function requireAdminGroup(event: APIGatewayProxyEventV2): APIGatewayProx
  * Require member group membership or return 403
  * Call this at the start of member handlers
  */
-export function requireMemberGroup(event: APIGatewayProxyEventV2): APIGatewayProxyResultV2 | null {
+export function requireMemberGroup(event: APIGatewayProxyEventV2, requestOrigin?: string): APIGatewayProxyResultV2 | null {
   if (!hasRequiredGroup(event, 'member')) {
-    return forbidden("Member group membership required");
+    return forbidden("Member group membership required", requestOrigin);
   }
   return null;
 }

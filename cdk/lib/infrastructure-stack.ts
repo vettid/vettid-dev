@@ -8,6 +8,7 @@ import {
   aws_apigatewayv2 as apigw,
   aws_apigatewayv2_authorizers as authorizers,
   aws_iam as iam,
+  aws_s3 as s3,
 } from 'aws-cdk-lib';
 
 /**
@@ -42,6 +43,9 @@ export class InfrastructureStack extends cdk.Stack {
     enrollmentSessions: dynamodb.Table;
   };
 
+  // S3 Buckets
+  public readonly termsBucket!: s3.Bucket;
+
   // Cognito resources
   public readonly memberUserPool!: cognito.UserPool;
   public readonly adminUserPool!: cognito.UserPool;
@@ -50,8 +54,7 @@ export class InfrastructureStack extends cdk.Stack {
   public readonly memberPoolDomain!: cognito.UserPoolDomain;
   public readonly adminPoolDomain!: cognito.UserPoolDomain;
 
-  // API Gateway resources
-  public readonly httpApi!: apigw.HttpApi;
+  // Authorizers (to be used with VettIDStack's HTTP API)
   public readonly adminAuthorizer!: apigw.IHttpRouteAuthorizer;
   public readonly memberAuthorizer!: apigw.IHttpRouteAuthorizer;
 
@@ -273,6 +276,17 @@ export class InfrastructureStack extends cdk.Stack {
       partitionKey: { name: 'user_guid', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'created_at', type: dynamodb.AttributeType.NUMBER },
       projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // ===== S3 BUCKETS =====
+
+    // S3 bucket for membership terms PDFs (shared by VettIDStack and AdminStack)
+    const termsBucket = new s3.Bucket(this, 'MembershipTermsBucket', {
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      versioned: true,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: true,
     });
 
     // ===== ASSIGN TO PUBLIC PROPERTIES =====
@@ -545,24 +559,9 @@ export class InfrastructureStack extends cdk.Stack {
       refreshTokenValidity: cdk.Duration.days(30),
     });
 
-    // ===== API GATEWAY =====
+    // ===== AUTHORIZERS =====
 
-
-    const httpApi = new apigw.HttpApi(this, 'Api', {
-      corsPreflight: {
-        allowMethods: [apigw.CorsHttpMethod.GET, apigw.CorsHttpMethod.POST, apigw.CorsHttpMethod.PUT, apigw.CorsHttpMethod.DELETE, apigw.CorsHttpMethod.OPTIONS],
-        allowOrigins: [
-          'https://vettid.dev',
-          'https://www.vettid.dev',
-          'https://admin.vettid.dev',
-          'https://account.vettid.dev',
-          'https://register.vettid.dev'
-        ],
-        allowHeaders: ['Authorization', 'Content-Type', 'X-Amz-Date', 'X-Api-Key', 'X-Amz-Security-Token'],
-      },
-    });
-
-    // Separate authorizers for admin and member user pools
+    // Authorizers for admin and member user pools (to be used by VettIDStack's HTTP API)
     const adminAuthorizer = new authorizers.HttpUserPoolAuthorizer('AdminAuthorizer', adminUserPool, {
       userPoolClients: [adminAppClient]
     });
@@ -570,14 +569,100 @@ export class InfrastructureStack extends cdk.Stack {
       userPoolClients: [memberAppClient]
     });
 
-    // Export auth resources
+    // ===== CUSTOM RESOURCES =====
+
+    // Seed initial membership terms from terms.txt
+    const seedTermsLambda = new lambdaNode.NodejsFunction(this, 'SeedInitialTermsFn', {
+      entry: 'lambda/custom-resources/seedInitialTerms.ts',
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: cdk.Duration.seconds(60),
+      environment: {
+        TABLE_MEMBERSHIP_TERMS: membershipTerms.tableName,
+        TERMS_BUCKET: termsBucket.bucketName,
+      },
+      bundling: {
+        nodeModules: [],
+        commandHooks: {
+          beforeBundling(inputDir: string, outputDir: string): string[] {
+            return [];
+          },
+          beforeInstall(inputDir: string, outputDir: string): string[] {
+            return [];
+          },
+          afterBundling(inputDir: string, outputDir: string): string[] {
+            return [
+              `cp ${inputDir}/assets/initial-terms.txt ${outputDir}/initial-terms.txt`,
+            ];
+          },
+        },
+      },
+    });
+
+    membershipTerms.grantReadWriteData(seedTermsLambda);
+    termsBucket.grantReadWrite(seedTermsLambda);
+
+    const seedTermsProvider = new cdk.custom_resources.Provider(this, 'SeedInitialTermsProvider', {
+      onEventHandler: seedTermsLambda,
+    });
+
+    new cdk.CustomResource(this, 'SeedInitialTermsResource', {
+      serviceToken: seedTermsProvider.serviceToken,
+    });
+
+    // Apply Cognito UI customization (logo + CSS) to both user pools
+    const applyCognitoUILambda = new lambdaNode.NodejsFunction(this, 'ApplyCognitoUIFn', {
+      entry: 'lambda/custom-resources/applyCognitoUI.ts',
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: cdk.Duration.seconds(60),
+      environment: {
+        ADMIN_USER_POOL_ID: adminUserPool.userPoolId,
+        ADMIN_CLIENT_ID: adminAppClient.userPoolClientId,
+        MEMBER_USER_POOL_ID: memberUserPool.userPoolId,
+        MEMBER_CLIENT_ID: memberAppClient.userPoolClientId,
+      },
+      bundling: {
+        nodeModules: [],
+        commandHooks: {
+          beforeBundling(inputDir: string, outputDir: string): string[] {
+            return [];
+          },
+          beforeInstall(inputDir: string, outputDir: string): string[] {
+            return [];
+          },
+          afterBundling(inputDir: string, outputDir: string): string[] {
+            return [
+              `cp ${inputDir}/frontend/assets/logo.jpg ${outputDir}/logo.jpg`,
+              `cp ${inputDir}/assets/cognito-ui.css ${outputDir}/cognito-ui.css`,
+            ];
+          },
+        },
+      },
+    });
+
+    // Grant permission to update Cognito UI customization
+    applyCognitoUILambda.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['cognito-idp:SetUICustomization'],
+      resources: [adminUserPool.userPoolArn, memberUserPool.userPoolArn],
+    }));
+
+    const applyCognitoUIProvider = new cdk.custom_resources.Provider(this, 'ApplyCognitoUIProvider', {
+      onEventHandler: applyCognitoUILambda,
+    });
+
+    new cdk.CustomResource(this, 'ApplyCognitoUIResource', {
+      serviceToken: applyCognitoUIProvider.serviceToken,
+    });
+
+    // Export resources
+    this.termsBucket = termsBucket;
     this.memberUserPool = memberUserPool;
     this.adminUserPool = adminUserPool;
     this.memberAppClient = memberAppClient;
     this.adminAppClient = adminAppClient;
     this.memberPoolDomain = memberPoolDomain;
     this.adminPoolDomain = adminPoolDomain;
-    this.httpApi = httpApi;
     this.adminAuthorizer = adminAuthorizer;
     this.memberAuthorizer = memberAuthorizer;
   }

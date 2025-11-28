@@ -1,5 +1,5 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
-import { DynamoDBClient, QueryCommand, GetItemCommand } from '@aws-sdk/client-dynamodb';
+import { DynamoDBClient, QueryCommand, GetItemCommand, ScanCommand } from '@aws-sdk/client-dynamodb';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import {
   ok,
@@ -14,16 +14,17 @@ const TABLE_PROPOSALS = process.env.TABLE_PROPOSALS!;
 
 /**
  * Get vote counts for a proposal (member accessible)
- * GET /proposals/{proposal_id}/vote-counts
+ * GET /proposals/{id}/vote-counts
  */
 export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   const requestId = getRequestId(event);
+  const requestOrigin = event.headers?.origin || event.headers?.Origin;
 
   try {
     const proposal_id = event.pathParameters?.proposal_id;
 
     if (!proposal_id) {
-      return badRequest('Proposal ID is required');
+      return badRequest('Proposal ID is required', requestOrigin);
     }
 
     // Get proposal details
@@ -33,16 +34,15 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     }));
 
     if (!proposalResult.Item) {
-      return badRequest('Proposal not found');
+      return badRequest('Proposal not found', requestOrigin);
     }
 
     const proposal = unmarshall(proposalResult.Item);
 
-    // Query all votes for this proposal using GSI
-    const votesResult = await ddb.send(new QueryCommand({
+    // Scan all votes for this proposal
+    const votesResult = await ddb.send(new ScanCommand({
       TableName: TABLE_VOTES,
-      IndexName: 'proposal-votes-index',
-      KeyConditionExpression: 'proposal_id = :proposal_id',
+      FilterExpression: 'proposal_id = :proposal_id',
       ExpressionAttributeValues: marshall({
         ':proposal_id': proposal_id,
       }),
@@ -80,9 +80,9 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       no: results.no,
       abstain: results.abstain,
       totalVotes,
-    });
+    }, requestOrigin);
   } catch (error: any) {
     console.error('Error getting proposal vote counts:', error);
-    return internalError(error.message || 'Failed to get proposal vote counts');
+    return internalError(error.message || 'Failed to get proposal vote counts', requestOrigin);
   }
 };

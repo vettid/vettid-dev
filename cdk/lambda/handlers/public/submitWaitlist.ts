@@ -118,11 +118,10 @@ export const handler = async (
     return jsonResponse(429, { message: 'Too many requests. Please try again later.' }, origin);
   }
 
-  // Check for duplicate email
+  // Check for duplicate email (email is the partition key)
   const existingEntries = await ddb.send(
     new QueryCommand({
       TableName: TABLE_WAITLIST,
-      IndexName: 'email-index',
       KeyConditionExpression: 'email = :email',
       ExpressionAttributeValues: marshall({
         ':email': email,

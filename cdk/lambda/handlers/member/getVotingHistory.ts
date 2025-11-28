@@ -1,5 +1,5 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
-import { DynamoDBClient, QueryCommand, GetItemCommand } from '@aws-sdk/client-dynamodb';
+import { DynamoDBClient, QueryCommand, GetItemCommand, ScanCommand } from '@aws-sdk/client-dynamodb';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import {
   ok,
@@ -29,14 +29,14 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       return badRequest('Email not found in token');
     }
 
-    // Get user_guid from registrations table using email-index GSI
-    const registrationsResult = await ddb.send(new QueryCommand({
+    // Get user_guid from registrations table using Scan
+    const registrationsResult = await ddb.send(new ScanCommand({
       TableName: TABLE_REGISTRATIONS,
-      IndexName: 'email-index',
-      KeyConditionExpression: 'email = :email',
+      FilterExpression: 'email = :email',
       ExpressionAttributeValues: marshall({
         ':email': email,
       }),
+      Limit: 1,
     }));
 
     if (!registrationsResult.Items || registrationsResult.Items.length === 0) {
@@ -50,15 +50,13 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       return badRequest('User GUID not found');
     }
 
-    // Query votes by user_guid using GSI
-    const votesResult = await ddb.send(new QueryCommand({
+    // Scan votes by user_guid
+    const votesResult = await ddb.send(new ScanCommand({
       TableName: TABLE_VOTES,
-      IndexName: 'user-votes-index',
-      KeyConditionExpression: 'user_guid = :user_guid',
+      FilterExpression: 'user_guid = :user_guid',
       ExpressionAttributeValues: marshall({
         ':user_guid': user_guid,
       }),
-      ScanIndexForward: false, // Sort by voted_at descending (most recent first)
     }));
 
     if (!votesResult.Items || votesResult.Items.length === 0) {
@@ -91,6 +89,13 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
         return vote;
       })
     );
+
+    // Sort by voted_at descending (most recent first)
+    votes.sort((a, b) => {
+      const dateA = new Date(a.voted_at || 0).getTime();
+      const dateB = new Date(b.voted_at || 0).getTime();
+      return dateB - dateA;
+    });
 
     return ok({ votes });
   } catch (error: any) {
