@@ -15,8 +15,6 @@ import { InfrastructureStack } from './infrastructure-stack';
 
 export interface AdminStackProps extends cdk.StackProps {
   infrastructure: InfrastructureStack;
-  adminUserPool: cognito.UserPool;
-  memberUserPool: cognito.UserPool;
   termsBucket: s3.Bucket;
 }
 
@@ -75,7 +73,9 @@ export class AdminStack extends cdk.Stack {
     super(scope, id, props);
 
     const tables = props.infrastructure.tables;
-    const { adminUserPool, memberUserPool, termsBucket } = props;
+    const adminUserPool = props.infrastructure.adminUserPool;
+    const memberUserPool = props.infrastructure.memberUserPool;
+    const { termsBucket } = props;
 
     // Default environment variables for all admin functions
     const defaultEnv = {

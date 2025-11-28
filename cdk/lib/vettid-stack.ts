@@ -33,18 +33,27 @@ export interface VettIdStackProps extends cdk.StackProps {
 
 export class VettIdStack extends cdk.Stack {
   // Public properties for admin and vault stacks to access
-  public readonly httpApi: apigw.HttpApi;
-  public readonly adminAuthorizer: apigw.IHttpRouteAuthorizer;
-  public readonly memberAuthorizer: apigw.IHttpRouteAuthorizer;
-  public readonly adminUserPool: cognito.UserPool;
-  public readonly memberUserPool: cognito.UserPool;
   public readonly termsBucket: s3.Bucket;
+
+  // Private properties for internal use (imported from infrastructure)
+  private readonly httpApi: apigw.HttpApi;
+  private readonly adminAuthorizer: apigw.IHttpRouteAuthorizer;
+  private readonly memberAuthorizer: apigw.IHttpRouteAuthorizer;
 
   constructor(scope: Construct, id: string, props: VettIdStackProps) {
     super(scope, id, props);
 
-    // Import tables from infrastructure stack
+    // Import resources from infrastructure stack
     const tables = props.infrastructure.tables;
+    this.httpApi = props.infrastructure.httpApi;
+    this.adminAuthorizer = props.infrastructure.adminAuthorizer;
+    this.memberAuthorizer = props.infrastructure.memberAuthorizer;
+    const adminUserPool = props.infrastructure.adminUserPool;
+    const memberUserPool = props.infrastructure.memberUserPool;
+    const adminAppClient = props.infrastructure.adminAppClient;
+    const memberAppClient = props.infrastructure.memberAppClient;
+    const memberPoolDomain = props.infrastructure.memberPoolDomain;
+    const adminPoolDomain = props.infrastructure.adminPoolDomain;
 
     // ===== S3 BUCKETS =====
 
@@ -441,251 +450,6 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
     // Access via: tables.invites, tables.registrations, etc.
     // Access via: siteBucket, logBucket, termsBucket
 
-
-    // Custom auth Lambda functions for passwordless magic link authentication
-    // These must be created before the user pool that references them
-    const defineAuthChallenge = new lambdaNode.NodejsFunction(this, 'DefineAuthChallengeFn', {
-      entry: 'lambda/handlers/auth/defineAuthChallenge.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      timeout: cdk.Duration.seconds(10),
-    });
-
-    const createAuthChallenge = new lambdaNode.NodejsFunction(this, 'CreateAuthChallengeFn', {
-      entry: 'lambda/handlers/auth/createAuthChallenge.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: {
-        MAGIC_LINK_TABLE: tables.magicLinkTokens.tableName,
-        REGISTRATIONS_TABLE: tables.registrations.tableName,
-        MAGIC_LINK_URL: 'https://vettid.dev/auth',
-        SES_FROM: 'no-reply@auth.vettid.dev',
-      },
-      timeout: cdk.Duration.seconds(10),
-    });
-
-    const verifyAuthChallenge = new lambdaNode.NodejsFunction(this, 'VerifyAuthChallengeFn', {
-      entry: 'lambda/handlers/auth/verifyAuthChallenge.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: {
-        MAGIC_LINK_TABLE: tables.magicLinkTokens.tableName,
-        REGISTRATIONS_TABLE: tables.registrations.tableName,
-      },
-      timeout: cdk.Duration.seconds(10),
-    });
-
-    // PreTokenGeneration trigger for admin user pool - adds custom:admin_type to ID token
-    const preTokenGeneration = new lambdaNode.NodejsFunction(this, 'PreTokenGenerationFn', {
-      entry: 'lambda/triggers/preTokenGeneration.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      timeout: cdk.Duration.seconds(10),
-    });
-
-    // Grant permissions to auth Lambda functions
-    tables.magicLinkTokens.grantReadWriteData(createAuthChallenge);
-    tables.magicLinkTokens.grantReadWriteData(verifyAuthChallenge);
-    tables.registrations.grantReadData(createAuthChallenge); // For PIN status check
-    tables.registrations.grantReadData(verifyAuthChallenge); // For PIN validation
-
-    // Grant CloudWatch metrics permissions to verifyAuthChallenge for failed login tracking
-    verifyAuthChallenge.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['cloudwatch:PutMetricData'],
-      resources: ['*'], // CloudWatch PutMetricData doesn't support resource-level permissions
-      conditions: {
-        StringEquals: {
-          'cloudwatch:namespace': 'VettID/Authentication'
-        }
-      }
-    }));
-
-    // Grant SES permissions to createAuthChallenge
-    // Note: Using wildcard for identities to support SES sandbox mode (requires verified recipients)
-    // In production mode, only FROM address needs to be verified
-    createAuthChallenge.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['ses:SendEmail', 'ses:SendRawEmail'],
-      resources: [`arn:aws:ses:${this.region}:${this.account}:identity/*`],
-    }));
-
-// Cognito User Pools (separate pools for admins and members)
-
-    // Member user pool - for VettID members accessing vettid.dev/account
-    // Uses passwordless magic link authentication via custom auth flow
-    const memberUserPool = new cognito.UserPool(this, 'MemberUserPool', {
-      selfSignUpEnabled: false,
-      signInAliases: { email: true },
-      passwordPolicy: {
-        minLength: 12,
-        requireDigits: true,
-        requireLowercase: true,
-        requireUppercase: true,
-        requireSymbols: true,
-      },
-      email: cognito.UserPoolEmail.withSES({
-        fromEmail: 'no-reply@auth.vettid.dev',
-        fromName: 'VettID',
-        sesRegion: 'us-east-1',
-        sesVerifiedDomain: 'auth.vettid.dev',
-      }),
-      customAttributes: {
-        'user_guid': new cognito.StringAttribute({ minLen: 36, maxLen: 36, mutable: false }),
-      },
-      lambdaTriggers: {
-        defineAuthChallenge: defineAuthChallenge,
-        createAuthChallenge: createAuthChallenge,
-        verifyAuthChallengeResponse: verifyAuthChallenge,
-      },
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-    });
-    const memberDomainPrefix = `vettid-members-${cdk.Names.uniqueId(this).toLowerCase().slice(0, 10)}`.replace(/[^a-z0-9-]/g, '');
-    const memberPoolDomain = memberUserPool.addDomain('MemberCognitoDomain', { cognitoDomain: { domainPrefix: memberDomainPrefix } });
-    new cognito.CfnUserPoolGroup(this, 'RegisteredGroup', { userPoolId: memberUserPool.userPoolId, groupName: 'registered' });
-    new cognito.CfnUserPoolGroup(this, 'MemberGroup', { userPoolId: memberUserPool.userPoolId, groupName: 'member' });
-
-    // Admin user pool - for VettID administrators accessing admin.vettid.dev
-    const adminUserPool = new cognito.UserPool(this, 'AdminUserPool', {
-      selfSignUpEnabled: false,
-      signInAliases: { email: true },
-      passwordPolicy: {
-        minLength: 12,
-        requireDigits: true,
-        requireLowercase: true,
-        requireUppercase: true,
-        requireSymbols: true,
-      },
-      email: cognito.UserPoolEmail.withSES({
-        fromEmail: 'no-reply@auth.vettid.dev',
-        fromName: 'VettID Admin',
-        sesRegion: 'us-east-1',
-        sesVerifiedDomain: 'auth.vettid.dev',
-      }),
-      customAttributes: {
-        'admin_type': new cognito.StringAttribute({ minLen: 1, maxLen: 50, mutable: true }),
-      },
-      lambdaTriggers: {
-        preTokenGeneration: preTokenGeneration,
-      },
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-    });
-    const adminDomainPrefix = `vettid-admin-${cdk.Names.uniqueId(this).toLowerCase().slice(0, 10)}`.replace(/[^a-z0-9-]/g, '');
-    const adminPoolDomain = adminUserPool.addDomain('AdminCognitoDomain', { cognitoDomain: { domainPrefix: adminDomainPrefix } });
-    new cognito.CfnUserPoolGroup(this, 'AdminGroup', { userPoolId: adminUserPool.userPoolId, groupName: 'admin' });
-
-    // Custom UI for admin Cognito hosted UI - matches VettID branding
-    // Note: Cognito only allows specific CSS classes without pseudo-selectors
-    const cognitoCustomCSS = `
-      .logo-customizable {
-        max-width: 100%;
-        max-height: 100px;
-      }
-      .banner-customizable {
-        padding: 25px 0px 25px 0px;
-        background: linear-gradient(135deg, #1a1a1a 0%, #0a0a0a 100%);
-      }
-      .submitButton-customizable {
-        font-size: 14px;
-        font-weight: bold;
-        margin: 20px 0px 10px 0px;
-        height: 40px;
-        padding: 0px;
-        border-radius: 2px;
-        color: #000;
-        background: linear-gradient(135deg, #ffc125 0%, #e0a800 100%);
-        border: none;
-        box-shadow: 0 4px 14px rgba(255, 193, 37, 0.5);
-      }
-      .inputField-customizable {
-        font-size: 14px;
-        height: 40px;
-        padding: 0.6rem;
-        border-radius: 2px;
-        border: 1px solid #333;
-        background: #050505;
-        color: #e0e0e0;
-      }
-      .background-customizable {
-        background: #000;
-      }
-      .textDescription-customizable {
-        padding-top: 10px;
-        padding-bottom: 10px;
-        display: block;
-        font-size: 16px;
-        color: #e0e0e0;
-      }
-      .idpDescription-customizable {
-        padding-top: 10px;
-        padding-bottom: 10px;
-        display: block;
-        font-size: 16px;
-        color: #e0e0e0;
-      }
-      .legalText-customizable {
-        color: #999;
-        font-size: 11px;
-      }
-      .errorMessage-customizable {
-        padding: 5px;
-        font-size: 14px;
-        width: 100%;
-        background: #1a0505;
-        border: 2px solid #dc2626;
-        color: #fecaca;
-        border-radius: 4px;
-      }
-      .socialButton-customizable {
-        height: 40px;
-        text-align: left;
-        width: 100%;
-        border-radius: 2px;
-        background: #0a0a0a;
-        border: 1px solid #333;
-        color: #e0e0e0;
-      }
-    `;
-
-    // Admin app client - for admin.vettid.dev (uses adminUserPool)
-    const adminAppClient = new cognito.UserPoolClient(this, 'AdminWebClient', {
-      userPool: adminUserPool,
-      authFlows: { userPassword: false, userSrp: false, adminUserPassword: false },
-      oAuth: {
-        flows: { authorizationCodeGrant: true },
-        scopes: [cognito.OAuthScope.OPENID, cognito.OAuthScope.EMAIL, cognito.OAuthScope.PROFILE],
-        callbackUrls: ['https://admin.vettid.dev/index.html'],
-        logoutUrls: ['https://admin.vettid.dev/index.html'],
-      },
-      generateSecret: false,
-      preventUserExistenceErrors: true,
-      enableTokenRevocation: true,
-      refreshTokenValidity: cdk.Duration.days(30),
-      readAttributes: new cognito.ClientAttributes()
-        .withStandardAttributes({ email: true, emailVerified: true, givenName: true, familyName: true })
-        .withCustomAttributes('admin_type'),
-      writeAttributes: new cognito.ClientAttributes()
-        .withStandardAttributes({ givenName: true, familyName: true })
-        .withCustomAttributes('admin_type'),
-    });
-
-    // Apply VettID branding CSS to Cognito hosted UI
-    // Note: Logo must be uploaded separately via AWS CLI (see deployment instructions)
-    new cognito.CfnUserPoolUICustomizationAttachment(this, 'AdminUICustomization', {
-      userPoolId: adminUserPool.userPoolId,
-      clientId: adminAppClient.userPoolClientId,
-      css: cognitoCustomCSS,
-    });
-
-    // Member app client - for vettid.dev/account (uses memberUserPool with magic link auth)
-    const memberAppClient = new cognito.UserPoolClient(this, 'MemberWebClient', {
-      userPool: memberUserPool,
-      authFlows: {
-        userPassword: false,
-        userSrp: false,
-        adminUserPassword: false,
-        custom: true, // Enable custom auth flow for magic links
-      },
-      generateSecret: false,
-      preventUserExistenceErrors: true,
-      enableTokenRevocation: true,
-      refreshTokenValidity: cdk.Duration.days(30),
-    });
-
     // Lambda env
     const defaultEnv = {
       TABLE_INVITES: tables.invites.tableName,
@@ -981,29 +745,6 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       }),
     );
 
-    // API Gateway + authorizers
-    const httpApi = new apigw.HttpApi(this, 'Api', {
-      corsPreflight: {
-        allowMethods: [apigw.CorsHttpMethod.GET, apigw.CorsHttpMethod.POST, apigw.CorsHttpMethod.PUT, apigw.CorsHttpMethod.DELETE, apigw.CorsHttpMethod.OPTIONS],
-        allowOrigins: [
-          'https://vettid.dev',
-          'https://www.vettid.dev',
-          'https://admin.vettid.dev',
-          'https://account.vettid.dev',
-          'https://register.vettid.dev'
-        ],
-        allowHeaders: ['Authorization', 'Content-Type', 'X-Amz-Date', 'X-Api-Key', 'X-Amz-Security-Token'],
-      },
-    });
-
-    // Separate authorizers for admin and member user pools
-    const adminAuthorizer = new authorizers.HttpUserPoolAuthorizer('AdminAuthorizer', adminUserPool, {
-      userPoolClients: [adminAppClient]
-    });
-    const memberAuthorizer = new authorizers.HttpUserPoolAuthorizer('MemberAuthorizer', memberUserPool, {
-      userPoolClients: [memberAppClient]
-    });
-
     // Protection strategies implemented:
     // 1. WAF on CloudFront with rate limiting (100 req/5min), OWASP Top 10, IP reputation
     // 2. API Gateway throttling (200 burst, 100 RPS)
@@ -1013,144 +754,144 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
     // 6. CloudWatch alarms for monitoring suspicious activity
 
     // Add /register route
-    httpApi.addRoutes({
+    this.httpApi.addRoutes({
       path: '/register',
       methods: [apigw.HttpMethod.POST],
       integration: new integrations.HttpLambdaIntegration('SubmitRegInt', submitRegistration),
     });
 
     // Add /waitlist route
-    httpApi.addRoutes({
+    this.httpApi.addRoutes({
       path: '/waitlist',
       methods: [apigw.HttpMethod.POST],
       integration: new integrations.HttpLambdaIntegration('SubmitWaitlistInt', submitWaitlist),
     });
 
-    httpApi.addRoutes({
+    this.httpApi.addRoutes({
       path: '/account/cancel',
       methods: [apigw.HttpMethod.POST],
       integration: new integrations.HttpLambdaIntegration('CancelAccountInt', cancelAccount),
-      authorizer: memberAuthorizer,
+      authorizer: this.memberAuthorizer,
     });
-    httpApi.addRoutes({
+    this.httpApi.addRoutes({
       path: '/account/security/pin/enable',
       methods: [apigw.HttpMethod.POST],
       integration: new integrations.HttpLambdaIntegration('EnablePinInt', enablePin),
-      authorizer: memberAuthorizer,
+      authorizer: this.memberAuthorizer,
     });
-    httpApi.addRoutes({
+    this.httpApi.addRoutes({
       path: '/account/security/pin/disable',
       methods: [apigw.HttpMethod.POST],
       integration: new integrations.HttpLambdaIntegration('DisablePinInt', disablePin),
-      authorizer: memberAuthorizer,
+      authorizer: this.memberAuthorizer,
     });
-    httpApi.addRoutes({
+    this.httpApi.addRoutes({
       path: '/account/security/pin/update',
       methods: [apigw.HttpMethod.POST],
       integration: new integrations.HttpLambdaIntegration('UpdatePinInt', updatePin),
-      authorizer: memberAuthorizer,
+      authorizer: this.memberAuthorizer,
     });
-    httpApi.addRoutes({
+    this.httpApi.addRoutes({
       path: '/account/security/pin/status',
       methods: [apigw.HttpMethod.GET],
       integration: new integrations.HttpLambdaIntegration('GetPinStatusInt', getPinStatus),
-      authorizer: memberAuthorizer,
+      authorizer: this.memberAuthorizer,
     });
-    httpApi.addRoutes({
+    this.httpApi.addRoutes({
       path: '/account/email-preferences',
       methods: [apigw.HttpMethod.GET],
       integration: new integrations.HttpLambdaIntegration('GetEmailPreferencesInt', getEmailPreferences),
-      authorizer: memberAuthorizer,
+      authorizer: this.memberAuthorizer,
     });
-    httpApi.addRoutes({
+    this.httpApi.addRoutes({
       path: '/account/email-preferences',
       methods: [apigw.HttpMethod.POST],
       integration: new integrations.HttpLambdaIntegration('UpdateEmailPreferencesInt', updateEmailPreferences),
-      authorizer: memberAuthorizer,
+      authorizer: this.memberAuthorizer,
     });
-    httpApi.addRoutes({
+    this.httpApi.addRoutes({
       path: '/account/membership/request',
       methods: [apigw.HttpMethod.POST],
       integration: new integrations.HttpLambdaIntegration('RequestMembershipInt', requestMembership),
-      authorizer: memberAuthorizer,
+      authorizer: this.memberAuthorizer,
     });
-    httpApi.addRoutes({
+    this.httpApi.addRoutes({
       path: '/account/membership/status',
       methods: [apigw.HttpMethod.GET],
       integration: new integrations.HttpLambdaIntegration('GetMembershipStatusInt', getMembershipStatus),
-      authorizer: memberAuthorizer,
+      authorizer: this.memberAuthorizer,
     });
-    httpApi.addRoutes({
+    this.httpApi.addRoutes({
       path: '/account/membership/terms',
       methods: [apigw.HttpMethod.GET],
       integration: new integrations.HttpLambdaIntegration('GetMembershipTermsInt', getMembershipTerms),
-      authorizer: memberAuthorizer,
+      authorizer: this.memberAuthorizer,
     });
-    httpApi.addRoutes({
+    this.httpApi.addRoutes({
       path: '/account/subscriptions',
       methods: [apigw.HttpMethod.POST],
       integration: new integrations.HttpLambdaIntegration('CreateSubscriptionInt', createSubscription),
-      authorizer: memberAuthorizer,
+      authorizer: this.memberAuthorizer,
     });
-    httpApi.addRoutes({
+    this.httpApi.addRoutes({
       path: '/account/subscriptions/status',
       methods: [apigw.HttpMethod.GET],
       integration: new integrations.HttpLambdaIntegration('GetSubscriptionStatusInt', getSubscriptionStatus),
-      authorizer: memberAuthorizer,
+      authorizer: this.memberAuthorizer,
     });
-    httpApi.addRoutes({
+    this.httpApi.addRoutes({
       path: '/account/subscriptions/cancel',
       methods: [apigw.HttpMethod.POST],
       integration: new integrations.HttpLambdaIntegration('CancelSubscriptionInt', cancelSubscription),
-      authorizer: memberAuthorizer,
+      authorizer: this.memberAuthorizer,
     });
-    httpApi.addRoutes({
+    this.httpApi.addRoutes({
       path: '/account/subscription-types',
       methods: [apigw.HttpMethod.GET],
       integration: new integrations.HttpLambdaIntegration('ListEnabledSubscriptionTypesInt', listEnabledSubscriptionTypes),
-      authorizer: memberAuthorizer,
+      authorizer: this.memberAuthorizer,
     });
-    httpApi.addRoutes({
+    this.httpApi.addRoutes({
       path: '/votes',
       methods: [apigw.HttpMethod.POST],
       integration: new integrations.HttpLambdaIntegration('SubmitVoteInt', submitVote),
-      authorizer: memberAuthorizer,
+      authorizer: this.memberAuthorizer,
     });
-    httpApi.addRoutes({
+    this.httpApi.addRoutes({
       path: '/votes/history',
       methods: [apigw.HttpMethod.GET],
       integration: new integrations.HttpLambdaIntegration('GetVotingHistoryInt', getVotingHistory),
-      authorizer: memberAuthorizer,
+      authorizer: this.memberAuthorizer,
     });
-    httpApi.addRoutes({
+    this.httpApi.addRoutes({
       path: '/proposals/active',
       methods: [apigw.HttpMethod.GET],
       integration: new integrations.HttpLambdaIntegration('GetActiveProposalsInt', getActiveProposals),
-      authorizer: memberAuthorizer,
+      authorizer: this.memberAuthorizer,
     });
-    httpApi.addRoutes({
+    this.httpApi.addRoutes({
       path: '/proposals',
       methods: [apigw.HttpMethod.GET],
       integration: new integrations.HttpLambdaIntegration('GetAllProposalsInt', getAllProposals),
-      authorizer: memberAuthorizer,
+      authorizer: this.memberAuthorizer,
     });
-    httpApi.addRoutes({
+    this.httpApi.addRoutes({
       path: '/proposals/{proposal_id}/results',
       methods: [apigw.HttpMethod.GET],
       integration: new integrations.HttpLambdaIntegration('GetProposalResultsInt', getProposalResults),
-      authorizer: memberAuthorizer,
+      authorizer: this.memberAuthorizer,
     });
-    httpApi.addRoutes({
+    this.httpApi.addRoutes({
       path: '/proposals/{proposal_id}/vote-counts',
       methods: [apigw.HttpMethod.GET],
       integration: new integrations.HttpLambdaIntegration('GetMemberProposalVoteCountsInt', getMemberProposalVoteCounts),
-      authorizer: memberAuthorizer,
+      authorizer: this.memberAuthorizer,
     });
 
     // API Gateway throttling (default stage)
     // Note: HTTP API v2 has account-level throttling by default (10,000 RPS burst, 5,000 RPS steady)
     // Additional per-route throttling can be configured via CfnStage
-    const defaultStage = httpApi.defaultStage?.node.defaultChild as apigw.CfnStage;
+    const defaultStage = this.httpApi.defaultStage?.node.defaultChild as apigw.CfnStage;
     if (defaultStage) {
       defaultStage.defaultRouteSettings = {
         throttlingBurstLimit: 200,  // Max concurrent requests per IP
@@ -1199,7 +940,7 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
         namespace: 'AWS/ApiGateway',
         metricName: '4XXError',
         dimensionsMap: {
-          ApiId: httpApi.apiId,
+          ApiId: this.httpApi.apiId,
         },
         statistic: 'Sum',
         period: cdk.Duration.minutes(5),
@@ -1274,7 +1015,7 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
     new cdk.CfnOutput(this, 'OutLogBucket', { value: logBucket.bucketName });
     new cdk.CfnOutput(this, 'OutDistributionId', { value: rootDist.distributionId });
     new cdk.CfnOutput(this, 'OutAdminDistributionId', { value: adminDist.distributionId });
-    new cdk.CfnOutput(this, 'OutApiUrl', { value: httpApi.apiEndpoint });
+    new cdk.CfnOutput(this, 'OutApiUrl', { value: this.httpApi.apiEndpoint });
 
     // Member user pool outputs
     new cdk.CfnOutput(this, 'OutMemberCognitoDomain', { value: memberPoolDomain.baseUrl() });
@@ -1292,11 +1033,6 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
     new cdk.CfnOutput(this, 'OutAdminUrl', { value: 'https://admin.vettid.dev' });
 
     // Assign public properties for admin and vault stacks
-    this.httpApi = httpApi;
-    this.adminAuthorizer = adminAuthorizer;
-    this.memberAuthorizer = memberAuthorizer;
-    this.adminUserPool = adminUserPool;
-    this.memberUserPool = memberUserPool;
     this.termsBucket = termsBucket;
   }
   /**

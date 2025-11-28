@@ -26,8 +26,6 @@ const core = new VettIdStack(app, 'VettIDStack', {
 const admin = new AdminStack(app, 'VettID-Admin', {
   env,
   infrastructure,
-  adminUserPool: core.adminUserPool,
-  memberUserPool: core.memberUserPool,
   termsBucket: core.termsBucket,
 });
 
