@@ -84,6 +84,22 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       return badRequest('This subscription type is not currently available');
     }
 
+    // Check if this is a one-time offer and user has already used it
+    if (subscriptionType.is_one_time_offer) {
+      // Check existing subscription record for has_used_trial flag
+      const existingSubResult = await ddb.send(new GetItemCommand({
+        TableName: TABLE_SUBSCRIPTIONS,
+        Key: marshall({ user_guid: userGuid }),
+      }));
+
+      if (existingSubResult.Item) {
+        const existingSub = unmarshall(existingSubResult.Item);
+        if (existingSub.has_used_trial) {
+          return badRequest('You have already used this one-time offer.');
+        }
+      }
+    }
+
     // Calculate expiration date based on subscription type
     const now = new Date();
     const expiresAt = new Date(now);
@@ -107,7 +123,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     }
 
     // Create subscription record
-    const subscription = {
+    const subscription: Record<string, any> = {
       user_guid: userGuid,
       email: email,
       subscription_type_id: subscription_type_id,
@@ -119,6 +135,11 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       currency: subscriptionType.currency || 'USD',
       auto_renew: false, // Placeholder for future payment integration
     };
+
+    // Mark if user has used a one-time offer (e.g., free trial)
+    if (subscriptionType.is_one_time_offer) {
+      subscription.has_used_trial = true;
+    }
 
     await ddb.send(new PutItemCommand({
       TableName: TABLE_SUBSCRIPTIONS,

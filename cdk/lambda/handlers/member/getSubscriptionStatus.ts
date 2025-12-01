@@ -74,6 +74,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       expires_at: subscription.expires_at,
       amount: subscription.amount || 0,
       currency: subscription.currency || 'USD',
+      has_used_trial: subscription.has_used_trial || false,
     });
   } catch (error: any) {
     console.error('Error getting subscription status:', error);
