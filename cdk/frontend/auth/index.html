@@ -270,6 +270,10 @@ async function validateMagicLink() {
                 result.getAccessToken().getJwtToken(),
                 result.getRefreshToken().getToken()
               );
+              // Mark PIN as verified for this session so account page doesn't prompt again
+              if (pinRequired) {
+                sessionStorage.setItem('pinVerified', 'true');
+              }
               showMessage('Successfully authenticated! Redirecting...', 'success');
               setTimeout(() => { window.location.href = '/account'; }, 1000);
             },
