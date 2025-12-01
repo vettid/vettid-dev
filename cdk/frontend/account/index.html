@@ -1099,9 +1099,58 @@ function getElement(id) {
 function loadTokens() {
   try { return JSON.parse(localStorage.getItem('tokens') || 'null'); } catch { return null; }
 }
+function saveTokens(tokens) {
+  localStorage.setItem('tokens', JSON.stringify(tokens));
+}
 function clearTokens() { localStorage.removeItem('tokens'); localStorage.removeItem('authEmail'); }
 function idToken() { return (loadTokens() || {}).id_token; }
 function signedIn() { return !!idToken(); }
+
+// Refresh tokens using Cognito OAuth endpoint
+async function refreshTokens() {
+  const tokens = loadTokens();
+  if (!tokens || !tokens.refresh_token) {
+    console.log('[AUTH] No refresh token available');
+    return false;
+  }
+
+  const cognitoDomain = window.VettIDConfig.member.cognitoDomain;
+  const clientId = window.VettIDConfig.member.clientId;
+
+  try {
+    const response = await fetch(`${cognitoDomain}/oauth2/token`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded'
+      },
+      body: new URLSearchParams({
+        grant_type: 'refresh_token',
+        client_id: clientId,
+        refresh_token: tokens.refresh_token
+      })
+    });
+
+    if (!response.ok) {
+      console.error('[AUTH] Token refresh failed:', response.status);
+      return false;
+    }
+
+    const data = await response.json();
+
+    // Update stored tokens (refresh_token stays the same)
+    saveTokens({
+      id_token: data.id_token,
+      access_token: data.access_token,
+      refresh_token: tokens.refresh_token // Keep existing refresh token
+    });
+
+    console.log('[AUTH] Tokens refreshed successfully');
+    return true;
+  } catch (error) {
+    console.error('[AUTH] Token refresh error:', error);
+    return false;
+  }
+}
 
 // ---- Toast Notifications ----
 function showToast(message, type = 'info') {
@@ -2236,11 +2285,19 @@ async function loadMembershipStatus() {
         document.getElementById('memberDetailsText').innerHTML = memberDetails;
         await loadMembershipTerms();
 
-        // Check if JWT token has member group - if not, need to sign out/in to get fresh token
+        // Check if JWT token has member group - if not, try to refresh tokens
         const { payload } = parseJwt(token);
         const groups = payload['cognito:groups'] || [];
         if (!groups.includes('member')) {
-          detailsP.innerHTML += '<br><br><div style="padding:12px;background:#ff9800;color:#000;border-radius:4px;margin-top:12px;"><strong>Action Required:</strong> Your membership has been approved! Please <a href="#" onclick="signOut(); return false;" style="color:#000;text-decoration:underline;font-weight:700;">sign out and sign back in</a> to update your account and gain access to member features.</div>';
+          // Try to refresh tokens automatically
+          detailsP.innerHTML += '<br><br><div style="padding:12px;background:#2196f3;color:#fff;border-radius:4px;margin-top:12px;"><strong>Updating access...</strong> Please wait while we activate your member features.</div>';
+          const refreshed = await refreshTokens();
+          if (refreshed) {
+            // Reload the page to apply new token
+            window.location.reload();
+          } else {
+            detailsP.innerHTML += '<br><br><div style="padding:12px;background:#ff9800;color:#000;border-radius:4px;margin-top:12px;"><strong>Action Required:</strong> Your membership has been approved! Please <a href="#" onclick="signOut(); return false;" style="color:#000;text-decoration:underline;font-weight:700;">sign out and sign back in</a> to update your account and gain access to member features.</div>';
+          }
         }
         break;
       default:
@@ -2316,13 +2373,27 @@ async function executeMembershipRequest() {
     msgEl.style.color = '#4caf50';
     showToast(data.message || 'Membership approved successfully', 'success');
 
-    // If response indicates user needs to sign in again, redirect after short delay
+    // If response indicates user needs updated token (new group membership)
     if (data.requires_signin) {
-      // Clear getting started flag so user sees getting started tab after re-login
-      clearGettingStartedComplete();
-      setTimeout(() => {
-        signOut();
-      }, 2000);
+      // Try to refresh tokens silently instead of forcing sign out
+      showToast('Updating your account access...', 'info');
+      const refreshed = await refreshTokens();
+
+      if (refreshed) {
+        // Token refreshed successfully - reload UI with new permissions
+        clearGettingStartedComplete();
+        await loadMembershipStatus();
+        await populateGettingStartedSteps();
+        updateTabVisibility();
+        showToast('Membership activated! You now have full member access.', 'success');
+      } else {
+        // Refresh failed - fall back to sign out
+        clearGettingStartedComplete();
+        showToast('Please sign in again to complete activation.', 'warning');
+        setTimeout(() => {
+          signOut();
+        }, 2000);
+      }
     } else {
       setLoading(btn, false);
       await loadMembershipStatus();
