@@ -321,6 +321,10 @@ document.getElementById('waitlistForm').addEventListener('submit', async (e) => 
       }
 
       document.getElementById('waitlistForm').reset();
+      // Re-enable submit button after success
+      waitlistSubmitBtn.disabled = false;
+      waitlistSubmitBtn.textContent = 'Join Wait List';
+      waitlistSubmitBtn.style.opacity = '1';
     }
   } catch (err) {
     messageEl.textContent = 'Network error: ' + err.message;
