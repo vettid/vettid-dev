@@ -502,8 +502,13 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
     const submitWaitlist = new lambdaNode.NodejsFunction(this, 'SubmitWaitlistFn', {
       entry: 'lambda/handlers/public/submitWaitlist.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
-      environment: { ...defaultEnv, TABLE_WAITLIST: tables.waitlist.tableName },
-      timeout: cdk.Duration.seconds(10),
+      environment: {
+        ...defaultEnv,
+        TABLE_WAITLIST: tables.waitlist.tableName,
+        TABLE_NOTIFICATION_PREFERENCES: tables.notificationPreferences.tableName,
+        SES_FROM: 'no-reply@vettid.dev',
+      },
+      timeout: cdk.Duration.seconds(15), // Allow time for admin notifications
     });
     const registrationStreamFn = new lambdaNode.NodejsFunction(this, 'RegistrationStreamFn', {
       entry: 'lambda/handlers/streams/registrationStream.ts',
@@ -660,6 +665,7 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
     tables.registrations.grantReadWriteData(submitRegistration);
     tables.waitlist.grantReadWriteData(submitWaitlist);
     tables.audit.grantReadWriteData(submitWaitlist); // For rate limiting
+    tables.notificationPreferences.grantReadData(submitWaitlist); // For admin notifications
     tables.registrations.grantReadWriteData(cancelAccount);
     tables.subscriptions.grantReadWriteData(cancelAccount);
     tables.registrations.grantReadWriteData(cleanupExpiredAccounts);
@@ -742,10 +748,10 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
         resources: ['*'], // These SES actions don't support resource-level permissions
       }),
     );
-    // SES permission for waitlist email verification
+    // SES permission for waitlist email verification and admin notifications
     submitWaitlist.addToRolePolicy(
       new iam.PolicyStatement({
-        actions: ['ses:VerifyEmailIdentity'],
+        actions: ['ses:VerifyEmailIdentity', 'ses:SendEmail'],
         resources: ['*'], // VerifyEmailIdentity doesn't support resource-level permissions
       }),
     );

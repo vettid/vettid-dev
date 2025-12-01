@@ -1,7 +1,7 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { DynamoDBClient, PutItemCommand, QueryCommand } from '@aws-sdk/client-dynamodb';
-import { SESClient, VerifyEmailIdentityCommand } from '@aws-sdk/client-ses';
-import { marshall } from '@aws-sdk/util-dynamodb';
+import { SESClient, VerifyEmailIdentityCommand, SendEmailCommand } from '@aws-sdk/client-ses';
+import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import { randomUUID } from 'crypto';
 import { validateEmail, validateName, checkRateLimit, hashIdentifier, getClientIp } from '../../common/util';
 
@@ -13,6 +13,8 @@ const RATE_LIMIT_MAX_REQUESTS = 5;
 const RATE_LIMIT_WINDOW_MINUTES = 60;
 
 const TABLE_WAITLIST = process.env.TABLE_WAITLIST!;
+const TABLE_NOTIFICATION_PREFERENCES = process.env.TABLE_NOTIFICATION_PREFERENCES!;
+const SES_FROM = process.env.SES_FROM || 'no-reply@vettid.dev';
 // SECURITY: Remove wildcard default - CORS_ORIGIN must be explicitly set or use allowed list
 const CORS_ORIGIN = process.env.CORS_ORIGIN || '';
 
@@ -71,6 +73,73 @@ function jsonResponse(
 
 function badRequest(message: string, origin?: string): APIGatewayProxyResultV2 {
   return jsonResponse(400, { message }, origin);
+}
+
+async function sendAdminNotifications(firstName: string, lastName: string, email: string): Promise<void> {
+  try {
+    // Query admin emails subscribed to waitlist notifications
+    const result = await ddb.send(
+      new QueryCommand({
+        TableName: TABLE_NOTIFICATION_PREFERENCES,
+        KeyConditionExpression: 'notification_type = :type',
+        ExpressionAttributeValues: marshall({
+          ':type': 'waitlist',
+        }),
+      })
+    );
+
+    if (!result.Items || result.Items.length === 0) {
+      console.log('No admins subscribed to waitlist notifications');
+      return;
+    }
+
+    const adminEmails = result.Items.map(item => unmarshall(item).admin_email as string);
+    console.log(`Sending waitlist notification to ${adminEmails.length} admin(s)`);
+
+    // Send email to each subscribed admin
+    for (const adminEmail of adminEmails) {
+      try {
+        await ses.send(
+          new SendEmailCommand({
+            Source: SES_FROM,
+            Destination: {
+              ToAddresses: [adminEmail],
+            },
+            Message: {
+              Subject: {
+                Data: 'New Waitlist Signup - VettID',
+                Charset: 'UTF-8',
+              },
+              Body: {
+                Html: {
+                  Data: `
+                    <h2>New Waitlist Signup</h2>
+                    <p>A new user has joined the VettID waitlist:</p>
+                    <ul>
+                      <li><strong>Name:</strong> ${firstName} ${lastName}</li>
+                      <li><strong>Email:</strong> ${email}</li>
+                      <li><strong>Time:</strong> ${new Date().toISOString()}</li>
+                    </ul>
+                    <p>You can manage waitlist entries in the <a href="https://admin.vettid.dev">Admin Portal</a>.</p>
+                  `,
+                  Charset: 'UTF-8',
+                },
+                Text: {
+                  Data: `New Waitlist Signup\n\nA new user has joined the VettID waitlist:\n\nName: ${firstName} ${lastName}\nEmail: ${email}\nTime: ${new Date().toISOString()}\n\nManage waitlist entries at https://admin.vettid.dev`,
+                  Charset: 'UTF-8',
+                },
+              },
+            },
+          })
+        );
+        console.log(`Notification sent to ${adminEmail}`);
+      } catch (emailError) {
+        console.error(`Failed to send notification to ${adminEmail}:`, emailError);
+      }
+    }
+  } catch (error) {
+    console.error('Failed to send admin notifications:', error);
+  }
 }
 
 export const handler = async (
@@ -153,6 +222,9 @@ export const handler = async (
       Item: marshall(waitlistItem),
     })
   );
+
+  // Send admin notifications
+  await sendAdminNotifications(first, last, email);
 
   // If email consent is given, trigger SES email verification
   let sesVerificationSent = false;
