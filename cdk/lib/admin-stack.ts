@@ -502,7 +502,7 @@ export class AdminStack extends cdk.Stack {
       runtime: lambda.Runtime.NODEJS_22_X,
       environment: {
         ...defaultEnv,
-        TABLE_PREFIX: 'VettIDStack',
+        TABLE_MAGIC_LINK_TOKENS: tables.magicLinkTokens.tableName,
       },
       timeout: cdk.Duration.seconds(30),
     });

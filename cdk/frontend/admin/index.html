@@ -823,7 +823,7 @@
                   <option value="api">API Gateway</option>
                   <option value="errors">Errors Only</option>
                 </select>
-                <button id="refreshLogs" class="btn" style="background:var(--bg-button-secondary);padding:6px 16px;font-size:0.85rem;">Refresh Logs</button>
+                <button id="refreshLogs" class="btn" style="background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);padding:6px 16px;font-size:0.85rem;">Refresh Logs</button>
               </div>
             </div>
             <div id="systemLogsContainer" style="max-height:400px;overflow-y:auto;background:var(--bg-logs);border-radius:4px;padding:12px;font-family:monospace;font-size:0.75rem;line-height:1.6;">
@@ -3037,14 +3037,14 @@ document.querySelectorAll('.tab').forEach(tab => {
           document.querySelector('[data-sub-tab="admin-users"]').classList.add('active');
         }
 
-        // Load data if first time
-        if (!tabsLoaded[target]) {
-          tabsLoaded[target] = true;
-          if (isSubscribers) loadAllSubscriptions();
-          if (isVoteManagement) loadAllProposalsAdmin();
-          if (isSiteManagement) loadSystemHealth();
-          if (isAdmin) loadAdmins();
+        // Always refresh data when switching to a tab
+        if (isSubscribers) loadAllSubscriptions();
+        if (isVoteManagement) loadAllProposalsAdmin();
+        if (isSiteManagement) {
+          loadSystemHealth();
+          loadSystemLogs();
         }
+        if (isAdmin) loadAdmins();
       }
       return;
     }
@@ -3059,15 +3059,11 @@ document.querySelectorAll('.tab').forEach(tab => {
       document.querySelectorAll('.sub-tab-content').forEach(s => s.classList.remove('active'));
       document.getElementById(subTab).classList.add('active');
 
-      // Load data for sub-tab if first time
-      const subTabKey = `${target}-${subTab}`;
-      if (!tabsLoaded[subTabKey]) {
-        tabsLoaded[subTabKey] = true;
-        if (subTab === 'subscription-types') loadSubscriptionTypes();
-        if (subTab === 'membership-terms') loadCurrentTerms();
-        if (subTab === 'email') loadSentEmails();
-        if (subTab === 'notifications') loadAllNotifications();
-      }
+      // Always refresh data when switching to a sub-tab
+      if (subTab === 'subscription-types') loadSubscriptionTypes();
+      if (subTab === 'membership-terms') loadCurrentTerms();
+      if (subTab === 'email') loadSentEmails();
+      if (subTab === 'notifications') loadAllNotifications();
 
       // Close sidebar on mobile
       if (window.innerWidth <= 768) {
@@ -3103,15 +3099,12 @@ document.querySelectorAll('.tab').forEach(tab => {
     tab.classList.add('active');
     document.getElementById(target).classList.add('active');
 
-    // Load data if first time
-    if (!tabsLoaded[target]) {
-      tabsLoaded[target] = true;
-      if (target === 'waitlist') loadWaitlist();
-      if (target === 'users') loadUsers();
-      if (target === 'invites') loadInvites();
-      if (target === 'admins') loadAdmins();
-      if (target === 'subscriptions') loadAllSubscriptions();
-    }
+    // Always refresh data when switching to a tab
+    if (target === 'waitlist') loadWaitlist();
+    if (target === 'users') loadUsers();
+    if (target === 'invites') loadInvites();
+    if (target === 'admins') loadAdmins();
+    if (target === 'subscriptions') loadAllSubscriptions();
 
     // Close sidebar on mobile after selecting tab
     if (window.innerWidth <= 768) {
@@ -5551,9 +5544,10 @@ async function loadSystemHealth() {
 
     // Change status color
     const statusEl = document.getElementById('apiHealthStatus');
-    if (apiStatus.toLowerCase() === 'operational') {
+    const statusLower = apiStatus.toLowerCase();
+    if (statusLower === 'operational' || statusLower === 'healthy') {
       statusEl.style.color = '#10b981';
-    } else if (apiStatus.toLowerCase() === 'degraded') {
+    } else if (statusLower === 'degraded') {
       statusEl.style.color = '#f59e0b';
     } else {
       statusEl.style.color = '#ef4444';
@@ -5580,7 +5574,8 @@ async function loadSystemLogs() {
     }
 
     const data = await res.json();
-    const logs = data.logs || [];
+    // API returns array directly, not wrapped in { logs: [...] }
+    const logs = Array.isArray(data) ? data : (data.logs || []);
 
     const container = document.getElementById('systemLogsContainer');
 

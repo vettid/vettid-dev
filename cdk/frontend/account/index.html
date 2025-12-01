@@ -270,9 +270,18 @@
     [data-theme="light"] #profileSubscriptionStatus { background: var(--bg-card) !important; border: 1px solid var(--border-color); }
     [data-theme="light"] #pinStatusBox { background: var(--bg-card) !important; border: 1px solid var(--border-color); }
     [data-theme="light"] #emailPrefsBox { background: var(--bg-card) !important; border: 1px solid var(--border-color); }
-    [data-theme="light"] #termsTextBox { background: var(--bg-card) !important; border-color: var(--border-color) !important; }
-    [data-theme="light"] #membershipTermsSection div[style*="background:#0f0f0f"] { background: var(--bg-hover) !important; border-color: var(--border-color) !important; }
-    [data-theme="light"] #memberInfoSection div[style*="background:#0a0a0a"] { background: var(--bg-card) !important; border-color: var(--border-color) !important; }
+    /* Membership terms - default dark theme */
+    #termsTextBox { background: #0a0a0a; color: #e5e5e5; }
+    #membershipTermsSection > div[style*="background"] { background: #0f0f0f !important; }
+    /* Membership terms - light theme */
+    [data-theme="light"] #termsTextBox { background: var(--bg-card) !important; border-color: var(--border-color) !important; color: var(--text-primary) !important; }
+    [data-theme="light"] #termsTextBox * { color: var(--text-primary) !important; }
+    [data-theme="light"] #membershipTermsSection { color: var(--text-primary) !important; }
+    [data-theme="light"] #membershipTermsSection > div { background: var(--bg-hover) !important; border-color: var(--border-color) !important; }
+    [data-theme="light"] #membershipTermsSection label { color: var(--text-primary) !important; }
+    [data-theme="light"] #memberInfoSection { color: var(--text-primary) !important; }
+    [data-theme="light"] #memberInfoSection > div { background: var(--bg-card) !important; border-color: var(--border-color) !important; }
+    [data-theme="light"] #memberInfoSection p { color: var(--text-primary) !important; }
 
     /* Subscription options light theme */
     [data-theme="light"] #subscriptionOptionsSection div[style*="background:#050505"] { background: var(--bg-card) !important; border-color: var(--border-color) !important; }
@@ -426,7 +435,7 @@
           Please review and accept the membership terms to become a full member. You'll be granted immediate access after accepting.
         </p>
 
-        <div id="termsTextBox" style="padding:16px;background:#0a0a0a;border-radius:4px;border:1px solid var(--border);max-height:400px;overflow-y:auto;margin-bottom:16px;">
+        <div id="termsTextBox" style="padding:16px;border-radius:4px;border:1px solid var(--border);max-height:400px;overflow-y:auto;margin-bottom:16px;">
           <p class="muted">Loading terms...</p>
         </div>
 
@@ -1110,7 +1119,6 @@ function signedIn() { return !!idToken(); }
 async function refreshTokens() {
   const tokens = loadTokens();
   if (!tokens || !tokens.refresh_token) {
-    console.log('[AUTH] No refresh token available');
     return false;
   }
 
@@ -1144,7 +1152,6 @@ async function refreshTokens() {
       refresh_token: tokens.refresh_token // Keep existing refresh token
     });
 
-    console.log('[AUTH] Tokens refreshed successfully');
     return true;
   } catch (error) {
     console.error('[AUTH] Token refresh error:', error);
@@ -1302,18 +1309,15 @@ function clearPinVerificationForSession() {
 async function checkAndRequirePinVerification() {
   // If already verified this session, skip
   if (isPinVerifiedForSession()) {
-    console.log('[PIN-LOGIN] PIN already verified this session');
     return false;
   }
 
   const token = idToken();
   if (!token) {
-    console.log('[PIN-LOGIN] No token, skipping PIN check');
     return false;
   }
 
   try {
-    console.log('[PIN-LOGIN] Checking PIN status...');
     const res = await fetch(API_URL + '/account/security/pin/status', {
       method: 'GET',
       headers: { 'Authorization': 'Bearer ' + token }
@@ -1321,25 +1325,20 @@ async function checkAndRequirePinVerification() {
 
     // 404 = PIN not configured, no verification needed
     if (res.status === 404) {
-      console.log('[PIN-LOGIN] PIN not configured, no verification needed');
       return false;
     }
 
     if (!res.ok) {
-      console.error('[PIN-LOGIN] Error checking PIN status:', res.status);
       return false; // On error, allow access (fail open)
     }
 
     const data = await res.json();
-    console.log('[PIN-LOGIN] PIN status:', data);
 
     if (data.pin_enabled) {
       // PIN is enabled, show verification modal
-      console.log('[PIN-LOGIN] PIN is enabled, showing verification modal');
       showPinVerificationModal();
       return true; // Block load until PIN verified
     } else {
-      console.log('[PIN-LOGIN] PIN is disabled, no verification needed');
       return false;
     }
   } catch (err) {
@@ -1597,7 +1596,6 @@ function checkAuth() {
   // Check if token is expired
   const token = idToken();
   if (isTokenExpired(token)) {
-    console.log('[AUTH] Token expired, redirecting to signin');
     clearTokens();
     window.location.href = '/signin';
     return false;
@@ -1784,16 +1782,13 @@ async function loadPinStatus() {
       console.error('[PIN] No ID token found');
       throw new Error('No authentication token found');
     }
-    console.log('[PIN] Fetching status from:', API_URL + '/account/security/pin/status');
     const res = await fetch(API_URL + '/account/security/pin/status', {
       method: 'GET',
       headers: { 'Authorization': 'Bearer ' + token }
     });
-    console.log('[PIN] Response status:', res.status);
 
     // Handle 404 as "PIN not configured yet" (valid state for new users)
     if (res.status === 404) {
-      console.log('[PIN] No PIN configured for this account (404) - treating as disabled');
       const statusSpan = document.getElementById('pinStatus');
       const updatedAtP = document.getElementById('pinUpdatedAt');
       const enableBtn = document.getElementById('enablePinBtn');
@@ -2462,8 +2457,6 @@ async function createSubscription(subscription_type_id) {
       // Just refresh the steps but stay on current tab
       await populateGettingStartedSteps();
     }
-
-    console.log('[SUBSCRIPTION] Subscription created:', data);
   } catch (err) {
     console.error('Error creating subscription:', err);
     msgEl.style.display = 'block';
@@ -2488,7 +2481,6 @@ async function loadSubscriptionStatus() {
     }
 
     subscriptionStatus = await res.json();
-    console.log('[SUBSCRIPTION] Subscription status:', subscriptionStatus);
 
     // Update UI based on subscription status
     updateSubscriptionUI();
@@ -2947,7 +2939,6 @@ async function loadUserVotes() {
 
     // Handle 400/404 as "no votes yet" (valid state for new users)
     if (res.status === 400 || res.status === 404) {
-      console.log('[VOTES] No vote history found (status ' + res.status + ') - treating as empty');
       userVotesCache = [];
       return;
     }
@@ -3709,15 +3700,6 @@ document.getElementById('gotItBtn').onclick = async () => {
 if (checkAuth()) {
   // Define the main app initialization function
   const runAppInitialization = async () => {
-    // Debug: Log JWT payload to console
-    const token = idToken();
-    if (token) {
-      const { payload } = parseJwt(token);
-      console.log('[AUTH] JWT Payload:', payload);
-      console.log('[AUTH] Groups type:', typeof payload['cognito:groups']);
-      console.log('[AUTH] Groups value:', payload['cognito:groups']);
-      console.log('[AUTH] Groups JSON:', JSON.stringify(payload['cognito:groups']));
-    }
     populateProfile();
 
     // Load subscription status first so isPaidSubscriber() works correctly in loadMembershipStatus()

@@ -7,6 +7,14 @@ const logs = new CloudWatchLogsClient({});
 const MAX_LIMIT = 100;
 const DEFAULT_LIMIT = 50;
 
+// VettID-specific log group prefixes
+const VETTID_LOG_PREFIXES = [
+  '/aws/lambda/VettID-Admin',
+  '/aws/lambda/VettID-Infrastructure',
+  '/aws/lambda/VettID-Vault',
+  '/aws/lambda/VettIDStack',
+];
+
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   // Validate admin group membership
   const authError = requireAdminGroup(event);
@@ -24,19 +32,24 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     const requestedLimit = Number(event.queryStringParameters?.limit || DEFAULT_LIMIT);
     const limit = Math.min(Math.max(1, requestedLimit), MAX_LIMIT);
 
-    // Get all Lambda log groups
-    const logGroupsResult = await logs.send(new DescribeLogGroupsCommand({
-      logGroupNamePrefix: '/aws/lambda/'
-    }));
+    // Get VettID Lambda log groups - fetch from multiple prefixes
+    let allLogGroups: LogGroup[] = [];
 
-    const logGroups = logGroupsResult.logGroups || [];
+    for (const prefix of VETTID_LOG_PREFIXES) {
+      const result = await logs.send(new DescribeLogGroupsCommand({
+        logGroupNamePrefix: prefix,
+        limit: 50  // Get up to 50 log groups per prefix
+      }));
+      if (result.logGroups) {
+        allLogGroups = allLogGroups.concat(result.logGroups);
+      }
+    }
+
     const logEntries: any[] = [];
 
     // Filter log groups based on source parameter
-    let targetLogGroups = logGroups;
-    if (source === 'lambda') {
-      targetLogGroups = logGroups.filter((lg: LogGroup) => lg.logGroupName?.includes('/aws/lambda/'));
-    } else if (source === 'api') {
+    let targetLogGroups = allLogGroups;
+    if (source === 'api') {
       // API Gateway logs (if configured)
       const apiLogGroups = await logs.send(new DescribeLogGroupsCommand({
         logGroupNamePrefix: '/aws/apigateway/'
@@ -44,12 +57,16 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       targetLogGroups = apiLogGroups.logGroups || [];
     }
 
+    // Sort log groups by last event time (most recent first) and take top 20
+    targetLogGroups.sort((a, b) => (b.creationTime || 0) - (a.creationTime || 0));
+    const recentLogGroups = targetLogGroups.slice(0, 20);
+
     // Fetch recent log events from each log group
     const endTime = Date.now();
     const startTime = endTime - (24 * 60 * 60 * 1000); // Last 24 hours
 
     await Promise.all(
-      targetLogGroups.slice(0, 10).map(async (logGroup: LogGroup) => {
+      recentLogGroups.map(async (logGroup: LogGroup) => {
         if (!logGroup.logGroupName) return;
 
         try {

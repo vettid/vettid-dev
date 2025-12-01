@@ -8,7 +8,21 @@ const ses = new SESClient({});
 const ddb = new DynamoDBClient({});
 const cloudwatch = new CloudWatchClient({});
 
-const TABLE_PREFIX = process.env.TABLE_PREFIX || 'VettIDStack';
+// Table names from environment variables (set by CDK)
+const TABLE_NAMES: Record<string, string | undefined> = {
+  'Invites': process.env.TABLE_INVITES,
+  'Registrations': process.env.TABLE_REGISTRATIONS,
+  'Audit': process.env.TABLE_AUDIT,
+  'Waitlist': process.env.TABLE_WAITLIST,
+  'MagicLinkTokens': process.env.TABLE_MAGIC_LINK_TOKENS,
+  'MembershipTerms': process.env.TABLE_MEMBERSHIP_TERMS,
+  'Subscriptions': process.env.TABLE_SUBSCRIPTIONS,
+  'SubscriptionTypes': process.env.TABLE_SUBSCRIPTION_TYPES,
+  'Proposals': process.env.TABLE_PROPOSALS,
+  'Votes': process.env.TABLE_VOTES,
+  'SentEmails': process.env.TABLE_SENT_EMAILS,
+  'NotificationPreferences': process.env.TABLE_NOTIFICATION_PREFERENCES,
+};
 
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   // Validate admin group membership
@@ -26,38 +40,26 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     // Fetch SES quota
     const sesQuota = await ses.send(new GetSendQuotaCommand({}));
 
-    // Fetch DynamoDB table sizes
-    const tableNames = [
-      `${TABLE_PREFIX}-Invites`,
-      `${TABLE_PREFIX}-Registrations`,
-      `${TABLE_PREFIX}-Audit`,
-      `${TABLE_PREFIX}-Users`,
-      `${TABLE_PREFIX}-Waitlist`,
-      `${TABLE_PREFIX}-MembershipRequests`,
-      `${TABLE_PREFIX}-Subscriptions`,
-      `${TABLE_PREFIX}-SubscriptionTypes`,
-      `${TABLE_PREFIX}-Proposals`,
-      `${TABLE_PREFIX}-Votes`,
-      `${TABLE_PREFIX}-Terms`,
-      `${TABLE_PREFIX}-TermAcceptances`,
-      `${TABLE_PREFIX}-RateLimits`,
-      `${TABLE_PREFIX}-MagicLinks`,
-      `${TABLE_PREFIX}-Exports`,
-      `${TABLE_PREFIX}-Notifications`
-    ];
+    // Build list of tables to query from environment variables
+    const tableEntries = Object.entries(TABLE_NAMES).filter(([_, tableName]) => tableName);
 
     let totalSize = 0;
     const tableSizes: Record<string, number> = {};
+    const tableItemCounts: Record<string, number> = {};
 
-    await Promise.all(tableNames.map(async (tableName) => {
+    await Promise.all(tableEntries.map(async ([displayName, tableName]) => {
       try {
-        const tableDesc = await ddb.send(new DescribeTableCommand({ TableName: tableName }));
+        const tableDesc = await ddb.send(new DescribeTableCommand({ TableName: tableName! }));
         const size = tableDesc.Table?.TableSizeBytes || 0;
-        tableSizes[tableName] = size;
+        const itemCount = tableDesc.Table?.ItemCount || 0;
+        tableSizes[displayName] = size;
+        tableItemCounts[displayName] = itemCount;
         totalSize += size;
       } catch (error) {
         // Table might not exist, skip
-        tableSizes[tableName] = 0;
+        console.error(`Error describing table ${tableName}:`, error);
+        tableSizes[displayName] = 0;
+        tableItemCounts[displayName] = 0;
       }
     }));
 
@@ -93,9 +95,11 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
           ? ((sesQuota.SentLast24Hours || 0) / sesQuota.Max24HourSend * 100).toFixed(1)
           : 0
       },
-      dynamo: {
+      dynamodb: {
         totalSize: totalSize,
+        totalItems: Object.values(tableItemCounts).reduce((sum, count) => sum + count, 0),
         tables: tableSizes,
+        tableItemCounts: tableItemCounts,
         tableCount: Object.keys(tableSizes).length
       },
       lambda: {
