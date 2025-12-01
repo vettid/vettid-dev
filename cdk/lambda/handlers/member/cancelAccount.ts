@@ -33,7 +33,8 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       return badRequest("Unable to identify user");
     }
 
-    // Find the user's registration by email using Scan
+    // Find the user's registration by email using Query on status-index
+    // Note: Remove Limit when using FilterExpression - Limit applies BEFORE filtering
     const queryResult = await ddb.send(new QueryCommand({
       TableName: TABLES.registrations,
       IndexName: 'status-index',
@@ -45,8 +46,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       ExpressionAttributeValues: marshall({
         ":email": userEmail,
         ":approved": "approved"
-      }),
-      Limit: 1
+      })
     }));
 
     if (!queryResult.Items || queryResult.Items.length === 0) {

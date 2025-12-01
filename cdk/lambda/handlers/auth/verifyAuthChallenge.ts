@@ -95,6 +95,7 @@ export const handler: VerifyAuthChallengeResponseTriggerHandler = async (event) 
   try {
     // First, check if user has PIN enabled
     const userEmail = event.request.userAttributes.email;
+    // Note: Remove Limit when using FilterExpression - Limit applies BEFORE filtering
     const regQuery = await ddb.send(new ScanCommand({
       TableName: REGISTRATIONS_TABLE,
       FilterExpression: "email = :email AND #s = :approved",
@@ -104,8 +105,7 @@ export const handler: VerifyAuthChallengeResponseTriggerHandler = async (event) 
       ExpressionAttributeValues: marshall({
         ":email": userEmail,
         ":approved": "approved"
-      }),
-      Limit: 1
+      })
     }));
 
     let pinRequired = false;

@@ -39,13 +39,13 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     }
 
     // Validate user has accepted membership terms
+    // Note: Remove Limit when using FilterExpression - Limit applies BEFORE filtering
     const registrationsResult = await ddb.send(new ScanCommand({
       TableName: TABLE_REGISTRATIONS,
       FilterExpression: 'email = :email',
       ExpressionAttributeValues: marshall({
         ':email': email,
       }),
-      Limit: 1,
     }));
 
     if (!registrationsResult.Items || registrationsResult.Items.length === 0) {
