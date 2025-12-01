@@ -2374,8 +2374,13 @@ async function createSubscription(subscription_type_id) {
     // Check if this was the user's first subscription
     const wasFirstSubscription = !subscriptionStatus || !subscriptionStatus.has_subscription;
 
-    // Reload tab visibility to show subscriber tabs
+    // Reload subscription status (this updates has_used_trial flag)
     await loadSubscriptionStatus();
+
+    // Reload subscription types to filter out used one-time offers
+    await loadSubscriptionTypes();
+
+    // Update tab visibility to show subscriber tabs
     updateTabVisibility();
 
     // Only redirect to getting started for first subscription
