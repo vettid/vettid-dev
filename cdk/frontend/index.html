@@ -469,16 +469,32 @@
     .header-logo span { display: none; }
     .features h2, .how-it-works h2, .cooperative h2 { font-size: 2rem; }
     .tower-bg { display: none; }
+    header {
+      padding: 10px 16px;
+    }
+    .header-logo img {
+      height: 32px;
+      width: 32px;
+    }
+    .header-buttons .btn {
+      padding: 8px 16px;
+      font-size: 0.85rem;
+    }
     .dev-banner {
-      top: 60px;
-      padding: 10px 12px;
+      position: fixed;
+      top: 52px;
+      left: 0;
+      right: 0;
+      padding: 10px 16px;
       line-height: 1.4;
+      z-index: 99;
     }
     .dev-banner p {
-      font-size: 0.75rem;
+      font-size: 0.8rem;
+      margin: 0;
     }
     body:has(.dev-banner) .hero {
-      padding-top: 140px;
+      padding-top: 130px;
     }
   }
 </style>
