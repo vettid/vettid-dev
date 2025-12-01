@@ -68,6 +68,13 @@ export class AdminStack extends cdk.Stack {
   public readonly listWaitlist!: lambdaNode.NodejsFunction;
   public readonly sendWaitlistInvites!: lambdaNode.NodejsFunction;
   public readonly deleteWaitlistEntries!: lambdaNode.NodejsFunction;
+  public readonly getSystemHealth!: lambdaNode.NodejsFunction;
+  public readonly getSystemLogs!: lambdaNode.NodejsFunction;
+  public readonly sendBulkEmail!: lambdaNode.NodejsFunction;
+  public readonly listSentEmails!: lambdaNode.NodejsFunction;
+  public readonly getNotifications!: lambdaNode.NodejsFunction;
+  public readonly addNotification!: lambdaNode.NodejsFunction;
+  public readonly removeNotification!: lambdaNode.NodejsFunction;
 
   constructor(scope: Construct, id: string, props: AdminStackProps) {
     super(scope, id, props);
@@ -88,6 +95,8 @@ export class AdminStack extends cdk.Stack {
       TABLE_VOTES: tables.votes.tableName,
       TABLE_SUBSCRIPTION_TYPES: tables.subscriptionTypes.tableName,
       TABLE_WAITLIST: tables.waitlist.tableName,
+      TABLE_SENT_EMAILS: tables.sentEmails.tableName,
+      TABLE_NOTIFICATION_PREFERENCES: tables.notificationPreferences.tableName,
       ALLOWED_ORIGINS: 'https://admin.vettid.dev,http://localhost:3000,http://localhost:5173',
     };
 
@@ -176,6 +185,7 @@ export class AdminStack extends cdk.Stack {
       environment: {
         ...defaultEnv,
         USER_POOL_ID: memberUserPool.userPoolId,
+        TABLE_WAITLIST: tables.waitlist.tableName,
       },
       timeout: cdk.Duration.seconds(30),
     });
@@ -272,6 +282,38 @@ export class AdminStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(30),
     });
 
+    // ===== NOTIFICATION MANAGEMENT =====
+
+    const getNotifications = new lambdaNode.NodejsFunction(this, 'GetNotificationsFn', {
+      entry: 'lambda/handlers/admin/getNotifications.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+        ADMIN_USER_POOL_ID: adminUserPool.userPoolId,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const addNotification = new lambdaNode.NodejsFunction(this, 'AddNotificationFn', {
+      entry: 'lambda/handlers/admin/addNotification.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+        ADMIN_USER_POOL_ID: adminUserPool.userPoolId,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const removeNotification = new lambdaNode.NodejsFunction(this, 'RemoveNotificationFn', {
+      entry: 'lambda/handlers/admin/removeNotification.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+        ADMIN_USER_POOL_ID: adminUserPool.userPoolId,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
     // ===== MEMBERSHIP MANAGEMENT =====
 
     const listMembershipRequests = new lambdaNode.NodejsFunction(this, 'ListMembershipRequestsFn', {
@@ -303,6 +345,27 @@ export class AdminStack extends cdk.Stack {
         TERMS_BUCKET: termsBucket.bucketName,
       },
       timeout: cdk.Duration.seconds(30),
+      bundling: {
+        nodeModules: ['pdfkit'],
+        commandHooks: {
+          beforeBundling(inputDir: string, outputDir: string): string[] {
+            return [];
+          },
+          afterBundling(inputDir: string, outputDir: string): string[] {
+            return [
+              // Copy VettID logo
+              `mkdir -p ${outputDir}/assets`,
+              `cp ${inputDir}/lambda/assets/logo.jpg ${outputDir}/assets/logo.jpg`,
+              // Copy PDFKit data files (font metrics)
+              `mkdir -p ${outputDir}/data`,
+              `cp -r ${inputDir}/node_modules/pdfkit/js/data/* ${outputDir}/data/`
+            ];
+          },
+          beforeInstall() {
+            return [];
+          },
+        },
+      },
     });
 
     const getCurrentMembershipTerms = new lambdaNode.NodejsFunction(this, 'GetCurrentMembershipTermsFn', {
@@ -432,6 +495,41 @@ export class AdminStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(30),
     });
 
+    // ===== SYSTEM MONITORING =====
+
+    const getSystemHealth = new lambdaNode.NodejsFunction(this, 'GetSystemHealthFn', {
+      entry: 'lambda/handlers/admin/getSystemHealth.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+        TABLE_PREFIX: 'VettIDStack',
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const getSystemLogs = new lambdaNode.NodejsFunction(this, 'GetSystemLogsFn', {
+      entry: 'lambda/handlers/admin/getSystemLogs.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: defaultEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    // ===== EMAIL MANAGEMENT =====
+
+    const sendBulkEmail = new lambdaNode.NodejsFunction(this, 'SendBulkEmailFn', {
+      entry: 'lambda/handlers/admin/sendBulkEmail.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: defaultEnv,
+      timeout: cdk.Duration.seconds(60),
+    });
+
+    const listSentEmails = new lambdaNode.NodejsFunction(this, 'ListSentEmailsFn', {
+      entry: 'lambda/handlers/admin/listSentEmails.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: defaultEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
     // ===== SCHEDULED TASKS =====
 
     const cleanupExpiredAccounts = new lambdaNode.NodejsFunction(this, 'CleanupExpiredAccountsFn', {
@@ -497,6 +595,13 @@ export class AdminStack extends cdk.Stack {
     tables.audit.grantReadWriteData(sendWaitlistInvites); // Audit logging
     tables.waitlist.grantReadWriteData(deleteWaitlistEntries);
     tables.audit.grantReadWriteData(deleteWaitlistEntries); // Audit logging
+    tables.waitlist.grantReadWriteData(deleteUser); // Delete waitlist entries during user deletion
+
+    tables.sentEmails.grantReadWriteData(sendBulkEmail);
+    tables.waitlist.grantReadData(sendBulkEmail); // Query waitlist for emails
+    tables.registrations.grantReadData(sendBulkEmail); // Query registrations for emails
+    tables.subscriptions.grantReadData(sendBulkEmail); // Query subscriptions for emails
+    tables.sentEmails.grantReadData(listSentEmails);
 
     tables.audit.grantReadWriteData(approveRegistration);
     tables.audit.grantReadWriteData(rejectRegistration);
@@ -508,6 +613,11 @@ export class AdminStack extends cdk.Stack {
     tables.audit.grantReadWriteData(addAdmin); // Audit logging and rate limiting
     tables.audit.grantReadWriteData(resetAdminPassword); // Audit logging
     tables.audit.grantReadWriteData(changePassword); // Audit logging
+
+    // Notification preferences permissions
+    tables.notificationPreferences.grantReadData(getNotifications);
+    tables.notificationPreferences.grantReadWriteData(addNotification);
+    tables.notificationPreferences.grantReadWriteData(removeNotification);
 
     // Grant SES permissions for resetAdminPassword
     resetAdminPassword.addToRolePolicy(new iam.PolicyStatement({
@@ -548,7 +658,7 @@ export class AdminStack extends cdk.Stack {
     }));
 
     deleteUser.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['cognito-idp:AdminDisableUser'],
+      actions: ['cognito-idp:AdminDeleteUser'],
       resources: [memberUserPool.userPoolArn],
     }));
 
@@ -593,6 +703,30 @@ export class AdminStack extends cdk.Stack {
       resources: ['*'], // Need wildcard to verify any email and send from noreply@vettid.dev
     }));
 
+    // Grant SES permissions for bulk email sending
+    sendBulkEmail.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['ses:SendEmail'],
+      resources: ['*'], // Need wildcard to send from noreply@vettid.dev
+    }));
+
+    // Grant system monitoring permissions
+    getSystemHealth.addToRolePolicy(new iam.PolicyStatement({
+      actions: [
+        'ses:GetSendQuota',
+        'dynamodb:DescribeTable',
+        'cloudwatch:GetMetricStatistics',
+      ],
+      resources: ['*'],
+    }));
+
+    getSystemLogs.addToRolePolicy(new iam.PolicyStatement({
+      actions: [
+        'logs:DescribeLogGroups',
+        'logs:FilterLogEvents',
+      ],
+      resources: ['*'],
+    }));
+
     // Export Lambda functions for VettIDStack to use in API routes
     this.listRegistrations = listRegistrations;
     this.approveRegistration = approveRegistration;
@@ -633,6 +767,13 @@ export class AdminStack extends cdk.Stack {
     this.listWaitlist = listWaitlist;
     this.sendWaitlistInvites = sendWaitlistInvites;
     this.deleteWaitlistEntries = deleteWaitlistEntries;
+    this.getSystemHealth = getSystemHealth;
+    this.getSystemLogs = getSystemLogs;
+    this.sendBulkEmail = sendBulkEmail;
+    this.listSentEmails = listSentEmails;
+    this.getNotifications = getNotifications;
+    this.addNotification = addNotification;
+    this.removeNotification = removeNotification;
 
     // ===== SCHEDULED TASKS =====
 

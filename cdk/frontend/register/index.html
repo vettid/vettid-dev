@@ -224,6 +224,10 @@ form.addEventListener('submit', async (e) => {
       }
 
       form.reset();
+      // Re-enable submit button after successful submission
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Submit';
+      submitBtn.style.opacity = '1';
     }
   } catch (err) {
     msgEl.textContent = "Network or server error: " + (err.message || err);

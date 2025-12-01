@@ -35,12 +35,14 @@ export class InfrastructureStack extends cdk.Stack {
     proposals: dynamodb.Table;
     votes: dynamodb.Table;
     subscriptionTypes: dynamodb.Table;
+    sentEmails: dynamodb.Table;
     credentials: dynamodb.Table;
     credentialKeys: dynamodb.Table;
     transactionKeys: dynamodb.Table;
     ledgerAuthTokens: dynamodb.Table;
     actionTokens: dynamodb.Table;
     enrollmentSessions: dynamodb.Table;
+    notificationPreferences: dynamodb.Table;
   };
 
   // S3 Buckets
@@ -68,7 +70,7 @@ export class InfrastructureStack extends cdk.Stack {
       partitionKey: { name: 'code', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
-      pointInTimeRecovery: true,
+      pointInTimeRecovery: true
     });
 
     // Registrations table with GSI
@@ -106,7 +108,7 @@ export class InfrastructureStack extends cdk.Stack {
       partitionKey: { name: 'email', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
-      pointInTimeRecovery: true,
+      pointInTimeRecovery: true
     });
 
     waitlist.addGlobalSecondaryIndex({
@@ -129,7 +131,7 @@ export class InfrastructureStack extends cdk.Stack {
       partitionKey: { name: 'version_id', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
-      pointInTimeRecovery: true,
+      pointInTimeRecovery: true
     });
 
     membershipTerms.addGlobalSecondaryIndex({
@@ -144,7 +146,7 @@ export class InfrastructureStack extends cdk.Stack {
       partitionKey: { name: 'user_guid', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
-      pointInTimeRecovery: true,
+      pointInTimeRecovery: true
     });
 
     // Proposals table
@@ -169,7 +171,7 @@ export class InfrastructureStack extends cdk.Stack {
       sortKey: { name: 'user_guid', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
-      pointInTimeRecovery: true,
+      pointInTimeRecovery: true
     });
 
     votes.addGlobalSecondaryIndex({
@@ -193,6 +195,20 @@ export class InfrastructureStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
+    // Sent emails table (for bulk email tracking)
+    const sentEmails = new dynamodb.Table(this, 'SentEmails', {
+      partitionKey: { name: 'email_id', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      pointInTimeRecovery: true
+    });
+
+    sentEmails.addGlobalSecondaryIndex({
+      indexName: 'sent-at-index',
+      partitionKey: { name: 'sent_at', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
     // ===== VAULT SERVICES TABLES =====
 
     // Credentials table
@@ -201,7 +217,7 @@ export class InfrastructureStack extends cdk.Stack {
       sortKey: { name: 'credential_id', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
-      pointInTimeRecovery: true,
+      pointInTimeRecovery: true
     });
 
     // Credential keys table
@@ -209,7 +225,7 @@ export class InfrastructureStack extends cdk.Stack {
       partitionKey: { name: 'credential_id', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
-      pointInTimeRecovery: true,
+      pointInTimeRecovery: true
     });
 
     credentialKeys.addGlobalSecondaryIndex({
@@ -278,6 +294,15 @@ export class InfrastructureStack extends cdk.Stack {
       projectionType: dynamodb.ProjectionType.ALL,
     });
 
+    // Notification Preferences table
+    const notificationPreferences = new dynamodb.Table(this, 'NotificationPreferences', {
+      partitionKey: { name: 'notification_type', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'admin_email', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      pointInTimeRecovery: true,
+    });
+
     // ===== S3 BUCKETS =====
 
     // S3 bucket for membership terms PDFs (shared by VettIDStack and AdminStack)
@@ -302,12 +327,14 @@ export class InfrastructureStack extends cdk.Stack {
       proposals,
       votes,
       subscriptionTypes,
+      sentEmails,
       credentials,
       credentialKeys,
       transactionKeys,
       ledgerAuthTokens,
       actionTokens,
       enrollmentSessions,
+      notificationPreferences,
     };
 
     // ===== AUTH LAMBDA FUNCTIONS =====

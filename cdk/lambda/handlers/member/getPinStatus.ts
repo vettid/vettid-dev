@@ -24,6 +24,8 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     }
 
     // Find the user's registration by email using Scan
+    // Note: Removed Limit:1 because DynamoDB applies filter AFTER reading Limit items,
+    // so Limit:1 with FilterExpression could read 1 non-matching item and return empty
     const queryResult = await ddb.send(new ScanCommand({
       TableName: TABLES.registrations,
       FilterExpression: "email = :email AND #s = :approved",
@@ -33,12 +35,15 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       ExpressionAttributeValues: marshall({
         ":email": userEmail,
         ":approved": "approved"
-      }),
-      Limit: 1
+      })
     }));
 
+    // If no registration found, return default disabled state (valid for new users)
     if (!queryResult.Items || queryResult.Items.length === 0) {
-      return notFound("No active registration found for your account");
+      return ok({
+        pin_enabled: false,
+        pin_updated_at: null
+      });
     }
 
     const reg = unmarshall(queryResult.Items[0]) as any;

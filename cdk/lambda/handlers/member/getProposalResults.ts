@@ -46,7 +46,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     // Query all votes for this proposal using GSI
     const votesResult = await ddb.send(new QueryCommand({
       TableName: TABLE_VOTES,
-      IndexName: 'proposal-votes-index',
+      IndexName: 'proposal-vote-index',
       KeyConditionExpression: 'proposal_id = :proposal_id',
       ExpressionAttributeValues: marshall({
         ':proposal_id': proposal_id,

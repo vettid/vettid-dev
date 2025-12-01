@@ -29,8 +29,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       FilterExpression: "email = :email",
       ExpressionAttributeValues: marshall({
         ":email": userEmail
-      }),
-      Limit: 1
+      })
     }));
 
     // If no registration found, return default status

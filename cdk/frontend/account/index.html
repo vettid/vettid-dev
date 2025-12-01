@@ -6,7 +6,6 @@
 <meta content="width=device-width, initial-scale=1" name="viewport"/>
 <meta http-equiv="X-Content-Type-Options" content="nosniff"/>
 <meta http-equiv="Referrer-Policy" content="strict-origin-when-cross-origin"/>
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' __API_URL__ __MEMBER_COGNITO_DOMAIN__; base-uri 'self'; form-action 'self';"/>
 <title>VettID • Account</title>
 <link rel="icon" type="image/jpeg" href="/assets/favicon.ico"/>
 <link rel="stylesheet" href="/assets/styles.css"/>
@@ -15,7 +14,10 @@
     body{display:flex;flex-direction:column;height:100vh;margin:0;overflow:hidden;}
     header{display:flex;justify-content:space-between;align-items:center;padding:16px 24px;background:linear-gradient(135deg,#1a1a1a 0%,#0a0a0a 100%);border-bottom:2px solid var(--accent);box-shadow:0 2px 8px rgba(0,0,0,0.3);flex-shrink:0;}
     .main-container{display:flex;flex:1;overflow:hidden;}
-    .sidebar{width:220px;background:linear-gradient(180deg,#0f0f0f 0%,#050505 100%);border-right:2px solid #222;display:flex;flex-direction:column;overflow-y:auto;transition:transform 0.3s ease;}
+    .sidebar{width:220px;background:linear-gradient(180deg,#0f0f0f 0%,#050505 100%);border-right:2px solid #222;display:flex;flex-direction:column;overflow-y:auto;transition:width 0.3s ease;position:relative;flex-shrink:0;}
+    .sidebar.collapsed{width:0;overflow:hidden;border-right:none;}
+    .sidebar-toggle{position:fixed;top:50%;left:220px;transform:translateY(-50%);background:var(--accent);border:none;width:32px;height:48px;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,0.3);color:#000;font-size:1.2rem;font-weight:bold;border-radius:0 4px 4px 0;z-index:1000;display:flex;align-items:center;justify-content:center;transition:left 0.3s ease;}
+    .sidebar.collapsed ~ .sidebar-toggle{left:0;border-radius:4px 0 0 4px;}
     .wrap{padding:20px 32px;flex:1;overflow-y:auto;max-width:none;width:100%;}
     .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
     .card{padding:24px;background:#0a0a0a;border-radius:8px;border:2px solid var(--border);margin-bottom:20px;}
@@ -24,8 +26,24 @@
     .tab{background:none;color:var(--gray);border:none;padding:14px 20px;cursor:pointer;transition:all .2s;border-left:3px solid transparent;text-align:left;font-weight:600;font-size:0.9rem;width:100%;}
     .tab:hover:not(.locked){color:var(--text);background:rgba(255,193,37,0.08)}
     .tab.active{color:var(--accent);border-left-color:var(--accent);background:rgba(255,193,37,0.12)}
+    .tab-parent{position:relative;display:flex;justify-content:space-between;align-items:center;}
+    .tab-parent .tab-text{flex:1;}
+    .tab-parent .tab-chevron{transition:transform 0.2s ease;font-size:0.8rem;margin-right:4px;}
+    .tab-parent.expanded .tab-chevron{transform:rotate(90deg);}
+    .tab-children{max-height:0;overflow:hidden;transition:max-height 0.3s ease;background:rgba(0,0,0,0.3);}
+    .tab-children.expanded{max-height:500px;}
+    .tab-child{padding-left:36px;font-size:0.85rem;min-height:44px;display:flex;align-items:center;}
+    .tab-child:hover{background:rgba(255,193,37,0.06);}
+    .tab-child.active{color:var(--accent);border-left-color:var(--accent);background:rgba(255,193,37,0.1);}
+    .sub-tab-content{display:none;}
+    .sub-tab-content.active{display:block;}
     .tab.locked{opacity:0.5;cursor:not-allowed;position:relative}
     .tab.locked::after{content:'🔒';margin-left:6px;font-size:0.7rem}
+    .sidebar-badge{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 5px;margin-left:8px;background:#ef4444;color:#fff;font-size:0.7rem;font-weight:700;border-radius:9px;line-height:1;}
+    .sidebar-badge.pulse{animation:badgePulse 2s infinite;}
+    @keyframes badgePulse{0%,100%{box-shadow:0 0 0 0 rgba(239,68,68,0.4);}50%{box-shadow:0 0 0 6px rgba(239,68,68,0);}}
+    .tab.locked::before{content:attr(data-tooltip);position:absolute;left:100%;top:50%;transform:translateY(-50%);margin-left:12px;padding:8px 12px;background:linear-gradient(135deg,#1a1a1a 0%,#0a0a0a 100%);color:var(--text);border:2px solid var(--accent);border-radius:6px;white-space:nowrap;opacity:0;pointer-events:none;transition:opacity 0.2s;font-size:0.85rem;font-weight:600;z-index:1000;box-shadow:0 4px 12px rgba(0,0,0,0.5);}
+    .tab.locked:hover::before{opacity:1;}
     .tab-content{display:none;height:100%;width:100%;}
     .tab-content.active{display:block;width:100%;}
     @keyframes slideIn{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}
@@ -42,35 +60,243 @@
     .skeleton{background:linear-gradient(90deg,#0a0a0a 25%,#1a1a1a 50%,#0a0a0a 75%);background-size:200% 100%;animation:shimmer 1.5s infinite;}
     @keyframes shimmer{0%{background-position:200% 0;}100%{background-position:-200% 0;}}
 
+    /* Tooltip Styles */
+    .tooltip{position:relative;}
+    .tooltip::before{content:attr(data-tooltip);position:absolute;left:100%;top:50%;transform:translateY(-50%);margin-left:12px;padding:8px 12px;background:linear-gradient(135deg,#1a1a1a 0%,#0a0a0a 100%);color:var(--text);border:2px solid var(--accent);border-radius:6px;white-space:nowrap;opacity:0;pointer-events:none;transition:opacity 0.2s;font-size:0.85rem;font-weight:600;z-index:1000;box-shadow:0 4px 12px rgba(0,0,0,0.5);}
+    .tooltip::after{content:'';position:absolute;left:100%;top:50%;transform:translateY(-50%);margin-left:6px;border:6px solid transparent;border-right-color:var(--accent);opacity:0;pointer-events:none;transition:opacity 0.2s;z-index:1000;}
+    .tooltip:hover::before,.tooltip:hover::after{opacity:1;}
+
+    /* Mobile menu button - hidden on desktop */
+    .mobile-menu-btn{display:none;align-items:center;justify-content:center;background:none;border:none;color:var(--accent);font-size:1.5rem;cursor:pointer;padding:8px;margin-right:8px;}
+    .sidebar-overlay{display:none;}
+
     @media (max-width: 768px){
       .grid{grid-template-columns:1fr}
-      .main-container{flex-direction:column;}
-      .sidebar{width:100%;border-right:none;border-bottom:2px solid #222;}
-      .tabs{flex-direction:row;flex-wrap:wrap;}
-      .tab{flex:1;min-width:100px;font-size:0.75rem;padding:12px 16px;border-left:none;border-bottom:3px solid transparent;}
-      .tab.active{border-left-color:transparent;border-bottom-color:var(--accent);}
-      header{flex-direction:column;gap:12px}
+      .main-container{flex-direction:row;}
+      .sidebar{position:fixed;left:0;top:0;bottom:0;width:260px;z-index:999;transform:translateX(-100%);transition:transform 0.3s ease;border-right:2px solid #222;padding-top:70px;}
+      .sidebar.mobile-open{transform:translateX(0);}
+      .sidebar-overlay{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);z-index:998;}
+      .sidebar-overlay.visible{display:block;}
+      .sidebar-toggle{display:none;}
+      .mobile-menu-btn{display:flex !important;}
+      .tabs{flex-direction:column;flex-wrap:nowrap;}
+      .tab{width:100%;font-size:0.95rem;padding:16px 20px;border-left:3px solid transparent;border-bottom:none;}
+      .tab.active{border-left-color:var(--accent);border-bottom-color:transparent;}
+      .tab-child{min-height:48px;padding:16px 20px 16px 40px;}
+      .tab-parent{min-height:48px;padding:16px 20px;}
+      .tab-children.expanded{max-height:500px;}
+      header{flex-direction:row;gap:8px;padding:12px 16px;}
+      header h1{font-size:1.1rem;}
+      header .btn{padding:8px 12px;font-size:0.85rem;}
+      #userEmail{display:none;}
+      .wrap{padding:16px;}
+
+      /* Mobile Modal Improvements */
+      #proposalResultsModal > div,
+      #pinDisableModal > div {
+        width: 95% !important;
+        max-width: 95% !important;
+        max-height: 85vh !important;
+        transform: translate(-50%, -50%) !important;
+      }
+
+      #proposalResultsModal > div > div:first-child,
+      #pinDisableModal > div > div:first-child {
+        padding: 16px !important;
+      }
+
+      #proposalResultsModal > div > div:nth-child(2),
+      #pinDisableModal > div > div:nth-child(2) {
+        padding: 16px !important;
+      }
+
+      #proposalResultsModal > div > div:last-child,
+      #pinDisableModal > div > div:last-child {
+        padding: 12px 16px !important;
+        flex-direction: column;
+      }
+
+      #proposalResultsModal > div > div:last-child button,
+      #pinDisableModal > div > div:last-child button {
+        width: 100%;
+        padding: 14px 24px !important;
+        font-size: 1rem;
+        min-height: 48px;
+      }
+
+      #pinDisableInput {
+        font-size: 16px !important;
+        padding: 14px !important;
+        min-height: 48px;
+      }
+
+      #proposalResultsModal h3,
+      #pinDisableModal h3 {
+        font-size: 1.1rem !important;
+      }
+
+      #proposalResultsModal button[onclick="closeProposalResultsModal()"],
+      #pinDisableModal button[onclick="closePinDisableModal()"] {
+        font-size: 1.8rem !important;
+        width: 40px !important;
+        height: 40px !important;
+      }
     }
+
+    /* User dropdown styles */
+    .user-dropdown{position:relative;display:inline-block;}
+    .user-dropdown-btn{cursor:pointer;display:flex;align-items:center;gap:6px;padding:6px 12px;border-radius:6px;transition:background 0.2s;}
+    .user-dropdown-btn:hover{background:rgba(255,193,37,0.1);}
+    .user-dropdown-menu{display:none;position:absolute;top:100%;right:0;margin-top:8px;background:#1a1a1a;border:2px solid var(--accent);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,0.4);min-width:200px;z-index:1000;}
+    .user-dropdown-menu.active{display:block;}
+    .user-dropdown-item{display:block;width:100%;padding:12px 16px;cursor:pointer;transition:background 0.2s;border-bottom:1px solid #333;color:var(--text);font-size:0.9rem;}
+    .user-dropdown-item:last-child{border-bottom:none;}
+    .user-dropdown-item:hover{background:rgba(255,193,37,0.1);}
+
+    /* Light theme CSS variables */
+    [data-theme="light"] {
+      --bg-body: #f5f5f5;
+      --bg-input: #f9fafb;
+      --bg-card: #ffffff;
+      --bg-hover: #f3f4f6;
+      --bg-tertiary: #e5e7eb;
+      --bg-progress: #d1d5db;
+      --bg-error-bg: #fee2e2;
+      --bg-button-secondary: #e5e7eb;
+      --bg-button-disabled: #d1d5db;
+      --bg-logs: #f3f4f6;
+      --bg-divider: #d1d5db;
+      --bg-skeleton: linear-gradient(90deg,#e5e7eb 25%,#f3f4f6 50%,#e5e7eb 75%);
+      --text-primary: #1f2937;
+      --text-secondary: #4b5563;
+      --border-color: #d1d5db;
+    }
+    [data-theme="light"] body { background: var(--bg-body); color: var(--text-primary); }
+    [data-theme="light"] .card { background: var(--bg-card); border-color: var(--border-color); color: var(--text-primary); }
+    [data-theme="light"] .tab { color: var(--text-secondary); }
+    [data-theme="light"] .tab:hover:not(.locked) { background: rgba(0,0,0,0.05); color: var(--text-primary); }
+    [data-theme="light"] .tab.active { color: var(--accent); background: rgba(255,193,37,0.15); }
+    [data-theme="light"] .tab-children { background: rgba(0,0,0,0.03); }
+    [data-theme="light"] .tab-child:hover { background: rgba(0,0,0,0.05); }
+    [data-theme="light"] .wrap { background: var(--bg-body); }
+    [data-theme="light"] h1, [data-theme="light"] h2, [data-theme="light"] h3, [data-theme="light"] h4 { color: var(--text-primary); }
+    [data-theme="light"] p, [data-theme="light"] span, [data-theme="light"] label { color: var(--text-secondary); }
+    [data-theme="light"] input, [data-theme="light"] select, [data-theme="light"] textarea { background: var(--bg-input); color: var(--text-primary); border-color: var(--border-color); }
+    [data-theme="light"] .skeleton { background: var(--bg-skeleton); background-size: 200% 100%; }
+    [data-theme="light"] .toggle-slider { background: #9ca3af; }
+    [data-theme="light"] .sidebar-toggle { background: var(--accent); color: #000; border-color: var(--border-color); }
+    [data-theme="light"] .mobile-menu-btn { color: var(--accent); }
+
+    /* Theme toggle button styles */
+    .theme-toggle{background:none;border:2px solid var(--accent);border-radius:50%;width:36px;height:36px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:1.1rem;transition:all 0.2s;color:var(--accent);}
+    .theme-toggle:hover{background:rgba(255,193,37,0.15);}
+
+    /* Comprehensive light theme overrides */
+    [data-theme="light"] header { background: linear-gradient(135deg, #f5f5f5 0%, #e8e8e8 100%); border-bottom-color: #d4a012; }
+    [data-theme="light"] header h1 { color: var(--text-primary); }
+    [data-theme="light"] .sidebar { background: linear-gradient(180deg, #ffffff 0%, #f5f5f5 100%); border-right-color: var(--border-color); }
+    [data-theme="light"] .tab-children { background: rgba(0,0,0,0.02); }
+    [data-theme="light"] .user-dropdown-menu { background: #ffffff; border-color: #d4a012; box-shadow: 0 4px 16px rgba(0,0,0,0.15); }
+    [data-theme="light"] .user-dropdown-item { color: var(--text-primary); border-bottom-color: var(--border-color); }
+    [data-theme="light"] .user-dropdown-item:hover { background: rgba(212,160,18,0.1); }
+    [data-theme="light"] .user-dropdown-btn span { color: #b8860b !important; }
+    [data-theme="light"] #userEmail { color: #b8860b !important; }
+    [data-theme="light"] code { background: #e5e7eb; color: var(--text-primary); }
+
+    /* Light theme data boxes and tiles */
+    [data-theme="light"] #overallProgress { background: var(--bg-card) !important; border-color: var(--border-color) !important; }
+    [data-theme="light"] #overallProgress > div:last-child { background: #e5e7eb !important; }
+    [data-theme="light"] #gettingStartedSteps > div { background: var(--bg-card) !important; border-color: var(--border-color) !important; }
+    [data-theme="light"] #membershipStatusBox { background: var(--bg-card) !important; border: 1px solid var(--border-color); }
+    [data-theme="light"] #profileSubscriptionStatus { background: var(--bg-card) !important; border: 1px solid var(--border-color); }
+    [data-theme="light"] #pinStatusBox { background: var(--bg-card) !important; border: 1px solid var(--border-color); }
+    [data-theme="light"] #emailPrefsBox { background: var(--bg-card) !important; border: 1px solid var(--border-color); }
+    [data-theme="light"] #termsTextBox { background: var(--bg-card) !important; border-color: var(--border-color) !important; }
+    [data-theme="light"] #membershipTermsSection div[style*="background:#0f0f0f"] { background: var(--bg-hover) !important; border-color: var(--border-color) !important; }
+    [data-theme="light"] #memberInfoSection div[style*="background:#0a0a0a"] { background: var(--bg-card) !important; border-color: var(--border-color) !important; }
+
+    /* Subscription options light theme */
+    [data-theme="light"] #subscriptionOptionsSection div[style*="background:#050505"] { background: var(--bg-card) !important; border-color: var(--border-color) !important; }
+
+    /* Vault services coming soon tiles */
+    [data-theme="light"] #vault-deploy div[style*="background:#050505"],
+    [data-theme="light"] #vault-byov div[style*="background:#050505"],
+    [data-theme="light"] #vault-backup div[style*="background:#050505"] { background: var(--bg-hover) !important; border-color: var(--border-color) !important; }
+
+    /* Voting tab light theme */
+    [data-theme="light"] #proposalsContainer > div { background: var(--bg-card) !important; border-color: var(--border-color) !important; }
+
+    /* Modal light theme */
+    [data-theme="light"] #enablePinModal > div,
+    [data-theme="light"] #updatePinModal > div,
+    [data-theme="light"] #pinDisableModal > div > div,
+    [data-theme="light"] #confirmModal > div > div,
+    [data-theme="light"] #alertModal > div > div,
+    [data-theme="light"] #membershipConfirmModal > div > div,
+    [data-theme="light"] #proposalResultsModal > div > div { background: var(--bg-card) !important; }
+    [data-theme="light"] #enablePinModal input,
+    [data-theme="light"] #updatePinModal input,
+    [data-theme="light"] #pinDisableModal input { background: var(--bg-input) !important; color: var(--text-primary) !important; border-color: var(--border-color) !important; }
+
+    /* Sidebar active state in light theme - make it more visible */
+    [data-theme="light"] .tab.active { color: #b8860b; background: rgba(212,160,18,0.15); border-left-color: #d4a012; }
+    [data-theme="light"] .tab-child.active { color: #b8860b; background: rgba(212,160,18,0.12); border-left-color: #d4a012; }
+    [data-theme="light"] .tab:hover:not(.locked) { color: var(--text-primary); background: rgba(212,160,18,0.08); }
+    [data-theme="light"] .tab-child:hover { background: rgba(212,160,18,0.06); }
   </style>
 </head>
 <body>
-<header><div style="display:flex;align-items:center;gap:12px;"><img alt="VettID logo" src="/assets/logo.jpg" style="height:36px;width:36px;border-radius:6px;"/><h1>VettID • Account</h1></div>
-<div style="display:flex;align-items:center;gap:16px;">
-<span id="userEmail" style="color:var(--accent);font-weight:600;"></span>
-<button class="btn" id="signout">Sign out</button>
+<header>
+<div style="display:flex;align-items:center;gap:12px;">
+  <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Open menu">&#9776;</button>
+  <img alt="VettID logo" src="/assets/logo.jpg" style="height:36px;width:36px;border-radius:6px;"/>
+  <h1>Account</h1>
+</div>
+<div id="userDropdownContainer" class="user-dropdown" style="display:none;">
+  <div class="user-dropdown-btn">
+    <span id="userEmail" style="color:var(--accent);font-weight:600;"></span>
+    <span style="font-size:0.7rem;">&#9660;</span>
+  </div>
+  <div id="userDropdownMenu" class="user-dropdown-menu">
+    <div class="user-dropdown-item" id="themeToggle" style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+      <span>Theme</span>
+      <span id="themeIcon" style="font-size:1.1rem;">&#9728;&#65039;</span>
+    </div>
+    <div class="user-dropdown-item" id="signout">Sign Out</div>
+  </div>
 </div>
 </header>
+<div class="sidebar-overlay" id="sidebarOverlay"></div>
 
 <div class="main-container">
-  <div class="sidebar">
+  <div class="sidebar" id="sidebar">
     <div class="tabs">
       <button class="tab active" data-tab="getting-started">Getting Started</button>
-      <button class="tab" data-tab="account">Account</button>
+      <button class="tab tab-parent" id="accountParent" data-tab="account">
+        <span class="tab-text">Account</span>
+        <span class="tab-chevron">&#9656;</span>
+      </button>
+      <div class="tab-children" id="accountChildren">
+        <button class="tab tab-child" data-tab="account" data-sub-tab="profile">Profile</button>
+        <button class="tab tab-child" data-tab="account" data-sub-tab="membership">Membership</button>
+        <button class="tab tab-child" data-tab="account" data-sub-tab="pin-code">PIN Code</button>
+        <button class="tab tab-child" data-tab="account" data-sub-tab="email-prefs">Email Preferences</button>
+        <button class="tab tab-child" data-tab="account" data-sub-tab="account-actions">Account Actions</button>
+      </div>
       <button class="tab" data-tab="subscription" style="display:none;">Subscription</button>
-      <button class="tab" data-tab="voting" style="display:none;">Voting</button>
-      <button class="tab" data-tab="deploy-vault" style="display:none;">Vault Services</button>
+      <button class="tab" data-tab="voting" style="display:none;">Voting<span id="votingBadge" class="sidebar-badge pulse" style="display:none;"></span></button>
+      <button class="tab tab-parent" id="vaultParent" data-tab="deploy-vault" style="display:none;">
+        <span class="tab-text">Vault Services</span>
+        <span class="tab-chevron">&#9656;</span>
+      </button>
+      <div class="tab-children" id="vaultChildren">
+        <button class="tab tab-child" data-tab="deploy-vault" data-sub-tab="deploy">Deploy a Vault</button>
+        <button class="tab tab-child" data-tab="deploy-vault" data-sub-tab="byov">Bring Your Own Vault</button>
+        <button class="tab tab-child" data-tab="deploy-vault" data-sub-tab="backup">Backup Services</button>
+      </div>
     </div>
   </div>
+  <button class="sidebar-toggle" id="sidebarToggle">&lt;</button>
 
   <div class="wrap">
 
@@ -101,8 +327,34 @@
 </div>
 
 <div id="account" class="tab-content">
-  <div class="grid">
-    <!-- Membership Card (First) -->
+  <!-- Profile Sub-tab -->
+  <div id="account-profile" class="sub-tab-content active">
+    <div class="card">
+      <h3>Your Profile</h3>
+      <div>
+        <p><strong>First name</strong><br/><span id="firstName">—</span></p>
+        <p><strong>Last name</strong><br/><span id="lastName">—</span></p>
+        <p><strong>Email</strong><br/><span id="email">—</span></p>
+        <p><strong>User GUID</strong><br/><code id="userGuid">—</code></p>
+      </div>
+
+      <hr style="margin:20px 0;border:none;border-top:1px solid #222" />
+
+      <h4 style="margin:0 0 12px;">Membership Status</h4>
+      <div id="membershipStatusBox" style="padding:12px;background:#0a0a0a;border-radius:4px;margin-bottom:16px;">
+        <p style="margin:0;"><strong>Status:</strong> <span id="membershipStatus">Loading...</span></p>
+        <p id="membershipDetails" style="margin:8px 0 0;"></p>
+      </div>
+
+      <h4 style="margin:0 0 12px;">Subscription Status</h4>
+      <div id="profileSubscriptionStatus" style="padding:12px;background:#0a0a0a;border-radius:4px;">
+        <p style="margin:0;">Loading...</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Membership Sub-tab -->
+  <div id="account-membership" class="sub-tab-content">
     <div class="card" id="membershipCard">
       <h3>Membership</h3>
       <p style="margin-bottom:16px;">VettID is a cooperative dedicated to our member's online security and privacy. In order to become a member you must read and accept our membership terms. Members must have an active trial or subscription in order to use the service. Members with active subscriptions have voting rights in the cooperative. You may cancel a subscription and maintain your membership without service access or voting rights. If you wish to cancel your membership you must cancel the account you registered. Upon cancellation your account data will be held for 7 days and may be recovered by contacting <a href="mailto:restore@vettid.dev" style="color:var(--accent);text-decoration:underline;">restore@vettid.dev</a>. Cancelled accounts will be permanently deleted 7 days after cancellation.</p>
@@ -148,32 +400,10 @@
         </div>
       </div>
     </div>
+  </div>
 
-    <!-- Profile Card (includes membership and subscription status) -->
-    <div class="card">
-      <h3>Your profile</h3>
-      <div>
-        <p><strong>First name</strong><br/><span id="firstName">—</span></p>
-        <p><strong>Last name</strong><br/><span id="lastName">—</span></p>
-        <p><strong>Email</strong><br/><span id="email">—</span></p>
-        <p><strong>User GUID</strong><br/><code id="userGuid">—</code></p>
-      </div>
-
-      <hr style="margin:20px 0;border:none;border-top:1px solid #222" />
-
-      <h4 style="margin:0 0 12px;">Membership Status</h4>
-      <div id="membershipStatusBox" style="padding:12px;background:#0a0a0a;border-radius:4px;margin-bottom:16px;">
-        <p style="margin:0;"><strong>Status:</strong> <span id="membershipStatus">Loading...</span></p>
-        <p id="membershipDetails" style="margin:8px 0 0;"></p>
-      </div>
-
-      <h4 style="margin:0 0 12px;">Subscription Status</h4>
-      <div id="profileSubscriptionStatus" style="padding:12px;background:#0a0a0a;border-radius:4px;">
-        <p style="margin:0;">Loading...</p>
-      </div>
-    </div>
-
-    <!-- PIN Code Card -->
+  <!-- PIN Code Sub-tab -->
+  <div id="account-pin-code" class="sub-tab-content">
     <div class="card" id="pinCodeCard">
       <h3>PIN Code</h3>
       <p class="muted" style="font-size:0.9rem;margin-bottom:16px;">
@@ -191,8 +421,10 @@
         <button class="btn" id="disablePinBtn" style="display:none;background:linear-gradient(135deg,#d32f2f 0%,#a00 100%);color:#fff;">Disable PIN</button>
       </div>
     </div>
+  </div>
 
-    <!-- Email Preferences Card -->
+  <!-- Email Preferences Sub-tab -->
+  <div id="account-email-prefs" class="sub-tab-content">
     <div class="card">
       <h3>Email Preferences</h3>
       <p class="muted" style="font-size:0.9rem;margin-bottom:16px;">
@@ -212,11 +444,12 @@
         </div>
       </div>
     </div>
+  </div>
 
-
-    <!-- Account Actions Card -->
+  <!-- Account Actions Sub-tab -->
+  <div id="account-account-actions" class="sub-tab-content">
     <div class="card">
-      <h3>Account actions</h3>
+      <h3>Account Actions</h3>
       <button class="btn" id="cancelAccountBtn" style="background:linear-gradient(135deg,#d32f2f 0%,#a00 100%);color:#fff;box-shadow:0 4px 12px rgba(211,47,47,0.3);">Cancel account</button>
       <p class="muted" style="font-size:0.85rem;margin-top:8px;">Canceling your account will disable your access. Your data will be held for 7 days before being permanently deleted. If you would like to restore your account or immediately delete your data please contact <a href="mailto:restore@vettid.dev" style="color:#4fc3f7;text-decoration:none;">restore@vettid.dev</a>.</p>
     </div>
@@ -237,6 +470,7 @@
       <input type="password" id="confirmPinInput" maxlength="6" pattern="[0-9]*" inputmode="numeric"
              style="width:100%;padding:12px;background:#0a0a0a;border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:1.1rem;letter-spacing:0.2em;text-align:center;"
              placeholder="••••••" />
+      <div id="pinMatchIndicator" style="display:none;margin-top:8px;padding:8px 12px;border-radius:4px;font-size:0.9rem;display:flex;align-items:center;gap:8px;"></div>
     </div>
     <div style="display:flex;gap:12px;margin-top:24px;">
       <button class="btn" id="confirmEnablePinBtn" style="flex:1;background:linear-gradient(135deg,#4caf50 0%,#2e7d32 100%);color:#fff;">Enable</button>
@@ -271,7 +505,7 @@
 </div>
 
 <div id="subscription" class="tab-content">
-  <div class="grid">
+  <div style="display:flex;flex-direction:column;gap:20px;max-width:800px;">
     <!-- Current Subscription Card -->
     <div class="card">
       <h3>Current Subscription</h3>
@@ -294,8 +528,167 @@
 </div>
 
 <script>
+// Theme management
+function initTheme() {
+  const savedTheme = localStorage.getItem('vettid-theme') || 'dark';
+  const root = document.documentElement;
+  const themeIcon = document.getElementById('themeIcon');
+  if (savedTheme === 'light') {
+    root.setAttribute('data-theme', 'light');
+    if (themeIcon) themeIcon.innerHTML = '&#127769;'; // Moon
+  } else {
+    root.removeAttribute('data-theme');
+    if (themeIcon) themeIcon.innerHTML = '&#9728;&#65039;'; // Sun
+  }
+}
+
+function toggleTheme() {
+  const root = document.documentElement;
+  const themeIcon = document.getElementById('themeIcon');
+  const currentTheme = root.getAttribute('data-theme');
+  if (currentTheme === 'light') {
+    root.removeAttribute('data-theme');
+    localStorage.setItem('vettid-theme', 'dark');
+    if (themeIcon) themeIcon.innerHTML = '&#9728;&#65039;'; // Sun
+  } else {
+    root.setAttribute('data-theme', 'light');
+    localStorage.setItem('vettid-theme', 'light');
+    if (themeIcon) themeIcon.innerHTML = '&#127769;'; // Moon
+  }
+}
+
+// Initialize theme immediately
+initTheme();
+
+// Confirm Modal Functions
+let confirmModalResolve = null;
+
+function showConfirmModal(options = {}) {
+  const modal = document.getElementById('confirmModal');
+  const title = document.getElementById('confirmModalTitle');
+  const message = document.getElementById('confirmModalMessage');
+  const cancelBtn = document.getElementById('confirmModalCancel');
+  const confirmBtn = document.getElementById('confirmModalConfirm');
+
+  title.textContent = options.title || 'Confirm Action';
+  message.innerHTML = options.message || 'Are you sure you want to proceed?';
+  cancelBtn.textContent = options.cancelText || 'Cancel';
+  confirmBtn.textContent = options.confirmText || 'Confirm';
+
+  // Set button color based on type
+  if (options.type === 'danger') {
+    confirmBtn.style.background = 'linear-gradient(135deg,#f44336 0%,#c62828 100%)';
+  } else if (options.type === 'warning') {
+    confirmBtn.style.background = 'linear-gradient(135deg,#ff9800 0%,#f57c00 100%)';
+  } else {
+    confirmBtn.style.background = 'linear-gradient(135deg,var(--accent) 0%,#ffc125 100%)';
+    confirmBtn.style.color = '#000';
+  }
+
+  modal.style.display = 'block';
+  document.body.style.overflow = 'hidden';
+
+  return new Promise((resolve) => {
+    confirmModalResolve = resolve;
+  });
+}
+
+function closeConfirmModal(result) {
+  const modal = document.getElementById('confirmModal');
+  modal.style.display = 'none';
+  document.body.style.overflow = '';
+  if (confirmModalResolve) {
+    confirmModalResolve(result);
+    confirmModalResolve = null;
+  }
+}
+
+// Alert Modal Functions (for success/error messages)
+let alertModalResolve = null;
+
+function showAlertModal(options = {}) {
+  const modal = document.getElementById('alertModal');
+  const title = document.getElementById('alertModalTitle');
+  const message = document.getElementById('alertModalMessage');
+  const okBtn = document.getElementById('alertModalOk');
+
+  // Set icon and title based on type
+  let icon = '';
+  let titleColor = 'var(--accent)';
+  let borderColor = 'var(--accent)';
+
+  if (options.type === 'success') {
+    icon = '<svg width="24" height="24" fill="none" stroke="#4caf50" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg>';
+    titleColor = '#4caf50';
+    borderColor = '#4caf50';
+  } else if (options.type === 'error') {
+    icon = '<svg width="24" height="24" fill="none" stroke="#f44336" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6M9 9l6 6"/></svg>';
+    titleColor = '#f44336';
+    borderColor = '#f44336';
+  } else if (options.type === 'warning') {
+    icon = '<svg width="24" height="24" fill="none" stroke="#ff9800" stroke-width="2"><path d="M12 2L2 22h20L12 2z"/><path d="M12 9v4M12 17h.01"/></svg>';
+    titleColor = '#ff9800';
+    borderColor = '#ff9800';
+  } else {
+    icon = '<svg width="24" height="24" fill="none" stroke="var(--accent)" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>';
+  }
+
+  title.innerHTML = icon + '<span>' + (options.title || 'Notice') + '</span>';
+  title.style.color = titleColor;
+  message.innerHTML = options.message || '';
+  okBtn.textContent = options.okText || 'OK';
+
+  // Update border color
+  modal.querySelector('div > div').style.borderColor = borderColor;
+
+  modal.style.display = 'block';
+  document.body.style.overflow = 'hidden';
+
+  return new Promise((resolve) => {
+    alertModalResolve = resolve;
+  });
+}
+
+function closeAlertModal() {
+  const modal = document.getElementById('alertModal');
+  modal.style.display = 'none';
+  document.body.style.overflow = '';
+  if (alertModalResolve) {
+    alertModalResolve();
+    alertModalResolve = null;
+  }
+}
+
+// Setup confirm modal event listeners
+document.addEventListener('DOMContentLoaded', () => {
+  const cancelBtn = document.getElementById('confirmModalCancel');
+  const confirmBtn = document.getElementById('confirmModalConfirm');
+  const modal = document.getElementById('confirmModal');
+
+  cancelBtn?.addEventListener('click', () => closeConfirmModal(false));
+  confirmBtn?.addEventListener('click', () => closeConfirmModal(true));
+
+  // Close on backdrop click
+  modal?.addEventListener('click', (e) => {
+    if (e.target === modal) closeConfirmModal(false);
+  });
+
+  // Setup alert modal event listeners
+  const alertOkBtn = document.getElementById('alertModalOk');
+  const alertModal = document.getElementById('alertModal');
+
+  alertOkBtn?.addEventListener('click', () => closeAlertModal());
+
+  // Close on backdrop click
+  alertModal?.addEventListener('click', (e) => {
+    if (e.target === alertModal) closeAlertModal();
+  });
+});
+
 // Subscription type state
 let availableSubscriptionTypes = [];
+let subscriptionStatus = null; // Global state for subscription status
+let membershipStatus = null; // Global state for membership status
 
 // Load subscription types
 async function loadSubscriptionTypes() {
@@ -322,7 +715,7 @@ async function loadSubscriptionTypes() {
 
     // Filter out one-time offers that have already been used
     // Check subscription status for used one-time offers
-    if (subscriptionStatus && subscriptionStatus.has_used_trial) {
+    if (subscriptionStatus?.has_used_trial) {
       subscriptionTypes = subscriptionTypes.filter(st => {
         // If it's a one-time offer and user has used trial, filter it out
         // Assuming free trials are marked as one-time offers
@@ -447,15 +840,10 @@ async function selectSubscriptionType(subscriptionTypeId) {
 </script>
 
 <div id="deploy-vault" class="tab-content">
-  <div class="card">
-    <h3>Vault Services</h3>
-    <p>Secure storage for your sensitive data and credentials.</p>
-  </div>
-
-  <div class="grid">
-    <!-- Deploy a Vault Card -->
+  <!-- Deploy a Vault Sub-tab -->
+  <div id="vault-deploy" class="sub-tab-content active">
     <div class="card">
-      <h4 style="margin-top:0;margin-bottom:16px;color:var(--accent);">Deploy a Vault</h4>
+      <h3>Deploy a Vault</h3>
       <p class="muted" style="margin-bottom:20px;font-size:0.95rem;">Deploy an encrypted vault for storing API keys, deployment tokens, and other sensitive credentials needed for automated deployments.</p>
 
       <div style="margin-top:24px;padding:24px;background:#050505;border-radius:4px;border:1px solid #333;text-align:center;">
@@ -463,10 +851,12 @@ async function selectSubscriptionType(subscriptionTypeId) {
         <p style="color:var(--gray);margin-top:8px;font-size:0.85rem;">Secure credential management</p>
       </div>
     </div>
+  </div>
 
-    <!-- Bring Your Own Vault Card -->
+  <!-- Bring Your Own Vault Sub-tab -->
+  <div id="vault-byov" class="sub-tab-content">
     <div class="card">
-      <h4 style="margin-top:0;margin-bottom:16px;color:var(--accent);">Bring Your Own Vault</h4>
+      <h3>Bring Your Own Vault</h3>
       <p class="muted" style="margin-bottom:20px;font-size:0.95rem;">Connect your existing Vaultwarden or Bitwarden instance to VettID for seamless integration with your current password management setup.</p>
 
       <div style="margin-top:24px;padding:24px;background:#050505;border-radius:4px;border:1px solid #333;text-align:center;">
@@ -474,10 +864,12 @@ async function selectSubscriptionType(subscriptionTypeId) {
         <p style="color:var(--gray);margin-top:8px;font-size:0.85rem;">Self-hosted vault integration</p>
       </div>
     </div>
+  </div>
 
-    <!-- Backup Services Card -->
+  <!-- Backup Services Sub-tab -->
+  <div id="vault-backup" class="sub-tab-content">
     <div class="card">
-      <h4 style="margin-top:0;margin-bottom:16px;color:var(--accent);">Backup Services</h4>
+      <h3>Backup Services</h3>
       <p class="muted" style="margin-bottom:20px;font-size:0.95rem;">Automated backup services for your critical data. Schedule regular backups and restore your data when needed.</p>
 
       <div style="margin-top:24px;padding:24px;background:#050505;border-radius:4px;border:1px solid #333;text-align:center;">
@@ -511,12 +903,138 @@ async function selectSubscriptionType(subscriptionTypeId) {
   </div><!-- end .wrap -->
 </div><!-- end .main-container -->
 
+<!-- Proposal Results Modal -->
+<div id="proposalResultsModal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.85);z-index:9999;backdrop-filter:blur(4px);">
+  <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:linear-gradient(135deg,#1a1a1a 0%,#0a0a0a 100%);border-radius:12px;border:2px solid var(--accent);box-shadow:0 10px 40px rgba(255,193,37,0.3);max-width:600px;width:90%;max-height:90vh;overflow-y:auto;">
+    <div style="padding:24px;border-bottom:2px solid #222;">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <h3 style="margin:0;color:var(--accent);">Proposal Results</h3>
+        <button onclick="closeProposalResultsModal()" style="background:none;border:none;color:var(--gray);font-size:1.5rem;cursor:pointer;padding:0;width:32px;height:32px;display:flex;align-items:center;justify-content:center;border-radius:4px;transition:all 0.2s;" onmouseover="this.style.background='rgba(255,193,37,0.1)';this.style.color='var(--accent)';" onmouseout="this.style.background='none';this.style.color='var(--gray)';">&times;</button>
+      </div>
+    </div>
+    <div id="proposalResultsContent" style="padding:24px;">
+      <p>Loading...</p>
+    </div>
+    <div style="padding:16px 24px;border-top:2px solid #222;text-align:right;">
+      <button onclick="closeProposalResultsModal()" class="btn" style="padding:10px 24px;">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- PIN Disable Confirmation Modal -->
+<div id="pinDisableModal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.85);z-index:9999;backdrop-filter:blur(4px);">
+  <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:linear-gradient(135deg,#1a1a1a 0%,#0a0a0a 100%);border-radius:12px;border:2px solid #ffc125;box-shadow:0 10px 40px rgba(255,193,37,0.3);max-width:500px;width:90%;">
+    <div style="padding:24px;border-bottom:2px solid #222;">
+      <h3 style="margin:0;color:#ffc125;">Disable PIN Authentication</h3>
+    </div>
+    <div style="padding:24px;">
+      <p style="margin:0 0 20px 0;color:var(--gray);line-height:1.6;">Enter your current PIN to confirm disabling PIN authentication. You will only need your magic link to sign in after this.</p>
+      <label style="display:block;margin-bottom:8px;color:var(--text);font-weight:600;">Current PIN</label>
+      <input type="password" id="pinDisableInput" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="Enter 4-6 digit PIN" style="width:100%;padding:12px;background:#0a0a0a;border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;" />
+      <p id="pinDisableError" style="margin:12px 0 0 0;color:#f44336;font-size:0.9rem;display:none;"></p>
+    </div>
+    <div style="padding:16px 24px;border-top:2px solid #222;display:flex;gap:12px;justify-content:flex-end;">
+      <button onclick="closePinDisableModal()" class="btn" style="padding:10px 24px;background:#333;">Cancel</button>
+      <button onclick="submitPinDisable()" class="btn" style="padding:10px 24px;background:linear-gradient(135deg,#f44336 0%,#c62828 100%);">Disable PIN</button>
+    </div>
+  </div>
+</div>
+
+<!-- PIN Verification on Login Modal -->
+<div id="verifyPinLoginModal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.95);z-index:10000;backdrop-filter:blur(8px);">
+  <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:linear-gradient(135deg,#1a1a1a 0%,#0a0a0a 100%);border-radius:12px;border:2px solid #ffc125;box-shadow:0 10px 40px rgba(255,193,37,0.3);max-width:420px;width:90%;">
+    <div style="padding:24px;border-bottom:2px solid #222;text-align:center;">
+      <div style="width:64px;height:64px;margin:0 auto 16px;background:linear-gradient(135deg,#ffc125 0%,#ff9800 100%);border-radius:50%;display:flex;align-items:center;justify-content:center;">
+        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+          <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+        </svg>
+      </div>
+      <h3 style="margin:0;color:#ffc125;font-size:1.3rem;">PIN Verification Required</h3>
+    </div>
+    <div style="padding:24px;">
+      <p style="margin:0 0 20px 0;color:var(--gray);line-height:1.6;text-align:center;">Enter your PIN to access your account.</p>
+      <label style="display:block;margin-bottom:8px;color:var(--text);font-weight:600;">PIN Code</label>
+      <input type="password" id="verifyPinLoginInput" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="Enter 4-6 digit PIN" style="width:100%;padding:14px;background:#0a0a0a;border:2px solid #222;border-radius:6px;color:var(--text);font-size:1.1rem;text-align:center;letter-spacing:0.3em;" />
+      <p id="verifyPinLoginError" style="margin:12px 0 0 0;color:#f44336;font-size:0.9rem;display:none;text-align:center;"></p>
+    </div>
+    <div style="padding:16px 24px;border-top:2px solid #222;display:flex;gap:12px;justify-content:center;">
+      <button onclick="submitPinVerification()" id="verifyPinLoginBtn" class="btn" style="padding:12px 48px;background:linear-gradient(135deg,#4caf50 0%,#2e7d32 100%);font-weight:600;">Verify</button>
+    </div>
+    <div style="padding:0 24px 16px;text-align:center;">
+      <a href="#" onclick="signOut();return false;" style="color:var(--gray);font-size:0.85rem;text-decoration:none;">Sign out and use a different account</a>
+    </div>
+  </div>
+</div>
+
+<!-- Generic Confirm Modal -->
+<div id="confirmModal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.85);z-index:9999;backdrop-filter:blur(4px);">
+  <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:linear-gradient(135deg,#1a1a1a 0%,#0a0a0a 100%);border-radius:12px;border:2px solid #ffc125;box-shadow:0 10px 40px rgba(255,193,37,0.3);max-width:500px;width:90%;">
+    <div style="padding:24px;border-bottom:2px solid #222;">
+      <h3 id="confirmModalTitle" style="margin:0;color:#ffc125;">Confirm Action</h3>
+    </div>
+    <div style="padding:24px;">
+      <p id="confirmModalMessage" style="margin:0;color:var(--gray);line-height:1.6;"></p>
+    </div>
+    <div style="padding:16px 24px;border-top:2px solid #222;display:flex;gap:12px;justify-content:flex-end;flex-wrap:wrap;">
+      <button id="confirmModalCancel" class="btn" style="padding:10px 24px;background:#333;">Cancel</button>
+      <button id="confirmModalConfirm" class="btn" style="padding:10px 24px;background:linear-gradient(135deg,#f44336 0%,#c62828 100%);">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<!-- Alert Modal (for success/error messages) -->
+<div id="alertModal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.85);z-index:9999;backdrop-filter:blur(4px);">
+  <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:linear-gradient(135deg,#1a1a1a 0%,#0a0a0a 100%);border-radius:12px;border:2px solid var(--accent);box-shadow:0 10px 40px rgba(255,193,37,0.3);max-width:450px;width:90%;">
+    <div style="padding:24px;border-bottom:2px solid #222;">
+      <h3 id="alertModalTitle" style="margin:0;color:var(--accent);display:flex;align-items:center;gap:10px;"></h3>
+    </div>
+    <div style="padding:24px;">
+      <p id="alertModalMessage" style="margin:0;color:var(--gray);line-height:1.6;"></p>
+    </div>
+    <div style="padding:16px 24px;border-top:2px solid #222;display:flex;justify-content:flex-end;">
+      <button id="alertModalOk" class="btn" style="padding:10px 32px;background:linear-gradient(135deg,var(--accent) 0%,#ffc125 100%);color:#000;">OK</button>
+    </div>
+  </div>
+</div>
+
+<!-- Membership Confirmation Modal -->
+<div id="membershipConfirmModal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.85);z-index:9999;backdrop-filter:blur(4px);">
+  <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:linear-gradient(135deg,#1a1a1a 0%,#0a0a0a 100%);border-radius:12px;border:2px solid var(--accent);box-shadow:0 10px 40px rgba(255,193,37,0.3);max-width:550px;width:90%;">
+    <div style="padding:24px;border-bottom:2px solid #222;">
+      <h3 style="margin:0;color:var(--accent);display:flex;align-items:center;gap:12px;">
+        <span style="font-size:1.5rem;">✓</span>
+        Confirm Membership
+      </h3>
+    </div>
+    <div style="padding:24px;">
+      <p style="margin:0 0 16px 0;color:var(--text);line-height:1.6;font-size:1rem;">Accept membership terms and become a full member?</p>
+      <p style="margin:0;padding:16px;background:rgba(255,193,37,0.1);border-left:4px solid var(--accent);border-radius:4px;color:var(--gray);line-height:1.6;font-size:0.9rem;">
+        <strong style="color:var(--accent);">Important:</strong> You will need to sign in again after acceptance to activate your full membership privileges.
+      </p>
+    </div>
+    <div style="padding:16px 24px;border-top:2px solid #222;display:flex;gap:12px;justify-content:flex-end;">
+      <button onclick="closeMembershipConfirmModal()" class="btn" style="padding:12px 28px;background:#333;font-weight:600;">Cancel</button>
+      <button onclick="confirmMembership()" class="btn" style="padding:12px 28px;background:linear-gradient(135deg,#ffd940 0%,#ffc125 100%);color:#000;font-weight:700;box-shadow:0 4px 14px rgba(255,217,64,0.4);">Accept & Continue</button>
+    </div>
+  </div>
+</div>
+
 <script src="/shared/config.js"></script>
 <script>
 // ====== CONFIG ======
 // Load configuration from centralized config file
 const API_URL = window.VettIDConfig.apiUrl;
 // ====================
+
+// ---- DOM Cache for Performance ----
+const DOMCache = {};
+function getElement(id) {
+  if (!DOMCache[id]) {
+    DOMCache[id] = document.getElementById(id);
+  }
+  return DOMCache[id];
+}
 
 // ---- Token storage ----
 function loadTokens() {
@@ -537,6 +1055,364 @@ function showToast(message, type = 'info') {
     toast.style.animation = 'slideOut 0.3s';
     setTimeout(() => toast.remove(), 300);
   }, 4000);
+}
+
+// ---- Proposal Results Modal ----
+function showProposalResultsModal(htmlContent) {
+  const modal = getElement('proposalResultsModal');
+  const content = getElement('proposalResultsContent');
+  content.innerHTML = htmlContent;
+  modal.style.display = 'block';
+  document.body.style.overflow = 'hidden';
+}
+
+function closeProposalResultsModal() {
+  const modal = getElement('proposalResultsModal');
+  modal.style.display = 'none';
+  document.body.style.overflow = '';
+}
+
+// Close modal on overlay click
+document.addEventListener('DOMContentLoaded', () => {
+  const modal = document.getElementById('proposalResultsModal');
+  modal?.addEventListener('click', (e) => {
+    if (e.target === modal) closeProposalResultsModal();
+  });
+
+  // Close modal on Escape key
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      if (modal?.style.display === 'block') {
+        closeProposalResultsModal();
+      }
+      const pinModal = document.getElementById('pinDisableModal');
+      if (pinModal?.style.display === 'block') {
+        closePinDisableModal();
+      }
+      // Close mobile sidebar on Escape
+      closeMobileSidebar();
+    }
+  });
+
+  // Mobile sidebar toggle
+  const mobileMenuBtn = document.getElementById('mobileMenuBtn');
+  const sidebar = document.getElementById('sidebar');
+  const sidebarOverlay = document.getElementById('sidebarOverlay');
+
+  function openMobileSidebar() {
+    sidebar?.classList.add('mobile-open');
+    sidebarOverlay?.classList.add('visible');
+    document.body.style.overflow = 'hidden';
+  }
+
+  function closeMobileSidebar() {
+    sidebar?.classList.remove('mobile-open');
+    sidebarOverlay?.classList.remove('visible');
+    document.body.style.overflow = '';
+  }
+
+  mobileMenuBtn?.addEventListener('click', () => {
+    if (sidebar?.classList.contains('mobile-open')) {
+      closeMobileSidebar();
+    } else {
+      openMobileSidebar();
+    }
+  });
+
+  sidebarOverlay?.addEventListener('click', closeMobileSidebar);
+
+  // Theme toggle
+  const themeToggle = document.getElementById('themeToggle');
+  themeToggle?.addEventListener('click', toggleTheme);
+
+  // Close sidebar when a tab is clicked on mobile
+  document.querySelectorAll('.tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      if (window.innerWidth <= 768) {
+        closeMobileSidebar();
+      }
+    });
+  });
+});
+
+// ---- PIN Disable Modal ----
+function showPinDisableModal() {
+  const modal = getElement('pinDisableModal');
+  const input = getElement('pinDisableInput');
+  const error = getElement('pinDisableError');
+
+  input.value = '';
+  error.style.display = 'none';
+  modal.style.display = 'block';
+  document.body.style.overflow = 'hidden';
+
+  // Focus input after modal opens
+  setTimeout(() => input.focus(), 100);
+}
+
+function closePinDisableModal() {
+  const modal = getElement('pinDisableModal');
+  modal.style.display = 'none';
+  document.body.style.overflow = '';
+}
+
+async function submitPinDisable() {
+  const input = getElement('pinDisableInput');
+  const error = getElement('pinDisableError');
+  const pin = input.value.trim();
+
+  // Validate PIN format
+  if (!/^\d{4,6}$/.test(pin)) {
+    error.textContent = 'PIN must be 4-6 digits';
+    error.style.display = 'block';
+    return;
+  }
+
+  error.style.display = 'none';
+
+  // Call the actual disable function with the PIN
+  closePinDisableModal();
+  await executePinDisable(pin);
+}
+
+// ---- PIN Verification on Login ----
+// Session-based PIN verification - user must verify PIN once per browser session when PIN is enabled
+function isPinVerifiedForSession() {
+  return sessionStorage.getItem('pinVerified') === 'true';
+}
+
+function markPinVerifiedForSession() {
+  sessionStorage.setItem('pinVerified', 'true');
+}
+
+function clearPinVerificationForSession() {
+  sessionStorage.removeItem('pinVerified');
+}
+
+// Check if PIN verification is required and show modal if needed
+// Returns: true if PIN verification is required (blocks load), false if can proceed
+async function checkAndRequirePinVerification() {
+  // If already verified this session, skip
+  if (isPinVerifiedForSession()) {
+    console.log('[PIN-LOGIN] PIN already verified this session');
+    return false;
+  }
+
+  const token = idToken();
+  if (!token) {
+    console.log('[PIN-LOGIN] No token, skipping PIN check');
+    return false;
+  }
+
+  try {
+    console.log('[PIN-LOGIN] Checking PIN status...');
+    const res = await fetch(API_URL + '/account/security/pin/status', {
+      method: 'GET',
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+
+    // 404 = PIN not configured, no verification needed
+    if (res.status === 404) {
+      console.log('[PIN-LOGIN] PIN not configured, no verification needed');
+      return false;
+    }
+
+    if (!res.ok) {
+      console.error('[PIN-LOGIN] Error checking PIN status:', res.status);
+      return false; // On error, allow access (fail open)
+    }
+
+    const data = await res.json();
+    console.log('[PIN-LOGIN] PIN status:', data);
+
+    if (data.pin_enabled) {
+      // PIN is enabled, show verification modal
+      console.log('[PIN-LOGIN] PIN is enabled, showing verification modal');
+      showPinVerificationModal();
+      return true; // Block load until PIN verified
+    } else {
+      console.log('[PIN-LOGIN] PIN is disabled, no verification needed');
+      return false;
+    }
+  } catch (err) {
+    console.error('[PIN-LOGIN] Error checking PIN status:', err);
+    return false; // On error, allow access (fail open)
+  }
+}
+
+function showPinVerificationModal() {
+  const modal = document.getElementById('verifyPinLoginModal');
+  const input = document.getElementById('verifyPinLoginInput');
+  const error = document.getElementById('verifyPinLoginError');
+
+  input.value = '';
+  error.style.display = 'none';
+  modal.style.display = 'block';
+  document.body.style.overflow = 'hidden';
+
+  // Focus input after modal opens
+  setTimeout(() => input.focus(), 100);
+
+  // Setup Enter key listener for convenience
+  input.onkeydown = (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      submitPinVerification();
+    }
+  };
+}
+
+function hidePinVerificationModal() {
+  const modal = document.getElementById('verifyPinLoginModal');
+  modal.style.display = 'none';
+  document.body.style.overflow = '';
+}
+
+async function submitPinVerification() {
+  const input = document.getElementById('verifyPinLoginInput');
+  const error = document.getElementById('verifyPinLoginError');
+  const btn = document.getElementById('verifyPinLoginBtn');
+  const pin = input.value.trim();
+
+  // Validate PIN format
+  if (!/^\d{4,6}$/.test(pin)) {
+    error.textContent = 'PIN must be 4-6 digits';
+    error.style.display = 'block';
+    input.focus();
+    return;
+  }
+
+  error.style.display = 'none';
+  btn.disabled = true;
+  btn.textContent = 'Verifying...';
+
+  const token = idToken();
+  if (!token) {
+    error.textContent = 'Session expired. Please sign in again.';
+    error.style.display = 'block';
+    btn.disabled = false;
+    btn.textContent = 'Verify';
+    return;
+  }
+
+  try {
+    const res = await fetch(API_URL + '/account/security/pin/verify', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ pin })
+    });
+
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      error.textContent = errData.message || 'Failed to verify PIN. Please try again.';
+      error.style.display = 'block';
+      btn.disabled = false;
+      btn.textContent = 'Verify';
+      input.value = '';
+      input.focus();
+      return;
+    }
+
+    const data = await res.json();
+
+    if (data.verified) {
+      // PIN verified successfully!
+      markPinVerifiedForSession();
+      hidePinVerificationModal();
+      // Continue loading the app
+      continueAppInitialization();
+    } else {
+      // PIN incorrect
+      error.textContent = data.message || 'Incorrect PIN. Please try again.';
+      error.style.display = 'block';
+      btn.disabled = false;
+      btn.textContent = 'Verify';
+      input.value = '';
+      input.focus();
+    }
+  } catch (err) {
+    console.error('[PIN-LOGIN] Error verifying PIN:', err);
+    error.textContent = 'Failed to verify PIN. Please try again.';
+    error.style.display = 'block';
+    btn.disabled = false;
+    btn.textContent = 'Verify';
+  }
+}
+
+// Store the continuation function for after PIN verification
+let continueAppInitialization = () => {};
+
+// ---- Membership Confirmation Modal ----
+function showMembershipConfirmModal() {
+  const modal = getElement('membershipConfirmModal');
+  modal.style.display = 'block';
+  document.body.style.overflow = 'hidden';
+}
+
+function closeMembershipConfirmModal() {
+  const modal = getElement('membershipConfirmModal');
+  modal.style.display = 'none';
+  document.body.style.overflow = '';
+}
+
+// Called when user clicks "Accept & Continue" in the modal
+async function confirmMembership() {
+  closeMembershipConfirmModal();
+  await executeMembershipRequest();
+}
+
+// ---- Debounce Helper ----
+function debounce(func, delay = 300) {
+  let timeoutId;
+  return function(...args) {
+    clearTimeout(timeoutId);
+    timeoutId = setTimeout(() => func.apply(this, args), delay);
+  };
+}
+
+// Prevent double-clicks on async operations
+const buttonClickTracking = new WeakMap();
+function preventDoubleClick(button, asyncFunc) {
+  return async function(...args) {
+    if (buttonClickTracking.get(button)) {
+      return; // Already processing
+    }
+    buttonClickTracking.set(button, true);
+    try {
+      await asyncFunc.apply(this, args);
+    } finally {
+      setTimeout(() => buttonClickTracking.delete(button), 1000);
+    }
+  };
+}
+
+// ---- Tab Lock/Unlock with Tooltips ----
+function lockTab(tabId, tooltipMessage) {
+  const tab = document.querySelector(`[data-tab="${tabId}"]`);
+  if (tab) {
+    tab.classList.add('locked');
+    tab.setAttribute('data-tooltip', tooltipMessage);
+    tab.addEventListener('click', preventTabClick);
+  }
+}
+
+function unlockTab(tabId) {
+  const tab = document.querySelector(`[data-tab="${tabId}"]`);
+  if (tab) {
+    tab.classList.remove('locked');
+    tab.removeAttribute('data-tooltip');
+    tab.removeEventListener('click', preventTabClick);
+  }
+}
+
+function preventTabClick(e) {
+  if (e.currentTarget.classList.contains('locked')) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
 }
 
 // ---- Loading State Helpers ----
@@ -634,14 +1510,20 @@ function populateProfile() {
   document.getElementById('lastName').textContent = payload.family_name || '—';
   document.getElementById('email').textContent = payload.email || '—';
   document.getElementById('userGuid').textContent = payload['custom:user_guid'] || '—';
-  // Also populate email in header
+  // Also populate email in header and show dropdown
   document.getElementById('userEmail').textContent = payload.email || '';
+  document.getElementById('userDropdownContainer').style.display = 'inline-block';
 }
 
 async function cancelAccount() {
-  if (!confirm('Are you sure you want to cancel your account? This will disable your access. An administrator can reactivate or permanently delete it.')) {
-    return;
-  }
+  const confirmed = await showConfirmModal({
+    title: 'Cancel Account',
+    message: 'Are you sure you want to cancel your account? This will disable your access. An administrator can reactivate or permanently delete it.',
+    confirmText: 'Cancel Account',
+    cancelText: 'Keep Account',
+    type: 'danger'
+  });
+  if (!confirmed) return;
 
   const btn = document.getElementById('cancelAccountBtn');
   setLoading(btn, true);
@@ -666,14 +1548,71 @@ async function cancelAccount() {
   }
 }
 
-// Tab switching
+// Tab switching with parent/child support
 document.querySelectorAll('.tab').forEach(tab => {
   tab.onclick = () => {
     const target = tab.getAttribute('data-tab');
-    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    const subTab = tab.getAttribute('data-sub-tab');
+    const isParent = tab.classList.contains('tab-parent');
+    const isChild = tab.classList.contains('tab-child');
+
+    // If it's a parent tab, toggle expand/collapse and switch to first child
+    if (isParent) {
+      const parentId = tab.id;
+      const childrenId = parentId.replace('Parent', 'Children');
+      const children = document.getElementById(childrenId);
+
+      // Toggle expansion
+      tab.classList.toggle('expanded');
+      children?.classList.toggle('expanded');
+
+      // If expanding, switch to the parent's tab content and first sub-tab
+      if (tab.classList.contains('expanded')) {
+        // Clear active state from all non-child tabs
+        document.querySelectorAll('.tab:not(.tab-child)').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+
+        // Activate parent and content
+        tab.classList.add('active');
+        document.getElementById(target)?.classList.add('active');
+
+        // Activate first child tab and its sub-content
+        const firstChild = children?.querySelector('.tab-child');
+        if (firstChild) {
+          document.querySelectorAll('.tab-child').forEach(c => c.classList.remove('active'));
+          firstChild.classList.add('active');
+          const firstSubTab = firstChild.getAttribute('data-sub-tab');
+          if (firstSubTab) {
+            activateSubTab(target, firstSubTab);
+          }
+        }
+      }
+      return;
+    }
+
+    // If it's a child tab, switch sub-tab content
+    if (isChild) {
+      // Clear active from all child tabs
+      document.querySelectorAll('.tab-child').forEach(c => c.classList.remove('active'));
+      tab.classList.add('active');
+
+      // Activate the sub-tab content
+      if (subTab) {
+        activateSubTab(target, subTab);
+      }
+      return;
+    }
+
+    // Regular tab - collapse any expanded parent tabs
+    document.querySelectorAll('.tab-parent').forEach(p => p.classList.remove('expanded'));
+    document.querySelectorAll('.tab-children').forEach(c => c.classList.remove('expanded'));
+    document.querySelectorAll('.tab-child').forEach(c => c.classList.remove('active'));
+
+    // Standard tab switching
+    document.querySelectorAll('.tab:not(.tab-child)').forEach(t => t.classList.remove('active'));
     document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
     tab.classList.add('active');
-    document.getElementById(target).classList.add('active');
+    document.getElementById(target)?.classList.add('active');
 
     // Load voting data when voting tab is clicked
     if (target === 'voting' && signedIn()) {
@@ -681,6 +1620,29 @@ document.querySelectorAll('.tab').forEach(tab => {
     }
   };
 });
+
+// Helper function to activate sub-tab content
+function activateSubTab(parentTab, subTabName) {
+  const parentContent = document.getElementById(parentTab);
+  if (!parentContent) return;
+
+  // Clear all sub-tab-content active states within this parent
+  parentContent.querySelectorAll('.sub-tab-content').forEach(s => s.classList.remove('active'));
+
+  // Determine the sub-tab-content ID based on parent tab
+  let subContentId;
+  if (parentTab === 'account') {
+    subContentId = 'account-' + subTabName;
+  } else if (parentTab === 'deploy-vault') {
+    subContentId = 'vault-' + subTabName;
+  }
+
+  // Activate the specific sub-tab content
+  const subContent = document.getElementById(subContentId);
+  if (subContent) {
+    subContent.classList.add('active');
+  }
+}
 
 // Keyboard shortcuts for tab navigation (1-6)
 document.addEventListener('keydown', (e) => {
@@ -690,10 +1652,9 @@ document.addEventListener('keydown', (e) => {
   const tabMap = {
     '1': 'getting-started',
     '2': 'account',
-    '3': 'membership',
-    '4': 'subscription',
-    '5': 'voting',
-    '6': 'deploy-vault'
+    '3': 'subscription',
+    '4': 'voting',
+    '5': 'deploy-vault'
   };
 
   const tabName = tabMap[e.key];
@@ -721,6 +1682,26 @@ async function loadPinStatus() {
       headers: { 'Authorization': 'Bearer ' + token }
     });
     console.log('[PIN] Response status:', res.status);
+
+    // Handle 404 as "PIN not configured yet" (valid state for new users)
+    if (res.status === 404) {
+      console.log('[PIN] No PIN configured for this account (404) - treating as disabled');
+      const statusSpan = document.getElementById('pinStatus');
+      const updatedAtP = document.getElementById('pinUpdatedAt');
+      const enableBtn = document.getElementById('enablePinBtn');
+      const updateBtn = document.getElementById('updatePinBtn');
+      const disableBtn = document.getElementById('disablePinBtn');
+
+      statusSpan.textContent = 'Disabled';
+      statusSpan.style.color = '#f44336';
+      statusSpan.style.fontWeight = '600';
+      updatedAtP.innerHTML = '';
+      enableBtn.style.display = 'inline-block';
+      updateBtn.style.display = 'none';
+      disableBtn.style.display = 'none';
+      return; // Exit early - this is not an error
+    }
+
     if (!res.ok) {
       const errorText = await res.text();
       console.error('[PIN] Error response:', errorText);
@@ -767,7 +1748,40 @@ function showEnablePinModal() {
   document.getElementById('enablePinModal').style.display = 'flex';
   document.getElementById('newPinInput').value = '';
   document.getElementById('confirmPinInput').value = '';
+  document.getElementById('pinMatchIndicator').style.display = 'none';
   document.getElementById('newPinInput').focus();
+
+  // Setup PIN match indicator
+  const newPinInput = document.getElementById('newPinInput');
+  const confirmPinInput = document.getElementById('confirmPinInput');
+  const indicator = document.getElementById('pinMatchIndicator');
+
+  function checkPinMatch() {
+    const newPin = newPinInput.value;
+    const confirmPin = confirmPinInput.value;
+
+    if (!confirmPin) {
+      indicator.style.display = 'none';
+      return;
+    }
+
+    indicator.style.display = 'flex';
+
+    if (newPin === confirmPin && newPin.length >= 4) {
+      // Pins match
+      indicator.style.background = 'rgba(76, 175, 80, 0.15)';
+      indicator.style.border = '1px solid #4caf50';
+      indicator.innerHTML = '<span style="color:#4caf50;font-size:1.2rem;">✓</span><span style="color:#4caf50;">PINs match</span>';
+    } else {
+      // Pins don't match
+      indicator.style.background = 'rgba(244, 67, 54, 0.15)';
+      indicator.style.border = '1px solid #f44336';
+      indicator.innerHTML = '<span style="color:#f44336;font-size:1.2rem;">✗</span><span style="color:#f44336;">PINs do not match</span>';
+    }
+  }
+
+  newPinInput.addEventListener('input', checkPinMatch);
+  confirmPinInput.addEventListener('input', checkPinMatch);
 }
 
 function hideEnablePinModal() {
@@ -894,22 +1908,20 @@ async function confirmUpdatePin() {
 }
 
 async function disablePin() {
-  if (!confirm('Are you sure you want to disable PIN authentication? You will only need your magic link to sign in.')) {
-    return;
-  }
+  const confirmed = await showConfirmModal({
+    title: 'Disable PIN Authentication',
+    message: 'Are you sure you want to disable PIN authentication? You will only need your magic link to sign in.',
+    confirmText: 'Disable PIN',
+    cancelText: 'Keep PIN',
+    type: 'warning'
+  });
+  if (!confirmed) return;
 
-  // Prompt for current PIN
-  const currentPin = prompt('Please enter your current PIN to confirm:');
-  if (!currentPin) {
-    return;
-  }
+  // Show PIN confirmation modal instead of prompt
+  showPinDisableModal();
+}
 
-  // Validate PIN format
-  if (!/^\d{4,6}$/.test(currentPin)) {
-    showToast('PIN must be 4-6 digits', 'error');
-    return;
-  }
-
+async function executePinDisable(currentPin) {
   const btn = document.getElementById('disablePinBtn');
   setLoading(btn, true);
 
@@ -995,14 +2007,22 @@ async function toggleEmailPreferences(event) {
   const newValue = toggle.checked;
 
   // Show confirmation dialog based on action
-  let confirmMessage;
-  if (newValue) {
-    confirmMessage = 'By enabling system emails, you agree to receive account notifications, security alerts, and service updates from VettID. Do you want to continue?';
-  } else {
-    confirmMessage = 'If you disable system emails, you will stop receiving important account notifications, security alerts, and service updates. Are you sure you want to continue?';
-  }
+  const modalOptions = newValue ? {
+    title: 'Enable System Emails',
+    message: 'By enabling system emails, you agree to receive account notifications, security alerts, and service updates from VettID. Do you want to continue?',
+    confirmText: 'Enable',
+    cancelText: 'Cancel',
+    type: 'default'
+  } : {
+    title: 'Disable System Emails',
+    message: 'If you disable system emails, you will stop receiving important account notifications, security alerts, and service updates. Are you sure you want to continue?',
+    confirmText: 'Disable',
+    cancelText: 'Keep Enabled',
+    type: 'warning'
+  };
 
-  if (!confirm(confirmMessage)) {
+  const confirmed = await showConfirmModal(modalOptions);
+  if (!confirmed) {
     // User cancelled, revert toggle
     toggle.checked = !newValue;
     return;
@@ -1092,18 +2112,17 @@ async function loadMembershipStatus() {
       console.error('[MEMBERSHIP] No ID token found');
       throw new Error('No authentication token found');
     }
-    console.log('[MEMBERSHIP] Fetching status from:', API_URL + '/account/membership/status');
     const res = await fetch(API_URL + '/account/membership/status', {
       method: 'GET',
       headers: { 'Authorization': 'Bearer ' + token }
     });
-    console.log('[MEMBERSHIP] Response status:', res.status);
     if (!res.ok) {
-      const errorText = await res.text();
-      console.error('[MEMBERSHIP] Error response:', errorText);
-      throw new Error(`Failed to load membership status: ${res.status} ${errorText}`);
+      throw new Error('Failed to load membership status');
     }
     const data = await res.json();
+
+    // Store membership status globally
+    membershipStatus = data.membership_status;
 
     const statusSpan = document.getElementById('membershipStatus');
     const detailsP = document.getElementById('membershipDetails');
@@ -1123,22 +2142,21 @@ async function loadMembershipStatus() {
         await loadMembershipTerms();
         break;
       case 'pending':
-        statusSpan.textContent = 'Registered User';
+        statusSpan.textContent = 'Membership Pending';
         statusSpan.style.color = '#ffc125';
         statusSpan.style.fontWeight = '600';
-        detailsP.innerHTML = '<span class="muted" style="font-size:0.85rem;">You are a registered user. Review and accept the membership terms below to become a full member.</span>';
-        termsSection.style.display = 'block';
+        detailsP.innerHTML = '<span class="muted" style="font-size:0.85rem;">Your membership request is pending approval.</span>';
+        termsSection.style.display = 'none';
         memberInfoSection.style.display = 'none';
-        membershipCard.classList.add('double-width');
-        await loadMembershipTerms();
+        membershipCard.classList.remove('double-width');
         break;
       case 'approved':
         statusSpan.textContent = 'Member';
         statusSpan.style.color = '#4caf50';
         statusSpan.style.fontWeight = '600';
-        // Only show "Activate a subscription" if user doesn't have an active subscription
-        if (!isSubscriber()) {
-          detailsP.innerHTML = '<span class="muted" style="font-size:0.85rem;"><a href="#" onclick="switchToTab(\'subscription\'); return false;" style="color:var(--accent);text-decoration:underline;font-weight:600;">Activate a subscription</a> to unlock all features.</span>';
+        // Only show "Activate a paid subscription" if user doesn't have an active paid subscription
+        if (!isPaidSubscriber()) {
+          detailsP.innerHTML = '<span class="muted" style="font-size:0.85rem;"><a href="#" onclick="switchToTab(\'subscription\'); return false;" style="color:var(--accent);text-decoration:underline;font-weight:600;">Activate a paid subscription</a> to unlock all features.</span>';
         } else {
           detailsP.innerHTML = '<span class="muted" style="font-size:0.85rem;">You have an active subscription with access to all features.</span>';
         }
@@ -1204,10 +2222,11 @@ async function requestMembership() {
     return;
   }
 
-  if (!confirm('Accept membership terms and become a full member? You will need to sign in again after acceptance.')) {
-    return;
-  }
+  // Show custom modal instead of browser confirm
+  showMembershipConfirmModal();
+}
 
+async function executeMembershipRequest() {
   const btn = document.getElementById('requestMembershipBtn');
   const msgEl = document.getElementById('requestMembershipMsg');
   setLoading(btn, true);
@@ -1240,6 +2259,8 @@ async function requestMembership() {
 
     // If response indicates user needs to sign in again, redirect after short delay
     if (data.requires_signin) {
+      // Clear getting started flag so user sees getting started tab after re-login
+      clearGettingStartedComplete();
       setTimeout(() => {
         signOut();
       }, 2000);
@@ -1319,8 +2340,6 @@ async function createSubscription(subscription_type_id) {
 }
 
 // Load subscription status
-let subscriptionStatus = null;
-
 async function loadSubscriptionStatus() {
   try {
     const res = await fetch(API_URL + '/account/subscriptions/status', {
@@ -1418,7 +2437,14 @@ function isPaidSubscriber() {
 
 
 async function cancelSubscription() {
-  if (!confirm('Are you sure you want to cancel your subscription? You will lose access when your current period ends.')) return;
+  const confirmed = await showConfirmModal({
+    title: 'Cancel Subscription',
+    message: 'Are you sure you want to cancel your subscription? You will lose access when your current period ends.',
+    confirmText: 'Cancel Subscription',
+    cancelText: 'Keep Subscription',
+    type: 'danger'
+  });
+  if (!confirmed) return;
 
   // Create a temporary button reference for loading state
   const tempBtn = document.createElement('button');
@@ -1451,6 +2477,20 @@ async function cancelSubscription() {
 // Event listeners
 document.getElementById('signout').onclick = signOut;
 document.getElementById('cancelAccountBtn').onclick = cancelAccount;
+
+// User dropdown toggle
+const userDropdownBtn = document.querySelector('.user-dropdown-btn');
+const userDropdownMenu = document.getElementById('userDropdownMenu');
+if (userDropdownBtn) {
+  userDropdownBtn.onclick = (e) => {
+    e.stopPropagation();
+    userDropdownMenu.classList.toggle('active');
+  };
+}
+// Close dropdown when clicking outside
+document.addEventListener('click', () => {
+  if (userDropdownMenu) userDropdownMenu.classList.remove('active');
+});
 
 // Membership Management event listeners
 document.getElementById('requestMembershipBtn').onclick = requestMembership;
@@ -1536,6 +2576,27 @@ async function loadAllProposals() {
 function updateProposalCounts() {
   document.getElementById('activeProposalsCount').textContent = allProposalsData.active.length;
   document.getElementById('completedProposalsCount').textContent = allProposalsData.completed.length;
+
+  // Update voting badge with count of active proposals user hasn't voted on
+  updateVotingBadge();
+}
+
+function updateVotingBadge() {
+  const badge = document.getElementById('votingBadge');
+  if (!badge) return;
+
+  // Count active proposals the user hasn't voted on
+  const unvotedCount = allProposalsData.active.filter(proposal => {
+    const hasVoted = userVotesCache && userVotesCache.some(v => v.proposal_id === proposal.proposal_id);
+    return !hasVoted;
+  }).length;
+
+  if (unvotedCount > 0) {
+    badge.textContent = unvotedCount;
+    badge.style.display = 'inline-flex';
+  } else {
+    badge.style.display = 'none';
+  }
 }
 
 function setupProposalFilters() {
@@ -1564,14 +2625,45 @@ async function renderProposals(filter) {
     proposalsToRender = [...allProposalsData.active].sort((a, b) => new Date(a.closes_at) - new Date(b.closes_at));
 
     if (proposalsToRender.length === 0) {
-      container.innerHTML = '<p class="muted" style="text-align:center;padding:40px;grid-column:1/-1;">No active proposals at this time.</p>';
+      container.innerHTML = `
+        <div style="grid-column:1/-1;text-align:center;padding:60px 20px;">
+          <div style="background:linear-gradient(135deg,#1a1a1a 0%,#0a0a0a 100%);border-radius:12px;border:2px solid #222;padding:40px 20px;max-width:500px;margin:0 auto;">
+            <div style="width:80px;height:80px;margin:0 auto 20px;background:rgba(16,185,129,0.1);border-radius:50%;display:flex;align-items:center;justify-content:center;">
+              <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2">
+                <path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
+                <path d="M9 12l2 2 4-4"/>
+              </svg>
+            </div>
+            <h4 style="color:var(--accent);margin:0 0 12px 0;font-size:1.2rem;">No Active Proposals</h4>
+            <p style="color:var(--gray);margin:0 0 20px 0;line-height:1.6;">There are no proposals currently open for voting. Check back soon for new community proposals.</p>
+            <button class="btn proposal-filter" data-filter="completed" onclick="document.getElementById('filterCompletedProposals').click()" style="background:linear-gradient(135deg,#6366f1 0%,#4f46e5 100%);padding:10px 24px;font-weight:600;">
+              View Completed Proposals
+            </button>
+          </div>
+        </div>
+      `;
       return;
     }
   } else if (filter === 'completed') {
     proposalsToRender = [...allProposalsData.completed].sort((a, b) => new Date(b.closes_at) - new Date(a.closes_at));
 
     if (proposalsToRender.length === 0) {
-      container.innerHTML = '<p class="muted" style="text-align:center;padding:40px;grid-column:1/-1;">No completed proposals yet.</p>';
+      container.innerHTML = `
+        <div style="grid-column:1/-1;text-align:center;padding:60px 20px;">
+          <div style="background:linear-gradient(135deg,#1a1a1a 0%,#0a0a0a 100%);border-radius:12px;border:2px solid #222;padding:40px 20px;max-width:500px;margin:0 auto;">
+            <div style="width:80px;height:80px;margin:0 auto 20px;background:rgba(99,102,241,0.1);border-radius:50%;display:flex;align-items:center;justify-content:center;">
+              <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#6366f1" stroke-width="2">
+                <path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+              </svg>
+            </div>
+            <h4 style="color:var(--accent);margin:0 0 12px 0;font-size:1.2rem;">No Completed Proposals</h4>
+            <p style="color:var(--gray);margin:0 0 20px 0;line-height:1.6;">No proposals have been completed yet. Completed proposals will appear here after voting closes.</p>
+            <button class="btn proposal-filter" data-filter="active" onclick="document.getElementById('filterActiveProposals').click()" style="background:linear-gradient(135deg,#10b981 0%,#059669 100%);padding:10px 24px;font-weight:600;">
+              View Active Proposals
+            </button>
+          </div>
+        </div>
+      `;
       return;
     }
 
@@ -1656,7 +2748,13 @@ async function submitVote(proposalId) {
   const choice = selectedVotes[proposalId];
   if (!choice) return;
 
-  const confirmed = confirm('⚠️ WARNING: Your vote is permanent and cannot be changed once submitted.\n\nAre you sure you want to submit your vote?');
+  const confirmed = await showConfirmModal({
+    title: 'Confirm Vote Submission',
+    message: '<strong style="color:#ff9800;">WARNING:</strong> Your vote is permanent and cannot be changed once submitted.<br><br>Are you sure you want to submit your vote?',
+    confirmText: 'Submit Vote',
+    cancelText: 'Cancel',
+    type: 'warning'
+  });
   if (!confirmed) return;
 
   try {
@@ -1680,7 +2778,11 @@ async function submitVote(proposalId) {
       throw new Error(error.message || 'Failed to submit vote');
     }
 
-    alert('✓ Your vote has been recorded successfully!');
+    await showAlertModal({
+      type: 'success',
+      title: 'Vote Recorded',
+      message: 'Your vote has been recorded successfully!'
+    });
 
     // Clear cache and reload
     userVotesCache = null;
@@ -1688,7 +2790,11 @@ async function submitVote(proposalId) {
     await loadAllProposals();
   } catch (error) {
     console.error('Error submitting vote:', error);
-    alert('Failed to submit vote: ' + error.message);
+    await showAlertModal({
+      type: 'error',
+      title: 'Vote Failed',
+      message: 'Failed to submit vote: ' + error.message
+    });
   }
 }
 
@@ -1703,6 +2809,13 @@ async function loadUserVotes() {
       method: 'GET',
       headers: { 'Authorization': 'Bearer ' + token }
     });
+
+    // Handle 400/404 as "no votes yet" (valid state for new users)
+    if (res.status === 400 || res.status === 404) {
+      console.log('[VOTES] No vote history found (status ' + res.status + ') - treating as empty');
+      userVotesCache = [];
+      return;
+    }
 
     if (!res.ok) throw new Error('Failed to load vote history');
     const data = await res.json();
@@ -2013,34 +3126,79 @@ async function viewProposalResults(proposalId) {
     const noPercent = total > 0 ? Math.round((data.results.no / total) * 100) : 0;
     const abstainPercent = total > 0 ? Math.round((data.results.abstain / total) * 100) : 0;
 
-    const message = `
-Proposal: ${data.proposal.proposal_title || 'Untitled'}
-${data.proposal.proposal_text}
+    const htmlContent = `
+      <div style="margin-bottom:20px;">
+        <h4 style="margin:0 0 12px 0;color:var(--accent);font-size:1.1rem;">${data.proposal.proposal_title || 'Untitled'}</h4>
+        <p style="color:var(--gray);margin-bottom:16px;line-height:1.6;">${data.proposal.proposal_text}</p>
 
-Status: ${data.proposal.status}
-Closed: ${new Date(data.proposal.closes_at).toLocaleDateString()}
+        <div style="display:flex;gap:20px;margin-bottom:20px;flex-wrap:wrap;">
+          <div>
+            <span style="color:var(--gray);font-size:0.9rem;">Status:</span>
+            <span style="color:var(--text);margin-left:8px;font-weight:600;">${data.proposal.status}</span>
+          </div>
+          <div>
+            <span style="color:var(--gray);font-size:0.9rem;">Closed:</span>
+            <span style="color:var(--text);margin-left:8px;font-weight:600;">${new Date(data.proposal.closes_at).toLocaleDateString()}</span>
+          </div>
+        </div>
+      </div>
 
-RESULTS:
-Total Votes: ${total}
+      <div style="background:#050505;border-radius:8px;padding:20px;border:1px solid #222;">
+        <h5 style="margin:0 0 16px 0;color:var(--accent);font-size:1rem;">Results</h5>
+        <div style="margin-bottom:16px;">
+          <div style="display:flex;justify-content:space-between;margin-bottom:8px;">
+            <span style="color:var(--gray);">Total Votes</span>
+            <span style="color:var(--text);font-weight:600;">${total}</span>
+          </div>
+        </div>
 
-Yes: ${data.results.yes} (${yesPercent}%)
-No: ${data.results.no} (${noPercent}%)
-Abstain: ${data.results.abstain} (${abstainPercent}%)
-    `.trim();
+        <div style="display:flex;flex-direction:column;gap:12px;">
+          <div>
+            <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
+              <span style="color:#4caf50;font-weight:600;">Yes</span>
+              <span style="color:var(--text);">${data.results.yes} (${yesPercent}%)</span>
+            </div>
+            <div style="background:#1a1a1a;border-radius:4px;height:8px;overflow:hidden;">
+              <div style="background:linear-gradient(90deg,#4caf50 0%,#2e7d32 100%);height:100%;width:${yesPercent}%;transition:width 0.5s ease;"></div>
+            </div>
+          </div>
 
-    alert(message);
+          <div>
+            <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
+              <span style="color:#f44336;font-weight:600;">No</span>
+              <span style="color:var(--text);">${data.results.no} (${noPercent}%)</span>
+            </div>
+            <div style="background:#1a1a1a;border-radius:4px;height:8px;overflow:hidden;">
+              <div style="background:linear-gradient(90deg,#f44336 0%,#c62828 100%);height:100%;width:${noPercent}%;transition:width 0.5s ease;"></div>
+            </div>
+          </div>
+
+          <div>
+            <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
+              <span style="color:#9e9e9e;font-weight:600;">Abstain</span>
+              <span style="color:var(--text);">${data.results.abstain} (${abstainPercent}%)</span>
+            </div>
+            <div style="background:#1a1a1a;border-radius:4px;height:8px;overflow:hidden;">
+              <div style="background:linear-gradient(90deg,#9e9e9e 0%,#616161 100%);height:100%;width:${abstainPercent}%;transition:width 0.5s ease;"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    showProposalResultsModal(htmlContent);
   } catch (error) {
     console.error('Error loading proposal results:', error);
-    alert('Failed to load proposal results: ' + error.message);
+    showToast('Failed to load proposal results: ' + error.message, 'error');
   }
 }
 
-// Update tab visibility based on user groups and subscription status
+// Update tab visibility based on membership status and subscription status
 function updateTabVisibility() {
   if (!signedIn()) return;
-  const { payload } = parseJwt(idToken());
-  const groups = payload['cognito:groups'] || [];
-  const isMember = groups.includes('member');
+
+  // Use database membership status, not JWT groups
+  const isMember = (membershipStatus === 'approved');
   const hasSubscription = isSubscriber();
   const hasPaidSubscription = isPaidSubscriber();
 
@@ -2075,29 +3233,100 @@ function updateTabVisibility() {
 }
 
 // ---- Getting Started Functions ----
-function isGettingStartedComplete() {
+async function isGettingStartedComplete() {
   if (!signedIn()) return false;
-  const { payload } = parseJwt(idToken());
-  const email = payload.email;
-  if (!email) return false;
-  return localStorage.getItem(`vettid_getting_started_complete_${email}`) === 'true';
+  try {
+    const res = await fetch(API_URL + '/account/getting-started-preference', {
+      method: 'GET',
+      headers: { 'Authorization': 'Bearer ' + idToken() }
+    });
+
+    if (!res.ok) {
+      console.error('Error fetching getting started preference:', res.status);
+      return false;
+    }
+
+    const response = await res.json();
+    return response.getting_started_complete || false;
+  } catch (error) {
+    console.error('Error fetching getting started preference:', error);
+    return false; // Default to false on error
+  }
 }
 
-function markGettingStartedComplete() {
+async function markGettingStartedComplete() {
   if (!signedIn()) return;
-  const { payload } = parseJwt(idToken());
-  const email = payload.email;
-  if (!email) return;
-  localStorage.setItem(`vettid_getting_started_complete_${email}`, 'true');
+  try {
+    const res = await fetch(API_URL + '/account/getting-started-preference', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + idToken(),
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ getting_started_complete: true })
+    });
+
+    if (!res.ok) {
+      console.error('Error marking getting started as complete:', res.status);
+    }
+  } catch (error) {
+    console.error('Error marking getting started as complete:', error);
+  }
 }
 
-function switchToTab(tabName) {
-  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-  const tab = document.querySelector(`.tab[data-tab="${tabName}"]`);
+async function clearGettingStartedComplete() {
+  if (!signedIn()) return;
+  try {
+    const res = await fetch(API_URL + '/account/getting-started-preference', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + idToken(),
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ getting_started_complete: false })
+    });
+
+    if (!res.ok) {
+      console.error('Error clearing getting started preference:', res.status);
+    }
+  } catch (error) {
+    console.error('Error clearing getting started preference:', error);
+  }
+}
+
+function switchToTab(tabName, subTabName) {
+  const tab = document.querySelector(`.tab[data-tab="${tabName}"]:not(.tab-child)`);
   const content = document.getElementById(tabName);
+  const isParent = tab?.classList.contains('tab-parent');
+
+  // Collapse all parent tabs first
+  document.querySelectorAll('.tab-parent').forEach(p => p.classList.remove('expanded'));
+  document.querySelectorAll('.tab-children').forEach(c => c.classList.remove('expanded'));
+  document.querySelectorAll('.tab-child').forEach(c => c.classList.remove('active'));
+  document.querySelectorAll('.tab:not(.tab-child)').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+
   if (tab) tab.classList.add('active');
   if (content) content.classList.add('active');
+
+  // If this is a parent tab, expand it and activate first child
+  if (isParent && tab) {
+    const parentId = tab.id;
+    const childrenId = parentId.replace('Parent', 'Children');
+    const children = document.getElementById(childrenId);
+
+    tab.classList.add('expanded');
+    children?.classList.add('expanded');
+
+    // If a specific sub-tab is requested, use it; otherwise use first child
+    const targetSubTab = subTabName || children?.querySelector('.tab-child')?.getAttribute('data-sub-tab');
+    if (targetSubTab) {
+      // Activate the specific child tab
+      const childTab = children?.querySelector(`.tab-child[data-sub-tab="${targetSubTab}"]`);
+      if (childTab) childTab.classList.add('active');
+      activateSubTab(tabName, targetSubTab);
+    }
+  }
 
   // Load voting data if switching to voting tab
   if (tabName === 'voting' && signedIn()) {
@@ -2106,9 +3335,20 @@ function switchToTab(tabName) {
   }
 }
 
-function navigateToStep(tabName, cardId) {
+function navigateToStep(tabName, cardId, subTabName) {
   // Switch to the tab
   switchToTab(tabName);
+
+  // If there's a sub-tab specified, switch to it
+  if (subTabName && subTabName !== 'null') {
+    activateSubTab(tabName, subTabName);
+    // Also update the child tab active state in the sidebar
+    const childTab = document.querySelector(`.tab-child[data-tab="${tabName}"][data-sub-tab="${subTabName}"]`);
+    if (childTab) {
+      document.querySelectorAll('.tab-child').forEach(c => c.classList.remove('active'));
+      childTab.classList.add('active');
+    }
+  }
 
   // If there's a specific card to focus on
   if (cardId && cardId !== 'null') {
@@ -2161,7 +3401,10 @@ async function checkStepCompletion() {
         method: 'GET',
         headers: { 'Authorization': 'Bearer ' + token }
       });
-      if (pinRes.ok) {
+      // Handle 404 as "no PIN configured" (valid state for new users)
+      if (pinRes.status === 404) {
+        steps.pinEnabled = false;
+      } else if (pinRes.ok) {
         const pinData = await pinRes.json();
         steps.pinEnabled = pinData.pin_enabled || false;
       }
@@ -2194,7 +3437,10 @@ async function checkStepCompletion() {
         method: 'GET',
         headers: { 'Authorization': 'Bearer ' + token }
       });
-      if (votesRes.ok) {
+      // Handle 400/404 as "no votes yet" (valid state for new users)
+      if (votesRes.status === 400 || votesRes.status === 404) {
+        steps.hasVoted = false;
+      } else if (votesRes.ok) {
         const votesData = await votesRes.json();
         steps.hasVoted = votesData.votes && votesData.votes.length > 0;
       }
@@ -2222,6 +3468,7 @@ async function populateGettingStartedSteps() {
       completed: steps.pinEnabled,
       accessible: true,
       tab: 'account',
+      subTab: 'pin-code',
       cardId: 'pinCodeCard',
       note: null
     },
@@ -2233,6 +3480,7 @@ async function populateGettingStartedSteps() {
       pending: steps.membershipPending,
       accessible: true,
       tab: 'account',
+      subTab: 'membership',
       cardId: 'membershipCard',
       note: steps.membershipPending ? 'Membership Pending' : null
     },
@@ -2289,7 +3537,7 @@ async function populateGettingStartedSteps() {
     const iconBg = isCompleted ? '#4caf50' : isPending ? '#ff9800' : isAccessible ? 'var(--accent)' : '#333';
 
     return `
-      <div ${isAccessible && !isCompleted && !isPending && step.tab ? `onclick="navigateToStep('${step.tab}','${step.cardId || 'null'}')"` : ''} style="padding:20px;background:#0a0a0a;border-radius:8px;border:2px solid ${borderColor};opacity:${opacity};cursor:${cursor};position:relative;">
+      <div ${isAccessible && !isCompleted && !isPending && step.tab ? `onclick="navigateToStep('${step.tab}','${step.cardId || 'null'}','${step.subTab || 'null'}')"` : ''} style="padding:20px;background:#0a0a0a;border-radius:8px;border:2px solid ${borderColor};opacity:${opacity};cursor:${cursor};position:relative;">
         <div style="display:flex;align-items:start;gap:16px;">
           <div style="flex-shrink:0;width:40px;height:40px;border-radius:50%;background:${iconBg};display:flex;align-items:center;justify-content:center;font-weight:700;font-size:1.2rem;color:${isCompleted || isPending || isAccessible ? '#000' : '#666'};">
             ${isCompleted ? '✓' : step.number}
@@ -2317,49 +3565,71 @@ async function populateGettingStartedSteps() {
   if (progressText) progressText.textContent = `${completedCount} of ${totalCount} complete`;
 }
 
-document.getElementById('gotItBtn').onclick = () => {
-  markGettingStartedComplete();
+document.getElementById('gotItBtn').onclick = async () => {
+  await markGettingStartedComplete();
   switchToTab('account');
 };
 
 // Initialize
 if (checkAuth()) {
-  // Debug: Log JWT payload to console
-  const token = idToken();
-  if (token) {
-    const { payload } = parseJwt(token);
-    console.log('[AUTH] JWT Payload:', payload);
-    console.log('[AUTH] Groups type:', typeof payload['cognito:groups']);
-    console.log('[AUTH] Groups value:', payload['cognito:groups']);
-    console.log('[AUTH] Groups JSON:', JSON.stringify(payload['cognito:groups']));
-  }
-  populateProfile();
+  // Define the main app initialization function
+  const runAppInitialization = async () => {
+    // Debug: Log JWT payload to console
+    const token = idToken();
+    if (token) {
+      const { payload } = parseJwt(token);
+      console.log('[AUTH] JWT Payload:', payload);
+      console.log('[AUTH] Groups type:', typeof payload['cognito:groups']);
+      console.log('[AUTH] Groups value:', payload['cognito:groups']);
+      console.log('[AUTH] Groups JSON:', JSON.stringify(payload['cognito:groups']));
+    }
+    populateProfile();
 
-  // Load membership status first to determine if user is truly new
-  Promise.all([
-    loadMembershipStatus(),
-    loadSubscriptionStatus(),
-    loadSubscriptionTypes(),
-    loadPinStatus(),
-    loadEmailPreferences()
-  ]).then(() => {
+    // Load subscription status first so isPaidSubscriber() works correctly in loadMembershipStatus()
+    await loadSubscriptionStatus();
+
+    await Promise.all([
+      loadMembershipStatus(),
+      loadSubscriptionTypes(),
+      loadPinStatus(),
+      loadEmailPreferences()
+    ]);
+
     updateTabVisibility();
     populateGettingStartedSteps();
 
-    // Check if user is truly new (not a member yet)
-    // If they're not a member, always show getting started regardless of localStorage
-    const { payload } = parseJwt(idToken());
-    const groups = payload['cognito:groups'] || [];
-    const isMember = groups.includes('member');
-
-    // Show Getting Started if: (1) not completed OR (2) not yet a member
-    if (!isGettingStartedComplete() || !isMember) {
-      switchToTab('getting-started');
-    } else {
+    // Show Getting Started tab unless user has clicked "Got it" button
+    // This is independent of membership status - getting started has multiple steps
+    const complete = await isGettingStartedComplete();
+    if (complete) {
       switchToTab('account');
+    } else {
+      switchToTab('getting-started');
     }
-  });
+  };
+
+  // Store the continuation function for use after PIN verification
+  continueAppInitialization = runAppInitialization;
+
+  // Check if PIN verification is required before loading the app
+  (async () => {
+    const pinRequired = await checkAndRequirePinVerification();
+    if (!pinRequired) {
+      // No PIN verification needed, proceed with app initialization
+      await runAppInitialization();
+    }
+    // If PIN is required, the modal is shown and runAppInitialization will be called
+    // after successful PIN verification via continueAppInitialization()
+  })();
 }
+
+// Sidebar toggle
+document.getElementById('sidebarToggle').onclick=()=>{
+  const sidebar=document.getElementById('sidebar');
+  const toggle=document.getElementById('sidebarToggle');
+  sidebar.classList.toggle('collapsed');
+  toggle.innerHTML=sidebar.classList.contains('collapsed')?'&gt;':'&lt;';
+};
 </script>
 </body>
 </html>

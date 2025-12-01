@@ -27,6 +27,7 @@
   "dependencies": {
     "@aws-cdk/cloud-assembly-schema": "48.20.0",
     "@aws-sdk/client-cloudwatch": "^3.939.0",
+    "@aws-sdk/client-cloudwatch-logs": "^3.940.0",
     "@aws-sdk/client-cognito-identity-provider": "^3.939.0",
     "@aws-sdk/client-dynamodb": "^3.939.0",
     "@aws-sdk/client-ses": "^3.939.0",

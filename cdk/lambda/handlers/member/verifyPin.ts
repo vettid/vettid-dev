@@ -12,7 +12,7 @@ import {
   parseJsonBody,
   ValidationError
 } from "../../common/util";
-import { UpdateItemCommand, QueryCommand, ScanCommand } from "@aws-sdk/client-dynamodb";
+import { ScanCommand } from "@aws-sdk/client-dynamodb";
 import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
 import { createHash } from "crypto";
 
@@ -39,8 +39,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
   try {
     // Get user's email from JWT claims
-    const claims = (event.requestContext as any)?.authorizer?.jwt?.claims;
-    const userEmail = claims?.email;
+    const userEmail = (event.requestContext as any)?.authorizer?.jwt?.claims?.email;
     if (!userEmail) {
       return badRequest("Unable to identify user");
     }
@@ -57,8 +56,6 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     }
 
     // Find the user's registration by email using Scan
-    // Note: Removed Limit:1 because DynamoDB applies filter AFTER reading Limit items,
-    // so Limit:1 with FilterExpression could read 1 non-matching item and return empty
     const queryResult = await ddb.send(new ScanCommand({
       TableName: TABLES.registrations,
       FilterExpression: "email = :email AND #s = :approved",
@@ -76,37 +73,53 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     }
 
     const reg = unmarshall(queryResult.Items[0]) as any;
-    const now = new Date().toISOString();
 
-    // Hash the PIN and store it
+    // Check if PIN is enabled
+    if (!reg.pin_enabled) {
+      // PIN not enabled - return success (no verification needed)
+      return ok({
+        verified: true,
+        pin_enabled: false,
+        message: "PIN is not enabled"
+      });
+    }
+
+    // Verify PIN matches stored hash
     const pinHash = hashPin(pin);
+    if (pinHash !== reg.pin_hash) {
+      // SECURITY: Log failed PIN verification attempts for security monitoring
+      await putAudit({
+        type: "pin_verification_failed",
+        registration_id: reg.registration_id,
+        email: userEmail,
+        failed_at: new Date().toISOString()
+      }, requestId);
 
-    await ddb.send(new UpdateItemCommand({
-      TableName: TABLES.registrations,
-      Key: marshall({ registration_id: reg.registration_id }),
-      UpdateExpression: "SET pin_hash = :pin_hash, pin_enabled = :enabled, pin_updated_at = :now",
-      ExpressionAttributeValues: marshall({
-        ":pin_hash": pinHash,
-        ":enabled": true,
-        ":now": now
-      })
-    }));
+      return ok({
+        verified: false,
+        pin_enabled: true,
+        message: "Incorrect PIN"
+      });
+    }
 
+    // PIN verified successfully
     await putAudit({
-      type: "pin_enabled",
+      type: "pin_verification_success",
       registration_id: reg.registration_id,
       email: userEmail,
-      enabled_at: now
+      verified_at: new Date().toISOString()
     }, requestId);
 
     return ok({
-      message: "PIN enabled successfully"
+      verified: true,
+      pin_enabled: true,
+      message: "PIN verified successfully"
     });
   } catch (error) {
     if (error instanceof ValidationError) {
       return badRequest(error.message);
     }
-    console.error('Failed to enable PIN:', error);
-    return internalError("Failed to enable PIN");
+    console.error('Failed to verify PIN:', error);
+    return internalError("Failed to verify PIN");
   }
 };

@@ -33,12 +33,12 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       return badRequest("Unable to identify user");
     }
 
-    // Find the user's registration by email using GSI
+    // Find the user's registration by email using Scan
     const queryResult = await ddb.send(new QueryCommand({
       TableName: TABLES.registrations,
-      IndexName: 'email-index',
-      KeyConditionExpression: "email = :email",
-      FilterExpression: "#s = :approved",
+      IndexName: 'status-index',
+      KeyConditionExpression: "#s = :approved",
+      FilterExpression: "email = :email",
       ExpressionAttributeNames: {
         "#s": "status"
       },

@@ -255,6 +255,7 @@ const webAcl = new wafv2.CfnWebACL(this, 'WebAcl', {
 // CloudFront Function: Add security headers to all responses with specific API URL
 const securityHeadersFn = new cloudfront.Function(this, 'SecurityHeadersFn', {
   code: cloudfront.FunctionCode.fromInline(`
+// Version: 2025-11-29-20:40 - Force update to use current API endpoint
 function handler(event) {
   var response = event.response;
   var headers = response.headers;
@@ -523,6 +524,9 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       entry: 'lambda/handlers/member/cancelAccount.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
       environment: { ...defaultEnv, USER_POOL_ID: memberUserPool.userPoolId, TABLE_SUBSCRIPTIONS: tables.subscriptions.tableName },
+      memorySize: 256,
+      timeout: cdk.Duration.seconds(30),
+      description: 'Cancel member account with 7-day grace period',
     });
     const cleanupExpiredAccounts = new lambdaNode.NodejsFunction(this, 'CleanupExpiredAccountsFn', {
       entry: 'lambda/handlers/scheduled/cleanupExpiredAccounts.ts',
@@ -534,6 +538,9 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       entry: 'lambda/handlers/member/enablePin.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
       environment: defaultEnv,
+      memorySize: 256,
+      timeout: cdk.Duration.seconds(30),
+      description: 'Enable PIN for member account security',
     });
     const disablePin = new lambdaNode.NodejsFunction(this, 'DisablePinFn', {
       entry: 'lambda/handlers/member/disablePin.ts',
@@ -550,6 +557,12 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       runtime: lambda.Runtime.NODEJS_22_X,
       environment: defaultEnv,
     });
+    const verifyPin = new lambdaNode.NodejsFunction(this, 'VerifyPinFn', {
+      entry: 'lambda/handlers/member/verifyPin.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: defaultEnv,
+      description: 'Verify PIN for member account login',
+    });
     const getEmailPreferences = new lambdaNode.NodejsFunction(this, 'GetEmailPreferencesFn', {
       entry: 'lambda/handlers/member/getEmailPreferences.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
@@ -557,6 +570,16 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
     });
     const updateEmailPreferences = new lambdaNode.NodejsFunction(this, 'UpdateEmailPreferencesFn', {
       entry: 'lambda/handlers/member/updateEmailPreferences.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: defaultEnv,
+    });
+    const getGettingStartedPreference = new lambdaNode.NodejsFunction(this, 'GetGettingStartedPreferenceFn', {
+      entry: 'lambda/handlers/member/getGettingStartedPreference.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: defaultEnv,
+    });
+    const updateGettingStartedPreference = new lambdaNode.NodejsFunction(this, 'UpdateGettingStartedPreferenceFn', {
+      entry: 'lambda/handlers/member/updateGettingStartedPreference.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
       environment: defaultEnv,
     });
@@ -644,8 +667,11 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
     tables.registrations.grantReadWriteData(disablePin);
     tables.registrations.grantReadWriteData(updatePin);
     tables.registrations.grantReadData(getPinStatus);
+    tables.registrations.grantReadData(verifyPin);
     tables.audit.grantReadData(getEmailPreferences);
     tables.audit.grantReadWriteData(updateEmailPreferences);
+    tables.audit.grantReadData(getGettingStartedPreference);
+    tables.audit.grantReadWriteData(updateGettingStartedPreference);
     tables.registrations.grantStreamRead(registrationStreamFn);
     tables.proposals.grantStreamRead(proposalStreamFn); // Read proposal stream events
     tables.subscriptions.grantReadData(proposalStreamFn); // Query active subscriptions
@@ -658,6 +684,7 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
     tables.audit.grantReadWriteData(enablePin);
     tables.audit.grantReadWriteData(disablePin);
     tables.audit.grantReadWriteData(updatePin);
+    tables.audit.grantReadWriteData(verifyPin);
     tables.registrations.grantReadWriteData(requestMembership);
     tables.registrations.grantReadData(getMembershipStatus);
     tables.audit.grantReadWriteData(requestMembership);
@@ -667,6 +694,7 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
     tables.subscriptions.grantReadWriteData(getSubscriptionStatus);
     tables.subscriptions.grantReadWriteData(cancelSubscription);
     tables.subscriptionTypes.grantReadData(createSubscription);
+    tables.registrations.grantReadData(createSubscription); // Validate membership status
     tables.audit.grantReadWriteData(createSubscription);
     tables.audit.grantReadWriteData(cancelSubscription);
     tables.votes.grantReadWriteData(submitVote);
@@ -813,6 +841,12 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       authorizer: this.memberAuthorizer,
     });
     this.httpApi.addRoutes({
+      path: '/account/security/pin/verify',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('VerifyPinInt', verifyPin),
+      authorizer: this.memberAuthorizer,
+    });
+    this.httpApi.addRoutes({
       path: '/account/email-preferences',
       methods: [apigw.HttpMethod.GET],
       integration: new integrations.HttpLambdaIntegration('GetEmailPreferencesInt', getEmailPreferences),
@@ -822,6 +856,18 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       path: '/account/email-preferences',
       methods: [apigw.HttpMethod.POST],
       integration: new integrations.HttpLambdaIntegration('UpdateEmailPreferencesInt', updateEmailPreferences),
+      authorizer: this.memberAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/account/getting-started-preference',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('GetGettingStartedPreferenceInt', getGettingStartedPreference),
+      authorizer: this.memberAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/account/getting-started-preference',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('UpdateGettingStartedPreferenceInt', updateGettingStartedPreference),
       authorizer: this.memberAuthorizer,
     });
     this.httpApi.addRoutes({
@@ -1167,6 +1213,8 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       integration: new integrations.HttpLambdaIntegration('ChangePasswordInt', adminStack.changePassword),
       authorizer: this.adminAuthorizer,
     });
+
+    // Membership request routes
     this.httpApi.addRoutes({
       path: '/admin/membership-requests',
       methods: [apigw.HttpMethod.GET],
@@ -1285,6 +1333,54 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       path: '/admin/waitlist',
       methods: [apigw.HttpMethod.DELETE],
       integration: new integrations.HttpLambdaIntegration('DeleteWaitlistEntriesInt', adminStack.deleteWaitlistEntries),
+      authorizer: this.adminAuthorizer,
+    });
+
+    // System monitoring routes
+    this.httpApi.addRoutes({
+      path: '/admin/system-health',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('GetSystemHealthInt', adminStack.getSystemHealth),
+      authorizer: this.adminAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/admin/system-logs',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('GetSystemLogsInt', adminStack.getSystemLogs),
+      authorizer: this.adminAuthorizer,
+    });
+
+    // Email management routes
+    this.httpApi.addRoutes({
+      path: '/admin/send-bulk-email',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('SendBulkEmailInt', adminStack.sendBulkEmail),
+      authorizer: this.adminAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/admin/sent-emails',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('ListSentEmailsInt', adminStack.listSentEmails),
+      authorizer: this.adminAuthorizer,
+    });
+
+    // Notification management routes
+    new apigw.HttpRoute(this, 'GetNotificationsRoute', {
+      httpApi: this.httpApi,
+      routeKey: apigw.HttpRouteKey.with('/admin/notifications/{type}', apigw.HttpMethod.GET),
+      integration: new integrations.HttpLambdaIntegration('GetNotificationsInt', adminStack.getNotifications),
+      authorizer: this.adminAuthorizer,
+    });
+    new apigw.HttpRoute(this, 'AddNotificationRoute', {
+      httpApi: this.httpApi,
+      routeKey: apigw.HttpRouteKey.with('/admin/notifications/{type}', apigw.HttpMethod.POST),
+      integration: new integrations.HttpLambdaIntegration('AddNotificationInt', adminStack.addNotification),
+      authorizer: this.adminAuthorizer,
+    });
+    new apigw.HttpRoute(this, 'RemoveNotificationRoute', {
+      httpApi: this.httpApi,
+      routeKey: apigw.HttpRouteKey.with('/admin/notifications/{type}/{email}', apigw.HttpMethod.DELETE),
+      integration: new integrations.HttpLambdaIntegration('RemoveNotificationInt', adminStack.removeNotification),
       authorizer: this.adminAuthorizer,
     });
   }

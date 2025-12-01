@@ -161,8 +161,7 @@ async function getUserDetails(userGuid: string): Promise<{ email: string; first_
       FilterExpression: 'user_guid = :user_guid',
       ExpressionAttributeValues: marshall({
         ':user_guid': userGuid
-      }),
-      Limit: 1
+      })
     }));
 
     if (!scanResult.Items || scanResult.Items.length === 0) {
@@ -218,8 +217,7 @@ async function markNotificationSent(subscriptionId: string): Promise<void> {
       FilterExpression: 'subscription_id = :id',
       ExpressionAttributeValues: marshall({
         ':id': subscriptionId
-      }),
-      Limit: 1
+      })
     }));
 
     if (scanResult.Items && scanResult.Items.length > 0) {

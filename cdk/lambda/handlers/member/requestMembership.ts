@@ -46,6 +46,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     }
 
     // Find the user's registration by email using Scan
+    // NOTE: Do NOT use Limit with FilterExpression - Limit applies BEFORE filtering
     const queryResult = await ddb.send(new ScanCommand({
       TableName: TABLES.registrations,
       FilterExpression: "email = :email AND #s = :approved",
@@ -55,8 +56,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       ExpressionAttributeValues: marshall({
         ":email": userEmail,
         ":approved": "approved"
-      }),
-      Limit: 1
+      })
     }));
 
     if (!queryResult.Items || queryResult.Items.length === 0) {

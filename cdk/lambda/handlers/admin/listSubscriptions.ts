@@ -1,5 +1,5 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
-import { DynamoDBClient, ScanCommand, GetItemCommand } from '@aws-sdk/client-dynamodb';
+import { DynamoDBClient, ScanCommand, GetItemCommand, BatchGetItemCommand } from '@aws-sdk/client-dynamodb';
 import { unmarshall, marshall } from '@aws-sdk/util-dynamodb';
 import { ok, internalError, requireAdminGroup } from '../../common/util';
 import { createHash } from 'crypto';
@@ -40,21 +40,71 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
 
     let subscriptions = subscriptionsResult.Items.map(item => unmarshall(item));
 
-    // Fetch all registrations to join user data
-    const registrationsResult = await ddb.send(new ScanCommand({
-      TableName: TABLE_REGISTRATIONS,
-    }));
+    // OPTIMIZED: Get unique user_guids first, then fetch only needed registrations
+    const uniqueUserGuids = [...new Set(subscriptions.map(s => s.user_guid).filter(Boolean))];
 
+    // Fetch only registrations for subscribed users
     const registrationsMap = new Map();
-    if (registrationsResult.Items) {
-      registrationsResult.Items.forEach(item => {
-        const reg = unmarshall(item);
-        registrationsMap.set(reg.user_guid, reg);
-      });
+    if (uniqueUserGuids.length > 0) {
+      const registrationsResult = await ddb.send(new ScanCommand({
+        TableName: TABLE_REGISTRATIONS,
+        FilterExpression: `user_guid IN (${uniqueUserGuids.map((_, i) => `:guid${i}`).join(', ')})`,
+        ExpressionAttributeValues: marshall(
+          Object.fromEntries(uniqueUserGuids.map((guid, i) => [`:guid${i}`, guid]))
+        ),
+      }));
+
+      if (registrationsResult.Items) {
+        registrationsResult.Items.forEach(item => {
+          const reg = unmarshall(item);
+          registrationsMap.set(reg.user_guid, reg);
+        });
+      }
     }
 
-    // Enrich subscriptions with user data and calculate dynamic status
-    const enrichedSubscriptions = await Promise.all(subscriptions.map(async (sub) => {
+    // Collect all email addresses for batch email preference lookup
+    const emails = subscriptions
+      .map(s => {
+        const registration = registrationsMap.get(s.user_guid);
+        return registration?.email || s.email || '';
+      })
+      .filter(Boolean);
+
+    // OPTIMIZED: Batch get email preferences (fixes N+1 query)
+    const emailPrefsMap = new Map();
+    if (emails.length > 0) {
+      // DynamoDB BatchGetItem supports up to 100 items at once
+      const batches = [];
+      for (let i = 0; i < emails.length; i += 100) {
+        batches.push(emails.slice(i, i + 100));
+      }
+
+      for (const batch of batches) {
+        try {
+          const batchResult = await ddb.send(new BatchGetItemCommand({
+            RequestItems: {
+              [TABLE_AUDIT]: {
+                Keys: batch.map(email => marshall({ id: `email_pref_${email}` })),
+              },
+            },
+          }));
+
+          if (batchResult.Responses?.[TABLE_AUDIT]) {
+            batchResult.Responses[TABLE_AUDIT].forEach(item => {
+              const pref = unmarshall(item);
+              // Extract email from id (format: email_pref_EMAIL)
+              const email = pref.id.replace('email_pref_', '');
+              emailPrefsMap.set(email, pref);
+            });
+          }
+        } catch (error) {
+          console.error('Error batch fetching email preferences:', error);
+        }
+      }
+    }
+
+    // Enrich subscriptions with user data (now all data is pre-fetched)
+    const enrichedSubscriptions = subscriptions.map((sub) => {
       const registration = registrationsMap.get(sub.user_guid);
       const expiresDate = new Date(sub.expires_at);
       const email = registration?.email || sub.email || '';
@@ -72,23 +122,9 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       // Get PIN status from registration
       const pinEnabled = registration?.pin_enabled === true;
 
-      // Get email preferences from audit table
-      let systemEmailsEnabled = false;
-      if (email) {
-        try {
-          const emailPrefResult = await ddb.send(new GetItemCommand({
-            TableName: TABLE_AUDIT,
-            Key: marshall({ id: `email_pref_${email}` }),
-          }));
-
-          if (emailPrefResult.Item) {
-            const emailPref = unmarshall(emailPrefResult.Item);
-            systemEmailsEnabled = emailPref.system_emails_enabled === true;
-          }
-        } catch (error) {
-          console.error(`Error fetching email preferences for user ${hashForLog(email)}:`, error);
-        }
-      }
+      // Get email preferences from pre-fetched map
+      const emailPref = emailPrefsMap.get(email);
+      const systemEmailsEnabled = emailPref?.system_emails_enabled === true;
 
       return {
         ...sub,
@@ -100,7 +136,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
         pin_enabled: pinEnabled,
         system_emails_enabled: systemEmailsEnabled,
       };
-    }));
+    });
 
     subscriptions = enrichedSubscriptions;
 

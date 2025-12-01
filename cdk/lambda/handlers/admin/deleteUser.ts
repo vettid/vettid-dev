@@ -19,9 +19,11 @@ import {
   hashIdentifier,
   tooManyRequests
 } from "../../common/util";
-import { UpdateItemCommand } from "@aws-sdk/client-dynamodb";
-import { marshall } from "@aws-sdk/util-dynamodb";
-import { AdminDisableUserCommand } from "@aws-sdk/client-cognito-identity-provider";
+import { UpdateItemCommand, QueryCommand, DeleteItemCommand } from "@aws-sdk/client-dynamodb";
+import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
+import { AdminDeleteUserCommand } from "@aws-sdk/client-cognito-identity-provider";
+
+const TABLE_WAITLIST = process.env.TABLE_WAITLIST!;
 
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   // Validate admin group membership
@@ -55,44 +57,116 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     const reg = await getRegistration(id);
     const adminEmail = getAdminEmail(event);
     const now = new Date().toISOString();
+    const deletedData = [];
 
-    // Disable user in Cognito if they exist (don't delete - that's for permanent delete only)
+    // 1. DELETE user from Cognito completely (not just disable)
     const exists = await userExistsInCognito(reg.email);
     if (exists) {
       try {
-        await cognito.send(new AdminDisableUserCommand({
+        await cognito.send(new AdminDeleteUserCommand({
           UserPoolId: USER_POOL_ID,
           Username: reg.email
         }));
+        deletedData.push('cognito_user');
+        console.log(`Deleted Cognito user: ${reg.email}`);
       } catch (err: any) {
-        // User may already be disabled (from cancel), which is fine
-        if (!err.name?.includes('AlreadyDisabled')) {
-          throw err;
+        // If user doesn't exist, that's fine (already deleted)
+        if (err.name !== 'UserNotFoundException') {
+          console.error(`Error deleting Cognito user ${reg.email}:`, err);
+          // CRITICAL: Do NOT continue with DynamoDB cleanup if Cognito deletion fails
+          // This prevents orphaned Cognito users that can still login but have no registration record
+          await putAudit({
+            type: 'user_delete_failed',
+            registration_id: id,
+            email: reg.email,
+            reason: 'cognito_deletion_failed',
+            error: err.message,
+            attempted_by: adminEmail
+          });
+          return internalError(`Failed to delete Cognito user. Please try again or contact support. Error: ${err.name}`);
         }
       }
     }
 
-    // Mark registration as deleted in DynamoDB
-    await ddb.send(new UpdateItemCommand({
-      TableName: TABLES.registrations,
-      Key: marshall({ registration_id: id }),
-      UpdateExpression: "SET #s = :deleted, deleted_at = :now, deleted_by = :by",
-      ExpressionAttributeNames: { "#s": "status" },
-      ExpressionAttributeValues: marshall({
-        ":deleted": "deleted",
-        ":now": now,
-        ":by": adminEmail
-      })
-    }));
+    // 2. DELETE all waitlist entries for this email
+    try {
+      const waitlistEntries = await ddb.send(new QueryCommand({
+        TableName: TABLE_WAITLIST,
+        KeyConditionExpression: 'email = :email',
+        ExpressionAttributeValues: marshall({ ':email': reg.email }),
+      }));
 
+      if (waitlistEntries.Items && waitlistEntries.Items.length > 0) {
+        // Delete all waitlist entries for this email
+        for (const item of waitlistEntries.Items) {
+          const entry = unmarshall(item);
+          await ddb.send(new DeleteItemCommand({
+            TableName: TABLE_WAITLIST,
+            Key: marshall({
+              email: reg.email,
+              waitlist_id: entry.waitlist_id
+            })
+          }));
+          deletedData.push('waitlist_entry');
+        }
+        console.log(`Deleted ${waitlistEntries.Items.length} waitlist entries for ${reg.email}`);
+      }
+    } catch (err: any) {
+      console.error(`Error deleting waitlist entries for ${reg.email}:`, err);
+      // Continue with other cleanup
+    }
+
+    // 3. DELETE the registration record completely (not just mark as deleted)
+    await ddb.send(new DeleteItemCommand({
+      TableName: TABLES.registrations,
+      Key: marshall({ registration_id: id })
+    }));
+    deletedData.push('registration');
+    console.log(`Deleted registration: ${id}`);
+
+    // 4. Clean up user preferences and other data from audit table
+    //    (getting_started, email_preferences, etc. use pattern: <type>_<email>)
+    try {
+      const auditPrefixesToCheck = [
+        `getting_started_${reg.email}`,
+        `email_preferences_${reg.email}`,
+        `pin_${reg.email}`,
+        `magic_link_${reg.email}`
+      ];
+
+      for (const prefixId of auditPrefixesToCheck) {
+        try {
+          await ddb.send(new DeleteItemCommand({
+            TableName: TABLES.audit,
+            Key: marshall({ id: prefixId })
+          }));
+          deletedData.push(`audit_${prefixId.split('_')[0]}`);
+        } catch (err: any) {
+          // Item may not exist, which is fine
+          if (err.name !== 'ResourceNotFoundException') {
+            console.warn(`Error deleting audit item ${prefixId}:`, err);
+          }
+        }
+      }
+    } catch (err: any) {
+      console.error(`Error cleaning up audit data for ${reg.email}:`, err);
+      // Continue - this is not critical
+    }
+
+    // 5. Write final audit log for the deletion itself
     await putAudit({
       type: "user_deleted",
       id,
       email: reg.email,
-      deleted_by: adminEmail
+      deleted_by: adminEmail,
+      deleted_data: deletedData,
+      deleted_at: now
     });
 
-    return ok({ message: "user deleted successfully" });
+    return ok({
+      message: "User deleted successfully. All user data has been permanently removed.",
+      deleted: deletedData
+    });
   } catch (error) {
     if (error instanceof NotFoundError) {
       return notFound(error.message);

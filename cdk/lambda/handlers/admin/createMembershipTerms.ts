@@ -1,11 +1,12 @@
 import { APIGatewayProxyHandlerV2 } from "aws-lambda";
 import { ddb, ok, badRequest, internalError, requireAdminGroup, getAdminEmail } from "../../common/util";
-import { PutItemCommand, UpdateItemCommand, QueryCommand } from "@aws-sdk/client-dynamodb";
+import { PutItemCommand, UpdateItemCommand, QueryCommand, ScanCommand } from "@aws-sdk/client-dynamodb";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
-import { randomUUID } from "crypto";
 import PDFDocument from "pdfkit";
 import { Readable } from "stream";
+import * as path from "path";
+import * as fs from "fs";
 
 const s3 = new S3Client({});
 const TABLE_MEMBERSHIP_TERMS = process.env.TABLE_MEMBERSHIP_TERMS!;
@@ -39,11 +40,28 @@ async function generateTermsPDF(termsText: string, versionId: string): Promise<B
     doc.on('error', reject);
 
     // First page: VettID logo and title
-    doc.fontSize(32)
-      .fillColor('#FFC125')
-      .text('VettID', { align: 'center' });
+    // Path to logo in Lambda environment (bundled with function)
+    const logoPath = path.join(__dirname, '../../assets/logo.jpg');
 
-    doc.moveDown(2);
+    // Check if logo exists and add it, otherwise fallback to text
+    if (fs.existsSync(logoPath)) {
+      // Center the logo (page width is 612 points for LETTER size, logo width ~150)
+      const logoWidth = 150;
+      const pageWidth = 612;
+      const xPosition = (pageWidth - logoWidth) / 2;
+
+      doc.image(logoPath, xPosition, doc.y, {
+        width: logoWidth,
+        align: 'center'
+      });
+      doc.moveDown(2);
+    } else {
+      // Fallback to text if logo not found
+      doc.fontSize(32)
+        .fillColor('#FFC125')
+        .text('VettID', { align: 'center' });
+      doc.moveDown(2);
+    }
 
     doc.fontSize(24)
       .fillColor('#000000')
@@ -78,6 +96,43 @@ async function generateTermsPDF(termsText: string, versionId: string): Promise<B
   });
 }
 
+// Get next sequential version number
+async function getNextVersionNumber(): Promise<string> {
+  try {
+    const scanRes = await ddb.send(new ScanCommand({
+      TableName: TABLE_MEMBERSHIP_TERMS,
+      ProjectionExpression: 'version_id'
+    }));
+
+    if (!scanRes.Items || scanRes.Items.length === 0) {
+      return "1.0";
+    }
+
+    // Parse existing versions and find max numeric version
+    let maxVersion = 0;
+    for (const item of scanRes.Items) {
+      const unmarshalled = unmarshall(item);
+      const versionStr = unmarshalled.version_id;
+
+      // Try to parse as numeric version (e.g., "1.0", "2.0")
+      const match = versionStr.match(/^(\d+)\.0$/);
+      if (match) {
+        const versionNum = parseInt(match[1], 10);
+        if (versionNum > maxVersion) {
+          maxVersion = versionNum;
+        }
+      }
+      // Ignore UUID versions (backward compatibility)
+    }
+
+    return `${maxVersion + 1}.0`;
+  } catch (error) {
+    console.error('Failed to get next version number:', error);
+    // Fallback to 1.0 if there's an error
+    return "1.0";
+  }
+}
+
 /**
  * Creates a new version of membership terms and marks it as current.
  *
@@ -109,10 +164,12 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   }
 
   const adminEmail = getAdminEmail(event);
-  const versionId = randomUUID();
   const now = new Date().toISOString();
 
   try {
+    // Get next sequential version number
+    const versionId = await getNextVersionNumber();
+
     // Generate PDF
     const pdfBuffer = await generateTermsPDF(terms_text, versionId);
 

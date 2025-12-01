@@ -1,5 +1,5 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
-import { DynamoDBClient, PutItemCommand, GetItemCommand } from '@aws-sdk/client-dynamodb';
+import { DynamoDBClient, PutItemCommand, GetItemCommand, ScanCommand } from '@aws-sdk/client-dynamodb';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import {
   ok,
@@ -7,12 +7,14 @@ import {
   internalError,
   parseJsonBody,
   getRequestId,
-  putAudit
+  putAudit,
+  forbidden
 } from '../../common/util';
 
 const ddb = new DynamoDBClient({});
 const TABLE_SUBSCRIPTIONS = process.env.TABLE_SUBSCRIPTIONS!;
 const TABLE_SUBSCRIPTION_TYPES = process.env.TABLE_SUBSCRIPTION_TYPES!;
+const TABLE_REGISTRATIONS = process.env.TABLE_REGISTRATIONS!;
 
 /**
  * Create or update a subscription for the authenticated user
@@ -30,6 +32,31 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
 
     if (!userGuid) {
       return badRequest('User GUID not found in token');
+    }
+
+    if (!email) {
+      return badRequest('Email not found in token');
+    }
+
+    // Validate user has accepted membership terms
+    const registrationsResult = await ddb.send(new ScanCommand({
+      TableName: TABLE_REGISTRATIONS,
+      FilterExpression: 'email = :email',
+      ExpressionAttributeValues: marshall({
+        ':email': email,
+      }),
+      Limit: 1,
+    }));
+
+    if (!registrationsResult.Items || registrationsResult.Items.length === 0) {
+      return forbidden('No registration found. Please contact support.');
+    }
+
+    const registration = unmarshall(registrationsResult.Items[0]);
+
+    // Only allow subscriptions for approved members
+    if (registration.membership_status !== 'approved') {
+      return forbidden('You must accept the membership terms before creating a subscription.');
     }
 
     // Parse request body

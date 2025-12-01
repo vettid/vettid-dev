@@ -28,20 +28,37 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
   // Check if user exists in Cognito and delete if found
   let userExists = true;
+  let cognitoDeleteSuccess = false;
   try {
     await cognito.send(new AdminGetUserCommand({
       UserPoolId: USER_POOL_ID,
       Username: reg.email
     }));
-  } catch {
-    userExists = false;
+  } catch (error: any) {
+    if (error.name === 'UserNotFoundException') {
+      userExists = false;
+    } else {
+      // Some other error checking user existence
+      console.error('Error checking Cognito user existence:', error);
+      throw error; // Re-throw unexpected errors
+    }
   }
 
   if (userExists) {
-    await cognito.send(new AdminDeleteUserCommand({
-      UserPoolId: USER_POOL_ID,
-      Username: reg.email
-    }));
+    try {
+      await cognito.send(new AdminDeleteUserCommand({
+        UserPoolId: USER_POOL_ID,
+        Username: reg.email
+      }));
+      cognitoDeleteSuccess = true;
+      console.log(`Successfully deleted Cognito user: ${reg.email}`);
+    } catch (error: any) {
+      console.error(`CRITICAL: Failed to delete Cognito user ${reg.email}:`, error);
+      // Don't throw - we still want to delete the DynamoDB record
+      // But we'll include this in the response
+    }
+  } else {
+    cognitoDeleteSuccess = true; // User didn't exist, so nothing to delete
   }
 
   // Permanently delete the registration record from DynamoDB
@@ -68,8 +85,17 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     id,
     email: reg.email,
     deleted_by: adminEmail,
-    previous_status: reg.status
+    previous_status: reg.status,
+    cognito_deleted: cognitoDeleteSuccess
   });
 
-  return ok({ message: "user permanently deleted" });
+  if (!cognitoDeleteSuccess) {
+    return ok({
+      message: "User record deleted, but FAILED to delete Cognito account. User may still be able to sign in.",
+      warning: true,
+      cognito_delete_failed: true
+    });
+  }
+
+  return ok({ message: "User permanently deleted" });
 };

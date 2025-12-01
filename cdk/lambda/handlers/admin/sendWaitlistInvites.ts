@@ -44,6 +44,7 @@ async function triggerSESVerification(email: string): Promise<boolean> {
 
 type SendInvitesRequest = {
   waitlist_ids: string[];
+  custom_message?: string; // Optional custom message to include in email
 };
 
 /**
@@ -102,7 +103,6 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
           ExpressionAttributeValues: marshall({
             ':wid': waitlistId,
           }),
-          Limit: 1,
         }));
 
         if (!waitlistResult.Items || waitlistResult.Items.length === 0) {
@@ -118,6 +118,9 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
         email = waitlistEntry.email || 'unknown';
         const first_name = waitlistEntry.first_name || '';
         const last_name = waitlistEntry.last_name || '';
+
+        // Get custom message from request payload
+        const customMessage = payload.custom_message?.trim() || '';
 
         // Generate invite code (8 characters, alphanumeric)
         const inviteCode = randomBytes(4).toString('hex').toUpperCase();
@@ -137,6 +140,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
             created_by: adminEmail,
             created_at: now.toISOString(),
             waitlist_id: waitlistId,
+            sent_to: email, // Store email for display in admin portal
             auto_approve: true, // Waitlist invitees are auto-approved
           }),
         }));
@@ -163,6 +167,22 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
           });
           continue;
         }
+
+        // HTML escape custom message for security
+        const escapeHtml = (str: string) => {
+          return str
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+        };
+
+        const customMessageHtml = customMessage
+          ? `<div style="background:#f0f9ff;border-left:4px solid #0ea5e9;padding:16px;margin:20px 0;border-radius:4px;">
+               <p style="margin:0;color:#0c4a6e;font-style:italic;">${escapeHtml(customMessage)}</p>
+             </div>`
+          : '';
 
         // Send email with invite code
         const registerUrl = `https://vettid.dev/register`;
@@ -203,6 +223,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     <div class="content">
       <p>Hi ${first_name} ${last_name},</p>
       <p>Great news! You've been selected from our waitlist to join VettID. We're excited to have you as part of our community.</p>
+      ${customMessageHtml}
       <p>Here's your personal invitation code:</p>
       <div class="code-box">
         <div class="code">${inviteCode}</div>
@@ -231,7 +252,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
                 `,
               },
               Text: {
-                Data: `Hi ${first_name} ${last_name},\n\nYou've been selected from our waitlist to join VettID!\n\nYour invitation code: ${inviteCode}\n\nThis code is valid for 7 days and can be used once.\n\nRegister at: ${registerUrl}\n\nWelcome to VettID!`,
+                Data: `Hi ${first_name} ${last_name},\n\nYou've been selected from our waitlist to join VettID!\n${customMessage ? `\n${customMessage}\n` : ''}\nYour invitation code: ${inviteCode}\n\nThis code is valid for 7 days and can be used once.\n\nRegister at: ${registerUrl}\n\nWelcome to VettID!`,
               },
             },
           },

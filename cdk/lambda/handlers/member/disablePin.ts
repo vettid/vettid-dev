@@ -65,8 +65,9 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       ExpressionAttributeValues: marshall({
         ":email": userEmail,
         ":approved": "approved"
-      }),
-      Limit: 1
+      })
+      // Note: Removed Limit:1 because DynamoDB applies filter AFTER reading Limit items,
+      // so Limit:1 with FilterExpression could read 1 non-matching item and return empty
     }));
 
     if (!queryResult.Items || queryResult.Items.length === 0) {

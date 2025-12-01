@@ -57,6 +57,7 @@ export const handler: CreateAuthChallengeTriggerHandler = async (event) => {
   // Check if user has PIN enabled FIRST (needed for all code paths)
   let pinRequired = false;
   try {
+    // NOTE: Do NOT use Limit with FilterExpression - Limit applies BEFORE filtering
     const regQuery = await ddb.send(new ScanCommand({
       TableName: REGISTRATIONS_TABLE,
       FilterExpression: "email = :email AND #s = :approved",
@@ -66,8 +67,7 @@ export const handler: CreateAuthChallengeTriggerHandler = async (event) => {
       ExpressionAttributeValues: marshall({
         ":email": email,
         ":approved": "approved"
-      }),
-      Limit: 1
+      })
     }));
 
     if (regQuery.Items && regQuery.Items.length > 0) {

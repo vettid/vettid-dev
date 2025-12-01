@@ -36,18 +36,19 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       ExpressionAttributeValues: marshall({
         ':email': email,
       }),
-      Limit: 1,
     }));
 
+    // If no registration found, return empty votes (valid for new users)
     if (!registrationsResult.Items || registrationsResult.Items.length === 0) {
-      return badRequest('User registration not found');
+      return ok({ votes: [] });
     }
 
     const registration = unmarshall(registrationsResult.Items[0]);
     const user_guid = registration.user_guid;
 
+    // If no user_guid, return empty votes
     if (!user_guid) {
-      return badRequest('User GUID not found');
+      return ok({ votes: [] });
     }
 
     // Scan votes by user_guid

@@ -36,7 +36,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       };
     });
 
-    return ok(admins, requestOrigin);
+    return ok({ admins }, requestOrigin);
   } catch (error) {
     console.error('Error listing admin users:', error);
     return internalError('Failed to list admin users', requestOrigin);
