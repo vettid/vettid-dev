@@ -144,6 +144,30 @@
         width: 40px !important;
         height: 40px !important;
       }
+
+      /* Fix subscription cards on mobile - stack vertically */
+      #subscriptionTypesContainer > div > div {
+        flex-direction: column !important;
+        align-items: stretch !important;
+        gap: 12px !important;
+        padding: 16px !important;
+      }
+      #subscriptionTypesContainer > div > div > div:last-of-type {
+        text-align: left !important;
+        min-width: unset !important;
+      }
+      #subscriptionTypesContainer .subscription-btn {
+        width: 100% !important;
+        padding: 14px 20px !important;
+      }
+
+      /* Add bottom padding to all tab content for mobile visibility */
+      .tab-content {
+        padding-bottom: 40px !important;
+      }
+      .wrap {
+        padding-bottom: 60px !important;
+      }
     }
 
     /* User dropdown styles */
