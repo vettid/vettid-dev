@@ -146,19 +146,45 @@
       }
 
       /* Fix subscription cards on mobile - stack vertically */
-      #subscriptionTypesContainer > div > div {
+      #subscriptionOptionsSection > div > div {
         flex-direction: column !important;
         align-items: stretch !important;
-        gap: 12px !important;
+        gap: 16px !important;
         padding: 16px !important;
+        text-align: center !important;
       }
-      #subscriptionTypesContainer > div > div > div:last-of-type {
-        text-align: left !important;
+      /* Name/description section */
+      #subscriptionOptionsSection > div > div > div:first-of-type {
+        text-align: center !important;
+        order: 1;
+      }
+      #subscriptionOptionsSection > div > div > div:first-of-type h4 {
+        font-size: 1.3rem !important;
+        margin-bottom: 8px !important;
+      }
+      #subscriptionOptionsSection > div > div > div:first-of-type p {
+        margin-bottom: 12px !important;
+      }
+      /* Price section */
+      #subscriptionOptionsSection > div > div > div:nth-of-type(2) {
+        text-align: center !important;
         min-width: unset !important;
+        order: 2;
+        padding: 12px 0;
+        border-top: 1px solid #333;
+        border-bottom: 1px solid #333;
       }
-      #subscriptionTypesContainer .subscription-btn {
+      /* Subscribe button */
+      #subscriptionOptionsSection .subscription-btn {
         width: 100% !important;
-        padding: 14px 20px !important;
+        padding: 16px 24px !important;
+        font-size: 1rem !important;
+        order: 3;
+      }
+      /* Popular badge positioning */
+      #subscriptionOptionsSection > div > div > div[style*="position:absolute"] {
+        left: 50% !important;
+        transform: translateX(-50%) !important;
       }
 
       /* Add bottom padding to all tab content for mobile visibility */
