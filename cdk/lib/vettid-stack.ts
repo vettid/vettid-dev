@@ -1201,6 +1201,12 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       integration: new integrations.HttpLambdaIntegration('ChangePasswordInt', adminStack.changePassword),
       authorizer: this.adminAuthorizer,
     });
+    this.httpApi.addRoutes({
+      path: '/admin/mfa',
+      methods: [apigw.HttpMethod.GET, apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('SetupMfaInt', adminStack.setupMfa),
+      authorizer: this.adminAuthorizer,
+    });
 
     // Membership request routes
     this.httpApi.addRoutes({

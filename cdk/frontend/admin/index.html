@@ -293,6 +293,42 @@
     </div>
   </div>
 
+  <!-- MFA Status Modal -->
+  <div id="mfaModal" class="modal-overlay">
+    <div class="modal" style="max-width:450px;">
+      <div class="modal-header">
+        <div class="modal-title">Two-Factor Authentication</div>
+        <button class="modal-close" id="closeMfaModal">×</button>
+      </div>
+      <div class="modal-body">
+        <!-- MFA enabled state -->
+        <div id="mfaEnabled" style="display:none;">
+          <div style="text-align:center;padding:20px;">
+            <div style="font-size:3rem;margin-bottom:16px;">✓</div>
+            <p style="color:#10b981;font-weight:600;font-size:1.1rem;margin-bottom:8px;">MFA is enabled</p>
+            <p style="color:var(--gray);font-size:0.9rem;">Your account is protected with two-factor authentication.</p>
+          </div>
+        </div>
+        <!-- MFA not enabled state -->
+        <div id="mfaNotEnabled" style="display:none;">
+          <div style="text-align:center;padding:20px;">
+            <div style="font-size:3rem;margin-bottom:16px;">🔐</div>
+            <p style="font-weight:600;font-size:1.1rem;margin-bottom:12px;">MFA not configured</p>
+            <p style="color:var(--gray);font-size:0.9rem;margin-bottom:16px;">
+              To set up MFA, please sign out and sign back in. You will be prompted to configure your authenticator app during the sign-in process.
+            </p>
+            <button class="btn" id="mfaSignOutBtn" style="width:100%;">Sign Out to Set Up MFA</button>
+          </div>
+        </div>
+        <!-- Loading state -->
+        <div id="mfaLoading" style="text-align:center;padding:40px;">
+          <p style="color:var(--gray);">Checking MFA status...</p>
+        </div>
+        <div id="mfaError" style="display:none;color:#ef4444;background:var(--bg-error-bg);padding:12px;border-radius:4px;margin-top:12px;font-size:0.9rem;"></div>
+      </div>
+    </div>
+  </div>
+
   <!-- Custom Invite Message Modal -->
   <div id="customMessageModal" class="modal-overlay">
     <div class="modal">
@@ -339,6 +375,10 @@
         <div id="userDropdownMenu" class="user-dropdown-menu">
           <div class="user-dropdown-item" id="changePasswordBtn">
             Change Password
+          </div>
+          <div class="user-dropdown-item" id="setupMfaBtn" style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+            <span>Set up MFA</span>
+            <span id="mfaStatusIcon" style="font-size:0.9rem;"></span>
           </div>
           <div class="user-dropdown-item" id="themeToggle" style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
             <span>Theme</span>
@@ -3313,6 +3353,91 @@ async function changePassword(oldPassword,newPassword){
 
   return res.json();
 }
+
+// ===== MFA Status Handlers =====
+const mfaModal = document.getElementById('mfaModal');
+const setupMfaBtn = document.getElementById('setupMfaBtn');
+const closeMfaModal = document.getElementById('closeMfaModal');
+const mfaStatusIcon = document.getElementById('mfaStatusIcon');
+
+async function checkMfaStatus() {
+  try {
+    const token = idToken();
+    if (!token) return false;
+    const res = await fetch(API_URL + '/admin/mfa', {
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.mfa_enabled) {
+        mfaStatusIcon.textContent = '✓';
+        mfaStatusIcon.style.color = '#10b981';
+      } else {
+        mfaStatusIcon.textContent = '';
+      }
+      return data.mfa_enabled;
+    }
+  } catch (e) {
+    console.error('Failed to check MFA status:', e);
+  }
+  return false;
+}
+
+async function showMfaStatus() {
+  const mfaEnabled = document.getElementById('mfaEnabled');
+  const mfaNotEnabled = document.getElementById('mfaNotEnabled');
+  const mfaLoading = document.getElementById('mfaLoading');
+  const mfaError = document.getElementById('mfaError');
+
+  mfaEnabled.style.display = 'none';
+  mfaNotEnabled.style.display = 'none';
+  mfaLoading.style.display = 'block';
+  mfaError.style.display = 'none';
+
+  try {
+    const isEnabled = await checkMfaStatus();
+    mfaLoading.style.display = 'none';
+    if (isEnabled) {
+      mfaEnabled.style.display = 'block';
+    } else {
+      mfaNotEnabled.style.display = 'block';
+    }
+  } catch (e) {
+    mfaLoading.style.display = 'none';
+    mfaError.textContent = 'Failed to check MFA status';
+    mfaError.style.display = 'block';
+  }
+}
+
+if (setupMfaBtn) {
+  setupMfaBtn.onclick = () => {
+    mfaModal.classList.add('active');
+    userDropdownMenu.classList.remove('active');
+    showMfaStatus();
+  };
+}
+
+if (closeMfaModal) {
+  closeMfaModal.onclick = () => {
+    mfaModal.classList.remove('active');
+  };
+}
+
+document.getElementById('mfaSignOutBtn').onclick = () => {
+  mfaModal.classList.remove('active');
+  signOut();
+};
+
+mfaModal.onclick = (e) => {
+  if (e.target === mfaModal) {
+    mfaModal.classList.remove('active');
+  }
+};
+
+// Check MFA status on page load
+setTimeout(() => {
+  if (signedIn()) checkMfaStatus();
+}, 1000);
 
 document.getElementById('selectAllInvites').onchange=(e)=>{
   const checked=e.target.checked;

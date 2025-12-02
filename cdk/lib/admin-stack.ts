@@ -44,6 +44,7 @@ export class AdminStack extends cdk.Stack {
   public readonly updateAdminType!: lambdaNode.NodejsFunction;
   public readonly resetAdminPassword!: lambdaNode.NodejsFunction;
   public readonly changePassword!: lambdaNode.NodejsFunction;
+  public readonly setupMfa!: lambdaNode.NodejsFunction;
   public readonly listMembershipRequests!: lambdaNode.NodejsFunction;
   public readonly approveMembership!: lambdaNode.NodejsFunction;
   public readonly denyMembership!: lambdaNode.NodejsFunction;
@@ -271,6 +272,16 @@ export class AdminStack extends cdk.Stack {
 
     const changePassword = new lambdaNode.NodejsFunction(this, 'ChangePasswordFn', {
       entry: 'lambda/handlers/admin/changePassword.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+        ADMIN_USER_POOL_ID: adminUserPool.userPoolId,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const setupMfa = new lambdaNode.NodejsFunction(this, 'SetupMfaFn', {
+      entry: 'lambda/handlers/admin/setupMfa.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
       environment: {
         ...defaultEnv,
@@ -711,7 +722,7 @@ export class AdminStack extends cdk.Stack {
       resources: [memberUserPool.userPoolArn],
     }));
 
-    [listAdmins, addAdmin, removeAdmin, disableAdmin, enableAdmin, updateAdminType, resetAdminPassword].forEach(fn => {
+    [listAdmins, addAdmin, removeAdmin, disableAdmin, enableAdmin, updateAdminType, resetAdminPassword, setupMfa].forEach(fn => {
       fn.addToRolePolicy(new iam.PolicyStatement({
         actions: [
           'cognito-idp:AdminCreateUser',
@@ -786,6 +797,7 @@ export class AdminStack extends cdk.Stack {
     this.updateAdminType = updateAdminType;
     this.resetAdminPassword = resetAdminPassword;
     this.changePassword = changePassword;
+    this.setupMfa = setupMfa;
     this.listMembershipRequests = listMembershipRequests;
     this.approveMembership = approveMembership;
     this.denyMembership = denyMembership;
