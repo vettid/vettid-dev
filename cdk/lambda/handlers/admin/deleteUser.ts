@@ -17,6 +17,7 @@ import {
   validateOrigin,
   checkRateLimit,
   hashIdentifier,
+  hashForLog,
   tooManyRequests,
   validatePathParam,
   ValidationError
@@ -77,11 +78,11 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
           Username: reg.email
         }));
         deletedData.push('cognito_user');
-        console.log(`Deleted Cognito user: ${reg.email}`);
+        console.log(`Deleted Cognito user: ${hashForLog(reg.email)}`);
       } catch (err: any) {
         // If user doesn't exist, that's fine (already deleted)
         if (err.name !== 'UserNotFoundException') {
-          console.error(`Error deleting Cognito user ${reg.email}:`, err);
+          console.error(`Error deleting Cognito user ${hashForLog(reg.email)}:`, err);
           // CRITICAL: Do NOT continue with DynamoDB cleanup if Cognito deletion fails
           // This prevents orphaned Cognito users that can still login but have no registration record
           await putAudit({
@@ -118,10 +119,10 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
           }));
           deletedData.push('waitlist_entry');
         }
-        console.log(`Deleted ${waitlistEntries.Items.length} waitlist entries for ${reg.email}`);
+        console.log(`Deleted ${waitlistEntries.Items.length} waitlist entries for ${hashForLog(reg.email)}`);
       }
     } catch (err: any) {
-      console.error(`Error deleting waitlist entries for ${reg.email}:`, err);
+      console.error(`Error deleting waitlist entries for ${hashForLog(reg.email)}:`, err);
       // Continue with other cleanup
     }
 

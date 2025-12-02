@@ -454,6 +454,7 @@ export class InfrastructureStack extends cdk.Stack {
     new cognito.CfnUserPoolGroup(this, 'MemberGroup', { userPoolId: memberUserPool.userPoolId, groupName: 'member' });
 
     // Admin user pool - for VettID administrators accessing admin.vettid.dev
+    // MFA is REQUIRED for all admin users (TOTP only, no SMS)
     const adminUserPool = new cognito.UserPool(this, 'AdminUserPool', {
       selfSignUpEnabled: false,
       signInAliases: { email: true },
@@ -463,6 +464,12 @@ export class InfrastructureStack extends cdk.Stack {
         requireLowercase: true,
         requireUppercase: true,
         requireSymbols: true,
+      },
+      // Require MFA for all admin users - critical security control
+      mfa: cognito.Mfa.REQUIRED,
+      mfaSecondFactor: {
+        sms: false,  // SMS is less secure and susceptible to SIM swapping attacks
+        otp: true,   // TOTP apps like Google Authenticator, Authy, 1Password
       },
       email: cognito.UserPoolEmail.withSES({
         fromEmail: 'no-reply@auth.vettid.dev',

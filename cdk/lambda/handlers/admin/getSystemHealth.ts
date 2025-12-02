@@ -1,5 +1,5 @@
 import { APIGatewayProxyHandlerV2 } from "aws-lambda";
-import { ok, requireAdminGroup, putAudit } from "../../common/util";
+import { ok, internalError, requireAdminGroup, putAudit } from "../../common/util";
 import { SESClient, GetSendQuotaCommand } from "@aws-sdk/client-ses";
 import { DynamoDBClient, DescribeTableCommand } from "@aws-sdk/client-dynamodb";
 import { CloudWatchClient, GetMetricStatisticsCommand } from "@aws-sdk/client-cloudwatch";
@@ -130,17 +130,6 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       error: error instanceof Error ? error.message : String(error)
     });
 
-    return {
-      statusCode: 500,
-      headers: {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Headers": "Content-Type,Authorization",
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        error: 'Failed to fetch system health',
-        message: error instanceof Error ? error.message : String(error)
-      })
-    };
+    return internalError('Failed to fetch system health');
   }
 };

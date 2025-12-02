@@ -2136,7 +2136,7 @@ async function loadUsers(resetPage=true){
     // Render cards for mobile view
     renderUsersCards(page);
   }catch(e){
-    tbody.innerHTML=`<tr><td colspan="4" class="muted">Error: ${e.message||e}</td></tr>`;
+    tbody.innerHTML=`<tr><td colspan="4" class="muted">Error: ${escapeHtml(e.message||String(e))}</td></tr>`;
   }
 }
 
@@ -2447,7 +2447,7 @@ async function loadInvites(resetPage=true){
     renderInvites();
   }catch(e){
     showToast('Failed to load invites: '+(e.message||e),'error');
-    tbody.innerHTML=`<tr><td colspan="8" class="muted">${e.message||e}</td></tr>`;
+    tbody.innerHTML=`<tr><td colspan="8" class="muted">${escapeHtml(e.message||String(e))}</td></tr>`;
   }
 }
 
@@ -2688,7 +2688,7 @@ async function loadAdmins(resetPage=true){
     renderAdminsCards(page);
   }catch(e){
     showToast('Failed to load admins: '+(e.message||e),'error');
-    tbody.innerHTML=`<tr><td colspan="8" class="muted">${e.message||e}</td></tr>`;
+    tbody.innerHTML=`<tr><td colspan="8" class="muted">${escapeHtml(e.message||String(e))}</td></tr>`;
   }
 }
 
@@ -4269,7 +4269,7 @@ async function loadAllSubscriptions(resetPage=true){
     renderSubscriptions();
   }catch(e){
     showToast('Failed to load subscriptions: '+(e.message||e),'error');
-    tbody.innerHTML=`<tr><td colspan="7" class="muted">${e.message||e}</td></tr>`;
+    tbody.innerHTML=`<tr><td colspan="7" class="muted">${escapeHtml(e.message||String(e))}</td></tr>`;
   }
 }
 

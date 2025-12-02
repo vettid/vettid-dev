@@ -1,5 +1,5 @@
 import { APIGatewayProxyHandlerV2 } from "aws-lambda";
-import { ddb, TABLES, ok, badRequest, putAudit, requireAdminGroup, validatePathParam, ValidationError } from "../../common/util";
+import { ddb, TABLES, ok, badRequest, putAudit, requireAdminGroup, validatePathParam, ValidationError, hashForLog } from "../../common/util";
 import { DeleteItemCommand, GetItemCommand } from "@aws-sdk/client-dynamodb";
 import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
 import { CognitoIdentityProviderClient, AdminDeleteUserCommand, AdminGetUserCommand } from "@aws-sdk/client-cognito-identity-provider";
@@ -58,9 +58,9 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         Username: reg.email
       }));
       cognitoDeleteSuccess = true;
-      console.log(`Successfully deleted Cognito user: ${reg.email}`);
+      console.log(`Successfully deleted Cognito user: ${hashForLog(reg.email)}`);
     } catch (error: any) {
-      console.error(`CRITICAL: Failed to delete Cognito user ${reg.email}:`, error);
+      console.error(`CRITICAL: Failed to delete Cognito user ${hashForLog(reg.email)}:`, error);
       // Don't throw - we still want to delete the DynamoDB record
       // But we'll include this in the response
     }

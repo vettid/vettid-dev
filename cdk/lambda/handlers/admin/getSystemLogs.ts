@@ -1,5 +1,5 @@
 import { APIGatewayProxyHandlerV2 } from "aws-lambda";
-import { ok, requireAdminGroup, putAudit } from "../../common/util";
+import { ok, internalError, requireAdminGroup, putAudit } from "../../common/util";
 import { CloudWatchLogsClient, DescribeLogGroupsCommand, FilterLogEventsCommand, LogGroup } from "@aws-sdk/client-cloudwatch-logs";
 
 const logs = new CloudWatchLogsClient({});
@@ -123,17 +123,6 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       error: error instanceof Error ? error.message : String(error)
     });
 
-    return {
-      statusCode: 500,
-      headers: {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Headers": "Content-Type,Authorization",
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        error: 'Failed to fetch system logs',
-        message: error instanceof Error ? error.message : String(error)
-      })
-    };
+    return internalError('Failed to fetch system logs');
   }
 };

@@ -34,6 +34,16 @@ export class ValidationError extends Error {
   }
 }
 
+/**
+ * Hash identifier for safe logging (no PII in logs)
+ * Use this to log emails, user IDs, etc. without exposing sensitive data
+ * @param value - The sensitive value to hash
+ * @returns First 12 characters of SHA-256 hash
+ */
+export function hashForLog(value: string): string {
+  return createHash('sha256').update(value.toLowerCase().trim()).digest('hex').substring(0, 12);
+}
+
 // ============================================
 // Date Utility Functions
 // ============================================
