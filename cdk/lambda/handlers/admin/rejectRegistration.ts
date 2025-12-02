@@ -1,5 +1,5 @@
 import { APIGatewayProxyHandlerV2 } from "aws-lambda";
-import { ddb, TABLES, ok, badRequest, putAudit, requireAdminGroup, validateOrigin, sanitizeInput, getRequestId } from "../../common/util";
+import { ddb, TABLES, ok, badRequest, putAudit, requireAdminGroup, validateOrigin, sanitizeInput, getRequestId, validatePathParam, ValidationError } from "../../common/util";
 import { UpdateItemCommand, GetItemCommand, QueryCommand } from "@aws-sdk/client-dynamodb";
 import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
 import { CognitoIdentityProviderClient, AdminRemoveUserFromGroupCommand, AdminGetUserCommand, AdminListGroupsForUserCommand } from "@aws-sdk/client-cognito-identity-provider";
@@ -16,8 +16,15 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   const csrfError = validateOrigin(event);
   if (csrfError) return csrfError;
 
-  const id = event.pathParameters?.registration_id;
-  if (!id) return badRequest("registration_id required");
+  let id: string;
+  try {
+    id = validatePathParam(event.pathParameters?.registration_id, "registration_id");
+  } catch (error) {
+    if (error instanceof ValidationError) {
+      return badRequest(error.message);
+    }
+    return badRequest("registration_id required");
+  }
 
   const requestId = getRequestId(event);
 

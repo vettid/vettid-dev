@@ -1,4 +1,4 @@
-import { CloudFormationCustomResourceEvent, CloudFormationCustomResourceResponse } from 'aws-lambda';
+import { CloudFormationCustomResourceEvent } from 'aws-lambda';
 import { CognitoIdentityProviderClient, SetUICustomizationCommand } from '@aws-sdk/client-cognito-identity-provider';
 import * as https from 'https';
 import * as url from 'url';
@@ -32,8 +32,6 @@ async function sendResponse(
     Data: data,
   });
 
-  console.log('Response body:', responseBody);
-
   const parsedUrl = url.parse(event.ResponseURL);
   const options = {
     hostname: parsedUrl.hostname,
@@ -48,7 +46,6 @@ async function sendResponse(
 
   return new Promise((resolve, reject) => {
     const request = https.request(options, (response) => {
-      console.log('Status code:', response.statusCode);
       resolve();
     });
 
@@ -71,28 +68,21 @@ async function applyUICustomization(
   imageBytes: Buffer,
   css: string
 ): Promise<void> {
-  console.log(`Applying UI customization to pool ${userPoolId}, client ${clientId}`);
-
   await cognito.send(new SetUICustomizationCommand({
     UserPoolId: userPoolId,
     ClientId: clientId,
     ImageFile: imageBytes,
     CSS: css,
   }));
-
-  console.log(`Successfully applied UI customization to ${userPoolId}/${clientId}`);
 }
 
 export const handler = async (event: CloudFormationCustomResourceEvent): Promise<void> => {
-  console.log('Event:', JSON.stringify(event, null, 2));
-
   try {
     const physicalId = ('PhysicalResourceId' in event)
       ? (event as any).PhysicalResourceId
       : event.RequestId;
 
     if (event.RequestType === 'Delete') {
-      console.log('Delete event - no action needed (UI customization will remain)');
       await sendResponse(event, 'SUCCESS', {}, physicalId);
       return;
     }
@@ -102,14 +92,8 @@ export const handler = async (event: CloudFormationCustomResourceEvent): Promise
       const logoPath = join(__dirname, 'logo.jpg');
       const cssPath = join(__dirname, 'cognito-ui.css');
 
-      console.log('Reading logo from:', logoPath);
-      console.log('Reading CSS from:', cssPath);
-
       const logoBytes = readFileSync(logoPath);
       const css = readFileSync(cssPath, 'utf-8');
-
-      console.log(`Logo size: ${logoBytes.length} bytes`);
-      console.log(`CSS size: ${css.length} bytes`);
 
       // Apply to admin user pool
       await applyUICustomization(ADMIN_USER_POOL_ID, ADMIN_CLIENT_ID, logoBytes, css);

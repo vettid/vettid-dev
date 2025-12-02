@@ -89,6 +89,13 @@ export class InfrastructureStack extends cdk.Stack {
       projectionType: dynamodb.ProjectionType.ALL,
     });
 
+    // Email index for efficient lookups by email (avoids full table scans)
+    registrations.addGlobalSecondaryIndex({
+      indexName: 'email-index',
+      partitionKey: { name: 'email', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
     // Audit log table
     const audit = new dynamodb.Table(this, 'Audit', {
       partitionKey: { name: 'id', type: dynamodb.AttributeType.STRING },
@@ -142,6 +149,13 @@ export class InfrastructureStack extends cdk.Stack {
     });
 
     // Subscriptions table
+    // DESIGN DECISION: Single-subscription-per-user model
+    // - PK is user_guid (not subscription_id) to enforce one active subscription per user
+    // - Creating a new subscription overwrites the existing one via PutItem
+    // - Previous subscriptions are preserved in the Audit table with action='subscription_replaced'
+    // - This design simplifies logic and avoids complex multi-subscription management
+    // - To support multiple subscriptions per user in the future, change PK to subscription_id
+    //   and add a GSI on user_guid
     const subscriptions = new dynamodb.Table(this, 'Subscriptions', {
       partitionKey: { name: 'user_guid', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,

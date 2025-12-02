@@ -1,6 +1,6 @@
 import { APIGatewayProxyHandlerV2 } from "aws-lambda";
 import { ddb, ok, badRequest, putAudit, requireAdminGroup } from "../../common/util";
-import { DeleteItemCommand, BatchWriteItemCommand, ScanCommand } from "@aws-sdk/client-dynamodb";
+import { DeleteItemCommand, ScanCommand } from "@aws-sdk/client-dynamodb";
 import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
 
 const TABLE_WAITLIST = process.env.TABLE_WAITLIST!;
@@ -56,9 +56,10 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     }
   }
 
-  // Audit log
+  // Audit log (email field is indexed in GSI for lookups)
   await putAudit({
     type: "waitlist_entries_deleted",
+    email: adminEmail, // For GSI lookup by admin email
     deleted_count: deleted.length,
     failed_count: failed.length,
     deleted_by: adminEmail,

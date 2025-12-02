@@ -1,5 +1,5 @@
 import { APIGatewayProxyHandlerV2 } from "aws-lambda";
-import { ddb, TABLES, ok, requireAdminGroup, putAudit, checkRateLimit, hashIdentifier, tooManyRequests } from "../../common/util";
+import { ddb, TABLES, ok, requireAdminGroup, putAudit } from "../../common/util";
 import { QueryCommand, ScanCommand } from "@aws-sdk/client-dynamodb";
 import { unmarshall } from "@aws-sdk/util-dynamodb";
 import { CognitoIdentityProviderClient, AdminGetUserCommand, AdminListGroupsForUserCommand } from "@aws-sdk/client-cognito-identity-provider";

@@ -1,5 +1,5 @@
 import { APIGatewayProxyHandlerV2 } from "aws-lambda";
-import { ddb, TABLES, ok, badRequest, putAudit, requireAdminGroup } from "../../common/util";
+import { ddb, TABLES, ok, badRequest, putAudit, requireAdminGroup, validatePathParam, ValidationError } from "../../common/util";
 import { DeleteItemCommand, GetItemCommand } from "@aws-sdk/client-dynamodb";
 import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
 import { CognitoIdentityProviderClient, AdminDeleteUserCommand, AdminGetUserCommand } from "@aws-sdk/client-cognito-identity-provider";
@@ -13,8 +13,15 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   const authError = requireAdminGroup(event);
   if (authError) return authError;
 
-  const id = event.pathParameters?.user_id;
-  if (!id) return badRequest("user_id required");
+  let id: string;
+  try {
+    id = validatePathParam(event.pathParameters?.user_id, "user_id");
+  } catch (error) {
+    if (error instanceof ValidationError) {
+      return badRequest(error.message);
+    }
+    return badRequest("user_id required");
+  }
 
   const regRes = await ddb.send(new GetItemCommand({
     TableName: TABLES.registrations,
@@ -74,9 +81,8 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         TableName: TABLE_SUBSCRIPTIONS,
         Key: marshall({ user_guid: reg.user_guid })
       }));
-    } catch (subError) {
-      // Log but don't fail - subscription may not exist
-      console.log('No subscription to delete or delete failed:', subError);
+    } catch {
+      // Ignore - subscription may not exist
     }
   }
 

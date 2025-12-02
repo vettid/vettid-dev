@@ -1,5 +1,10 @@
 /**
  * Shared styles for VettID application
+ *
+ * This file contains reusable styles for components shared across portals.
+ * For page-specific styles, see:
+ * - /assets/styles.css - Base styles and CSS variables for all pages
+ * - Inline <style> blocks in individual HTML files for page-specific overrides
  */
 
 /* CSS Variables */
@@ -7,6 +12,7 @@
   --color-bg: #000;
   --color-brand: #ffc125;
   --color-text: #fff;
+  --color-text-muted: #bbb; /* Improved contrast from #aaa */
   --color-border: #222;
   --color-card-bg: #111;
   --color-success: #10b981;
@@ -15,6 +21,7 @@
   --color-danger: #7c2d12;
   --color-danger-dark: #991b1b;
   --color-info: #6366f1;
+  --color-focus: #ffc125;
   --spacing-xs: 4px;
   --spacing-sm: 8px;
   --spacing-md: 16px;
@@ -30,6 +37,30 @@ body {
   background: var(--color-bg);
   color: var(--color-text);
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+/* Focus Visible - Accessibility */
+/* Apply visible focus ring for keyboard navigation */
+:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+/* Remove default focus for mouse users */
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* Ensure buttons and links have proper focus styles */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+  border-radius: 2px;
 }
 
 /* Header */
@@ -61,11 +92,17 @@ h2, h3 {
   font-weight: 700;
   cursor: pointer;
   font-size: 0.875rem;
-  transition: opacity 0.2s;
+  transition: opacity 0.2s, transform 0.2s, box-shadow 0.2s;
 }
 
 .btn:hover {
   opacity: 0.9;
+}
+
+.btn:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px rgba(255, 193, 37, 0.2);
 }
 
 .btn:disabled {
@@ -154,7 +191,9 @@ h2, h3 {
 input[type="text"],
 input[type="email"],
 input[type="number"],
-select {
+input[type="password"],
+select,
+textarea {
   background: var(--color-card-bg);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
@@ -166,7 +205,9 @@ select {
 input[type="text"]:focus,
 input[type="email"]:focus,
 input[type="number"]:focus,
-select:focus {
+input[type="password"]:focus,
+select:focus,
+textarea:focus {
   outline: 2px solid var(--color-brand);
   outline-offset: 2px;
 }
@@ -174,6 +215,12 @@ select:focus {
 label {
   font-weight: 500;
   font-size: 0.875rem;
+}
+
+/* Checkbox focus styles */
+input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
 }
 
 /* Code */
@@ -206,7 +253,7 @@ td {
 
 /* Utilities */
 .muted {
-  opacity: 0.85;
+  color: var(--color-text-muted);
 }
 
 .protected {
@@ -239,6 +286,12 @@ td {
 
 .tab:hover {
   opacity: 0.9;
+}
+
+.tab:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: -2px;
+  opacity: 1;
 }
 
 .tab.active {
@@ -279,4 +332,19 @@ td {
   background: rgba(234, 179, 8, 0.1);
   border-color: var(--color-warning);
   color: var(--color-warning);
+}
+
+/* Links */
+a {
+  color: var(--color-brand);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+a:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
 }

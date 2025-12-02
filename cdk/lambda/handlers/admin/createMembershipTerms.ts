@@ -4,7 +4,6 @@ import { PutItemCommand, UpdateItemCommand, QueryCommand, ScanCommand } from "@a
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
 import PDFDocument from "pdfkit";
-import { Readable } from "stream";
 import * as path from "path";
 import * as fs from "fs";
 
@@ -15,16 +14,6 @@ const TERMS_BUCKET = process.env.TERMS_BUCKET!;
 type CreateTermsRequest = {
   terms_text: string;
 };
-
-// Helper to convert stream to buffer
-async function streamToBuffer(stream: Readable): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    stream.on('data', (chunk) => chunks.push(chunk));
-    stream.on('error', reject);
-    stream.on('end', () => resolve(Buffer.concat(chunks)));
-  });
-}
 
 // Generate PDF with VettID logo and terms text
 async function generateTermsPDF(termsText: string, versionId: string): Promise<Buffer> {

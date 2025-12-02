@@ -1,5 +1,5 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
-import { DynamoDBClient, PutItemCommand, GetItemCommand, ScanCommand } from '@aws-sdk/client-dynamodb';
+import { DynamoDBClient, PutItemCommand, GetItemCommand, QueryCommand } from '@aws-sdk/client-dynamodb';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import {
   ok,
@@ -8,7 +8,8 @@ import {
   parseJsonBody,
   getRequestId,
   putAudit,
-  forbidden
+  forbidden,
+  requireUserClaims
 } from '../../common/util';
 
 const ddb = new DynamoDBClient({});
@@ -25,24 +26,16 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
   const requestId = getRequestId(event);
 
   try {
-    // Get user GUID from JWT claims
-    const claims = (event.requestContext as any)?.authorizer?.jwt?.claims;
-    const userGuid = claims?.['custom:user_guid'];
-    const email = claims?.email;
+    // Get user claims from JWT token
+    const claimsResult = requireUserClaims(event);
+    if ('error' in claimsResult) return claimsResult.error;
+    const { user_guid: userGuid, email } = claimsResult.claims;
 
-    if (!userGuid) {
-      return badRequest('User GUID not found in token');
-    }
-
-    if (!email) {
-      return badRequest('Email not found in token');
-    }
-
-    // Validate user has accepted membership terms
-    // Note: Remove Limit when using FilterExpression - Limit applies BEFORE filtering
-    const registrationsResult = await ddb.send(new ScanCommand({
+    // Validate user has accepted membership terms using GSI (efficient query instead of scan)
+    const registrationsResult = await ddb.send(new QueryCommand({
       TableName: TABLE_REGISTRATIONS,
-      FilterExpression: 'email = :email',
+      IndexName: 'email-index',
+      KeyConditionExpression: 'email = :email',
       ExpressionAttributeValues: marshall({
         ':email': email,
       }),
@@ -141,6 +134,34 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       subscription.has_used_trial = true;
     }
 
+    // AUDIT: Check for existing subscription and log before overwriting
+    // This preserves subscription history since the table uses single-subscription-per-user model
+    const existingSubForAudit = await ddb.send(new GetItemCommand({
+      TableName: TABLE_SUBSCRIPTIONS,
+      Key: marshall({ user_guid: userGuid }),
+    }));
+
+    if (existingSubForAudit.Item) {
+      const previousSub = unmarshall(existingSubForAudit.Item);
+      // Log the previous subscription state before overwriting
+      await putAudit({
+        type: 'subscription_replaced',
+        user_guid: userGuid,
+        email: email,
+        previous_subscription: {
+          subscription_type_id: previousSub.subscription_type_id,
+          subscription_type_name: previousSub.subscription_type_name,
+          status: previousSub.status,
+          created_at: previousSub.created_at,
+          expires_at: previousSub.expires_at,
+          amount: previousSub.amount,
+          currency: previousSub.currency,
+        },
+        new_subscription_type_id: subscription_type_id,
+        reason: 'new_subscription_created',
+      }, requestId);
+    }
+
     await ddb.send(new PutItemCommand({
       TableName: TABLE_SUBSCRIPTIONS,
       Item: marshall(subscription),
@@ -148,7 +169,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
 
     // Log to audit
     await putAudit({
-      action: 'subscription_created',
+      type: 'subscription_created',
       user_guid: userGuid,
       email: email,
       subscription_type_id: subscription_type_id,

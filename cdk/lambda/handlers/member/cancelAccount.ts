@@ -11,7 +11,8 @@ import {
   cognito,
   USER_POOL_ID,
   NotFoundError,
-  requireRegisteredOrMemberGroup
+  requireRegisteredOrMemberGroup,
+  extractUserClaims
 } from "../../common/util";
 import { UpdateItemCommand, QueryCommand, DeleteItemCommand } from "@aws-sdk/client-dynamodb";
 import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
@@ -27,11 +28,13 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   const requestId = (event.requestContext as any).requestId;
 
   try {
-    // Get user's email from JWT claims
-    const userEmail = (event.requestContext as any)?.authorizer?.jwt?.claims?.email;
-    if (!userEmail) {
+    // Get user claims from JWT token
+    const userClaims = extractUserClaims(event);
+    if (!userClaims) {
       return badRequest("Unable to identify user");
     }
+    const userEmail = userClaims.email;
+    const userGuid = userClaims.user_guid;
 
     // Find the user's registration by email using Query on status-index
     // Note: Remove Limit when using FilterExpression - Limit applies BEFORE filtering
@@ -85,16 +88,14 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     }));
 
     // Delete user's subscription if it exists
-    const userGuid = (event.requestContext as any)?.authorizer?.jwt?.claims?.['custom:user_guid'];
     if (userGuid && TABLE_SUBSCRIPTIONS) {
       try {
         await ddb.send(new DeleteItemCommand({
           TableName: TABLE_SUBSCRIPTIONS,
           Key: marshall({ user_guid: userGuid })
         }));
-      } catch (subError) {
-        // Log but don't fail - subscription may not exist
-        console.log('No subscription to delete or delete failed:', subError);
+      } catch {
+        // Ignore - subscription may not exist
       }
     }
 

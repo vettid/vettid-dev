@@ -3,13 +3,9 @@ import { Construct } from 'constructs';
 import {
   aws_lambda_nodejs as lambdaNode,
   aws_lambda as lambda,
-  aws_apigatewayv2 as apigw,
-  aws_apigatewayv2_integrations as integrations,
   aws_iam as iam,
   aws_events as events,
   aws_events_targets as targets_events,
-  aws_cognito as cognito,
-  aws_s3 as s3,
 } from 'aws-cdk-lib';
 import { InfrastructureStack } from './infrastructure-stack';
 
@@ -75,6 +71,7 @@ export class AdminStack extends cdk.Stack {
   public readonly getNotifications!: lambdaNode.NodejsFunction;
   public readonly addNotification!: lambdaNode.NodejsFunction;
   public readonly removeNotification!: lambdaNode.NodejsFunction;
+  public readonly getAuditLog!: lambdaNode.NodejsFunction;
 
   constructor(scope: Construct, id: string, props: AdminStackProps) {
     super(scope, id, props);
@@ -314,6 +311,15 @@ export class AdminStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(30),
     });
 
+    // ===== AUDIT LOG =====
+
+    const getAuditLog = new lambdaNode.NodejsFunction(this, 'GetAuditLogFn', {
+      entry: 'lambda/handlers/admin/getAuditLog.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: defaultEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
     // ===== MEMBERSHIP MANAGEMENT =====
 
     const listMembershipRequests = new lambdaNode.NodejsFunction(this, 'ListMembershipRequestsFn', {
@@ -549,6 +555,9 @@ export class AdminStack extends cdk.Stack {
     tables.invites.grantReadData(listInvites);
     tables.invites.grantReadWriteData(expireInvite);
     tables.invites.grantReadWriteData(deleteInvite);
+    tables.audit.grantReadWriteData(createInvite); // Audit logging
+    tables.audit.grantReadWriteData(expireInvite); // Audit logging
+    tables.audit.grantReadWriteData(deleteInvite); // Audit logging
 
     tables.registrations.grantReadWriteData(listRegistrations);
     tables.registrations.grantReadWriteData(approveRegistration);
@@ -564,7 +573,9 @@ export class AdminStack extends cdk.Stack {
     tables.registrations.grantReadData(listSubscriptions); // Need to join registration data
     tables.audit.grantReadData(listSubscriptions); // Need to fetch email preferences
     tables.subscriptions.grantReadWriteData(extendSubscription);
+    tables.audit.grantReadWriteData(extendSubscription); // Audit logging
     tables.subscriptions.grantReadWriteData(reactivateSubscription);
+    tables.audit.grantReadWriteData(reactivateSubscription); // Audit logging
 
     tables.subscriptionTypes.grantReadWriteData(createSubscriptionType);
     tables.subscriptionTypes.grantReadData(listSubscriptionTypes);
@@ -583,8 +594,10 @@ export class AdminStack extends cdk.Stack {
     tables.membershipTerms.grantReadData(listMembershipTerms);
 
     tables.proposals.grantReadWriteData(createProposal);
+    tables.audit.grantReadWriteData(createProposal); // Audit logging
     tables.proposals.grantReadData(listProposals);
     tables.proposals.grantReadWriteData(suspendProposal);
+    tables.audit.grantReadWriteData(suspendProposal); // Audit logging
     tables.proposals.grantReadData(getProposalVoteCounts);
 
     tables.votes.grantReadData(getProposalVoteCounts);
@@ -613,6 +626,7 @@ export class AdminStack extends cdk.Stack {
     tables.audit.grantReadWriteData(addAdmin); // Audit logging and rate limiting
     tables.audit.grantReadWriteData(resetAdminPassword); // Audit logging
     tables.audit.grantReadWriteData(changePassword); // Audit logging
+    tables.audit.grantReadData(getAuditLog); // Query audit logs
 
     // Notification preferences permissions
     tables.notificationPreferences.grantReadData(getNotifications);
@@ -648,12 +662,12 @@ export class AdminStack extends cdk.Stack {
     }));
 
     disableUser.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['cognito-idp:AdminDisableUser'],
+      actions: ['cognito-idp:AdminGetUser', 'cognito-idp:AdminDisableUser'],
       resources: [memberUserPool.userPoolArn],
     }));
 
     enableUser.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['cognito-idp:AdminEnableUser'],
+      actions: ['cognito-idp:AdminGetUser', 'cognito-idp:AdminEnableUser'],
       resources: [memberUserPool.userPoolArn],
     }));
 
@@ -662,8 +676,33 @@ export class AdminStack extends cdk.Stack {
       resources: [memberUserPool.userPoolArn],
     }));
 
+    // Grant Cognito permissions for reject registration (needs to check user and remove from groups)
+    rejectRegistration.addToRolePolicy(new iam.PolicyStatement({
+      actions: [
+        'cognito-idp:AdminGetUser',
+        'cognito-idp:AdminListGroupsForUser',
+        'cognito-idp:AdminRemoveUserFromGroup',
+      ],
+      resources: [memberUserPool.userPoolArn],
+    }));
+
+    // Grant Cognito permissions for list registrations (needs to check user status and groups)
+    listRegistrations.addToRolePolicy(new iam.PolicyStatement({
+      actions: [
+        'cognito-idp:AdminGetUser',
+        'cognito-idp:AdminListGroupsForUser',
+      ],
+      resources: [memberUserPool.userPoolArn],
+    }));
+
+    // Grant Cognito permissions for approve membership (needs to add user to member group)
+    approveMembership.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['cognito-idp:AdminAddUserToGroup'],
+      resources: [memberUserPool.userPoolArn],
+    }));
+
     permanentlyDeleteUser.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['cognito-idp:AdminDeleteUser'],
+      actions: ['cognito-idp:AdminGetUser', 'cognito-idp:AdminDeleteUser'],
       resources: [memberUserPool.userPoolArn],
     }));
 
@@ -774,6 +813,7 @@ export class AdminStack extends cdk.Stack {
     this.getNotifications = getNotifications;
     this.addNotification = addNotification;
     this.removeNotification = removeNotification;
+    this.getAuditLog = getAuditLog;
 
     // ===== SCHEDULED TASKS =====
 

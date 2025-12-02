@@ -89,7 +89,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
 
     // Log to audit
     const auditEntry: any = {
-      action: 'proposal_created',
+      type: 'proposal_created',
       email: email,
       proposal_id: proposalId,
       proposal_text: proposal_text,

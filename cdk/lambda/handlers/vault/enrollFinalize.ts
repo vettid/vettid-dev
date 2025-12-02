@@ -247,7 +247,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
 
     // Audit log
     await putAudit({
-      action: 'enrollment_completed',
+      type: 'enrollment_completed',
       user_guid: userGuid,
       session_id: body.enrollment_session_id,
       cek_version: cekVersion,

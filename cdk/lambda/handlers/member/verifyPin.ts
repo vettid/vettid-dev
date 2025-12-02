@@ -12,7 +12,7 @@ import {
   parseJsonBody,
   ValidationError
 } from "../../common/util";
-import { ScanCommand } from "@aws-sdk/client-dynamodb";
+import { QueryCommand } from "@aws-sdk/client-dynamodb";
 import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
 import { createHash } from "crypto";
 
@@ -55,10 +55,12 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       return badRequest("PIN must be 4-6 digits");
     }
 
-    // Find the user's registration by email using Scan
-    const queryResult = await ddb.send(new ScanCommand({
+    // Find the user's registration by email using GSI (efficient query instead of scan)
+    const queryResult = await ddb.send(new QueryCommand({
       TableName: TABLES.registrations,
-      FilterExpression: "email = :email AND #s = :approved",
+      IndexName: 'email-index',
+      KeyConditionExpression: "email = :email",
+      FilterExpression: "#s = :approved",
       ExpressionAttributeNames: {
         "#s": "status"
       },

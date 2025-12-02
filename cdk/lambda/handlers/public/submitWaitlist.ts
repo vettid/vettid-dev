@@ -89,12 +89,10 @@ async function sendAdminNotifications(firstName: string, lastName: string, email
     );
 
     if (!result.Items || result.Items.length === 0) {
-      console.log('No admins subscribed to waitlist notifications');
       return;
     }
 
     const adminEmails = result.Items.map(item => unmarshall(item).admin_email as string);
-    console.log(`Sending waitlist notification to ${adminEmails.length} admin(s)`);
 
     // Send email to each subscribed admin
     for (const adminEmail of adminEmails) {
@@ -132,7 +130,6 @@ async function sendAdminNotifications(firstName: string, lastName: string, email
             },
           })
         );
-        console.log(`Notification sent to ${adminEmail}`);
       } catch (emailError) {
         console.error(`Failed to send notification to ${adminEmail}:`, emailError);
       }

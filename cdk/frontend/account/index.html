@@ -285,6 +285,9 @@
 
     /* Subscription options light theme */
     [data-theme="light"] #subscriptionOptionsSection div[style*="background:#050505"] { background: var(--bg-card) !important; border-color: var(--border-color) !important; }
+    /* Current subscription details light theme */
+    html[data-theme="light"] #currentSubscriptionDetails > div { background: #ffffff !important; border-color: #d4a012 !important; }
+    html[data-theme="light"] #currentSubscriptionDetails p { color: #1f2937 !important; }
 
     /* Vault services coming soon tiles */
     [data-theme="light"] #vault-deploy div[style*="background:#050505"],
@@ -305,6 +308,14 @@
     [data-theme="light"] #enablePinModal input,
     [data-theme="light"] #updatePinModal input,
     [data-theme="light"] #pinDisableModal input { background: var(--bg-input) !important; color: var(--text-primary) !important; border-color: var(--border-color) !important; }
+    /* Modal cancel buttons in light theme */
+    html[data-theme="light"] #membershipConfirmModal button[style*="background:#333"],
+    html[data-theme="light"] #confirmModal button[style*="background:#333"],
+    html[data-theme="light"] #alertModal button[style*="background:#333"] { background: #e5e7eb !important; color: #1f2937 !important; border: 1px solid #d1d5db !important; }
+    html[data-theme="light"] #membershipConfirmModal > div { background: linear-gradient(135deg,#ffffff 0%,#f5f5f5 100%) !important; }
+    html[data-theme="light"] #membershipConfirmModal p { color: #1f2937 !important; }
+    html[data-theme="light"] #membershipConfirmModal div[style*="border-top"],
+    html[data-theme="light"] #membershipConfirmModal div[style*="border-bottom"] { border-color: #d1d5db !important; }
 
     /* Sidebar active state in light theme - make it more visible */
     [data-theme="light"] .tab.active { color: #b8860b; background: rgba(212,160,18,0.15); border-left-color: #d4a012; }
@@ -1160,15 +1171,34 @@ async function refreshTokens() {
 }
 
 // ---- Toast Notifications ----
+let toastOffset = 0;
 function showToast(message, type = 'info') {
   const toast = document.createElement('div');
+  toast.className = 'vettid-toast';
   const bgColor = type === 'error' ? '#f44336' : type === 'success' ? '#4caf50' : type === 'warning' ? '#ff9800' : '#2196f3';
-  toast.style.cssText = `position:fixed;top:20px;right:20px;padding:16px 24px;background:${bgColor};color:#fff;border-radius:4px;box-shadow:0 4px 12px rgba(0,0,0,0.5);z-index:9999;animation:slideIn 0.3s;max-width:400px;word-wrap:break-word;`;
+
+  // Calculate position based on existing toasts
+  const existingToasts = document.querySelectorAll('.vettid-toast');
+  let topOffset = 20;
+  existingToasts.forEach(t => {
+    topOffset += t.offsetHeight + 10;
+  });
+
+  toast.style.cssText = `position:fixed;top:${topOffset}px;right:20px;padding:16px 24px;background:${bgColor};color:#fff;border-radius:4px;box-shadow:0 4px 12px rgba(0,0,0,0.5);z-index:9999;animation:slideIn 0.3s;max-width:400px;word-wrap:break-word;transition:top 0.3s ease;`;
   toast.textContent = message;
   document.body.appendChild(toast);
+
   setTimeout(() => {
     toast.style.animation = 'slideOut 0.3s';
-    setTimeout(() => toast.remove(), 300);
+    setTimeout(() => {
+      toast.remove();
+      // Reposition remaining toasts
+      let newTop = 20;
+      document.querySelectorAll('.vettid-toast').forEach(t => {
+        t.style.top = newTop + 'px';
+        newTop += t.offsetHeight + 10;
+      });
+    }, 300);
   }, 4000);
 }
 
@@ -3713,7 +3743,7 @@ if (checkAuth()) {
     ]);
 
     updateTabVisibility();
-    populateGettingStartedSteps();
+    await populateGettingStartedSteps();
 
     // Show Getting Started tab unless user has clicked "Got it" button
     // This is independent of membership status - getting started has multiple steps
@@ -3728,15 +3758,21 @@ if (checkAuth()) {
   // Store the continuation function for use after PIN verification
   continueAppInitialization = runAppInitialization;
 
-  // Check if PIN verification is required before loading the app
+  // PIN verification is handled during Cognito auth flow (magic link + PIN)
+  // No need to verify again on account page load - this was causing double PIN prompts
+  // The sessionStorage 'pinVerified' flag set during auth is sufficient
+  // Wrap in async IIFE for proper top-level await support in non-module scripts
   (async () => {
-    const pinRequired = await checkAndRequirePinVerification();
-    if (!pinRequired) {
-      // No PIN verification needed, proceed with app initialization
+    try {
       await runAppInitialization();
+    } catch (error) {
+      console.error('Error during app initialization:', error);
+      // Show a user-friendly error message
+      const container = document.getElementById('gettingStartedSteps');
+      if (container) {
+        container.innerHTML = '<div style="color:#ef4444;padding:20px;background:#1a1a1a;border-radius:8px;border:2px solid #ef4444;">Error loading your account. Please try refreshing the page.</div>';
+      }
     }
-    // If PIN is required, the modal is shown and runAppInitialization will be called
-    // after successful PIN verification via continueAppInitialization()
   })();
 }
 

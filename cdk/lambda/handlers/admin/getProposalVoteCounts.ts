@@ -1,11 +1,10 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
-import { DynamoDBClient, QueryCommand, GetItemCommand, ScanCommand } from '@aws-sdk/client-dynamodb';
+import { DynamoDBClient, GetItemCommand, ScanCommand } from '@aws-sdk/client-dynamodb';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import {
   ok,
   badRequest,
   internalError,
-  getRequestId,
   requireAdminGroup
 } from '../../common/util';
 
@@ -21,8 +20,6 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
   // Require admin group membership
   const authError = requireAdminGroup(event);
   if (authError) return authError;
-
-  const requestId = getRequestId(event);
 
   try {
     const proposal_id = event.pathParameters?.proposal_id;

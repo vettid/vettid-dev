@@ -1,24 +1,20 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
-import { DynamoDBClient, ScanCommand, GetItemCommand, BatchGetItemCommand } from '@aws-sdk/client-dynamodb';
+import { DynamoDBClient, ScanCommand, BatchGetItemCommand } from '@aws-sdk/client-dynamodb';
 import { unmarshall, marshall } from '@aws-sdk/util-dynamodb';
 import { ok, internalError, requireAdminGroup } from '../../common/util';
-import { createHash } from 'crypto';
-
-/**
- * Hash identifier for safe logging (no PII in logs)
- */
-function hashForLog(value: string): string {
-  return createHash('sha256').update(value.toLowerCase().trim()).digest('hex').substring(0, 12);
-}
 
 const ddb = new DynamoDBClient({});
 const TABLE_SUBSCRIPTIONS = process.env.TABLE_SUBSCRIPTIONS!;
 const TABLE_REGISTRATIONS = process.env.TABLE_REGISTRATIONS!;
 const TABLE_AUDIT = process.env.TABLE_AUDIT!;
 
+// SECURITY: Maximum items to return per request
+const MAX_LIMIT = 100;
+const DEFAULT_LIMIT = 50;
+
 /**
  * List subscriptions with optional status filter
- * GET /admin/subscriptions?status=active|cancelled|expired
+ * GET /admin/subscriptions?status=active|cancelled|expired&limit=50&cursor=xxx
  */
 export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   // Require admin group membership
@@ -29,13 +25,30 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     const statusFilter = event.queryStringParameters?.status;
     const now = new Date();
 
-    // Fetch all subscriptions
+    // SECURITY: Enforce reasonable limits to prevent abuse
+    const requestedLimit = Number(event.queryStringParameters?.limit || DEFAULT_LIMIT);
+    const limit = Math.min(Math.max(1, requestedLimit), MAX_LIMIT);
+    const cursor = event.queryStringParameters?.cursor;
+
+    // Decode pagination cursor if provided
+    let exclusiveStartKey: Record<string, any> | undefined;
+    if (cursor) {
+      try {
+        exclusiveStartKey = JSON.parse(Buffer.from(cursor, 'base64').toString('utf-8'));
+      } catch {
+        // Invalid cursor, ignore
+      }
+    }
+
+    // Fetch subscriptions with pagination
     const subscriptionsResult = await ddb.send(new ScanCommand({
       TableName: TABLE_SUBSCRIPTIONS,
+      Limit: limit,
+      ExclusiveStartKey: exclusiveStartKey
     }));
 
     if (!subscriptionsResult.Items) {
-      return ok({ subscriptions: [] });
+      return ok({ subscriptions: [], count: 0, limit });
     }
 
     let subscriptions = subscriptionsResult.Items.map(item => unmarshall(item));
@@ -145,7 +158,19 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       subscriptions = subscriptions.filter(s => s.status === statusFilter);
     }
 
-    return ok({ subscriptions });
+    // Build response with pagination
+    const response: any = {
+      subscriptions,
+      count: subscriptions.length,
+      limit
+    };
+
+    // Include next cursor if there are more results
+    if (subscriptionsResult.LastEvaluatedKey) {
+      response.nextCursor = Buffer.from(JSON.stringify(subscriptionsResult.LastEvaluatedKey)).toString('base64');
+    }
+
+    return ok(response);
   } catch (error: any) {
     console.error('Error listing subscriptions:', error);
     return internalError(error.message || 'Failed to list subscriptions');

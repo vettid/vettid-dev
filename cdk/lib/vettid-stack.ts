@@ -1,15 +1,12 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import {
-  aws_dynamodb as dynamodb,
   aws_lambda_nodejs as lambdaNode,
   aws_lambda as lambda,
   aws_apigatewayv2 as apigw,
   aws_apigatewayv2_integrations as integrations,
-  aws_apigatewayv2_authorizers as authorizers,
   aws_iam as iam,
   aws_s3 as s3,
-  aws_cognito as cognito,
   aws_lambda_event_sources as lambdaEventSources,
   aws_cloudfront as cloudfront,
   aws_cloudfront_origins as origins,
@@ -25,7 +22,6 @@ import {
   aws_events_targets as targets_events,
 } from 'aws-cdk-lib';
 import { InfrastructureStack } from './infrastructure-stack';
-import { AdminStack } from './admin-stack';
 
 export interface VettIdStackProps extends cdk.StackProps {
   infrastructure: InfrastructureStack;
@@ -481,17 +477,6 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       ALLOWED_ORIGINS: 'https://vettid.dev,https://www.vettid.dev,https://admin.vettid.dev,https://account.vettid.dev,https://register.vettid.dev',
     };
 
-    // Vault services environment variables
-    const vaultEnv = {
-      ...defaultEnv,
-      TABLE_CREDENTIALS: tables.credentials.tableName,
-      TABLE_CREDENTIAL_KEYS: tables.credentialKeys.tableName,
-      TABLE_TRANSACTION_KEYS: tables.transactionKeys.tableName,
-      TABLE_LEDGER_AUTH_TOKENS: tables.ledgerAuthTokens.tableName,
-      TABLE_ACTION_TOKENS: tables.actionTokens.tableName,
-      TABLE_ENROLLMENT_SESSIONS: tables.enrollmentSessions.tableName,
-    };
-
     // Lambdas
     const submitRegistration = new lambdaNode.NodejsFunction(this, 'SubmitRegistrationFn', {
       entry: 'lambda/handlers/public/submitRegistration.ts',
@@ -732,13 +717,10 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       }));
     });
     // Cognito permissions scoped to specific User Pools
-    const memberUserPoolArn = memberUserPool.userPoolArn;
-    const adminUserPoolArn = adminUserPool.userPoolArn;
-
     submitRegistration.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ['cognito-idp:AdminCreateUser', 'cognito-idp:AdminAddUserToGroup', 'cognito-idp:AdminGetUser', 'cognito-idp:AdminSetUserPassword'],
-        resources: [memberUserPoolArn],
+        resources: [memberUserPool.userPoolArn],
       }),
     );
     // SES permission to verify email identities for marketing consent
@@ -758,19 +740,19 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
     requestMembership.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ['cognito-idp:AdminAddUserToGroup', 'cognito-idp:AdminGetUser'],
-        resources: [memberUserPoolArn],
+        resources: [memberUserPool.userPoolArn],
       }),
     );
     cancelAccount.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ['cognito-idp:AdminDisableUser', 'cognito-idp:AdminGetUser'],
-        resources: [memberUserPoolArn],
+        resources: [memberUserPool.userPoolArn],
       }),
     );
     cleanupExpiredAccounts.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ['cognito-idp:AdminDeleteUser'],
-        resources: [memberUserPoolArn],
+        resources: [memberUserPool.userPoolArn],
       }),
     );
 
@@ -1387,6 +1369,14 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       httpApi: this.httpApi,
       routeKey: apigw.HttpRouteKey.with('/admin/notifications/{type}/{email}', apigw.HttpMethod.DELETE),
       integration: new integrations.HttpLambdaIntegration('RemoveNotificationInt', adminStack.removeNotification),
+      authorizer: this.adminAuthorizer,
+    });
+
+    // Audit log route
+    this.httpApi.addRoutes({
+      path: '/admin/audit',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('GetAuditLogInt', adminStack.getAuditLog),
       authorizer: this.adminAuthorizer,
     });
   }

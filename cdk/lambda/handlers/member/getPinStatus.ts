@@ -4,11 +4,10 @@ import {
   TABLES,
   ok,
   badRequest,
-  notFound,
   internalError,
   requireRegisteredOrMemberGroup
 } from "../../common/util";
-import { QueryCommand, ScanCommand } from "@aws-sdk/client-dynamodb";
+import { QueryCommand } from "@aws-sdk/client-dynamodb";
 import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
 
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
@@ -23,12 +22,12 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       return badRequest("Unable to identify user");
     }
 
-    // Find the user's registration by email using Scan
-    // Note: Removed Limit:1 because DynamoDB applies filter AFTER reading Limit items,
-    // so Limit:1 with FilterExpression could read 1 non-matching item and return empty
-    const queryResult = await ddb.send(new ScanCommand({
+    // Find the user's registration by email using GSI (efficient query instead of scan)
+    const queryResult = await ddb.send(new QueryCommand({
       TableName: TABLES.registrations,
-      FilterExpression: "email = :email AND #s = :approved",
+      IndexName: 'email-index',
+      KeyConditionExpression: "email = :email",
+      FilterExpression: "#s = :approved",
       ExpressionAttributeNames: {
         "#s": "status"
       },

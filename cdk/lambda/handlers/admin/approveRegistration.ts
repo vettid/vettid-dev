@@ -17,7 +17,9 @@ import {
   validateOrigin,
   checkRateLimit,
   hashIdentifier,
-  tooManyRequests
+  tooManyRequests,
+  validatePathParam,
+  ValidationError
 } from "../../common/util";
 import { UpdateItemCommand } from "@aws-sdk/client-dynamodb";
 import { marshall } from "@aws-sdk/util-dynamodb";
@@ -49,8 +51,15 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     return tooManyRequests("Too many approval requests. Please try again later.");
   }
 
-  const id = event.pathParameters?.registration_id;
-  if (!id) return badRequest("registration_id required");
+  let id: string;
+  try {
+    id = validatePathParam(event.pathParameters?.registration_id, "registration_id");
+  } catch (error) {
+    if (error instanceof ValidationError) {
+      return badRequest(error.message);
+    }
+    return badRequest("registration_id required");
+  }
 
   const requestId = (event.requestContext as any).requestId;
 
@@ -101,7 +110,22 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         Username: reg.email
       }));
       const guidAttr = userResponse.UserAttributes?.find(attr => attr.Name === 'custom:user_guid');
-      userGuid = guidAttr?.Value || randomUUID(); // Fallback to new GUID if not found
+
+      if (!guidAttr?.Value) {
+        // CRITICAL: Existing user is missing custom:user_guid attribute
+        // This is a data integrity issue that must be resolved manually
+        // Do NOT generate a new GUID as it would cause mismatches with DynamoDB records
+        console.error(`User ${reg.email} exists in Cognito but missing custom:user_guid attribute`);
+        await putAudit({
+          type: 'approval_error_missing_guid',
+          email: reg.email,
+          registration_id: id,
+          error: 'Existing Cognito user missing custom:user_guid attribute - requires manual intervention'
+        }, requestId);
+        return internalError('User account requires administrative repair. Please contact support.');
+      }
+
+      userGuid = guidAttr.Value;
     }
 
     // Add to registered group (not member - they need to request membership separately)
@@ -112,19 +136,31 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     }));
 
     // Update registration status, set membership_status and user_guid
-    await ddb.send(new UpdateItemCommand({
-      TableName: TABLES.registrations,
-      Key: marshall({ registration_id: id }),
-      UpdateExpression: "SET #s = :approved, approved_at = :now, approved_by = :by, membership_status = :membership_status, user_guid = :user_guid",
-      ExpressionAttributeNames: { "#s": "status" },
-      ExpressionAttributeValues: marshall({
-        ":approved": "approved",
-        ":now": now,
-        ":by": adminEmail,
-        ":membership_status": "pending",
-        ":user_guid": userGuid
-      })
-    }));
+    // IDEMPOTENCY: Use conditional expression to ensure we only approve pending registrations
+    try {
+      await ddb.send(new UpdateItemCommand({
+        TableName: TABLES.registrations,
+        Key: marshall({ registration_id: id }),
+        UpdateExpression: "SET #s = :approved, approved_at = :now, approved_by = :by, membership_status = :membership_status, user_guid = :user_guid",
+        // Only update if status is still pending (prevents race conditions)
+        ConditionExpression: "#s = :pending",
+        ExpressionAttributeNames: { "#s": "status" },
+        ExpressionAttributeValues: marshall({
+          ":approved": "approved",
+          ":pending": "pending",
+          ":now": now,
+          ":by": adminEmail,
+          ":membership_status": "pending",
+          ":user_guid": userGuid
+        })
+      }));
+    } catch (error: any) {
+      if (error.name === 'ConditionalCheckFailedException') {
+        // Registration was already approved by another request
+        return ok({ message: "already approved" });
+      }
+      throw error;
+    }
 
     await putAudit({
       type: "registration_approved",

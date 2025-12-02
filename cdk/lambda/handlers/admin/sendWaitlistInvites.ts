@@ -10,7 +10,6 @@ const ses = new SESClient({});
 
 const TABLE_WAITLIST = process.env.TABLE_WAITLIST!;
 const TABLE_INVITES = process.env.TABLE_INVITES!;
-const TABLE_AUDIT = process.env.TABLE_AUDIT!;
 const SES_FROM_EMAIL = process.env.SES_FROM_EMAIL || 'noreply@vettid.dev';
 
 /**
@@ -276,9 +275,10 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
           }),
         }));
 
-        // Log to audit
+        // Log to audit (email field is indexed in GSI for lookups)
         await putAudit({
-          action: 'waitlist_invite_sent',
+          type: 'waitlist_invite_sent',
+          email: adminEmail, // For GSI lookup by admin email
           admin_email: adminEmail,
           waitlist_id: waitlistId,
           recipient_email: email,

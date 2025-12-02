@@ -17,9 +17,11 @@ import {
   validateOrigin,
   checkRateLimit,
   hashIdentifier,
-  tooManyRequests
+  tooManyRequests,
+  validatePathParam,
+  ValidationError
 } from "../../common/util";
-import { UpdateItemCommand, QueryCommand, DeleteItemCommand } from "@aws-sdk/client-dynamodb";
+import { QueryCommand, DeleteItemCommand } from "@aws-sdk/client-dynamodb";
 import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
 import { AdminDeleteUserCommand } from "@aws-sdk/client-cognito-identity-provider";
 
@@ -50,8 +52,15 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     return tooManyRequests("Too many delete requests. Please try again later.");
   }
 
-  const id = event.pathParameters?.user_id;
-  if (!id) return badRequest("user_id required");
+  let id: string;
+  try {
+    id = validatePathParam(event.pathParameters?.user_id, "user_id");
+  } catch (error) {
+    if (error instanceof ValidationError) {
+      return badRequest(error.message);
+    }
+    return badRequest("user_id required");
+  }
 
   try {
     const reg = await getRegistration(id);

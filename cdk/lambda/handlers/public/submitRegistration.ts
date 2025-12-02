@@ -7,14 +7,13 @@ import {
   GetItemCommand,
   PutItemCommand,
   UpdateItemCommand,
-  QueryCommand,
   ScanCommand,
 } from '@aws-sdk/client-dynamodb';
 import { SESClient, VerifyEmailIdentityCommand, GetIdentityVerificationAttributesCommand } from '@aws-sdk/client-ses';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import { randomUUID } from 'crypto';
 import { CognitoIdentityProviderClient, AdminCreateUserCommand, AdminAddUserToGroupCommand, AdminGetUserCommand } from '@aws-sdk/client-cognito-identity-provider';
-import { validateEmail, validateName, validateInviteCode, sanitizeInput, checkRateLimit, hashIdentifier, getClientIp, shouldBypassRateLimit } from '../../common/util';
+import { validateEmail, validateName, validateInviteCode, checkRateLimit, hashIdentifier, getClientIp } from '../../common/util';
 
 // Rate limit: 10 registration attempts per IP per hour
 const RATE_LIMIT_MAX_REQUESTS = 10;
@@ -28,7 +27,6 @@ const TABLE_INVITES = process.env.TABLE_INVITES!;
 const TABLE_REGISTRATIONS = process.env.TABLE_REGISTRATIONS!;
 const TABLE_AUDIT = process.env.TABLE_AUDIT;
 const USER_POOL_ID = process.env.USER_POOL_ID!;
-const MEMBER_GROUP = process.env.MEMBER_GROUP || 'member';
 const REGISTERED_GROUP = process.env.REGISTERED_GROUP || 'registered';
 const CORS_ORIGIN = process.env.CORS_ORIGIN || '*';
 
@@ -333,8 +331,6 @@ export const handler = async (
         Username: email,
         GroupName: REGISTERED_GROUP,
       }));
-
-      console.log(`Auto-approved user ${email} created in Cognito and added to ${REGISTERED_GROUP} group (awaiting terms acceptance for member group)`);
     } catch (cognitoError: any) {
       // Log but don't fail - the registration record exists, admin can manually approve
       console.error('Failed to create auto-approved user in Cognito:', cognitoError);
@@ -379,8 +375,6 @@ export const handler = async (
       if (status !== 'Success' && status !== 'Pending') {
         await ses.send(new VerifyEmailIdentityCommand({ EmailAddress: email }));
         sesVerificationSent = true;
-      } else {
-        console.log(`Email ${email} already has SES verification status: ${status}, skipping verification request`);
       }
     } catch (error) {
       // Log but don't fail the request if SES verification fails

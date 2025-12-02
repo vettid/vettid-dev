@@ -12,10 +12,19 @@
     --bg-dark: #000;
     --bg-card: #0a0a0a;
     --text: #e0e0e0;
-    --text-muted: #888;
+    --text-muted: #a0a0a0;
   }
 
   * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  /* Focus visible for accessibility */
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  :focus:not(:focus-visible) {
+    outline: none;
+  }
 
   body {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;

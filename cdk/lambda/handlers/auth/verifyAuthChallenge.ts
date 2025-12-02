@@ -1,6 +1,6 @@
 // lambda/handlers/auth/verifyAuthChallenge.ts
 import { VerifyAuthChallengeResponseTriggerHandler } from 'aws-lambda';
-import { DynamoDBClient, GetItemCommand, DeleteItemCommand, QueryCommand, ScanCommand } from '@aws-sdk/client-dynamodb';
+import { DynamoDBClient, GetItemCommand, DeleteItemCommand, ScanCommand } from '@aws-sdk/client-dynamodb';
 import { CloudWatchClient, PutMetricDataCommand } from '@aws-sdk/client-cloudwatch';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import { createHash, timingSafeEqual } from 'crypto';
@@ -81,7 +81,6 @@ export const handler: VerifyAuthChallengeResponseTriggerHandler = async (event) 
   const { challengeAnswer } = event.request;
 
   if (!challengeAnswer) {
-    console.log('Missing challenge answer');
     await publishFailedLoginMetric('MissingToken');
     event.response.answerCorrect = false;
     return event;
@@ -115,12 +114,10 @@ export const handler: VerifyAuthChallengeResponseTriggerHandler = async (event) 
       const reg = unmarshall(regQuery.Items[0]) as any;
       pinRequired = reg.pin_enabled === true;
       storedPinHash = reg.pin_hash || null;
-      console.log('PIN required:', pinRequired);
     }
 
     // If PIN is required but not provided, reject
     if (pinRequired && !providedPin) {
-      console.log('PIN required but not provided');
       await publishFailedLoginMetric('PinRequired');
       event.response.answerCorrect = false;
       return event;
@@ -129,7 +126,6 @@ export const handler: VerifyAuthChallengeResponseTriggerHandler = async (event) 
     // If PIN is provided, validate it
     if (pinRequired && providedPin) {
       if (!storedPinHash) {
-        console.log('PIN enabled but no hash stored');
         await publishFailedLoginMetric('PinHashMissing');
         event.response.answerCorrect = false;
         return event;
@@ -138,13 +134,10 @@ export const handler: VerifyAuthChallengeResponseTriggerHandler = async (event) 
       const providedPinHash = hashPin(providedPin);
       // SECURITY: Use timing-safe comparison to prevent timing attacks
       if (!secureCompare(providedPinHash, storedPinHash)) {
-        console.log('PIN hash mismatch');
         await publishFailedLoginMetric('InvalidPin');
         event.response.answerCorrect = false;
         return event;
       }
-
-      console.log('PIN verified successfully');
     }
 
     // Retrieve token from DynamoDB to verify it exists and hasn't expired
@@ -156,7 +149,6 @@ export const handler: VerifyAuthChallengeResponseTriggerHandler = async (event) 
     }));
 
     if (!result.Item) {
-      console.log('Token not found in database');
       await publishFailedLoginMetric('TokenNotFound');
       event.response.answerCorrect = false;
       return event;
@@ -167,7 +159,6 @@ export const handler: VerifyAuthChallengeResponseTriggerHandler = async (event) 
 
     // Check if token has expired
     if (tokenData.expiresAt && tokenData.expiresAt < now) {
-      console.log('Token has expired');
       await publishFailedLoginMetric('TokenExpired');
       event.response.answerCorrect = false;
       return event;
@@ -175,13 +166,11 @@ export const handler: VerifyAuthChallengeResponseTriggerHandler = async (event) 
 
     // Check if token belongs to the correct user
     if (tokenData.email !== userEmail) {
-      console.log('Token email mismatch');
       await publishFailedLoginMetric('EmailMismatch');
       event.response.answerCorrect = false;
       return event;
     }
 
-    console.log('Token verified successfully');
     event.response.answerCorrect = true;
 
     // Delete the token so it can't be reused
@@ -189,8 +178,6 @@ export const handler: VerifyAuthChallengeResponseTriggerHandler = async (event) 
       TableName: MAGIC_LINK_TABLE,
       Key: marshall({ token }),
     }));
-
-    console.log('Token deleted after successful verification');
 
   } catch (error) {
     console.error('Error verifying token:', error);

@@ -19,6 +19,6 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     Key: marshall({ code })
   }));
 
-  await putAudit({ type: "invite_deleted", code, deleted_by: adminEmail });
+  await putAudit({ type: "invite_deleted", email: adminEmail, code, deleted_by: adminEmail });
   return ok({ message: "Invite deleted", code });
 };

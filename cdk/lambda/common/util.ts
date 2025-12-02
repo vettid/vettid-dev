@@ -1,4 +1,4 @@
-import { DynamoDBClient, PutItemCommand, GetItemCommand, UpdateItemCommand, QueryCommand } from "@aws-sdk/client-dynamodb";
+import { DynamoDBClient, PutItemCommand, GetItemCommand, UpdateItemCommand } from "@aws-sdk/client-dynamodb";
 import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
 import { SESClient, SendTemplatedEmailCommand } from "@aws-sdk/client-ses";
 import { CognitoIdentityProviderClient, AdminGetUserCommand } from "@aws-sdk/client-cognito-identity-provider";
@@ -33,6 +33,91 @@ export class ValidationError extends Error {
     this.name = "ValidationError";
   }
 }
+
+// ============================================
+// Date Utility Functions
+// ============================================
+
+/**
+ * Get the current timestamp as an ISO 8601 string
+ * Use this for storing dates in DynamoDB (consistent format)
+ * @returns ISO 8601 formatted date string (e.g., "2024-01-15T10:30:00.000Z")
+ */
+export function nowIso(): string {
+  return new Date().toISOString();
+}
+
+/**
+ * Get the current timestamp as Unix epoch seconds
+ * Use this for TTL values and expiration comparisons
+ * @returns Unix timestamp in seconds
+ */
+export function nowSeconds(): number {
+  return Math.floor(Date.now() / 1000);
+}
+
+/**
+ * Get the current timestamp as Unix epoch milliseconds
+ * Use this for precise timing and elapsed time calculations
+ * @returns Unix timestamp in milliseconds
+ */
+export function nowMs(): number {
+  return Date.now();
+}
+
+/**
+ * Parse an ISO date string or timestamp and return a Date object
+ * Handles both ISO strings and Unix timestamps (seconds or milliseconds)
+ * @param value - ISO string, Unix seconds, or Unix milliseconds
+ * @returns Date object
+ */
+export function parseDate(value: string | number): Date {
+  if (typeof value === 'string') {
+    return new Date(value);
+  }
+  // Detect if timestamp is in seconds (< 10 digits) or milliseconds (13+ digits)
+  return value < 1e12 ? new Date(value * 1000) : new Date(value);
+}
+
+/**
+ * Add a duration to the current time and return as ISO string
+ * @param minutes - Minutes to add (can be negative for subtraction)
+ * @returns ISO 8601 formatted date string
+ */
+export function addMinutesIso(minutes: number): string {
+  return new Date(Date.now() + minutes * 60 * 1000).toISOString();
+}
+
+/**
+ * Add a duration to the current time and return as Unix seconds
+ * @param minutes - Minutes to add (can be negative for subtraction)
+ * @returns Unix timestamp in seconds (suitable for DynamoDB TTL)
+ */
+export function addMinutesSeconds(minutes: number): number {
+  return Math.floor((Date.now() + minutes * 60 * 1000) / 1000);
+}
+
+/**
+ * Check if a date/timestamp has passed (is in the past)
+ * @param value - ISO string, Unix seconds, or Unix milliseconds
+ * @returns true if the date is in the past
+ */
+export function isPast(value: string | number): boolean {
+  return parseDate(value).getTime() < Date.now();
+}
+
+/**
+ * Check if a date/timestamp is in the future
+ * @param value - ISO string, Unix seconds, or Unix milliseconds
+ * @returns true if the date is in the future
+ */
+export function isFuture(value: string | number): boolean {
+  return parseDate(value).getTime() > Date.now();
+}
+
+// ============================================
+// Security Functions
+// ============================================
 
 /**
  * Timing-safe string comparison to prevent timing attacks
@@ -73,7 +158,10 @@ export function generateSecureId(prefix?: string, length: number = 16): string {
  */
 export async function putAudit(entry: Record<string, any>, requestId?: string): Promise<void> {
   entry.id = generateSecureId('AUDIT');
-  entry.ts = new Date().toISOString();
+  const now = new Date();
+  entry.ts = now.toISOString();
+  // Add numeric timestamp for GSI sorting (email-timestamp-index)
+  entry.createdAtTimestamp = now.getTime();
   if (requestId) {
     entry.request_id = requestId;
   }
@@ -92,19 +180,121 @@ export function getRequestId(event: APIGatewayProxyEventV2): string {
 }
 
 /**
- * Send templated email with error handling
+ * Retry configuration for external service calls
+ */
+interface RetryConfig {
+  maxRetries?: number;
+  initialDelayMs?: number;
+  maxDelayMs?: number;
+  backoffMultiplier?: number;
+}
+
+const DEFAULT_RETRY_CONFIG: Required<RetryConfig> = {
+  maxRetries: 3,
+  initialDelayMs: 100,
+  maxDelayMs: 2000,
+  backoffMultiplier: 2,
+};
+
+/**
+ * Check if an error is transient and should be retried
+ */
+function isTransientError(error: any): boolean {
+  // AWS SDK transient errors
+  const transientErrorCodes = [
+    'ThrottlingException',
+    'ProvisionedThroughputExceededException',
+    'ServiceUnavailable',
+    'InternalError',
+    'RequestLimitExceeded',
+    'TooManyRequestsException',
+    'TransientFailure',
+  ];
+
+  if (error?.name && transientErrorCodes.includes(error.name)) {
+    return true;
+  }
+
+  // Check HTTP status codes for transient errors
+  const statusCode = error?.$metadata?.httpStatusCode || error?.statusCode;
+  if (statusCode >= 500 || statusCode === 429) {
+    return true;
+  }
+
+  // Network errors
+  if (error?.code === 'ECONNRESET' || error?.code === 'ETIMEDOUT' || error?.code === 'ENOTFOUND') {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Execute a function with exponential backoff retry logic
+ * @param fn The async function to execute
+ * @param config Retry configuration
+ * @returns The result of the function
+ * @throws The last error if all retries fail
+ */
+export async function withRetry<T>(
+  fn: () => Promise<T>,
+  config: RetryConfig = {}
+): Promise<T> {
+  const { maxRetries, initialDelayMs, maxDelayMs, backoffMultiplier } = {
+    ...DEFAULT_RETRY_CONFIG,
+    ...config,
+  };
+
+  let lastError: any;
+  let delay = initialDelayMs;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (error: any) {
+      lastError = error;
+
+      // Don't retry non-transient errors
+      if (!isTransientError(error)) {
+        throw error;
+      }
+
+      // Don't retry after max retries
+      if (attempt >= maxRetries) {
+        console.error(`All ${maxRetries} retries exhausted. Last error:`, error);
+        throw error;
+      }
+
+      // Log retry attempt
+      console.warn(`Transient error on attempt ${attempt + 1}/${maxRetries + 1}, retrying in ${delay}ms:`, error?.name || error?.message);
+
+      // Wait before retrying
+      await new Promise(resolve => setTimeout(resolve, delay));
+
+      // Exponential backoff with jitter
+      delay = Math.min(delay * backoffMultiplier + Math.random() * 50, maxDelayMs);
+    }
+  }
+
+  throw lastError;
+}
+
+/**
+ * Send templated email with error handling and retry logic
  */
 export async function sendTemplateEmail(to: string, template: string, data: any): Promise<boolean> {
   try {
-    await ses.send(new SendTemplatedEmailCommand({
-      Source: process.env.SES_FROM!,
-      Destination: { ToAddresses: [to] },
-      Template: template,
-      TemplateData: JSON.stringify(data),
-    }));
+    await withRetry(async () => {
+      await ses.send(new SendTemplatedEmailCommand({
+        Source: process.env.SES_FROM!,
+        Destination: { ToAddresses: [to] },
+        Template: template,
+        TemplateData: JSON.stringify(data),
+      }));
+    }, { maxRetries: 2 });
     return true;
   } catch (error) {
-    console.error(`Failed to send email to ${to}:`, error);
+    console.error(`Failed to send email to ${to} after retries:`, error);
     return false;
   }
 }
@@ -200,7 +390,7 @@ export async function checkRateLimit(
   try {
     // Atomic increment with conditional check
     // This prevents race conditions by checking and incrementing in a single operation
-    const result = await ddb.send(new UpdateItemCommand({
+    await ddb.send(new UpdateItemCommand({
       TableName: TABLES.audit,
       Key: marshall({ id: rateLimitKey }),
       UpdateExpression: 'SET #count = if_not_exists(#count, :zero) + :one, #ttl = :ttl, #ts = :ts, #action = :action',
@@ -222,8 +412,8 @@ export async function checkRateLimit(
       ReturnValues: 'ALL_NEW'
     }));
 
-    const newCount = unmarshall(result.Attributes!).request_count;
-    return true; // Request allowed (increment succeeded)
+    // Request allowed (increment succeeded)
+    return true;
   } catch (error: any) {
     if (error.name === 'ConditionalCheckFailedException') {
       // Rate limit exceeded (atomic check failed)
@@ -531,16 +721,19 @@ export async function getInvite(code: string): Promise<any> {
  * Cognito helpers
  * SECURITY: Uses timing-safe comparison to prevent email enumeration attacks
  * The function always takes roughly the same time regardless of whether user exists
+ * Includes retry logic for transient errors
  */
 export async function userExistsInCognito(email: string): Promise<boolean> {
   const startTime = Date.now();
   const minDuration = 50; // Minimum execution time in ms to prevent timing attacks
 
   try {
-    await cognito.send(new AdminGetUserCommand({
-      UserPoolId: USER_POOL_ID,
-      Username: email
-    }));
+    await withRetry(async () => {
+      await cognito.send(new AdminGetUserCommand({
+        UserPoolId: USER_POOL_ID,
+        Username: email
+      }));
+    }, { maxRetries: 2 });
 
     // Ensure consistent timing
     const elapsed = Date.now() - startTime;
@@ -548,8 +741,17 @@ export async function userExistsInCognito(email: string): Promise<boolean> {
       await new Promise(resolve => setTimeout(resolve, minDuration - elapsed));
     }
     return true;
-  } catch {
-    // Ensure consistent timing even on failure
+  } catch (error: any) {
+    // User not found is expected, not an error
+    if (error?.name === 'UserNotFoundException') {
+      const elapsed = Date.now() - startTime;
+      if (elapsed < minDuration) {
+        await new Promise(resolve => setTimeout(resolve, minDuration - elapsed));
+      }
+      return false;
+    }
+    // Log unexpected errors but still return false to maintain consistent behavior
+    console.error('Error checking user in Cognito:', error);
     const elapsed = Date.now() - startTime;
     if (elapsed < minDuration) {
       await new Promise(resolve => setTimeout(resolve, minDuration - elapsed));
@@ -753,6 +955,111 @@ export function validatePathParam(value: string | undefined, fieldName: string =
   }
 
   return trimmed;
+}
+
+/**
+ * User claims extracted from JWT token
+ */
+export interface UserClaims {
+  user_guid: string;
+  email: string;
+  groups: string[];
+}
+
+/**
+ * Extract and validate user claims from JWT token
+ * SECURITY: Always use this instead of directly accessing claims to ensure proper validation
+ * @param event API Gateway event with JWT claims
+ * @returns UserClaims object or null if claims are missing/invalid
+ */
+export function extractUserClaims(event: APIGatewayProxyEventV2): UserClaims | null {
+  const claims = (event.requestContext as any)?.authorizer?.jwt?.claims;
+
+  if (!claims) {
+    return null;
+  }
+
+  const user_guid = claims['custom:user_guid'];
+  const email = claims.email;
+
+  // Both user_guid and email are required
+  if (!user_guid || typeof user_guid !== 'string' || user_guid.trim() === '') {
+    return null;
+  }
+
+  if (!email || typeof email !== 'string' || email.trim() === '') {
+    return null;
+  }
+
+  // Extract groups (can be array or string)
+  let groups: string[] = [];
+  const rawGroups = claims['cognito:groups'];
+
+  if (Array.isArray(rawGroups)) {
+    groups = rawGroups;
+  } else if (typeof rawGroups === 'string') {
+    // Handle "[group1 group2]" format from API Gateway
+    if (rawGroups.startsWith('[') && rawGroups.endsWith(']')) {
+      const content = rawGroups.slice(1, -1).trim();
+      if (content) {
+        groups = content.includes(',')
+          ? content.split(',').map(g => g.trim())
+          : content.split(/\s+/).filter(g => g.trim());
+      }
+    } else {
+      groups = [rawGroups];
+    }
+  }
+
+  return {
+    user_guid: user_guid.trim(),
+    email: email.trim().toLowerCase(),
+    groups
+  };
+}
+
+/**
+ * Require user claims or return an error response
+ * Use this at the start of handlers that need user identity
+ * @param event API Gateway event
+ * @param requestOrigin Optional origin for CORS headers
+ * @returns Object with either 'claims' (success) or 'error' (failure)
+ */
+export function requireUserClaims(
+  event: APIGatewayProxyEventV2,
+  requestOrigin?: string
+): { claims: UserClaims } | { error: APIGatewayProxyResultV2 } {
+  const claims = extractUserClaims(event);
+
+  if (!claims) {
+    return {
+      error: badRequest('Invalid token: missing required claims (user_guid or email)', requestOrigin)
+    };
+  }
+
+  return { claims };
+}
+
+/**
+ * Get user GUID from event, with validation
+ * Convenience function for handlers that only need the GUID
+ * @param event API Gateway event
+ * @returns user_guid string or null if not available
+ */
+export function getUserGuid(event: APIGatewayProxyEventV2): string | null {
+  const claims = extractUserClaims(event);
+  return claims?.user_guid || null;
+}
+
+/**
+ * Get user email from event, with validation
+ * Convenience function for handlers that only need the email
+ * @param event API Gateway event
+ * @returns email string or null if not available
+ */
+export function getUserEmail(event: APIGatewayProxyEventV2): string | null {
+  const claims = extractUserClaims(event);
+  return claims?.email || null;
 }
 
 /**

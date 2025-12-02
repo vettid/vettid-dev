@@ -39,6 +39,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
   await putAudit({
     type: "invite_expired",
+    email: adminEmail,
     code,
     expired_by: adminEmail
   });

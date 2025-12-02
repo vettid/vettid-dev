@@ -7,7 +7,8 @@ import {
   internalError,
   getRequestId,
   putAudit,
-  validateOrigin
+  validateOrigin,
+  requireUserClaims
 } from '../../common/util';
 
 const ddb = new DynamoDBClient({});
@@ -25,14 +26,10 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
   if (csrfError) return csrfError;
 
   try {
-    // Get user GUID from JWT claims
-    const claims = (event.requestContext as any)?.authorizer?.jwt?.claims;
-    const userGuid = claims?.['custom:user_guid'];
-    const email = claims?.email;
-
-    if (!userGuid) {
-      return badRequest('User GUID not found in token');
-    }
+    // Get user claims from JWT token
+    const claimsResult = requireUserClaims(event);
+    if ('error' in claimsResult) return claimsResult.error;
+    const { user_guid: userGuid, email } = claimsResult.claims;
 
     // Get current subscription
     const result = await ddb.send(new GetItemCommand({
@@ -70,7 +67,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
 
     // Log to audit
     await putAudit({
-      action: 'subscription_cancelled',
+      type: 'subscription_cancelled',
       user_guid: userGuid,
       email: email,
       subscription_type_id: subscription.subscription_type_id,

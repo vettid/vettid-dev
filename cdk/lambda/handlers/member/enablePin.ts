@@ -12,7 +12,7 @@ import {
   parseJsonBody,
   ValidationError
 } from "../../common/util";
-import { UpdateItemCommand, QueryCommand, ScanCommand } from "@aws-sdk/client-dynamodb";
+import { UpdateItemCommand, QueryCommand } from "@aws-sdk/client-dynamodb";
 import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
 import { createHash } from "crypto";
 
@@ -56,12 +56,12 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       return badRequest("PIN must be 4-6 digits");
     }
 
-    // Find the user's registration by email using Scan
-    // Note: Removed Limit:1 because DynamoDB applies filter AFTER reading Limit items,
-    // so Limit:1 with FilterExpression could read 1 non-matching item and return empty
-    const queryResult = await ddb.send(new ScanCommand({
+    // Find the user's registration by email using GSI (efficient query instead of scan)
+    const queryResult = await ddb.send(new QueryCommand({
       TableName: TABLES.registrations,
-      FilterExpression: "email = :email AND #s = :approved",
+      IndexName: 'email-index',
+      KeyConditionExpression: "email = :email",
+      FilterExpression: "#s = :approved",
       ExpressionAttributeNames: {
         "#s": "status"
       },

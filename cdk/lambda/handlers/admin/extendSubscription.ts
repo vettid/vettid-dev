@@ -102,7 +102,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
 
         // Log to audit
         await putAudit({
-          action: 'subscription_extended',
+          type: 'subscription_extended',
           email: email,
           user_guid: userGuid,
           days_added: days,

@@ -3,8 +3,7 @@ import { DynamoDBClient, QueryCommand } from '@aws-sdk/client-dynamodb';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import {
   ok,
-  internalError,
-  getRequestId
+  internalError
 } from '../../common/util';
 
 const ddb = new DynamoDBClient({});
@@ -14,9 +13,7 @@ const TABLE_PROPOSALS = process.env.TABLE_PROPOSALS!;
  * Get all active proposals
  * GET /proposals/active
  */
-export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
-  const requestId = getRequestId(event);
-
+export const handler = async (_event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
     // Query proposals with status='active' using GSI
     const proposalsResult = await ddb.send(new QueryCommand({

@@ -1,7 +1,7 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
-import { DynamoDBClient, GetItemCommand, PutItemCommand, QueryCommand, UpdateItemCommand } from '@aws-sdk/client-dynamodb';
+import { DynamoDBClient, GetItemCommand, PutItemCommand, UpdateItemCommand } from '@aws-sdk/client-dynamodb';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
-import { randomBytes, generateKeyPairSync } from 'crypto';
+import { generateKeyPairSync } from 'crypto';
 import {
   ok,
   badRequest,
@@ -20,7 +20,6 @@ const ddb = new DynamoDBClient({});
 const TABLE_INVITES = process.env.TABLE_INVITES!;
 const TABLE_ENROLLMENT_SESSIONS = process.env.TABLE_ENROLLMENT_SESSIONS!;
 const TABLE_TRANSACTION_KEYS = process.env.TABLE_TRANSACTION_KEYS!;
-const TABLE_CREDENTIALS = process.env.TABLE_CREDENTIALS!;
 
 // Number of transaction keys to generate per enrollment
 const INITIAL_TRANSACTION_KEY_COUNT = 20;
@@ -50,13 +49,6 @@ function generateX25519KeyPair(): { publicKey: string; privateKey: string } {
     publicKey: rawPublic.toString('base64'),
     privateKey: rawPrivate.toString('base64'),
   };
-}
-
-/**
- * Generate a secure random token (hex encoded)
- */
-function generateSecureToken(bytes: number = 32): string {
-  return randomBytes(bytes).toString('hex');
 }
 
 /**
@@ -198,7 +190,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
 
     // Audit log
     await putAudit({
-      action: 'enrollment_started',
+      type: 'enrollment_started',
       user_guid: userGuid,
       session_id: sessionId,
       invitation_code: body.invitation_code.substring(0, 8) + '...',  // Partial for privacy

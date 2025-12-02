@@ -1,11 +1,10 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
-import { DynamoDBClient, QueryCommand, GetItemCommand, ScanCommand } from '@aws-sdk/client-dynamodb';
+import { DynamoDBClient, QueryCommand, GetItemCommand } from '@aws-sdk/client-dynamodb';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import {
   ok,
   badRequest,
-  internalError,
-  getRequestId
+  internalError
 } from '../../common/util';
 
 const ddb = new DynamoDBClient({});
@@ -18,8 +17,6 @@ const TABLE_REGISTRATIONS = process.env.TABLE_REGISTRATIONS!;
  * GET /votes/history
  */
 export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
-  const requestId = getRequestId(event);
-
   try {
     // Get email from JWT claims
     const claims = (event.requestContext as any)?.authorizer?.jwt?.claims;
@@ -29,10 +26,11 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       return badRequest('Email not found in token');
     }
 
-    // Get user_guid from registrations table using Scan
-    const registrationsResult = await ddb.send(new ScanCommand({
+    // Get user_guid from registrations table using GSI (efficient query instead of scan)
+    const registrationsResult = await ddb.send(new QueryCommand({
       TableName: TABLE_REGISTRATIONS,
-      FilterExpression: 'email = :email',
+      IndexName: 'email-index',
+      KeyConditionExpression: 'email = :email',
       ExpressionAttributeValues: marshall({
         ':email': email,
       }),
@@ -51,10 +49,11 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       return ok({ votes: [] });
     }
 
-    // Scan votes by user_guid
-    const votesResult = await ddb.send(new ScanCommand({
+    // Query votes by user_guid using GSI (efficient query instead of scan)
+    const votesResult = await ddb.send(new QueryCommand({
       TableName: TABLE_VOTES,
-      FilterExpression: 'user_guid = :user_guid',
+      IndexName: 'user-index',
+      KeyConditionExpression: 'user_guid = :user_guid',
       ExpressionAttributeValues: marshall({
         ':user_guid': user_guid,
       }),

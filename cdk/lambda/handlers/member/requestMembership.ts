@@ -10,9 +10,10 @@ import {
   requireRegisteredOrMemberGroup,
   getRequestId,
   cognito,
-  USER_POOL_ID
+  USER_POOL_ID,
+  requireUserClaims
 } from "../../common/util";
-import { UpdateItemCommand, QueryCommand, ScanCommand } from "@aws-sdk/client-dynamodb";
+import { UpdateItemCommand, QueryCommand } from "@aws-sdk/client-dynamodb";
 import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
 import { AdminAddUserToGroupCommand } from "@aws-sdk/client-cognito-identity-provider";
 
@@ -39,17 +40,17 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   }
 
   try {
-    // Get user's email from JWT claims
-    const userEmail = (event.requestContext as any)?.authorizer?.jwt?.claims?.email;
-    if (!userEmail) {
-      return badRequest("Unable to identify user");
-    }
+    // Get user claims from JWT token using standardized utility
+    const claimsResult = requireUserClaims(event);
+    if ('error' in claimsResult) return claimsResult.error;
+    const { email: userEmail } = claimsResult.claims;
 
-    // Find the user's registration by email using Scan
-    // NOTE: Do NOT use Limit with FilterExpression - Limit applies BEFORE filtering
-    const queryResult = await ddb.send(new ScanCommand({
+    // Find the user's registration by email using GSI (efficient query instead of scan)
+    const queryResult = await ddb.send(new QueryCommand({
       TableName: TABLES.registrations,
-      FilterExpression: "email = :email AND #s = :approved",
+      IndexName: 'email-index',
+      KeyConditionExpression: "email = :email",
+      FilterExpression: "#s = :approved",
       ExpressionAttributeNames: {
         "#s": "status"
       },
@@ -72,24 +73,62 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
     const now = new Date().toISOString();
 
-    // Add user to member group in Cognito
-    await cognito.send(new AdminAddUserToGroupCommand({
-      UserPoolId: USER_POOL_ID,
-      Username: userEmail,
-      GroupName: 'member'
-    }));
+    // RACE CONDITION FIX: Update DynamoDB FIRST with conditional expression
+    // This ensures atomicity - only one request can succeed in updating the status
+    try {
+      await ddb.send(new UpdateItemCommand({
+        TableName: TABLES.registrations,
+        Key: marshall({ registration_id: reg.registration_id }),
+        UpdateExpression: "SET membership_status = :status, membership_approved_at = :now, terms_version_id = :termsVersion, terms_accepted_at = :now",
+        // Conditional expression: only update if membership_status is NOT already 'approved'
+        ConditionExpression: "attribute_not_exists(membership_status) OR membership_status <> :status",
+        ExpressionAttributeValues: marshall({
+          ":status": "approved",
+          ":now": now,
+          ":termsVersion": termsVersionId
+        })
+      }));
+    } catch (conditionError: any) {
+      if (conditionError.name === 'ConditionalCheckFailedException') {
+        // Another request already approved the membership
+        return badRequest("You are already a member");
+      }
+      throw conditionError;
+    }
 
-    // Update membership status to approved and record terms acceptance
-    await ddb.send(new UpdateItemCommand({
-      TableName: TABLES.registrations,
-      Key: marshall({ registration_id: reg.registration_id }),
-      UpdateExpression: "SET membership_status = :status, membership_approved_at = :now, terms_version_id = :termsVersion, terms_accepted_at = :now",
-      ExpressionAttributeValues: marshall({
-        ":status": "approved",
-        ":now": now,
-        ":termsVersion": termsVersionId
-      })
-    }));
+    // DynamoDB updated successfully - now add to Cognito group
+    // If this fails, we need to rollback the DynamoDB change
+    try {
+      await cognito.send(new AdminAddUserToGroupCommand({
+        UserPoolId: USER_POOL_ID,
+        Username: userEmail,
+        GroupName: 'member'
+      }));
+    } catch (cognitoError) {
+      // Cognito failed - rollback DynamoDB change
+      console.error('Cognito group add failed, rolling back DynamoDB:', cognitoError);
+      try {
+        await ddb.send(new UpdateItemCommand({
+          TableName: TABLES.registrations,
+          Key: marshall({ registration_id: reg.registration_id }),
+          UpdateExpression: "SET membership_status = :status REMOVE membership_approved_at, terms_version_id, terms_accepted_at",
+          ExpressionAttributeValues: marshall({
+            ":status": "pending"
+          })
+        }));
+      } catch (rollbackError) {
+        // Log rollback failure for manual intervention
+        console.error('CRITICAL: Failed to rollback DynamoDB after Cognito failure:', rollbackError);
+        await putAudit({
+          type: "membership_rollback_failed",
+          registration_id: reg.registration_id,
+          email: userEmail,
+          cognito_error: String(cognitoError),
+          rollback_error: String(rollbackError)
+        }, requestId);
+      }
+      throw cognitoError;
+    }
 
     await putAudit({
       type: "membership_approved_auto",

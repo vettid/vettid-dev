@@ -3,9 +3,8 @@ import { DynamoDBClient, GetItemCommand, UpdateItemCommand } from '@aws-sdk/clie
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import {
   ok,
-  badRequest,
-  notFound,
-  internalError
+  internalError,
+  requireUserClaims
 } from '../../common/util';
 
 const ddb = new DynamoDBClient({});
@@ -17,13 +16,10 @@ const TABLE_SUBSCRIPTIONS = process.env.TABLE_SUBSCRIPTIONS!;
  */
 export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
-    // Get user GUID from JWT claims
-    const claims = (event.requestContext as any)?.authorizer?.jwt?.claims;
-    const userGuid = claims?.['custom:user_guid'];
-
-    if (!userGuid) {
-      return badRequest('User GUID not found in token');
-    }
+    // Get user claims from JWT token
+    const claimsResult = requireUserClaims(event);
+    if ('error' in claimsResult) return claimsResult.error;
+    const { user_guid: userGuid } = claimsResult.claims;
 
     // Get subscription from DynamoDB
     const result = await ddb.send(new GetItemCommand({

@@ -141,7 +141,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
 
     // Audit log (don't include the actual hash)
     await putAudit({
-      action: 'enrollment_password_set',
+      type: 'enrollment_password_set',
       user_guid: session.user_guid,
       session_id: body.enrollment_session_id,
       key_id: body.key_id,

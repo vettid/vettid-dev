@@ -1,6 +1,6 @@
 // lambda/handlers/auth/createAuthChallenge.ts
 import { CreateAuthChallengeTriggerHandler } from 'aws-lambda';
-import { DynamoDBClient, PutItemCommand, QueryCommand, ScanCommand } from '@aws-sdk/client-dynamodb';
+import { DynamoDBClient, PutItemCommand, ScanCommand } from '@aws-sdk/client-dynamodb';
 import { SESClient, SendEmailCommand } from '@aws-sdk/client-ses';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import { randomBytes, createHash } from 'crypto';
@@ -19,7 +19,11 @@ const MAGIC_LINK_TABLE = process.env.MAGIC_LINK_TABLE!;
 const REGISTRATIONS_TABLE = process.env.REGISTRATIONS_TABLE!;
 const MAGIC_LINK_URL = process.env.MAGIC_LINK_URL || 'https://account.vettid.dev/auth';
 const SES_FROM = process.env.SES_FROM || 'no-reply@auth.vettid.dev';
-const TOKEN_EXPIRY_MINUTES = 15;
+// Configurable token expiry (default 15 minutes, max 60 minutes for security)
+const TOKEN_EXPIRY_MINUTES = Math.min(
+  Math.max(1, Number(process.env.TOKEN_EXPIRY_MINUTES) || 15),
+  60
+);
 
 /**
  * Generate a secure random token
@@ -48,7 +52,6 @@ export const handler: CreateAuthChallengeTriggerHandler = async (event) => {
 
   const { userAttributes } = event.request;
   const email = userAttributes.email;
-  const sub = userAttributes.sub;
 
   if (!email) {
     throw new Error('User email not found');
@@ -73,7 +76,6 @@ export const handler: CreateAuthChallengeTriggerHandler = async (event) => {
     if (regQuery.Items && regQuery.Items.length > 0) {
       const reg = unmarshall(regQuery.Items[0]) as any;
       pinRequired = reg.pin_enabled === true;
-      console.log(`PIN required for user ${hashForLog(email)}: ${pinRequired}`);
     }
   } catch (error) {
     console.error('Error checking PIN status:', error);
@@ -129,7 +131,6 @@ export const handler: CreateAuthChallengeTriggerHandler = async (event) => {
       const ageSeconds = now - validTokens[0].createdAtTimestamp;
       const minutesRemaining = Math.round((validTokens[0].expiresAt - now) / 60);
 
-      console.log(`Found existing valid token for user ${hashForLog(email)}, age: ${ageSeconds}s, expires in ${minutesRemaining}m, reusing without sending email`);
       event.response.publicChallengeParameters = { email, pinRequired: pinRequired.toString() };
       event.response.privateChallengeParameters = { token: existingToken };
       event.response.challengeMetadata = 'MAGIC_LINK';
@@ -140,8 +141,6 @@ export const handler: CreateAuthChallengeTriggerHandler = async (event) => {
     console.error('Error checking for existing tokens:', error);
     // Continue with normal flow if check fails
   }
-
-  console.log(`Creating new token for user ${hashForLog(email)} and sending email`);
 
   // Generate magic link token
   const token = generateToken();
@@ -159,8 +158,6 @@ export const handler: CreateAuthChallengeTriggerHandler = async (event) => {
       createdAtTimestamp: now, // Unix timestamp for easy comparison
     }),
   }));
-
-  console.log(`Generated magic link token for user ${hashForLog(email)}, expires in ${TOKEN_EXPIRY_MINUTES} minutes`);
 
   // Build magic link using URL fragment for security
   // Fragments are not sent to server or logged in access logs
@@ -251,7 +248,6 @@ If you didn't request this login link, you can safely ignore this email.
 
   try {
     await ses.send(new SendEmailCommand(emailParams));
-    console.log(`Magic link email sent to user ${hashForLog(email)}`);
   } catch (error) {
     console.error('Failed to send magic link email:', error);
     throw error;

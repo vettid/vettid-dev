@@ -116,6 +116,14 @@
       color: #a0a0a0;
       font-size: 0.85rem;
     }
+    /* Focus visible for accessibility */
+    :focus-visible {
+      outline: 2px solid #ffc125;
+      outline-offset: 2px;
+    }
+    :focus:not(:focus-visible) {
+      outline: none;
+    }
   </style>
 </head>
 <body>
@@ -151,15 +159,10 @@ const AWS_REGION = window.VettIDConfig.region;
 const poolData = { UserPoolId: USER_POOL_ID, ClientId: CLIENT_ID };
 const userPool = new AmazonCognitoIdentity.CognitoUserPool(poolData);
 
-// Check if SDK has any cached user
+// Check if SDK has any cached user and clear it to prevent auto-auth
 const currentUser = userPool.getCurrentUser();
-console.log('[SIGNIN] Cognito SDK getCurrentUser:', currentUser ? currentUser.getUsername() : 'null');
-
-// If there's a cached user, clear it immediately to prevent auto-auth
 if (currentUser) {
-  console.log('[SIGNIN] WARNING: Found cached Cognito user, signing them out to prevent auto-auth');
   currentUser.signOut();
-  console.log('[SIGNIN] Cached user signed out');
 }
 
 // ---- Token storage ----
@@ -197,8 +200,6 @@ async function sendMagicLink(e) {
     return;
   }
 
-  console.log('[SIGNIN] User requesting magic link for:', email);
-
   const sendBtn = document.getElementById('sendLinkBtn');
   sendBtn.disabled = true;
   showStatus('Sending magic link...', 'info');
@@ -212,10 +213,9 @@ async function sendMagicLink(e) {
 
   cognitoUser.setAuthenticationFlowType('CUSTOM_AUTH');
 
-  console.log('[SIGNIN] Calling initiateAuth (send magic link)');
   cognitoUser.initiateAuth(authDetails, {
     onSuccess: (result) => {
-      console.log('Unexpected success on initiateAuth');
+      // Unexpected - magic link flow should go through customChallenge
     },
     onFailure: (err) => {
       console.error('Auth error:', err);
@@ -233,10 +233,6 @@ async function sendMagicLink(e) {
 
 // Event listeners
 document.getElementById('signinForm').addEventListener('submit', sendMagicLink);
-
-// Initialize
-console.log('[SIGNIN] Page loaded. Current URL:', window.location.href);
-console.log('[SIGNIN] LocalStorage tokens:', !!localStorage.getItem('tokens'));
 </script>
 </body>
 </html>

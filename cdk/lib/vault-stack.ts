@@ -3,10 +3,7 @@ import { Construct } from 'constructs';
 import {
   aws_lambda_nodejs as lambdaNode,
   aws_lambda as lambda,
-  aws_apigatewayv2 as apigw,
-  aws_apigatewayv2_integrations as integrations,
   aws_iam as iam,
-  aws_cognito as cognito,
 } from 'aws-cdk-lib';
 import { InfrastructureStack } from './infrastructure-stack';
 

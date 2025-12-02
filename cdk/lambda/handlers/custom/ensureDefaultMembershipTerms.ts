@@ -1,7 +1,7 @@
 import { Handler } from "aws-lambda";
 import { DynamoDBClient, PutItemCommand, QueryCommand } from "@aws-sdk/client-dynamodb";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
-import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
+import { marshall } from "@aws-sdk/util-dynamodb";
 import { randomUUID } from "crypto";
 import PDFDocument from "pdfkit";
 

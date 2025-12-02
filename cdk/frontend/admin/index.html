@@ -99,10 +99,10 @@
     .user-dropdown-item{display:block;width:100%;padding:12px 16px;cursor:pointer;transition:background 0.2s;border-bottom:1px solid var(--bg-divider);color:var(--text);font-size:0.9rem;}
     .user-dropdown-item:last-child{border-bottom:none;}
     .user-dropdown-item:hover{background:rgba(255,193,37,0.1);}
-    .pagination{display:flex;align-items:center;gap:12px;margin-top:20px;padding:12px;background:var(--bg-input);border-radius:2px;border:1px solid var(--border)}
+    .pagination{display:flex;align-items:center;gap:12px;margin-top:20px;padding:12px;background:var(--bg-input);border-radius:2px;border:1px solid var(--border);flex-wrap:wrap;justify-content:center;}
     .pagination select{width:auto;padding:.5rem}
     .pagination button{padding:.5rem 1rem;font-size:.85rem}
-    .pagination .info{color:var(--gray)}
+    .pagination .info{color:var(--gray);text-align:center;}
     .toast-container{position:fixed;top:80px;right:24px;z-index:9999;display:flex;flex-direction:column;gap:12px;max-width:400px;}
     .toast{padding:16px 20px;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,0.4);display:flex;align-items:center;gap:12px;animation:slideIn 0.3s ease-out;font-weight:500;border-left:4px solid;}
     .toast.success{background:linear-gradient(135deg,#0e5f3d 0%,#064e2f 100%);border-left-color:#10b981;color:#d1fae5;}
@@ -189,10 +189,19 @@
     table.hide-on-card{display:table;}
     table.hide-on-card.hidden{display:none;}
     @media(max-width:768px){
+      body{height:auto!important;min-height:100vh;overflow:auto!important;}
       .sidebar{position:fixed;left:0;top:60px;bottom:0;z-index:999;box-shadow:2px 0 8px rgba(0,0,0,0.3);}
-      .main-container{flex-direction:column;}
-      .wrap{padding:16px;}
+      .main-container{flex-direction:column;overflow:visible;min-height:calc(100vh - 60px);}
+      .wrap{padding:16px;padding-bottom:100px;overflow:visible;-webkit-overflow-scrolling:touch;min-height:0;flex:1;}
+      .tab-content{height:auto!important;overflow:visible!important;}
+      .sub-tab-content{height:auto!important;overflow:visible!important;}
+      .tab-content.card{overflow:visible!important;}
       .user-dropdown-menu{right:auto;left:0;}
+      /* Mobile pagination styles */
+      .pagination{flex-direction:column;gap:10px;padding:16px;}
+      .pagination label{width:100%;text-align:center;}
+      .pagination .info{width:100%;order:1;}
+      .pagination button{min-width:100px;}
       /* Mobile modal styles */
       .modal{width:95%;max-width:95%;padding:16px;max-height:90vh;overflow-y:auto;}
       .modal-header{margin-bottom:16px;padding-bottom:10px;}
@@ -884,50 +893,27 @@
 
         <!-- Email Sub-Tab -->
         <div id="email" class="sub-tab-content">
-          <h3 style="margin-top:0;">Email Management</h3>
-          <p class="muted">Send bulk emails to waitlist users, registered users, members, or subscribers.</p>
-
-          <!-- Email Composition Form -->
-          <div style="padding:20px;background:var(--bg-card);border-radius:4px;border:1px solid var(--border);margin-top:16px;">
-            <h4 style="margin-top:0;">Compose Email</h4>
-
-            <div style="margin-bottom:16px;">
-              <label style="display:block;margin-bottom:6px;font-size:0.9rem;font-weight:600;">Recipients</label>
-              <select id="emailRecipientType" style="width:100%;padding:10px;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:0.95rem;">
-                <option value="">Select recipient group...</option>
-                <option value="waitlist">All Waitlisted Users</option>
-                <option value="registered">All Registered Users</option>
-                <option value="members">All Members</option>
-                <option value="subscribers">All Subscribers</option>
-              </select>
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:16px;">
+            <div>
+              <h3 style="margin:0;">Email Management</h3>
+              <p class="muted" style="margin:4px 0 0 0;">Send bulk emails to waitlist users, registered users, members, or subscribers.</p>
             </div>
-
-            <div style="margin-bottom:16px;">
-              <label style="display:block;margin-bottom:6px;font-size:0.9rem;font-weight:600;">Subject</label>
-              <input type="text" id="emailSubject" placeholder="Enter email subject..." style="width:100%;padding:10px;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:0.95rem;">
-            </div>
-
-            <div style="margin-bottom:16px;">
-              <label style="display:block;margin-bottom:6px;font-size:0.9rem;font-weight:600;">Message</label>
-              <textarea id="emailBody" placeholder="Enter your message here... (HTML supported)" style="width:100%;padding:12px;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:0.95rem;min-height:200px;font-family:monospace;resize:vertical;"></textarea>
-              <p class="muted" style="font-size:0.85rem;margin-top:8px;">You can use basic HTML for formatting (e.g., &lt;b&gt;bold&lt;/b&gt;, &lt;i&gt;italic&lt;/i&gt;, &lt;p&gt;paragraph&lt;/p&gt;)</p>
-            </div>
-
-            <button id="sendBulkEmail" class="btn" style="background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);padding:12px 24px;font-size:1rem;font-weight:600;">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;margin-right:8px;">
+            <button id="openComposeEmailBtn" class="btn" style="background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;margin-right:6px;">
                 <line x1="22" y1="2" x2="11" y2="13"></line>
                 <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
               </svg>
-              Send Email
+              Compose Email
             </button>
           </div>
 
           <!-- Sent Emails History -->
-          <div style="padding:20px;background:var(--bg-card);border-radius:4px;border:1px solid var(--border);margin-top:24px;">
-            <h4 style="margin-top:0;">Sent Emails</h4>
+          <div style="padding:20px;background:var(--bg-card);border-radius:4px;border:1px solid var(--border);">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+              <h4 style="margin:0;">Sent Emails</h4>
+              <button id="refreshSentEmails" class="btn" style="padding:8px 16px;font-size:0.85rem;">Refresh</button>
+            </div>
             <p class="muted" style="margin-bottom:16px;">History of bulk emails sent to users (newest first)</p>
-
-            <button id="refreshSentEmails" class="btn" style="margin-bottom:16px;">Refresh</button>
 
             <div id="sentEmailsList" style="display:flex;flex-direction:column;gap:12px;">
               <!-- Sent emails will be displayed here -->
@@ -1270,16 +1256,18 @@ function renderWaitlistCards(entries) {
       rejected: '#ef4444'
     };
     const statusColor = statusColors[entry.status] || '#6b7280';
+    const statusLabel = entry.status ? entry.status.charAt(0).toUpperCase() + entry.status.slice(1) : 'Pending';
+    const isDisabled = entry.status === 'invited' || entry.status === 'rejected';
 
     const card = document.createElement('div');
     card.className = 'data-card';
     card.innerHTML = `
       <div class="data-card-header">
         <div style="display:flex;align-items:center;gap:12px;flex:1;">
-          <input type="checkbox" class="waitlist-checkbox" value="${escapeHtml(entry.email)}" onclick="event.stopPropagation();updateWaitlistSelection();" style="width:18px;height:18px;cursor:pointer;"/>
-          <div class="data-card-title">${escapeHtml(entry.first_name)} ${escapeHtml(entry.last_name)}</div>
+          <input type="checkbox" class="waitlist-checkbox" data-id="${escapeHtml(entry.waitlist_id)}" onclick="event.stopPropagation();updateWaitlistSelectedCount();" style="width:18px;height:18px;cursor:pointer;" ${isDisabled ? 'disabled title="Already processed"' : ''}/>
+          <div class="data-card-title">${escapeHtml(entry.first_name || '')} ${escapeHtml(entry.last_name || '')}</div>
         </div>
-        <span class="data-card-badge" style="background:${statusColor}">${escapeHtml(entry.status)}</span>
+        <span class="data-card-badge" style="background:${statusColor}">${statusLabel}</span>
       </div>
       <div class="data-card-body">
         <div class="data-card-row">
@@ -1288,7 +1276,7 @@ function renderWaitlistCards(entries) {
         </div>
         <div class="data-card-row">
           <span class="data-card-label">Created:</span>
-          <span class="data-card-value">${new Date(entry.created_at).toLocaleDateString()}</span>
+          <span class="data-card-value">${entry.created_at ? new Date(entry.created_at).toLocaleDateString() : '—'}</span>
         </div>
         ${entry.invited_at ? `
         <div class="data-card-row">
@@ -1301,7 +1289,7 @@ function renderWaitlistCards(entries) {
           <span class="data-card-value">${escapeHtml(entry.invited_by)}</span>
         </div>` : ''}
       </div>
-      ${entry.status === 'pending' ? `
+      ${entry.status === 'pending' || !entry.status ? `
       <div class="data-card-actions">
         <button class="btn" style="background:linear-gradient(135deg,#0e9e4d 0%,#0a7a3a 100%);" onclick="event.stopPropagation();">Invite</button>
         <button class="btn" style="background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);" onclick="event.stopPropagation();">Reject</button>
@@ -1612,6 +1600,10 @@ function renderAdminsCards(admins) {
           <span class="data-card-label">Created:</span>
           <span class="data-card-value">${escapeHtml(createdDate)}</span>
         </div>
+      </div>
+      <div class="data-card-actions">
+        <button class="btn" style="background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);" onclick="event.stopPropagation();openManageAccessModal('${escapeHtml(a.email)}','${escapeHtml(name)}',${a.enabled},'${adminType}');">Manage</button>
+        <button class="btn" style="background:linear-gradient(135deg,#8b5cf6 0%,#7c3aed 100%);" onclick="event.stopPropagation();openActivityLogModal('${escapeHtml(a.email)}','${escapeHtml(name)}');">Activity</button>
       </div>
     `;
     cardContainer.appendChild(card);
@@ -2443,7 +2435,9 @@ async function loadInvites(resetPage=true){
   try{
     // Fetch all invites (no status filter in API call)
     if(resetPage||invitesData.length===0){
-      invitesData=await api('/admin/invites');
+      const response=await api('/admin/invites');
+      // API returns { items, count, limit, nextCursor } - extract items array
+      invitesData=Array.isArray(response)?response:(response.items||[]);
     }
 
     // Update quick filter counts
@@ -4850,13 +4844,24 @@ function renderActivityLog() {
   const content = document.getElementById('activityLogContent');
 
   // Filter activities based on current filter
+  // Support both 'action' and 'type' field names from audit entries
   let filtered = currentActivityData;
   if (currentActivityFilter === 'login') {
-    filtered = currentActivityData.filter(a => a.action && (a.action.includes('login') || a.action.includes('auth')));
+    filtered = currentActivityData.filter(a => {
+      const actionType = (a.action || a.type || '').toLowerCase();
+      return actionType.includes('login') || actionType.includes('auth');
+    });
   } else if (currentActivityFilter === 'action') {
-    filtered = currentActivityData.filter(a => a.action && !a.action.includes('login') && !a.action.includes('error') && !a.action.includes('failed'));
+    filtered = currentActivityData.filter(a => {
+      const actionType = (a.action || a.type || '').toLowerCase();
+      return actionType && !actionType.includes('login') && !actionType.includes('auth') && !actionType.includes('error') && !actionType.includes('failed');
+    });
   } else if (currentActivityFilter === 'error') {
-    filtered = currentActivityData.filter(a => a.action && (a.action.includes('error') || a.action.includes('failed')));
+    // Support both 'action' and 'type' field names
+    filtered = currentActivityData.filter(a => {
+      const actionType = a.action || a.type || '';
+      return actionType.includes('error') || actionType.includes('failed');
+    });
   }
 
   if (filtered.length === 0) {
@@ -4865,21 +4870,24 @@ function renderActivityLog() {
   }
 
   // Sort by timestamp descending (most recent first)
+  // Support both 'timestamp'/'created_at' and 'ts' field names
   filtered.sort((a, b) => {
-    const aTime = new Date(a.timestamp || a.created_at).getTime();
-    const bTime = new Date(b.timestamp || b.created_at).getTime();
+    const aTime = new Date(a.timestamp || a.created_at || a.ts).getTime();
+    const bTime = new Date(b.timestamp || b.created_at || b.ts).getTime();
     return bTime - aTime;
   });
 
   // Render activity items
   const html = filtered.map(activity => {
-    const timestamp = new Date(activity.timestamp || activity.created_at);
+    // Support both 'timestamp'/'created_at' and 'ts' field names
+    const timestamp = new Date(activity.timestamp || activity.created_at || activity.ts);
     const relativeTime = formatRelativeTime(timestamp);
 
     // Determine activity type color
+    // Support both 'action' and 'type' field names
     let typeColor = '#3b82f6';
     let typeBg = 'linear-gradient(135deg,#3b82f6 0%,#2563eb 100%)';
-    const action = (activity.action || '').toLowerCase();
+    const action = (activity.action || activity.type || '').toLowerCase();
 
     if (action.includes('login') || action.includes('auth')) {
       typeColor = '#10b981';
@@ -4889,12 +4897,23 @@ function renderActivityLog() {
       typeBg = 'linear-gradient(135deg,#ef4444 0%,#dc2626 100%)';
     }
 
-    const details = activity.details ? `<div style="font-size:0.8rem;color:var(--gray);margin-top:4px;">${escapeHtml(JSON.stringify(activity.details, null, 2))}</div>` : '';
+    // Build details from audit entry fields (excluding standard fields)
+    const excludeFields = ['id', 'type', 'action', 'ts', 'timestamp', 'created_at', 'email', 'createdAtTimestamp', 'request_id', 'description', 'ip_address', 'details'];
+    const extraDetails = Object.entries(activity)
+      .filter(([key]) => !excludeFields.includes(key))
+      .reduce((acc, [key, value]) => ({ ...acc, [key]: value }), {});
+    const hasExtraDetails = Object.keys(extraDetails).length > 0;
+    const details = hasExtraDetails ? `<div style="font-size:0.8rem;color:var(--gray);margin-top:4px;"><pre style="margin:0;white-space:pre-wrap;font-family:inherit;">${escapeHtml(JSON.stringify(extraDetails, null, 2))}</pre></div>` : '';
+
+    // Format action type for display (e.g., 'invite_created' -> 'Invite Created')
+    const displayAction = (activity.action || activity.type || 'Unknown Action')
+      .replace(/_/g, ' ')
+      .replace(/\b\w/g, c => c.toUpperCase());
 
     return `
       <div style="padding:12px;margin-bottom:12px;background:var(--bg-card);border-left:3px solid ${typeColor};border-radius:4px;">
         <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:6px;">
-          <div style="font-weight:600;color:var(--text);">${escapeHtml(activity.action || 'Unknown Action')}</div>
+          <div style="font-weight:600;color:var(--text);">${escapeHtml(displayAction)}</div>
           <span style="font-size:0.75rem;color:var(--gray);white-space:nowrap;margin-left:12px;" title="${timestamp.toLocaleString()}">${relativeTime}</span>
         </div>
         ${activity.description ? `<div style="font-size:0.85rem;color:var(--gray);margin-bottom:4px;">${escapeHtml(activity.description)}</div>` : ''}
@@ -5702,14 +5721,14 @@ function renderWaitlist() {
     return true;
   });
 
-  // Check for empty state
+  // Check for empty state - update both table and cards
   if (filtered.length === 0) {
-    if (viewState.waitlist === 'card') {
-      const cardContainer = document.getElementById('waitlistCardContainer');
-      cardContainer.innerHTML = '<div class="empty-state"><div class="empty-state-text">No waitlist entries found</div><div class="empty-state-subtext">Try adjusting your filters</div></div>';
-    } else {
-      showEmptyState('waitlistTable', 'No waitlist entries found', 'Try adjusting your filters');
-    }
+    const cardContainer = document.getElementById('waitlistCardContainer');
+    cardContainer.innerHTML = '<div class="empty-state"><div class="empty-state-text">No waitlist entries found</div><div class="empty-state-subtext">Try adjusting your filters</div></div>';
+    showEmptyState('waitlistTable', 'No waitlist entries found', 'Try adjusting your filters');
+    document.getElementById('waitlistInfo').textContent = 'Page 0 of 0 (0 total)';
+    document.getElementById('waitlistPrev').disabled = true;
+    document.getElementById('waitlistNext').disabled = true;
     return;
   }
 
@@ -5724,34 +5743,34 @@ function renderWaitlist() {
   document.getElementById('waitlistPrev').disabled = waitlistPaginationState.currentPage === 1;
   document.getElementById('waitlistNext').disabled = waitlistPaginationState.currentPage === totalPages || filtered.length === 0;
 
-  // Render based on current view
-  if (viewState.waitlist === 'card') {
-    renderWaitlistCards(page);
-  } else {
-    const tbody = document.querySelector('#waitlistTable tbody');
-    tbody.innerHTML = '';
+  // Always render both table and cards - CSS controls which is visible based on screen size
+  // Render table
+  const tbody = document.querySelector('#waitlistTable tbody');
+  tbody.innerHTML = '';
 
-    page.forEach(w => {
-      const tr = document.createElement('tr');
-      const name = `${w.first_name || ''} ${w.last_name || ''}`.trim() || '—';
-      const createdDate = w.created_at ? new Date(w.created_at).toLocaleString() : '—';
-      const invitedDate = w.invited_at ? new Date(w.invited_at).toLocaleString() : '—';
-      const invitedBy = w.invited_by ? escapeHtml(w.invited_by) : '—';
+  page.forEach(w => {
+    const tr = document.createElement('tr');
+    const name = `${w.first_name || ''} ${w.last_name || ''}`.trim() || '—';
+    const createdDate = w.created_at ? new Date(w.created_at).toLocaleString() : '—';
+    const invitedDate = w.invited_at ? new Date(w.invited_at).toLocaleString() : '—';
+    const invitedBy = w.invited_by ? escapeHtml(w.invited_by) : '—';
 
-      let statusBadge = '<span style="display:inline-block;background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);color:#fff;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;">Pending</span>';
-      if (w.status === 'invited') {
-        statusBadge = '<span style="display:inline-block;background:linear-gradient(135deg,#10b981 0%,#059669 100%);color:#fff;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;">Invited</span>';
-      } else if (w.status === 'rejected') {
-        statusBadge = '<span style="display:inline-block;background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);color:#fff;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;">Rejected</span>';
-      }
+    let statusBadge = '<span style="display:inline-block;background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);color:#fff;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;">Pending</span>';
+    if (w.status === 'invited') {
+      statusBadge = '<span style="display:inline-block;background:linear-gradient(135deg,#10b981 0%,#059669 100%);color:#fff;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;">Invited</span>';
+    } else if (w.status === 'rejected') {
+      statusBadge = '<span style="display:inline-block;background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);color:#fff;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;">Rejected</span>';
+    }
 
-      const isDisabled = w.status === 'invited' || w.status === 'rejected';
-      tr.innerHTML = `<td><input type='checkbox' class='waitlist-checkbox' data-id='${escapeHtml(w.waitlist_id)}' ${isDisabled ? 'disabled title="Already processed"' : ''} /></td><td>${escapeHtml(name)}</td><td>${escapeHtml(w.email)}</td><td>${statusBadge}</td><td>${createdDate}</td><td>${invitedDate}</td><td>${invitedBy}</td>`;
-      tbody.appendChild(tr);
-    });
+    const isDisabled = w.status === 'invited' || w.status === 'rejected';
+    tr.innerHTML = `<td><input type='checkbox' class='waitlist-checkbox' data-id='${escapeHtml(w.waitlist_id)}' ${isDisabled ? 'disabled title="Already processed"' : ''} /></td><td>${escapeHtml(name)}</td><td>${escapeHtml(w.email)}</td><td>${statusBadge}</td><td>${createdDate}</td><td>${invitedDate}</td><td>${invitedBy}</td>`;
+    tbody.appendChild(tr);
+  });
 
-    updateWaitlistSelectedCount();
-  }
+  // Render cards (for mobile view)
+  renderWaitlistCards(page);
+
+  updateWaitlistSelectedCount();
 }
 
 function updateWaitlistSelectedCount() {
@@ -6090,6 +6109,22 @@ async function loadSentEmails() {
   }
 }
 
+// Compose Email Modal functions
+function openComposeEmailModal() {
+  document.getElementById('composeEmailModal').classList.add('active');
+}
+
+function closeComposeEmailModal() {
+  document.getElementById('composeEmailModal').classList.remove('active');
+  // Clear form
+  document.getElementById('emailRecipientType').value = '';
+  document.getElementById('emailSubject').value = '';
+  document.getElementById('emailBody').value = '';
+}
+
+// Open compose email modal button
+document.getElementById('openComposeEmailBtn')?.addEventListener('click', openComposeEmailModal);
+
 // Send bulk email
 document.getElementById('sendBulkEmail')?.addEventListener('click', async () => {
   const recipientType = document.getElementById('emailRecipientType').value;
@@ -6159,10 +6194,8 @@ document.getElementById('sendBulkEmail')?.addEventListener('click', async () => 
     const data = await res.json();
     showToast(`Email sent successfully to ${data.recipient_count} recipients!`, 'success');
 
-    // Clear form
-    document.getElementById('emailRecipientType').value = '';
-    document.getElementById('emailSubject').value = '';
-    document.getElementById('emailBody').value = '';
+    // Close modal and clear form
+    closeComposeEmailModal();
 
     // Reload sent emails list
     await loadSentEmails();
@@ -6675,6 +6708,50 @@ document.getElementById('refreshSentEmails')?.addEventListener('click', loadSent
       <div style="display:flex;gap:12px;">
         <button id="startImportBtn" class="btn" style="flex:1;background:linear-gradient(135deg,#10b981 0%,#059669 100%);" disabled>Import to Waitlist</button>
         <button onclick="closeCsvImportModal()" class="btn" style="flex:1;background:var(--bg-button-secondary);">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Compose Email Modal -->
+<div id="composeEmailModal" class="modal-overlay">
+  <div class="modal" style="max-width:600px;">
+    <div class="modal-header">
+      <h3 class="modal-title">Compose Email</h3>
+      <button class="modal-close" onclick="closeComposeEmailModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div style="margin-bottom:16px;">
+        <label style="display:block;margin-bottom:6px;font-size:0.9rem;font-weight:600;">Recipients</label>
+        <select id="emailRecipientType" style="width:100%;padding:10px;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:0.95rem;">
+          <option value="">Select recipient group...</option>
+          <option value="waitlist">All Waitlisted Users</option>
+          <option value="registered">All Registered Users</option>
+          <option value="members">All Members</option>
+          <option value="subscribers">All Subscribers</option>
+        </select>
+      </div>
+
+      <div style="margin-bottom:16px;">
+        <label style="display:block;margin-bottom:6px;font-size:0.9rem;font-weight:600;">Subject</label>
+        <input type="text" id="emailSubject" placeholder="Enter email subject..." style="width:100%;padding:10px;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:0.95rem;">
+      </div>
+
+      <div style="margin-bottom:16px;">
+        <label style="display:block;margin-bottom:6px;font-size:0.9rem;font-weight:600;">Message</label>
+        <textarea id="emailBody" placeholder="Enter your message here... (HTML supported)" style="width:100%;padding:12px;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:0.95rem;min-height:180px;font-family:monospace;resize:vertical;"></textarea>
+        <p class="muted" style="font-size:0.8rem;margin-top:6px;">Supports basic HTML: &lt;b&gt;, &lt;i&gt;, &lt;p&gt;, &lt;a&gt;</p>
+      </div>
+
+      <div style="display:flex;gap:12px;">
+        <button id="sendBulkEmail" class="btn" style="flex:1;background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;margin-right:6px;">
+            <line x1="22" y1="2" x2="11" y2="13"></line>
+            <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+          </svg>
+          Send Email
+        </button>
+        <button onclick="closeComposeEmailModal()" class="btn" style="flex:1;background:linear-gradient(135deg,#6b7280 0%,#4b5563 100%);">Cancel</button>
       </div>
     </div>
   </div>

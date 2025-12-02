@@ -1,5 +1,5 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
-import { DynamoDBClient, GetItemCommand, PutItemCommand, UpdateItemCommand, QueryCommand } from '@aws-sdk/client-dynamodb';
+import { DynamoDBClient, GetItemCommand, PutItemCommand, UpdateItemCommand } from '@aws-sdk/client-dynamodb';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import { createHash, randomBytes, generateKeyPairSync, createCipheriv } from 'crypto';
 import {
@@ -183,8 +183,6 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       return badRequest('Transaction key not found');
     }
 
-    const transactionKey = unmarshall(tkResult.Item);
-
     // Mark transaction key as used
     await ddb.send(new UpdateItemCommand({
       TableName: TABLE_TRANSACTION_KEYS,
@@ -294,7 +292,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
 
     // Audit log
     await putAudit({
-      action: 'auth_executed',
+      type: 'auth_executed',
       user_guid: userGuid,
       token_id: tokenId,
       cek_rotated_to: newCekVersion,

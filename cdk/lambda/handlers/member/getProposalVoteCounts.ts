@@ -1,11 +1,10 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
-import { DynamoDBClient, QueryCommand, GetItemCommand, ScanCommand } from '@aws-sdk/client-dynamodb';
+import { DynamoDBClient, GetItemCommand, ScanCommand } from '@aws-sdk/client-dynamodb';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import {
   ok,
   badRequest,
-  internalError,
-  getRequestId
+  internalError
 } from '../../common/util';
 
 const ddb = new DynamoDBClient({});
@@ -17,7 +16,6 @@ const TABLE_PROPOSALS = process.env.TABLE_PROPOSALS!;
  * GET /proposals/{id}/vote-counts
  */
 export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
-  const requestId = getRequestId(event);
   const requestOrigin = event.headers?.origin || event.headers?.Origin;
 
   try {
@@ -36,8 +34,6 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     if (!proposalResult.Item) {
       return badRequest('Proposal not found', requestOrigin);
     }
-
-    const proposal = unmarshall(proposalResult.Item);
 
     // Scan all votes for this proposal
     const votesResult = await ddb.send(new ScanCommand({
@@ -65,15 +61,6 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     }
 
     const totalVotes = results.yes + results.no + results.abstain;
-
-    // Calculate hours until close for active proposals
-    let hoursUntilClose = null;
-    if (proposal.status === 'active') {
-      const now = new Date();
-      const closesAt = new Date(proposal.closes_at);
-      const msUntilClose = closesAt.getTime() - now.getTime();
-      hoursUntilClose = Math.max(0, Math.round(msUntilClose / (1000 * 60 * 60)));
-    }
 
     return ok({
       yes: results.yes,

@@ -1,14 +1,33 @@
-import { DynamoDBStreamEvent, DynamoDBRecord } from 'aws-lambda';
-import { DynamoDBClient, ScanCommand, GetItemCommand } from '@aws-sdk/client-dynamodb';
+import { DynamoDBStreamEvent, DynamoDBRecord, DynamoDBBatchResponse, DynamoDBBatchItemFailure } from 'aws-lambda';
+import { DynamoDBClient, ScanCommand, GetItemCommand, PutItemCommand } from '@aws-sdk/client-dynamodb';
 import { SESClient, SendTemplatedEmailCommand } from '@aws-sdk/client-ses';
 import { unmarshall, marshall } from '@aws-sdk/util-dynamodb';
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 
 /**
  * Hash identifier for safe logging (no PII in logs)
  */
 function hashForLog(value: string): string {
   return createHash('sha256').update(value.toLowerCase().trim()).digest('hex').substring(0, 12);
+}
+
+// Transient errors that should be retried
+const TRANSIENT_ERROR_CODES = [
+  'ServiceUnavailable',
+  'ServiceUnavailableException',
+  'ThrottlingException',
+  'Throttling',
+  'ProvisionedThroughputExceededException',
+  'InternalServerError',
+  'RequestLimitExceeded',
+  'MessageRejected' // SES temporary rejection
+];
+
+function isTransientError(error: any): boolean {
+  const errorCode = error.name || error.code || error.Code;
+  return TRANSIENT_ERROR_CODES.some(code =>
+    errorCode?.includes(code) || error.message?.includes(code)
+  );
 }
 
 const ddb = new DynamoDBClient({});
@@ -29,20 +48,61 @@ interface ProposalRecord {
 }
 
 /**
+ * Helper to log errors to audit table (best effort)
+ */
+async function logErrorToAudit(eventId: string | undefined, error: any, isTransient: boolean): Promise<void> {
+  try {
+    await ddb.send(new PutItemCommand({
+      TableName: TABLE_AUDIT,
+      Item: marshall({
+        id: `stream_error_${randomUUID()}`,
+        type: 'proposal_stream_error',
+        event_id: eventId || 'unknown',
+        message: error.message || String(error),
+        error_code: error.name || error.code,
+        is_transient: isTransient,
+        created_at: new Date().toISOString()
+      })
+    }));
+  } catch (auditErr) {
+    console.warn('Failed to log stream error to audit:', auditErr);
+  }
+}
+
+/**
  * Process DynamoDB Stream events for proposals table
  * Sends email notifications when proposals become active
+ *
+ * Returns partial batch response to enable retry of failed records
  */
-export const handler = async (event: DynamoDBStreamEvent): Promise<void> => {
+export const handler = async (event: DynamoDBStreamEvent): Promise<DynamoDBBatchResponse> => {
   console.log(`Processing ${event.Records.length} stream records`);
+  const batchItemFailures: DynamoDBBatchItemFailure[] = [];
 
   for (const record of event.Records) {
     try {
       await processRecord(record);
-    } catch (error) {
-      console.error('Error processing record:', error);
-      // Continue processing other records
+    } catch (error: any) {
+      console.error('Error processing record:', record.eventID, error);
+
+      // Log the error to audit (best effort)
+      const isTransient = isTransientError(error);
+      await logErrorToAudit(record.eventID, error, isTransient);
+
+      // For transient errors, mark the record as failed so it will be retried
+      // For permanent errors (e.g., invalid template), log and continue
+      if (isTransient) {
+        if (record.eventID) {
+          batchItemFailures.push({ itemIdentifier: record.eventID });
+        }
+      } else {
+        console.error('Permanent error processing record, skipping:', record.eventID, error.message);
+      }
     }
   }
+
+  // Return partial batch response - Lambda will retry only failed items
+  return { batchItemFailures };
 };
 
 async function processRecord(record: DynamoDBRecord): Promise<void> {

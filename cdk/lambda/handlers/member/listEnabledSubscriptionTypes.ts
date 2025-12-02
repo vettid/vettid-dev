@@ -1,7 +1,7 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { DynamoDBClient, ScanCommand } from '@aws-sdk/client-dynamodb';
 import { unmarshall } from '@aws-sdk/util-dynamodb';
-import { ok, internalError, badRequest } from '../../common/util';
+import { ok, internalError, requireUserClaims } from '../../common/util';
 
 const ddb = new DynamoDBClient({});
 const TABLE_SUBSCRIPTION_TYPES = process.env.TABLE_SUBSCRIPTION_TYPES!;
@@ -14,13 +14,10 @@ const TABLE_AUDIT = process.env.TABLE_AUDIT!;
  */
 export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
-    // Get user GUID from JWT claims
-    const claims = (event.requestContext as any)?.authorizer?.jwt?.claims;
-    const userGuid = claims?.['custom:user_guid'];
-
-    if (!userGuid) {
-      return badRequest('User GUID not found in token');
-    }
+    // Get user claims from JWT token
+    const claimsResult = requireUserClaims(event);
+    if ('error' in claimsResult) return claimsResult.error;
+    const { user_guid: userGuid } = claimsResult.claims;
 
     // Scan all subscription types
     const result = await ddb.send(new ScanCommand({

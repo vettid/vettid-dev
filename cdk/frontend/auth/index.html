@@ -113,8 +113,16 @@
     }
     .helper-text {
       font-size: 0.85rem;
-      color: #999;
+      color: #a0a0a0;
       margin-top: 12px;
+    }
+    /* Focus visible for accessibility */
+    :focus-visible {
+      outline: 2px solid #ffc125;
+      outline-offset: 2px;
+    }
+    :focus:not(:focus-visible) {
+      outline: none;
     }
   </style>
 </head>
@@ -167,8 +175,6 @@ function showMessage(text, type) {
 }
 
 async function validateMagicLink() {
-  console.log('[AUTH] Page loaded, validating magic link');
-
   // Get token and email from URL fragment (more secure than query params)
   // Fragment (#token=...&email=...) is not sent to server or logged
   const fragment = location.hash.substring(1); // Remove the '#'
@@ -176,12 +182,9 @@ async function validateMagicLink() {
   const token = params.get('token');
   const email = params.get('email');
 
-  console.log('[AUTH] Token present:', !!token, 'Email:', email);
-
   if (!token || !email) {
-    console.error('[AUTH] Missing token or email in URL fragment');
-    showMessage('Invalid magic link. Please request a new one.', 'error');
-    setTimeout(() => { window.location.href = '/signin'; }, 3000);
+    showMessage('Invalid magic link. Redirecting to sign in...', 'error');
+    window.location.href = '/signin';
     return;
   }
 
@@ -189,7 +192,6 @@ async function validateMagicLink() {
   history.replaceState(null, '', location.pathname);
 
   try {
-    console.log('[AUTH] Creating Cognito user for:', email);
     const userData = { Username: email, Pool: userPool };
     const cognitoUser = new AmazonCognitoIdentity.CognitoUser(userData);
     cognitoUser.setAuthenticationFlowType('CUSTOM_AUTH');
@@ -199,49 +201,40 @@ async function validateMagicLink() {
       Username: email
     });
 
-    console.log('[AUTH] Calling initiateAuth to start validation flow');
-
     cognitoUser.initiateAuth(authDetails, {
       onSuccess: (result) => {
         // Shouldn't happen on first call, but handle it
-        console.log('[AUTH] Unexpected immediate success');
         saveTokens(
           result.getIdToken().getJwtToken(),
           result.getAccessToken().getJwtToken(),
           result.getRefreshToken().getToken()
         );
-        showMessage('Successfully authenticated! Redirecting...', 'success');
-        setTimeout(() => { window.location.href = '/account'; }, 1000);
+        window.location.href = '/account';
       },
       onFailure: (err) => {
         console.error('[AUTH] Auth failed:', err);
         showMessage('Authentication failed: ' + (err.message || 'Invalid or expired link'), 'error');
-        setTimeout(() => { window.location.href = '/signin'; }, 3000);
+        setTimeout(() => { window.location.href = '/signin'; }, 2000);
       },
       customChallenge: (challengeParameters) => {
         // We got the challenge, check if PIN is required
-        console.log('[AUTH] Received challenge:', challengeParameters);
         const pinRequired = challengeParameters.pinRequired === 'true';
-        console.log('[AUTH] PIN required:', pinRequired);
 
         // If PIN is not required, auto-submit without prompting
         if (!pinRequired) {
-          console.log('[AUTH] PIN not required, auto-submitting token');
           cognitoUser.sendCustomChallengeAnswer(token, {
             onSuccess: (result) => {
-              console.log('[AUTH] Authentication successful');
               saveTokens(
                 result.getIdToken().getJwtToken(),
                 result.getAccessToken().getJwtToken(),
                 result.getRefreshToken().getToken()
               );
-              showMessage('Successfully authenticated! Redirecting...', 'success');
-              setTimeout(() => { window.location.href = '/account'; }, 1000);
+              window.location.href = '/account';
             },
             onFailure: (err) => {
               console.error('[AUTH] Auth failed after auto-submit:', err);
               showMessage('Authentication failed: ' + (err.message || 'Unknown error'), 'error');
-              setTimeout(() => { window.location.href = '/signin'; }, 3000);
+              setTimeout(() => { window.location.href = '/signin'; }, 2000);
             }
           });
           return;
@@ -264,7 +257,6 @@ async function validateMagicLink() {
 
           cognitoUser.sendCustomChallengeAnswer(answerValue, {
             onSuccess: (result) => {
-              console.log('[AUTH] Challenge answered successfully');
               saveTokens(
                 result.getIdToken().getJwtToken(),
                 result.getAccessToken().getJwtToken(),
@@ -274,8 +266,7 @@ async function validateMagicLink() {
               if (pinRequired) {
                 sessionStorage.setItem('pinVerified', 'true');
               }
-              showMessage('Successfully authenticated! Redirecting...', 'success');
-              setTimeout(() => { window.location.href = '/account'; }, 1000);
+              window.location.href = '/account';
             },
             onFailure: (err) => {
               console.error('[AUTH] Challenge answer failed:', err);
@@ -286,12 +277,12 @@ async function validateMagicLink() {
                 errorMsg += (err.message || 'Invalid or expired link');
               }
               showMessage(errorMsg, 'error');
-              setTimeout(() => { window.location.href = '/signin'; }, 3000);
+              setTimeout(() => { window.location.href = '/signin'; }, 2000);
             },
             customChallenge: () => {
               console.error('[AUTH] Unexpected additional challenge');
               showMessage('Authentication failed. Please try again.', 'error');
-              setTimeout(() => { window.location.href = '/signin'; }, 3000);
+              setTimeout(() => { window.location.href = '/signin'; }, 2000);
             }
           });
         }
@@ -308,18 +299,15 @@ async function validateMagicLink() {
 
           if (pin) {
             // Send token:pin format
-            console.log('[AUTH] Submitting with PIN');
             submitChallengeAnswer(token + ':' + pin);
           } else {
             // No PIN entered, just send token
-            console.log('[AUTH] No PIN entered, submitting token only');
             submitChallengeAnswer(token);
           }
         };
 
         // Handle skip PIN button
         document.getElementById('skipPinBtn').onclick = () => {
-          console.log('[AUTH] Skipping PIN, submitting token only');
           submitChallengeAnswer(token);
         };
 
@@ -334,8 +322,8 @@ async function validateMagicLink() {
 
   } catch (error) {
     console.error('[AUTH] Unexpected error:', error);
-    showMessage('An error occurred. Please try again.', 'error');
-    setTimeout(() => { window.location.href = '/signin'; }, 3000);
+    showMessage('An error occurred. Redirecting...', 'error');
+    setTimeout(() => { window.location.href = '/signin'; }, 2000);
   }
 }
 

@@ -4,8 +4,7 @@ import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import {
   ok,
   badRequest,
-  internalError,
-  getRequestId
+  internalError
 } from '../../common/util';
 
 const ddb = new DynamoDBClient({});
@@ -17,8 +16,6 @@ const TABLE_PROPOSALS = process.env.TABLE_PROPOSALS!;
  * GET /proposals/{proposal_id}/results
  */
 export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
-  const requestId = getRequestId(event);
-
   try {
     const proposal_id = event.pathParameters?.proposal_id;
 

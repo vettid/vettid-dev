@@ -58,7 +58,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
 
     // Log to audit
     await putAudit({
-      action: 'proposal_suspended',
+      type: 'proposal_suspended',
       email: email,
       proposal_id: proposalId,
       suspended_at: now.toISOString(),

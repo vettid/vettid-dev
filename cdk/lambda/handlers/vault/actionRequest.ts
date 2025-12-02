@@ -1,7 +1,7 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { DynamoDBClient, GetItemCommand, PutItemCommand, QueryCommand } from '@aws-sdk/client-dynamodb';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
-import { createHash, randomBytes, sign } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import {
   ok,
   badRequest,
@@ -196,7 +196,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
 
     // Audit log
     await putAudit({
-      action: 'action_requested',
+      type: 'action_requested',
       user_guid: body.user_guid,
       action_type: body.action_type,
       endpoint: actionEndpoint,

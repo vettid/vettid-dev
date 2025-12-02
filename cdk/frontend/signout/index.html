@@ -73,13 +73,7 @@ const CLIENT_ID = window.VettIDConfig.member.clientId;
 
 // Clear all authentication data
 function clearAllAuthData() {
-  console.log('[SIGNOUT] Starting comprehensive sign out');
-
-  // DON'T use Cognito SDK signOut - it might trigger auth flows
-  // Just clear storage directly
-  console.log('[SIGNOUT] Skipping Cognito SDK signOut() - clearing storage manually instead');
-
-  // Clear tokens
+  // Clear tokens directly (don't use Cognito SDK signOut - it might trigger auth flows)
   localStorage.removeItem('tokens');
   localStorage.removeItem('authEmail');
 
@@ -94,15 +88,10 @@ function clearAllAuthData() {
       keysToRemove.push(key);
     }
   }
-  keysToRemove.forEach(key => {
-    console.log('[SIGNOUT] Removing localStorage key:', key);
-    localStorage.removeItem(key);
-  });
+  keysToRemove.forEach(key => localStorage.removeItem(key));
 
   // Clear session storage as well
   sessionStorage.clear();
-
-  console.log('[SIGNOUT] All authentication data cleared');
 }
 
 // Perform sign out
@@ -116,7 +105,6 @@ async function signOut() {
 
     // Wait a moment, then redirect
     setTimeout(() => {
-      console.log('Redirecting to signin page');
       window.location.href = '/signin';
     }, 1000);
   } catch (error) {
