@@ -742,6 +742,15 @@ export class AdminStack extends cdk.Stack {
       }));
     });
 
+    // Grant SES permissions for addAdmin to verify new admin emails
+    addAdmin.addToRolePolicy(new iam.PolicyStatement({
+      actions: [
+        'ses:VerifyEmailIdentity',
+        'ses:GetIdentityVerificationAttributes',
+      ],
+      resources: ['*'],
+    }));
+
     // Grant SES permissions for sending and verifying emails
     sendWaitlistInvites.addToRolePolicy(new iam.PolicyStatement({
       actions: [

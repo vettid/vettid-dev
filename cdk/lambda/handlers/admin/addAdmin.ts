@@ -1,8 +1,10 @@
 import { APIGatewayProxyHandlerV2 } from "aws-lambda";
 import { ok, badRequest, putAudit, requireAdminGroup, validateOrigin, validateEmail, validateName, checkRateLimit, hashIdentifier, tooManyRequests, getAdminEmail, internalError } from "../../common/util";
 import { CognitoIdentityProviderClient, AdminCreateUserCommand, AdminAddUserToGroupCommand, AdminGetUserCommand, AdminUpdateUserAttributesCommand } from "@aws-sdk/client-cognito-identity-provider";
+import { SESClient, VerifyEmailIdentityCommand, GetIdentityVerificationAttributesCommand } from "@aws-sdk/client-ses";
 
 const cognito = new CognitoIdentityProviderClient({});
+const ses = new SESClient({});
 const USER_POOL_ID = process.env.ADMIN_USER_POOL_ID!;
 const ADMIN_GROUP = process.env.ADMIN_GROUP || "admin";
 
@@ -94,18 +96,53 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       GroupName: ADMIN_GROUP
     }));
 
+    // Check if email is already verified in SES, if not send verification
+    let sesVerificationSent = false;
+    let sesAlreadyVerified = false;
+    try {
+      const verificationStatus = await ses.send(new GetIdentityVerificationAttributesCommand({
+        Identities: [email]
+      }));
+
+      const status = verificationStatus.VerificationAttributes?.[email]?.VerificationStatus;
+
+      if (status === 'Success') {
+        sesAlreadyVerified = true;
+      } else {
+        // Send verification email (also handles 'Pending' status by resending)
+        await ses.send(new VerifyEmailIdentityCommand({
+          EmailAddress: email
+        }));
+        sesVerificationSent = true;
+      }
+    } catch (sesError: any) {
+      // Log but don't fail the admin creation if SES verification fails
+      console.error('SES verification error (non-fatal):', sesError);
+    }
+
     await putAudit({
       type: "admin_added",
       email,
       first_name: firstName,
       last_name: lastName,
       admin_type: adminType,
-      added_by: adminEmail
+      added_by: adminEmail,
+      ses_verification_sent: sesVerificationSent,
+      ses_already_verified: sesAlreadyVerified
     });
 
+    let message = userExists ? "User added to admin group" : "Admin user created successfully";
+    if (sesVerificationSent) {
+      message += ". SES verification email sent - they must click the link to receive notifications.";
+    } else if (sesAlreadyVerified) {
+      message += ". Email already verified for notifications.";
+    }
+
     return ok({
-      message: userExists ? "User added to admin group" : "Admin user created successfully",
-      email
+      message,
+      email,
+      ses_verification_sent: sesVerificationSent,
+      ses_already_verified: sesAlreadyVerified
     }, requestOrigin);
   } catch (error: any) {
     console.error('Error adding admin user:', error);
