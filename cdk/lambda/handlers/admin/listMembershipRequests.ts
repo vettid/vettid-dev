@@ -21,6 +21,12 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   // Get optional membership_status filter from query params
   const membershipStatusFilter = event.queryStringParameters?.membership_status;
 
+  // Get optional pagination params
+  const limitParam = event.queryStringParameters?.limit;
+  const offsetParam = event.queryStringParameters?.offset;
+  const limit = limitParam ? Math.min(Math.max(parseInt(limitParam, 10) || 100, 1), 100) : 100;
+  const offset = offsetParam ? Math.max(parseInt(offsetParam, 10) || 0, 0) : 0;
+
   // Validate membership_status filter if provided
   if (membershipStatusFilter && !VALID_MEMBERSHIP_STATUSES.includes(membershipStatusFilter)) {
     return badRequest(`Invalid membership_status filter. Must be one of: ${VALID_MEMBERSHIP_STATUSES.join(', ')}`);
@@ -68,7 +74,13 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       return 0;
     });
 
-    return ok({ registrations });
+    // Get total count before pagination
+    const total = registrations.length;
+
+    // Apply pagination
+    registrations = registrations.slice(offset, offset + limit);
+
+    return ok({ registrations, total, limit, offset });
   } catch (error) {
     console.error('Failed to list membership requests:', error);
     return internalError("Failed to list membership requests");
