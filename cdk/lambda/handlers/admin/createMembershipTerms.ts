@@ -148,8 +148,17 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
   const { terms_text } = payload;
 
-  if (!terms_text || terms_text.trim().length === 0) {
-    return badRequest("terms_text is required and cannot be empty");
+  if (!terms_text || typeof terms_text !== 'string') {
+    return badRequest("terms_text is required");
+  }
+
+  const trimmedText = terms_text.trim();
+  if (trimmedText.length === 0) {
+    return badRequest("terms_text cannot be empty or whitespace-only");
+  }
+
+  if (trimmedText.length < 10) {
+    return badRequest("terms_text must be at least 10 characters");
   }
 
   const adminEmail = getAdminEmail(event);

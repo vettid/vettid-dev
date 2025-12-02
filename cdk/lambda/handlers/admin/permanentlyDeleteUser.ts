@@ -1,5 +1,5 @@
 import { APIGatewayProxyHandlerV2 } from "aws-lambda";
-import { ddb, TABLES, ok, badRequest, putAudit, requireAdminGroup, validatePathParam, ValidationError, hashForLog } from "../../common/util";
+import { ddb, TABLES, ok, badRequest, notFound, putAudit, requireAdminGroup, validatePathParam, ValidationError, hashForLog } from "../../common/util";
 import { DeleteItemCommand, GetItemCommand } from "@aws-sdk/client-dynamodb";
 import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
 import { CognitoIdentityProviderClient, AdminDeleteUserCommand, AdminGetUserCommand } from "@aws-sdk/client-cognito-identity-provider";
@@ -28,7 +28,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     Key: marshall({ registration_id: id })
   }));
 
-  if (!regRes.Item) return badRequest("registration not found");
+  if (!regRes.Item) return notFound("User not found");
   const reg = unmarshall(regRes.Item) as any;
 
   const adminEmail = (event.requestContext as any)?.authorizer?.jwt?.claims?.email || "unknown@vettid.dev";

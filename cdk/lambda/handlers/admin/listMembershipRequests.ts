@@ -3,16 +3,28 @@ import {
   ddb,
   TABLES,
   ok,
+  badRequest,
   internalError,
   requireAdminGroup
 } from "../../common/util";
 import { ScanCommand } from "@aws-sdk/client-dynamodb";
 import { unmarshall } from "@aws-sdk/util-dynamodb";
 
+// Valid membership status values
+const VALID_MEMBERSHIP_STATUSES = ['none', 'pending', 'approved', 'denied'];
+
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   // Validate admin group membership
   const authError = requireAdminGroup(event);
   if (authError) return authError;
+
+  // Get optional membership_status filter from query params
+  const membershipStatusFilter = event.queryStringParameters?.membership_status;
+
+  // Validate membership_status filter if provided
+  if (membershipStatusFilter && !VALID_MEMBERSHIP_STATUSES.includes(membershipStatusFilter)) {
+    return badRequest(`Invalid membership_status filter. Must be one of: ${VALID_MEMBERSHIP_STATUSES.join(', ')}`);
+  }
 
   try {
     // Scan for all approved registrations (could be optimized with GSI if needed)
@@ -27,7 +39,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       }
     }));
 
-    const registrations = (result.Items || [])
+    let registrations = (result.Items || [])
       .map(item => unmarshall(item))
       .map((reg: any) => ({
         registration_id: reg.registration_id,
@@ -41,14 +53,20 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         membership_denial_reason: reg.membership_denial_reason || null,
         membership_approved_by: reg.membership_approved_by || null,
         membership_denied_by: reg.membership_denied_by || null
-      }))
-      .sort((a, b) => {
-        // Sort by requested_at if pending
-        if (a.membership_requested_at && b.membership_requested_at) {
-          return new Date(b.membership_requested_at).getTime() - new Date(a.membership_requested_at).getTime();
-        }
-        return 0;
-      });
+      }));
+
+    // Apply membership_status filter if provided
+    if (membershipStatusFilter) {
+      registrations = registrations.filter(reg => reg.membership_status === membershipStatusFilter);
+    }
+
+    // Sort by requested_at if pending
+    registrations.sort((a, b) => {
+      if (a.membership_requested_at && b.membership_requested_at) {
+        return new Date(b.membership_requested_at).getTime() - new Date(a.membership_requested_at).getTime();
+      }
+      return 0;
+    });
 
     return ok({ registrations });
   } catch (error) {

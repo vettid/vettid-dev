@@ -538,6 +538,11 @@ export function cors(requestOrigin?: string, methods: string = "OPTIONS,GET,POST
     "X-Permitted-Cross-Domain-Policies": "none",
     "Referrer-Policy": "strict-origin-when-cross-origin",
     "Content-Language": "en",
+    // SECURITY: Additional security headers for compliance
+    "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+    "Content-Security-Policy": "default-src 'self'; frame-ancestors 'none'",
+    "Cache-Control": "no-store, no-cache, must-revalidate",
+    "Pragma": "no-cache",
   };
 }
 
