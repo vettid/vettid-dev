@@ -269,11 +269,11 @@
       </div>
       <div class="modal-body">
         <div style="margin-bottom:16px;">
-          <label style="display:block;margin-bottom:6px;font-size:0.9rem;color:var(--gray);">Current Password</label>
+          <label for="currentPassword" style="display:block;margin-bottom:6px;font-size:0.9rem;color:var(--gray);">Current Password</label>
           <input type="password" id="currentPassword" placeholder="Enter current password" style="width:100%;" autocomplete="current-password" />
         </div>
         <div style="margin-bottom:16px;">
-          <label style="display:block;margin-bottom:6px;font-size:0.9rem;color:var(--gray);">New Password</label>
+          <label for="newPassword" style="display:block;margin-bottom:6px;font-size:0.9rem;color:var(--gray);">New Password</label>
           <input type="password" id="newPassword" placeholder="Enter new password" style="width:100%;" autocomplete="new-password" />
           <div class="password-strength">
             <div class="password-strength-fill" id="passwordStrengthFill"></div>
@@ -281,7 +281,7 @@
           <div class="password-strength-text" id="passwordStrengthText"></div>
         </div>
         <div style="margin-bottom:20px;">
-          <label style="display:block;margin-bottom:6px;font-size:0.9rem;color:var(--gray);">Confirm New Password</label>
+          <label for="confirmPassword" style="display:block;margin-bottom:6px;font-size:0.9rem;color:var(--gray);">Confirm New Password</label>
           <input type="password" id="confirmPassword" placeholder="Confirm new password" style="width:100%;" autocomplete="new-password" />
           <div class="password-match-indicator" id="passwordMatchIndicator"></div>
         </div>
@@ -341,7 +341,7 @@
           Sending invites to <strong id="inviteCountDisplay">0</strong> waitlist entries.
         </p>
         <div style="margin-bottom:20px;">
-          <label style="display:block;margin-bottom:6px;font-size:0.9rem;color:var(--gray);">
+          <label for="customMessageText" style="display:block;margin-bottom:6px;font-size:0.9rem;color:var(--gray);">
             Custom Message (Optional)
           </label>
           <textarea id="customMessageText"
@@ -467,7 +467,7 @@
         <div style="padding:16px;background:var(--bg-card);border-radius:8px;border:1px solid var(--border);margin-bottom:20px;">
           <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:12px;">
             <div>
-              <label style="display:block;margin-bottom:4px;font-size:0.85rem;color:var(--gray);">Search</label>
+              <label for="waitlistSearch" style="display:block;margin-bottom:4px;font-size:0.85rem;color:var(--gray);">Search</label>
               <input id="waitlistSearch" type="text" placeholder="Name, email..." style="width:100%;" />
             </div>
             <button id="resetWaitlistFilters" class="btn" style="margin-top:20px;background:var(--bg-button-secondary);">Reset Filters</button>
@@ -536,7 +536,7 @@
           <h4 style="margin:0 0 12px 0;color:var(--accent);">Filters</h4>
           <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:12px;">
             <div>
-              <label style="display:block;margin-bottom:4px;font-size:0.85rem;color:var(--gray);">Registration Status</label>
+              <label for="filterRegistration" style="display:block;margin-bottom:4px;font-size:0.85rem;color:var(--gray);">Registration Status</label>
               <select id="filterRegistration" style="width:100%;">
                 <option value="">All</option>
                 <option value="pending">Pending</option>
@@ -547,7 +547,7 @@
               </select>
             </div>
             <div>
-              <label style="display:block;margin-bottom:4px;font-size:0.85rem;color:var(--gray);">Membership Status</label>
+              <label for="filterMembership" style="display:block;margin-bottom:4px;font-size:0.85rem;color:var(--gray);">Membership Status</label>
               <select id="filterMembership" style="width:100%;">
                 <option value="">All</option>
                 <option value="none">No Request</option>
@@ -557,7 +557,7 @@
               </select>
             </div>
             <div>
-              <label style="display:block;margin-bottom:4px;font-size:0.85rem;color:var(--gray);">Subscription Status</label>
+              <label for="filterSubscription" style="display:block;margin-bottom:4px;font-size:0.85rem;color:var(--gray);">Subscription Status</label>
               <select id="filterSubscription" style="width:100%;">
                 <option value="">All</option>
                 <option value="active">Active</option>
@@ -569,15 +569,15 @@
           </div>
           <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:12px;">
             <div>
-              <label style="display:block;margin-bottom:4px;font-size:0.85rem;color:var(--gray);">Registration Date From</label>
+              <label for="filterDateFrom" style="display:block;margin-bottom:4px;font-size:0.85rem;color:var(--gray);">Registration Date From</label>
               <input id="filterDateFrom" type="date" style="width:100%;" />
             </div>
             <div>
-              <label style="display:block;margin-bottom:4px;font-size:0.85rem;color:var(--gray);">Registration Date To</label>
+              <label for="filterDateTo" style="display:block;margin-bottom:4px;font-size:0.85rem;color:var(--gray);">Registration Date To</label>
               <input id="filterDateTo" type="date" style="width:100%;" />
             </div>
             <div>
-              <label style="display:block;margin-bottom:4px;font-size:0.85rem;color:var(--gray);">Last Active</label>
+              <label for="filterLastActive" style="display:block;margin-bottom:4px;font-size:0.85rem;color:var(--gray);">Last Active</label>
               <select id="filterLastActive" style="width:100%;">
                 <option value="">All Time</option>
                 <option value="1">Last 24 Hours</option>
@@ -591,7 +591,7 @@
           </div>
           <div style="display:flex;gap:12px;align-items:center;">
             <div style="flex:1;">
-              <label style="display:block;margin-bottom:4px;font-size:0.85rem;color:var(--gray);">Search</label>
+              <label for="usersSearch" style="display:block;margin-bottom:4px;font-size:0.85rem;color:var(--gray);">Search</label>
               <input id="usersSearch" type="text" placeholder="Name, email, invite code, user GUID..." style="width:100%;" />
             </div>
             <button id="resetFilters" class="btn" style="margin-top:20px;background:var(--bg-button-secondary);">Reset Filters</button>
@@ -1022,11 +1022,11 @@
             <h4 style="margin:0 0 12px 0;color:var(--accent);">Filters</h4>
             <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:12px;">
               <div>
-                <label style="display:block;margin-bottom:4px;font-size:0.85rem;color:var(--gray);">Search</label>
+                <label for="subscriptionsSearch" style="display:block;margin-bottom:4px;font-size:0.85rem;color:var(--gray);">Search</label>
                 <input id="subscriptionsSearch" type="text" placeholder="Name, email, plan, GUID..." style="width:100%;" />
               </div>
               <div>
-                <label style="display:block;margin-bottom:4px;font-size:0.85rem;color:var(--gray);">Status</label>
+                <label for="filterSubStatus" style="display:block;margin-bottom:4px;font-size:0.85rem;color:var(--gray);">Status</label>
                 <select id="filterSubStatus" style="width:100%;">
                   <option value="">All</option>
                   <option value="active">Active</option>
@@ -1036,7 +1036,7 @@
                 </select>
               </div>
               <div>
-                <label style="display:block;margin-bottom:4px;font-size:0.85rem;color:var(--gray);">Plan Type</label>
+                <label for="filterSubPlan" style="display:block;margin-bottom:4px;font-size:0.85rem;color:var(--gray);">Plan Type</label>
                 <select id="filterSubPlan" style="width:100%;">
                   <option value="">All Plans</option>
                 </select>
@@ -6783,7 +6783,7 @@ document.getElementById('refreshSentEmails')?.addEventListener('click', loadSent
 
       <!-- File Upload -->
       <div style="margin-bottom:20px;">
-        <label style="display:block;margin-bottom:6px;font-size:0.9rem;color:var(--gray);">
+        <label for="csvFileInput" style="display:block;margin-bottom:6px;font-size:0.9rem;color:var(--gray);">
           CSV File <span style="color:#ef4444;">*</span>
         </label>
         <input type="file" id="csvFileInput" accept=".csv" style="width:100%;" />
@@ -6847,7 +6847,7 @@ document.getElementById('refreshSentEmails')?.addEventListener('click', loadSent
     </div>
     <div class="modal-body">
       <div style="margin-bottom:16px;">
-        <label style="display:block;margin-bottom:6px;font-size:0.9rem;font-weight:600;">Recipients</label>
+        <label for="emailRecipientType" style="display:block;margin-bottom:6px;font-size:0.9rem;font-weight:600;">Recipients</label>
         <select id="emailRecipientType" style="width:100%;padding:10px;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:0.95rem;">
           <option value="">Select recipient group...</option>
           <option value="waitlist">All Waitlisted Users</option>
@@ -6858,12 +6858,12 @@ document.getElementById('refreshSentEmails')?.addEventListener('click', loadSent
       </div>
 
       <div style="margin-bottom:16px;">
-        <label style="display:block;margin-bottom:6px;font-size:0.9rem;font-weight:600;">Subject</label>
+        <label for="emailSubject" style="display:block;margin-bottom:6px;font-size:0.9rem;font-weight:600;">Subject</label>
         <input type="text" id="emailSubject" placeholder="Enter email subject..." style="width:100%;padding:10px;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:0.95rem;">
       </div>
 
       <div style="margin-bottom:16px;">
-        <label style="display:block;margin-bottom:6px;font-size:0.9rem;font-weight:600;">Message</label>
+        <label for="emailBody" style="display:block;margin-bottom:6px;font-size:0.9rem;font-weight:600;">Message</label>
         <textarea id="emailBody" placeholder="Enter your message here... (HTML supported)" style="width:100%;padding:12px;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:0.95rem;min-height:180px;font-family:monospace;resize:vertical;"></textarea>
         <p class="muted" style="font-size:0.8rem;margin-top:6px;">Supports basic HTML: &lt;b&gt;, &lt;i&gt;, &lt;p&gt;, &lt;a&gt;</p>
       </div>

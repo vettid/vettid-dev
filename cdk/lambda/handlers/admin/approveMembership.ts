@@ -70,8 +70,8 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     }, requestId);
 
     return ok({ message: "Membership approved successfully" });
-  } catch (error) {
-    if (error instanceof NotFoundError) {
+  } catch (error: any) {
+    if (error instanceof NotFoundError || error?.name === 'NotFoundError') {
       return notFound(error.message);
     }
     console.error('Failed to approve membership:', error);

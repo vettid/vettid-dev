@@ -67,11 +67,11 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     }, requestId);
 
     return ok({ message: "Membership denied" });
-  } catch (error) {
-    if (error instanceof NotFoundError) {
+  } catch (error: any) {
+    if (error instanceof NotFoundError || error?.name === 'NotFoundError') {
       return notFound(error.message);
     }
-    if (error instanceof ValidationError) {
+    if (error instanceof ValidationError || error?.name === 'ValidationError') {
       return badRequest(error.message);
     }
     console.error('Failed to deny membership:', error);
