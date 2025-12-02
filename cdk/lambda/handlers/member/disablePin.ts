@@ -9,7 +9,8 @@ import {
   putAudit,
   requireRegisteredOrMemberGroup,
   getRequestId,
-  parseJsonBody
+  parseJsonBody,
+  ValidationError
 } from "../../common/util";
 import { UpdateItemCommand, QueryCommand } from "@aws-sdk/client-dynamodb";
 import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
@@ -118,6 +119,9 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       message: "PIN disabled successfully"
     });
   } catch (error) {
+    if (error instanceof ValidationError || (error as any)?.name === 'ValidationError') {
+      return badRequest((error as Error).message);
+    }
     console.error('Failed to disable PIN:', error);
     return internalError("Failed to disable PIN");
   }

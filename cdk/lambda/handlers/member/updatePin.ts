@@ -133,8 +133,8 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       message: "PIN updated successfully"
     });
   } catch (error) {
-    if (error instanceof ValidationError) {
-      return badRequest(error.message);
+    if (error instanceof ValidationError || (error as any)?.name === 'ValidationError') {
+      return badRequest((error as Error).message);
     }
     console.error('Failed to update PIN:', error);
     return internalError("Failed to update PIN");
