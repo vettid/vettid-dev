@@ -10,7 +10,8 @@ import {
   requireRegisteredOrMemberGroup,
   getRequestId,
   parseJsonBody,
-  ValidationError
+  ValidationError,
+  isWeakPin
 } from "../../common/util";
 import { UpdateItemCommand, QueryCommand } from "@aws-sdk/client-dynamodb";
 import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
@@ -62,6 +63,11 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
     if (!isValidPin(newPin)) {
       return badRequest("New PIN must be 4-6 digits");
+    }
+
+    // SECURITY: Reject weak PINs
+    if (isWeakPin(newPin)) {
+      return badRequest("New PIN is too weak. Avoid sequential digits (1234), repeated digits (1111), or common patterns.");
     }
 
     if (currentPin === newPin) {

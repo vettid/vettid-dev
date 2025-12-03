@@ -1,7 +1,7 @@
 import { APIGatewayProxyHandlerV2 } from "aws-lambda";
 import { DynamoDBClient, QueryCommand } from "@aws-sdk/client-dynamodb";
 import { unmarshall, marshall } from "@aws-sdk/util-dynamodb";
-import { ok, badRequest, internalError, requireAdminGroup } from "../../common/util";
+import { ok, badRequest, internalError, forbidden, requireAdminGroup, checkRateLimit, hashIdentifier, tooManyRequests, getAdminEmail, putAudit } from "../../common/util";
 
 const ddb = new DynamoDBClient({});
 const TABLE_AUDIT = process.env.TABLE_AUDIT!;
@@ -16,6 +16,8 @@ const DEFAULT_LIMIT = 50;
  *
  * Uses the email-timestamp-index GSI to query audit entries.
  * Note: Only entries with createdAtTimestamp field will appear (new entries).
+ *
+ * SECURITY: Restricted to admin_type='admin' only. Rate limited to 30 req/min.
  */
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   const requestOrigin = event.headers?.origin || event.headers?.Origin;
@@ -23,6 +25,25 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   // Validate admin group membership
   const authError = requireAdminGroup(event, requestOrigin);
   if (authError) return authError;
+
+  // SECURITY: Restrict to full admins only (admin_type='admin')
+  const adminType = (event.requestContext as any)?.authorizer?.jwt?.claims?.['custom:admin_type'];
+  if (adminType !== 'admin') {
+    await putAudit({
+      type: 'unauthorized_audit_log_access_attempt',
+      admin_type: adminType,
+      path: event.rawPath
+    });
+    return forbidden('Insufficient privileges to access audit logs', requestOrigin);
+  }
+
+  // Rate limiting: 30 requests per admin per minute
+  const callerEmail = getAdminEmail(event);
+  const callerHash = hashIdentifier(callerEmail);
+  const isAllowed = await checkRateLimit(callerHash, 'audit_log_query', 30, 60);
+  if (!isAllowed) {
+    return tooManyRequests("Too many audit log requests. Please try again later.", requestOrigin);
+  }
 
   const email = event.queryStringParameters?.email;
   if (!email) {

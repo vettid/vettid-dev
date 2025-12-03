@@ -1,9 +1,13 @@
 import { APIGatewayProxyHandlerV2 } from "aws-lambda";
-import { ddb, TABLES, ok, badRequest } from "../../common/util";
+import { ddb, TABLES, ok, badRequest, internalError, requireRegisteredOrMemberGroup } from "../../common/util";
 import { GetItemCommand } from "@aws-sdk/client-dynamodb";
 import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
 
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
+  // Validate registered or member group membership
+  const authError = requireRegisteredOrMemberGroup(event);
+  if (authError) return authError;
+
   // Get user email from JWT claims
   const claims = (event.requestContext as any)?.authorizer?.jwt?.claims;
   const email = claims?.email;
@@ -37,6 +41,6 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     });
   } catch (error: any) {
     console.error('Error getting email preferences:', error);
-    throw error;
+    return internalError('Failed to get email preferences');
   }
 };

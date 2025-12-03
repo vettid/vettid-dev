@@ -10,7 +10,8 @@ import {
   requireRegisteredOrMemberGroup,
   getRequestId,
   parseJsonBody,
-  ValidationError
+  ValidationError,
+  isWeakPin
 } from "../../common/util";
 import { UpdateItemCommand, QueryCommand } from "@aws-sdk/client-dynamodb";
 import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
@@ -54,6 +55,11 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
     if (!isValidPin(pin)) {
       return badRequest("PIN must be 4-6 digits");
+    }
+
+    // SECURITY: Reject weak PINs
+    if (isWeakPin(pin)) {
+      return badRequest("PIN is too weak. Avoid sequential digits (1234), repeated digits (1111), or common patterns.");
     }
 
     // Find the user's registration by email using GSI (efficient query instead of scan)

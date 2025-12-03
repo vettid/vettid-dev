@@ -1,5 +1,5 @@
 import { APIGatewayProxyHandlerV2 } from "aws-lambda";
-import { ok, internalError, requireAdminGroup, putAudit } from "../../common/util";
+import { ok, internalError, forbidden, requireAdminGroup, putAudit } from "../../common/util";
 import { CloudWatchLogsClient, DescribeLogGroupsCommand, FilterLogEventsCommand, LogGroup } from "@aws-sdk/client-cloudwatch-logs";
 
 const logs = new CloudWatchLogsClient({});
@@ -25,6 +25,17 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       path: event.rawPath
     });
     return authError;
+  }
+
+  // SECURITY: Restrict to full admins only (admin_type='admin')
+  const adminType = (event.requestContext as any)?.authorizer?.jwt?.claims?.['custom:admin_type'];
+  if (adminType !== 'admin') {
+    await putAudit({
+      type: 'unauthorized_system_logs_access_attempt',
+      admin_type: adminType,
+      path: event.rawPath
+    });
+    return forbidden('Insufficient privileges to access system logs');
   }
 
   try {

@@ -4,7 +4,8 @@ import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import {
   ok,
   badRequest,
-  internalError
+  internalError,
+  requireRegisteredOrMemberGroup
 } from '../../common/util';
 
 const ddb = new DynamoDBClient({});
@@ -14,8 +15,14 @@ const TABLE_PROPOSALS = process.env.TABLE_PROPOSALS!;
 /**
  * Get results for a specific proposal
  * GET /proposals/{proposal_id}/results
+ *
+ * SECURITY: Requires member or registered group membership
  */
 export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
+  // Validate registered or member group membership
+  const authError = requireRegisteredOrMemberGroup(event);
+  if (authError) return authError;
+
   try {
     const proposal_id = event.pathParameters?.proposal_id;
 
@@ -79,6 +86,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     });
   } catch (error: any) {
     console.error('Error getting proposal results:', error);
-    return internalError(error.message || 'Failed to get proposal results');
+    // SECURITY: Don't expose error.message to prevent information disclosure
+    return internalError('Failed to get proposal results');
   }
 };

@@ -146,6 +146,51 @@ export function isFuture(value: string | number): boolean {
 // ============================================
 
 /**
+ * Check if a PIN is weak and should be rejected
+ * SECURITY: Prevents common weak PINs that are easily guessable
+ * @param pin The PIN to validate (must be 4-6 digits)
+ * @returns true if PIN is weak and should be rejected, false if acceptable
+ */
+export function isWeakPin(pin: string): boolean {
+  // All same digit (e.g., 1111, 0000, 2222, 111111)
+  if (/^(\d)\1+$/.test(pin)) return true;
+
+  // Sequential ascending (e.g., 1234, 2345, 123456)
+  let isAscending = true;
+  for (let i = 1; i < pin.length; i++) {
+    if (parseInt(pin[i]) !== parseInt(pin[i - 1]) + 1) {
+      isAscending = false;
+      break;
+    }
+  }
+  if (isAscending) return true;
+
+  // Sequential descending (e.g., 4321, 5432, 654321)
+  let isDescending = true;
+  for (let i = 1; i < pin.length; i++) {
+    if (parseInt(pin[i]) !== parseInt(pin[i - 1]) - 1) {
+      isDescending = false;
+      break;
+    }
+  }
+  if (isDescending) return true;
+
+  // Common weak patterns
+  const weakPatterns = [
+    '1212', '2121', '1221', '2112',  // Alternating patterns
+    '1234', '2345', '3456', '4567', '5678', '6789', '7890',  // Sequential (covered above but explicit)
+    '0123', '9876', '8765', '7654', '6543', '5432', '4321', '3210',  // More sequential
+    '1122', '2233', '3344', '4455', '5566', '6677', '7788', '8899', '9900',  // Repeated pairs
+    '1357', '2468', '1379',  // Common number patterns
+    '1111', '2222', '3333', '4444', '5555', '6666', '7777', '8888', '9999', '0000',  // All same
+  ];
+
+  if (weakPatterns.includes(pin)) return true;
+
+  return false;
+}
+
+/**
  * Timing-safe string comparison to prevent timing attacks
  * SECURITY: Always use this for comparing tokens, secrets, and user-provided values
  * against stored values to prevent attackers from inferring information via response times.
