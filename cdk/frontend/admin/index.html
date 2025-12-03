@@ -43,7 +43,7 @@
       --bg-tertiary: #e5e7eb;
       --bg-progress: #d1d5db;
       --bg-error-bg: #fee2e2;
-      --bg-button-secondary: #ddd6fe;
+      --bg-button-secondary: #7c3aed;
       --bg-button-disabled: #d1d5db;
       --bg-logs: #f3f4f6;
       --bg-divider: #d1d5db;
@@ -257,6 +257,38 @@
     [data-theme="light"] .sidebar-toggle { background: #d4a012; color: #000; }
     [data-theme="light"] code { background: #e5e7eb; color: #1f2937; }
     [data-theme="light"] .bulk-action-bar { background: #ffffff; border-color: #d4a012; }
+
+    /* Flatpickr light theme overrides - use html selector for specificity */
+    html[data-theme="light"] .flatpickr-calendar { background: #ffffff !important; border: 1px solid #d1d5db !important; box-shadow: 0 4px 16px rgba(0,0,0,0.15) !important; }
+    html[data-theme="light"] .flatpickr-calendar.arrowTop:before { border-bottom-color: #d1d5db !important; }
+    html[data-theme="light"] .flatpickr-calendar.arrowTop:after { border-bottom-color: #ffffff !important; }
+    html[data-theme="light"] .flatpickr-months { background: linear-gradient(135deg, #d4a012 0%, #b8860b 100%) !important; border-bottom: 1px solid #b8860b !important; }
+    html[data-theme="light"] .flatpickr-months .flatpickr-month { color: #000 !important; }
+    html[data-theme="light"] .flatpickr-current-month .flatpickr-monthDropdown-months { background: transparent !important; color: #000 !important; font-weight: 600 !important; }
+    html[data-theme="light"] .flatpickr-current-month .flatpickr-monthDropdown-months option { background: #ffffff !important; color: #1f2937 !important; }
+    html[data-theme="light"] .flatpickr-current-month input.cur-year { color: #000 !important; background: transparent !important; font-weight: 600 !important; }
+    html[data-theme="light"] .flatpickr-months .flatpickr-prev-month, html[data-theme="light"] .flatpickr-months .flatpickr-next-month { color: #000 !important; fill: #000 !important; }
+    html[data-theme="light"] .flatpickr-months .flatpickr-prev-month:hover, html[data-theme="light"] .flatpickr-months .flatpickr-next-month:hover { color: #fff !important; }
+    html[data-theme="light"] .flatpickr-months .flatpickr-prev-month:hover svg, html[data-theme="light"] .flatpickr-months .flatpickr-next-month:hover svg { fill: #fff !important; }
+    html[data-theme="light"] .flatpickr-months .flatpickr-prev-month svg, html[data-theme="light"] .flatpickr-months .flatpickr-next-month svg { fill: #000 !important; }
+    html[data-theme="light"] .flatpickr-weekdays { background: #f9fafb !important; }
+    html[data-theme="light"] span.flatpickr-weekday { color: #6b7280 !important; background: transparent !important; }
+    html[data-theme="light"] .flatpickr-days { background: #ffffff !important; }
+    html[data-theme="light"] .flatpickr-day { color: #1f2937 !important; background: transparent !important; }
+    html[data-theme="light"] .flatpickr-day:hover { background: #f3f4f6 !important; border-color: #d1d5db !important; }
+    html[data-theme="light"] .flatpickr-day.today { border-color: #d4a012 !important; }
+    html[data-theme="light"] .flatpickr-day.selected, html[data-theme="light"] .flatpickr-day.selected:hover { background: #d4a012 !important; border-color: #d4a012 !important; color: #000 !important; }
+    html[data-theme="light"] .flatpickr-day.prevMonthDay, html[data-theme="light"] .flatpickr-day.nextMonthDay { color: #9ca3af !important; }
+    html[data-theme="light"] .flatpickr-day.disabled, html[data-theme="light"] .flatpickr-day.disabled:hover { color: #d1d5db !important; }
+    html[data-theme="light"] .flatpickr-time { background: #f9fafb !important; border-top: 1px solid #e5e7eb !important; }
+    html[data-theme="light"] .flatpickr-time input { color: #1f2937 !important; background: #ffffff !important; border: 1px solid #d1d5db !important; }
+    html[data-theme="light"] .flatpickr-time input:hover, html[data-theme="light"] .flatpickr-time input:focus { background: #ffffff !important; border-color: #d4a012 !important; }
+    html[data-theme="light"] .flatpickr-time .flatpickr-time-separator, html[data-theme="light"] .flatpickr-time .flatpickr-am-pm { color: #1f2937 !important; }
+    html[data-theme="light"] .flatpickr-time .flatpickr-am-pm:hover { background: #f3f4f6 !important; }
+    html[data-theme="light"] .numInputWrapper span { border-color: #d1d5db !important; }
+    html[data-theme="light"] .numInputWrapper span:hover { background: #f3f4f6 !important; }
+    html[data-theme="light"] .numInputWrapper span svg path { fill: #6b7280 !important; }
+    html[data-theme="light"] .numInputWrapper span:hover svg path { fill: #1f2937 !important; }
   </style>
 </head>
 <body>
@@ -650,8 +682,8 @@
           <button id="quickFilterExpiringSoonInvites" class="btn" style="background:linear-gradient(135deg,#f59e0b 0%,#d97706 100%);padding:10px 20px;font-weight:600;">
             Expiring Soon <span id="expiringSoonInvitesCount" style="background:#92400e;color:#fff;border-radius:12px;padding:2px 8px;margin-left:8px;font-size:0.75rem;">0</span>
           </button>
-          <button id="quickFilterUsedInvites" class="btn" style="background:linear-gradient(135deg,#6b7280 0%,#4b5563 100%);padding:10px 20px;font-weight:600;">
-            Used <span id="usedInvitesCount" style="background:var(--bg-button-secondary);color:#fff;border-radius:12px;padding:2px 8px;margin-left:8px;font-size:0.75rem;">0</span>
+          <button id="quickFilterUsedInvites" class="btn" style="background:linear-gradient(135deg,#a855f7 0%,#7c3aed 100%);padding:10px 20px;font-weight:600;">
+            Used <span id="usedInvitesCount" style="background:#5b21b6;color:#fff;border-radius:12px;padding:2px 8px;margin-left:8px;font-size:0.75rem;">0</span>
           </button>
         </div>
 
@@ -693,8 +725,8 @@
             <button id="quickFilterActiveAdmins" class="btn filter-active" style="background:linear-gradient(135deg,#10b981 0%,#059669 100%);padding:10px 20px;font-weight:600;">
               Active <span id="activeAdminsCount" style="background:#065f46;color:#fff;border-radius:12px;padding:2px 8px;margin-left:8px;font-size:0.75rem;">0</span>
             </button>
-            <button id="quickFilterDisabledAdmins" class="btn" style="background:linear-gradient(135deg,#6b7280 0%,#4b5563 100%);padding:10px 20px;font-weight:600;">
-              Disabled <span id="disabledAdminsCount" style="background:var(--bg-button-secondary);color:#fff;border-radius:12px;padding:2px 8px;margin-left:8px;font-size:0.75rem;">0</span>
+            <button id="quickFilterDisabledAdmins" class="btn" style="background:linear-gradient(135deg,#f97316 0%,#ea580c 100%);padding:10px 20px;font-weight:600;">
+              Disabled <span id="disabledAdminsCount" style="background:#c2410c;color:#fff;border-radius:12px;padding:2px 8px;margin-left:8px;font-size:0.75rem;">0</span>
             </button>
           </div>
 
@@ -1008,8 +1040,8 @@
 
           <!-- Quick Filter Badges -->
           <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px;">
-            <button id="quickFilterAllSubs" class="btn filter-active" style="background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);padding:10px 20px;font-weight:600;">
-              All <span id="allSubsCount" style="background:#1e40af;color:#fff;border-radius:12px;padding:2px 8px;margin-left:8px;font-size:0.75rem;">0</span>
+            <button id="quickFilterAllSubs" class="btn filter-active" style="background:linear-gradient(135deg,#a855f7 0%,#7c3aed 100%);padding:10px 20px;font-weight:600;">
+              All <span id="allSubsCount" style="background:#5b21b6;color:#fff;border-radius:12px;padding:2px 8px;margin-left:8px;font-size:0.75rem;">0</span>
             </button>
             <button id="quickFilterPaidSubs" class="btn" style="background:linear-gradient(135deg,#10b981 0%,#059669 100%);padding:10px 20px;font-weight:600;">
               Paid <span id="paidSubsCount" style="background:#065f46;color:#fff;border-radius:12px;padding:2px 8px;margin-left:8px;font-size:0.75rem;">0</span>
@@ -1174,6 +1206,24 @@ function escapeHtml(unsafe) {
     .replace(/'/g, "&#039;");
 }
 
+// Parse timestamps that could be seconds, milliseconds, or ISO strings
+function parseTimestamp(value) {
+  if (!value) return null;
+  // If it's a string that looks like ISO date, parse directly
+  if (typeof value === 'string' && value.includes('-')) {
+    const d = new Date(value);
+    return isNaN(d.getTime()) ? null : d;
+  }
+  // If numeric, detect if seconds or milliseconds
+  // Timestamps < 10000000000 are likely seconds (before year 2286)
+  // Timestamps >= 10000000000 are likely milliseconds
+  const num = Number(value);
+  if (isNaN(num)) return null;
+  const ms = num < 10000000000 ? num * 1000 : num;
+  const d = new Date(ms);
+  return isNaN(d.getTime()) ? null : d;
+}
+
 // Security: Session idle timeout (30 minutes)
 const IDLE_TIMEOUT = 30 * 60 * 1000; // 30 minutes in milliseconds
 const IDLE_WARNING_TIME = 28 * 60 * 1000; // 28 minutes - show warning
@@ -1307,7 +1357,7 @@ function renderWaitlistCards(entries) {
     card.innerHTML = `
       <div class="data-card-header">
         <div style="display:flex;align-items:center;gap:12px;flex:1;">
-          <input type="checkbox" class="waitlist-checkbox" data-id="${escapeHtml(entry.waitlist_id)}" onclick="event.stopPropagation();updateWaitlistSelectedCount();" style="width:18px;height:18px;cursor:pointer;" ${isDisabled ? 'disabled title="Already processed"' : ''}/>
+          <input type="checkbox" name="waitlist-select" class="waitlist-checkbox" data-id="${escapeHtml(entry.waitlist_id)}" onclick="event.stopPropagation();updateWaitlistSelectedCount();" style="width:18px;height:18px;cursor:pointer;" ${isDisabled ? 'disabled title="Already processed"' : ''}/>
           <div class="data-card-title">${escapeHtml(entry.first_name || '')} ${escapeHtml(entry.last_name || '')}</div>
         </div>
         <span class="data-card-badge" style="background:${statusColor}">${statusLabel}</span>
@@ -1374,7 +1424,7 @@ function renderUsersCards(users) {
     card.innerHTML = `
       <div class="data-card-header">
         <div style="display:flex;align-items:center;gap:12px;flex:1;">
-          <input type="checkbox" class="user-checkbox" data-id="${escapeHtml(u.registration_id)}" data-status="${escapeHtml(u.status)}" data-member="${escapeHtml(memberStatus)}" onclick="event.stopPropagation();updateUsersSelectedCount();" style="width:18px;height:18px;cursor:pointer;"/>
+          <input type="checkbox" name="user-select" class="user-checkbox" data-id="${escapeHtml(u.registration_id)}" data-status="${escapeHtml(u.status)}" data-member="${escapeHtml(memberStatus)}" onclick="event.stopPropagation();updateUsersSelectedCount();" style="width:18px;height:18px;cursor:pointer;"/>
           <div class="data-card-title">${escapeHtml(name)}</div>
         </div>
       </div>
@@ -1416,7 +1466,8 @@ function renderInvitesCards(invites) {
   const now = Date.now();
 
   invites.forEach(i => {
-    const expiresAt = i.expires_at ? i.expires_at * 1000 : null;
+    const expiresParsed = parseTimestamp(i.expires_at);
+    const expiresAt = expiresParsed ? expiresParsed.getTime() : null;
     const daysLeft = expiresAt ? Math.ceil((expiresAt - now) / (1000 * 60 * 60 * 24)) : null;
     const isExpired = expiresAt && expiresAt < now;
     const isExpiringSoon = daysLeft && daysLeft < 7 && daysLeft > 0;
@@ -1444,14 +1495,14 @@ function renderInvitesCards(invites) {
     else if (percentage > 50) barColor = '#f59e0b';
 
     const createdDate = i.created_at ? new Date(i.created_at).toLocaleDateString() : '—';
-    const expiresDate = i.expires_at ? new Date(i.expires_at * 1000).toLocaleDateString() : '—';
+    const expiresDate = expiresParsed ? expiresParsed.toLocaleDateString() : '—';
 
     const card = document.createElement('div');
     card.className = 'data-card';
     card.innerHTML = `
       <div class="data-card-header">
         <div style="display:flex;align-items:center;gap:12px;flex:1;">
-          <input type="checkbox" class="invites-checkbox" data-code="${escapeHtml(i.code)}" data-status="${escapeHtml(actualStatus)}" onclick="event.stopPropagation();updateInvitesSelectedCount();" style="width:18px;height:18px;cursor:pointer;"/>
+          <input type="checkbox" name="invite-select" class="invites-checkbox" data-code="${escapeHtml(i.code)}" data-status="${escapeHtml(actualStatus)}" onclick="event.stopPropagation();updateInvitesSelectedCount();" style="width:18px;height:18px;cursor:pointer;"/>
           <div class="data-card-title" style="font-family:monospace;font-size:0.9rem;">${escapeHtml(i.code)}</div>
         </div>
         <span class="data-card-badge" style="background:${statusColor}">${statusText}</span>
@@ -1528,7 +1579,7 @@ function renderSubscribersCards(subscriptions) {
     card.innerHTML = `
       <div class="data-card-header">
         <div style="display:flex;align-items:center;gap:12px;flex:1;">
-          <input type="checkbox" class="subscription-checkbox" data-guid="${escapeHtml(s.user_guid)}" onclick="event.stopPropagation();updateSubscriptionsSelectedCount();" style="width:18px;height:18px;cursor:pointer;"/>
+          <input type="checkbox" name="subscription-select" class="subscription-checkbox" data-guid="${escapeHtml(s.user_guid)}" onclick="event.stopPropagation();updateSubscriptionsSelectedCount();" style="width:18px;height:18px;cursor:pointer;"/>
           <div class="data-card-title">${escapeHtml(name)}</div>
         </div>
         <span class="data-card-badge" style="background:${statusColor}">${statusText}</span>
@@ -1622,7 +1673,7 @@ function renderAdminsCards(admins) {
     card.className = 'data-card';
     card.innerHTML = `
       <div class="data-card-header">
-        <input type="checkbox" class="admin-checkbox" data-email="${escapeHtml(a.email)}" data-enabled="${a.enabled}" onclick="event.stopPropagation();updateAdminsBulkButtons();" />
+        <input type="checkbox" name="admin-select" class="admin-checkbox" data-email="${escapeHtml(a.email)}" data-enabled="${a.enabled}" onclick="event.stopPropagation();updateAdminsBulkButtons();" />
         <span class="data-card-title">${escapeHtml(name) || '—'}</span>
         ${statusBadge}
       </div>
@@ -2012,7 +2063,7 @@ async function loadUsers(resetPage=true){
   if(!isAdmin())return;
   if(resetPage)paginationState.users.page=0;
   const tbody=document.querySelector('#usersTable tbody');
-  tbody.innerHTML='<tr><td colspan="4" class="muted">Loading...</td></tr>';
+  showLoadingSkeleton('usersTable');
 
   try{
     // Fetch all user data if needed
@@ -2165,7 +2216,7 @@ async function loadUsers(resetPage=true){
         const highlightedEmail=highlightText(u.email,searchTerm);
 
         tr.innerHTML=`
-          <td><input type='checkbox' class='user-checkbox' data-id='${escapeHtml(u.registration_id)}' data-status='${escapeHtml(u.status)}' data-member='${escapeHtml(u.membership_status||'none')}' /></td>
+          <td><input type='checkbox' name='user-select' class='user-checkbox' data-id='${escapeHtml(u.registration_id)}' data-status='${escapeHtml(u.status)}' data-member='${escapeHtml(u.membership_status||'none')}' /></td>
           <td>${highlightedName||'—'}</td>
           <td>${highlightedEmail}</td>
           <td>${badges}</td>
@@ -2539,7 +2590,8 @@ function renderInvites(){
   // Apply filters
   let filtered=invitesData.filter(i=>{
     // Quick filter
-    const expiresAt=i.expires_at?i.expires_at*1000:null;
+    const expiresParsed=parseTimestamp(i.expires_at);
+    const expiresAt=expiresParsed?expiresParsed.getTime():null;
     const daysLeft=expiresAt?Math.ceil((expiresAt-now)/(1000*60*60*24)):null;
     const isExpired=expiresAt&&expiresAt<now;
     const isExpiringSoon=daysLeft&&daysLeft<7&&daysLeft>0;
@@ -2565,15 +2617,21 @@ function renderInvites(){
 
   // Paginate
   const page=updatePagination('invites',filtered);
+  const searchTerm=paginationState.invites.search;
 
   page.forEach(i=>{
     const tr=document.createElement('tr');
     const createdDate=i.created_at?new Date(i.created_at).toLocaleString():'—';
-    const expiresDate=i.expires_at?new Date(i.expires_at*1000).toLocaleString():'—';
+    const expiresParsed=parseTimestamp(i.expires_at);
+    const expiresDate=expiresParsed?expiresParsed.toLocaleString():'—';
     const autoApprove=i.auto_approve?'Yes':'No';
 
+    // Apply search highlighting
+    const highlightedCode=highlightText(i.code,searchTerm);
+    const highlightedSentTo=highlightText(i.sent_to||'—',searchTerm);
+
     // Calculate status with expiration check
-    const expiresAt=i.expires_at?i.expires_at*1000:null;
+    const expiresAt=expiresParsed?expiresParsed.getTime():null;
     const daysLeft=expiresAt?Math.ceil((expiresAt-now)/(1000*60*60*24)):null;
     const isExpired=expiresAt&&expiresAt<now;
     const isExpiringSoon=daysLeft&&daysLeft<7&&daysLeft>0;
@@ -2601,7 +2659,7 @@ function renderInvites(){
     else if(percentage>50)barColor='#f59e0b';
     const progressBar=`<div style="display:flex;align-items:center;gap:8px;"><div style="width:100px;">${createProgressBar(percentage,barColor)}</div><span style="font-size:0.75rem;color:var(--gray);">${used}/${maxUses}</span></div>`;
 
-    tr.innerHTML=`<td><input type='checkbox' class='invites-checkbox' data-code='${escapeHtml(i.code)}' data-status='${escapeHtml(actualStatus)}' /></td><td>${escapeHtml(i.code)}</td><td>${escapeHtml(i.sent_to||'—')}</td><td>${progressBar}</td><td>${statusBadge}</td><td>${autoApprove}</td><td>${escapeHtml(createdDate)}</td><td>${escapeHtml(i.created_by||'—')}</td><td>${escapeHtml(expiresDate)}</td>`;
+    tr.innerHTML=`<td><input type='checkbox' name='invite-select' class='invites-checkbox' data-code='${escapeHtml(i.code)}' data-status='${escapeHtml(actualStatus)}' /></td><td>${highlightedCode}</td><td>${highlightedSentTo}</td><td>${progressBar}</td><td>${statusBadge}</td><td>${autoApprove}</td><td>${escapeHtml(createdDate)}</td><td>${escapeHtml(i.created_by||'—')}</td><td>${escapeHtml(expiresDate)}</td>`;
     tbody.appendChild(tr);
   });
 
@@ -2645,11 +2703,16 @@ async function loadAdmins(resetPage=true){
 
     tbody.innerHTML='';
     const page=updatePagination('admins',filtered);
+    const searchTerm=paginationState.admins.search;
 
     page.forEach(a=>{
       const tr=document.createElement('tr');
       const name=(a.given_name||'')+(a.family_name?' '+a.family_name:'');
       const createdDate=a.created_at?new Date(a.created_at).toLocaleString():'—';
+
+      // Apply search highlighting
+      const highlightedName=highlightText(name,searchTerm);
+      const highlightedEmail=highlightText(a.email,searchTerm);
 
       // Admin type badge
       const adminTypeLabels={
@@ -2704,7 +2767,7 @@ async function loadAdmins(resetPage=true){
       // View Activity button
       const activityBtn = `<button class='btn' style='background:linear-gradient(135deg,#10b981 0%,#059669 100%);' data-activity-email='${escapeHtml(a.email)}' data-activity-name='${escapeHtml(name||a.email)}'>View Activity</button>`;
 
-      tr.innerHTML=`<td><input type="checkbox" class="admin-checkbox" data-email="${escapeHtml(a.email)}" data-enabled="${a.enabled}" /></td><td>${escapeHtml(name)||'—'}</td><td>${escapeHtml(a.email)}</td><td>${adminTypeBadge}</td><td>${statusBadge}</td><td>${lastLoginDisplay}</td><td>${escapeHtml(createdDate)}</td><td style="white-space:nowrap;">${manageBtn}${activityBtn}</td>`;
+      tr.innerHTML=`<td><input type="checkbox" name="admin-select" class="admin-checkbox" data-email="${escapeHtml(a.email)}" data-enabled="${a.enabled}" /></td><td>${highlightedName||'—'}</td><td>${highlightedEmail}</td><td>${adminTypeBadge}</td><td>${statusBadge}</td><td>${lastLoginDisplay}</td><td>${escapeHtml(createdDate)}</td><td style="white-space:nowrap;">${manageBtn}${activityBtn}</td>`;
       tbody.appendChild(tr);
     });
 
@@ -3518,7 +3581,7 @@ async function loadCurrentTerms(){
 
   // Show loading skeletons
   showGridLoadingSkeleton('currentTermsDisplay', 1);
-  previousDisplay.innerHTML="<p class='muted' style='text-align:center;padding:20px;'>Loading...</p>";
+  showGridLoadingSkeleton('previousTermsDisplay', 2);
 
   try{
     await refresh();
@@ -4562,10 +4625,10 @@ function renderSubscriptions(){
     // Plan filter
     if(subFilters.plan&&s.plan!==subFilters.plan)return false;
 
-    // Search filter
+    // Search filter (names, email, and GUID)
     const search=paginationState.subscriptions.search.toLowerCase();
     if(search){
-      const searchable=[s.first_name,s.last_name,s.email,s.plan,s.user_guid].filter(Boolean).join(' ').toLowerCase();
+      const searchable=[s.first_name,s.last_name,s.email,s.user_guid].filter(Boolean).join(' ').toLowerCase();
       if(!searchable.includes(search))return false;
     }
 
@@ -4584,12 +4647,17 @@ function renderSubscriptions(){
   // Paginate
   const page=updatePagination('subscriptions',filtered);
   const now=new Date();
+  const searchTerm=paginationState.subscriptions.search;
 
   page.forEach(s=>{
     const tr=document.createElement('tr');
     const expiresDate=new Date(s.expires_at);
     const daysLeft=Math.ceil((expiresDate-now)/(1000*60*60*24));
     const name=`${s.first_name||''} ${s.last_name||''}`.trim()||'—';
+
+    // Apply search highlighting
+    const highlightedName=highlightText(name,searchTerm);
+    const highlightedEmail=highlightText(s.email,searchTerm);
 
     // Status badge with gradient
     let statusBadge='';
@@ -4623,7 +4691,7 @@ function renderSubscriptions(){
       ?'<span style="display:inline-block;background:linear-gradient(135deg,#10b981 0%,#059669 100%);color:#fff;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;">On</span>'
       :'<span style="display:inline-block;background:linear-gradient(135deg,#6b7280 0%,#4b5563 100%);color:#fff;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;">Off</span>';
 
-    tr.innerHTML=`<td><input type='checkbox' class='subscription-checkbox' data-guid='${escapeHtml(s.user_guid)}' /></td><td>${escapeHtml(name)}</td><td>${escapeHtml(s.email)}</td><td>${escapeHtml(s.plan)||'—'}</td><td>${statusBadge}</td><td>${pinBadge}</td><td>${emailBadge}</td><td>${escapeHtml(expiresDate.toLocaleString())}</td><td>${daysLeftBadge}</td>`;
+    tr.innerHTML=`<td><input type='checkbox' name='subscription-select' class='subscription-checkbox' data-guid='${escapeHtml(s.user_guid)}' /></td><td>${highlightedName}</td><td>${highlightedEmail}</td><td>${escapeHtml(s.plan)||'—'}</td><td>${statusBadge}</td><td>${pinBadge}</td><td>${emailBadge}</td><td>${escapeHtml(expiresDate.toLocaleString())}</td><td>${daysLeftBadge}</td>`;
     tbody.appendChild(tr);
   });
 
@@ -4734,13 +4802,12 @@ document.getElementById('resetSubFilters').onclick=()=>{
 document.getElementById('refreshSubscriptions').onclick=()=>loadAllSubscriptions(true);
 document.getElementById('refreshAnalyticsBtn').onclick=()=>loadAllSubscriptions(true);
 
-// Search with debouncing
-const debouncedLoadSubscriptions=debounce(()=>renderSubscriptions(),300);
+// Search handler
 document.getElementById('subscriptionsSearch').oninput=e=>{
   paginationState.subscriptions.search=e.target.value;
   paginationState.subscriptions.page=0;
   document.getElementById('selectAllSubscriptions').checked=false;
-  debouncedLoadSubscriptions();
+  renderSubscriptions();
 };
 
 // Pagination
@@ -5887,12 +5954,17 @@ function renderWaitlist() {
   const tbody = document.querySelector('#waitlistTable tbody');
   tbody.innerHTML = '';
 
+  const searchTerm = waitlistPaginationState.search;
   page.forEach(w => {
     const tr = document.createElement('tr');
     const name = `${w.first_name || ''} ${w.last_name || ''}`.trim() || '—';
     const createdDate = w.created_at ? new Date(w.created_at).toLocaleString() : '—';
     const invitedDate = w.invited_at ? new Date(w.invited_at).toLocaleString() : '—';
     const invitedBy = w.invited_by ? escapeHtml(w.invited_by) : '—';
+
+    // Apply search highlighting
+    const highlightedName = highlightText(name, searchTerm);
+    const highlightedEmail = highlightText(w.email, searchTerm);
 
     let statusBadge = '<span style="display:inline-block;background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);color:#fff;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;">Pending</span>';
     if (w.status === 'invited') {
@@ -5902,7 +5974,7 @@ function renderWaitlist() {
     }
 
     const isDisabled = w.status === 'invited' || w.status === 'rejected';
-    tr.innerHTML = `<td><input type='checkbox' class='waitlist-checkbox' data-id='${escapeHtml(w.waitlist_id)}' ${isDisabled ? 'disabled title="Already processed"' : ''} /></td><td>${escapeHtml(name)}</td><td>${escapeHtml(w.email)}</td><td>${statusBadge}</td><td>${createdDate}</td><td>${invitedDate}</td><td>${invitedBy}</td>`;
+    tr.innerHTML = `<td><input type='checkbox' name='waitlist-select' class='waitlist-checkbox' data-id='${escapeHtml(w.waitlist_id)}' ${isDisabled ? 'disabled title="Already processed"' : ''} /></td><td>${highlightedName}</td><td>${highlightedEmail}</td><td>${statusBadge}</td><td>${createdDate}</td><td>${invitedDate}</td><td>${invitedBy}</td>`;
     tbody.appendChild(tr);
   });
 
@@ -6356,10 +6428,112 @@ document.getElementById('refreshSentEmails')?.addEventListener('click', loadSent
 document.addEventListener('DOMContentLoaded', function() {
   const isDarkTheme = () => document.documentElement.getAttribute('data-theme') !== 'light';
 
+  // Apply theme styles to flatpickr calendar
+  const applyFlatpickrTheme = (instance) => {
+    const cal = instance.calendarContainer;
+    if (!cal) return;
+
+    if (!isDarkTheme()) {
+      // Light theme styles
+      cal.style.setProperty('background', '#ffffff', 'important');
+      cal.style.setProperty('border', '1px solid #d1d5db', 'important');
+      cal.style.setProperty('box-shadow', '0 4px 16px rgba(0,0,0,0.15)', 'important');
+
+      const months = cal.querySelector('.flatpickr-months');
+      if (months) {
+        months.style.setProperty('background', 'linear-gradient(135deg, #d4a012 0%, #b8860b 100%)', 'important');
+        months.style.setProperty('border-bottom', '1px solid #b8860b', 'important');
+        months.style.setProperty('border-radius', '4px 4px 0 0', 'important');
+      }
+
+      cal.querySelectorAll('.flatpickr-month, .flatpickr-current-month, .cur-year').forEach(el => {
+        el.style.setProperty('color', '#000', 'important');
+        el.style.setProperty('background', 'transparent', 'important');
+      });
+
+      const monthDropdown = cal.querySelector('.flatpickr-monthDropdown-months');
+      if (monthDropdown) {
+        monthDropdown.style.setProperty('color', '#000', 'important');
+        monthDropdown.style.setProperty('background', 'transparent', 'important');
+        monthDropdown.style.setProperty('font-weight', '600', 'important');
+      }
+
+      cal.querySelectorAll('.flatpickr-prev-month, .flatpickr-next-month').forEach(el => {
+        el.style.setProperty('fill', '#000', 'important');
+      });
+      cal.querySelectorAll('.flatpickr-prev-month svg, .flatpickr-next-month svg').forEach(el => {
+        el.style.setProperty('fill', '#000', 'important');
+      });
+
+      const weekdays = cal.querySelector('.flatpickr-weekdays');
+      if (weekdays) {
+        weekdays.style.setProperty('background', '#f9fafb', 'important');
+      }
+      cal.querySelectorAll('.flatpickr-weekday').forEach(el => {
+        el.style.setProperty('color', '#6b7280', 'important');
+        el.style.setProperty('background', 'transparent', 'important');
+      });
+
+      cal.querySelectorAll('.flatpickr-day').forEach(el => {
+        el.style.setProperty('color', '#1f2937', 'important');
+      });
+    } else {
+      // Dark theme styles - reset to flatpickr defaults or apply dark styles
+      cal.style.setProperty('background', '#1e1e2e', 'important');
+      cal.style.setProperty('border', '1px solid #3d3d5c', 'important');
+      cal.style.setProperty('box-shadow', '0 4px 16px rgba(0,0,0,0.4)', 'important');
+
+      const months = cal.querySelector('.flatpickr-months');
+      if (months) {
+        months.style.setProperty('background', 'linear-gradient(135deg, #d4a012 0%, #b8860b 100%)', 'important');
+        months.style.setProperty('border-bottom', '1px solid #b8860b', 'important');
+        months.style.setProperty('border-radius', '4px 4px 0 0', 'important');
+      }
+
+      cal.querySelectorAll('.flatpickr-month, .flatpickr-current-month, .cur-year').forEach(el => {
+        el.style.setProperty('color', '#000', 'important');
+        el.style.setProperty('background', 'transparent', 'important');
+      });
+
+      const monthDropdown = cal.querySelector('.flatpickr-monthDropdown-months');
+      if (monthDropdown) {
+        monthDropdown.style.setProperty('color', '#000', 'important');
+        monthDropdown.style.setProperty('background', 'transparent', 'important');
+        monthDropdown.style.setProperty('font-weight', '600', 'important');
+      }
+
+      cal.querySelectorAll('.flatpickr-prev-month, .flatpickr-next-month').forEach(el => {
+        el.style.setProperty('fill', '#000', 'important');
+      });
+      cal.querySelectorAll('.flatpickr-prev-month svg, .flatpickr-next-month svg').forEach(el => {
+        el.style.setProperty('fill', '#000', 'important');
+      });
+
+      const weekdays = cal.querySelector('.flatpickr-weekdays');
+      if (weekdays) {
+        weekdays.style.setProperty('background', '#2a2a3e', 'important');
+      }
+      cal.querySelectorAll('.flatpickr-weekday').forEach(el => {
+        el.style.setProperty('color', '#9ca3af', 'important');
+        el.style.setProperty('background', 'transparent', 'important');
+      });
+
+      cal.querySelectorAll('.flatpickr-day').forEach(el => {
+        el.style.setProperty('color', '#e5e7eb', 'important');
+      });
+    }
+  };
+
   // Common Flatpickr config
   const baseConfig = {
     allowInput: true,
     animate: true,
+    onReady: function(selectedDates, dateStr, instance) {
+      applyFlatpickrTheme(instance);
+    },
+    onOpen: function(selectedDates, dateStr, instance) {
+      applyFlatpickrTheme(instance);
+    },
   };
 
   // Date-only pickers for invite filters
@@ -6480,7 +6654,7 @@ document.addEventListener('DOMContentLoaded', function() {
       </select>
       <div style="display:flex;gap:12px;">
         <button onclick="handleChangeAdminType()" class="btn" style="flex:1;background:linear-gradient(135deg,#10b981 0%,#059669 100%);">Update Type</button>
-        <button onclick="closeChangeAdminTypeModal()" class="btn" style="flex:1;background:linear-gradient(135deg,#6b7280 0%,#4b5563 100%);">Cancel</button>
+        <button onclick="closeChangeAdminTypeModal()" class="btn" style="flex:1;background:linear-gradient(135deg,#7c3aed 0%,#6d28d9 100%);">Cancel</button>
       </div>
     </div>
   </div>
@@ -6543,7 +6717,7 @@ document.addEventListener('DOMContentLoaded', function() {
       </label>
       <div style="display:flex;gap:12px;">
         <button id="createInviteBtn" class="btn" style="flex:1;background:linear-gradient(135deg,#10b981 0%,#059669 100%);">Create</button>
-        <button onclick="closeCreateInviteModal()" class="btn" style="flex:1;background:linear-gradient(135deg,#6b7280 0%,#4b5563 100%);">Cancel</button>
+        <button onclick="closeCreateInviteModal()" class="btn" style="flex:1;background:linear-gradient(135deg,#7c3aed 0%,#6d28d9 100%);">Cancel</button>
       </div>
       <div id="inviteMsg" style="margin-top:12px;"></div>
     </div>
@@ -6583,7 +6757,7 @@ document.addEventListener('DOMContentLoaded', function() {
       </div>
       <div style="display:flex;gap:12px;">
         <button id="addAdminBtn" class="btn" style="flex:1;background:linear-gradient(135deg,#10b981 0%,#059669 100%);">Create Admin</button>
-        <button onclick="closeAddAdminModal()" class="btn" style="flex:1;background:linear-gradient(135deg,#6b7280 0%,#4b5563 100%);">Cancel</button>
+        <button onclick="closeAddAdminModal()" class="btn" style="flex:1;background:linear-gradient(135deg,#7c3aed 0%,#6d28d9 100%);">Cancel</button>
       </div>
       <div id="adminMsg" style="margin-top:12px;"></div>
     </div>
@@ -6654,7 +6828,7 @@ document.addEventListener('DOMContentLoaded', function() {
       </div>
       <div style="display:flex;gap:12px;">
         <button id="createSubscriptionTypeBtn" class="btn" style="flex:1;background:linear-gradient(135deg,#10b981 0%,#059669 100%);">Create</button>
-        <button onclick="closeCreateSubscriptionTypeModal()" class="btn" style="flex:1;background:linear-gradient(135deg,#6b7280 0%,#4b5563 100%);">Cancel</button>
+        <button onclick="closeCreateSubscriptionTypeModal()" class="btn" style="flex:1;background:linear-gradient(135deg,#7c3aed 0%,#6d28d9 100%);">Cancel</button>
       </div>
       <div id="subscriptionTypeMsg" style="margin-top:12px;"></div>
     </div>
@@ -6675,7 +6849,7 @@ document.addEventListener('DOMContentLoaded', function() {
       </div>
       <div style="display:flex;gap:12px;">
         <button id="createTermsBtn" class="btn" style="flex:1;background:linear-gradient(135deg,#10b981 0%,#059669 100%);">Create New Version</button>
-        <button onclick="closeCreateTermsModal()" class="btn" style="flex:1;background:linear-gradient(135deg,#6b7280 0%,#4b5563 100%);">Cancel</button>
+        <button onclick="closeCreateTermsModal()" class="btn" style="flex:1;background:linear-gradient(135deg,#7c3aed 0%,#6d28d9 100%);">Cancel</button>
       </div>
       <div id="termsMsg" style="margin-top:12px;"></div>
     </div>
@@ -6761,7 +6935,7 @@ document.addEventListener('DOMContentLoaded', function() {
       </div>
       <div style="display:flex;gap:12px;">
         <button id="createProposalBtn" class="btn" style="flex:1;background:linear-gradient(135deg,#10b981 0%,#059669 100%);">Create Proposal</button>
-        <button onclick="closeCreateProposalModal()" class="btn" style="flex:1;background:linear-gradient(135deg,#6b7280 0%,#4b5563 100%);">Cancel</button>
+        <button onclick="closeCreateProposalModal()" class="btn" style="flex:1;background:linear-gradient(135deg,#7c3aed 0%,#6d28d9 100%);">Cancel</button>
       </div>
       <div id="proposalMsg" style="margin-top:12px;"></div>
     </div>
@@ -6958,7 +7132,7 @@ document.addEventListener('DOMContentLoaded', function() {
           </svg>
           Send Email
         </button>
-        <button onclick="closeComposeEmailModal()" class="btn" style="flex:1;background:linear-gradient(135deg,#6b7280 0%,#4b5563 100%);">Cancel</button>
+        <button onclick="closeComposeEmailModal()" class="btn" style="flex:1;background:linear-gradient(135deg,#7c3aed 0%,#6d28d9 100%);">Cancel</button>
       </div>
     </div>
   </div>
