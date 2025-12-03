@@ -644,10 +644,15 @@ export class AdminStack extends cdk.Stack {
     tables.notificationPreferences.grantReadWriteData(addNotification);
     tables.notificationPreferences.grantReadWriteData(removeNotification);
 
+    // SES permissions scoped to specific identity and region
+    const sesIdentityArn = `arn:aws:ses:${this.region}:${this.account}:identity/*`;
+    const sesConfigSetArn = `arn:aws:ses:${this.region}:${this.account}:configuration-set/*`;
+    const sesTemplateArn = `arn:aws:ses:${this.region}:${this.account}:template/*`;
+
     // Grant SES permissions for resetAdminPassword
     resetAdminPassword.addToRolePolicy(new iam.PolicyStatement({
       actions: ['ses:SendEmail'],
-      resources: ['*'], // Need wildcard to send from noreply@vettid.dev
+      resources: [sesIdentityArn, sesConfigSetArn],
     }));
 
     // Grant Cognito permissions for resetAdminPassword
@@ -743,29 +748,29 @@ export class AdminStack extends cdk.Stack {
     });
 
     // Grant SES permissions for addAdmin to verify new admin emails
+    // Note: VerifyEmailIdentity and GetIdentityVerificationAttributes don't support resource-level permissions
     addAdmin.addToRolePolicy(new iam.PolicyStatement({
       actions: [
         'ses:VerifyEmailIdentity',
         'ses:GetIdentityVerificationAttributes',
       ],
-      resources: ['*'],
+      resources: ['*'], // These SES actions don't support resource-level permissions per AWS docs
     }));
 
     // Grant SES permissions for sending and verifying emails
     sendWaitlistInvites.addToRolePolicy(new iam.PolicyStatement({
-      actions: [
-        'ses:SendEmail',
-        'ses:SendTemplatedEmail',
-        'ses:GetIdentityVerificationAttributes',
-        'ses:VerifyEmailIdentity',
-      ],
-      resources: ['*'], // Need wildcard to verify any email and send from noreply@vettid.dev
+      actions: ['ses:SendEmail', 'ses:SendTemplatedEmail'],
+      resources: [sesIdentityArn, sesTemplateArn, sesConfigSetArn],
+    }));
+    sendWaitlistInvites.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['ses:GetIdentityVerificationAttributes', 'ses:VerifyEmailIdentity'],
+      resources: ['*'], // These SES actions don't support resource-level permissions per AWS docs
     }));
 
     // Grant SES permissions for bulk email sending
     sendBulkEmail.addToRolePolicy(new iam.PolicyStatement({
       actions: ['ses:SendEmail'],
-      resources: ['*'], // Need wildcard to send from noreply@vettid.dev
+      resources: [sesIdentityArn, sesConfigSetArn],
     }));
 
     // Grant system monitoring permissions

@@ -44,6 +44,22 @@ export function hashForLog(value: string): string {
   return createHash('sha256').update(value.toLowerCase().trim()).digest('hex').substring(0, 12);
 }
 
+/**
+ * Escape HTML special characters to prevent XSS attacks
+ * Use this when embedding user-controlled data in HTML (e.g., email templates)
+ * @param unsafe - The potentially unsafe string
+ * @returns HTML-escaped string safe for embedding in HTML
+ */
+export function escapeHtml(unsafe: string): string {
+  if (!unsafe) return '';
+  return String(unsafe)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
 // ============================================
 // Date Utility Functions
 // ============================================
@@ -786,14 +802,9 @@ export function sanitizeInput(input: string, maxLength: number = 500): string {
 
   let sanitized = input.trim();
 
-  // Decode HTML entities to prevent encoded XSS attacks
-  sanitized = sanitized
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/&quot;/gi, '"')
-    .replace(/&#x27;/gi, "'")
-    .replace(/&#x2F;/gi, '/')
-    .replace(/&amp;/gi, '&');
+  // SECURITY: Do NOT decode HTML entities first - this allows double-encoding bypass attacks
+  // Example: &amp;lt;script&amp;gt; -> &lt;script&gt; -> <script>
+  // Instead, filter the raw input and let output encoding handle display safety
 
   // Remove dangerous patterns
   sanitized = sanitized
@@ -801,18 +812,24 @@ export function sanitizeInput(input: string, maxLength: number = 500): string {
     .replace(/\0/g, '')
     // Remove control characters (except newlines and tabs)
     .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
-    // Remove HTML/XML tags
+    // Remove HTML/XML tags (both literal and HTML-encoded versions)
     .replace(/<[^>]*>/g, '')
-    // Remove javascript: protocol
+    .replace(/&lt;[^&]*&gt;/gi, '')
+    // Remove javascript: protocol (literal and encoded)
     .replace(/javascript:/gi, '')
+    .replace(/&#0*106;|&#x0*6a;/gi, '') // encoded 'j'
     // Remove data: protocol (can be used for XSS)
     .replace(/data:text\/html/gi, '')
-    // Remove on* event handlers
+    .replace(/data:text&#x2f;html/gi, '')
+    // Remove on* event handlers (literal and encoded)
     .replace(/on\w+\s*=/gi, '')
+    .replace(/&#0*111;&#0*110;\w+\s*=/gi, '') // encoded 'on'
     // Remove script tags even if obfuscated
     .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/&lt;script[\s\S]*?&lt;\/script&gt;/gi, '')
     // Remove style tags
     .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/&lt;style[\s\S]*?&lt;\/style&gt;/gi, '')
     // Limit length to prevent storage abuse
     .substring(0, maxLength);
 

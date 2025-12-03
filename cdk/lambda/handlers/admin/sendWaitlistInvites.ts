@@ -220,7 +220,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       <h1>You're Invited to VettID!</h1>
     </div>
     <div class="content">
-      <p>Hi ${first_name} ${last_name},</p>
+      <p>Hi ${escapeHtml(first_name)} ${escapeHtml(last_name)},</p>
       <p>Great news! You've been selected from our waitlist to join VettID. We're excited to have you as part of our community.</p>
       ${customMessageHtml}
       <p>Here's your personal invitation code:</p>

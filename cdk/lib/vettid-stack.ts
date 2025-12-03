@@ -51,13 +51,9 @@ export class VettIdStack extends cdk.Stack {
 
     // S3 bucket for CloudFront access logs with 90-day retention
     const logBucket = new s3.Bucket(this, 'CloudFrontLogBucket', {
-      blockPublicAccess: new s3.BlockPublicAccess({
-        blockPublicAcls: false,
-        blockPublicPolicy: true,
-        ignorePublicAcls: false,
-        restrictPublicBuckets: true,
-      }),
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       objectOwnership: s3.ObjectOwnership.BUCKET_OWNER_PREFERRED,
+      encryption: s3.BucketEncryption.S3_MANAGED,
       lifecycleRules: [
         {
           id: 'DeleteOldLogs',

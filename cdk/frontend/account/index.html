@@ -607,6 +607,33 @@
 </div>
 
 <script>
+// Security: HTML escape function to prevent XSS
+function escapeHtml(unsafe) {
+  if (!unsafe) return '';
+  return String(unsafe)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+// Security: Validate URL to prevent open redirect and javascript: attacks
+function validateUrl(url) {
+  if (!url) return '';
+  try {
+    const parsed = new URL(url);
+    // Only allow https protocol
+    if (parsed.protocol !== 'https:') return '';
+    // Only allow trusted domains (S3, CloudFront, vettid.dev)
+    const trustedDomains = ['amazonaws.com', 'cloudfront.net', 'vettid.dev'];
+    if (!trustedDomains.some(domain => parsed.hostname.endsWith(domain))) return '';
+    return url;
+  } catch {
+    return '';
+  }
+}
+
 // Theme management
 function initTheme() {
   const savedTheme = localStorage.getItem('vettid-theme') || 'dark';
@@ -2213,13 +2240,18 @@ async function loadMembershipTerms() {
     }
     currentTermsData = await res.json();
 
-    // Display terms text
+    // Display terms text (using textContent to prevent XSS)
     const termsBox = document.getElementById('termsTextBox');
-    termsBox.innerHTML = '<pre style="white-space:pre-wrap;font-family:inherit;margin:0;line-height:1.6;">' + currentTermsData.terms_text + '</pre>';
+    const pre = document.createElement('pre');
+    pre.style.cssText = 'white-space:pre-wrap;font-family:inherit;margin:0;line-height:1.6;';
+    pre.textContent = currentTermsData.terms_text || '';
+    termsBox.innerHTML = '';
+    termsBox.appendChild(pre);
 
-    // Set all download links
-    document.getElementById('termsDownloadLink').href = currentTermsData.download_url;
-    document.getElementById('memberTermsDownloadLink').href = currentTermsData.download_url;
+    // Set all download links (validate URL to prevent open redirect)
+    const validatedUrl = validateUrl(currentTermsData.download_url);
+    document.getElementById('termsDownloadLink').href = validatedUrl || '#';
+    document.getElementById('memberTermsDownloadLink').href = validatedUrl || '#';
 
   } catch (err) {
     console.error('Error loading membership terms:', err);
@@ -2227,7 +2259,8 @@ async function loadMembershipTerms() {
     if (err.message && err.message.includes('404')) {
       termsBox.innerHTML = '<p class="muted">Membership terms have not been configured yet. Please contact an administrator.</p>';
     } else {
-      termsBox.innerHTML = '<p class="muted">Failed to load membership terms. Error: ' + (err.message || 'Unknown error') + '</p>';
+      // Don't expose raw error message - use generic message
+      termsBox.innerHTML = '<p class="muted">Failed to load membership terms. Please try again later.</p>';
     }
     // Disable the request button if terms can't be loaded
     const requestBtn = document.getElementById('requestMembershipBtn');

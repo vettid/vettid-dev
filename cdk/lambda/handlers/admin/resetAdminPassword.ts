@@ -1,5 +1,5 @@
 import { APIGatewayProxyHandlerV2 } from "aws-lambda";
-import { ok, badRequest, requireAdminGroup, validateOrigin, putAudit, ses, checkRateLimit, hashIdentifier, tooManyRequests } from "../../common/util";
+import { ok, badRequest, requireAdminGroup, validateOrigin, putAudit, ses, checkRateLimit, hashIdentifier, tooManyRequests, escapeHtml } from "../../common/util";
 import { CognitoIdentityProviderClient, AdminGetUserCommand, AdminSetUserPasswordCommand } from "@aws-sdk/client-cognito-identity-provider";
 import { SendEmailCommand } from "@aws-sdk/client-ses";
 import { randomBytes } from "crypto";
@@ -83,16 +83,16 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
                 <body style="font-family: Arial, sans-serif; color: #333; line-height: 1.6;">
                   <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
                     <h2 style="color: #ffc125;">Password Reset Request</h2>
-                    <p>Hello ${fullName},</p>
+                    <p>Hello ${escapeHtml(fullName)},</p>
                     <p>An administrator has reset your VettID Admin password.</p>
                     <div style="background: #f5f5f5; padding: 15px; border-left: 4px solid #ffc125; margin: 20px 0;">
                       <p style="margin: 0;"><strong>Temporary Password:</strong></p>
-                      <p style="margin: 10px 0 0 0; font-family: monospace; font-size: 1.1em; color: #000;">${temporaryPassword}</p>
+                      <p style="margin: 10px 0 0 0; font-family: monospace; font-size: 1.1em; color: #000;">${escapeHtml(temporaryPassword)}</p>
                     </div>
                     <p>To sign in:</p>
                     <ol>
                       <li>Go to <a href="https://admin.vettid.dev" style="color: #ffc125;">https://admin.vettid.dev</a></li>
-                      <li>Enter your email: <strong>${decodedEmail}</strong></li>
+                      <li>Enter your email: <strong>${escapeHtml(decodedEmail)}</strong></li>
                       <li>Enter the temporary password above</li>
                       <li>You will be prompted to create a new password</li>
                     </ol>

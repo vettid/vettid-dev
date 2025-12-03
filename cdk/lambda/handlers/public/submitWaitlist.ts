@@ -3,7 +3,7 @@ import { DynamoDBClient, PutItemCommand, QueryCommand } from '@aws-sdk/client-dy
 import { SESClient, VerifyEmailIdentityCommand, SendEmailCommand } from '@aws-sdk/client-ses';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import { randomUUID } from 'crypto';
-import { validateEmail, validateName, checkRateLimit, hashIdentifier, getClientIp } from '../../common/util';
+import { validateEmail, validateName, checkRateLimit, hashIdentifier, getClientIp, escapeHtml } from '../../common/util';
 
 const ddb = new DynamoDBClient({});
 const ses = new SESClient({});
@@ -115,8 +115,8 @@ async function sendAdminNotifications(firstName: string, lastName: string, email
                     <h2>New Waitlist Signup</h2>
                     <p>A new user has joined the VettID waitlist:</p>
                     <ul>
-                      <li><strong>Name:</strong> ${firstName} ${lastName}</li>
-                      <li><strong>Email:</strong> ${email}</li>
+                      <li><strong>Name:</strong> ${escapeHtml(firstName)} ${escapeHtml(lastName)}</li>
+                      <li><strong>Email:</strong> ${escapeHtml(email)}</li>
                       <li><strong>Time:</strong> ${new Date().toISOString()}</li>
                     </ul>
                     <p>You can manage waitlist entries in the <a href="https://admin.vettid.dev">Admin Portal</a>.</p>
