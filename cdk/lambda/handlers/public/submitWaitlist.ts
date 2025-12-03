@@ -30,6 +30,7 @@ const ALLOWED_ORIGINS = [
   'https://register.vettid.dev',
   'https://vettid.dev',
   'https://www.vettid.dev',
+  'https://admin.vettid.dev',
   'http://localhost:3000',
   'http://localhost:5173',
 ];

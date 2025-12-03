@@ -8,6 +8,8 @@
   <title>VettID • Admin</title>
   <link rel="icon" type="image/jpeg" href="https://vettid.dev/assets/favicon.ico" />
   <link rel="stylesheet" href="https://vettid.dev/assets/styles.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/themes/dark.css" />
   <style>
 
     /* ===== CSS Custom Properties for Theme Support ===== */
@@ -19,7 +21,7 @@
       --bg-tertiary: #1a1a1a;
       --bg-progress: #222;
       --bg-error-bg: #1a0505;
-      --bg-button-secondary: #374151;
+      --bg-button-secondary: #4c4663;
       --bg-button-disabled: #444;
       --bg-logs: #000;
       --bg-divider: #222;
@@ -41,7 +43,7 @@
       --bg-tertiary: #e5e7eb;
       --bg-progress: #d1d5db;
       --bg-error-bg: #fee2e2;
-      --bg-button-secondary: #e5e7eb;
+      --bg-button-secondary: #ddd6fe;
       --bg-button-disabled: #d1d5db;
       --bg-logs: #f3f4f6;
       --bg-divider: #d1d5db;
@@ -570,11 +572,11 @@
           <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:12px;">
             <div>
               <label for="filterDateFrom" style="display:block;margin-bottom:4px;font-size:0.85rem;color:var(--gray);">Registration Date From</label>
-              <input id="filterDateFrom" type="date" style="width:100%;" />
+              <input id="filterDateFrom" type="text" placeholder="From date" style="width:100%;" />
             </div>
             <div>
               <label for="filterDateTo" style="display:block;margin-bottom:4px;font-size:0.85rem;color:var(--gray);">Registration Date To</label>
-              <input id="filterDateTo" type="date" style="width:100%;" />
+              <input id="filterDateTo" type="text" placeholder="To date" style="width:100%;" />
             </div>
             <div>
               <label for="filterLastActive" style="display:block;margin-bottom:4px;font-size:0.85rem;color:var(--gray);">Last Active</label>
@@ -1153,6 +1155,7 @@
   </div>
 
 <script src="/shared/config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
 <script>
 // Load configuration from centralized config file
 const COGNITO_DOMAIN = window.VettIDConfig.admin.cognitoDomain;
@@ -2542,7 +2545,7 @@ function renderInvites(){
     const isExpiringSoon=daysLeft&&daysLeft<7&&daysLeft>0;
 
     if(inviteQuickFilter==='active'&&i.status!=='active'&&i.status!=='new')return false;
-    if(inviteQuickFilter==='expiring'&&!isExpiringSoon)return false;
+    if(inviteQuickFilter==='expiring'&&(!isExpiringSoon||i.status==='exhausted'||i.status==='expired'||isExpired))return false;
     if(inviteQuickFilter==='used'&&!(i.status==='exhausted'||i.status==='expired'||isExpired))return false;
 
     // Search filter (searches code and sent_to email)
@@ -3796,6 +3799,13 @@ async function createProposal(){
 
   const openDateTime=new Date(openDate);
   const closeDateTime=new Date(closeDate);
+  const now=new Date();
+
+  if(openDateTime<now){
+    msgEl.textContent='Opening date/time must be in the future';
+    msgEl.style.color='#ef4444';
+    return;
+  }
 
   if(closeDateTime<=openDateTime){
     msgEl.textContent='Closing date/time must be after opening date/time';
@@ -4652,11 +4662,15 @@ document.getElementById('bulkExtendSubscriptions').onclick=async()=>{
   if(!confirmed)return;
 
   try{
-    const guids=Array.from(checkboxes).map(cb=>cb.getAttribute('data-guid'));
+    const guids=Array.from(checkboxes).map(cb=>cb.getAttribute('data-guid')).filter(guid=>guid&&guid.trim()!=='');
+    if(guids.length===0){
+      showToast('No valid subscriptions selected (missing user GUIDs)','warning');
+      return;
+    }
     for(const guid of guids){
       await api(`/admin/subscriptions/${encodeURIComponent(guid)}/extend`,{method:'POST',body:JSON.stringify({days:7})});
     }
-    showToast(`Extended ${checkboxes.length} subscription(s) by 7 days`,'success');
+    showToast(`Extended ${guids.length} subscription(s) by 7 days`,'success');
     await loadAllSubscriptions(true);
   }catch(e){
     showToast('Error: '+(e.message||e),'error');
@@ -6337,6 +6351,74 @@ document.getElementById('sendBulkEmail')?.addEventListener('click', async () => 
 // Refresh sent emails button
 document.getElementById('refreshSentEmails')?.addEventListener('click', loadSentEmails);
 
+// ===== FLATPICKR DATE PICKER INITIALIZATION =====
+// Initialize Flatpickr on date inputs for better UX
+document.addEventListener('DOMContentLoaded', function() {
+  const isDarkTheme = () => document.documentElement.getAttribute('data-theme') !== 'light';
+
+  // Common Flatpickr config
+  const baseConfig = {
+    allowInput: true,
+    animate: true,
+  };
+
+  // Date-only pickers for invite filters
+  if (document.getElementById('filterDateFrom')) {
+    flatpickr('#filterDateFrom', {
+      ...baseConfig,
+      dateFormat: 'Y-m-d',
+      onChange: function(selectedDates, dateStr) {
+        // Trigger filter update
+        paginationState.invites.page = 0;
+        renderInvites();
+      }
+    });
+  }
+
+  if (document.getElementById('filterDateTo')) {
+    flatpickr('#filterDateTo', {
+      ...baseConfig,
+      dateFormat: 'Y-m-d',
+      onChange: function(selectedDates, dateStr) {
+        paginationState.invites.page = 0;
+        renderInvites();
+      }
+    });
+  }
+
+  // DateTime picker for invite expiry
+  if (document.getElementById('expiresAt')) {
+    flatpickr('#expiresAt', {
+      ...baseConfig,
+      enableTime: true,
+      dateFormat: 'Y-m-d H:i',
+      time_24hr: true,
+      minDate: 'today'
+    });
+  }
+
+  // DateTime pickers for proposal dates with future-only constraint
+  if (document.getElementById('proposalOpenDate')) {
+    flatpickr('#proposalOpenDate', {
+      ...baseConfig,
+      enableTime: true,
+      dateFormat: 'Y-m-d H:i',
+      time_24hr: true,
+      minDate: 'today'
+    });
+  }
+
+  if (document.getElementById('proposalCloseDate')) {
+    flatpickr('#proposalCloseDate', {
+      ...baseConfig,
+      enableTime: true,
+      dateFormat: 'Y-m-d H:i',
+      time_24hr: true,
+      minDate: 'today'
+    });
+  }
+});
+
 </script>
 
 <!-- Select Notification Admin Modal -->
@@ -6454,7 +6536,7 @@ document.getElementById('refreshSentEmails')?.addEventListener('click', loadSent
       <label for="maxUses" style="display:block;margin-bottom:8px;font-weight:600;">Max uses</label>
       <input id="maxUses" type="number" min="1" value="1" style="width:100%;margin-bottom:12px;" />
       <label for="expiresAt" style="display:block;margin-bottom:8px;font-weight:600;">Expiration date & time (optional)</label>
-      <input id="expiresAt" type="datetime-local" step="60" style="max-width:280px;margin-bottom:12px;" />
+      <input id="expiresAt" type="text" placeholder="Select date & time" style="max-width:280px;margin-bottom:12px;" />
       <label style="display:flex;align-items:center;gap:8px;margin-bottom:16px;cursor:pointer;">
         <input id="autoApprove" type="checkbox" />
         <span>Auto-approve registrations</span>
@@ -6670,11 +6752,11 @@ document.getElementById('refreshSentEmails')?.addEventListener('click', loadSent
       <div style="margin-bottom:16px;">
         <div style="margin-bottom:16px;">
           <label for="proposalOpenDate" style="display:block;margin-bottom:8px;font-weight:600;">Opening Date & Time</label>
-          <input type="datetime-local" id="proposalOpenDate" step="60" style="max-width:280px;padding:10px;border-radius:4px;border:1px solid var(--border);background:var(--bg-input);color:var(--text);" />
+          <input type="text" id="proposalOpenDate" placeholder="Select opening date & time" style="max-width:280px;padding:10px;border-radius:4px;border:1px solid var(--border);background:var(--bg-input);color:var(--text);" />
         </div>
         <div>
           <label for="proposalCloseDate" style="display:block;margin-bottom:8px;font-weight:600;">Closing Date & Time</label>
-          <input type="datetime-local" id="proposalCloseDate" step="60" style="max-width:280px;padding:10px;border-radius:4px;border:1px solid var(--border);background:var(--bg-input);color:var(--text);" />
+          <input type="text" id="proposalCloseDate" placeholder="Select closing date & time" style="max-width:280px;padding:10px;border-radius:4px;border:1px solid var(--border);background:var(--bg-input);color:var(--text);" />
         </div>
       </div>
       <div style="display:flex;gap:12px;">

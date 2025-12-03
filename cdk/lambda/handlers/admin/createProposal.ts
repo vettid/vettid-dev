@@ -57,6 +57,11 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       return badRequest('Closing date must be after opening date');
     }
 
+    // Validate that opening date is in the future
+    if (opensDate < now) {
+      return badRequest('Opening date must be in the future');
+    }
+
     // Determine initial status
     let status = 'upcoming';
     if (now >= opensDate && now < closesDate) {
