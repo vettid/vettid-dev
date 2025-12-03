@@ -1204,6 +1204,38 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       authorizer: this.adminAuthorizer,
     });
 
+    // Pending Admin Invitation routes (2-step flow)
+    this.httpApi.addRoutes({
+      path: '/admin/pending-admins',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('ListPendingAdminsInt', adminStack.listPendingAdmins),
+      authorizer: this.adminAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/admin/pending-admins',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('InviteAdminInt', adminStack.inviteAdmin),
+      authorizer: this.adminAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/admin/pending-admins/{email}/activate',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('ActivateAdminInt', adminStack.activateAdmin),
+      authorizer: this.adminAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/admin/pending-admins/{email}',
+      methods: [apigw.HttpMethod.DELETE],
+      integration: new integrations.HttpLambdaIntegration('CancelPendingAdminInt', adminStack.cancelPendingAdmin),
+      authorizer: this.adminAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/admin/pending-admins/{email}/resend',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('ResendAdminVerificationInt', adminStack.resendAdminVerification),
+      authorizer: this.adminAuthorizer,
+    });
+
     // Membership request routes
     this.httpApi.addRoutes({
       path: '/admin/membership-requests',

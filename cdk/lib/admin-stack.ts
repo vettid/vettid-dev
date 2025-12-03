@@ -45,6 +45,11 @@ export class AdminStack extends cdk.Stack {
   public readonly resetAdminPassword!: lambdaNode.NodejsFunction;
   public readonly changePassword!: lambdaNode.NodejsFunction;
   public readonly setupMfa!: lambdaNode.NodejsFunction;
+  public readonly inviteAdmin!: lambdaNode.NodejsFunction;
+  public readonly listPendingAdmins!: lambdaNode.NodejsFunction;
+  public readonly activateAdmin!: lambdaNode.NodejsFunction;
+  public readonly cancelPendingAdmin!: lambdaNode.NodejsFunction;
+  public readonly resendAdminVerification!: lambdaNode.NodejsFunction;
   public readonly listMembershipRequests!: lambdaNode.NodejsFunction;
   public readonly approveMembership!: lambdaNode.NodejsFunction;
   public readonly denyMembership!: lambdaNode.NodejsFunction;
@@ -95,6 +100,7 @@ export class AdminStack extends cdk.Stack {
       TABLE_WAITLIST: tables.waitlist.tableName,
       TABLE_SENT_EMAILS: tables.sentEmails.tableName,
       TABLE_NOTIFICATION_PREFERENCES: tables.notificationPreferences.tableName,
+      PENDING_ADMINS_TABLE: tables.pendingAdmins.tableName,
       ALLOWED_ORIGINS: 'https://admin.vettid.dev,http://localhost:3000,http://localhost:5173',
     };
 
@@ -287,6 +293,49 @@ export class AdminStack extends cdk.Stack {
         ...defaultEnv,
         ADMIN_USER_POOL_ID: adminUserPool.userPoolId,
       },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    // ===== PENDING ADMIN INVITATION (2-STEP FLOW) =====
+
+    const inviteAdmin = new lambdaNode.NodejsFunction(this, 'InviteAdminFn', {
+      entry: 'lambda/handlers/admin/inviteAdmin.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+        ADMIN_USER_POOL_ID: adminUserPool.userPoolId,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const listPendingAdmins = new lambdaNode.NodejsFunction(this, 'ListPendingAdminsFn', {
+      entry: 'lambda/handlers/admin/listPendingAdmins.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: defaultEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const activateAdmin = new lambdaNode.NodejsFunction(this, 'ActivateAdminFn', {
+      entry: 'lambda/handlers/admin/activateAdmin.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+        ADMIN_USER_POOL_ID: adminUserPool.userPoolId,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const cancelPendingAdmin = new lambdaNode.NodejsFunction(this, 'CancelPendingAdminFn', {
+      entry: 'lambda/handlers/admin/cancelPendingAdmin.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: defaultEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const resendAdminVerification = new lambdaNode.NodejsFunction(this, 'ResendAdminVerificationFn', {
+      entry: 'lambda/handlers/admin/resendAdminVerification.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: defaultEnv,
       timeout: cdk.Duration.seconds(30),
     });
 
@@ -644,6 +693,19 @@ export class AdminStack extends cdk.Stack {
     tables.notificationPreferences.grantReadWriteData(addNotification);
     tables.notificationPreferences.grantReadWriteData(removeNotification);
 
+    // Pending admins table permissions
+    tables.pendingAdmins.grantReadWriteData(inviteAdmin);
+    tables.pendingAdmins.grantReadData(listPendingAdmins);
+    tables.pendingAdmins.grantReadWriteData(activateAdmin);
+    tables.pendingAdmins.grantReadWriteData(cancelPendingAdmin);
+    tables.pendingAdmins.grantReadData(resendAdminVerification);
+
+    // Audit permissions for pending admin functions
+    tables.audit.grantReadWriteData(inviteAdmin);
+    tables.audit.grantReadWriteData(activateAdmin);
+    tables.audit.grantReadWriteData(cancelPendingAdmin);
+    tables.audit.grantReadWriteData(resendAdminVerification);
+
     // SES permissions scoped to specific identity and region
     const sesIdentityArn = `arn:aws:ses:${this.region}:${this.account}:identity/*`;
     const sesConfigSetArn = `arn:aws:ses:${this.region}:${this.account}:configuration-set/*`;
@@ -659,6 +721,48 @@ export class AdminStack extends cdk.Stack {
     resetAdminPassword.addToRolePolicy(new iam.PolicyStatement({
       actions: ['cognito-idp:AdminGetUser', 'cognito-idp:AdminSetUserPassword'],
       resources: [adminUserPool.userPoolArn],
+    }));
+
+    // Grant SES permissions for pending admin flow (verify emails, check status, delete identity)
+    inviteAdmin.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['ses:VerifyEmailIdentity', 'ses:GetIdentityVerificationAttributes'],
+      resources: ['*'], // SES verification actions don't support resource-level permissions
+    }));
+    inviteAdmin.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['cognito-idp:AdminGetUser'],
+      resources: [adminUserPool.userPoolArn],
+    }));
+
+    listPendingAdmins.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['ses:GetIdentityVerificationAttributes'],
+      resources: ['*'],
+    }));
+
+    activateAdmin.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['ses:GetIdentityVerificationAttributes', 'ses:SendEmail'],
+      resources: ['*'],
+    }));
+    activateAdmin.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['ses:SendEmail'],
+      resources: [sesIdentityArn, sesConfigSetArn],
+    }));
+    activateAdmin.addToRolePolicy(new iam.PolicyStatement({
+      actions: [
+        'cognito-idp:AdminCreateUser',
+        'cognito-idp:AdminAddUserToGroup',
+        'cognito-idp:AdminSetUserPassword',
+      ],
+      resources: [adminUserPool.userPoolArn],
+    }));
+
+    cancelPendingAdmin.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['ses:DeleteIdentity'],
+      resources: ['*'],
+    }));
+
+    resendAdminVerification.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['ses:VerifyEmailIdentity', 'ses:GetIdentityVerificationAttributes'],
+      resources: ['*'],
     }));
 
     // Grant S3 permissions for membership terms
@@ -812,6 +916,11 @@ export class AdminStack extends cdk.Stack {
     this.resetAdminPassword = resetAdminPassword;
     this.changePassword = changePassword;
     this.setupMfa = setupMfa;
+    this.inviteAdmin = inviteAdmin;
+    this.listPendingAdmins = listPendingAdmins;
+    this.activateAdmin = activateAdmin;
+    this.cancelPendingAdmin = cancelPendingAdmin;
+    this.resendAdminVerification = resendAdminVerification;
     this.listMembershipRequests = listMembershipRequests;
     this.approveMembership = approveMembership;
     this.denyMembership = denyMembership;

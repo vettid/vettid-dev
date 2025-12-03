@@ -161,6 +161,19 @@
     .strength-weak{background:#ef4444;}.strength-fair{background:#f59e0b;}.strength-good{background:#10b981;}.strength-strong{background:#059669;}
     .theme-toggle{background:none;border:2px solid var(--border);color:var(--text);border-radius:50%;width:40px;height:40px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all 0.3s;font-size:1.2rem;}
     .theme-toggle:hover{border-color:var(--accent);background:rgba(255,193,37,0.1);transform:rotate(180deg);}
+    /* Action dropdown for table rows */
+    .action-dropdown{position:relative;display:inline-block;}
+    .action-dropdown-btn{background:var(--bg-input);border:1px solid var(--border);color:var(--text);width:32px;height:32px;border-radius:6px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:1.2rem;font-weight:bold;transition:all 0.2s;letter-spacing:1px;}
+    .action-dropdown-btn:hover{border-color:var(--accent);background:rgba(255,193,37,0.1);}
+    .action-dropdown-menu{display:none;position:absolute;top:100%;right:0;margin-top:4px;background:var(--bg-dropdown);border:1px solid var(--accent);border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,0.4);min-width:160px;z-index:1000;overflow:hidden;}
+    .action-dropdown-menu.active{display:block;}
+    .action-dropdown-item{display:block;width:100%;padding:10px 14px;cursor:pointer;transition:background 0.2s;border:none;background:none;color:var(--text);font-size:0.85rem;text-align:left;}
+    .action-dropdown-item:hover{background:rgba(255,193,37,0.1);}
+    [data-theme="light"] .action-dropdown-btn{background:#f9fafb;border-color:#d1d5db;color:#1f2937;}
+    [data-theme="light"] .action-dropdown-btn:hover{border-color:#d4a012;background:rgba(212,160,18,0.1);}
+    [data-theme="light"] .action-dropdown-menu{background:#ffffff;border-color:#d4a012;box-shadow:0 4px 16px rgba(0,0,0,0.15);}
+    [data-theme="light"] .action-dropdown-item{color:#1f2937;}
+    [data-theme="light"] .action-dropdown-item:hover{background:rgba(212,160,18,0.1);}
     /* Responsive view: cards on mobile, table on desktop */
     .card-grid{display:none;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px;margin-top:16px;}
     .list-view{display:block;}
@@ -715,8 +728,20 @@
           <h3 style="margin-top:0;">Admin Users</h3>
           <p class="muted">Manage administrator accounts and permissions.</p>
 
-          <!-- Add Admin User Button -->
-          <button id="toggleAdminForm" class="btn" style="margin-bottom:16px;background:linear-gradient(135deg,#4caf50 0%,#2e7d32 100%);">Add Admin User</button>
+          <!-- Invite Admin User Button -->
+          <button id="toggleAdminForm" class="btn" style="margin-bottom:16px;background:linear-gradient(135deg,#4caf50 0%,#2e7d32 100%);">Invite Admin User</button>
+
+          <!-- Pending Admin Invitations Section -->
+          <div id="pendingAdminsSection" style="margin-bottom:24px;display:none;">
+            <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+              <h4 style="margin:0;color:var(--accent);">Pending Invitations</h4>
+              <span id="pendingAdminsCount" style="background:#f59e0b;color:#fff;border-radius:12px;padding:2px 10px;font-size:0.8rem;font-weight:600;">0</span>
+            </div>
+            <p style="color:var(--gray);font-size:0.85rem;margin-bottom:12px;">Admins awaiting email verification. They must click the verification link before their account can be activated.</p>
+            <div id="pendingAdminsList" style="display:grid;gap:12px;">
+              <!-- Pending admin cards will be dynamically added here -->
+            </div>
+          </div>
 
           <!-- Add Admin User Form (Hidden by default) -->
 
@@ -2666,6 +2691,123 @@ function renderInvites(){
   updateInvitesSelectedCount();
   renderInvitesCards(page);
 }
+
+// Pending Admin Invitations
+let pendingAdminsData = [];
+async function loadPendingAdmins() {
+  if (!isAdmin()) return;
+  try {
+    const response = await api('/admin/pending-admins');
+    pendingAdminsData = response.pending_admins || [];
+    renderPendingAdmins();
+  } catch (e) {
+    console.error('Error loading pending admins:', e);
+    pendingAdminsData = [];
+    renderPendingAdmins();
+  }
+}
+
+function renderPendingAdmins() {
+  const section = document.getElementById('pendingAdminsSection');
+  const list = document.getElementById('pendingAdminsList');
+  const countBadge = document.getElementById('pendingAdminsCount');
+
+  if (pendingAdminsData.length === 0) {
+    section.style.display = 'none';
+    return;
+  }
+
+  section.style.display = 'block';
+  countBadge.textContent = pendingAdminsData.length;
+  list.innerHTML = '';
+
+  pendingAdminsData.forEach(admin => {
+    const card = document.createElement('div');
+    card.style.cssText = 'padding:16px;background:var(--bg-input);border-radius:8px;border:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;';
+
+    const isVerified = admin.ses_verified === true || admin.ses_status === 'Success';
+    const statusColor = isVerified ? '#10b981' : '#f59e0b';
+    const statusText = isVerified ? 'Verified - Ready to Activate' : 'Awaiting Email Verification';
+
+    const adminTypeLabels = {
+      'admin': 'Admin',
+      'user_admin': 'User Admin',
+      'subscriber_admin': 'Subscriber Admin',
+      'vote_admin': 'Vote Admin'
+    };
+
+    card.innerHTML = `
+      <div>
+        <div style="font-weight:600;color:var(--text);margin-bottom:4px;">${admin.first_name || ''} ${admin.last_name || ''}</div>
+        <div style="font-size:0.85rem;color:var(--gray);margin-bottom:4px;">${admin.email}</div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <span style="font-size:0.75rem;color:${statusColor};font-weight:600;">${statusText}</span>
+          <span style="font-size:0.75rem;color:var(--gray);">${adminTypeLabels[admin.admin_type] || 'Admin'}</span>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        ${isVerified
+          ? `<button class="btn" style="background:linear-gradient(135deg,#10b981 0%,#059669 100%);padding:8px 16px;font-size:0.85rem;" onclick="activatePendingAdmin('${admin.email}')">Activate</button>`
+          : `<button class="btn" style="background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);padding:8px 16px;font-size:0.85rem;" onclick="resendAdminVerification('${admin.email}')">Resend</button>`
+        }
+        <button class="btn" style="background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);padding:8px 16px;font-size:0.85rem;" onclick="cancelPendingAdmin('${admin.email}')">Cancel</button>
+      </div>
+    `;
+    list.appendChild(card);
+  });
+}
+
+async function activatePendingAdmin(email) {
+  const confirmed = await showConfirm(
+    'Activate Admin Account',
+    `Are you sure you want to activate the admin account for ${email}? They will receive an email with their login credentials.`,
+    'Activate',
+    'Cancel',
+    false
+  );
+  if (!confirmed) return;
+  try {
+    const result = await api(`/admin/pending-admins/${encodeURIComponent(email)}/activate`, { method: 'POST' });
+    showToast(result.message || `Admin ${email} activated successfully!`, 'success');
+    await loadPendingAdmins();
+    await loadAdmins();
+  } catch (e) {
+    showToast('Error: ' + (e.message || e), 'error');
+  }
+}
+
+async function resendAdminVerification(email) {
+  try {
+    const result = await api(`/admin/pending-admins/${encodeURIComponent(email)}/resend`, { method: 'POST' });
+    if (result.already_verified) {
+      showToast(result.message || 'Email already verified - ready to activate!', 'success');
+      await loadPendingAdmins();
+    } else {
+      showToast(result.message || 'Verification email resent!', 'success');
+    }
+  } catch (e) {
+    showToast('Error: ' + (e.message || e), 'error');
+  }
+}
+
+async function cancelPendingAdmin(email) {
+  const confirmed = await showConfirm(
+    'Cancel Invitation',
+    `Are you sure you want to cancel the invitation for ${email}? This cannot be undone.`,
+    'Cancel Invitation',
+    'Keep',
+    true
+  );
+  if (!confirmed) return;
+  try {
+    const result = await api(`/admin/pending-admins/${encodeURIComponent(email)}`, { method: 'DELETE' });
+    showToast(result.message || `Invitation for ${email} cancelled.`, 'success');
+    await loadPendingAdmins();
+  } catch (e) {
+    showToast('Error: ' + (e.message || e), 'error');
+  }
+}
+
 let adminsData=[];
 let adminQuickFilter='active';
 async function loadAdmins(resetPage=true){
@@ -2761,29 +2903,51 @@ async function loadAdmins(resetPage=true){
         lastLoginDisplay = `<span title="${lastLogin.toLocaleString()}" style="color:var(--text);">${relativeTime}</span>`;
       }
 
-      // Manage Access button
-      const manageBtn = `<button class='btn' style='background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);margin-right:8px;' data-manage-email='${escapeHtml(a.email)}' data-manage-name='${escapeHtml(name||a.email)}' data-manage-type='${escapeHtml(adminType)}' data-manage-enabled='${escapeHtml(a.enabled)}'>Manage Access</button>`;
+      // Action dropdown menu
+      const actionDropdown = `<div class="action-dropdown">
+        <button class="action-dropdown-btn" title="Actions">⋮</button>
+        <div class="action-dropdown-menu">
+          <button class="action-dropdown-item" data-manage-email='${escapeHtml(a.email)}' data-manage-name='${escapeHtml(name||a.email)}' data-manage-type='${escapeHtml(adminType)}' data-manage-enabled='${escapeHtml(a.enabled)}'>Manage Access</button>
+          <button class="action-dropdown-item" data-activity-email='${escapeHtml(a.email)}' data-activity-name='${escapeHtml(name||a.email)}'>View Activity</button>
+        </div>
+      </div>`;
 
-      // View Activity button
-      const activityBtn = `<button class='btn' style='background:linear-gradient(135deg,#10b981 0%,#059669 100%);' data-activity-email='${escapeHtml(a.email)}' data-activity-name='${escapeHtml(name||a.email)}'>View Activity</button>`;
-
-      tr.innerHTML=`<td><input type="checkbox" name="admin-select" class="admin-checkbox" data-email="${escapeHtml(a.email)}" data-enabled="${a.enabled}" /></td><td>${highlightedName||'—'}</td><td>${highlightedEmail}</td><td>${adminTypeBadge}</td><td>${statusBadge}</td><td>${lastLoginDisplay}</td><td>${escapeHtml(createdDate)}</td><td style="white-space:nowrap;">${manageBtn}${activityBtn}</td>`;
+      tr.innerHTML=`<td><input type="checkbox" name="admin-select" class="admin-checkbox" data-email="${escapeHtml(a.email)}" data-enabled="${a.enabled}" /></td><td>${highlightedName||'—'}</td><td>${highlightedEmail}</td><td>${adminTypeBadge}</td><td>${statusBadge}</td><td>${lastLoginDisplay}</td><td>${escapeHtml(createdDate)}</td><td>${actionDropdown}</td>`;
       tbody.appendChild(tr);
     });
 
+    // Action dropdown toggle handlers
+    tbody.querySelectorAll('.action-dropdown-btn').forEach(btn=>{
+      btn.onclick=(e)=>{
+        e.stopPropagation();
+        const menu=btn.nextElementSibling;
+        // Close all other dropdowns first
+        document.querySelectorAll('.action-dropdown-menu.active').forEach(m=>{
+          if(m!==menu)m.classList.remove('active');
+        });
+        menu.classList.toggle('active');
+      };
+    });
+
     // Manage Access button handler
-    tbody.querySelectorAll("button[data-manage-email]").forEach(btn=>btn.onclick=()=>{
+    tbody.querySelectorAll("button[data-manage-email]").forEach(btn=>btn.onclick=(e)=>{
+      e.stopPropagation();
       const email=btn.getAttribute('data-manage-email');
       const name=btn.getAttribute('data-manage-name');
       const type=btn.getAttribute('data-manage-type');
       const enabled=btn.getAttribute('data-manage-enabled')==='true';
+      // Close dropdown
+      btn.closest('.action-dropdown-menu')?.classList.remove('active');
       openManageAccessModal(email,name,type,enabled);
     });
 
     // View Activity button handler
-    tbody.querySelectorAll("button[data-activity-email]").forEach(btn=>btn.onclick=async ()=>{
+    tbody.querySelectorAll("button[data-activity-email]").forEach(btn=>btn.onclick=async (e)=>{
+      e.stopPropagation();
       const email=btn.getAttribute('data-activity-email');
       const name=btn.getAttribute('data-activity-name');
+      // Close dropdown
+      btn.closest('.action-dropdown-menu')?.classList.remove('active');
       await openActivityLogModal(email,name);
     });
 
@@ -2929,7 +3093,7 @@ document.getElementById('quickFilterDisabledAdmins').onclick=()=>{
 };
 
 document.getElementById('refreshInvites').onclick=loadInvites;
-document.getElementById('refreshAdmins').onclick=loadAdmins;
+document.getElementById('refreshAdmins').onclick=()=>{ loadAdmins(); loadPendingAdmins(); };
 document.getElementById('toggleInviteForm').onclick=()=>document.getElementById('createInviteModal').classList.add('active');
 document.getElementById('toggleAdminForm').onclick=()=>document.getElementById('addAdminModal').classList.add('active');
 
@@ -2974,13 +3138,14 @@ document.getElementById('addAdminBtn').onclick=async()=>{
   if(!lastName){showToast('Please enter a last name','warning');return;}
   if(!email){showToast('Please enter an email address','warning');return;}
   try{
-    await api('/admin/admins',{method:'POST',body:JSON.stringify({first_name:firstName,last_name:lastName,email,admin_type:adminType})});
-    showToast(`Admin user ${email} added successfully!`,'success');
+    const result = await api('/admin/pending-admins',{method:'POST',body:JSON.stringify({first_name:firstName,last_name:lastName,email,admin_type:adminType})});
+    showToast(result.message || `Invitation sent to ${email}!`,'success');
     document.getElementById('adminFirstName').value='';
     document.getElementById('adminLastName').value='';
     document.getElementById('adminEmail').value='';
     document.getElementById('adminType').value='admin';
     closeAddAdminModal();
+    await loadPendingAdmins();
     await loadAdmins();
   }catch(e){
     const msgEl=document.getElementById('adminMsg');
@@ -3144,7 +3309,7 @@ document.querySelectorAll('.tab').forEach(tab => {
           loadSystemHealth();
           loadSystemLogs();
         }
-        if (isAdmin) loadAdmins();
+        if (isAdmin) { loadAdmins(); loadPendingAdmins(); }
       }
       return;
     }
@@ -3160,6 +3325,7 @@ document.querySelectorAll('.tab').forEach(tab => {
       document.getElementById(subTab).classList.add('active');
 
       // Always refresh data when switching to a sub-tab
+      if (subTab === 'admin-users') { loadAdmins(); loadPendingAdmins(); }
       if (subTab === 'subscription-types') loadSubscriptionTypes();
       if (subTab === 'membership-terms') loadCurrentTerms();
       if (subTab === 'email') loadSentEmails();
@@ -3234,6 +3400,8 @@ if(userDropdownBtn){
 // Close dropdown when clicking outside
 document.addEventListener('click',()=>{
   if(userDropdownMenu)userDropdownMenu.classList.remove('active');
+  // Close action dropdowns
+  document.querySelectorAll('.action-dropdown-menu.active').forEach(m=>m.classList.remove('active'));
 });
 
 // Password change modal handlers
@@ -4997,9 +5165,14 @@ async function openActivityLogModal(email, name) {
     const modalTitle = document.getElementById('activityLogTitle');
     modalTitle.textContent = `Activity Log: ${name}`;
 
-    // Show modal with loading state
+    // Show modal with loading skeleton
     modal.classList.add('active');
-    document.getElementById('activityLogContent').innerHTML = '<div style="color:var(--gray);text-align:center;padding:40px 20px;">Loading activity...</div>';
+    document.getElementById('activityLogContent').innerHTML = `
+      <div style="padding:12px 0;">
+        <div class="skeleton" style="height:60px;margin-bottom:12px;border-radius:6px;"></div>
+        <div class="skeleton" style="height:60px;margin-bottom:12px;border-radius:6px;"></div>
+        <div class="skeleton" style="height:60px;margin-bottom:12px;border-radius:6px;"></div>
+      </div>`;
 
     // Fetch activity/audit log for this admin
     const auditData = await api(`/admin/audit?email=${encodeURIComponent(email)}`);
@@ -6691,7 +6864,11 @@ document.addEventListener('DOMContentLoaded', function() {
       </div>
 
       <div id="activityLogContent" style="max-height:400px;overflow-y:auto;background:var(--bg-input);border-radius:4px;padding:16px;">
-        <div style="color:var(--gray);text-align:center;padding:40px 20px;">Loading activity...</div>
+        <div style="padding:12px 0;">
+          <div class="skeleton" style="height:60px;margin-bottom:12px;border-radius:6px;"></div>
+          <div class="skeleton" style="height:60px;margin-bottom:12px;border-radius:6px;"></div>
+          <div class="skeleton" style="height:60px;margin-bottom:12px;border-radius:6px;"></div>
+        </div>
       </div>
     </div>
   </div>
@@ -6724,14 +6901,15 @@ document.addEventListener('DOMContentLoaded', function() {
   </div>
 </div>
 
-<!-- Add Admin User Modal -->
+<!-- Invite Admin User Modal -->
 <div id="addAdminModal" class="modal-overlay">
   <div class="modal">
     <div class="modal-header">
-      <h3 class="modal-title">Add Admin User</h3>
+      <h3 class="modal-title">Invite Admin User</h3>
       <button class="modal-close" onclick="closeAddAdminModal()">&times;</button>
     </div>
     <div class="modal-body">
+      <p style="color:var(--gray);font-size:0.85rem;margin-bottom:16px;">The invited admin will receive a verification email from AWS. Once they click the verification link, you can activate their account and they'll receive their login credentials.</p>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
         <div>
           <label for="adminFirstName" style="display:block;margin-bottom:8px;font-weight:600;">First Name</label>
@@ -6756,7 +6934,7 @@ document.addEventListener('DOMContentLoaded', function() {
         </select>
       </div>
       <div style="display:flex;gap:12px;">
-        <button id="addAdminBtn" class="btn" style="flex:1;background:linear-gradient(135deg,#10b981 0%,#059669 100%);">Create Admin</button>
+        <button id="addAdminBtn" class="btn" style="flex:1;background:linear-gradient(135deg,#10b981 0%,#059669 100%);">Send Invitation</button>
         <button onclick="closeAddAdminModal()" class="btn" style="flex:1;background:linear-gradient(135deg,#7c3aed 0%,#6d28d9 100%);">Cancel</button>
       </div>
       <div id="adminMsg" style="margin-top:12px;"></div>

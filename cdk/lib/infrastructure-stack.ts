@@ -43,6 +43,7 @@ export class InfrastructureStack extends cdk.Stack {
     actionTokens: dynamodb.Table;
     enrollmentSessions: dynamodb.Table;
     notificationPreferences: dynamodb.Table;
+    pendingAdmins: dynamodb.Table;
   };
 
   // S3 Buckets
@@ -317,6 +318,15 @@ export class InfrastructureStack extends cdk.Stack {
       pointInTimeRecovery: true,
     });
 
+    // Pending Admins table - stores admin invitations awaiting SES verification
+    const pendingAdmins = new dynamodb.Table(this, 'PendingAdmins', {
+      partitionKey: { name: 'email', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      pointInTimeRecovery: true,
+      timeToLiveAttribute: 'expires_at',
+    });
+
     // ===== S3 BUCKETS =====
 
     // S3 bucket for membership terms PDFs (shared by VettIDStack and AdminStack)
@@ -349,6 +359,7 @@ export class InfrastructureStack extends cdk.Stack {
       actionTokens,
       enrollmentSessions,
       notificationPreferences,
+      pendingAdmins,
     };
 
     // ===== AUTH LAMBDA FUNCTIONS =====
