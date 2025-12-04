@@ -1,5 +1,5 @@
 import { APIGatewayProxyHandlerV2 } from "aws-lambda";
-import { ok, badRequest, putAudit, requireAdminGroup, validateOrigin, validateEmail, validateName, checkRateLimit, hashIdentifier, tooManyRequests, getAdminEmail, internalError } from "../../common/util";
+import { ok, badRequest, forbidden, putAudit, requireAdminGroup, validateOrigin, validateEmail, validateName, checkRateLimit, hashIdentifier, tooManyRequests, getAdminEmail, internalError } from "../../common/util";
 import { CognitoIdentityProviderClient, AdminCreateUserCommand, AdminAddUserToGroupCommand, AdminGetUserCommand, AdminUpdateUserAttributesCommand } from "@aws-sdk/client-cognito-identity-provider";
 import { SESClient, VerifyEmailIdentityCommand, GetIdentityVerificationAttributesCommand } from "@aws-sdk/client-ses";
 
@@ -7,6 +7,15 @@ const cognito = new CognitoIdentityProviderClient({});
 const ses = new SESClient({});
 const USER_POOL_ID = process.env.ADMIN_USER_POOL_ID!;
 const ADMIN_GROUP = process.env.ADMIN_GROUP || "admin";
+
+// Admin type hierarchy: higher number = more privilege
+// Only admins with equal or higher privilege can create admins of a given type
+const ADMIN_TYPE_HIERARCHY: Record<string, number> = {
+  'vote_admin': 1,
+  'subscriber_admin': 2,
+  'user_admin': 2,
+  'admin': 4  // Full admin has highest privilege
+};
 
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   const requestOrigin = event.headers?.origin || event.headers?.Origin;
@@ -47,6 +56,22 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   }
 
   const adminEmail = (event.requestContext as any)?.authorizer?.jwt?.claims?.email || "unknown@vettid.dev";
+
+  // SECURITY: Check admin type hierarchy - callers can only create admins at or below their privilege level
+  const callerAdminType = (event.requestContext as any)?.authorizer?.jwt?.claims?.['custom:admin_type'] || 'admin';
+  const callerPrivilege = ADMIN_TYPE_HIERARCHY[callerAdminType] || 0;
+  const targetPrivilege = ADMIN_TYPE_HIERARCHY[adminType] || 0;
+
+  if (targetPrivilege > callerPrivilege) {
+    await putAudit({
+      type: 'admin_creation_privilege_violation',
+      caller_email: adminEmail,
+      caller_admin_type: callerAdminType,
+      attempted_admin_type: adminType,
+      target_email: email
+    });
+    return forbidden(`You cannot create an admin with higher privileges than your own (${callerAdminType})`, requestOrigin);
+  }
 
   try {
     // Check if user already exists

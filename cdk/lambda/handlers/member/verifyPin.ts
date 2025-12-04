@@ -10,7 +10,8 @@ import {
   requireRegisteredOrMemberGroup,
   getRequestId,
   parseJsonBody,
-  ValidationError
+  ValidationError,
+  secureCompare
 } from "../../common/util";
 import { QueryCommand } from "@aws-sdk/client-dynamodb";
 import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
@@ -86,9 +87,9 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       });
     }
 
-    // Verify PIN matches stored hash
+    // Verify PIN matches stored hash using timing-safe comparison
     const pinHash = hashPin(pin);
-    if (pinHash !== reg.pin_hash) {
+    if (!secureCompare(pinHash, reg.pin_hash)) {
       // SECURITY: Log failed PIN verification attempts for security monitoring
       await putAudit({
         type: "pin_verification_failed",

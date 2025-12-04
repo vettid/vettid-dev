@@ -113,6 +113,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     });
   } catch (error: any) {
     console.error('Error submitting vote:', error);
-    return internalError(error.message || 'Failed to submit vote');
+    // SECURITY: Don't expose error.message
+    return internalError('Failed to submit vote');
   }
 };

@@ -40,7 +40,13 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
 
     // Parse request body
     const body = parseJsonBody(event);
-    const days = body.days || 7;
+
+    // SECURITY: Validate and constrain days parameter
+    const rawDays = Number(body.days) || 7;
+    if (!Number.isInteger(rawDays) || rawDays < 1 || rawDays > 3650) {
+      return badRequest('Days must be an integer between 1 and 3650 (10 years max)');
+    }
+    const days = rawDays;
 
     // Determine if single or bulk operation
     let userGuids: string[] = [];
@@ -124,6 +130,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     });
   } catch (error: any) {
     console.error('Error extending subscriptions:', error);
-    return internalError(error.message || 'Failed to extend subscriptions');
+    // SECURITY: Don't expose error.message
+    return internalError('Failed to extend subscriptions');
   }
 };

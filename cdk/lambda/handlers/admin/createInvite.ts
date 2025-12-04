@@ -12,7 +12,10 @@ import {
   requireAdminGroup,
   validateOrigin,
   sanitizeInput,
-  getRequestId
+  getRequestId,
+  checkRateLimit,
+  hashIdentifier,
+  tooManyRequests
 } from "../../common/util";
 import { PutItemCommand } from "@aws-sdk/client-dynamodb";
 import { marshall } from "@aws-sdk/util-dynamodb";
@@ -22,6 +25,14 @@ import { marshall } from "@aws-sdk/util-dynamodb";
  */
 function generateInviteCode(): string {
   return generateSecureId("VET");
+}
+
+/**
+ * Validate custom invite code format
+ * Must be alphanumeric with optional dashes/underscores, 4-50 chars
+ */
+function isValidInviteCode(code: string): boolean {
+  return /^[A-Za-z0-9_-]{4,50}$/.test(code);
 }
 
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
@@ -34,6 +45,14 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   if (csrfError) return csrfError;
 
   const requestId = getRequestId(event);
+  const adminEmail = getAdminEmail(event);
+
+  // Rate limiting: Max 100 invite creations per admin per hour
+  const adminHash = hashIdentifier(adminEmail);
+  const isAllowed = await checkRateLimit(adminHash, 'create_invite', 100, 60);
+  if (!isAllowed) {
+    return tooManyRequests("Too many invite creations. Please try again later.");
+  }
 
   try {
     const body = parseJsonBody(event);
@@ -41,9 +60,19 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     const max_uses = Math.max(1, Number(body.max_uses || 1));
     const expires_at = body.expires_at || null;
     const auto_approve = body.auto_approve === true;
+
     // Use custom code if provided, otherwise generate secure code
-    const code = body.code ? sanitizeInput(body.code).trim() : generateInviteCode();
-    const adminEmail = getAdminEmail(event);
+    let code: string;
+    if (body.code) {
+      const sanitizedCode = sanitizeInput(body.code).trim();
+      // SECURITY: Validate custom invite code format
+      if (!isValidInviteCode(sanitizedCode)) {
+        return badRequest("Invalid invite code format. Must be 4-50 alphanumeric characters (dashes and underscores allowed)");
+      }
+      code = sanitizedCode;
+    } else {
+      code = generateInviteCode();
+    }
 
     const item: any = {
       code,
@@ -68,8 +97,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       code,
       max_uses,
       expires_at,
-      auto_approve,
-      created_by: adminEmail
+      auto_approve
     }, requestId);
 
     return ok({ code, max_uses, expires_at, auto_approve });

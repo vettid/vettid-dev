@@ -1,5 +1,5 @@
 import { APIGatewayProxyHandlerV2 } from "aws-lambda";
-import { ok, badRequest, internalError, requireAdminGroup, validateOrigin, putAudit, parseJsonBody } from "../../common/util";
+import { ok, badRequest, internalError, requireAdminGroup, validateOrigin, putAudit, parseJsonBody, checkRateLimit, hashIdentifier, tooManyRequests } from "../../common/util";
 import { CognitoIdentityProviderClient, ChangePasswordCommand } from "@aws-sdk/client-cognito-identity-provider";
 
 const cognito = new CognitoIdentityProviderClient({});
@@ -14,6 +14,13 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   if (csrfError) return csrfError;
 
   const adminEmail = (event.requestContext as any)?.authorizer?.jwt?.claims?.email || "unknown@vettid.dev";
+
+  // Rate limiting: Max 5 password changes per admin per hour
+  const adminHash = hashIdentifier(adminEmail);
+  const isAllowed = await checkRateLimit(adminHash, 'change_password', 5, 60);
+  if (!isAllowed) {
+    return tooManyRequests("Too many password change attempts. Please try again later.");
+  }
 
   // Parse request body
   const body = parseJsonBody(event);

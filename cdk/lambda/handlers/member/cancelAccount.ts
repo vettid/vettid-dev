@@ -5,6 +5,7 @@ import {
   ok,
   badRequest,
   notFound,
+  forbidden,
   internalError,
   putAudit,
   userExistsInCognito,
@@ -57,6 +58,19 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     }
 
     const reg = unmarshall(queryResult.Items[0]) as any;
+
+    // SECURITY: Verify the registration belongs to the authenticated user
+    // This prevents IDOR where modified JWT claims could cancel another user's account
+    if (reg.user_guid && userGuid && reg.user_guid !== userGuid) {
+      await putAudit({
+        type: 'cancel_account_idor_attempt',
+        claimed_user_guid: userGuid,
+        registration_user_guid: reg.user_guid,
+        email: userEmail
+      }, requestId);
+      return forbidden("You can only cancel your own account");
+    }
+
     const now = new Date().toISOString();
 
     // Calculate scheduled deletion date (7 days from now)

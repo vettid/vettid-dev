@@ -12,7 +12,8 @@ import {
   NotFoundError,
   requireAdminGroup,
   parseJsonBody,
-  ValidationError
+  ValidationError,
+  validateUUID
 } from "../../common/util";
 import { UpdateItemCommand } from "@aws-sdk/client-dynamodb";
 import { marshall } from "@aws-sdk/util-dynamodb";
@@ -22,8 +23,13 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   const authError = requireAdminGroup(event);
   if (authError) return authError;
 
-  const id = event.pathParameters?.id;
-  if (!id) return badRequest("id required");
+  // SECURITY: Validate path parameter as UUID
+  let id: string;
+  try {
+    id = validateUUID(event.pathParameters?.id || '', 'registration_id');
+  } catch {
+    return badRequest("Invalid registration ID format");
+  }
 
   const requestId = (event.requestContext as any).requestId;
 

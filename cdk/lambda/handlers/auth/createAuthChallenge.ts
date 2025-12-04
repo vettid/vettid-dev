@@ -250,7 +250,17 @@ If you didn't request this login link, you can safely ignore this email.
     await ses.send(new SendEmailCommand(emailParams));
   } catch (error) {
     console.error('Failed to send magic link email:', error);
-    throw error;
+    // SECURITY: Don't expose SES error details - return generic challenge response
+    // The user will see a generic "check your email" message
+    event.response.publicChallengeParameters = {
+      email,
+      pinRequired: pinRequired.toString(),
+    };
+    event.response.privateChallengeParameters = {
+      token, // Token was already stored, so auth can still proceed if email arrives
+    };
+    event.response.challengeMetadata = 'MAGIC_LINK';
+    return event;
   }
 
   // Set the challenge metadata (not sent to client)

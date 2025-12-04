@@ -162,10 +162,28 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       }, requestId);
     }
 
-    await ddb.send(new PutItemCommand({
-      TableName: TABLE_SUBSCRIPTIONS,
-      Item: marshall(subscription),
-    }));
+    // SECURITY: Use conditional expression to prevent race conditions for one-time offers
+    // If someone rapidly submits multiple subscription requests, only the first succeeds
+    try {
+      if (subscriptionType.is_one_time_offer) {
+        await ddb.send(new PutItemCommand({
+          TableName: TABLE_SUBSCRIPTIONS,
+          Item: marshall(subscription),
+          // Only create if no has_used_trial flag exists (atomic check)
+          ConditionExpression: 'attribute_not_exists(has_used_trial)',
+        }));
+      } else {
+        await ddb.send(new PutItemCommand({
+          TableName: TABLE_SUBSCRIPTIONS,
+          Item: marshall(subscription),
+        }));
+      }
+    } catch (conditionError: any) {
+      if (conditionError.name === 'ConditionalCheckFailedException') {
+        return badRequest('You have already used this one-time offer.');
+      }
+      throw conditionError;
+    }
 
     // Log to audit
     await putAudit({
@@ -188,6 +206,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     });
   } catch (error: any) {
     console.error('Error creating subscription:', error);
-    return internalError(error.message || 'Failed to create subscription');
+    // SECURITY: Don't expose error.message
+    return internalError('Failed to create subscription');
   }
 };

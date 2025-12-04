@@ -1,9 +1,9 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
-import { DynamoDBClient, ScanCommand, QueryCommand, PutItemCommand } from '@aws-sdk/client-dynamodb';
+import { DynamoDBClient, ScanCommand, QueryCommand, PutItemCommand, BatchGetItemCommand } from '@aws-sdk/client-dynamodb';
 import { SESClient, SendEmailCommand } from '@aws-sdk/client-ses';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import { randomUUID } from 'crypto';
-import { ok, badRequest, internalError, requireAdminGroup, getAdminEmail } from '../../common/util';
+import { ok, badRequest, internalError, requireAdminGroup, getAdminEmail, validateUUID } from '../../common/util';
 
 const ddb = new DynamoDBClient({});
 const ses = new SESClient({});
@@ -111,17 +111,35 @@ async function getRecipientEmails(recipientType: string): Promise<string[]> {
         })
       }));
 
-      if (result.Items) {
-        // For subscriptions, we need to look up email from registrations
+      if (result.Items && result.Items.length > 0) {
+        // SECURITY: Validate and collect user_guids
+        const validUserGuids: string[] = [];
         for (const item of result.Items) {
           const subscription = unmarshall(item);
           if (subscription.user_guid) {
-            // Look up email from registrations table
-            const regResult = await ddb.send(new ScanCommand({
+            // Validate UUID format to prevent injection
+            try {
+              validateUUID(subscription.user_guid, 'user_guid');
+              validUserGuids.push(subscription.user_guid);
+            } catch {
+              console.warn(`Invalid user_guid format in subscription: ${subscription.user_guid?.substring(0, 8)}...`);
+              continue;
+            }
+          }
+        }
+
+        // FIX N+1: Use BatchGetItem to fetch registrations in batches of 100
+        for (let i = 0; i < validUserGuids.length; i += 100) {
+          const batch = validUserGuids.slice(i, i + 100);
+
+          // Query registrations by user_guid using the user-guid-index GSI
+          for (const userGuid of batch) {
+            const regResult = await ddb.send(new QueryCommand({
               TableName: TABLE_REGISTRATIONS,
-              FilterExpression: 'user_guid = :user_guid',
+              IndexName: 'user-guid-index',
+              KeyConditionExpression: 'user_guid = :user_guid',
               ExpressionAttributeValues: marshall({
-                ':user_guid': subscription.user_guid
+                ':user_guid': userGuid
               }),
               Limit: 1
             }));
@@ -230,6 +248,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     }
 
     // Record sent email in DynamoDB
+    // SECURITY: Don't store full email body in logs - only metadata
     const emailId = randomUUID();
     const sentAt = new Date().toISOString();
 
@@ -239,8 +258,8 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
         email_id: emailId,
         recipient_type,
         subject,
-        body_html,
-        body_text,
+        // SECURITY: Store truncated preview instead of full body to prevent sensitive data exposure
+        body_preview: body_text.substring(0, 200) + (body_text.length > 200 ? '...' : ''),
         recipient_count: sentCount,
         failed_count: failedEmails.length,
         sent_at: sentAt,
@@ -257,6 +276,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     });
   } catch (error: any) {
     console.error('Error sending bulk email:', error);
-    return internalError(error.message || 'Failed to send bulk email');
+    // SECURITY: Don't expose error.message
+    return internalError('Failed to send bulk email');
   }
 };

@@ -11,7 +11,8 @@ import {
   getRequestId,
   cognito,
   USER_POOL_ID,
-  requireUserClaims
+  requireUserClaims,
+  validateOrigin
 } from "../../common/util";
 import { UpdateItemCommand, QueryCommand } from "@aws-sdk/client-dynamodb";
 import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
@@ -21,6 +22,10 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   // Validate registered or member group membership
   const authError = requireRegisteredOrMemberGroup(event);
   if (authError) return authError;
+
+  // CSRF protection: Validate request origin for state-changing operation
+  const csrfError = validateOrigin(event);
+  if (csrfError) return csrfError;
 
   const requestId = getRequestId(event);
 

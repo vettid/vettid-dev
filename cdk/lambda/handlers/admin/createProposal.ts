@@ -44,6 +44,19 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       return badRequest('Missing required fields: proposal_text, opens_at, closes_at');
     }
 
+    // SECURITY: Validate proposal text length
+    if (typeof proposal_text !== 'string' || proposal_text.trim().length < 10) {
+      return badRequest('Proposal text must be at least 10 characters');
+    }
+    if (proposal_text.length > 10000) {
+      return badRequest('Proposal text must not exceed 10,000 characters');
+    }
+
+    // Validate optional title length
+    if (proposal_title && (typeof proposal_title !== 'string' || proposal_title.length > 200)) {
+      return badRequest('Proposal title must not exceed 200 characters');
+    }
+
     // Validate dates
     const opensDate = new Date(opens_at);
     const closesDate = new Date(closes_at);
@@ -115,6 +128,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     });
   } catch (error: any) {
     console.error('Error creating proposal:', error);
-    return internalError(error.message || 'Failed to create proposal');
+    // SECURITY: Don't expose error.message
+    return internalError('Failed to create proposal');
   }
 };
