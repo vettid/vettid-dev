@@ -1,0 +1,10 @@
+{
+  "instance": "ios",
+  "phase": 0,
+  "task": "Awaiting task assignment",
+  "status": "waiting",
+  "blockers": [],
+  "completedTasks": [],
+  "lastUpdated": "2025-12-07T00:00:00Z",
+  "notes": "Waiting for coordination setup to complete"
+}

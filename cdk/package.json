@@ -11,17 +11,26 @@
     "deploy": "npm run build && ./node_modules/.bin/cdk deploy --all",
     "synth": "npm run build && ./node_modules/.bin/cdk synth",
     "destroy": "cdk destroy --all",
-    "ensure-default-terms": "./node_modules/.bin/cdk deploy --outputs-file cdk-outputs.json && aws lambda invoke --function-name $(cat cdk-outputs.json | grep EnsureDefaultTermsLambdaArn | awk '{print $2}' | tr -d '\",' | awk -F: '{print $NF}') /tmp/ensure-terms-response.json && cat /tmp/ensure-terms-response.json"
+    "ensure-default-terms": "./node_modules/.bin/cdk deploy --outputs-file cdk-outputs.json && aws lambda invoke --function-name $(cat cdk-outputs.json | grep EnsureDefaultTermsLambdaArn | awk '{print $2}' | tr -d '\",' | awk -F: '{print $NF}') /tmp/ensure-terms-response.json && cat /tmp/ensure-terms-response.json",
+    "test": "jest --config tests/jest.config.js",
+    "test:unit": "jest --config tests/jest.config.js --testPathPattern=unit",
+    "test:integration": "jest --config tests/jest.config.js --testPathPattern=integration",
+    "test:e2e": "jest --config tests/jest.config.js --testPathPattern=e2e",
+    "test:security": "jest --config tests/jest.config.js --testPathPattern=security",
+    "test:coverage": "jest --config tests/jest.config.js --coverage"
   },
   "devDependencies": {
     "@aws-sdk/client-s3": "^3.939.0",
     "@aws-sdk/s3-request-presigner": "^3.939.0",
     "@types/aws-lambda": "^8.10.159",
+    "@types/jest": "^29.5.12",
     "@types/node": "^24.10.1",
     "@types/pdfkit": "^0.17.3",
     "aws-cdk": "2.1033.0",
     "esbuild": "0.27.0",
+    "jest": "^29.7.0",
     "pdfkit": "^0.17.2",
+    "ts-jest": "^29.1.2",
     "typescript": "5.9.3"
   },
   "dependencies": {

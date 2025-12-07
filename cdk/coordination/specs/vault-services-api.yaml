@@ -1,0 +1,1177 @@
+openapi: 3.0.3
+info:
+  title: VettID Vault Services API
+  description: |
+    API specification for VettID Vault Services. This API enables:
+    - Vault enrollment and authentication
+    - Credential management (Protean Credential System)
+    - Vault lifecycle management
+    - Backup and restore operations
+
+    **Authentication:**
+    - Public endpoints: No authentication required
+    - Member endpoints: Cognito JWT (member pool) in Authorization header
+    - Vault endpoints: Protean credential authentication flow
+  version: 1.0.0
+  contact:
+    name: VettID Development Team
+
+servers:
+  - url: https://api.vettid.dev
+    description: Production API
+  - url: https://api-dev.vettid.dev
+    description: Development API
+
+tags:
+  - name: enrollment
+    description: Vault Services enrollment operations
+  - name: authentication
+    description: Protean credential authentication
+  - name: vault-lifecycle
+    description: Vault provisioning and management
+  - name: backup
+    description: Backup and restore operations
+  - name: credentials
+    description: Credential management
+
+paths:
+  # ============================================
+  # ENROLLMENT ENDPOINTS
+  # ============================================
+
+  /member/vault/deploy:
+    post:
+      tags:
+        - enrollment
+      summary: Initiate vault deployment
+      description: |
+        Member initiates vault deployment. Returns QR code data for mobile app enrollment.
+        Called from the member web portal.
+      operationId: deployVault
+      security:
+        - memberAuth: []
+      responses:
+        '200':
+          description: Deployment initiated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeploymentResponse'
+        '409':
+          description: Vault already exists for this member
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: No active subscription
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /member/vault/status:
+    get:
+      tags:
+        - enrollment
+      summary: Get vault status
+      description: Returns current vault status for the authenticated member
+      operationId: getVaultStatus
+      security:
+        - memberAuth: []
+      responses:
+        '200':
+          description: Vault status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VaultStatus'
+        '404':
+          description: No vault found
+
+  /vault/enroll/start:
+    post:
+      tags:
+        - enrollment
+      summary: Start mobile enrollment
+      description: |
+        Mobile app calls this after scanning QR code to start enrollment.
+        Returns challenge for device attestation and transaction keys.
+      operationId: enrollStart
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EnrollStartRequest'
+      responses:
+        '200':
+          description: Enrollment session started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnrollStartResponse'
+        '400':
+          description: Invalid or expired invitation
+        '409':
+          description: Already enrolled
+
+  /vault/enroll/attestation:
+    post:
+      tags:
+        - enrollment
+      summary: Submit device attestation
+      description: |
+        Mobile app submits device attestation data.
+        Android: Hardware Key Attestation certificate chain
+        iOS: App Attest attestation object
+      operationId: enrollAttestation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AttestationRequest'
+      responses:
+        '200':
+          description: Attestation verified
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AttestationResponse'
+        '403':
+          description: Attestation failed (tampered device, invalid signature, etc.)
+
+  /vault/enroll/password:
+    post:
+      tags:
+        - enrollment
+      summary: Set enrollment password
+      description: |
+        Mobile app sets the password for the credential blob.
+        Password is hashed with Argon2id before storage.
+      operationId: enrollSetPassword
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetPasswordRequest'
+      responses:
+        '200':
+          description: Password set
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SetPasswordResponse'
+        '400':
+          description: Invalid session or password requirements not met
+
+  /vault/enroll/finalize:
+    post:
+      tags:
+        - enrollment
+      summary: Finalize enrollment
+      description: |
+        Completes enrollment, creates credential blob, returns encrypted
+        credential to mobile app for storage.
+      operationId: enrollFinalize
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FinalizeRequest'
+      responses:
+        '200':
+          description: Enrollment complete
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinalizeResponse'
+        '400':
+          description: Invalid session or missing prerequisites
+
+  # ============================================
+  # AUTHENTICATION ENDPOINTS
+  # ============================================
+
+  /vault/auth/request:
+    post:
+      tags:
+        - authentication
+      summary: Request authentication
+      description: |
+        Mobile app initiates authentication to perform a vault action.
+        Returns current LAT for verification and assigns action endpoint.
+      operationId: authRequest
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthRequest'
+      responses:
+        '200':
+          description: Auth request accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthRequestResponse'
+        '409':
+          description: Concurrent session detected
+
+  /vault/auth/execute:
+    post:
+      tags:
+        - authentication
+      summary: Execute authentication
+      description: |
+        Mobile app submits encrypted credential blob and password hash.
+        Server decrypts, verifies password, rotates keys, returns new blob.
+      operationId: authExecute
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthExecuteRequest'
+      responses:
+        '200':
+          description: Authentication successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthExecuteResponse'
+        '401':
+          description: Authentication failed (wrong password, invalid blob)
+        '403':
+          description: Device attestation required
+
+  /vault/auth/validate-lat:
+    post:
+      tags:
+        - authentication
+      summary: Validate LAT
+      description: |
+        Mobile app validates that the received LAT matches stored LAT.
+        Prevents phishing attacks by verifying server identity.
+      operationId: validateLAT
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ValidateLATRequest'
+      responses:
+        '200':
+          description: LAT valid
+        '401':
+          description: LAT mismatch - possible phishing
+
+  # ============================================
+  # TRANSACTION KEYS ENDPOINTS
+  # ============================================
+
+  /vault/transaction-keys:
+    get:
+      tags:
+        - credentials
+      summary: Get transaction keys
+      description: |
+        Returns available transaction key public keys for the user.
+        Mobile app uses these to encrypt sensitive data in requests.
+      operationId: getTransactionKeys
+      security:
+        - vaultAuth: []
+      responses:
+        '200':
+          description: Transaction keys
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionKeysResponse'
+
+    post:
+      tags:
+        - credentials
+      summary: Replenish transaction keys
+      description: |
+        Server generates new transaction keys when pool is low.
+        Returns new public keys for mobile app storage.
+      operationId: replenishTransactionKeys
+      security:
+        - vaultAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReplenishKeysRequest'
+      responses:
+        '200':
+          description: New keys generated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionKeysResponse'
+
+  # ============================================
+  # VAULT LIFECYCLE ENDPOINTS
+  # ============================================
+
+  /vault/provision:
+    post:
+      tags:
+        - vault-lifecycle
+      summary: Provision vault instance
+      description: |
+        Provisions EC2 vault instance for the member.
+        Called after successful enrollment.
+      operationId: provisionVault
+      security:
+        - vaultAuth: []
+      responses:
+        '200':
+          description: Vault provisioning started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProvisionResponse'
+        '409':
+          description: Vault already provisioned
+
+  /vault/initialize:
+    post:
+      tags:
+        - vault-lifecycle
+      summary: Initialize vault
+      description: |
+        Initializes vault after EC2 instance is running.
+        Performs vault enrollment (second Protean credential).
+      operationId: initializeVault
+      security:
+        - vaultAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InitializeRequest'
+      responses:
+        '200':
+          description: Vault initialized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InitializeResponse'
+
+  /vault/stop:
+    post:
+      tags:
+        - vault-lifecycle
+      summary: Stop vault
+      description: |
+        Gracefully stops vault instance. Triggers backup before stop.
+      operationId: stopVault
+      security:
+        - vaultAuth: []
+      responses:
+        '200':
+          description: Vault stopping
+        '404':
+          description: No running vault
+
+  /vault/start:
+    post:
+      tags:
+        - vault-lifecycle
+      summary: Start vault
+      description: |
+        Starts a stopped vault instance.
+      operationId: startVault
+      security:
+        - vaultAuth: []
+      responses:
+        '200':
+          description: Vault starting
+        '404':
+          description: No vault found
+
+  /vault/terminate:
+    post:
+      tags:
+        - vault-lifecycle
+      summary: Terminate vault
+      description: |
+        Permanently terminates vault instance. Requires confirmation.
+        Creates final backup before termination.
+      operationId: terminateVault
+      security:
+        - vaultAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TerminateRequest'
+      responses:
+        '200':
+          description: Vault terminated
+        '400':
+          description: Confirmation required
+
+  /vault/health:
+    get:
+      tags:
+        - vault-lifecycle
+      summary: Get vault health
+      description: Returns vault health status
+      operationId: getVaultHealth
+      security:
+        - vaultAuth: []
+      responses:
+        '200':
+          description: Vault health status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+
+  # ============================================
+  # BACKUP ENDPOINTS
+  # ============================================
+
+  /vault/backup:
+    post:
+      tags:
+        - backup
+      summary: Trigger backup
+      description: Triggers manual backup of vault data
+      operationId: triggerBackup
+      security:
+        - vaultAuth: []
+      responses:
+        '200':
+          description: Backup started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BackupStatus'
+
+    get:
+      tags:
+        - backup
+      summary: List backups
+      description: Returns list of available backups
+      operationId: listBackups
+      security:
+        - vaultAuth: []
+      responses:
+        '200':
+          description: Backup list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BackupList'
+
+  /vault/backup/{backupId}/restore:
+    post:
+      tags:
+        - backup
+      summary: Restore from backup
+      description: Initiates restore from specified backup
+      operationId: restoreBackup
+      security:
+        - vaultAuth: []
+      parameters:
+        - name: backupId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Restore started
+        '404':
+          description: Backup not found
+
+  /vault/credentials/backup:
+    post:
+      tags:
+        - backup
+      summary: Upload credential backup
+      description: |
+        Uploads encrypted credential backup for Credential Backup Service.
+        Credentials encrypted client-side with recovery phrase.
+      operationId: uploadCredentialBackup
+      security:
+        - vaultAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CredentialBackupRequest'
+      responses:
+        '200':
+          description: Backup stored
+
+  /vault/credentials/recover:
+    get:
+      tags:
+        - backup
+      summary: Download credential backup
+      description: |
+        Downloads encrypted credential backup using recovery token.
+        Token obtained via QR code on web portal.
+      operationId: downloadCredentialBackup
+      parameters:
+        - name: token
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Encrypted credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CredentialBackupResponse'
+        '404':
+          description: Token invalid or expired
+
+  # ============================================
+  # NATS TOKEN ENDPOINTS
+  # ============================================
+
+  /vault/nats/token:
+    post:
+      tags:
+        - vault-lifecycle
+      summary: Generate NATS token
+      description: |
+        Generates JWT token for NATS access.
+        Token scoped to member's OwnerSpace.
+      operationId: generateNatsToken
+      security:
+        - vaultAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NatsTokenRequest'
+      responses:
+        '200':
+          description: NATS token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NatsTokenResponse'
+
+components:
+  securitySchemes:
+    memberAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Cognito JWT from member user pool
+
+    vaultAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Protean credential authentication token
+
+  schemas:
+    # ============================================
+    # ENROLLMENT SCHEMAS
+    # ============================================
+
+    DeploymentResponse:
+      type: object
+      required:
+        - vaultId
+        - status
+        - enrollmentQr
+        - expiresAt
+      properties:
+        vaultId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [pending_enrollment, enrolled, provisioning, running, stopped]
+        enrollmentQr:
+          type: object
+          properties:
+            data:
+              type: string
+              description: QR code data (base64 or URL)
+            type:
+              type: string
+              enum: [vettid_vault_enrollment]
+        expiresAt:
+          type: string
+          format: date-time
+
+    VaultStatus:
+      type: object
+      required:
+        - vaultId
+        - status
+      properties:
+        vaultId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [pending_enrollment, enrolled, provisioning, running, stopped, terminated]
+        instanceId:
+          type: string
+          description: EC2 instance ID (when provisioned)
+        region:
+          type: string
+        enrolledAt:
+          type: string
+          format: date-time
+        lastBackup:
+          type: string
+          format: date-time
+        health:
+          $ref: '#/components/schemas/HealthStatus'
+
+    EnrollStartRequest:
+      type: object
+      required:
+        - inviteCode
+        - deviceInfo
+      properties:
+        inviteCode:
+          type: string
+          description: Invitation code from QR
+        deviceInfo:
+          type: object
+          required:
+            - platform
+            - osVersion
+            - appVersion
+          properties:
+            platform:
+              type: string
+              enum: [android, ios]
+            osVersion:
+              type: string
+            appVersion:
+              type: string
+            deviceModel:
+              type: string
+
+    EnrollStartResponse:
+      type: object
+      required:
+        - sessionId
+        - attestationChallenge
+        - transactionKeys
+      properties:
+        sessionId:
+          type: string
+          format: uuid
+        attestationChallenge:
+          type: string
+          format: byte
+          description: 32-byte challenge for device attestation
+        transactionKeys:
+          type: array
+          items:
+            $ref: '#/components/schemas/TransactionKeyPublic'
+          minItems: 20
+          maxItems: 20
+
+    AttestationRequest:
+      type: object
+      required:
+        - sessionId
+        - platform
+      properties:
+        sessionId:
+          type: string
+          format: uuid
+        platform:
+          type: string
+          enum: [android, ios]
+        # Android fields
+        attestationCertChain:
+          type: array
+          items:
+            type: string
+            format: byte
+          description: X.509 certificate chain (Android)
+        # iOS fields
+        attestationData:
+          type: string
+          format: byte
+          description: App Attest attestation object (iOS)
+        keyId:
+          type: string
+          description: Key identifier from generateKey() (iOS)
+
+    AttestationResponse:
+      type: object
+      required:
+        - verified
+        - securityLevel
+      properties:
+        verified:
+          type: boolean
+        securityLevel:
+          type: string
+          enum: [strongbox, tee, software]
+        platform:
+          type: string
+        osVersion:
+          type: string
+
+    SetPasswordRequest:
+      type: object
+      required:
+        - sessionId
+        - encryptedPassword
+        - transactionKeyId
+      properties:
+        sessionId:
+          type: string
+          format: uuid
+        encryptedPassword:
+          type: string
+          format: byte
+          description: Password encrypted with transaction key
+        transactionKeyId:
+          type: string
+          description: ID of transaction key used for encryption
+
+    SetPasswordResponse:
+      type: object
+      required:
+        - success
+      properties:
+        success:
+          type: boolean
+
+    FinalizeRequest:
+      type: object
+      required:
+        - sessionId
+      properties:
+        sessionId:
+          type: string
+          format: uuid
+        secrets:
+          type: object
+          description: Optional initial secrets to store in credential
+
+    FinalizeResponse:
+      type: object
+      required:
+        - credentialBlob
+        - lat
+        - userGuid
+      properties:
+        credentialBlob:
+          $ref: '#/components/schemas/CredentialBlob'
+        lat:
+          $ref: '#/components/schemas/LAT'
+        userGuid:
+          type: string
+          format: uuid
+        backupPublicKey:
+          type: string
+          format: byte
+          description: Public key for vault backup encryption
+
+    # ============================================
+    # AUTHENTICATION SCHEMAS
+    # ============================================
+
+    AuthRequest:
+      type: object
+      required:
+        - userGuid
+        - action
+      properties:
+        userGuid:
+          type: string
+          format: uuid
+        action:
+          type: string
+          description: Action to perform after authentication
+        deviceInfo:
+          type: object
+          properties:
+            platform:
+              type: string
+            appVersion:
+              type: string
+
+    AuthRequestResponse:
+      type: object
+      required:
+        - authSessionId
+        - lat
+        - endpoint
+      properties:
+        authSessionId:
+          type: string
+          format: uuid
+        lat:
+          $ref: '#/components/schemas/LAT'
+        endpoint:
+          type: string
+          description: Assigned endpoint for this action
+
+    AuthExecuteRequest:
+      type: object
+      required:
+        - authSessionId
+        - credentialBlob
+        - encryptedPasswordHash
+        - transactionKeyId
+      properties:
+        authSessionId:
+          type: string
+          format: uuid
+        credentialBlob:
+          $ref: '#/components/schemas/CredentialBlob'
+        encryptedPasswordHash:
+          type: string
+          format: byte
+          description: Argon2id hash encrypted with transaction key
+        transactionKeyId:
+          type: string
+
+    AuthExecuteResponse:
+      type: object
+      required:
+        - success
+        - newCredentialBlob
+        - newLat
+        - actionToken
+      properties:
+        success:
+          type: boolean
+        newCredentialBlob:
+          $ref: '#/components/schemas/CredentialBlob'
+          description: Re-encrypted with new CEK
+        newLat:
+          $ref: '#/components/schemas/LAT'
+        actionToken:
+          type: string
+          description: Token to perform the requested action
+        newTransactionKeys:
+          type: array
+          items:
+            $ref: '#/components/schemas/TransactionKeyPublic'
+          description: Replenished keys if pool was low
+
+    ValidateLATRequest:
+      type: object
+      required:
+        - userGuid
+        - expectedLat
+      properties:
+        userGuid:
+          type: string
+          format: uuid
+        expectedLat:
+          type: string
+          description: LAT token stored on device
+
+    # ============================================
+    # TRANSACTION KEY SCHEMAS
+    # ============================================
+
+    TransactionKeyPublic:
+      type: object
+      required:
+        - keyId
+        - publicKey
+        - algorithm
+      properties:
+        keyId:
+          type: string
+        publicKey:
+          type: string
+          format: byte
+          description: X25519 public key (32 bytes, base64)
+        algorithm:
+          type: string
+          enum: [X25519]
+        createdAt:
+          type: string
+          format: date-time
+
+    TransactionKeysResponse:
+      type: object
+      required:
+        - keys
+        - unusedCount
+      properties:
+        keys:
+          type: array
+          items:
+            $ref: '#/components/schemas/TransactionKeyPublic'
+        unusedCount:
+          type: integer
+
+    ReplenishKeysRequest:
+      type: object
+      required:
+        - count
+      properties:
+        count:
+          type: integer
+          minimum: 1
+          maximum: 20
+          default: 10
+
+    # ============================================
+    # CREDENTIAL SCHEMAS
+    # ============================================
+
+    CredentialBlob:
+      type: object
+      required:
+        - userGuid
+        - encryptedBlob
+        - ephemeralPublicKey
+        - cekVersion
+      properties:
+        userGuid:
+          type: string
+          format: uuid
+        encryptedBlob:
+          type: string
+          format: byte
+          description: XChaCha20-Poly1305 encrypted JSON
+        ephemeralPublicKey:
+          type: string
+          format: byte
+          description: X25519 ephemeral public key (32 bytes)
+        cekVersion:
+          type: integer
+          description: Credential encryption key version
+
+    LAT:
+      type: object
+      required:
+        - token
+        - version
+      properties:
+        token:
+          type: string
+          description: 256-bit random token (64 hex chars)
+        version:
+          type: integer
+          description: LAT version (increments on each use)
+
+    # ============================================
+    # VAULT LIFECYCLE SCHEMAS
+    # ============================================
+
+    ProvisionResponse:
+      type: object
+      required:
+        - vaultId
+        - status
+      properties:
+        vaultId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [provisioning]
+        estimatedReadyTime:
+          type: string
+          format: date-time
+
+    InitializeRequest:
+      type: object
+      required:
+        - vaultId
+      properties:
+        vaultId:
+          type: string
+          format: uuid
+        memberInfo:
+          type: object
+          properties:
+            firstName:
+              type: string
+            lastName:
+              type: string
+            email:
+              type: string
+              format: email
+
+    InitializeResponse:
+      type: object
+      required:
+        - vaultCredentialBlob
+        - ownerSpaceToken
+        - messageSpaceUri
+      properties:
+        vaultCredentialBlob:
+          $ref: '#/components/schemas/CredentialBlob'
+          description: Second Protean credential for vault communication
+        ownerSpaceToken:
+          type: string
+          description: JWT for OwnerSpace access
+        ownerSpaceUri:
+          type: string
+          description: NATS URI for OwnerSpace
+        messageSpaceUri:
+          type: string
+          description: NATS URI for MessageSpace
+
+    TerminateRequest:
+      type: object
+      required:
+        - confirmationCode
+      properties:
+        confirmationCode:
+          type: string
+          description: Confirmation code to prevent accidental termination
+
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [healthy, degraded, unhealthy, unknown]
+        memoryUsagePercent:
+          type: number
+        diskUsagePercent:
+          type: number
+        cpuUsagePercent:
+          type: number
+        natsConnected:
+          type: boolean
+        lastChecked:
+          type: string
+          format: date-time
+
+    # ============================================
+    # BACKUP SCHEMAS
+    # ============================================
+
+    BackupStatus:
+      type: object
+      required:
+        - backupId
+        - status
+      properties:
+        backupId:
+          type: string
+        status:
+          type: string
+          enum: [in_progress, completed, failed]
+        startedAt:
+          type: string
+          format: date-time
+        completedAt:
+          type: string
+          format: date-time
+
+    BackupList:
+      type: object
+      required:
+        - backups
+      properties:
+        backups:
+          type: array
+          items:
+            type: object
+            properties:
+              backupId:
+                type: string
+              createdAt:
+                type: string
+                format: date-time
+              sizeBytes:
+                type: integer
+              type:
+                type: string
+                enum: [automatic, manual, pre_stop]
+
+    CredentialBackupRequest:
+      type: object
+      required:
+        - encryptedCredentials
+      properties:
+        encryptedCredentials:
+          type: string
+          format: byte
+          description: Credentials encrypted with recovery phrase-derived key
+
+    CredentialBackupResponse:
+      type: object
+      required:
+        - encryptedCredentials
+      properties:
+        encryptedCredentials:
+          type: string
+          format: byte
+
+    # ============================================
+    # NATS SCHEMAS
+    # ============================================
+
+    NatsTokenRequest:
+      type: object
+      required:
+        - scope
+      properties:
+        scope:
+          type: string
+          enum: [ownerspace_full, ownerspace_read, messagespace_read]
+        ttlMinutes:
+          type: integer
+          minimum: 1
+          maximum: 10080
+          default: 60
+
+    NatsTokenResponse:
+      type: object
+      required:
+        - token
+        - expiresAt
+        - natsUrl
+      properties:
+        token:
+          type: string
+          description: NATS JWT token
+        expiresAt:
+          type: string
+          format: date-time
+        natsUrl:
+          type: string
+          description: NATS server URL (os.vettid.dev or ms.vettid.dev)
+
+    # ============================================
+    # ERROR SCHEMAS
+    # ============================================
+
+    Error:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        details:
+          type: object
