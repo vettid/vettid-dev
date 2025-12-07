@@ -1,33 +1,41 @@
 {
   "instance": "testing",
   "phase": 1,
-  "task": "Phase 1 integration test scaffolding complete",
+  "task": "Phase 1 mock attestation data and database tests complete",
   "status": "in_progress",
   "blockers": [],
   "completedTasks": [
     "Phase 0: Fixed jest.config.js tsconfig path resolution",
     "Phase 0: Fixed setup.ts module export",
     "Phase 0: Fixed cryptoTestUtils.ts Buffer type issue",
-    "Phase 0: All 48 unit tests passing",
-    "Phase 1: Created enrollment flow integration tests (enrollmentFlow.test.ts)",
-    "Phase 1: Created device attestation tests (deviceAttestation.test.ts)",
-    "Phase 1: Created LAT lifecycle tests (latLifecycle.test.ts)",
-    "Phase 1: Created brute force security tests (bruteForce.test.ts)",
-    "Phase 1: Created timing attack security tests (timingAttack.test.ts)",
-    "Phase 1: Created replay attack security tests (replayAttack.test.ts)"
+    "Phase 0: All unit tests passing",
+    "Phase 1: Created enrollment flow integration tests",
+    "Phase 1: Created device attestation tests",
+    "Phase 1: Created LAT lifecycle tests",
+    "Phase 1: Created security tests (brute force, timing, replay)",
+    "Phase 1: Created Android Hardware Key Attestation mock fixtures",
+    "Phase 1: Created iOS App Attest mock fixtures",
+    "Phase 1: Created credential lifecycle database tests",
+    "Phase 1: Created key rotation tests",
+    "Phase 1: Documented test utilities for mobile instances"
   ],
   "nextTasks": [
-    "Implement actual enrollment API integration tests (requires Lambda deployment)",
-    "Add Android/iOS attestation mock data for validation tests",
+    "Fill in todo tests as Lambda handlers are deployed",
+    "Validate attestation parsing with actual Android/iOS data",
     "Coordinate with Android/iOS instances for cross-platform testing"
   ],
   "testSummary": {
-    "totalTests": 229,
-    "passing": 69,
-    "todo": 159,
+    "totalTests": 393,
+    "passing": 117,
+    "todo": 275,
     "failing": 0,
-    "notes": "All implemented tests pass. Todo tests are scaffolding for future implementation."
+    "notes": "All implemented tests pass. Todo tests await backend Lambda deployment."
   },
-  "lastUpdated": "2025-12-07T17:10:00Z",
-  "notes": "Phase 1 integration test scaffolding complete. Created comprehensive test files for enrollment flow, device attestation (Android/iOS), LAT lifecycle, and security tests (brute force, timing, replay). Tests are organized by category with placeholder todos for features awaiting Lambda implementation."
+  "fixtures": {
+    "android": "tests/fixtures/attestation/androidAttestation.ts",
+    "ios": "tests/fixtures/attestation/iosAttestation.ts",
+    "documentation": "tests/README.md"
+  },
+  "lastUpdated": "2025-12-07T17:45:00Z",
+  "notes": "Phase 1 test infrastructure expanded with mock attestation data for Android (Hardware Key Attestation) and iOS (App Attest). Created database integration test scaffolding for credential lifecycle and key rotation. Added comprehensive README documentation for mobile instances."
 }

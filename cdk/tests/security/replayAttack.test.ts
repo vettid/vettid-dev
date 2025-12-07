@@ -114,7 +114,8 @@ describe('LAT Replay Prevention', () => {
       const storedVersion = 5;
       const futureVersion = 10;
 
-      const isValid = futureVersion === storedVersion;
+      // Explicit type conversion to avoid TS literal type comparison warning
+      const isValid = (futureVersion as number) === (storedVersion as number);
       expect(isValid).toBe(false);
     });
 

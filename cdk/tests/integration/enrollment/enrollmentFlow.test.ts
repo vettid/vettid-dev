@@ -153,47 +153,50 @@ describe('Credential Blob Encryption (Integration)', () => {
     // Generate CEK key pair (simulating server-side)
     const cekKeyPair = generateX25519KeyPair();
 
-    // Create credential data
+    // Create credential data (using DecryptedCredential type)
     const credentialData = {
       guid: 'test-user-guid',
-      password_hash: '$argon2id$v=19$m=65536,t=3,p=4$salt$hash',
-      hash_algorithm: 'argon2id',
-      hash_version: '1.0',
+      passwordHash: '$argon2id$v=19$m=65536,t=3,p=4$salt$hash',
+      hashAlgorithm: 'argon2id',
+      hashVersion: '1.0',
       policies: {
-        ttl_hours: 24,
-        max_failed_attempts: 3,
+        ttlHours: 24,
+        maxFailedAttempts: 3,
       },
       secrets: {
-        vault_access_key: 'test-key',
+        vaultAccessKey: 'test-key',
       },
     };
 
     // Encrypt credential blob (simulating mobile app)
-    const encrypted = encryptCredentialBlob(
-      Buffer.from(JSON.stringify(credentialData)),
-      cekKeyPair.publicKey
-    );
+    const encrypted = encryptCredentialBlob(credentialData, cekKeyPair.publicKey);
 
     // Decrypt credential blob (simulating server)
     const decrypted = decryptCredentialBlob(encrypted, cekKeyPair.privateKey);
-    const decryptedData = JSON.parse(decrypted.toString());
 
-    expect(decryptedData.guid).toBe(credentialData.guid);
-    expect(decryptedData.password_hash).toBe(credentialData.password_hash);
-    expect(decryptedData.secrets.vault_access_key).toBe(credentialData.secrets.vault_access_key);
+    expect(decrypted.guid).toBe(credentialData.guid);
+    expect(decrypted.passwordHash).toBe(credentialData.passwordHash);
+    expect(decrypted.secrets.vaultAccessKey).toBe(credentialData.secrets.vaultAccessKey);
   });
 
   it('should produce different ciphertext each time (ephemeral key)', () => {
     const cekKeyPair = generateX25519KeyPair();
-    const plaintext = Buffer.from('test data');
+    const credentialData = {
+      guid: 'test-guid',
+      passwordHash: 'hash',
+      hashAlgorithm: 'argon2id',
+      hashVersion: '1.0',
+      policies: { ttlHours: 24, maxFailedAttempts: 3 },
+      secrets: {},
+    };
 
-    const encrypted1 = encryptCredentialBlob(plaintext, cekKeyPair.publicKey);
-    const encrypted2 = encryptCredentialBlob(plaintext, cekKeyPair.publicKey);
+    const encrypted1 = encryptCredentialBlob(credentialData, cekKeyPair.publicKey);
+    const encrypted2 = encryptCredentialBlob(credentialData, cekKeyPair.publicKey);
 
     // Ephemeral keys should be different
-    expect(encrypted1.ephemeralPublicKey.equals(encrypted2.ephemeralPublicKey)).toBe(false);
-    // Ciphertext should be different
-    expect(encrypted1.ciphertext.equals(encrypted2.ciphertext)).toBe(false);
+    expect(encrypted1.ephemeralPublicKey).not.toBe(encrypted2.ephemeralPublicKey);
+    // Encrypted blob should be different
+    expect(encrypted1.encryptedBlob).not.toBe(encrypted2.encryptedBlob);
   });
 });
 
@@ -219,9 +222,12 @@ describe('Transaction Key Pool (Integration)', () => {
     const pool = generateTransactionKeyPool(20);
 
     expect(pool).toHaveLength(20);
-    pool.forEach((key, index) => {
+    pool.forEach((key) => {
       expect(key.keyId).toBeDefined();
-      expect(key.publicKey).toHaveLength(32);
+      // publicKey is base64-encoded (44 chars for 32 bytes)
+      expect(key.publicKey).toHaveLength(44);
+      // Verify it decodes to 32 bytes
+      expect(Buffer.from(key.publicKey, 'base64')).toHaveLength(32);
       expect(key.algorithm).toBe('X25519');
     });
   });
