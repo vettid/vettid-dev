@@ -1,7 +1,7 @@
 {
   "instance": "ios",
-  "phase": 3,
-  "task": "Vault lifecycle management UI",
+  "phase": 4,
+  "task": "NATS client integration",
   "status": "completed",
   "blockers": [],
   "completedTasks": [
@@ -33,10 +33,20 @@
     "Implemented VaultStatusView - Status cards, quick stats, health indicators, actions",
     "Implemented VaultBackgroundRefresh - BGTaskScheduler for background sync",
     "Updated MainTabView to use VaultStatusView",
-    "Added VaultStatusViewModelTests - Comprehensive status and lifecycle tests"
+    "Added VaultStatusViewModelTests - Comprehensive status and lifecycle tests",
+    "Implemented NatsCredentials - Token model with JWT, seed, permissions, expiration",
+    "Implemented NatsCredentialStore - Keychain storage for NATS credentials",
+    "Implemented NatsConnectionManager - Connection lifecycle with reconnection",
+    "Implemented OwnerSpaceClient - Vault pub/sub via OwnerSpace topics",
+    "Implemented NatsTokenRefreshTask - BGTaskScheduler 6-hour token refresh",
+    "Added NATS API endpoints - /vault/nats/account, /vault/nats/token, /vault/nats/status",
+    "Implemented NatsSetupViewModel - Setup flow state machine",
+    "Implemented NatsConnectionStatusView - Connection status indicator and setup UI",
+    "Added NatsCredentialsTests - Expiration, permissions, JSON decoding",
+    "Added NatsConnectionManagerTests - State management and error handling"
   ],
-  "lastUpdated": "2025-12-07T16:45:00Z",
-  "notes": "Phase 3 complete. Vault lifecycle management with VaultStatusView showing states (pending_enrollment, enrolled, provisioning, running, stopped, terminated), health indicators, quick stats (keys available, last sync), and action buttons. BGTaskScheduler integration for background refresh. Full test coverage for status enums and view model.",
+  "lastUpdated": "2025-12-07T19:15:00Z",
+  "notes": "Phase 4 complete. NATS client infrastructure ready with NatsCredentials (JWT + NKey seed), NatsCredentialStore (Keychain), NatsConnectionManager (lifecycle + reconnect), OwnerSpaceClient (vault pub/sub). API integration for account creation, token generation, status check. NatsSetupViewModel for setup flow UI. BGTaskScheduler token refresh at 6-hour intervals. Client wrapper abstracted - actual nats.swift SPM integration pending.",
   "repository": "https://github.com/mesmerverse/vettid-ios",
-  "latestCommit": "5172f4f"
+  "latestCommit": "6c17bda"
 }
