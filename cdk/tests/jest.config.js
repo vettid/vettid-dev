@@ -9,7 +9,7 @@ module.exports = {
   ],
   transform: {
     '^.+\\.tsx?$': ['ts-jest', {
-      tsconfig: '../tsconfig.json'
+      tsconfig: '<rootDir>/../tsconfig.json'
     }]
   },
   moduleNameMapper: {

@@ -3,6 +3,9 @@
  * Runs before all tests
  */
 
+// Export to make this a module
+export {};
+
 // Set test environment variables
 process.env.NODE_ENV = 'test';
 process.env.AWS_REGION = 'us-east-1';

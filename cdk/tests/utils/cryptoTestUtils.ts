@@ -71,7 +71,7 @@ export function deriveKey(
   info: string,
   length: number = 32
 ): Buffer {
-  return crypto.hkdfSync('sha256', sharedSecret, Buffer.alloc(0), info, length);
+  return Buffer.from(crypto.hkdfSync('sha256', sharedSecret, Buffer.alloc(0), info, length));
 }
 
 // ============================================
