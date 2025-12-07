@@ -1274,6 +1274,12 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       authorizer: this.adminAuthorizer,
     });
     this.httpApi.addRoutes({
+      path: '/admin/membership-terms/{version_id}/download',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('GetTermsDownloadUrlInt', adminStack.getTermsDownloadUrl),
+      authorizer: this.adminAuthorizer,
+    });
+    this.httpApi.addRoutes({
       path: '/admin/proposals',
       methods: [apigw.HttpMethod.POST],
       integration: new integrations.HttpLambdaIntegration('CreateProposalInt', adminStack.createProposal),
@@ -1451,6 +1457,32 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       path: '/vault/auth/execute',
       methods: [apigw.HttpMethod.POST],
       integration: new integrations.HttpLambdaIntegration('AuthExecuteInt', vaultStack.authExecute),
+      authorizer: this.memberAuthorizer,
+    });
+
+    // NATS Account Management
+    this.httpApi.addRoutes({
+      path: '/vault/nats/account',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('NatsCreateAccountInt', vaultStack.natsCreateAccount),
+      authorizer: this.memberAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/vault/nats/token',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('NatsGenerateTokenInt', vaultStack.natsGenerateToken),
+      authorizer: this.memberAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/vault/nats/token/revoke',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('NatsRevokeTokenInt', vaultStack.natsRevokeToken),
+      authorizer: this.memberAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/vault/nats/status',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('NatsGetStatusInt', vaultStack.natsGetStatus),
       authorizer: this.memberAuthorizer,
     });
   }

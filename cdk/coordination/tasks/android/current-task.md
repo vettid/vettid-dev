@@ -1,7 +1,7 @@
-# Task: Phase 3 - Vault Lifecycle Management
+# Task: Phase 4 - NATS Client Integration
 
 ## Phase
-Phase 3: Vault Services Enrollment
+Phase 4: NATS Infrastructure
 
 ## Assigned To
 Android Instance
@@ -10,401 +10,325 @@ Android Instance
 `github.com/mesmerverse/vettid-android`
 
 ## Status
-Phase 2 complete. Ready for Phase 3 vault lifecycle management.
+Phase 3 complete. Ready for Phase 4 NATS client integration.
 
-## New Backend Endpoints
+## Overview
 
-Three new endpoints have been added:
+Implement NATS client integration for the Android app. The backend now provides:
+- NATS account creation (namespace allocation)
+- JWT token generation for NATS authentication
+- Token revocation
 
-1. `GET /vault/status` - Get vault status (not_enrolled, pending, enrolled, active)
-2. `POST /vault/sync` - Sync vault and replenish transaction keys
-3. `POST /member/vault/deploy` - Web portal endpoint (not used by mobile)
+The mobile app needs to:
+1. Create a NATS account via API
+2. Request tokens for NATS connection
+3. Connect to NATS cluster using tokens
+4. Implement pub/sub for vault communication
 
-## Phase 3 Android Tasks
+## API Endpoints
 
-### 1. Add Vault Status API
+### Create NATS Account
+```
+POST /vault/nats/account
+Authorization: Bearer <member_jwt>
 
-Update VaultService interface:
+Response 200:
+{
+  "owner_space_id": "OwnerSpace.{user_guid}",
+  "message_space_id": "MessageSpace.{user_guid}",
+  "nats_endpoint": "nats://nats.vettid.dev:4222",
+  "status": "active"
+}
+```
 
-```kotlin
-interface VaultService {
-    // Existing enrollment/auth endpoints...
+### Generate NATS Token
+```
+POST /vault/nats/token
+Authorization: Bearer <member_jwt>
+Content-Type: application/json
 
-    @GET("/vault/status")
-    suspend fun getVaultStatus(): VaultStatusResponse
-
-    @POST("/vault/sync")
-    suspend fun syncVault(): SyncResponse
+{
+  "client_type": "app",
+  "device_id": "optional-device-identifier"
 }
 
-data class VaultStatusResponse(
-    val status: String,                    // "not_enrolled", "pending", "enrolled", "active", "error"
-    val user_guid: String? = null,
-    val enrolled_at: String? = null,
-    val last_auth_at: String? = null,
-    val last_sync_at: String? = null,
-    val device_type: String? = null,       // "android" or "ios"
-    val security_level: String? = null,    // "hardware", "StrongBox", "TEE"
-    val transaction_keys_remaining: Int? = null,
-    val credential_version: Int? = null,
-    val error_message: String? = null
+Response 200:
+{
+  "token_id": "nats_uuid",
+  "nats_jwt": "base64url.payload.signature",
+  "nats_seed": "SUAM...",
+  "nats_endpoint": "nats://nats.vettid.dev:4222",
+  "expires_at": "2025-12-08T...",
+  "permissions": {
+    "publish": ["OwnerSpace.guid.forVault.>"],
+    "subscribe": ["OwnerSpace.guid.forApp.>", "OwnerSpace.guid.eventTypes"]
+  }
+}
+```
+
+### Get NATS Status
+```
+GET /vault/nats/status
+Authorization: Bearer <member_jwt>
+
+Response 200:
+{
+  "has_account": true,
+  "account": {
+    "owner_space_id": "OwnerSpace.{user_guid}",
+    "message_space_id": "MessageSpace.{user_guid}",
+    "status": "active",
+    "created_at": "2025-12-07T..."
+  },
+  "active_tokens": [...],
+  "nats_endpoint": "nats://nats.vettid.dev:4222"
+}
+```
+
+## Phase 4 Android Tasks
+
+### 1. Add NATS Client Dependency
+
+Add the official NATS.io Java client:
+
+```kotlin
+// build.gradle.kts (app)
+dependencies {
+    implementation("io.nats:jnats:2.17.6")
+}
+```
+
+### 2. NATS Client Module
+
+Create NATS client components:
+
+```
+app/src/main/kotlin/dev/vettid/nats/
+├── NatsClient.kt             # Main client wrapper
+├── NatsCredentials.kt        # Token/credential management
+├── NatsConnectionManager.kt  # Connection lifecycle
+├── OwnerSpaceClient.kt       # OwnerSpace operations
+└── MessageSpaceClient.kt     # MessageSpace operations
+```
+
+#### NatsCredentials.kt
+```kotlin
+data class NatsCredentials(
+    val tokenId: String,
+    val jwt: String,
+    val seed: String,
+    val endpoint: String,
+    val expiresAt: Instant,
+    val permissions: NatsPermissions
 )
 
-data class SyncResponse(
-    val status: String,                    // "synced" or "keys_replenished"
-    val last_sync_at: String,
-    val transaction_keys_remaining: Int,
-    val new_transaction_keys: List<TransactionKey>? = null,
-    val credential_version: Int
+data class NatsPermissions(
+    val publish: List<String>,
+    val subscribe: List<String>
 )
 ```
 
-### 2. Create VaultStatusViewModel
+#### NatsConnectionManager.kt
+```kotlin
+class NatsConnectionManager @Inject constructor(
+    private val apiClient: VettIdApiClient,
+    private val credentialStore: NatsCredentialStore
+) {
+    private var connection: Connection? = null
+
+    suspend fun connect(): Result<Connection>
+    suspend fun disconnect()
+    suspend fun refreshTokenIfNeeded()
+    fun isConnected(): Boolean
+}
+```
+
+### 3. NATS Account Setup Flow
+
+Implement account setup after vault enrollment:
 
 ```kotlin
-// app/src/main/kotlin/dev/vettid/vault/
-VaultStatusViewModel.kt
-
-@HiltViewModel
-class VaultStatusViewModel @Inject constructor(
-    private val vaultService: VaultService,
-    private val credentialStore: CredentialStore
+class NatsSetupViewModel @Inject constructor(
+    private val apiClient: VettIdApiClient,
+    private val connectionManager: NatsConnectionManager
 ) : ViewModel() {
-
-    private val _state = MutableStateFlow<VaultState>(VaultState.Loading)
-    val state: StateFlow<VaultState> = _state.asStateFlow()
-
-    init {
-        loadVaultStatus()
+    sealed class SetupState {
+        object Initial : SetupState()
+        object CreatingAccount : SetupState()
+        object GeneratingToken : SetupState()
+        object Connecting : SetupState()
+        data class Connected(val status: NatsAccountStatus) : SetupState()
+        data class Error(val message: String) : SetupState()
     }
 
-    fun loadVaultStatus() {
-        viewModelScope.launch {
-            _state.value = VaultState.Loading
-            try {
-                val response = vaultService.getVaultStatus()
-                _state.value = when (response.status) {
-                    "not_enrolled" -> VaultState.NotEnrolled
-                    "pending" -> VaultState.Pending
-                    "enrolled" -> VaultState.Enrolled(
-                        userGuid = response.user_guid!!,
-                        enrolledAt = response.enrolled_at,
-                        keysRemaining = response.transaction_keys_remaining ?: 0
-                    )
-                    "active" -> VaultState.Active(
-                        userGuid = response.user_guid!!,
-                        lastAuthAt = response.last_auth_at,
-                        lastSyncAt = response.last_sync_at,
-                        keysRemaining = response.transaction_keys_remaining ?: 0,
-                        credentialVersion = response.credential_version ?: 1
-                    )
-                    else -> VaultState.Error(response.error_message ?: "Unknown error")
-                }
-            } catch (e: Exception) {
-                _state.value = VaultState.Error(e.message ?: "Failed to load status")
-            }
-        }
-    }
-
-    fun syncVault() {
-        viewModelScope.launch {
-            try {
-                val response = vaultService.syncVault()
-
-                // Store any new transaction keys
-                response.new_transaction_keys?.let { keys ->
-                    credentialStore.addTransactionKeys(keys)
-                }
-
-                // Refresh status
-                loadVaultStatus()
-            } catch (e: Exception) {
-                // Handle sync error
-            }
-        }
-    }
-}
-
-sealed class VaultState {
-    object Loading : VaultState()
-    object NotEnrolled : VaultState()
-    object Pending : VaultState()
-    data class Enrolled(
-        val userGuid: String,
-        val enrolledAt: String?,
-        val keysRemaining: Int
-    ) : VaultState()
-    data class Active(
-        val userGuid: String,
-        val lastAuthAt: String?,
-        val lastSyncAt: String?,
-        val keysRemaining: Int,
-        val credentialVersion: Int
-    ) : VaultState()
-    data class Error(val message: String) : VaultState()
-}
-```
-
-### 3. Create VaultStatusScreen
-
-```kotlin
-// app/src/main/kotlin/dev/vettid/vault/
-VaultStatusScreen.kt
-
-@Composable
-fun VaultStatusScreen(
-    viewModel: VaultStatusViewModel = hiltViewModel(),
-    onEnrollClick: () -> Unit
-) {
-    val state by viewModel.state.collectAsState()
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp)
-    ) {
-        Text(
-            text = "Vault Status",
-            style = MaterialTheme.typography.headlineMedium
-        )
-
-        Spacer(modifier = Modifier.height(24.dp))
-
-        when (val currentState = state) {
-            is VaultState.Loading -> {
-                CircularProgressIndicator()
-            }
-            is VaultState.NotEnrolled -> {
-                VaultNotEnrolledCard(onEnrollClick = onEnrollClick)
-            }
-            is VaultState.Pending -> {
-                VaultPendingCard()
-            }
-            is VaultState.Enrolled -> {
-                VaultEnrolledCard(state = currentState)
-            }
-            is VaultState.Active -> {
-                VaultActiveCard(
-                    state = currentState,
-                    onSyncClick = { viewModel.syncVault() }
-                )
-            }
-            is VaultState.Error -> {
-                VaultErrorCard(
-                    message = currentState.message,
-                    onRetryClick = { viewModel.loadVaultStatus() }
-                )
-            }
-        }
-    }
-}
-
-@Composable
-fun VaultActiveCard(
-    state: VaultState.Active,
-    onSyncClick: () -> Unit
-) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    imageVector = Icons.Default.CheckCircle,
-                    contentDescription = null,
-                    tint = Color.Green
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Vault Active", style = MaterialTheme.typography.titleMedium)
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            Text("Last Sync: ${state.lastSyncAt ?: "Never"}")
-            Text("Transaction Keys: ${state.keysRemaining}")
-            Text("Credential Version: ${state.credentialVersion}")
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            Button(onClick = onSyncClick) {
-                Text("Sync Now")
-            }
-        }
+    suspend fun setupNats() {
+        // 1. Create NATS account
+        // 2. Generate app token
+        // 3. Connect to NATS
+        // 4. Subscribe to forApp topic
     }
 }
 ```
 
-### 4. Background Sync Worker
+### 4. OwnerSpace Client
+
+Implement OwnerSpace communication:
 
 ```kotlin
-// app/src/main/kotlin/dev/vettid/vault/
-VaultSyncWorker.kt
+class OwnerSpaceClient @Inject constructor(
+    private val connectionManager: NatsConnectionManager
+) {
+    // Topics
+    // Publish: OwnerSpace.{guid}.forVault.>
+    // Subscribe: OwnerSpace.{guid}.forApp.>
 
-@HiltWorker
-class VaultSyncWorker @AssistedInject constructor(
-    @Assisted context: Context,
-    @Assisted params: WorkerParameters,
-    private val vaultService: VaultService,
-    private val credentialStore: CredentialStore
+    suspend fun sendToVault(message: VaultMessage): Result<Unit>
+    fun subscribeToVaultResponses(callback: (VaultResponse) -> Unit): Subscription
+    suspend fun getEventTypes(): List<EventType>
+}
+```
+
+### 5. Message Types
+
+Define message structures:
+
+```kotlin
+// Messages TO vault
+sealed class VaultMessage {
+    data class ExecuteHandler(
+        val handlerId: String,
+        val payload: JsonObject
+    ) : VaultMessage()
+
+    data class StatusRequest(
+        val requestId: String
+    ) : VaultMessage()
+}
+
+// Messages FROM vault
+sealed class VaultResponse {
+    data class HandlerResult(
+        val requestId: String,
+        val success: Boolean,
+        val result: JsonObject?
+    ) : VaultResponse()
+
+    data class StatusResponse(
+        val requestId: String,
+        val vaultStatus: VaultStatus
+    ) : VaultResponse()
+}
+```
+
+### 6. Connection UI
+
+Create connection status UI:
+
+```kotlin
+@Composable
+fun NatsConnectionStatus(
+    viewModel: NatsSetupViewModel = hiltViewModel()
+) {
+    val state by viewModel.setupState.collectAsState()
+
+    when (state) {
+        is SetupState.Connected -> ConnectionActiveIndicator()
+        is SetupState.Connecting -> ConnectionProgressIndicator()
+        is SetupState.Error -> ConnectionErrorBanner(state.message)
+        else -> Unit
+    }
+}
+```
+
+### 7. Token Refresh
+
+Implement automatic token refresh:
+
+```kotlin
+class NatsTokenRefreshWorker(
+    context: Context,
+    params: WorkerParameters
 ) : CoroutineWorker(context, params) {
 
     override suspend fun doWork(): Result {
-        return try {
-            val response = vaultService.syncVault()
-
-            // Store new transaction keys if any
-            response.new_transaction_keys?.let { keys ->
-                credentialStore.addTransactionKeys(keys)
-            }
-
-            Result.success()
-        } catch (e: Exception) {
-            if (runAttemptCount < 3) {
-                Result.retry()
-            } else {
-                Result.failure()
-            }
-        }
+        // Check token expiration
+        // Refresh if < 1 hour remaining
+        // Reconnect with new token
     }
 
     companion object {
         fun schedule(context: Context) {
-            val constraints = Constraints.Builder()
-                .setRequiredNetworkType(NetworkType.CONNECTED)
-                .build()
-
-            val syncRequest = PeriodicWorkRequestBuilder<VaultSyncWorker>(
-                repeatInterval = 6,
-                repeatIntervalTimeUnit = TimeUnit.HOURS
-            )
-                .setConstraints(constraints)
-                .build()
-
-            WorkManager.getInstance(context)
-                .enqueueUniquePeriodicWork(
-                    "vault_sync",
-                    ExistingPeriodicWorkPolicy.KEEP,
-                    syncRequest
-                )
+            // Schedule periodic token refresh check
+            val request = PeriodicWorkRequestBuilder<NatsTokenRefreshWorker>(
+                6, TimeUnit.HOURS
+            ).build()
+            WorkManager.getInstance(context).enqueue(request)
         }
     }
 }
 ```
 
-### 5. Update Home Screen
+## Testing Requirements
 
-Add vault status card to main screen:
-
+### Unit Tests
 ```kotlin
-@Composable
-fun HomeScreen(
-    vaultViewModel: VaultStatusViewModel = hiltViewModel(),
-    onVaultClick: () -> Unit
-) {
-    val vaultState by vaultViewModel.state.collectAsState()
-
-    Column(modifier = Modifier.padding(16.dp)) {
-        // Other home content...
-
-        VaultStatusCard(
-            state = vaultState,
-            onClick = onVaultClick
-        )
-    }
+class NatsCredentialsTest {
+    @Test fun `should parse token response correctly`()
+    @Test fun `should detect expired token`()
 }
 
-@Composable
-fun VaultStatusCard(
-    state: VaultState,
-    onClick: () -> Unit
-) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-    ) {
-        Row(
-            modifier = Modifier.padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(
-                imageVector = when (state) {
-                    is VaultState.Active -> Icons.Default.Lock
-                    is VaultState.NotEnrolled -> Icons.Default.LockOpen
-                    else -> Icons.Default.Sync
-                },
-                contentDescription = null
-            )
-            Spacer(modifier = Modifier.width(16.dp))
-            Column {
-                Text("Vault", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    text = when (state) {
-                        is VaultState.Active -> "Active"
-                        is VaultState.NotEnrolled -> "Not Set Up"
-                        is VaultState.Pending -> "Setup in Progress"
-                        is VaultState.Enrolled -> "Enrolled"
-                        is VaultState.Loading -> "Loading..."
-                        is VaultState.Error -> "Error"
-                    },
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
-        }
-    }
+class OwnerSpaceClientTest {
+    @Test fun `should format publish topic correctly`()
+    @Test fun `should handle connection failure`()
 }
 ```
 
-### 6. Unit Tests
-
+### Integration Tests
 ```kotlin
-class VaultStatusViewModelTest {
-    @Test
-    fun `loadVaultStatus updates state to Active`()
-
-    @Test
-    fun `loadVaultStatus updates state to NotEnrolled`()
-
-    @Test
-    fun `syncVault stores new transaction keys`()
-
-    @Test
-    fun `syncVault refreshes status after sync`()
-}
-
-class VaultSyncWorkerTest {
-    @Test
-    fun `doWork syncs successfully`()
-
-    @Test
-    fun `doWork retries on failure`()
-
-    @Test
-    fun `doWork stores new keys`()
+class NatsIntegrationTest {
+    @Test fun `should create account and connect`()
+    @Test fun `should send message to vault topic`()
+    @Test fun `should receive message from app topic`()
 }
 ```
 
-## Key References (in vettid-dev)
+## Deliverables
 
-Pull latest from vettid-dev:
-- `cdk/lambda/handlers/vault/getVaultStatus.ts`
-- `cdk/lambda/handlers/vault/syncVault.ts`
+- [ ] NatsClient wrapper class
+- [ ] NatsCredentials data model
+- [ ] NatsConnectionManager with lifecycle management
+- [ ] OwnerSpaceClient for vault communication
+- [ ] NatsSetupViewModel and UI
+- [ ] Token refresh worker
+- [ ] Unit tests for NATS components
+- [ ] Integration tests for NATS connection
 
 ## Acceptance Criteria
 
-- [ ] VaultStatusViewModel loads and displays vault status
-- [ ] VaultStatusScreen shows appropriate UI for each state
-- [ ] Sync button triggers vault sync
-- [ ] New transaction keys stored after sync
-- [ ] Background worker syncs every 6 hours
-- [ ] Home screen shows vault status card
-- [ ] Unit tests pass
+- [ ] App can create NATS account via API
+- [ ] App can generate and store NATS tokens
+- [ ] App connects to NATS using TLS (port 4222)
+- [ ] App can publish to OwnerSpace.forVault
+- [ ] App can subscribe to OwnerSpace.forApp
+- [ ] Token refresh works before expiration
+- [ ] Connection errors are handled gracefully
+- [ ] All unit tests pass
 
 ## Status Update
 
 ```bash
+cd /path/to/vettid-android
+git pull  # Get latest from backend if needed
+# Edit app/src/main/kotlin/... (create NATS components)
+git add .
+git commit -m "Phase 4: Add NATS client integration"
+git push
+
+# Update status in backend repo
 cd /path/to/vettid-dev
 git pull
 # Edit cdk/coordination/status/android.json
 git add cdk/coordination/status/android.json
-git commit -m "Update Android status: Phase 3 vault lifecycle complete"
+git commit -m "Update Android status: Phase 4 NATS client complete"
 git push
 ```

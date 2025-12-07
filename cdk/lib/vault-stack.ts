@@ -17,6 +17,7 @@ export interface VaultStackProps extends cdk.StackProps {
  * Contains vault enrollment and authentication services:
  * - Vault enrollment Lambda functions
  * - Vault authentication Lambda functions
+ * - NATS account management Lambda functions
  * - API routes added by VettIDStack after instantiation
  *
  * Depends on: Infrastructure Stack (for tables, user pool)
@@ -28,6 +29,12 @@ export class VaultStack extends cdk.Stack {
   public readonly enrollFinalize!: lambdaNode.NodejsFunction;
   public readonly actionRequest!: lambdaNode.NodejsFunction;
   public readonly authExecute!: lambdaNode.NodejsFunction;
+
+  // NATS account management functions
+  public readonly natsCreateAccount!: lambdaNode.NodejsFunction;
+  public readonly natsGenerateToken!: lambdaNode.NodejsFunction;
+  public readonly natsRevokeToken!: lambdaNode.NodejsFunction;
+  public readonly natsGetStatus!: lambdaNode.NodejsFunction;
 
   constructor(scope: Construct, id: string, props: VaultStackProps) {
     super(scope, id, props);
@@ -94,6 +101,43 @@ export class VaultStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(30),
     });
 
+    // ===== NATS ACCOUNT MANAGEMENT =====
+
+    const natsEnv = {
+      TABLE_NATS_ACCOUNTS: tables.natsAccounts.tableName,
+      TABLE_NATS_TOKENS: tables.natsTokens.tableName,
+      TABLE_AUDIT: tables.audit.tableName,
+      NATS_DOMAIN: 'nats.vettid.dev',
+    };
+
+    this.natsCreateAccount = new lambdaNode.NodejsFunction(this, 'NatsCreateAccountFn', {
+      entry: 'lambda/handlers/nats/createMemberAccount.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: natsEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    this.natsGenerateToken = new lambdaNode.NodejsFunction(this, 'NatsGenerateTokenFn', {
+      entry: 'lambda/handlers/nats/generateMemberJwt.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: natsEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    this.natsRevokeToken = new lambdaNode.NodejsFunction(this, 'NatsRevokeTokenFn', {
+      entry: 'lambda/handlers/nats/revokeToken.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: natsEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    this.natsGetStatus = new lambdaNode.NodejsFunction(this, 'NatsGetStatusFn', {
+      entry: 'lambda/handlers/nats/getNatsStatus.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: natsEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
     // ===== PERMISSIONS =====
 
     // Grant table permissions
@@ -144,5 +188,22 @@ export class VaultStack extends cdk.Stack {
         resources: [sesIdentityArn],
       }));
     });
+
+    // ===== NATS PERMISSIONS =====
+
+    // Grant NATS accounts table access
+    tables.natsAccounts.grantReadWriteData(this.natsCreateAccount);
+    tables.natsAccounts.grantReadData(this.natsGenerateToken);
+    tables.natsAccounts.grantReadData(this.natsGetStatus);
+
+    // Grant NATS tokens table access
+    tables.natsTokens.grantReadWriteData(this.natsGenerateToken);
+    tables.natsTokens.grantReadWriteData(this.natsRevokeToken);
+    tables.natsTokens.grantReadData(this.natsGetStatus);
+
+    // Grant audit table access for NATS functions
+    tables.audit.grantReadWriteData(this.natsCreateAccount);
+    tables.audit.grantReadWriteData(this.natsGenerateToken);
+    tables.audit.grantReadWriteData(this.natsRevokeToken);
   }
 }

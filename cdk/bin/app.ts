@@ -5,6 +5,7 @@ import { InfrastructureStack } from '../lib/infrastructure-stack';
 import { VettIdStack } from '../lib/vettid-stack';
 import { AdminStack } from '../lib/admin-stack';
 import { VaultStack } from '../lib/vault-stack';
+import { NatsStack } from '../lib/nats-stack';
 
 const app = new cdk.App();
 
@@ -39,3 +40,13 @@ const vault = new VaultStack(app, 'VettID-Vault', {
 
 // 6. Add vault routes to VettIDStack API
 core.addVaultRoutes(vault);
+
+// 7. Deploy NATS infrastructure stack (VPC, EC2 cluster, NLB)
+// Note: This stack requires the Route 53 hosted zone ID for nats.vettid.dev
+// To deploy, provide the hosted zone ID via context or environment variable
+const nats = new NatsStack(app, 'VettID-NATS', {
+  env,
+  domainName: 'nats.vettid.dev',
+  hostedZoneId: app.node.tryGetContext('hostedZoneId') || process.env.HOSTED_ZONE_ID || 'PLACEHOLDER',
+  zoneName: 'vettid.dev',
+});

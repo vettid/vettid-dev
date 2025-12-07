@@ -1,7 +1,7 @@
-# Task: Phase 3 - Vault Lifecycle Testing
+# Task: Phase 4 - NATS Infrastructure Testing
 
 ## Phase
-Phase 3: Vault Services Enrollment
+Phase 4: NATS Infrastructure
 
 ## Assigned To
 Testing Instance
@@ -10,151 +10,180 @@ Testing Instance
 `github.com/mesmerverse/vettid-dev`
 
 ## Status
-Phase 2 complete. Ready for Phase 3 vault lifecycle testing.
+Phase 3 complete. Ready for Phase 4 NATS infrastructure testing.
 
-## New Backend Handlers
+## New Infrastructure
 
-Three new handlers have been created:
+### NATS Stack (`lib/nats-stack.ts`)
+- Dedicated VPC with 3 AZs
+- 3-node NATS cluster on t4g.small (ARM64)
+- Network Load Balancer with ACM TLS
+- Self-signed certificates for internal cluster communication
+- Secrets Manager for operator keys and internal CA
 
-1. `POST /member/vault/deploy` - Member initiates vault deployment, returns QR code data
-2. `GET /vault/status` - Get vault status for authenticated user
-3. `POST /vault/sync` - Sync vault state and replenish transaction keys
+### New DynamoDB Tables
+- `NatsAccounts` - Member NATS namespace allocations
+- `NatsTokens` - Issued NATS JWT tokens (with GSI on user_guid)
 
-## Phase 3 Testing Tasks
+### New Lambda Handlers
+1. `POST /vault/nats/account` - Create member NATS namespace
+2. `POST /vault/nats/token` - Generate scoped NATS JWT token
+3. `POST /vault/nats/token/revoke` - Revoke NATS token
+4. `GET /vault/nats/status` - Get NATS account status
 
-### 1. Vault Deployment Tests
+## Phase 4 Testing Tasks
 
-Create tests for the new deploy vault handler:
+### 1. NATS Account Creation Tests
 
 ```
-cdk/tests/integration/vault/
-├── deployVault.test.ts         # Test POST /member/vault/deploy
-├── getVaultStatus.test.ts      # Test GET /vault/status
-└── syncVault.test.ts           # Test POST /vault/sync
+cdk/tests/integration/nats/
+├── createAccount.test.ts      # Test POST /vault/nats/account
+├── generateToken.test.ts      # Test POST /vault/nats/token
+├── revokeToken.test.ts        # Test POST /vault/nats/token/revoke
+└── getNatsStatus.test.ts      # Test GET /vault/nats/status
 ```
 
-Test cases for `deployVault`:
-- Member can initiate vault deployment
-- Returns valid QR data structure with invite code
-- Duplicate deployment returns existing pending invite
-- Already-enrolled member cannot deploy again (409 Conflict)
-- Invite expires after 30 minutes
-
-### 2. Vault Status Tests
-
-Test `getVaultStatus` endpoint:
-
+Test cases for `createMemberAccount`:
 ```typescript
-describe('GET /vault/status', () => {
-  it('should return not_enrolled for new users');
-  it('should return pending during enrollment');
-  it('should return enrolled after finalization');
-  it('should return active after first authentication');
-  it('should include transaction_keys_remaining count');
-  it('should include credential_version');
-  it('should include device_type and security_level');
+describe('POST /vault/nats/account', () => {
+  it('should create NATS account for authenticated member');
+  it('should return OwnerSpace and MessageSpace IDs');
+  it('should return 409 if account already exists');
+  it('should require authentication');
+  it('should generate unique account public key placeholder');
 });
 ```
 
-### 3. Vault Sync Tests
+### 2. Token Generation Tests
 
-Test `syncVault` endpoint:
-
+Test `generateMemberJwt` endpoint:
 ```typescript
-describe('POST /vault/sync', () => {
-  it('should update last_sync_at timestamp');
-  it('should return current key count when above minimum');
-  it('should replenish keys when below minimum (10)');
-  it('should generate 20 new keys when replenishing');
-  it('should return new transaction keys in response');
-  it('should return 404 for non-enrolled users');
+describe('POST /vault/nats/token', () => {
+  it('should generate token for app client_type');
+  it('should generate token for vault client_type');
+  it('should require NATS account to exist first');
+  it('should return token with correct permissions');
+  it('should set app token validity to 24 hours');
+  it('should set vault token validity to 7 days');
+  it('should include nats_jwt and nats_seed in response');
+  it('should store token record in DynamoDB');
 });
 ```
 
-### 4. E2E Enrollment Flow Tests
+### 3. Token Revocation Tests
 
-Update e2e tests to include full flow:
-
+Test `revokeToken` endpoint:
 ```typescript
-// tests/e2e/vaultLifecycle.test.ts
-describe('Full Vault Lifecycle', () => {
-  it('should complete: deploy → enroll → auth → sync');
-  it('should track status transitions correctly');
-  it('should replenish keys after multiple auths');
+describe('POST /vault/nats/token/revoke', () => {
+  it('should revoke active token');
+  it('should return 404 for non-existent token');
+  it('should prevent revoking other users tokens');
+  it('should update token status to revoked');
+  it('should return already revoked message for re-revocation');
 });
 ```
 
-### 5. QR Code Validation Tests
+### 4. Status Tests
 
-Test QR data structure:
-
+Test `getNatsStatus` endpoint:
 ```typescript
-describe('QR Code Data', () => {
-  it('should have type: vettid_vault_enrollment');
-  it('should include valid invite code');
-  it('should include API endpoint');
-  it('should include expiration timestamp');
-  it('should be valid JSON parseable by mobile apps');
+describe('GET /vault/nats/status', () => {
+  it('should return has_account: false for new users');
+  it('should return account details after creation');
+  it('should list active tokens');
+  it('should filter out expired tokens');
+  it('should return nats_endpoint');
 });
 ```
 
-## Key Files to Test
+### 5. Permission Tests
 
-- `lambda/handlers/member/deployVault.ts` - NEW
-- `lambda/handlers/vault/getVaultStatus.ts` - NEW
-- `lambda/handlers/vault/syncVault.ts` - NEW
+Test NATS permissions structure:
+```typescript
+describe('NATS Permissions', () => {
+  describe('App client permissions', () => {
+    it('should allow publish to OwnerSpace.forVault');
+    it('should allow subscribe to OwnerSpace.forApp');
+    it('should allow subscribe to OwnerSpace.eventTypes');
+  });
+
+  describe('Vault client permissions', () => {
+    it('should allow publish to OwnerSpace.forApp');
+    it('should allow publish to MessageSpace.forOwner');
+    it('should allow subscribe to OwnerSpace.forVault');
+    it('should allow subscribe to OwnerSpace.control');
+  });
+});
+```
+
+### 6. Namespace Isolation Tests
+
+```typescript
+describe('Namespace Isolation', () => {
+  it('should prevent cross-namespace access');
+  it('should verify account IDs are unique per user');
+  it('should verify token cannot access other accounts');
+});
+```
 
 ## Response Structures
 
-### Deploy Vault Response
+### Create Account Response
 ```typescript
 {
-  invite_code: string;
-  qr_data: string;  // JSON stringified
-  expires_at: string;  // ISO timestamp
-  enrollment_endpoint: string;  // "/vault/enroll/start"
+  owner_space_id: string;       // "OwnerSpace.{user_guid}"
+  message_space_id: string;     // "MessageSpace.{user_guid}"
+  nats_endpoint: string;        // "nats://nats.vettid.dev:4222"
+  status: 'active';
 }
 ```
 
-### Vault Status Response
+### Generate Token Response
 ```typescript
 {
-  status: 'not_enrolled' | 'pending' | 'enrolled' | 'active' | 'error';
-  user_guid?: string;
-  enrolled_at?: string;
-  last_auth_at?: string;
-  last_sync_at?: string;
-  device_type?: 'android' | 'ios';
-  security_level?: string;
-  transaction_keys_remaining?: number;
-  credential_version?: number;
+  token_id: string;
+  nats_jwt: string;
+  nats_seed: string;
+  nats_endpoint: string;
+  expires_at: string;
+  permissions: {
+    publish: string[];
+    subscribe: string[];
+  };
 }
 ```
 
-### Sync Response
+### NATS Status Response
 ```typescript
 {
-  status: 'synced' | 'keys_replenished';
-  last_sync_at: string;
-  transaction_keys_remaining: number;
-  new_transaction_keys?: Array<{
-    key_id: string;
-    public_key: string;
-    algorithm: string;
+  has_account: boolean;
+  account?: {
+    owner_space_id: string;
+    message_space_id: string;
+    status: string;
+    created_at: string;
+  };
+  active_tokens: Array<{
+    token_id: string;
+    client_type: 'app' | 'vault';
+    device_id?: string;
+    issued_at: string;
+    expires_at: string;
+    last_used_at?: string;
   }>;
-  credential_version: number;
+  nats_endpoint: string;
 }
 ```
 
 ## Acceptance Criteria
 
-- [ ] Unit tests for all three new handlers
-- [ ] Integration tests for vault lifecycle
-- [ ] E2E test for complete deploy → enroll → auth → sync flow
-- [ ] QR data structure validated
-- [ ] Transaction key replenishment verified
-- [ ] Status transitions verified
+- [ ] Unit tests for all four NATS handlers
+- [ ] Integration tests for account creation flow
+- [ ] Token generation and revocation tests
+- [ ] Permission structure validation tests
+- [ ] Namespace isolation verification
 - [ ] All existing tests still pass
+- [ ] Test coverage for error cases (404, 409, 403)
 
 ## Status Update
 
@@ -163,6 +192,6 @@ cd /path/to/vettid-dev
 git pull
 # Edit cdk/coordination/status/testing.json
 git add cdk/coordination/status/testing.json
-git commit -m "Update Testing status: Phase 3 vault lifecycle tests complete"
+git commit -m "Update Testing status: Phase 4 NATS infrastructure tests"
 git push
 ```

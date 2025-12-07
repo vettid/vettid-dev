@@ -44,6 +44,8 @@ export class InfrastructureStack extends cdk.Stack {
     enrollmentSessions: dynamodb.Table;
     notificationPreferences: dynamodb.Table;
     pendingAdmins: dynamodb.Table;
+    natsAccounts: dynamodb.Table;
+    natsTokens: dynamodb.Table;
   };
 
   // S3 Buckets
@@ -327,6 +329,31 @@ export class InfrastructureStack extends cdk.Stack {
       timeToLiveAttribute: 'expires_at',
     });
 
+    // ===== NATS INFRASTRUCTURE TABLES =====
+
+    // NATS Accounts table - stores member NATS namespace allocations
+    const natsAccounts = new dynamodb.Table(this, 'NatsAccounts', {
+      partitionKey: { name: 'user_guid', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      pointInTimeRecovery: true,
+    });
+
+    // NATS Tokens table - stores issued NATS JWT tokens
+    const natsTokens = new dynamodb.Table(this, 'NatsTokens', {
+      partitionKey: { name: 'token_id', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      timeToLiveAttribute: 'ttl',
+    });
+
+    natsTokens.addGlobalSecondaryIndex({
+      indexName: 'user-index',
+      partitionKey: { name: 'user_guid', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'issued_at', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
     // ===== S3 BUCKETS =====
 
     // S3 bucket for membership terms PDFs (shared by VettIDStack and AdminStack)
@@ -360,6 +387,8 @@ export class InfrastructureStack extends cdk.Stack {
       enrollmentSessions,
       notificationPreferences,
       pendingAdmins,
+      natsAccounts,
+      natsTokens,
     };
 
     // ===== AUTH LAMBDA FUNCTIONS =====
