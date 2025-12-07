@@ -1,0 +1,32 @@
+# Gradle
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# Android Studio
+*.iml
+.idea/
+*.log
+local.properties
+
+# Kotlin
+*.class
+
+# Generated files
+app/build/
+app/release/
+
+# Mac
+.DS_Store
+
+# Android specific
+*.apk
+*.ap_
+*.aab
+*.dex
+*.jks
+*.keystore
+!debug.keystore
+
+# Test outputs
+app/src/androidTest/outputs/
