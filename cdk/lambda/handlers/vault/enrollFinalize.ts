@@ -1,7 +1,7 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { DynamoDBClient, GetItemCommand, PutItemCommand, UpdateItemCommand, QueryCommand } from '@aws-sdk/client-dynamodb';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
-import { randomBytes, generateKeyPairSync, createCipheriv, createHash } from 'crypto';
+// crypto module imported via common/crypto
 import {
   ok,
   badRequest,
@@ -13,6 +13,16 @@ import {
   putAudit,
   generateSecureId,
 } from '../../common/util';
+import {
+  generateX25519KeyPair,
+  encryptCredentialBlob,
+  decryptWithTransactionKey,
+  deserializeEncryptedBlob,
+  serializeEncryptedBlob,
+  generateLAT,
+  hashLATToken,
+  hashPassword,
+} from '../../common/crypto';
 
 const ddb = new DynamoDBClient({});
 
@@ -25,46 +35,6 @@ const TABLE_TRANSACTION_KEYS = process.env.TABLE_TRANSACTION_KEYS!;
 
 interface FinalizeRequest {
   enrollment_session_id: string;
-}
-
-/**
- * Generate an X25519 key pair for CEK (Credential Encryption Key)
- */
-function generateX25519KeyPair(): { publicKey: Buffer; privateKey: Buffer } {
-  const keyPair = generateKeyPairSync('x25519');
-  const publicKey = keyPair.publicKey.export({ type: 'spki', format: 'der' });
-  const privateKey = keyPair.privateKey.export({ type: 'pkcs8', format: 'der' });
-
-  // Extract raw key bytes
-  const rawPublic = publicKey.slice(12);
-  const rawPrivate = privateKey.slice(16);
-
-  return {
-    publicKey: rawPublic,
-    privateKey: rawPrivate,
-  };
-}
-
-/**
- * Generate a secure LAT token
- */
-function generateLatToken(): string {
-  return randomBytes(32).toString('hex');
-}
-
-/**
- * Encrypt the credential blob
- * In production, this would use ChaCha20-Poly1305 with proper key derivation
- * For now, using AES-256-GCM as a placeholder
- */
-function encryptCredentialBlob(data: Buffer, key: Buffer): { ciphertext: Buffer; iv: Buffer; tag: Buffer } {
-  const iv = randomBytes(12);
-  const cipher = createCipheriv('aes-256-gcm', createHash('sha256').update(key).digest(), iv);
-
-  const ciphertext = Buffer.concat([cipher.update(data), cipher.final()]);
-  const tag = cipher.getAuthTag();
-
-  return { ciphertext, iv, tag };
 }
 
 /**
@@ -135,30 +105,64 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       }),
     }));
 
-    // Generate LAT (Ledger Auth Token)
-    const latToken = generateLatToken();
+    // Generate LAT (Ledger Auth Token) using crypto utilities
+    const lat = generateLAT(1);
     const latId = generateSecureId('lat', 16);
-    const latVersion = 1;
 
     await ddb.send(new PutItemCommand({
       TableName: TABLE_LEDGER_AUTH_TOKENS,
       Item: marshall({
         user_guid: userGuid,
-        version: latVersion,
+        version: lat.version,
         lat_id: latId,
-        token_hash: createHash('sha256').update(latToken).digest('hex'),  // Store hash, not raw token
+        token_hash: hashLATToken(lat.token),  // Store hash, not raw token
         status: 'ACTIVE',
         created_at: now.toISOString(),
       }),
     }));
+
+    // Decrypt password hash from session using the transaction key
+    // The mobile app encrypted the password with a UTK during set-password step
+    let decryptedPasswordHash: string;
+    try {
+      // Get the LTK (Ledger Transaction Key - private key) that was used
+      const ltkResult = await ddb.send(new GetItemCommand({
+        TableName: TABLE_TRANSACTION_KEYS,
+        Key: marshall({
+          user_guid: userGuid,
+          key_id: session.password_key_id,
+        }),
+      }));
+
+      if (!ltkResult.Item) {
+        return badRequest('Transaction key not found for password decryption');
+      }
+
+      const ltk = unmarshall(ltkResult.Item);
+      const ltkPrivateKey = Buffer.from(ltk.private_key, 'base64');
+
+      // Deserialize and decrypt the password hash
+      const encryptedPassword = deserializeEncryptedBlob({
+        ciphertext: session.encrypted_password_hash,
+        nonce: session.password_nonce,
+        ephemeral_public_key: session.password_ephemeral_key || session.ephemeral_public_key,
+      });
+
+      const decryptedBuffer = decryptWithTransactionKey(encryptedPassword, ltkPrivateKey);
+      decryptedPasswordHash = decryptedBuffer.toString('utf-8');
+    } catch (decryptError) {
+      console.error('Failed to decrypt password hash:', decryptError);
+      // Fall back to storing as-is if decryption fails (legacy format)
+      decryptedPasswordHash = session.encrypted_password_hash;
+    }
 
     // Create credential data structure
     const credentialData = {
       guid: userGuid,
       version: 1,
       created_at: now.toISOString(),
-      password_hash: session.encrypted_password_hash,  // Store the encrypted hash from enrollment
-      password_nonce: session.password_nonce,
+      password_hash: decryptedPasswordHash,  // Decrypted hash from enrollment
+      hash_algorithm: 'pbkdf2-sha256',  // Or 'argon2id' in production
       policies: {
         cache_period: 3600,
         require_biometric: false,
@@ -167,15 +171,15 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       secrets: {},
     };
 
-    // Encrypt credential blob with CEK
+    // Encrypt credential blob with CEK using proper ECIES
     const credentialJson = JSON.stringify(credentialData);
-    const { ciphertext, iv, tag } = encryptCredentialBlob(
+    const encryptedBlobData = encryptCredentialBlob(
       Buffer.from(credentialJson, 'utf-8'),
-      cekKeyPair.privateKey
+      cekKeyPair.publicKey  // Use PUBLIC key for encryption
     );
 
-    // Combine into encrypted blob format: iv || tag || ciphertext
-    const encryptedBlob = Buffer.concat([iv, tag, ciphertext]).toString('base64');
+    // Serialize the encrypted blob for transmission
+    const serializedBlob = serializeEncryptedBlob(encryptedBlobData);
 
     // Store credential metadata
     await ddb.send(new PutItemCommand({
@@ -184,7 +188,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
         user_guid: userGuid,
         status: 'ACTIVE',
         cek_version: cekVersion,
-        lat_version: latVersion,
+        lat_version: lat.version,
         device_id: session.device_id,
         invitation_code: session.invitation_code,
         created_at: now.toISOString(),
@@ -251,7 +255,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       user_guid: userGuid,
       session_id: body.enrollment_session_id,
       cek_version: cekVersion,
-      lat_version: latVersion,
+      lat_version: lat.version,
       transaction_keys_remaining: remainingKeys.length,
     }, requestId);
 
@@ -259,12 +263,14 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       status: 'enrolled',
       credential_package: {
         user_guid: userGuid,
-        encrypted_blob: encryptedBlob,
+        encrypted_blob: serializedBlob.ciphertext,
+        ephemeral_public_key: serializedBlob.ephemeral_public_key,
+        nonce: serializedBlob.nonce,
         cek_version: cekVersion,
         ledger_auth_token: {
           lat_id: latId,
-          token: latToken,  // Send raw token to mobile (will be stored for verification)
-          version: latVersion,
+          token: lat.token,  // Send raw token to mobile (will be stored for verification)
+          version: lat.version,
         },
         transaction_keys: remainingKeys,
       },

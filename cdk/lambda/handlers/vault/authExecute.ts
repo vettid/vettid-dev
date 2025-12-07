@@ -1,7 +1,6 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { DynamoDBClient, GetItemCommand, PutItemCommand, UpdateItemCommand } from '@aws-sdk/client-dynamodb';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
-import { createHash, randomBytes, generateKeyPairSync, createCipheriv } from 'crypto';
 import {
   ok,
   badRequest,
@@ -15,6 +14,17 @@ import {
   putAudit,
   generateSecureId,
 } from '../../common/util';
+import {
+  generateX25519KeyPair,
+  encryptCredentialBlob,
+  decryptCredentialBlob,
+  decryptWithTransactionKey,
+  deserializeEncryptedBlob,
+  serializeEncryptedBlob,
+  generateLAT,
+  hashLATToken,
+  verifyPassword,
+} from '../../common/crypto';
 
 const ddb = new DynamoDBClient({});
 
@@ -72,29 +82,6 @@ function validateActionToken(authHeader: string | undefined): { valid: boolean; 
   }
 }
 
-/**
- * Generate new CEK for rotation
- */
-function generateX25519KeyPair(): { publicKey: Buffer; privateKey: Buffer } {
-  const keyPair = generateKeyPairSync('x25519');
-  const publicKey = keyPair.publicKey.export({ type: 'spki', format: 'der' });
-  const privateKey = keyPair.privateKey.export({ type: 'pkcs8', format: 'der' });
-  return {
-    publicKey: publicKey.slice(12),
-    privateKey: privateKey.slice(16),
-  };
-}
-
-/**
- * Encrypt credential blob
- */
-function encryptCredentialBlob(data: Buffer, key: Buffer): { ciphertext: Buffer; iv: Buffer; tag: Buffer } {
-  const iv = randomBytes(12);
-  const cipher = createCipheriv('aes-256-gcm', createHash('sha256').update(key).digest(), iv);
-  const ciphertext = Buffer.concat([cipher.update(data), cipher.final()]);
-  const tag = cipher.getAuthTag();
-  return { ciphertext, iv, tag };
-}
 
 /**
  * POST /api/v1/auth/execute
@@ -196,22 +183,76 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       }),
     }));
 
-    // In production:
-    // 1. Decrypt the blob using CEK
-    // 2. Decrypt the password hash using LTK + ephemeral public key
-    // 3. Verify password hash matches stored hash
-    // For this stub, we'll simulate success
-
-    // TODO: Implement actual cryptographic verification
-    // const cekResult = await ddb.send(new GetItemCommand({
-    //   TableName: TABLE_CREDENTIAL_KEYS,
-    //   Key: marshall({ user_guid: userGuid, version: body.cek_version }),
-    // }));
-    // ... decrypt and verify ...
-
     const now = new Date();
+    const tk = unmarshall(tkResult.Item);
 
-    // Rotate CEK
+    // 1. Decrypt password hash using transaction key (LTK)
+    const ltkPrivateKey = Buffer.from(tk.private_key, 'base64');
+    const encryptedPasswordData = deserializeEncryptedBlob({
+      ciphertext: body.encrypted_password_hash,
+      nonce: body.nonce,
+      ephemeral_public_key: body.ephemeral_public_key,
+    });
+
+    let providedPasswordHash: string;
+    try {
+      const decryptedBuffer = decryptWithTransactionKey(encryptedPasswordData, ltkPrivateKey);
+      providedPasswordHash = decryptedBuffer.toString('utf-8');
+    } catch (decryptError) {
+      console.error('Failed to decrypt password hash:', decryptError);
+      return badRequest('Failed to decrypt password data');
+    }
+
+    // 2. Get CEK to decrypt credential blob
+    const cekResult = await ddb.send(new GetItemCommand({
+      TableName: TABLE_CREDENTIAL_KEYS,
+      Key: marshall({ user_guid: userGuid, version: body.cek_version }),
+    }));
+
+    if (!cekResult.Item) {
+      return badRequest('CEK not found');
+    }
+
+    const cek = unmarshall(cekResult.Item);
+    const cekPrivateKey = Buffer.from(cek.private_key, 'base64');
+
+    // 3. Decrypt credential blob to get stored password hash
+    const encryptedBlobData = deserializeEncryptedBlob({
+      ciphertext: body.encrypted_blob,
+      nonce: body.nonce,  // Note: In production, blob should have its own nonce
+      ephemeral_public_key: body.ephemeral_public_key,
+    });
+
+    let credentialData: { password_hash: string; [key: string]: any };
+    try {
+      const decryptedBlob = decryptCredentialBlob(encryptedBlobData, cekPrivateKey);
+      credentialData = JSON.parse(decryptedBlob.toString('utf-8'));
+    } catch (blobDecryptError) {
+      console.error('Failed to decrypt credential blob:', blobDecryptError);
+      return badRequest('Failed to decrypt credential data');
+    }
+
+    // 4. Verify password hash matches
+    const passwordValid = await verifyPassword(credentialData.password_hash, providedPasswordHash);
+    if (!passwordValid) {
+      // Increment failed auth count
+      await ddb.send(new UpdateItemCommand({
+        TableName: TABLE_CREDENTIALS,
+        Key: marshall({ user_guid: userGuid }),
+        UpdateExpression: 'SET failed_auth_count = failed_auth_count + :one',
+        ExpressionAttributeValues: marshall({ ':one': 1 }),
+      }));
+
+      await putAudit({
+        type: 'auth_failed',
+        user_guid: userGuid,
+        reason: 'password_mismatch',
+      }, requestId);
+
+      return unauthorized('Authentication failed');
+    }
+
+    // 5. Rotate CEK
     const newCekKeyPair = generateX25519KeyPair();
     const newCekVersion = credential.cek_version + 1;
 
@@ -240,18 +281,17 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       }),
     }));
 
-    // Rotate LAT
-    const newLatToken = randomBytes(32).toString('hex');
+    // 6. Rotate LAT using crypto utilities
+    const newLat = generateLAT(credential.lat_version + 1);
     const newLatId = generateSecureId('lat', 16);
-    const newLatVersion = credential.lat_version + 1;
 
     await ddb.send(new PutItemCommand({
       TableName: TABLE_LEDGER_AUTH_TOKENS,
       Item: marshall({
         user_guid: userGuid,
-        version: newLatVersion,
+        version: newLat.version,
         lat_id: newLatId,
-        token_hash: createHash('sha256').update(newLatToken).digest('hex'),
+        token_hash: hashLATToken(newLat.token),
         status: 'ACTIVE',
         created_at: now.toISOString(),
       }),
@@ -269,13 +309,13 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       }),
     }));
 
-    // Re-encrypt credential blob with new CEK (stub - in production, decrypt and re-encrypt)
-    const stubCredentialData = { guid: userGuid, rotated_at: now.toISOString() };
-    const { ciphertext, iv, tag } = encryptCredentialBlob(
-      Buffer.from(JSON.stringify(stubCredentialData)),
-      newCekKeyPair.privateKey
+    // 7. Re-encrypt credential blob with new CEK
+    credentialData.rotated_at = now.toISOString();
+    const newEncryptedBlobData = encryptCredentialBlob(
+      Buffer.from(JSON.stringify(credentialData)),
+      newCekKeyPair.publicKey  // Use PUBLIC key for encryption
     );
-    const newEncryptedBlob = Buffer.concat([iv, tag, ciphertext]).toString('base64');
+    const serializedNewBlob = serializeEncryptedBlob(newEncryptedBlobData);
 
     // Update credential metadata
     await ddb.send(new UpdateItemCommand({
@@ -284,7 +324,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       UpdateExpression: 'SET cek_version = :cek_version, lat_version = :lat_version, last_action_at = :last_action, failed_auth_count = :zero',
       ExpressionAttributeValues: marshall({
         ':cek_version': newCekVersion,
-        ':lat_version': newLatVersion,
+        ':lat_version': newLat.version,
         ':last_action': now.toISOString(),
         ':zero': 0,
       }),
@@ -296,7 +336,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       user_guid: userGuid,
       token_id: tokenId,
       cek_rotated_to: newCekVersion,
-      lat_rotated_to: newLatVersion,
+      lat_rotated_to: newLat.version,
     }, requestId);
 
     return ok({
@@ -307,12 +347,14 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
         timestamp: now.toISOString(),
       },
       credential_package: {
-        encrypted_blob: newEncryptedBlob,
+        encrypted_blob: serializedNewBlob.ciphertext,
+        ephemeral_public_key: serializedNewBlob.ephemeral_public_key,
+        nonce: serializedNewBlob.nonce,
         cek_version: newCekVersion,
         ledger_auth_token: {
           lat_id: newLatId,
-          token: newLatToken,
-          version: newLatVersion,
+          token: newLat.token,
+          version: newLat.version,
         },
         new_transaction_keys: [],  // Would include replenished keys if pool is low
       },

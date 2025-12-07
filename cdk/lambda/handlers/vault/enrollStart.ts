@@ -1,7 +1,6 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { DynamoDBClient, GetItemCommand, PutItemCommand, UpdateItemCommand } from '@aws-sdk/client-dynamodb';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
-import { generateKeyPairSync } from 'crypto';
 import {
   ok,
   badRequest,
@@ -13,6 +12,7 @@ import {
   putAudit,
   generateSecureId,
 } from '../../common/util';
+import { generateX25519KeyPair } from '../../common/crypto';
 
 const ddb = new DynamoDBClient({});
 
@@ -28,27 +28,6 @@ interface EnrollStartRequest {
   invitation_code: string;
   device_id: string;
   attestation_data: string;
-}
-
-/**
- * Generate an X25519 key pair for transaction keys
- * Returns base64-encoded public and private keys
- */
-function generateX25519KeyPair(): { publicKey: string; privateKey: string } {
-  const keyPair = generateKeyPairSync('x25519');
-  const publicKey = keyPair.publicKey.export({ type: 'spki', format: 'der' });
-  const privateKey = keyPair.privateKey.export({ type: 'pkcs8', format: 'der' });
-
-  // Extract raw key bytes (skip DER header)
-  // X25519 public key in SPKI format has 12-byte header
-  // X25519 private key in PKCS8 format has 16-byte header
-  const rawPublic = publicKey.slice(12);
-  const rawPrivate = privateKey.slice(16);
-
-  return {
-    publicKey: rawPublic.toString('base64'),
-    privateKey: rawPrivate.toString('base64'),
-  };
 }
 
 /**
@@ -129,14 +108,18 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       const keyPair = generateX25519KeyPair();
       const keyId = generateSecureId('tk', 16);
 
+      // Convert Buffer to base64 for storage
+      const publicKeyB64 = keyPair.publicKey.toString('base64');
+      const privateKeyB64 = keyPair.privateKey.toString('base64');
+
       // Store the full key pair (LTK is private, UTK is public)
       await ddb.send(new PutItemCommand({
         TableName: TABLE_TRANSACTION_KEYS,
         Item: marshall({
           user_guid: userGuid,
           key_id: keyId,
-          public_key: keyPair.publicKey,      // UTK - sent to mobile
-          private_key: keyPair.privateKey,    // LTK - stays on ledger (encrypted at rest by DynamoDB)
+          public_key: publicKeyB64,      // UTK - sent to mobile
+          private_key: privateKeyB64,    // LTK - stays on ledger (encrypted at rest by DynamoDB)
           algorithm: 'X25519',
           status: 'UNUSED',
           key_index: i,
@@ -147,7 +130,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       // Only include public key in response (UTK)
       transactionKeys.push({
         key_id: keyId,
-        public_key: keyPair.publicKey,
+        public_key: publicKeyB64,
         algorithm: 'X25519',
       });
     }
