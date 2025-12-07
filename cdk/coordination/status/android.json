@@ -1,7 +1,7 @@
 {
   "instance": "android",
   "phase": 0,
-  "task": "Android project scaffold complete",
+  "task": "Migrated to vettid-android repo",
   "status": "completed",
   "blockers": [],
   "completedTasks": [
@@ -11,8 +11,10 @@
     "API models matching OpenAPI spec",
     "Device attestation (Hardware Key Attestation with StrongBox/TEE)",
     "Unit tests for CryptoManager",
-    "Unit tests for CredentialStore"
+    "Unit tests for CredentialStore",
+    "Repository migration to vettid-android"
   ],
-  "lastUpdated": "2025-12-07T10:57:00Z",
-  "notes": "Android project copied from existing vettid.android repo at /Users/al/Projects/vettid.android. All Phase 0 deliverables complete. Project uses Tink for X25519/ChaCha20, Signal Argon2 for password hashing. Supports Android 8.0+ (API 26) with GrapheneOS hardware attestation support."
+  "lastUpdated": "2025-12-07T12:00:00Z",
+  "notes": "Android development now happens in https://github.com/mesmerverse/vettid-android. All Phase 0 deliverables complete. Unit tests added for CryptoManager (19 tests) and CredentialStore (22 tests). Ready for Phase 1 tasks.",
+  "repository": "https://github.com/mesmerverse/vettid-android"
 }
