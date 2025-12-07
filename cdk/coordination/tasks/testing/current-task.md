@@ -1,133 +1,74 @@
-# Task: Set Up Test Infrastructure
+# Task: Phase 1 - Backend Implementation Tests
 
 ## Phase
-Phase 0: Foundation & Coordination Setup
+Phase 1: Protean Credential System - Core
 
 ## Assigned To
 Testing Instance
 
-## Prerequisites
-- [x] Coordination directory structure created
-- [x] API specifications available in `cdk/coordination/specs/`
+## Repository
+`github.com/mesmerverse/vettid-dev`
 
-## Context
+## Status
+Your Phase 1 integration test scaffolding is complete (229 tests, 69 passing, 159 todo).
 
-You are the **Testing Instance** for the VettID Vault Services project. Your role is to create and maintain the test infrastructure, write tests for all components, and validate security requirements.
+## Phase 1 Testing Tasks
 
-Read these files first:
-1. `cdk/docs/DEVELOPMENT_PLAN.md` - Overall development plan
-2. `cdk/coordination/README.md` - Coordination protocol
-3. `cdk/coordination/specs/vault-services-api.yaml` - API specification
-4. `cdk/coordination/specs/credential-format.md` - Credential format spec
+Now that the test scaffolding exists, your focus shifts to:
 
-## Deliverables
+### 1. Expand Implemented Tests
 
-### 1. Create Test Directory Structure
+The following test files have comprehensive scaffolding with `it.todo()` placeholders. As the orchestrator implements backend Lambda handlers, you will fill in these tests:
+
+**Files to monitor:**
+- `cdk/tests/integration/enrollment/enrollmentFlow.test.ts`
+- `cdk/tests/integration/attestation/deviceAttestation.test.ts`
+- `cdk/tests/integration/ledger/latLifecycle.test.ts`
+- `cdk/tests/security/bruteForce.test.ts`
+- `cdk/tests/security/timingAttack.test.ts`
+- `cdk/tests/security/replayAttack.test.ts`
+
+### 2. Add Mock Data for Mobile Attestation
+
+Create test fixtures for:
+- Android Hardware Key Attestation certificates
+- iOS App Attest attestation objects
+
+Reference docs:
+- https://developer.android.com/training/articles/security-key-attestation
+- https://developer.apple.com/documentation/devicecheck/validating_apps_that_connect_to_your_server
+
+### 3. Database Integration Tests
+
+When the Ledger (PostgreSQL) infrastructure is deployed, create:
 
 ```
-cdk/tests/
-├── jest.config.js          # Jest configuration
-├── setup.ts                # Global test setup
-├── utils/
-│   ├── testClient.ts       # HTTP API test client
-│   ├── mockCognito.ts      # Mock Cognito tokens
-│   ├── mockDynamoDB.ts     # DynamoDB local helpers
-│   └── cryptoTestUtils.ts  # Crypto test helpers
-├── unit/
-│   └── .gitkeep
-├── integration/
-│   └── .gitkeep
-├── e2e/
-│   └── .gitkeep
-└── security/
-    └── .gitkeep
+cdk/tests/integration/ledger/
+├── credentialLifecycle.test.ts  # Full credential CRUD
+├── keyRotation.test.ts          # CEK/TK rotation
+├── concurrentSession.test.ts    # Atomic session tests
+└── transactionKeyPool.test.ts   # Key pool management
 ```
 
-### 2. Configure Jest
+### 4. API Contract Tests
 
-Create `cdk/tests/jest.config.js` with:
-- TypeScript support via ts-jest
-- Path aliases matching the Lambda handlers
-- Coverage reporting
-- Test environment configuration
+Validate Lambda handlers match OpenAPI spec:
+- `POST /vault/enroll/start`
+- `POST /vault/enroll/attestation`
+- `POST /vault/enroll/set-password`
+- `POST /vault/enroll/finalize`
+- `POST /vault/auth/action-request`
+- `POST /vault/auth/execute`
 
-### 3. Create Base Test Utilities
+## Coordination
 
-**testClient.ts:**
-- HTTP client for API testing
-- Support for Bearer token authentication
-- Response validation helpers
-
-**mockCognito.ts:**
-- Generate valid JWT tokens for testing
-- Support both admin and member pools
-- Include custom claims (user_guid, groups)
-
-**cryptoTestUtils.ts:**
-- X25519 key pair generation
-- XChaCha20-Poly1305 encrypt/decrypt
-- Argon2id hash generation
-- LAT token generation
-
-### 4. Create Initial Unit Tests
-
-Create placeholder tests for Phase 1 crypto utilities:
-- `unit/crypto/encryption.test.ts`
-- `unit/crypto/argon2.test.ts`
-- `unit/crypto/keyGeneration.test.ts`
-
-### 5. Update package.json
-
-Add test scripts:
-```json
-{
-  "scripts": {
-    "test": "jest",
-    "test:unit": "jest --testPathPattern=unit",
-    "test:integration": "jest --testPathPattern=integration",
-    "test:e2e": "jest --testPathPattern=e2e",
-    "test:security": "jest --testPathPattern=security",
-    "test:coverage": "jest --coverage"
-  }
-}
-```
-
-Add dev dependencies:
-- jest
-- ts-jest
-- @types/jest
-- tweetnacl (for crypto tests)
-- argon2-browser or hash-wasm (for Argon2 tests)
+When you need new Lambda handlers or API changes:
+1. Document the requirement in `cdk/coordination/results/issues/`
+2. Update your status in `cdk/coordination/status/testing.json`
 
 ## Acceptance Criteria
 
-- [ ] Jest runs successfully with `npm test`
-- [ ] Test utilities compile without errors
-- [ ] Mock token generation produces valid JWT structure
-- [ ] Crypto test utilities can encrypt/decrypt correctly
-- [ ] At least one passing placeholder test in each category
-- [ ] Coverage reporting works
-
-## Reporting
-
-When complete:
-1. Update `cdk/coordination/status/testing.json`:
-   ```json
-   {
-     "instance": "testing",
-     "phase": 0,
-     "task": "Test infrastructure setup complete",
-     "status": "completed",
-     "completedTasks": ["Jest setup", "Test utilities", "Placeholder tests"],
-     "lastUpdated": "<current timestamp>"
-   }
-   ```
-
-2. Document any issues in `cdk/coordination/results/issues/`
-
-## Notes
-
-- The existing codebase uses Node.js 22 and TypeScript
-- Lambda handlers are in `cdk/lambda/handlers/`
-- Common utilities are in `cdk/lambda/common/`
-- Existing patterns should be followed where applicable
+- [ ] All existing 69 passing tests continue to pass
+- [ ] Mock attestation data created for Android/iOS
+- [ ] Test utilities documented for mobile instances
+- [ ] Integration tests ready to activate when backend deploys

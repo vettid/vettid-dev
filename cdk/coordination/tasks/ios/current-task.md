@@ -1,191 +1,170 @@
-# Task: Create iOS Project in Dedicated Repository
+# Task: Phase 1 - Enrollment Flow Implementation
 
 ## Phase
-Phase 0: Foundation & Coordination Setup
+Phase 1: Protean Credential System - Core
 
 ## Assigned To
 iOS Instance
 
-## IMPORTANT: Repository Location
+## Repository
+`github.com/mesmerverse/vettid-ios`
 
-**The iOS app must be created in a separate, dedicated repository.**
+## Status
+Phase 0 complete. Project scaffold created with crypto, storage, and attestation. Ready for Phase 1.
 
-| Item | Value |
-|------|-------|
-| **Repository** | `github.com/mesmerverse/vettid-ios` |
-| **Coordination Repo** | `github.com/mesmerverse/vettid-dev` |
+## Phase 1 iOS Tasks
 
-## Setup Steps
+### 1. Enrollment Flow UI
 
-### 1. Clone the iOS Repository
-
-```bash
-git clone https://github.com/mesmerverse/vettid-ios.git
-cd vettid-ios
-```
-
-### 2. Clone vettid-dev for Specifications
-
-```bash
-# In a separate directory
-git clone https://github.com/mesmerverse/vettid-dev.git
-```
-
-Reference these specs while building:
-- `vettid-dev/cdk/coordination/specs/vault-services-api.yaml` - API endpoints
-- `vettid-dev/cdk/coordination/specs/credential-format.md` - Crypto operations
-- `vettid-dev/cdk/coordination/specs/nats-topics.md` - NATS structure
-- `vettid-dev/cdk/docs/DEVELOPMENT_PLAN.md` - Overall plan
-
-## Deliverables
-
-### 1. Create iOS Project Structure
-
-Create a new Xcode project in `vettid-ios/`:
-
-```
-vettid-ios/
-├── VettID.xcodeproj/
-├── VettID/
-│   ├── VettIDApp.swift
-│   ├── Info.plist
-│   ├── Sources/
-│   │   ├── Auth/
-│   │   │   ├── CredentialStore.swift
-│   │   │   ├── CredentialBlob.swift
-│   │   │   ├── CryptoUtils.swift
-│   │   │   └── DeviceAttestation.swift
-│   │   ├── API/
-│   │   │   ├── VaultServiceClient.swift
-│   │   │   └── APIModels.swift
-│   │   ├── Enrollment/
-│   │   │   ├── EnrollmentView.swift
-│   │   │   ├── EnrollmentViewModel.swift
-│   │   │   ├── EnrollmentManager.swift
-│   │   │   ├── QRScannerView.swift
-│   │   │   └── PasswordSetupView.swift
-│   │   ├── NATS/
-│   │   │   └── NatsClient.swift
-│   │   └── UI/
-│   │       ├── Theme/
-│   │       │   └── VettIDTheme.swift
-│   │       └── Components/
-│   ├── Resources/
-│   │   ├── Assets.xcassets/
-│   │   └── Localizable.strings
-│   └── Preview Content/
-├── VettIDTests/
-│   ├── Auth/
-│   │   ├── CredentialStoreTests.swift
-│   │   └── CryptoUtilsTests.swift
-│   └── API/
-│       └── VaultServiceClientTests.swift
-└── VettIDUITests/
-    └── EnrollmentFlowTests.swift
-```
-
-### 2. Configure Project Settings
-
-**Xcode Configuration:**
-- Deployment target: iOS 15.0+
-- Swift version: 5.9+
-- Enable App Attest capability
-- Enable Keychain sharing
-
-**Dependencies (Swift Package Manager):**
+Implement the complete enrollment flow screens using SwiftUI:
 
 ```swift
-dependencies: [
-    .package(url: "https://github.com/jedisct1/swift-sodium.git", from: "0.9.1"),
-]
+// VettID/Sources/Enrollment/
+EnrollmentView.swift          // Main enrollment container
+QRScannerView.swift           // Scan invitation QR code
+AttestationView.swift         // App Attest progress
+PasswordSetupView.swift       // Password creation with strength meter
+EnrollmentCompleteView.swift  // Success confirmation
 ```
 
-Or use CryptoKit (built-in) for X25519 operations.
+**Flow:**
+1. User scans QR code containing invitation code
+2. App requests attestation challenge from backend
+3. App performs App Attest attestation
+4. User creates password (min 12 chars, strength indicator)
+5. App encrypts password with transaction key
+6. Backend returns credential blob and LAT
+7. App stores credential blob in Keychain
 
-### 3. Implement Core Crypto Utilities
+### 2. Update VaultServiceClient
 
-**CryptoUtils.swift:**
+Ensure API client matches `vault-services-api.yaml`:
+
 ```swift
-import CryptoKit
+// VettID/Sources/API/
+VaultServiceClient.swift
 
-enum CryptoUtils {
-    static func generateX25519KeyPair() -> (publicKey: Data, privateKey: Data)
-    static func deriveSharedSecret(privateKey: Data, publicKey: Data) -> Data
-    static func encrypt(plaintext: Data, key: Data) throws -> EncryptedData
-    static func decrypt(encrypted: EncryptedData, key: Data) throws -> Data
-    static func deriveKey(sharedSecret: Data, info: String) -> Data
+protocol VaultServiceProtocol {
+    func enrollStart(inviteCode: String, deviceInfo: DeviceInfo) async throws -> EnrollStartResponse
+    func submitAttestation(sessionId: String, attestation: AttestationData) async throws -> AttestationResponse
+    func setPassword(sessionId: String, encryptedPassword: Data, keyId: String) async throws -> SetPasswordResponse
+    func finalize(sessionId: String) async throws -> FinalizeResponse
+    func actionRequest(userGuid: String, actionType: ActionType) async throws -> ActionResponse
+    func authExecute(actionId: String, signature: Data) async throws -> AuthExecuteResponse
 }
 ```
 
-### 4. Implement Credential Storage
+### 3. Enrollment State Management
 
-**CredentialStore.swift:**
 ```swift
-class CredentialStore {
-    func storeCredentialBlob(_ blob: CredentialBlob) throws
-    func getCredentialBlob() throws -> CredentialBlob?
-    func storeLAT(_ lat: LAT) throws
-    func getLAT() throws -> LAT?
-    func storeTransactionKeys(_ keys: [TransactionKey]) throws
-    func getUnusedTransactionKey() throws -> TransactionKey?
-    func markTransactionKeyUsed(_ keyId: String) throws
-    func clear() throws
+// VettID/Sources/Enrollment/
+EnrollmentViewModel.swift
+
+@MainActor
+class EnrollmentViewModel: ObservableObject {
+    @Published var state: EnrollmentState = .initial
+
+    enum EnrollmentState {
+        case initial
+        case scanningQR(error: String?)
+        case attesting(progress: Double)
+        case settingPassword(strength: PasswordStrength)
+        case finalizing(progress: Double)
+        case complete(userGuid: String)
+        case error(message: String, retryable: Bool)
+    }
+
+    func startEnrollment(inviteCode: String) async
+    func submitAttestation() async
+    func setPassword(_ password: String) async
+    func finalize() async
 }
 ```
 
-### 5. Implement App Attest
+### 4. Transaction Key Encryption
 
-**DeviceAttestation.swift:**
+Implement client-side encryption using transaction keys:
+
 ```swift
-import DeviceCheck
+// In CryptoManager.swift, add:
+func encryptWithTransactionKey(
+    plaintext: Data,
+    transactionKeyPublicKey: Data
+) throws -> EncryptedPayload
 
-class DeviceAttestation {
-    var isSupported: Bool { DCAppAttestService.shared.isSupported }
-    func generateKey() async throws -> String
-    func attestKey(keyId: String, challenge: Data) async throws -> Data
-    func generateAssertion(keyId: String, clientData: Data) async throws -> Data
+struct EncryptedPayload {
+    let ciphertext: Data
+    let ephemeralPublicKey: Data
+    let nonce: Data
 }
 ```
 
-### 6. Define API Models
+### 5. QR Code Scanner
 
-Based on `vault-services-api.yaml`, create Swift Codable structs.
+Implement camera-based QR scanning:
 
-### 7. Create Unit Tests
+```swift
+// VettID/Sources/Enrollment/
+QRScannerView.swift
 
-- `CryptoUtilsTests.swift`
-- `CredentialStoreTests.swift`
+struct QRScannerView: View {
+    @Binding var scannedCode: String?
+    var onCodeScanned: (String) -> Void
 
-## Workflow for Status Updates
+    // Use AVFoundation for camera access
+    // Parse QR code for invitation code format
+}
+```
 
-After completing work, update status in `vettid-dev`:
+### 6. Unit Tests
 
+Add tests for new functionality:
+
+```swift
+// VettIDTests/
+EnrollmentViewModelTests.swift    // State transitions
+VaultServiceClientTests.swift     // API contract tests
+TransactionKeyEncryptionTests.swift  // Crypto operations
+```
+
+## Key References (in vettid-dev)
+
+Pull latest from vettid-dev and reference:
+- `cdk/coordination/specs/vault-services-api.yaml` - API endpoints
+- `cdk/coordination/specs/credential-format.md` - Credential blob format
+- `cdk/coordination/specs/nats-topics.md` - Future NATS integration
+
+## API Base URL
+
+For development testing:
+- `https://api-dev.vettid.dev` (when backend is deployed)
+
+## Status Update Workflow
+
+After completing work:
 ```bash
 cd /path/to/vettid-dev
 git pull
 # Edit cdk/coordination/status/ios.json
 git add cdk/coordination/status/ios.json
-git commit -m "Update iOS status: Phase 0 complete"
+git commit -m "Update iOS status: Phase 1 enrollment flow complete"
 git push
 ```
 
-## Acceptance Criteria
-
-- [ ] iOS project created in `vettid-ios` repository
-- [ ] CryptoUtils generates valid X25519 keys
-- [ ] Encryption/decryption roundtrip works
-- [ ] CredentialStore securely stores data in Keychain
-- [ ] DeviceAttestation compiles (runtime testing on device)
-- [ ] Unit tests pass
-- [ ] API models match OpenAPI spec
-- [ ] Status updated in `vettid-dev`
-
 ## Notes
 
-- Target iOS 15.0+ for App Attest support
-- Use SwiftUI for all views
-- Use async/await for API calls
-- CryptoKit provides X25519 and Curve25519
-- For XChaCha20-Poly1305, use swift-sodium
-- App Attest requires a physical device (not simulator)
-- Use @MainActor for UI updates
+- App Attest requires physical device (not simulator)
+- Use async/await for all API calls
+- Use @MainActor for all UI updates
+- Follow Apple Human Interface Guidelines for UI
+- Camera permission required for QR scanning
+
+## Acceptance Criteria
+
+- [ ] QR scanner captures invitation code
+- [ ] App Attest completes successfully (on device)
+- [ ] Password encryption uses transaction keys correctly
+- [ ] Credential blob stored in Keychain
+- [ ] LAT stored for future authentication
+- [ ] All unit tests pass
+- [ ] UI follows iOS design guidelines

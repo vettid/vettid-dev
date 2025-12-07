@@ -1,103 +1,147 @@
-# Task: Migrate to Separate Repository
+# Task: Phase 1 - Enrollment Flow Implementation
 
 ## Phase
-Phase 0.5: Repository Migration
+Phase 1: Protean Credential System - Core
 
 ## Assigned To
 Android Instance
 
-## IMPORTANT: Repository Change
+## Repository
+`github.com/mesmerverse/vettid-android`
 
-**The Android app code must now live in a separate repository.**
+## Status
+Phase 0 complete. Migration to dedicated repo complete. Ready for Phase 1.
 
-| Item | Value |
-|------|-------|
-| **New Repository** | `github.com/mesmerverse/vettid-android` |
-| **Old Location** | `vettid-dev/android/` (to be removed) |
-| **Coordination Repo** | `github.com/mesmerverse/vettid-dev` |
+## Phase 1 Android Tasks
 
-## Migration Steps
+### 1. Enrollment Flow UI
 
-### 1. Clone the New Repository
+Implement the complete enrollment flow screens:
 
-```bash
-# Clone the dedicated Android repo
-git clone https://github.com/mesmerverse/vettid-android.git
-cd vettid-android
+```kotlin
+// app/src/main/kotlin/dev/vettid/features/enrollment/
+EnrollmentScreen.kt          // Main enrollment container
+QRScannerScreen.kt           // Scan invitation QR code
+AttestationScreen.kt         // Hardware attestation progress
+PasswordSetupScreen.kt       // Password creation with strength meter
+EnrollmentCompleteScreen.kt  // Success confirmation
 ```
 
-### 2. Move Code from vettid-dev
+**Flow:**
+1. User scans QR code containing invitation code
+2. App requests attestation challenge from backend
+3. App performs hardware attestation
+4. User creates password (min 12 chars, strength indicator)
+5. App encrypts password with transaction key
+6. Backend returns credential blob and LAT
+7. App stores credential blob encrypted in EncryptedSharedPreferences
 
-The Phase 0 Android code was committed to `vettid-dev/android/`. You need to:
-1. Copy the contents from `vettid-dev/android/` to `vettid-android/`
-2. Ensure all files are properly transferred
-3. Commit to `vettid-android`
+### 2. Implement VaultServiceClient
 
-```bash
-# From vettid-android directory
-cp -r /path/to/vettid-dev/android/* .
-git add .
-git commit -m "Initial Android app scaffold from Phase 0
+Create API client matching `vault-services-api.yaml`:
 
-Migrated from vettid-dev repository.
+```kotlin
+// app/src/main/kotlin/dev/vettid/core/network/
+VaultServiceClient.kt
 
-Features:
-- Kotlin + Jetpack Compose + Hilt DI
-- X25519, ChaCha20-Poly1305, Argon2id crypto
-- EncryptedSharedPreferences credential storage
-- Hardware Key Attestation (StrongBox/TEE)
-- Unit tests for CryptoManager and CredentialStore
+interface VaultService {
+    @POST("/vault/enroll/start")
+    suspend fun enrollStart(body: EnrollStartRequest): EnrollStartResponse
 
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
+    @POST("/vault/enroll/attestation")
+    suspend fun submitAttestation(body: AttestationRequest): AttestationResponse
 
-Co-Authored-By: Claude <noreply@anthropic.com>"
-git push
+    @POST("/vault/enroll/set-password")
+    suspend fun setPassword(body: SetPasswordRequest): SetPasswordResponse
+
+    @POST("/vault/enroll/finalize")
+    suspend fun finalize(body: FinalizeRequest): FinalizeResponse
+
+    @POST("/vault/auth/action-request")
+    suspend fun actionRequest(body: ActionRequest): ActionResponse
+
+    @POST("/vault/auth/execute")
+    suspend fun authExecute(body: AuthExecuteRequest): AuthExecuteResponse
+}
 ```
 
-### 3. Reference Specifications
+### 3. Enrollment State Management
 
-API specifications remain in `vettid-dev`. Clone it for reference:
+```kotlin
+// app/src/main/kotlin/dev/vettid/features/enrollment/
+EnrollmentViewModel.kt
+EnrollmentState.kt
 
-```bash
-git clone https://github.com/mesmerverse/vettid-dev.git
+sealed class EnrollmentState {
+    object Initial : EnrollmentState()
+    data class ScanningQR(val error: String? = null) : EnrollmentState()
+    data class Attesting(val progress: Float) : EnrollmentState()
+    data class SettingPassword(val strength: PasswordStrength) : EnrollmentState()
+    data class Finalizing(val progress: Float) : EnrollmentState()
+    data class Complete(val userGuid: String) : EnrollmentState()
+    data class Error(val message: String, val retryable: Boolean) : EnrollmentState()
+}
 ```
 
-Key specs to reference:
-- `vettid-dev/cdk/coordination/specs/vault-services-api.yaml`
-- `vettid-dev/cdk/coordination/specs/credential-format.md`
-- `vettid-dev/cdk/coordination/specs/nats-topics.md`
+### 4. Transaction Key Encryption
 
-### 4. Update Status
+Implement client-side encryption using transaction keys:
 
-After migration, update your status in `vettid-dev`:
+```kotlin
+// In CryptoManager.kt, add:
+fun encryptWithTransactionKey(
+    plaintext: ByteArray,
+    transactionKeyPublicKey: ByteArray
+): EncryptedPayload
 
+data class EncryptedPayload(
+    val ciphertext: ByteArray,
+    val ephemeralPublicKey: ByteArray,
+    val nonce: ByteArray
+)
+```
+
+### 5. Unit Tests
+
+Add tests for new functionality:
+
+```kotlin
+// app/src/test/kotlin/dev/vettid/
+EnrollmentViewModelTest.kt    // State transitions
+VaultServiceClientTest.kt     // API contract tests
+TransactionKeyEncryptionTest.kt  // Crypto operations
+```
+
+## Key References (in vettid-dev)
+
+Pull latest from vettid-dev and reference:
+- `cdk/coordination/specs/vault-services-api.yaml` - API endpoints
+- `cdk/coordination/specs/credential-format.md` - Credential blob format
+- `cdk/coordination/specs/nats-topics.md` - Future NATS integration
+
+## API Base URL
+
+For development testing:
+- `https://api-dev.vettid.dev` (when backend is deployed)
+
+## Status Update Workflow
+
+After completing work:
 ```bash
 cd /path/to/vettid-dev
+git pull
 # Edit cdk/coordination/status/android.json
 git add cdk/coordination/status/android.json
-git commit -m "Update Android status: migrated to vettid-android repo"
+git commit -m "Update Android status: Phase 1 enrollment flow complete"
 git push
 ```
-
-## Future Workflow
-
-For all future phases:
-1. Work in `vettid-android` repository
-2. Reference specs from `vettid-dev/cdk/coordination/specs/`
-3. Update status in `vettid-dev/cdk/coordination/status/android.json`
-4. Report issues to `vettid-dev/cdk/coordination/results/issues/`
-
-## Phase 1 Preview
-
-After migration, Phase 1 will focus on:
-- Completing enrollment flow UI
-- Implementing full Protean credential authentication
-- QR code scanning for vault enrollment
-- Integration testing with backend APIs
 
 ## Acceptance Criteria
 
-- [ ] Code successfully migrated to `vettid-android`
-- [ ] Project builds successfully in new location
-- [ ] Unit tests pass
-- [ ] Status updated in `vettid-dev`
+- [ ] QR scanner captures invitation code
+- [ ] Hardware attestation completes successfully
+- [ ] Password encryption uses transaction keys correctly
+- [ ] Credential blob stored securely
+- [ ] LAT stored for future authentication
+- [ ] All unit tests pass
+- [ ] UI follows Material 3 design guidelines
