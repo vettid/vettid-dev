@@ -1,7 +1,7 @@
 {
   "instance": "testing",
-  "phase": 3,
-  "task": "Phase 3 vault services enrollment testing complete",
+  "phase": 4,
+  "task": "Phase 4 NATS infrastructure testing complete",
   "status": "in_progress",
   "blockers": [],
   "completedTasks": [
@@ -27,21 +27,34 @@
     "Phase 3: Created enrollmentStateTransitions.test.ts (state machine validation)",
     "Phase 3: Created createInvite.test.ts (deploy vault endpoint integration tests)",
     "Phase 3: Created validateInvite.test.ts (enroll start endpoint integration tests)",
-    "Phase 3: Created vaultStatus.test.ts (vault status endpoint integration tests)"
+    "Phase 3: Created vaultStatus.test.ts (vault status endpoint integration tests)",
+    "Phase 4: Created createAccount.test.ts (NATS account creation tests)",
+    "Phase 4: Created generateToken.test.ts (NATS token generation tests)",
+    "Phase 4: Created revokeToken.test.ts (NATS token revocation tests)",
+    "Phase 4: Created getNatsStatus.test.ts (NATS status endpoint tests)",
+    "Phase 4: Created namespaceIsolation.test.ts (NATS namespace isolation tests)"
   ],
   "nextTasks": [
     "Fill in todo tests as Lambda handlers are deployed",
     "Validate attestation parsing with actual Android/iOS data",
     "Coordinate with Android/iOS instances for cross-platform testing",
     "Add iOS enrollment and auth simulation to e2e tests",
-    "Create complete enrollment integration tests when VettID-Vault stack deploys"
+    "Create complete enrollment integration tests when VettID-Vault stack deploys",
+    "Test NATS handlers against live NATS cluster when deployed"
   ],
   "testSummary": {
-    "totalTests": 691,
-    "passing": 394,
+    "totalTests": 821,
+    "passing": 524,
     "todo": 296,
     "failing": 1,
-    "notes": "All implemented tests pass. One timing test may show intermittent failures due to CI environment variance. Phase 3 added 159 new passing tests."
+    "notes": "All implemented tests pass. One timing test may show intermittent failures due to CI environment variance. Phase 4 added 130 new passing tests for NATS infrastructure."
+  },
+  "phase4NewTests": {
+    "createAccount": "tests/integration/nats/createAccount.test.ts - 18 tests (18 passing)",
+    "generateToken": "tests/integration/nats/generateToken.test.ts - 26 tests (26 passing)",
+    "revokeToken": "tests/integration/nats/revokeToken.test.ts - 22 tests (22 passing)",
+    "getNatsStatus": "tests/integration/nats/getNatsStatus.test.ts - 28 tests (28 passing)",
+    "namespaceIsolation": "tests/integration/nats/namespaceIsolation.test.ts - 36 tests (36 passing)"
   },
   "phase3NewTests": {
     "webToMobileEnrollment": "tests/e2e/enrollment/webToMobileEnrollment.test.ts - 18 tests (18 passing)",
@@ -62,6 +75,6 @@
     "ios": "tests/fixtures/attestation/iosAttestation.ts",
     "documentation": "tests/README.md"
   },
-  "lastUpdated": "2025-12-07T19:25:00Z",
-  "notes": "Phase 3 complete. Added comprehensive test coverage for vault services enrollment: (1) Web to Mobile Enrollment E2E - complete flow from vault deployment through QR scan to finalization with mock services simulating backend; (2) Invite Code Validation - generation, validation, expiration, single-use, revocation, security edge cases; (3) Enrollment State Transitions - valid/invalid transitions, timeout handling, failure states, concurrent sessions; (4) Create Invite endpoint - vault deployment, limits, pending enrollment handling, QR code generation; (5) Validate Invite endpoint - request validation, status handling, session creation, security; (6) Vault Status endpoint - all status states, transitions, health reporting, error states. Tests use mock services based on vault-services-api.yaml spec."
+  "lastUpdated": "2025-12-07T20:20:00Z",
+  "notes": "Phase 4 complete. Added comprehensive test coverage for NATS infrastructure: (1) Account Creation - authenticated member account creation, OwnerSpace/MessageSpace ID generation, duplicate prevention, status codes; (2) Token Generation - app and vault client types with proper permissions, validity periods (24h/7d), account requirement validation, token storage; (3) Token Revocation - active token revocation, ownership validation, idempotent re-revocation, multi-token handling; (4) Status Endpoint - account status, active token listing, expired/revoked token filtering, user isolation; (5) Namespace Isolation - unique namespaces per user, cross-user access prevention, app/vault permission scopes, token expiry/revocation enforcement. Tests use mock handlers simulating Lambda behavior based on actual handler implementations."
 }
