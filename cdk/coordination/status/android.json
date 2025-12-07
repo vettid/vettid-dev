@@ -1,7 +1,7 @@
 {
   "instance": "android",
-  "phase": 3,
-  "task": "Phase 3 vault lifecycle management complete",
+  "phase": 4,
+  "task": "Phase 4 NATS client integration complete",
   "status": "completed",
   "blockers": [],
   "completedTasks": [
@@ -30,9 +30,19 @@
     "Vault lifecycle endpoints (status, health, provision, start, stop, backup)",
     "VaultSyncWorker with WorkManager for background sync",
     "VaultStatusCard home screen component",
-    "Unit tests for VaultStatusViewModel"
+    "Unit tests for VaultStatusViewModel",
+    "NatsClient wrapper with pub/sub and connection management",
+    "NatsCredentials data model with expiration checking",
+    "NatsConnectionManager for lifecycle and token management",
+    "NatsApiClient for backend NATS endpoints (account, token, status)",
+    "OwnerSpaceClient for vault pub/sub communication",
+    "NatsSetupViewModel with connection state machine",
+    "NatsConnectionScreen and NatsStatusIndicator UI components",
+    "NatsTokenRefreshWorker with 6-hour periodic refresh",
+    "Hilt DI configuration for NATS components",
+    "Unit tests for NatsCredentials and NatsSetupViewModel"
   ],
-  "lastUpdated": "2025-12-07T16:30:00Z",
-  "notes": "Phase 3 Android vault lifecycle complete. VaultStatusViewModel manages vault states (NotEnrolled, Enrolled, Provisioning, Running, Stopped, Terminated). Health metrics display with CPU/memory/disk/NATS status. VaultSyncWorker handles periodic health checks via WorkManager. Home screen integration with VaultStatusCard. Ready for Phase 4 (backup and settings).",
+  "lastUpdated": "2025-12-07T18:00:00Z",
+  "notes": "Phase 4 NATS client integration complete. NatsClient wraps jnats library with coroutine-friendly API. NatsConnectionManager handles account creation, token generation, and connection lifecycle. OwnerSpaceClient provides pub/sub for vault communication (OwnerSpace.{guid}.forVault.> publish, OwnerSpace.{guid}.forApp.> subscribe). NatsTokenRefreshWorker uses WorkManager for 6-hour periodic token refresh. Note: Pre-existing build issues in Phase 2/3 code due to duplicate response types in ApiClient.kt vs VaultServiceClient.kt need resolution.",
   "repository": "https://github.com/mesmerverse/vettid-android"
 }
