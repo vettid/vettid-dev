@@ -1,7 +1,7 @@
-# Task: Phase 2 - Hardware Key Attestation Integration
+# Task: Phase 3 - Vault Lifecycle Management
 
 ## Phase
-Phase 2: Device Attestation
+Phase 3: Vault Services Enrollment
 
 ## Assigned To
 Android Instance
@@ -10,244 +10,393 @@ Android Instance
 `github.com/mesmerverse/vettid-android`
 
 ## Status
-Phase 1 complete. Ready for Phase 2 attestation integration.
+Phase 2 complete. Ready for Phase 3 vault lifecycle management.
 
-## IMPORTANT: API Change
+## New Backend Endpoints
 
-The enrollment flow has changed. The backend now requires attestation verification as a separate step.
+Three new endpoints have been added:
 
-**New Flow:**
-1. `POST /vault/enroll/start` - Returns `attestation_challenge`
-2. `POST /vault/enroll/attestation/android` - Submit attestation certificate chain
-3. `POST /vault/enroll/set-password` - Set password (only after attestation verified)
-4. `POST /vault/enroll/finalize` - Complete enrollment
+1. `GET /vault/status` - Get vault status (not_enrolled, pending, enrolled, active)
+2. `POST /vault/sync` - Sync vault and replenish transaction keys
+3. `POST /member/vault/deploy` - Web portal endpoint (not used by mobile)
 
-## Phase 2 Android Tasks
+## Phase 3 Android Tasks
 
-### 1. Update VaultServiceClient
+### 1. Add Vault Status API
 
-Add the new attestation endpoint:
+Update VaultService interface:
 
 ```kotlin
 interface VaultService {
-    @POST("/vault/enroll/start")
-    suspend fun enrollStart(body: EnrollStartRequest): EnrollStartResponse
-    // Response now includes: attestation_challenge, attestation_endpoint
+    // Existing enrollment/auth endpoints...
 
-    @POST("/vault/enroll/attestation/android")
-    suspend fun submitAndroidAttestation(body: AndroidAttestationRequest): AttestationResponse
-    // New endpoint!
+    @GET("/vault/status")
+    suspend fun getVaultStatus(): VaultStatusResponse
 
-    // ... existing endpoints
+    @POST("/vault/sync")
+    suspend fun syncVault(): SyncResponse
 }
 
-data class EnrollStartRequest(
-    val invitation_code: String,
-    val device_id: String,
-    val device_type: String = "android"  // NEW: specify device type
+data class VaultStatusResponse(
+    val status: String,                    // "not_enrolled", "pending", "enrolled", "active", "error"
+    val user_guid: String? = null,
+    val enrolled_at: String? = null,
+    val last_auth_at: String? = null,
+    val last_sync_at: String? = null,
+    val device_type: String? = null,       // "android" or "ios"
+    val security_level: String? = null,    // "hardware", "StrongBox", "TEE"
+    val transaction_keys_remaining: Int? = null,
+    val credential_version: Int? = null,
+    val error_message: String? = null
 )
 
-data class EnrollStartResponse(
-    val enrollment_session_id: String,
-    val user_guid: String,
-    val attestation_challenge: String,  // NEW: challenge for attestation
-    val attestation_endpoint: String,   // NEW: endpoint to submit attestation
-    val transaction_keys: List<TransactionKey>,
-    val next_step: String  // "attestation_required"
-)
-
-data class AndroidAttestationRequest(
-    val enrollment_session_id: String,
-    val certificate_chain: List<String>  // Base64-encoded DER certs
-)
-
-data class AttestationResponse(
-    val status: String,  // "attestation_verified"
-    val device_type: String,
-    val security_level: String,  // "hardware" or "software"
-    val next_step: String,  // "password_required"
-    val password_key_id: String
+data class SyncResponse(
+    val status: String,                    // "synced" or "keys_replenished"
+    val last_sync_at: String,
+    val transaction_keys_remaining: Int,
+    val new_transaction_keys: List<TransactionKey>? = null,
+    val credential_version: Int
 )
 ```
 
-### 2. Implement Hardware Key Attestation
-
-Create attestation with the challenge from backend:
+### 2. Create VaultStatusViewModel
 
 ```kotlin
-// app/src/main/kotlin/dev/vettid/core/attestation/
-HardwareKeyAttestation.kt
+// app/src/main/kotlin/dev/vettid/vault/
+VaultStatusViewModel.kt
 
-class HardwareKeyAttestation(private val context: Context) {
+@HiltViewModel
+class VaultStatusViewModel @Inject constructor(
+    private val vaultService: VaultService,
+    private val credentialStore: CredentialStore
+) : ViewModel() {
 
-    /**
-     * Generate attestation certificate chain using KeyStore
-     */
-    suspend fun generateAttestation(challenge: ByteArray): AttestationResult {
-        val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+    private val _state = MutableStateFlow<VaultState>(VaultState.Loading)
+    val state: StateFlow<VaultState> = _state.asStateFlow()
 
-        // Generate key with attestation
-        val keyPairGenerator = KeyPairGenerator.getInstance(
-            KeyProperties.KEY_ALGORITHM_EC,
-            "AndroidKeyStore"
-        )
-
-        val builder = KeyGenParameterSpec.Builder(
-            "vettid_attestation_key",
-            KeyProperties.PURPOSE_SIGN
-        )
-            .setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))
-            .setDigests(KeyProperties.DIGEST_SHA256)
-            .setAttestationChallenge(challenge)  // Include backend challenge
-            .setUserAuthenticationRequired(false)
-
-        // Request StrongBox if available
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            builder.setIsStrongBoxBacked(true)
-        }
-
-        keyPairGenerator.initialize(builder.build())
-        keyPairGenerator.generateKeyPair()
-
-        // Get certificate chain
-        val chain = keyStore.getCertificateChain("vettid_attestation_key")
-
-        return AttestationResult(
-            certificateChain = chain.map { Base64.encodeToString(it.encoded, Base64.NO_WRAP) },
-            securityLevel = if (isStrongBoxBacked()) "StrongBox" else "TEE"
-        )
+    init {
+        loadVaultStatus()
     }
-}
-```
 
-### 3. Update EnrollmentViewModel
+    fun loadVaultStatus() {
+        viewModelScope.launch {
+            _state.value = VaultState.Loading
+            try {
+                val response = vaultService.getVaultStatus()
+                _state.value = when (response.status) {
+                    "not_enrolled" -> VaultState.NotEnrolled
+                    "pending" -> VaultState.Pending
+                    "enrolled" -> VaultState.Enrolled(
+                        userGuid = response.user_guid!!,
+                        enrolledAt = response.enrolled_at,
+                        keysRemaining = response.transaction_keys_remaining ?: 0
+                    )
+                    "active" -> VaultState.Active(
+                        userGuid = response.user_guid!!,
+                        lastAuthAt = response.last_auth_at,
+                        lastSyncAt = response.last_sync_at,
+                        keysRemaining = response.transaction_keys_remaining ?: 0,
+                        credentialVersion = response.credential_version ?: 1
+                    )
+                    else -> VaultState.Error(response.error_message ?: "Unknown error")
+                }
+            } catch (e: Exception) {
+                _state.value = VaultState.Error(e.message ?: "Failed to load status")
+            }
+        }
+    }
 
-Add attestation step to state machine:
+    fun syncVault() {
+        viewModelScope.launch {
+            try {
+                val response = vaultService.syncVault()
 
-```kotlin
-sealed class EnrollmentState {
-    object Initial : EnrollmentState()
-    data class ScanningQR(val error: String? = null) : EnrollmentState()
-    data class StartingEnrollment(val inviteCode: String) : EnrollmentState()
-    data class Attesting(val challenge: String, val progress: Float) : EnrollmentState()  // NEW
-    data class AttestationFailed(val error: String) : EnrollmentState()  // NEW
-    data class SettingPassword(val strength: PasswordStrength) : EnrollmentState()
-    data class Finalizing(val progress: Float) : EnrollmentState()
-    data class Complete(val userGuid: String) : EnrollmentState()
-    data class Error(val message: String, val retryable: Boolean) : EnrollmentState()
-}
+                // Store any new transaction keys
+                response.new_transaction_keys?.let { keys ->
+                    credentialStore.addTransactionKeys(keys)
+                }
 
-// In ViewModel:
-fun submitAttestation(challenge: String) {
-    viewModelScope.launch {
-        _state.value = EnrollmentState.Attesting(challenge, 0.2f)
-
-        val attestation = hardwareKeyAttestation.generateAttestation(
-            Base64.decode(challenge, Base64.DEFAULT)
-        )
-
-        _state.value = EnrollmentState.Attesting(challenge, 0.6f)
-
-        val response = vaultService.submitAndroidAttestation(
-            AndroidAttestationRequest(
-                enrollment_session_id = sessionId,
-                certificate_chain = attestation.certificateChain
-            )
-        )
-
-        if (response.status == "attestation_verified") {
-            passwordKeyId = response.password_key_id
-            _state.value = EnrollmentState.SettingPassword(PasswordStrength.NONE)
-        } else {
-            _state.value = EnrollmentState.AttestationFailed("Attestation rejected")
+                // Refresh status
+                loadVaultStatus()
+            } catch (e: Exception) {
+                // Handle sync error
+            }
         }
     }
 }
+
+sealed class VaultState {
+    object Loading : VaultState()
+    object NotEnrolled : VaultState()
+    object Pending : VaultState()
+    data class Enrolled(
+        val userGuid: String,
+        val enrolledAt: String?,
+        val keysRemaining: Int
+    ) : VaultState()
+    data class Active(
+        val userGuid: String,
+        val lastAuthAt: String?,
+        val lastSyncAt: String?,
+        val keysRemaining: Int,
+        val credentialVersion: Int
+    ) : VaultState()
+    data class Error(val message: String) : VaultState()
+}
 ```
 
-### 4. Update AttestationScreen
-
-Show attestation progress and handle failures:
+### 3. Create VaultStatusScreen
 
 ```kotlin
+// app/src/main/kotlin/dev/vettid/vault/
+VaultStatusScreen.kt
+
 @Composable
-fun AttestationScreen(
-    state: EnrollmentState.Attesting,
-    onRetry: () -> Unit
+fun VaultStatusScreen(
+    viewModel: VaultStatusViewModel = hiltViewModel(),
+    onEnrollClick: () -> Unit
 ) {
+    val state by viewModel.state.collectAsState()
+
     Column(
-        modifier = Modifier.fillMaxSize(),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
     ) {
-        Icon(
-            imageVector = Icons.Default.Security,
-            contentDescription = null,
-            modifier = Modifier.size(64.dp)
+        Text(
+            text = "Vault Status",
+            style = MaterialTheme.typography.headlineMedium
         )
 
         Spacer(modifier = Modifier.height(24.dp))
 
-        Text("Verifying Device Security")
+        when (val currentState = state) {
+            is VaultState.Loading -> {
+                CircularProgressIndicator()
+            }
+            is VaultState.NotEnrolled -> {
+                VaultNotEnrolledCard(onEnrollClick = onEnrollClick)
+            }
+            is VaultState.Pending -> {
+                VaultPendingCard()
+            }
+            is VaultState.Enrolled -> {
+                VaultEnrolledCard(state = currentState)
+            }
+            is VaultState.Active -> {
+                VaultActiveCard(
+                    state = currentState,
+                    onSyncClick = { viewModel.syncVault() }
+                )
+            }
+            is VaultState.Error -> {
+                VaultErrorCard(
+                    message = currentState.message,
+                    onRetryClick = { viewModel.loadVaultStatus() }
+                )
+            }
+        }
+    }
+}
 
-        Spacer(modifier = Modifier.height(16.dp))
+@Composable
+fun VaultActiveCard(
+    state: VaultState.Active,
+    onSyncClick: () -> Unit
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Default.CheckCircle,
+                    contentDescription = null,
+                    tint = Color.Green
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Vault Active", style = MaterialTheme.typography.titleMedium)
+            }
 
-        LinearProgressIndicator(progress = state.progress)
+            Spacer(modifier = Modifier.height(16.dp))
 
-        Spacer(modifier = Modifier.height(8.dp))
+            Text("Last Sync: ${state.lastSyncAt ?: "Never"}")
+            Text("Transaction Keys: ${state.keysRemaining}")
+            Text("Credential Version: ${state.credentialVersion}")
 
-        Text(
-            text = "Generating hardware attestation...",
-            style = MaterialTheme.typography.bodySmall
-        )
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Button(onClick = onSyncClick) {
+                Text("Sync Now")
+            }
+        }
     }
 }
 ```
 
-### 5. Unit Tests
-
-Add attestation tests:
+### 4. Background Sync Worker
 
 ```kotlin
-class HardwareKeyAttestationTest {
-    @Test
-    fun `generateAttestation returns valid certificate chain`()
+// app/src/main/kotlin/dev/vettid/vault/
+VaultSyncWorker.kt
 
-    @Test
-    fun `attestation includes challenge in certificate`()
+@HiltWorker
+class VaultSyncWorker @AssistedInject constructor(
+    @Assisted context: Context,
+    @Assisted params: WorkerParameters,
+    private val vaultService: VaultService,
+    private val credentialStore: CredentialStore
+) : CoroutineWorker(context, params) {
 
-    @Test
-    fun `falls back to TEE when StrongBox unavailable`()
+    override suspend fun doWork(): Result {
+        return try {
+            val response = vaultService.syncVault()
+
+            // Store new transaction keys if any
+            response.new_transaction_keys?.let { keys ->
+                credentialStore.addTransactionKeys(keys)
+            }
+
+            Result.success()
+        } catch (e: Exception) {
+            if (runAttemptCount < 3) {
+                Result.retry()
+            } else {
+                Result.failure()
+            }
+        }
+    }
+
+    companion object {
+        fun schedule(context: Context) {
+            val constraints = Constraints.Builder()
+                .setRequiredNetworkType(NetworkType.CONNECTED)
+                .build()
+
+            val syncRequest = PeriodicWorkRequestBuilder<VaultSyncWorker>(
+                repeatInterval = 6,
+                repeatIntervalTimeUnit = TimeUnit.HOURS
+            )
+                .setConstraints(constraints)
+                .build()
+
+            WorkManager.getInstance(context)
+                .enqueueUniquePeriodicWork(
+                    "vault_sync",
+                    ExistingPeriodicWorkPolicy.KEEP,
+                    syncRequest
+                )
+        }
+    }
+}
+```
+
+### 5. Update Home Screen
+
+Add vault status card to main screen:
+
+```kotlin
+@Composable
+fun HomeScreen(
+    vaultViewModel: VaultStatusViewModel = hiltViewModel(),
+    onVaultClick: () -> Unit
+) {
+    val vaultState by vaultViewModel.state.collectAsState()
+
+    Column(modifier = Modifier.padding(16.dp)) {
+        // Other home content...
+
+        VaultStatusCard(
+            state = vaultState,
+            onClick = onVaultClick
+        )
+    }
 }
 
-class EnrollmentViewModelTest {
+@Composable
+fun VaultStatusCard(
+    state: VaultState,
+    onClick: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = when (state) {
+                    is VaultState.Active -> Icons.Default.Lock
+                    is VaultState.NotEnrolled -> Icons.Default.LockOpen
+                    else -> Icons.Default.Sync
+                },
+                contentDescription = null
+            )
+            Spacer(modifier = Modifier.width(16.dp))
+            Column {
+                Text("Vault", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    text = when (state) {
+                        is VaultState.Active -> "Active"
+                        is VaultState.NotEnrolled -> "Not Set Up"
+                        is VaultState.Pending -> "Setup in Progress"
+                        is VaultState.Enrolled -> "Enrolled"
+                        is VaultState.Loading -> "Loading..."
+                        is VaultState.Error -> "Error"
+                    },
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+        }
+    }
+}
+```
+
+### 6. Unit Tests
+
+```kotlin
+class VaultStatusViewModelTest {
     @Test
-    fun `transitions to Attesting after enrollment start`()
+    fun `loadVaultStatus updates state to Active`()
 
     @Test
-    fun `transitions to SettingPassword after attestation verified`()
+    fun `loadVaultStatus updates state to NotEnrolled`()
 
     @Test
-    fun `transitions to AttestationFailed on rejection`()
+    fun `syncVault stores new transaction keys`()
+
+    @Test
+    fun `syncVault refreshes status after sync`()
+}
+
+class VaultSyncWorkerTest {
+    @Test
+    fun `doWork syncs successfully`()
+
+    @Test
+    fun `doWork retries on failure`()
+
+    @Test
+    fun `doWork stores new keys`()
 }
 ```
 
 ## Key References (in vettid-dev)
 
 Pull latest from vettid-dev:
-- `cdk/lambda/common/attestation.ts` - Backend attestation verification
-- `cdk/lambda/handlers/attestation/verifyAndroidAttestation.ts` - Android handler
-- `cdk/coordination/specs/vault-services-api.yaml` - Updated API spec
+- `cdk/lambda/handlers/vault/getVaultStatus.ts`
+- `cdk/lambda/handlers/vault/syncVault.ts`
 
 ## Acceptance Criteria
 
-- [ ] Hardware Key Attestation generates valid certificate chain
-- [ ] Challenge from backend is included in attestation
-- [ ] StrongBox used when available, falls back to TEE
-- [ ] EnrollmentViewModel handles attestation state
-- [ ] AttestationScreen shows progress and errors
+- [ ] VaultStatusViewModel loads and displays vault status
+- [ ] VaultStatusScreen shows appropriate UI for each state
+- [ ] Sync button triggers vault sync
+- [ ] New transaction keys stored after sync
+- [ ] Background worker syncs every 6 hours
+- [ ] Home screen shows vault status card
 - [ ] Unit tests pass
-- [ ] Integration with backend verified on physical device
 
 ## Status Update
 
@@ -256,6 +405,6 @@ cd /path/to/vettid-dev
 git pull
 # Edit cdk/coordination/status/android.json
 git add cdk/coordination/status/android.json
-git commit -m "Update Android status: Phase 2 attestation complete"
+git commit -m "Update Android status: Phase 3 vault lifecycle complete"
 git push
 ```

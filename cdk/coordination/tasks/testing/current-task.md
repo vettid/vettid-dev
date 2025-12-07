@@ -1,7 +1,7 @@
-# Task: Phase 2 - Device Attestation Testing
+# Task: Phase 3 - Vault Lifecycle Testing
 
 ## Phase
-Phase 2: Device Attestation
+Phase 3: Vault Services Enrollment
 
 ## Assigned To
 Testing Instance
@@ -10,71 +10,150 @@ Testing Instance
 `github.com/mesmerverse/vettid-dev`
 
 ## Status
-Phase 1 complete. Ready for Phase 2 attestation testing.
+Phase 2 complete. Ready for Phase 3 vault lifecycle testing.
 
-## Phase 2 Testing Tasks
+## New Backend Handlers
 
-### 1. Attestation Verification Tests
+Three new handlers have been created:
 
-Create tests for the new attestation handlers:
+1. `POST /member/vault/deploy` - Member initiates vault deployment, returns QR code data
+2. `GET /vault/status` - Get vault status for authenticated user
+3. `POST /vault/sync` - Sync vault state and replenish transaction keys
+
+## Phase 3 Testing Tasks
+
+### 1. Vault Deployment Tests
+
+Create tests for the new deploy vault handler:
 
 ```
-cdk/tests/unit/attestation/
-├── androidAttestation.test.ts   # Test verifyAndroidAttestation()
-├── iosAttestation.test.ts       # Test verifyIosAttestation()
-└── attestationUtils.test.ts     # Test challenge generation, etc.
+cdk/tests/integration/vault/
+├── deployVault.test.ts         # Test POST /member/vault/deploy
+├── getVaultStatus.test.ts      # Test GET /vault/status
+└── syncVault.test.ts           # Test POST /vault/sync
 ```
 
-Test cases:
-- Valid attestation certificate chain parsing
-- Invalid/expired certificate rejection
-- Challenge verification
-- Security level detection (hardware vs software)
-- Root CA verification
+Test cases for `deployVault`:
+- Member can initiate vault deployment
+- Returns valid QR data structure with invite code
+- Duplicate deployment returns existing pending invite
+- Already-enrolled member cannot deploy again (409 Conflict)
+- Invite expires after 30 minutes
 
-### 2. Update Integration Tests
+### 2. Vault Status Tests
 
-Update enrollment flow tests for new attestation step:
+Test `getVaultStatus` endpoint:
 
 ```typescript
-// tests/integration/enrollment/enrollmentFlow.test.ts
-describe('Enrollment with Attestation', () => {
-  it('should require attestation before password');
-  it('should reject invalid attestation');
-  it('should accept valid Android attestation');
-  it('should accept valid iOS attestation');
-  it('should store attestation result in session');
+describe('GET /vault/status', () => {
+  it('should return not_enrolled for new users');
+  it('should return pending during enrollment');
+  it('should return enrolled after finalization');
+  it('should return active after first authentication');
+  it('should include transaction_keys_remaining count');
+  it('should include credential_version');
+  it('should include device_type and security_level');
 });
 ```
 
-### 3. Use Existing Fixtures
+### 3. Vault Sync Tests
 
-Your Phase 1 attestation fixtures are ready:
-- `tests/fixtures/attestation/androidAttestation.ts`
-- `tests/fixtures/attestation/iosAttestation.ts`
+Test `syncVault` endpoint:
 
-Use these mock certificates and attestation objects for testing.
+```typescript
+describe('POST /vault/sync', () => {
+  it('should update last_sync_at timestamp');
+  it('should return current key count when above minimum');
+  it('should replenish keys when below minimum (10)');
+  it('should generate 20 new keys when replenishing');
+  it('should return new transaction keys in response');
+  it('should return 404 for non-enrolled users');
+});
+```
 
-### 4. Security Tests
+### 4. E2E Enrollment Flow Tests
 
-Add attestation-specific security tests:
-- Replay attack prevention (challenge reuse)
-- Certificate chain validation
-- Timing attack resistance for verification
+Update e2e tests to include full flow:
+
+```typescript
+// tests/e2e/vaultLifecycle.test.ts
+describe('Full Vault Lifecycle', () => {
+  it('should complete: deploy → enroll → auth → sync');
+  it('should track status transitions correctly');
+  it('should replenish keys after multiple auths');
+});
+```
+
+### 5. QR Code Validation Tests
+
+Test QR data structure:
+
+```typescript
+describe('QR Code Data', () => {
+  it('should have type: vettid_vault_enrollment');
+  it('should include valid invite code');
+  it('should include API endpoint');
+  it('should include expiration timestamp');
+  it('should be valid JSON parseable by mobile apps');
+});
+```
 
 ## Key Files to Test
 
-- `lambda/common/attestation.ts` - Attestation utilities
-- `lambda/handlers/attestation/verifyAndroidAttestation.ts`
-- `lambda/handlers/attestation/verifyIosAttestation.ts`
-- `lambda/handlers/vault/enrollStart.ts` - Updated with attestation flow
+- `lambda/handlers/member/deployVault.ts` - NEW
+- `lambda/handlers/vault/getVaultStatus.ts` - NEW
+- `lambda/handlers/vault/syncVault.ts` - NEW
+
+## Response Structures
+
+### Deploy Vault Response
+```typescript
+{
+  invite_code: string;
+  qr_data: string;  // JSON stringified
+  expires_at: string;  // ISO timestamp
+  enrollment_endpoint: string;  // "/vault/enroll/start"
+}
+```
+
+### Vault Status Response
+```typescript
+{
+  status: 'not_enrolled' | 'pending' | 'enrolled' | 'active' | 'error';
+  user_guid?: string;
+  enrolled_at?: string;
+  last_auth_at?: string;
+  last_sync_at?: string;
+  device_type?: 'android' | 'ios';
+  security_level?: string;
+  transaction_keys_remaining?: number;
+  credential_version?: number;
+}
+```
+
+### Sync Response
+```typescript
+{
+  status: 'synced' | 'keys_replenished';
+  last_sync_at: string;
+  transaction_keys_remaining: number;
+  new_transaction_keys?: Array<{
+    key_id: string;
+    public_key: string;
+    algorithm: string;
+  }>;
+  credential_version: number;
+}
+```
 
 ## Acceptance Criteria
 
-- [ ] Unit tests for attestation parsing and verification
-- [ ] Integration tests for attestation in enrollment flow
-- [ ] Mock fixtures generate valid test data
-- [ ] Security tests for attestation replay prevention
+- [ ] Unit tests for all three new handlers
+- [ ] Integration tests for vault lifecycle
+- [ ] E2E test for complete deploy → enroll → auth → sync flow
+- [ ] QR data structure validated
+- [ ] Transaction key replenishment verified
+- [ ] Status transitions verified
 - [ ] All existing tests still pass
 
 ## Status Update
@@ -84,6 +163,6 @@ cd /path/to/vettid-dev
 git pull
 # Edit cdk/coordination/status/testing.json
 git add cdk/coordination/status/testing.json
-git commit -m "Update Testing status: Phase 2 attestation tests complete"
+git commit -m "Update Testing status: Phase 3 vault lifecycle tests complete"
 git push
 ```
