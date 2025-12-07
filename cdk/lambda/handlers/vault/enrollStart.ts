@@ -13,6 +13,7 @@ import {
   generateSecureId,
 } from '../../common/util';
 import { generateX25519KeyPair } from '../../common/crypto';
+import { generateAttestationChallenge } from '../../common/attestation';
 
 const ddb = new DynamoDBClient({});
 
@@ -27,7 +28,7 @@ const INITIAL_TRANSACTION_KEY_COUNT = 20;
 interface EnrollStartRequest {
   invitation_code: string;
   device_id: string;
-  attestation_data: string;
+  device_type: 'android' | 'ios';
 }
 
 /**
@@ -35,12 +36,13 @@ interface EnrollStartRequest {
  *
  * Start enrollment with invitation code.
  * Validates the invitation, creates enrollment session, generates transaction keys.
+ * Generates attestation challenge for device verification.
  *
  * Returns:
  * - enrollment_session_id
  * - user_guid
+ * - attestation_challenge (for device attestation)
  * - transaction_keys (UTKs - public keys only)
- * - password_prompt with key_id to use
  */
 export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   const requestId = getRequestId(event);
@@ -55,8 +57,8 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     if (!body.device_id) {
       return badRequest('device_id is required');
     }
-    if (!body.attestation_data) {
-      return badRequest('attestation_data is required');
+    if (!body.device_type || !['android', 'ios'].includes(body.device_type)) {
+      return badRequest('device_type must be android or ios');
     }
 
     // Validate invitation code exists and is valid
@@ -81,13 +83,8 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       return badRequest('This invitation code has expired');
     }
 
-    // TODO: Validate attestation_data based on platform
-    // For now, we just verify it's present and base64 encoded
-    try {
-      Buffer.from(body.attestation_data, 'base64');
-    } catch {
-      return badRequest('Invalid attestation_data format');
-    }
+    // Generate attestation challenge for device verification
+    const attestationChallenge = generateAttestationChallenge(body.device_type);
 
     // Generate user GUID for this enrollment
     const userGuid = generateSecureId('user', 32);
@@ -138,7 +135,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     // Select the first key for password encryption
     const passwordKeyId = transactionKeys[0].key_id;
 
-    // Create enrollment session
+    // Create enrollment session with attestation step
     await ddb.send(new PutItemCommand({
       TableName: TABLE_ENROLLMENT_SESSIONS,
       Item: marshall({
@@ -146,9 +143,11 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
         user_guid: userGuid,
         invitation_code: body.invitation_code,
         device_id: body.device_id,
-        attestation_data: body.attestation_data,
+        device_type: body.device_type,
+        attestation_challenge: attestationChallenge.challenge,
+        attestation_challenge_expires: attestationChallenge.expiresAt,
         status: 'STARTED',
-        step: 'password_required',
+        step: 'attestation_required',  // Changed: require attestation first
         password_key_id: passwordKeyId,
         created_at: now.toISOString(),
         expires_at: expiresAt.toISOString(),
@@ -183,11 +182,12 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     return ok({
       enrollment_session_id: sessionId,
       user_guid: userGuid,
+      attestation_challenge: attestationChallenge.challenge,
+      attestation_endpoint: body.device_type === 'android'
+        ? '/vault/enroll/attestation/android'
+        : '/vault/enroll/attestation/ios',
       transaction_keys: transactionKeys,
-      password_prompt: {
-        use_key_id: passwordKeyId,
-        message: 'Please create a secure password for your credential.',
-      },
+      next_step: 'attestation_required',
     });
 
   } catch (error: any) {

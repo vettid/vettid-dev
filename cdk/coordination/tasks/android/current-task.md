@@ -1,7 +1,7 @@
-# Task: Phase 1 - Enrollment Flow Implementation
+# Task: Phase 2 - Hardware Key Attestation Integration
 
 ## Phase
-Phase 1: Protean Credential System - Core
+Phase 2: Device Attestation
 
 ## Assigned To
 Android Instance
@@ -10,138 +10,252 @@ Android Instance
 `github.com/mesmerverse/vettid-android`
 
 ## Status
-Phase 0 complete. Migration to dedicated repo complete. Ready for Phase 1.
+Phase 1 complete. Ready for Phase 2 attestation integration.
 
-## Phase 1 Android Tasks
+## IMPORTANT: API Change
 
-### 1. Enrollment Flow UI
+The enrollment flow has changed. The backend now requires attestation verification as a separate step.
 
-Implement the complete enrollment flow screens:
+**New Flow:**
+1. `POST /vault/enroll/start` - Returns `attestation_challenge`
+2. `POST /vault/enroll/attestation/android` - Submit attestation certificate chain
+3. `POST /vault/enroll/set-password` - Set password (only after attestation verified)
+4. `POST /vault/enroll/finalize` - Complete enrollment
 
-```kotlin
-// app/src/main/kotlin/dev/vettid/features/enrollment/
-EnrollmentScreen.kt          // Main enrollment container
-QRScannerScreen.kt           // Scan invitation QR code
-AttestationScreen.kt         // Hardware attestation progress
-PasswordSetupScreen.kt       // Password creation with strength meter
-EnrollmentCompleteScreen.kt  // Success confirmation
-```
+## Phase 2 Android Tasks
 
-**Flow:**
-1. User scans QR code containing invitation code
-2. App requests attestation challenge from backend
-3. App performs hardware attestation
-4. User creates password (min 12 chars, strength indicator)
-5. App encrypts password with transaction key
-6. Backend returns credential blob and LAT
-7. App stores credential blob encrypted in EncryptedSharedPreferences
+### 1. Update VaultServiceClient
 
-### 2. Implement VaultServiceClient
-
-Create API client matching `vault-services-api.yaml`:
+Add the new attestation endpoint:
 
 ```kotlin
-// app/src/main/kotlin/dev/vettid/core/network/
-VaultServiceClient.kt
-
 interface VaultService {
     @POST("/vault/enroll/start")
     suspend fun enrollStart(body: EnrollStartRequest): EnrollStartResponse
+    // Response now includes: attestation_challenge, attestation_endpoint
 
-    @POST("/vault/enroll/attestation")
-    suspend fun submitAttestation(body: AttestationRequest): AttestationResponse
+    @POST("/vault/enroll/attestation/android")
+    suspend fun submitAndroidAttestation(body: AndroidAttestationRequest): AttestationResponse
+    // New endpoint!
 
-    @POST("/vault/enroll/set-password")
-    suspend fun setPassword(body: SetPasswordRequest): SetPasswordResponse
+    // ... existing endpoints
+}
 
-    @POST("/vault/enroll/finalize")
-    suspend fun finalize(body: FinalizeRequest): FinalizeResponse
+data class EnrollStartRequest(
+    val invitation_code: String,
+    val device_id: String,
+    val device_type: String = "android"  // NEW: specify device type
+)
 
-    @POST("/vault/auth/action-request")
-    suspend fun actionRequest(body: ActionRequest): ActionResponse
+data class EnrollStartResponse(
+    val enrollment_session_id: String,
+    val user_guid: String,
+    val attestation_challenge: String,  // NEW: challenge for attestation
+    val attestation_endpoint: String,   // NEW: endpoint to submit attestation
+    val transaction_keys: List<TransactionKey>,
+    val next_step: String  // "attestation_required"
+)
 
-    @POST("/vault/auth/execute")
-    suspend fun authExecute(body: AuthExecuteRequest): AuthExecuteResponse
+data class AndroidAttestationRequest(
+    val enrollment_session_id: String,
+    val certificate_chain: List<String>  // Base64-encoded DER certs
+)
+
+data class AttestationResponse(
+    val status: String,  // "attestation_verified"
+    val device_type: String,
+    val security_level: String,  // "hardware" or "software"
+    val next_step: String,  // "password_required"
+    val password_key_id: String
+)
+```
+
+### 2. Implement Hardware Key Attestation
+
+Create attestation with the challenge from backend:
+
+```kotlin
+// app/src/main/kotlin/dev/vettid/core/attestation/
+HardwareKeyAttestation.kt
+
+class HardwareKeyAttestation(private val context: Context) {
+
+    /**
+     * Generate attestation certificate chain using KeyStore
+     */
+    suspend fun generateAttestation(challenge: ByteArray): AttestationResult {
+        val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+
+        // Generate key with attestation
+        val keyPairGenerator = KeyPairGenerator.getInstance(
+            KeyProperties.KEY_ALGORITHM_EC,
+            "AndroidKeyStore"
+        )
+
+        val builder = KeyGenParameterSpec.Builder(
+            "vettid_attestation_key",
+            KeyProperties.PURPOSE_SIGN
+        )
+            .setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))
+            .setDigests(KeyProperties.DIGEST_SHA256)
+            .setAttestationChallenge(challenge)  // Include backend challenge
+            .setUserAuthenticationRequired(false)
+
+        // Request StrongBox if available
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            builder.setIsStrongBoxBacked(true)
+        }
+
+        keyPairGenerator.initialize(builder.build())
+        keyPairGenerator.generateKeyPair()
+
+        // Get certificate chain
+        val chain = keyStore.getCertificateChain("vettid_attestation_key")
+
+        return AttestationResult(
+            certificateChain = chain.map { Base64.encodeToString(it.encoded, Base64.NO_WRAP) },
+            securityLevel = if (isStrongBoxBacked()) "StrongBox" else "TEE"
+        )
+    }
 }
 ```
 
-### 3. Enrollment State Management
+### 3. Update EnrollmentViewModel
+
+Add attestation step to state machine:
 
 ```kotlin
-// app/src/main/kotlin/dev/vettid/features/enrollment/
-EnrollmentViewModel.kt
-EnrollmentState.kt
-
 sealed class EnrollmentState {
     object Initial : EnrollmentState()
     data class ScanningQR(val error: String? = null) : EnrollmentState()
-    data class Attesting(val progress: Float) : EnrollmentState()
+    data class StartingEnrollment(val inviteCode: String) : EnrollmentState()
+    data class Attesting(val challenge: String, val progress: Float) : EnrollmentState()  // NEW
+    data class AttestationFailed(val error: String) : EnrollmentState()  // NEW
     data class SettingPassword(val strength: PasswordStrength) : EnrollmentState()
     data class Finalizing(val progress: Float) : EnrollmentState()
     data class Complete(val userGuid: String) : EnrollmentState()
     data class Error(val message: String, val retryable: Boolean) : EnrollmentState()
 }
+
+// In ViewModel:
+fun submitAttestation(challenge: String) {
+    viewModelScope.launch {
+        _state.value = EnrollmentState.Attesting(challenge, 0.2f)
+
+        val attestation = hardwareKeyAttestation.generateAttestation(
+            Base64.decode(challenge, Base64.DEFAULT)
+        )
+
+        _state.value = EnrollmentState.Attesting(challenge, 0.6f)
+
+        val response = vaultService.submitAndroidAttestation(
+            AndroidAttestationRequest(
+                enrollment_session_id = sessionId,
+                certificate_chain = attestation.certificateChain
+            )
+        )
+
+        if (response.status == "attestation_verified") {
+            passwordKeyId = response.password_key_id
+            _state.value = EnrollmentState.SettingPassword(PasswordStrength.NONE)
+        } else {
+            _state.value = EnrollmentState.AttestationFailed("Attestation rejected")
+        }
+    }
+}
 ```
 
-### 4. Transaction Key Encryption
+### 4. Update AttestationScreen
 
-Implement client-side encryption using transaction keys:
+Show attestation progress and handle failures:
 
 ```kotlin
-// In CryptoManager.kt, add:
-fun encryptWithTransactionKey(
-    plaintext: ByteArray,
-    transactionKeyPublicKey: ByteArray
-): EncryptedPayload
+@Composable
+fun AttestationScreen(
+    state: EnrollmentState.Attesting,
+    onRetry: () -> Unit
+) {
+    Column(
+        modifier = Modifier.fillMaxSize(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Icon(
+            imageVector = Icons.Default.Security,
+            contentDescription = null,
+            modifier = Modifier.size(64.dp)
+        )
 
-data class EncryptedPayload(
-    val ciphertext: ByteArray,
-    val ephemeralPublicKey: ByteArray,
-    val nonce: ByteArray
-)
+        Spacer(modifier = Modifier.height(24.dp))
+
+        Text("Verifying Device Security")
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        LinearProgressIndicator(progress = state.progress)
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Text(
+            text = "Generating hardware attestation...",
+            style = MaterialTheme.typography.bodySmall
+        )
+    }
+}
 ```
 
 ### 5. Unit Tests
 
-Add tests for new functionality:
+Add attestation tests:
 
 ```kotlin
-// app/src/test/kotlin/dev/vettid/
-EnrollmentViewModelTest.kt    // State transitions
-VaultServiceClientTest.kt     // API contract tests
-TransactionKeyEncryptionTest.kt  // Crypto operations
+class HardwareKeyAttestationTest {
+    @Test
+    fun `generateAttestation returns valid certificate chain`()
+
+    @Test
+    fun `attestation includes challenge in certificate`()
+
+    @Test
+    fun `falls back to TEE when StrongBox unavailable`()
+}
+
+class EnrollmentViewModelTest {
+    @Test
+    fun `transitions to Attesting after enrollment start`()
+
+    @Test
+    fun `transitions to SettingPassword after attestation verified`()
+
+    @Test
+    fun `transitions to AttestationFailed on rejection`()
+}
 ```
 
 ## Key References (in vettid-dev)
 
-Pull latest from vettid-dev and reference:
-- `cdk/coordination/specs/vault-services-api.yaml` - API endpoints
-- `cdk/coordination/specs/credential-format.md` - Credential blob format
-- `cdk/coordination/specs/nats-topics.md` - Future NATS integration
+Pull latest from vettid-dev:
+- `cdk/lambda/common/attestation.ts` - Backend attestation verification
+- `cdk/lambda/handlers/attestation/verifyAndroidAttestation.ts` - Android handler
+- `cdk/coordination/specs/vault-services-api.yaml` - Updated API spec
 
-## API Base URL
+## Acceptance Criteria
 
-For development testing:
-- `https://api-dev.vettid.dev` (when backend is deployed)
+- [ ] Hardware Key Attestation generates valid certificate chain
+- [ ] Challenge from backend is included in attestation
+- [ ] StrongBox used when available, falls back to TEE
+- [ ] EnrollmentViewModel handles attestation state
+- [ ] AttestationScreen shows progress and errors
+- [ ] Unit tests pass
+- [ ] Integration with backend verified on physical device
 
-## Status Update Workflow
+## Status Update
 
-After completing work:
 ```bash
 cd /path/to/vettid-dev
 git pull
 # Edit cdk/coordination/status/android.json
 git add cdk/coordination/status/android.json
-git commit -m "Update Android status: Phase 1 enrollment flow complete"
+git commit -m "Update Android status: Phase 2 attestation complete"
 git push
 ```
-
-## Acceptance Criteria
-
-- [ ] QR scanner captures invitation code
-- [ ] Hardware attestation completes successfully
-- [ ] Password encryption uses transaction keys correctly
-- [ ] Credential blob stored securely
-- [ ] LAT stored for future authentication
-- [ ] All unit tests pass
-- [ ] UI follows Material 3 design guidelines

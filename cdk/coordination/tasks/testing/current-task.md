@@ -1,7 +1,7 @@
-# Task: Phase 1 - Backend Implementation Tests
+# Task: Phase 2 - Device Attestation Testing
 
 ## Phase
-Phase 1: Protean Credential System - Core
+Phase 2: Device Attestation
 
 ## Assigned To
 Testing Instance
@@ -10,65 +10,80 @@ Testing Instance
 `github.com/mesmerverse/vettid-dev`
 
 ## Status
-Your Phase 1 integration test scaffolding is complete (229 tests, 69 passing, 159 todo).
+Phase 1 complete. Ready for Phase 2 attestation testing.
 
-## Phase 1 Testing Tasks
+## Phase 2 Testing Tasks
 
-Now that the test scaffolding exists, your focus shifts to:
+### 1. Attestation Verification Tests
 
-### 1. Expand Implemented Tests
-
-The following test files have comprehensive scaffolding with `it.todo()` placeholders. As the orchestrator implements backend Lambda handlers, you will fill in these tests:
-
-**Files to monitor:**
-- `cdk/tests/integration/enrollment/enrollmentFlow.test.ts`
-- `cdk/tests/integration/attestation/deviceAttestation.test.ts`
-- `cdk/tests/integration/ledger/latLifecycle.test.ts`
-- `cdk/tests/security/bruteForce.test.ts`
-- `cdk/tests/security/timingAttack.test.ts`
-- `cdk/tests/security/replayAttack.test.ts`
-
-### 2. Add Mock Data for Mobile Attestation
-
-Create test fixtures for:
-- Android Hardware Key Attestation certificates
-- iOS App Attest attestation objects
-
-Reference docs:
-- https://developer.android.com/training/articles/security-key-attestation
-- https://developer.apple.com/documentation/devicecheck/validating_apps_that_connect_to_your_server
-
-### 3. Database Integration Tests
-
-When the Ledger (PostgreSQL) infrastructure is deployed, create:
+Create tests for the new attestation handlers:
 
 ```
-cdk/tests/integration/ledger/
-├── credentialLifecycle.test.ts  # Full credential CRUD
-├── keyRotation.test.ts          # CEK/TK rotation
-├── concurrentSession.test.ts    # Atomic session tests
-└── transactionKeyPool.test.ts   # Key pool management
+cdk/tests/unit/attestation/
+├── androidAttestation.test.ts   # Test verifyAndroidAttestation()
+├── iosAttestation.test.ts       # Test verifyIosAttestation()
+└── attestationUtils.test.ts     # Test challenge generation, etc.
 ```
 
-### 4. API Contract Tests
+Test cases:
+- Valid attestation certificate chain parsing
+- Invalid/expired certificate rejection
+- Challenge verification
+- Security level detection (hardware vs software)
+- Root CA verification
 
-Validate Lambda handlers match OpenAPI spec:
-- `POST /vault/enroll/start`
-- `POST /vault/enroll/attestation`
-- `POST /vault/enroll/set-password`
-- `POST /vault/enroll/finalize`
-- `POST /vault/auth/action-request`
-- `POST /vault/auth/execute`
+### 2. Update Integration Tests
 
-## Coordination
+Update enrollment flow tests for new attestation step:
 
-When you need new Lambda handlers or API changes:
-1. Document the requirement in `cdk/coordination/results/issues/`
-2. Update your status in `cdk/coordination/status/testing.json`
+```typescript
+// tests/integration/enrollment/enrollmentFlow.test.ts
+describe('Enrollment with Attestation', () => {
+  it('should require attestation before password');
+  it('should reject invalid attestation');
+  it('should accept valid Android attestation');
+  it('should accept valid iOS attestation');
+  it('should store attestation result in session');
+});
+```
+
+### 3. Use Existing Fixtures
+
+Your Phase 1 attestation fixtures are ready:
+- `tests/fixtures/attestation/androidAttestation.ts`
+- `tests/fixtures/attestation/iosAttestation.ts`
+
+Use these mock certificates and attestation objects for testing.
+
+### 4. Security Tests
+
+Add attestation-specific security tests:
+- Replay attack prevention (challenge reuse)
+- Certificate chain validation
+- Timing attack resistance for verification
+
+## Key Files to Test
+
+- `lambda/common/attestation.ts` - Attestation utilities
+- `lambda/handlers/attestation/verifyAndroidAttestation.ts`
+- `lambda/handlers/attestation/verifyIosAttestation.ts`
+- `lambda/handlers/vault/enrollStart.ts` - Updated with attestation flow
 
 ## Acceptance Criteria
 
-- [ ] All existing 69 passing tests continue to pass
-- [ ] Mock attestation data created for Android/iOS
-- [ ] Test utilities documented for mobile instances
-- [ ] Integration tests ready to activate when backend deploys
+- [ ] Unit tests for attestation parsing and verification
+- [ ] Integration tests for attestation in enrollment flow
+- [ ] Mock fixtures generate valid test data
+- [ ] Security tests for attestation replay prevention
+- [ ] All existing tests still pass
+
+## Status Update
+
+```bash
+cd /path/to/vettid-dev
+git pull
+# Edit cdk/coordination/status/testing.json
+git add cdk/coordination/status/testing.json
+git commit -m "Update Testing status: Phase 2 attestation tests complete"
+git push
+```
