@@ -56,6 +56,7 @@ export class AdminStack extends cdk.Stack {
   public readonly createMembershipTerms!: lambdaNode.NodejsFunction;
   public readonly getCurrentMembershipTerms!: lambdaNode.NodejsFunction;
   public readonly listMembershipTerms!: lambdaNode.NodejsFunction;
+  public readonly getTermsDownloadUrl!: lambdaNode.NodejsFunction;
   public readonly createProposal!: lambdaNode.NodejsFunction;
   public readonly listProposals!: lambdaNode.NodejsFunction;
   public readonly suspendProposal!: lambdaNode.NodejsFunction;
@@ -78,6 +79,7 @@ export class AdminStack extends cdk.Stack {
   public readonly addNotification!: lambdaNode.NodejsFunction;
   public readonly removeNotification!: lambdaNode.NodejsFunction;
   public readonly getAuditLog!: lambdaNode.NodejsFunction;
+  public readonly generateNatsControlToken!: lambdaNode.NodejsFunction;
 
   constructor(scope: Construct, id: string, props: AdminStackProps) {
     super(scope, id, props);
@@ -380,6 +382,20 @@ export class AdminStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(30),
     });
 
+    // ===== NATS CONTROL =====
+
+    const generateNatsControlToken = new lambdaNode.NodejsFunction(this, 'GenerateNatsControlTokenFn', {
+      entry: 'lambda/handlers/nats/generateControlToken.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+        TABLE_NATS_ACCOUNTS: tables.natsAccounts.tableName,
+        TABLE_NATS_TOKENS: tables.natsTokens.tableName,
+        NATS_DOMAIN: 'nats.vettid.dev',
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
     // ===== MEMBERSHIP MANAGEMENT =====
 
     const listMembershipRequests = new lambdaNode.NodejsFunction(this, 'ListMembershipRequestsFn', {
@@ -446,6 +462,15 @@ export class AdminStack extends cdk.Stack {
 
     const listMembershipTerms = new lambdaNode.NodejsFunction(this, 'ListMembershipTermsFn', {
       entry: 'lambda/handlers/admin/listMembershipTerms.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const getTermsDownloadUrl = new lambdaNode.NodejsFunction(this, 'GetTermsDownloadUrlFn', {
+      entry: 'lambda/handlers/admin/getTermsDownloadUrl.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
       environment: {
         ...defaultEnv,
@@ -768,7 +793,7 @@ export class AdminStack extends cdk.Stack {
     // Grant S3 permissions for membership terms
     termsBucket.grantReadWrite(createMembershipTerms);
     termsBucket.grantRead(getCurrentMembershipTerms);
-    termsBucket.grantRead(listMembershipTerms);
+    termsBucket.grantRead(getTermsDownloadUrl);
 
     // Grant Cognito permissions
     approveRegistration.addToRolePolicy(new iam.PolicyStatement({
@@ -927,6 +952,7 @@ export class AdminStack extends cdk.Stack {
     this.createMembershipTerms = createMembershipTerms;
     this.getCurrentMembershipTerms = getCurrentMembershipTerms;
     this.listMembershipTerms = listMembershipTerms;
+    this.getTermsDownloadUrl = getTermsDownloadUrl;
     this.createProposal = createProposal;
     this.listProposals = listProposals;
     this.suspendProposal = suspendProposal;
@@ -949,6 +975,12 @@ export class AdminStack extends cdk.Stack {
     this.addNotification = addNotification;
     this.removeNotification = removeNotification;
     this.getAuditLog = getAuditLog;
+    this.generateNatsControlToken = generateNatsControlToken;
+
+    // ===== NATS CONTROL PERMISSIONS =====
+    tables.natsAccounts.grantReadData(generateNatsControlToken);
+    tables.natsTokens.grantReadWriteData(generateNatsControlToken);
+    tables.audit.grantReadWriteData(generateNatsControlToken);
 
     // ===== SCHEDULED TASKS =====
 

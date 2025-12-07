@@ -1419,6 +1419,14 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       integration: new integrations.HttpLambdaIntegration('GetAuditLogInt', adminStack.getAuditLog),
       authorizer: this.adminAuthorizer,
     });
+
+    // NATS Control - Admin-only endpoint for issuing control tokens
+    this.httpApi.addRoutes({
+      path: '/admin/nats/control-token',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('GenerateNatsControlTokenInt', adminStack.generateNatsControlToken),
+      authorizer: this.adminAuthorizer,
+    });
   }
 
   /**
