@@ -36,6 +36,13 @@ export class VaultStack extends cdk.Stack {
   public readonly natsRevokeToken!: lambdaNode.NodejsFunction;
   public readonly natsGetStatus!: lambdaNode.NodejsFunction;
 
+  // Vault lifecycle management functions
+  public readonly provisionVault!: lambdaNode.NodejsFunction;
+  public readonly initializeVault!: lambdaNode.NodejsFunction;
+  public readonly stopVault!: lambdaNode.NodejsFunction;
+  public readonly terminateVault!: lambdaNode.NodejsFunction;
+  public readonly getVaultHealth!: lambdaNode.NodejsFunction;
+
   constructor(scope: Construct, id: string, props: VaultStackProps) {
     super(scope, id, props);
 
@@ -138,6 +145,62 @@ export class VaultStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(30),
     });
 
+    // ===== VAULT LIFECYCLE MANAGEMENT =====
+
+    const vaultLifecycleEnv = {
+      TABLE_VAULT_INSTANCES: tables.vaultInstances.tableName,
+      TABLE_CREDENTIALS: tables.credentials.tableName,
+      TABLE_NATS_ACCOUNTS: tables.natsAccounts.tableName,
+      VAULT_AMI_ID: process.env.VAULT_AMI_ID || 'ami-placeholder',
+      VAULT_INSTANCE_TYPE: 't4g.nano',
+      VAULT_SECURITY_GROUP: '', // Set via CDK context or env
+      VAULT_SUBNET_IDS: '', // Set via CDK context or env
+      VAULT_IAM_PROFILE: '', // Set via CDK context or env
+    };
+
+    this.provisionVault = new lambdaNode.NodejsFunction(this, 'ProvisionVaultFn', {
+      entry: 'lambda/handlers/vault/provisionVault.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: vaultLifecycleEnv,
+      timeout: cdk.Duration.seconds(60),
+    });
+
+    this.initializeVault = new lambdaNode.NodejsFunction(this, 'InitializeVaultFn', {
+      entry: 'lambda/handlers/vault/initializeVault.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        TABLE_VAULT_INSTANCES: tables.vaultInstances.tableName,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    this.stopVault = new lambdaNode.NodejsFunction(this, 'StopVaultFn', {
+      entry: 'lambda/handlers/vault/stopVault.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        TABLE_VAULT_INSTANCES: tables.vaultInstances.tableName,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    this.terminateVault = new lambdaNode.NodejsFunction(this, 'TerminateVaultFn', {
+      entry: 'lambda/handlers/vault/terminateVault.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        TABLE_VAULT_INSTANCES: tables.vaultInstances.tableName,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    this.getVaultHealth = new lambdaNode.NodejsFunction(this, 'GetVaultHealthFn', {
+      entry: 'lambda/handlers/vault/getVaultHealth.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        TABLE_VAULT_INSTANCES: tables.vaultInstances.tableName,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
     // ===== PERMISSIONS =====
 
     // Grant table permissions
@@ -205,5 +268,58 @@ export class VaultStack extends cdk.Stack {
     tables.audit.grantReadWriteData(this.natsCreateAccount);
     tables.audit.grantReadWriteData(this.natsGenerateToken);
     tables.audit.grantReadWriteData(this.natsRevokeToken);
+
+    // ===== VAULT LIFECYCLE PERMISSIONS =====
+
+    // Grant vault instances table access
+    tables.vaultInstances.grantReadWriteData(this.provisionVault);
+    tables.vaultInstances.grantReadWriteData(this.initializeVault);
+    tables.vaultInstances.grantReadWriteData(this.stopVault);
+    tables.vaultInstances.grantReadWriteData(this.terminateVault);
+    tables.vaultInstances.grantReadWriteData(this.getVaultHealth);
+
+    // provisionVault needs to check credentials and NATS accounts
+    tables.credentials.grantReadData(this.provisionVault);
+    tables.natsAccounts.grantReadData(this.provisionVault);
+
+    // Grant EC2 permissions for vault lifecycle management
+    const ec2Policy = new iam.PolicyStatement({
+      actions: [
+        'ec2:RunInstances',
+        'ec2:CreateTags',
+        'ec2:DescribeInstances',
+        'ec2:DescribeInstanceStatus',
+        'ec2:DescribeSubnets',
+        'ec2:StopInstances',
+        'ec2:StartInstances',
+        'ec2:TerminateInstances',
+      ],
+      resources: ['*'], // EC2 RunInstances requires broad permissions
+    });
+
+    this.provisionVault.addToRolePolicy(ec2Policy);
+    this.initializeVault.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['ec2:DescribeInstances'],
+      resources: ['*'],
+    }));
+    this.stopVault.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['ec2:StopInstances', 'ec2:DescribeInstances'],
+      resources: ['*'],
+    }));
+    this.terminateVault.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['ec2:TerminateInstances', 'ec2:DescribeInstances'],
+      resources: ['*'],
+    }));
+    this.getVaultHealth.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['ec2:DescribeInstances', 'ec2:DescribeInstanceStatus'],
+      resources: ['*'],
+    }));
+
+    // Grant IAM pass role permission if using instance profile
+    // This will be needed when VAULT_IAM_PROFILE is set
+    this.provisionVault.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['iam:PassRole'],
+      resources: [`arn:aws:iam::${this.account}:role/vettid-vault-*`],
+    }));
   }
 }

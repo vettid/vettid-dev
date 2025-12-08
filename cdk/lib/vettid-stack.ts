@@ -1493,5 +1493,37 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       integration: new integrations.HttpLambdaIntegration('NatsGetStatusInt', vaultStack.natsGetStatus),
       authorizer: this.memberAuthorizer,
     });
+
+    // Vault Lifecycle Management
+    this.httpApi.addRoutes({
+      path: '/vault/provision',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('ProvisionVaultInt', vaultStack.provisionVault),
+      authorizer: this.memberAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/vault/initialize',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('InitializeVaultInt', vaultStack.initializeVault),
+      authorizer: this.memberAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/vault/stop',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('StopVaultInt', vaultStack.stopVault),
+      authorizer: this.memberAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/vault/terminate',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('TerminateVaultInt', vaultStack.terminateVault),
+      authorizer: this.memberAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/vault/health',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('GetVaultHealthInt', vaultStack.getVaultHealth),
+      authorizer: this.memberAuthorizer,
+    });
   }
 }

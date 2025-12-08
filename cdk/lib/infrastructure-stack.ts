@@ -46,6 +46,7 @@ export class InfrastructureStack extends cdk.Stack {
     pendingAdmins: dynamodb.Table;
     natsAccounts: dynamodb.Table;
     natsTokens: dynamodb.Table;
+    vaultInstances: dynamodb.Table;
   };
 
   // S3 Buckets
@@ -354,6 +355,29 @@ export class InfrastructureStack extends cdk.Stack {
       projectionType: dynamodb.ProjectionType.ALL,
     });
 
+    // ===== VAULT INSTANCES TABLE =====
+
+    // Vault Instances table - stores EC2 vault instance state per user
+    const vaultInstances = new dynamodb.Table(this, 'VaultInstances', {
+      partitionKey: { name: 'user_guid', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      pointInTimeRecovery: true,
+    });
+
+    vaultInstances.addGlobalSecondaryIndex({
+      indexName: 'instance-index',
+      partitionKey: { name: 'instance_id', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    vaultInstances.addGlobalSecondaryIndex({
+      indexName: 'status-index',
+      partitionKey: { name: 'status', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'created_at', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
     // ===== S3 BUCKETS =====
 
     // S3 bucket for membership terms PDFs (shared by VettIDStack and AdminStack)
@@ -389,6 +413,7 @@ export class InfrastructureStack extends cdk.Stack {
       pendingAdmins,
       natsAccounts,
       natsTokens,
+      vaultInstances,
     };
 
     // ===== AUTH LAMBDA FUNCTIONS =====
