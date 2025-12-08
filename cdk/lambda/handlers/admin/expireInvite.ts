@@ -1,48 +1,55 @@
 import { APIGatewayProxyHandlerV2 } from "aws-lambda";
-import { ddb, TABLES, ok, badRequest, putAudit, requireAdminGroup } from "../../common/util";
+import { ddb, TABLES, ok, badRequest, putAudit, requireAdminGroup, notFound, internalError } from "../../common/util";
 import { UpdateItemCommand, GetItemCommand } from "@aws-sdk/client-dynamodb";
 import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
 
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
-  // Validate admin group membership
-  const authError = requireAdminGroup(event);
-  if (authError) return authError;
+  const origin = event.headers?.origin;
 
-  const code = event.pathParameters?.code;
-  if (!code) return badRequest("code required");
+  try {
+    // Validate admin group membership
+    const authError = requireAdminGroup(event, origin);
+    if (authError) return authError;
 
-  const inviteRes = await ddb.send(new GetItemCommand({
-    TableName: TABLES.invites,
-    Key: marshall({ code })
-  }));
+    const code = event.pathParameters?.code;
+    if (!code) return badRequest("code required", origin);
 
-  if (!inviteRes.Item) return badRequest("invite not found");
-  const invite = unmarshall(inviteRes.Item) as any;
+    const inviteRes = await ddb.send(new GetItemCommand({
+      TableName: TABLES.invites,
+      Key: marshall({ code })
+    }));
 
-  if (invite.status !== "active") return badRequest("invite is not active");
+    if (!inviteRes.Item) return notFound("invite not found", origin);
+    const invite = unmarshall(inviteRes.Item) as any;
 
-  const adminEmail = (event.requestContext as any)?.authorizer?.jwt?.claims?.email || "unknown@vettid.dev";
-  const now = new Date().toISOString();
+    if (invite.status !== "active") return badRequest("invite is not active", origin);
 
-  // Update invite status to expired
-  await ddb.send(new UpdateItemCommand({
-    TableName: TABLES.invites,
-    Key: marshall({ code }),
-    UpdateExpression: "SET #s = :expired, expired_at = :now, expired_by = :by",
-    ExpressionAttributeNames: { "#s": "status" },
-    ExpressionAttributeValues: marshall({
-      ":expired": "expired",
-      ":now": now,
-      ":by": adminEmail
-    })
-  }));
+    const adminEmail = (event.requestContext as any)?.authorizer?.jwt?.claims?.email || "unknown@vettid.dev";
+    const now = new Date().toISOString();
 
-  await putAudit({
-    type: "invite_expired",
-    email: adminEmail,
-    code,
-    expired_by: adminEmail
-  });
+    // Update invite status to expired
+    await ddb.send(new UpdateItemCommand({
+      TableName: TABLES.invites,
+      Key: marshall({ code }),
+      UpdateExpression: "SET #s = :expired, expired_at = :now, expired_by = :by",
+      ExpressionAttributeNames: { "#s": "status" },
+      ExpressionAttributeValues: marshall({
+        ":expired": "expired",
+        ":now": now,
+        ":by": adminEmail
+      })
+    }));
 
-  return ok({ message: "invite expired successfully" });
+    await putAudit({
+      type: "invite_expired",
+      email: adminEmail,
+      code,
+      expired_by: adminEmail
+    });
+
+    return ok({ message: "invite expired successfully" }, origin);
+  } catch (error) {
+    console.error("Error expiring invite:", error);
+    return internalError("Failed to expire invite", origin);
+  }
 };
