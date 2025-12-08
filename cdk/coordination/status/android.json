@@ -1,7 +1,7 @@
 {
   "instance": "android",
-  "phase": 4,
-  "task": "Phase 4 NATS client integration complete",
+  "phase": 5,
+  "task": "Phase 5 vault communication complete",
   "status": "completed",
   "blockers": [],
   "completedTasks": [
@@ -40,9 +40,16 @@
     "NatsConnectionScreen and NatsStatusIndicator UI components",
     "NatsTokenRefreshWorker with 6-hour periodic refresh",
     "Hilt DI configuration for NATS components",
-    "Unit tests for NatsCredentials and NatsSetupViewModel"
+    "Unit tests for NatsCredentials and NatsSetupViewModel",
+    "VaultServiceClient initialize/terminate endpoints",
+    "VaultHealthResponse enhanced with detailed component health",
+    "VaultEventClient for NATS event submission (SendMessage, UpdateProfile, CreateConnection)",
+    "VaultResponseHandler for request/response correlation with timeout",
+    "VaultHealthViewModel with 30-second health polling",
+    "VaultHealthScreen with Compose UI (Loading, NotProvisioned, Provisioning, Loaded, Error)",
+    "Unit tests for VaultEventClient, VaultResponseHandler, VaultHealthViewModel"
   ],
-  "lastUpdated": "2025-12-07T18:00:00Z",
-  "notes": "Phase 4 NATS client integration complete. NatsClient wraps jnats library with coroutine-friendly API. NatsConnectionManager handles account creation, token generation, and connection lifecycle. OwnerSpaceClient provides pub/sub for vault communication (OwnerSpace.{guid}.forVault.> publish, OwnerSpace.{guid}.forApp.> subscribe). NatsTokenRefreshWorker uses WorkManager for 6-hour periodic token refresh. Note: Pre-existing build issues in Phase 2/3 code due to duplicate response types in ApiClient.kt vs VaultServiceClient.kt need resolution.",
+  "lastUpdated": "2025-12-07T19:30:00Z",
+  "notes": "Phase 5 vault communication complete. VaultEventClient enables event submission via NATS/OwnerSpaceClient (messaging.send, profile.update, connection.create, custom events). VaultResponseHandler provides request/response correlation with configurable timeout. VaultHealthViewModel implements 30-second health polling with provisioning workflow and progress tracking. VaultHealthScreen displays component health (Local NATS, Central NATS, Vault Manager), system resources, and status indicators. Build issues from Phase 2/3 (duplicate types, progress indicator API changes) have been resolved.",
   "repository": "https://github.com/mesmerverse/vettid-android"
 }
