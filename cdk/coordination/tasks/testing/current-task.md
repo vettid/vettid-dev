@@ -1,7 +1,7 @@
-# Task: Phase 4 - NATS Infrastructure Testing
+# Task: Phase 5 - Vault Instance Testing
 
 ## Phase
-Phase 4: NATS Infrastructure
+Phase 5: Vault Instance (EC2)
 
 ## Assigned To
 Testing Instance
@@ -10,188 +10,236 @@ Testing Instance
 `github.com/mesmerverse/vettid-dev`
 
 ## Status
-Phase 3 complete. Ready for Phase 4 NATS infrastructure testing.
+Phase 4 complete. Ready for Phase 5 vault instance testing.
+
+## Overview
+
+Phase 5 introduces the Vault Instance - an EC2-based service that runs on ARM64 t4g.nano instances. The vault instance:
+- Runs a local NATS server
+- Connects to the central NATS cluster
+- Executes the Vault Manager service (Go)
+- Processes events from the mobile app via NATS
 
 ## New Infrastructure
 
-### NATS Stack (`lib/nats-stack.ts`)
-- Dedicated VPC with 3 AZs
-- 3-node NATS cluster on t4g.small (ARM64)
-- Network Load Balancer with ACM TLS
-- Self-signed certificates for internal cluster communication
-- Secrets Manager for operator keys and internal CA
+### Vault Provisioning Handlers
+- `POST /vault/provision` - Spin up EC2 instance for user
+- `POST /vault/initialize` - Configure vault after provision
+- `POST /vault/stop` - Stop vault instance
+- `POST /vault/terminate` - Terminate vault instance
+- `GET /vault/health` - Health check endpoint
 
-### New DynamoDB Tables
-- `NatsAccounts` - Member NATS namespace allocations
-- `NatsTokens` - Issued NATS JWT tokens (with GSI on user_guid)
-
-### New Lambda Handlers
-1. `POST /vault/nats/account` - Create member NATS namespace
-2. `POST /vault/nats/token` - Generate scoped NATS JWT token
-3. `POST /vault/nats/token/revoke` - Revoke NATS token
-4. `GET /vault/nats/status` - Get NATS account status
-
-## Phase 4 Testing Tasks
-
-### 1. NATS Account Creation Tests
-
+### Vault Manager Service
+The Vault Manager is a Go service running on each vault instance:
 ```
-cdk/tests/integration/nats/
-├── createAccount.test.ts      # Test POST /vault/nats/account
-├── generateToken.test.ts      # Test POST /vault/nats/token
-├── revokeToken.test.ts        # Test POST /vault/nats/token/revoke
-└── getNatsStatus.test.ts      # Test GET /vault/nats/status
+vault-manager/
+├── cmd/main.go
+├── internal/
+│   ├── nats/         # NATS client (local + central)
+│   ├── events/       # Event processing
+│   ├── handlers/     # WASM handler execution
+│   └── health/       # Health monitoring
+└── configs/
 ```
 
-Test cases for `createMemberAccount`:
+## Phase 5 Testing Tasks
+
+### 1. Vault Provisioning Tests
+
+Create tests for provisioning lifecycle:
+
+```
+cdk/tests/integration/vault/
+├── provisioning.test.ts      # EC2 instance provisioning
+├── initialization.test.ts    # Vault configuration
+├── healthCheck.test.ts       # Health endpoint
+└── gracefulShutdown.test.ts  # Stop/terminate flow
+```
+
+#### provisioning.test.ts
 ```typescript
-describe('POST /vault/nats/account', () => {
-  it('should create NATS account for authenticated member');
-  it('should return OwnerSpace and MessageSpace IDs');
-  it('should return 409 if account already exists');
-  it('should require authentication');
-  it('should generate unique account public key placeholder');
+describe('POST /vault/provision', () => {
+  it('should provision vault for authenticated member');
+  it('should return instance_id and provisioning status');
+  it('should reject duplicate provisioning for same user');
+  it('should assign unique security group per instance');
+  it('should use correct AMI (ARM64, hardened)');
+  it('should apply correct instance tags');
+  it('should timeout if provisioning takes >2 minutes');
+  it('should require active NATS account');
 });
 ```
 
-### 2. Token Generation Tests
-
-Test `generateMemberJwt` endpoint:
+#### initialization.test.ts
 ```typescript
-describe('POST /vault/nats/token', () => {
-  it('should generate token for app client_type');
-  it('should generate token for vault client_type');
-  it('should require NATS account to exist first');
-  it('should return token with correct permissions');
-  it('should set app token validity to 24 hours');
-  it('should set vault token validity to 7 days');
-  it('should include nats_jwt and nats_seed in response');
-  it('should store token record in DynamoDB');
+describe('POST /vault/initialize', () => {
+  it('should configure vault after EC2 is running');
+  it('should assign OwnerSpace namespace');
+  it('should assign MessageSpace namespace');
+  it('should start local NATS server');
+  it('should connect to central NATS cluster');
+  it('should install user credentials');
+  it('should return initialization status');
+  it('should fail gracefully if EC2 not ready');
 });
 ```
 
-### 3. Token Revocation Tests
-
-Test `revokeToken` endpoint:
+#### healthCheck.test.ts
 ```typescript
-describe('POST /vault/nats/token/revoke', () => {
-  it('should revoke active token');
-  it('should return 404 for non-existent token');
-  it('should prevent revoking other users tokens');
-  it('should update token status to revoked');
-  it('should return already revoked message for re-revocation');
+describe('GET /vault/health', () => {
+  it('should return healthy for running vault');
+  it('should include local NATS status');
+  it('should include central NATS connection status');
+  it('should include Vault Manager process status');
+  it('should include memory/CPU usage');
+  it('should return unhealthy with details on failure');
+  it('should require vault to be provisioned');
 });
 ```
 
-### 4. Status Tests
-
-Test `getNatsStatus` endpoint:
+#### gracefulShutdown.test.ts
 ```typescript
-describe('GET /vault/nats/status', () => {
-  it('should return has_account: false for new users');
-  it('should return account details after creation');
-  it('should list active tokens');
-  it('should filter out expired tokens');
-  it('should return nats_endpoint');
-});
-```
-
-### 5. Permission Tests
-
-Test NATS permissions structure:
-```typescript
-describe('NATS Permissions', () => {
-  describe('App client permissions', () => {
-    it('should allow publish to OwnerSpace.forVault');
-    it('should allow subscribe to OwnerSpace.forApp');
-    it('should allow subscribe to OwnerSpace.eventTypes');
+describe('Vault Lifecycle', () => {
+  describe('POST /vault/stop', () => {
+    it('should stop vault gracefully');
+    it('should flush pending events');
+    it('should disconnect from central NATS');
+    it('should preserve state for restart');
   });
 
-  describe('Vault client permissions', () => {
-    it('should allow publish to OwnerSpace.forApp');
-    it('should allow publish to MessageSpace.forOwner');
-    it('should allow subscribe to OwnerSpace.forVault');
-    it('should allow subscribe to OwnerSpace.control');
+  describe('POST /vault/terminate', () => {
+    it('should terminate EC2 instance');
+    it('should clean up security group');
+    it('should revoke NATS credentials');
+    it('should update vault status to terminated');
+    it('should be idempotent');
   });
 });
 ```
 
-### 6. Namespace Isolation Tests
+### 2. E2E Vault Lifecycle Tests
 
 ```typescript
-describe('Namespace Isolation', () => {
-  it('should prevent cross-namespace access');
-  it('should verify account IDs are unique per user');
-  it('should verify token cannot access other accounts');
+// tests/e2e/vaultLifecycle.test.ts
+describe('Full Vault Lifecycle', () => {
+  it('should complete: provision → initialize → health → stop → terminate');
+  it('should allow restart after stop');
+  it('should recover from initialization failure');
+  it('should handle concurrent health checks');
+});
+```
+
+### 3. NATS Integration Tests
+
+```typescript
+// tests/integration/vault/natsIntegration.test.ts
+describe('Vault NATS Integration', () => {
+  it('should relay messages from central to local NATS');
+  it('should relay messages from local to central NATS');
+  it('should handle central NATS disconnection');
+  it('should reconnect automatically after network issues');
+  it('should buffer messages during reconnection');
+});
+```
+
+### 4. Vault Manager Mock Tests
+
+```typescript
+// tests/integration/vault/vaultManager.test.ts
+describe('Vault Manager', () => {
+  describe('Event Processing', () => {
+    it('should process events from forVault topic');
+    it('should publish responses to forApp topic');
+    it('should handle malformed events gracefully');
+    it('should enforce rate limits');
+  });
+
+  describe('Control Topic', () => {
+    it('should accept commands from control topic');
+    it('should process shutdown command');
+    it('should process backup command');
+    it('should reject unauthorized commands');
+  });
+
+  describe('Health Reporting', () => {
+    it('should report health to monitoring endpoint');
+    it('should include handler execution metrics');
+    it('should include NATS connection metrics');
+  });
 });
 ```
 
 ## Response Structures
 
-### Create Account Response
+### Provision Response
 ```typescript
 {
-  owner_space_id: string;       // "OwnerSpace.{user_guid}"
-  message_space_id: string;     // "MessageSpace.{user_guid}"
-  nats_endpoint: string;        // "nats://nats.vettid.dev:4222"
-  status: 'active';
+  instance_id: string;
+  status: 'provisioning' | 'running' | 'failed';
+  region: string;
+  availability_zone: string;
+  private_ip?: string;
+  estimated_ready_at: string;
 }
 ```
 
-### Generate Token Response
+### Initialize Response
 ```typescript
 {
-  token_id: string;
-  nats_jwt: string;
-  nats_seed: string;
-  nats_endpoint: string;
-  expires_at: string;
-  permissions: {
-    publish: string[];
-    subscribe: string[];
-  };
+  status: 'initialized' | 'failed';
+  local_nats_status: 'running' | 'stopped';
+  central_nats_status: 'connected' | 'disconnected';
+  owner_space_id: string;
+  message_space_id: string;
 }
 ```
 
-### NATS Status Response
+### Health Response
 ```typescript
 {
-  has_account: boolean;
-  account?: {
-    owner_space_id: string;
-    message_space_id: string;
-    status: string;
-    created_at: string;
+  status: 'healthy' | 'unhealthy' | 'degraded';
+  uptime_seconds: number;
+  local_nats: {
+    status: 'running' | 'stopped';
+    connections: number;
   };
-  active_tokens: Array<{
-    token_id: string;
-    client_type: 'app' | 'vault';
-    device_id?: string;
-    issued_at: string;
-    expires_at: string;
-    last_used_at?: string;
-  }>;
-  nats_endpoint: string;
+  central_nats: {
+    status: 'connected' | 'disconnected';
+    latency_ms: number;
+  };
+  vault_manager: {
+    status: 'running' | 'stopped';
+    memory_mb: number;
+    cpu_percent: number;
+    handlers_loaded: number;
+  };
+  last_event_at?: string;
 }
 ```
 
 ## Acceptance Criteria
 
-- [ ] Unit tests for all four NATS handlers
-- [ ] Integration tests for account creation flow
-- [ ] Token generation and revocation tests
-- [ ] Permission structure validation tests
-- [ ] Namespace isolation verification
-- [ ] All existing tests still pass
-- [ ] Test coverage for error cases (404, 409, 403)
+- [ ] Provisioning tests validate EC2 lifecycle
+- [ ] Initialization tests verify NATS setup
+- [ ] Health check tests cover all status scenarios
+- [ ] Graceful shutdown tests verify cleanup
+- [ ] E2E tests cover full lifecycle
+- [ ] NATS relay tests verify message routing
+- [ ] All tests use mocks (no actual EC2 provisioning in CI)
 
 ## Status Update
 
 ```bash
 cd /path/to/vettid-dev
 git pull
+# Create test files
+git add cdk/tests/integration/vault/
+git commit -m "Phase 5: Add vault instance tests"
+git push
+
+# Update status
 # Edit cdk/coordination/status/testing.json
 git add cdk/coordination/status/testing.json
-git commit -m "Update Testing status: Phase 4 NATS infrastructure tests"
+git commit -m "Update Testing status: Phase 5 vault instance tests"
 git push
 ```

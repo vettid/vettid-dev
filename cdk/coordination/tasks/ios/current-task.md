@@ -1,7 +1,7 @@
-# Task: Phase 4 - NATS Client Integration
+# Task: Phase 5 - Vault Communication
 
 ## Phase
-Phase 4: NATS Infrastructure
+Phase 5: Vault Instance (EC2)
 
 ## Assigned To
 iOS Instance
@@ -10,502 +10,539 @@ iOS Instance
 `github.com/mesmerverse/vettid-ios`
 
 ## Status
-Phase 3 complete. Ready for Phase 4 NATS client integration.
+Phase 4 complete. Ready for Phase 5 vault communication.
 
 ## Overview
 
-Implement NATS client integration for the iOS app. The backend now provides:
-- NATS account creation (namespace allocation)
-- JWT token generation for NATS authentication
-- Token revocation
+Phase 5 connects the mobile app to the user's vault instance. With NATS infrastructure in place from Phase 4, you now need to:
+1. Implement event submission to the vault
+2. Handle responses from the vault
+3. Display vault health status
+4. Handle vault lifecycle events (provisioning, stop, terminate)
 
-The mobile app needs to:
-1. Create a NATS account via API
-2. Request tokens for NATS connection
-3. Connect to NATS cluster using tokens
-4. Implement pub/sub for vault communication
+## New Backend Endpoints
 
-## API Endpoints
-
-### Create NATS Account
+### Vault Lifecycle
 ```
-POST /vault/nats/account
-Authorization: Bearer <member_jwt>
-
-Response 200:
-{
-  "owner_space_id": "OwnerSpace.{user_guid}",
-  "message_space_id": "MessageSpace.{user_guid}",
-  "nats_endpoint": "nats://nats.vettid.dev:4222",
-  "status": "active"
-}
+POST /vault/provision    # Start provisioning vault EC2 instance
+POST /vault/initialize   # Initialize vault after EC2 is running
+POST /vault/stop         # Stop vault (preserve state)
+POST /vault/terminate    # Terminate vault (cleanup)
+GET  /vault/health       # Get vault health status
 ```
 
-### Generate NATS Token
-```
-POST /vault/nats/token
-Authorization: Bearer <member_jwt>
-Content-Type: application/json
+## Phase 5 iOS Tasks
 
-{
-  "client_type": "app",
-  "device_id": "optional-device-identifier"
-}
+### 1. Vault Lifecycle API
 
-Response 200:
-{
-  "token_id": "nats_uuid",
-  "nats_jwt": "base64url.payload.signature",
-  "nats_seed": "SUAM...",
-  "nats_endpoint": "nats://nats.vettid.dev:4222",
-  "expires_at": "2025-12-08T...",
-  "permissions": {
-    "publish": ["OwnerSpace.guid.forVault.>"],
-    "subscribe": ["OwnerSpace.guid.forApp.>", "OwnerSpace.guid.eventTypes"]
-  }
-}
-```
-
-### Get NATS Status
-```
-GET /vault/nats/status
-Authorization: Bearer <member_jwt>
-
-Response 200:
-{
-  "has_account": true,
-  "account": {
-    "owner_space_id": "OwnerSpace.{user_guid}",
-    "message_space_id": "MessageSpace.{user_guid}",
-    "status": "active",
-    "created_at": "2025-12-07T..."
-  },
-  "active_tokens": [...],
-  "nats_endpoint": "nats://nats.vettid.dev:4222"
-}
-```
-
-## Phase 4 iOS Tasks
-
-### 1. Add NATS Client Dependency
-
-Add Swift NATS client via SPM:
+Add vault lifecycle endpoints to APIClient:
 
 ```swift
-// Package.swift or Xcode SPM
-dependencies: [
-    .package(url: "https://github.com/nats-io/nats.swift.git", from: "0.1.0")
-]
-```
+// Services/APIClient.swift
 
-Note: Swift NATS client is relatively new. Alternative: Use a bridged Objective-C/C client or implement minimal client.
-
-### 2. NATS Client Module
-
-Create NATS client components:
-
-```
-VettID/Sources/NATS/
-├── NatsClient.swift             # Main client wrapper
-├── NatsCredentials.swift        # Token/credential management
-├── NatsConnectionManager.swift  # Connection lifecycle
-├── OwnerSpaceClient.swift       # OwnerSpace operations
-└── MessageSpaceClient.swift     # MessageSpace operations
-```
-
-#### NatsCredentials.swift
-```swift
-struct NatsCredentials: Codable {
-    let tokenId: String
-    let jwt: String
-    let seed: String
-    let endpoint: String
-    let expiresAt: Date
-    let permissions: NatsPermissions
-
-    var isExpired: Bool {
-        Date() >= expiresAt
-    }
-
-    var shouldRefresh: Bool {
-        // Refresh if less than 1 hour remaining
-        Date().addingTimeInterval(3600) >= expiresAt
-    }
+extension APIClient {
+    func provisionVault() async throws -> ProvisionResponse
+    func initializeVault() async throws -> InitializeResponse
+    func stopVault() async throws -> StopResponse
+    func terminateVault() async throws -> TerminateResponse
+    func getVaultHealth() async throws -> VaultHealthResponse
 }
 
-struct NatsPermissions: Codable {
-    let publish: [String]
-    let subscribe: [String]
+struct ProvisionResponse: Codable {
+    let instance_id: String
+    let status: String  // "provisioning", "running", "failed"
+    let region: String
+    let availability_zone: String
+    let private_ip: String?
+    let estimated_ready_at: String
+}
+
+struct InitializeResponse: Codable {
+    let status: String  // "initialized", "failed"
+    let local_nats_status: String
+    let central_nats_status: String
+    let owner_space_id: String
+    let message_space_id: String
+}
+
+struct VaultHealthResponse: Codable {
+    let status: String  // "healthy", "unhealthy", "degraded"
+    let uptime_seconds: Int
+    let local_nats: NatsHealth
+    let central_nats: CentralNatsHealth
+    let vault_manager: VaultManagerHealth
+    let last_event_at: String?
+}
+
+struct NatsHealth: Codable {
+    let status: String
+    let connections: Int
+}
+
+struct CentralNatsHealth: Codable {
+    let status: String
+    let latency_ms: Int
+}
+
+struct VaultManagerHealth: Codable {
+    let status: String
+    let memory_mb: Int
+    let cpu_percent: Float
+    let handlers_loaded: Int
 }
 ```
 
-#### NatsConnectionManager.swift
+### 2. Event Submission via NATS
+
+Implement event submission through OwnerSpaceClient:
+
 ```swift
-@MainActor
-class NatsConnectionManager: ObservableObject {
-    @Published var connectionState: NatsConnectionState = .disconnected
+// NATS/VaultEventClient.swift
 
-    private let apiClient: VettIdApiClient
-    private let credentialStore: NatsCredentialStore
-    private var connection: NatsConnection?
+class VaultEventClient {
+    private let ownerSpaceClient: OwnerSpaceClient
 
-    init(apiClient: VettIdApiClient, credentialStore: NatsCredentialStore) {
-        self.apiClient = apiClient
-        self.credentialStore = credentialStore
+    init(ownerSpaceClient: OwnerSpaceClient) {
+        self.ownerSpaceClient = ownerSpaceClient
     }
 
-    func connect() async throws {
-        connectionState = .connecting
-
-        // Get or refresh credentials
-        var credentials = try await credentialStore.getCredentials()
-        if credentials?.shouldRefresh ?? true {
-            credentials = try await refreshCredentials()
-        }
-
-        guard let creds = credentials else {
-            throw NatsError.noCredentials
-        }
-
-        // Connect using credentials
-        connection = try await NatsConnection.connect(
-            endpoint: creds.endpoint,
-            jwt: creds.jwt,
-            seed: creds.seed
+    /// Submit an event to the vault for processing
+    func submitEvent(_ event: VaultEvent) async throws -> String {
+        let requestId = UUID().uuidString
+        let message = VaultEventMessage(
+            request_id: requestId,
+            event_type: event.type,
+            payload: event.payload,
+            timestamp: ISO8601DateFormatter().string(from: Date())
         )
 
-        connectionState = .connected
-    }
-
-    func disconnect() async {
-        await connection?.close()
-        connection = nil
-        connectionState = .disconnected
-    }
-
-    private func refreshCredentials() async throws -> NatsCredentials {
-        let response = try await apiClient.generateNatsToken(clientType: .app)
-        let credentials = NatsCredentials(
-            tokenId: response.token_id,
-            jwt: response.nats_jwt,
-            seed: response.nats_seed,
-            endpoint: response.nats_endpoint,
-            expiresAt: ISO8601DateFormatter().date(from: response.expires_at) ?? Date(),
-            permissions: NatsPermissions(
-                publish: response.permissions.publish,
-                subscribe: response.permissions.subscribe
-            )
+        try await ownerSpaceClient.sendToVault(
+            message: message,
+            topic: "events.\(event.type)"
         )
-        try await credentialStore.saveCredentials(credentials)
-        return credentials
+
+        return requestId
+    }
+
+    /// Subscribe to event responses from vault
+    func subscribeToResponses() -> AsyncStream<VaultEventResponse> {
+        ownerSpaceClient.subscribeToVaultResponses(
+            topic: "responses.>",
+            type: VaultEventResponse.self
+        )
     }
 }
 
-enum NatsConnectionState {
-    case disconnected
-    case connecting
-    case connected
-    case error(Error)
+struct VaultEventMessage: Encodable {
+    let request_id: String
+    let event_type: String
+    let payload: [String: AnyCodable]
+    let timestamp: String
+}
+
+struct VaultEventResponse: Decodable {
+    let request_id: String
+    let status: String  // "success", "error"
+    let result: [String: AnyCodable]?
+    let error: String?
+    let processed_at: String
+}
+
+enum VaultEvent {
+    case sendMessage(recipient: String, content: String)
+    case updateProfile(updates: [String: Any])
+    case createConnection(inviteCode: String)
+
+    var type: String {
+        switch self {
+        case .sendMessage: return "messaging.send"
+        case .updateProfile: return "profile.update"
+        case .createConnection: return "connection.create"
+        }
+    }
+
+    var payload: [String: AnyCodable] {
+        switch self {
+        case .sendMessage(let recipient, let content):
+            return ["recipient": AnyCodable(recipient), "content": AnyCodable(content)]
+        case .updateProfile(let updates):
+            return updates.mapValues { AnyCodable($0) }
+        case .createConnection(let inviteCode):
+            return ["invite_code": AnyCodable(inviteCode)]
+        }
+    }
 }
 ```
 
-### 3. NATS Account Setup Flow
+### 3. Vault Health ViewModel
 
-Implement account setup after vault enrollment:
+Create ViewModel for vault health monitoring:
 
 ```swift
+// Vault/VaultHealthViewModel.swift
+
 @MainActor
-class NatsSetupViewModel: ObservableObject {
-    @Published var setupState: SetupState = .initial
+class VaultHealthViewModel: ObservableObject {
+    @Published var healthState: VaultHealthState = .loading
 
-    enum SetupState {
-        case initial
-        case creatingAccount
-        case generatingToken
-        case connecting
-        case connected(NatsAccountStatus)
-        case error(String)
-    }
+    private let apiClient: APIClient
+    private let natsConnectionManager: NatsConnectionManager
+    private var healthCheckTask: Task<Void, Never>?
 
-    private let apiClient: VettIdApiClient
-    private let connectionManager: NatsConnectionManager
-
-    init(apiClient: VettIdApiClient, connectionManager: NatsConnectionManager) {
+    init(apiClient: APIClient, natsConnectionManager: NatsConnectionManager) {
         self.apiClient = apiClient
-        self.connectionManager = connectionManager
+        self.natsConnectionManager = natsConnectionManager
     }
 
-    func setupNats() async {
+    func startHealthMonitoring() {
+        healthCheckTask?.cancel()
+        healthCheckTask = Task {
+            while !Task.isCancelled {
+                await checkHealth()
+                try? await Task.sleep(nanoseconds: 30_000_000_000) // 30 seconds
+            }
+        }
+    }
+
+    func stopHealthMonitoring() {
+        healthCheckTask?.cancel()
+        healthCheckTask = nil
+    }
+
+    private func checkHealth() async {
         do {
-            // 1. Create NATS account
-            setupState = .creatingAccount
-            let account = try await apiClient.createNatsAccount()
-
-            // 2. Generate app token
-            setupState = .generatingToken
-            let token = try await apiClient.generateNatsToken(clientType: .app)
-
-            // 3. Connect to NATS
-            setupState = .connecting
-            try await connectionManager.connect()
-
-            // 4. Report success
-            setupState = .connected(NatsAccountStatus(
-                ownerSpaceId: account.owner_space_id,
-                messageSpaceId: account.message_space_id
+            let health = try await apiClient.getVaultHealth()
+            healthState = .loaded(VaultHealthInfo(
+                status: HealthStatus(rawValue: health.status) ?? .unhealthy,
+                uptime: TimeInterval(health.uptime_seconds),
+                localNats: health.local_nats.status == "running",
+                centralNats: health.central_nats.status == "connected",
+                centralLatency: health.central_nats.latency_ms,
+                vaultManager: health.vault_manager.status == "running",
+                handlersLoaded: health.vault_manager.handlers_loaded,
+                lastEventAt: health.last_event_at.flatMap { ISO8601DateFormatter().date(from: $0) }
             ))
         } catch {
-            setupState = .error(error.localizedDescription)
-        }
-    }
-}
-```
-
-### 4. OwnerSpace Client
-
-Implement OwnerSpace communication:
-
-```swift
-class OwnerSpaceClient {
-    private let connectionManager: NatsConnectionManager
-    private let ownerSpaceId: String
-
-    init(connectionManager: NatsConnectionManager, ownerSpaceId: String) {
-        self.connectionManager = connectionManager
-        self.ownerSpaceId = ownerSpaceId
-    }
-
-    // Topics
-    // Publish: OwnerSpace.{guid}.forVault.>
-    // Subscribe: OwnerSpace.{guid}.forApp.>
-
-    func sendToVault<T: Encodable>(_ message: T, topic: String) async throws {
-        let fullTopic = "\(ownerSpaceId).forVault.\(topic)"
-        let data = try JSONEncoder().encode(message)
-        try await connectionManager.publish(data, to: fullTopic)
-    }
-
-    func subscribeToVaultResponses<T: Decodable>(
-        topic: String,
-        type: T.Type
-    ) -> AsyncStream<T> {
-        let fullTopic = "\(ownerSpaceId).forApp.\(topic)"
-        return connectionManager.subscribe(to: fullTopic, type: type)
-    }
-
-    func getEventTypes() async throws -> [EventType] {
-        let topic = "\(ownerSpaceId).eventTypes"
-        // Request/reply pattern or fetch from stream
-        return []
-    }
-}
-```
-
-### 5. Message Types
-
-Define message structures:
-
-```swift
-// Messages TO vault
-enum VaultMessage: Encodable {
-    case executeHandler(ExecuteHandlerMessage)
-    case statusRequest(StatusRequestMessage)
-}
-
-struct ExecuteHandlerMessage: Encodable {
-    let handlerId: String
-    let payload: [String: AnyCodable]
-}
-
-struct StatusRequestMessage: Encodable {
-    let requestId: String
-}
-
-// Messages FROM vault
-enum VaultResponse: Decodable {
-    case handlerResult(HandlerResultMessage)
-    case statusResponse(StatusResponseMessage)
-}
-
-struct HandlerResultMessage: Decodable {
-    let requestId: String
-    let success: Bool
-    let result: [String: AnyCodable]?
-}
-
-struct StatusResponseMessage: Decodable {
-    let requestId: String
-    let vaultStatus: VaultStatus
-}
-```
-
-### 6. Connection UI
-
-Create connection status UI:
-
-```swift
-struct NatsConnectionStatusView: View {
-    @ObservedObject var viewModel: NatsSetupViewModel
-
-    var body: some View {
-        switch viewModel.setupState {
-        case .connected:
-            HStack {
-                Circle()
-                    .fill(.green)
-                    .frame(width: 8, height: 8)
-                Text("Connected")
-                    .font(.caption)
-            }
-        case .connecting, .creatingAccount, .generatingToken:
-            HStack {
-                ProgressView()
-                    .scaleEffect(0.7)
-                Text("Connecting...")
-                    .font(.caption)
-            }
-        case .error(let message):
-            HStack {
-                Circle()
-                    .fill(.red)
-                    .frame(width: 8, height: 8)
-                Text(message)
-                    .font(.caption)
-                    .lineLimit(1)
-            }
-        case .initial:
-            EmptyView()
-        }
-    }
-}
-```
-
-### 7. Token Refresh
-
-Implement automatic token refresh:
-
-```swift
-import BackgroundTasks
-
-class NatsTokenRefreshTask {
-    static let identifier = "dev.vettid.natsrefresh"
-
-    static func register() {
-        BGTaskScheduler.shared.register(
-            forTaskWithIdentifier: identifier,
-            using: nil
-        ) { task in
-            handleRefresh(task: task as! BGAppRefreshTask)
+            healthState = .error(error.localizedDescription)
         }
     }
 
-    static func schedule() {
-        let request = BGAppRefreshTaskRequest(identifier: identifier)
-        request.earliestBeginDate = Date(timeIntervalSinceNow: 6 * 3600) // 6 hours
+    func provisionVault() async {
+        healthState = .provisioning
 
         do {
-            try BGTaskScheduler.shared.submit(request)
+            let provision = try await apiClient.provisionVault()
+            // Poll for completion
+            await pollForProvisioning(instanceId: provision.instance_id)
         } catch {
-            print("Failed to schedule NATS token refresh: \(error)")
+            healthState = .error(error.localizedDescription)
         }
     }
 
-    private static func handleRefresh(task: BGAppRefreshTask) {
-        schedule() // Schedule next refresh
-
-        let refreshTask = Task {
+    private func pollForProvisioning(instanceId: String) async {
+        for _ in 0..<60 { // Max 2 minutes
+            try? await Task.sleep(nanoseconds: 2_000_000_000) // 2 seconds
             do {
-                let credentialStore = NatsCredentialStore()
-                guard let credentials = try await credentialStore.getCredentials(),
-                      credentials.shouldRefresh else {
-                    task.setTaskCompleted(success: true)
+                let health = try await apiClient.getVaultHealth()
+                if health.status == "healthy" {
+                    await checkHealth()
                     return
                 }
-
-                let apiClient = VettIdApiClient()
-                let response = try await apiClient.generateNatsToken(clientType: .app)
-
-                // Save new credentials
-                let newCredentials = NatsCredentials(
-                    tokenId: response.token_id,
-                    jwt: response.nats_jwt,
-                    seed: response.nats_seed,
-                    endpoint: response.nats_endpoint,
-                    expiresAt: ISO8601DateFormatter().date(from: response.expires_at) ?? Date(),
-                    permissions: NatsPermissions(
-                        publish: response.permissions.publish,
-                        subscribe: response.permissions.subscribe
-                    )
-                )
-                try await credentialStore.saveCredentials(newCredentials)
-
-                task.setTaskCompleted(success: true)
             } catch {
-                task.setTaskCompleted(success: false)
+                // Still provisioning
             }
         }
+        healthState = .error("Provisioning timeout")
+    }
 
-        task.expirationHandler = {
-            refreshTask.cancel()
+    deinit {
+        healthCheckTask?.cancel()
+    }
+}
+
+enum VaultHealthState {
+    case loading
+    case provisioning
+    case notProvisioned
+    case loaded(VaultHealthInfo)
+    case error(String)
+}
+
+struct VaultHealthInfo {
+    let status: HealthStatus
+    let uptime: TimeInterval
+    let localNats: Bool
+    let centralNats: Bool
+    let centralLatency: Int
+    let vaultManager: Bool
+    let handlersLoaded: Int
+    let lastEventAt: Date?
+}
+
+enum HealthStatus: String {
+    case healthy
+    case degraded
+    case unhealthy
+}
+```
+
+### 4. Vault Health View
+
+Create health display components:
+
+```swift
+// Vault/VaultHealthView.swift
+
+struct VaultHealthView: View {
+    @StateObject var viewModel: VaultHealthViewModel
+
+    var body: some View {
+        NavigationView {
+            VStack(spacing: 16) {
+                switch viewModel.healthState {
+                case .loading:
+                    ProgressView()
+                case .provisioning:
+                    ProvisioningView()
+                case .notProvisioned:
+                    NotProvisionedView(onProvision: {
+                        Task { await viewModel.provisionVault() }
+                    })
+                case .loaded(let info):
+                    VaultHealthDetailsView(info: info)
+                case .error(let message):
+                    ErrorView(message: message, onRetry: {
+                        viewModel.startHealthMonitoring()
+                    })
+                }
+            }
+            .padding()
+            .navigationTitle("Vault Health")
+        }
+        .onAppear {
+            viewModel.startHealthMonitoring()
+        }
+        .onDisappear {
+            viewModel.stopHealthMonitoring()
+        }
+    }
+}
+
+struct VaultHealthDetailsView: View {
+    let info: VaultHealthInfo
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            // Status header
+            HStack {
+                Circle()
+                    .fill(statusColor)
+                    .frame(width: 16, height: 16)
+                Text(info.status.rawValue.capitalized)
+                    .font(.title2)
+                    .fontWeight(.semibold)
+            }
+
+            Divider()
+
+            // Component status
+            ComponentStatusRow(
+                title: "Local NATS",
+                isActive: info.localNats
+            )
+            ComponentStatusRow(
+                title: "Central NATS",
+                isActive: info.centralNats,
+                detail: "\(info.centralLatency)ms"
+            )
+            ComponentStatusRow(
+                title: "Vault Manager",
+                isActive: info.vaultManager
+            )
+
+            Divider()
+
+            // Stats
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Handlers Loaded: \(info.handlersLoaded)")
+                Text("Uptime: \(formatUptime(info.uptime))")
+                if let lastEvent = info.lastEventAt {
+                    Text("Last Event: \(lastEvent, style: .relative)")
+                }
+            }
+            .font(.subheadline)
+            .foregroundColor(.secondary)
+        }
+        .padding()
+        .background(Color(.systemGray6))
+        .cornerRadius(12)
+    }
+
+    private var statusColor: Color {
+        switch info.status {
+        case .healthy: return .green
+        case .degraded: return .yellow
+        case .unhealthy: return .red
+        }
+    }
+
+    private func formatUptime(_ interval: TimeInterval) -> String {
+        let hours = Int(interval) / 3600
+        let minutes = (Int(interval) % 3600) / 60
+        return "\(hours)h \(minutes)m"
+    }
+}
+
+struct ComponentStatusRow: View {
+    let title: String
+    let isActive: Bool
+    var detail: String? = nil
+
+    var body: some View {
+        HStack {
+            Image(systemName: isActive ? "checkmark.circle.fill" : "xmark.circle.fill")
+                .foregroundColor(isActive ? .green : .red)
+            Text(title)
+            Spacer()
+            if let detail = detail {
+                Text(detail)
+                    .foregroundColor(.secondary)
+            }
         }
     }
 }
 ```
 
-## Testing Requirements
+### 5. Event Response Handler
 
-### Unit Tests
+Handle responses from vault events:
+
 ```swift
-class NatsCredentialsTests: XCTestCase {
-    func testIsExpired_returnsTrueForPastDate() { }
-    func testShouldRefresh_returnsTrueWhenLessThanOneHour() { }
+// NATS/VaultResponseHandler.swift
+
+actor VaultResponseHandler {
+    private let vaultEventClient: VaultEventClient
+    private var pendingRequests: [String: CheckedContinuation<VaultEventResponse, Error>] = [:]
+    private var responseTask: Task<Void, Never>?
+
+    init(vaultEventClient: VaultEventClient) {
+        self.vaultEventClient = vaultEventClient
+        startListening()
+    }
+
+    private func startListening() {
+        responseTask = Task {
+            for await response in vaultEventClient.subscribeToResponses() {
+                if let continuation = pendingRequests.removeValue(forKey: response.request_id) {
+                    continuation.resume(returning: response)
+                }
+            }
+        }
+    }
+
+    func submitAndAwait(
+        _ event: VaultEvent,
+        timeout: TimeInterval = 30
+    ) async throws -> VaultEventResponse {
+        let requestId = try await vaultEventClient.submitEvent(event)
+
+        return try await withCheckedThrowingContinuation { continuation in
+            Task {
+                await self.registerPending(requestId: requestId, continuation: continuation)
+
+                // Set up timeout
+                Task {
+                    try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                    await self.handleTimeout(requestId: requestId)
+                }
+            }
+        }
+    }
+
+    private func registerPending(
+        requestId: String,
+        continuation: CheckedContinuation<VaultEventResponse, Error>
+    ) {
+        pendingRequests[requestId] = continuation
+    }
+
+    private func handleTimeout(requestId: String) {
+        if let continuation = pendingRequests.removeValue(forKey: requestId) {
+            continuation.resume(throwing: VaultError.responseTimeout)
+        }
+    }
+
+    deinit {
+        responseTask?.cancel()
+    }
 }
 
-class OwnerSpaceClientTests: XCTestCase {
-    func testSendToVault_formatsTopicCorrectly() async { }
-    func testSubscribeToVaultResponses_createsCorrectSubscription() { }
+enum VaultError: Error {
+    case responseTimeout
+    case eventSubmissionFailed
 }
 ```
 
-### Integration Tests
+### 6. Unit Tests
+
 ```swift
-class NatsIntegrationTests: XCTestCase {
-    func testCreateAccountAndConnect() async { }
-    func testSendMessageToVaultTopic() async { }
-    func testReceiveMessageFromAppTopic() async { }
+// VettIDTests/VaultEventClientTests.swift
+
+class VaultEventClientTests: XCTestCase {
+    func testSubmitEvent_sendsToCorrectTopic() async { }
+    func testSubscribeToResponses_receivesVaultMessages() { }
+}
+
+// VettIDTests/VaultHealthViewModelTests.swift
+
+class VaultHealthViewModelTests: XCTestCase {
+    func testCheckHealth_updatesStateCorrectly() async { }
+    func testProvisionVault_pollsUntilReady() async { }
+    func testTimeout_duringProvisioning_showsError() async { }
+}
+
+// VettIDTests/VaultResponseHandlerTests.swift
+
+class VaultResponseHandlerTests: XCTestCase {
+    func testSubmitAndAwait_matchesRequestToResponse() async { }
+    func testSubmitAndAwait_timesOutAfterDuration() async { }
 }
 ```
 
 ## Deliverables
 
-- [ ] NatsClient wrapper class
-- [ ] NatsCredentials model with Keychain storage
-- [ ] NatsConnectionManager with lifecycle management
-- [ ] OwnerSpaceClient for vault communication
-- [ ] NatsSetupViewModel and UI
-- [ ] Token refresh background task
-- [ ] Unit tests for NATS components
-- [ ] Integration tests for NATS connection
+- [ ] APIClient with vault lifecycle endpoints
+- [ ] VaultEventClient for NATS event submission
+- [ ] VaultHealthViewModel for health monitoring
+- [ ] VaultHealthView with SwiftUI status UI
+- [ ] VaultResponseHandler for request/response correlation
+- [ ] Unit tests for new components
 
 ## Acceptance Criteria
 
-- [ ] App can create NATS account via API
-- [ ] App can generate and store NATS tokens in Keychain
-- [ ] App connects to NATS using TLS (port 4222)
-- [ ] App can publish to OwnerSpace.forVault
-- [ ] App can subscribe to OwnerSpace.forApp
-- [ ] Token refresh works before expiration
-- [ ] Connection errors are handled gracefully
-- [ ] All unit tests pass
+- [ ] App can provision vault via API
+- [ ] App polls for provisioning completion
+- [ ] App displays vault health status
+- [ ] App submits events via NATS to vault
+- [ ] App receives and correlates responses
+- [ ] Health monitoring updates every 30 seconds
+- [ ] Error states displayed with retry option
+
+## Notes
+
+- iOS notes: nats.swift SPM integration still pending - may need to use mock for now
+- Vault provisioning may take 1-2 minutes - show appropriate progress UI
+- Consider battery impact of 30-second health polling - adjust interval as needed
+- Use async/await and actors for thread-safe response handling
 
 ## Status Update
 
 ```bash
 cd /path/to/vettid-ios
-git pull  # Get latest from backend if needed
-# Edit VettID/Sources/... (create NATS components)
+git pull
+# Create vault communication components
 git add .
-git commit -m "Phase 4: Add NATS client integration"
+git commit -m "Phase 5: Add vault communication"
 git push
 
 # Update status in backend repo
@@ -513,6 +550,6 @@ cd /path/to/vettid-dev
 git pull
 # Edit cdk/coordination/status/ios.json
 git add cdk/coordination/status/ios.json
-git commit -m "Update iOS status: Phase 4 NATS client complete"
+git commit -m "Update iOS status: Phase 5 vault communication complete"
 git push
 ```

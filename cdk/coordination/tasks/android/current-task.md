@@ -1,7 +1,7 @@
-# Task: Phase 4 - NATS Client Integration
+# Task: Phase 5 - Vault Communication
 
 ## Phase
-Phase 4: NATS Infrastructure
+Phase 5: Vault Instance (EC2)
 
 ## Assigned To
 Android Instance
@@ -10,318 +10,461 @@ Android Instance
 `github.com/mesmerverse/vettid-android`
 
 ## Status
-Phase 3 complete. Ready for Phase 4 NATS client integration.
+Phase 4 complete. Ready for Phase 5 vault communication.
 
 ## Overview
 
-Implement NATS client integration for the Android app. The backend now provides:
-- NATS account creation (namespace allocation)
-- JWT token generation for NATS authentication
-- Token revocation
+Phase 5 connects the mobile app to the user's vault instance. With NATS infrastructure in place from Phase 4, you now need to:
+1. Implement event submission to the vault
+2. Handle responses from the vault
+3. Display vault health status
+4. Handle vault lifecycle events (provisioning, stop, terminate)
 
-The mobile app needs to:
-1. Create a NATS account via API
-2. Request tokens for NATS connection
-3. Connect to NATS cluster using tokens
-4. Implement pub/sub for vault communication
+## New Backend Endpoints
 
-## API Endpoints
-
-### Create NATS Account
+### Vault Lifecycle
 ```
-POST /vault/nats/account
-Authorization: Bearer <member_jwt>
-
-Response 200:
-{
-  "owner_space_id": "OwnerSpace.{user_guid}",
-  "message_space_id": "MessageSpace.{user_guid}",
-  "nats_endpoint": "nats://nats.vettid.dev:4222",
-  "status": "active"
-}
+POST /vault/provision    # Start provisioning vault EC2 instance
+POST /vault/initialize   # Initialize vault after EC2 is running
+POST /vault/stop         # Stop vault (preserve state)
+POST /vault/terminate    # Terminate vault (cleanup)
+GET  /vault/health       # Get vault health status
 ```
 
-### Generate NATS Token
-```
-POST /vault/nats/token
-Authorization: Bearer <member_jwt>
-Content-Type: application/json
+## Phase 5 Android Tasks
 
-{
-  "client_type": "app",
-  "device_id": "optional-device-identifier"
-}
+### 1. Vault Provisioning Client
 
-Response 200:
-{
-  "token_id": "nats_uuid",
-  "nats_jwt": "base64url.payload.signature",
-  "nats_seed": "SUAM...",
-  "nats_endpoint": "nats://nats.vettid.dev:4222",
-  "expires_at": "2025-12-08T...",
-  "permissions": {
-    "publish": ["OwnerSpace.guid.forVault.>"],
-    "subscribe": ["OwnerSpace.guid.forApp.>", "OwnerSpace.guid.eventTypes"]
-  }
-}
-```
-
-### Get NATS Status
-```
-GET /vault/nats/status
-Authorization: Bearer <member_jwt>
-
-Response 200:
-{
-  "has_account": true,
-  "account": {
-    "owner_space_id": "OwnerSpace.{user_guid}",
-    "message_space_id": "MessageSpace.{user_guid}",
-    "status": "active",
-    "created_at": "2025-12-07T..."
-  },
-  "active_tokens": [...],
-  "nats_endpoint": "nats://nats.vettid.dev:4222"
-}
-```
-
-## Phase 4 Android Tasks
-
-### 1. Add NATS Client Dependency
-
-Add the official NATS.io Java client:
+Add vault lifecycle API to VaultServiceClient:
 
 ```kotlin
-// build.gradle.kts (app)
-dependencies {
-    implementation("io.nats:jnats:2.17.6")
+// api/VaultServiceClient.kt
+
+interface VaultServiceClient {
+    // Existing endpoints...
+
+    @POST("/vault/provision")
+    suspend fun provisionVault(): ProvisionResponse
+
+    @POST("/vault/initialize")
+    suspend fun initializeVault(): InitializeResponse
+
+    @POST("/vault/stop")
+    suspend fun stopVault(): StopResponse
+
+    @POST("/vault/terminate")
+    suspend fun terminateVault(): TerminateResponse
+
+    @GET("/vault/health")
+    suspend fun getVaultHealth(): VaultHealthResponse
 }
-```
 
-### 2. NATS Client Module
-
-Create NATS client components:
-
-```
-app/src/main/kotlin/dev/vettid/nats/
-├── NatsClient.kt             # Main client wrapper
-├── NatsCredentials.kt        # Token/credential management
-├── NatsConnectionManager.kt  # Connection lifecycle
-├── OwnerSpaceClient.kt       # OwnerSpace operations
-└── MessageSpaceClient.kt     # MessageSpace operations
-```
-
-#### NatsCredentials.kt
-```kotlin
-data class NatsCredentials(
-    val tokenId: String,
-    val jwt: String,
-    val seed: String,
-    val endpoint: String,
-    val expiresAt: Instant,
-    val permissions: NatsPermissions
+data class ProvisionResponse(
+    val instance_id: String,
+    val status: String,  // "provisioning", "running", "failed"
+    val region: String,
+    val availability_zone: String,
+    val private_ip: String?,
+    val estimated_ready_at: String
 )
 
-data class NatsPermissions(
-    val publish: List<String>,
-    val subscribe: List<String>
+data class InitializeResponse(
+    val status: String,  // "initialized", "failed"
+    val local_nats_status: String,
+    val central_nats_status: String,
+    val owner_space_id: String,
+    val message_space_id: String
+)
+
+data class VaultHealthResponse(
+    val status: String,  // "healthy", "unhealthy", "degraded"
+    val uptime_seconds: Long,
+    val local_nats: NatsHealth,
+    val central_nats: CentralNatsHealth,
+    val vault_manager: VaultManagerHealth,
+    val last_event_at: String?
+)
+
+data class NatsHealth(
+    val status: String,
+    val connections: Int
+)
+
+data class CentralNatsHealth(
+    val status: String,
+    val latency_ms: Long
+)
+
+data class VaultManagerHealth(
+    val status: String,
+    val memory_mb: Int,
+    val cpu_percent: Float,
+    val handlers_loaded: Int
 )
 ```
 
-#### NatsConnectionManager.kt
+### 2. Event Submission via NATS
+
+Implement event submission through OwnerSpaceClient:
+
 ```kotlin
-class NatsConnectionManager @Inject constructor(
-    private val apiClient: VettIdApiClient,
-    private val credentialStore: NatsCredentialStore
+// nats/VaultEventClient.kt
+
+class VaultEventClient @Inject constructor(
+    private val ownerSpaceClient: OwnerSpaceClient
 ) {
-    private var connection: Connection? = null
+    /**
+     * Submit an event to the vault for processing
+     */
+    suspend fun submitEvent(event: VaultEvent): Result<String> {
+        val requestId = UUID.randomUUID().toString()
+        val message = VaultEventMessage(
+            request_id = requestId,
+            event_type = event.type,
+            payload = event.payload,
+            timestamp = Instant.now().toString()
+        )
 
-    suspend fun connect(): Result<Connection>
-    suspend fun disconnect()
-    suspend fun refreshTokenIfNeeded()
-    fun isConnected(): Boolean
+        return ownerSpaceClient.sendToVault(
+            message = message,
+            topic = "events.${event.type}"
+        ).map { requestId }
+    }
+
+    /**
+     * Subscribe to event responses from vault
+     */
+    fun subscribeToResponses(): Flow<VaultEventResponse> {
+        return ownerSpaceClient.subscribeToVaultResponses(
+            topic = "responses.>",
+            type = VaultEventResponse::class
+        )
+    }
+}
+
+data class VaultEventMessage(
+    val request_id: String,
+    val event_type: String,
+    val payload: JsonObject,
+    val timestamp: String
+)
+
+data class VaultEventResponse(
+    val request_id: String,
+    val status: String,  // "success", "error"
+    val result: JsonObject?,
+    val error: String?,
+    val processed_at: String
+)
+
+sealed class VaultEvent(val type: String, val payload: JsonObject) {
+    class SendMessage(recipient: String, content: String) : VaultEvent(
+        "messaging.send",
+        JsonObject(mapOf("recipient" to recipient, "content" to content))
+    )
+
+    class UpdateProfile(updates: Map<String, Any>) : VaultEvent(
+        "profile.update",
+        JsonObject(updates)
+    )
+
+    class CreateConnection(inviteCode: String) : VaultEvent(
+        "connection.create",
+        JsonObject(mapOf("invite_code" to inviteCode))
+    )
 }
 ```
 
-### 3. NATS Account Setup Flow
+### 3. Vault Health ViewModel
 
-Implement account setup after vault enrollment:
+Create ViewModel for vault health monitoring:
 
 ```kotlin
-class NatsSetupViewModel @Inject constructor(
-    private val apiClient: VettIdApiClient,
-    private val connectionManager: NatsConnectionManager
+// vault/VaultHealthViewModel.kt
+
+@HiltViewModel
+class VaultHealthViewModel @Inject constructor(
+    private val vaultService: VaultServiceClient,
+    private val natsConnectionManager: NatsConnectionManager
 ) : ViewModel() {
-    sealed class SetupState {
-        object Initial : SetupState()
-        object CreatingAccount : SetupState()
-        object GeneratingToken : SetupState()
-        object Connecting : SetupState()
-        data class Connected(val status: NatsAccountStatus) : SetupState()
-        data class Error(val message: String) : SetupState()
+
+    private val _healthState = MutableStateFlow<VaultHealthState>(VaultHealthState.Loading)
+    val healthState: StateFlow<VaultHealthState> = _healthState.asStateFlow()
+
+    private var healthCheckJob: Job? = null
+
+    init {
+        startHealthMonitoring()
     }
 
-    suspend fun setupNats() {
-        // 1. Create NATS account
-        // 2. Generate app token
-        // 3. Connect to NATS
-        // 4. Subscribe to forApp topic
+    fun startHealthMonitoring() {
+        healthCheckJob?.cancel()
+        healthCheckJob = viewModelScope.launch {
+            while (isActive) {
+                checkHealth()
+                delay(30_000) // Check every 30 seconds
+            }
+        }
+    }
+
+    private suspend fun checkHealth() {
+        try {
+            val health = vaultService.getVaultHealth()
+            _healthState.value = VaultHealthState.Loaded(
+                status = when (health.status) {
+                    "healthy" -> HealthStatus.Healthy
+                    "degraded" -> HealthStatus.Degraded
+                    else -> HealthStatus.Unhealthy
+                },
+                uptime = Duration.ofSeconds(health.uptime_seconds),
+                localNats = health.local_nats.status == "running",
+                centralNats = health.central_nats.status == "connected",
+                centralLatency = health.central_nats.latency_ms,
+                vaultManager = health.vault_manager.status == "running",
+                handlersLoaded = health.vault_manager.handlers_loaded,
+                lastEventAt = health.last_event_at?.let { Instant.parse(it) }
+            )
+        } catch (e: Exception) {
+            _healthState.value = VaultHealthState.Error(e.message ?: "Health check failed")
+        }
+    }
+
+    fun provisionVault() {
+        viewModelScope.launch {
+            _healthState.value = VaultHealthState.Provisioning
+            try {
+                val provision = vaultService.provisionVault()
+                // Poll for completion
+                pollForProvisioning(provision.instance_id)
+            } catch (e: Exception) {
+                _healthState.value = VaultHealthState.Error(e.message ?: "Provisioning failed")
+            }
+        }
+    }
+
+    private suspend fun pollForProvisioning(instanceId: String) {
+        repeat(60) { // Max 2 minutes
+            delay(2000)
+            try {
+                val health = vaultService.getVaultHealth()
+                if (health.status == "healthy") {
+                    checkHealth()
+                    return
+                }
+            } catch (e: Exception) {
+                // Still provisioning
+            }
+        }
+        _healthState.value = VaultHealthState.Error("Provisioning timeout")
+    }
+
+    override fun onCleared() {
+        healthCheckJob?.cancel()
+        super.onCleared()
     }
 }
-```
 
-### 4. OwnerSpace Client
-
-Implement OwnerSpace communication:
-
-```kotlin
-class OwnerSpaceClient @Inject constructor(
-    private val connectionManager: NatsConnectionManager
-) {
-    // Topics
-    // Publish: OwnerSpace.{guid}.forVault.>
-    // Subscribe: OwnerSpace.{guid}.forApp.>
-
-    suspend fun sendToVault(message: VaultMessage): Result<Unit>
-    fun subscribeToVaultResponses(callback: (VaultResponse) -> Unit): Subscription
-    suspend fun getEventTypes(): List<EventType>
-}
-```
-
-### 5. Message Types
-
-Define message structures:
-
-```kotlin
-// Messages TO vault
-sealed class VaultMessage {
-    data class ExecuteHandler(
-        val handlerId: String,
-        val payload: JsonObject
-    ) : VaultMessage()
-
-    data class StatusRequest(
-        val requestId: String
-    ) : VaultMessage()
+sealed class VaultHealthState {
+    object Loading : VaultHealthState()
+    object Provisioning : VaultHealthState()
+    object NotProvisioned : VaultHealthState()
+    data class Loaded(
+        val status: HealthStatus,
+        val uptime: Duration,
+        val localNats: Boolean,
+        val centralNats: Boolean,
+        val centralLatency: Long,
+        val vaultManager: Boolean,
+        val handlersLoaded: Int,
+        val lastEventAt: Instant?
+    ) : VaultHealthState()
+    data class Error(val message: String) : VaultHealthState()
 }
 
-// Messages FROM vault
-sealed class VaultResponse {
-    data class HandlerResult(
-        val requestId: String,
-        val success: Boolean,
-        val result: JsonObject?
-    ) : VaultResponse()
-
-    data class StatusResponse(
-        val requestId: String,
-        val vaultStatus: VaultStatus
-    ) : VaultResponse()
-}
+enum class HealthStatus { Healthy, Degraded, Unhealthy }
 ```
 
-### 6. Connection UI
+### 4. Vault Health UI
 
-Create connection status UI:
+Create health display components:
 
 ```kotlin
+// vault/VaultHealthScreen.kt
+
 @Composable
-fun NatsConnectionStatus(
-    viewModel: NatsSetupViewModel = hiltViewModel()
+fun VaultHealthScreen(
+    viewModel: VaultHealthViewModel = hiltViewModel()
 ) {
-    val state by viewModel.setupState.collectAsState()
+    val state by viewModel.healthState.collectAsState()
 
-    when (state) {
-        is SetupState.Connected -> ConnectionActiveIndicator()
-        is SetupState.Connecting -> ConnectionProgressIndicator()
-        is SetupState.Error -> ConnectionErrorBanner(state.message)
-        else -> Unit
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+    ) {
+        Text("Vault Health", style = MaterialTheme.typography.headlineMedium)
+        Spacer(modifier = Modifier.height(16.dp))
+
+        when (val currentState = state) {
+            is VaultHealthState.Loading -> LoadingIndicator()
+            is VaultHealthState.Provisioning -> ProvisioningIndicator()
+            is VaultHealthState.NotProvisioned -> NotProvisionedCard(
+                onProvision = { viewModel.provisionVault() }
+            )
+            is VaultHealthState.Loaded -> VaultHealthDetails(currentState)
+            is VaultHealthState.Error -> ErrorCard(
+                message = currentState.message,
+                onRetry = { viewModel.startHealthMonitoring() }
+            )
+        }
     }
+}
+
+@Composable
+fun VaultHealthDetails(state: VaultHealthState.Loaded) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            // Status header
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                StatusIndicator(state.status)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = state.status.name,
+                    style = MaterialTheme.typography.titleLarge
+                )
+            }
+
+            Divider(modifier = Modifier.padding(vertical = 12.dp))
+
+            // Component status
+            ComponentStatusRow("Local NATS", state.localNats)
+            ComponentStatusRow("Central NATS", state.centralNats, "${state.centralLatency}ms")
+            ComponentStatusRow("Vault Manager", state.vaultManager)
+
+            Divider(modifier = Modifier.padding(vertical = 12.dp))
+
+            // Stats
+            Text("Handlers Loaded: ${state.handlersLoaded}")
+            Text("Uptime: ${state.uptime.toHours()}h ${state.uptime.toMinutesPart()}m")
+            state.lastEventAt?.let {
+                Text("Last Event: ${formatRelativeTime(it)}")
+            }
+        }
+    }
+}
+
+@Composable
+fun StatusIndicator(status: HealthStatus) {
+    val color = when (status) {
+        HealthStatus.Healthy -> Color.Green
+        HealthStatus.Degraded -> Color.Yellow
+        HealthStatus.Unhealthy -> Color.Red
+    }
+    Box(
+        modifier = Modifier
+            .size(16.dp)
+            .background(color, CircleShape)
+    )
 }
 ```
 
-### 7. Token Refresh
+### 5. Event Response Handler
 
-Implement automatic token refresh:
+Handle responses from vault events:
 
 ```kotlin
-class NatsTokenRefreshWorker(
-    context: Context,
-    params: WorkerParameters
-) : CoroutineWorker(context, params) {
+// nats/VaultResponseHandler.kt
 
-    override suspend fun doWork(): Result {
-        // Check token expiration
-        // Refresh if < 1 hour remaining
-        // Reconnect with new token
+@Singleton
+class VaultResponseHandler @Inject constructor(
+    private val vaultEventClient: VaultEventClient
+) {
+    private val pendingRequests = ConcurrentHashMap<String, CompletableDeferred<VaultEventResponse>>()
+
+    init {
+        // Start listening for responses
+        CoroutineScope(Dispatchers.IO).launch {
+            vaultEventClient.subscribeToResponses().collect { response ->
+                pendingRequests.remove(response.request_id)?.complete(response)
+            }
+        }
     }
 
-    companion object {
-        fun schedule(context: Context) {
-            // Schedule periodic token refresh check
-            val request = PeriodicWorkRequestBuilder<NatsTokenRefreshWorker>(
-                6, TimeUnit.HOURS
-            ).build()
-            WorkManager.getInstance(context).enqueue(request)
+    suspend fun submitAndAwait(
+        event: VaultEvent,
+        timeout: Duration = Duration.ofSeconds(30)
+    ): Result<VaultEventResponse> {
+        val deferred = CompletableDeferred<VaultEventResponse>()
+
+        return try {
+            val requestId = vaultEventClient.submitEvent(event).getOrThrow()
+            pendingRequests[requestId] = deferred
+
+            withTimeout(timeout.toMillis()) {
+                Result.success(deferred.await())
+            }
+        } catch (e: TimeoutCancellationException) {
+            Result.failure(Exception("Vault response timeout"))
+        } catch (e: Exception) {
+            Result.failure(e)
         }
     }
 }
 ```
 
-## Testing Requirements
+### 6. Unit Tests
 
-### Unit Tests
 ```kotlin
-class NatsCredentialsTest {
-    @Test fun `should parse token response correctly`()
-    @Test fun `should detect expired token`()
+class VaultEventClientTest {
+    @Test fun `submitEvent sends to correct topic`()
+    @Test fun `subscribeToResponses receives vault messages`()
 }
 
-class OwnerSpaceClientTest {
-    @Test fun `should format publish topic correctly`()
-    @Test fun `should handle connection failure`()
+class VaultHealthViewModelTest {
+    @Test fun `checkHealth updates state correctly`()
+    @Test fun `provisionVault polls until ready`()
+    @Test fun `timeout during provisioning shows error`()
 }
-```
 
-### Integration Tests
-```kotlin
-class NatsIntegrationTest {
-    @Test fun `should create account and connect`()
-    @Test fun `should send message to vault topic`()
-    @Test fun `should receive message from app topic`()
+class VaultResponseHandlerTest {
+    @Test fun `submitAndAwait matches request to response`()
+    @Test fun `submitAndAwait times out after duration`()
 }
 ```
 
 ## Deliverables
 
-- [ ] NatsClient wrapper class
-- [ ] NatsCredentials data model
-- [ ] NatsConnectionManager with lifecycle management
-- [ ] OwnerSpaceClient for vault communication
-- [ ] NatsSetupViewModel and UI
-- [ ] Token refresh worker
-- [ ] Unit tests for NATS components
-- [ ] Integration tests for NATS connection
+- [ ] VaultServiceClient with lifecycle endpoints
+- [ ] VaultEventClient for NATS event submission
+- [ ] VaultHealthViewModel for health monitoring
+- [ ] VaultHealthScreen with status UI
+- [ ] VaultResponseHandler for request/response correlation
+- [ ] Unit tests for new components
 
 ## Acceptance Criteria
 
-- [ ] App can create NATS account via API
-- [ ] App can generate and store NATS tokens
-- [ ] App connects to NATS using TLS (port 4222)
-- [ ] App can publish to OwnerSpace.forVault
-- [ ] App can subscribe to OwnerSpace.forApp
-- [ ] Token refresh works before expiration
-- [ ] Connection errors are handled gracefully
-- [ ] All unit tests pass
+- [ ] App can provision vault via API
+- [ ] App polls for provisioning completion
+- [ ] App displays vault health status
+- [ ] App submits events via NATS to vault
+- [ ] App receives and correlates responses
+- [ ] Health monitoring updates every 30 seconds
+- [ ] Error states displayed with retry option
+
+## Notes
+
+- Android notes duplicate response types in Phase 2/3 code - resolve before starting
+- Vault provisioning may take 1-2 minutes - show appropriate progress UI
+- Consider battery impact of 30-second health polling - adjust interval as needed
 
 ## Status Update
 
 ```bash
 cd /path/to/vettid-android
-git pull  # Get latest from backend if needed
-# Edit app/src/main/kotlin/... (create NATS components)
+git pull
+# Create vault communication components
 git add .
-git commit -m "Phase 4: Add NATS client integration"
+git commit -m "Phase 5: Add vault communication"
 git push
 
 # Update status in backend repo
@@ -329,6 +472,6 @@ cd /path/to/vettid-dev
 git pull
 # Edit cdk/coordination/status/android.json
 git add cdk/coordination/status/android.json
-git commit -m "Update Android status: Phase 4 NATS client complete"
+git commit -m "Update Android status: Phase 5 vault communication complete"
 git push
 ```
