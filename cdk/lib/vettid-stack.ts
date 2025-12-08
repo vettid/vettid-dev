@@ -1427,6 +1427,32 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       integration: new integrations.HttpLambdaIntegration('GenerateNatsControlTokenInt', adminStack.generateNatsControlToken),
       authorizer: this.adminAuthorizer,
     });
+
+    // Handler Registry Admin - Admin-only endpoints for managing handler registry
+    this.httpApi.addRoutes({
+      path: '/admin/registry/handlers',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('AdminListRegistryHandlersInt', adminStack.listRegistryHandlers),
+      authorizer: this.adminAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/admin/registry/handlers',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('AdminUploadHandlerInt', adminStack.uploadHandler),
+      authorizer: this.adminAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/admin/registry/handlers/sign',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('AdminSignHandlerInt', adminStack.signHandler),
+      authorizer: this.adminAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/admin/registry/handlers/revoke',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('AdminRevokeHandlerInt', adminStack.revokeHandler),
+      authorizer: this.adminAuthorizer,
+    });
   }
 
   /**
@@ -1523,6 +1549,45 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       path: '/vault/health',
       methods: [apigw.HttpMethod.GET],
       integration: new integrations.HttpLambdaIntegration('GetVaultHealthInt', vaultStack.getVaultHealth),
+      authorizer: this.memberAuthorizer,
+    });
+
+    // ===== HANDLER REGISTRY ROUTES =====
+
+    this.httpApi.addRoutes({
+      path: '/registry/handlers',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('ListHandlersInt', vaultStack.listHandlers),
+      authorizer: this.memberAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/registry/handlers/{id}',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('GetHandlerInt', vaultStack.getHandler),
+      authorizer: this.memberAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/vault/handlers/install',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('InstallHandlerInt', vaultStack.installHandler),
+      authorizer: this.memberAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/vault/handlers/uninstall',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('UninstallHandlerInt', vaultStack.uninstallHandler),
+      authorizer: this.memberAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/vault/handlers',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('ListInstalledHandlersInt', vaultStack.listInstalledHandlers),
+      authorizer: this.memberAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/vault/handlers/{id}/execute',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('ExecuteHandlerInt', vaultStack.executeHandler),
       authorizer: this.memberAuthorizer,
     });
   }

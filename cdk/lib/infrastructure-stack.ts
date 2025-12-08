@@ -47,10 +47,13 @@ export class InfrastructureStack extends cdk.Stack {
     natsAccounts: dynamodb.Table;
     natsTokens: dynamodb.Table;
     vaultInstances: dynamodb.Table;
+    handlers: dynamodb.Table;
+    handlerInstallations: dynamodb.Table;
   };
 
   // S3 Buckets
   public readonly termsBucket!: s3.Bucket;
+  public readonly handlersBucket!: s3.Bucket;
 
   // Cognito resources
   public readonly memberUserPool!: cognito.UserPool;
@@ -378,10 +381,59 @@ export class InfrastructureStack extends cdk.Stack {
       projectionType: dynamodb.ProjectionType.ALL,
     });
 
+    // ===== HANDLER REGISTRY TABLES =====
+
+    // Handlers table - stores handler metadata in the registry
+    const handlers = new dynamodb.Table(this, 'Handlers', {
+      partitionKey: { name: 'handler_id', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      pointInTimeRecovery: true,
+    });
+
+    handlers.addGlobalSecondaryIndex({
+      indexName: 'category-index',
+      partitionKey: { name: 'category', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'name', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    handlers.addGlobalSecondaryIndex({
+      indexName: 'status-index',
+      partitionKey: { name: 'status', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'published_at', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // Handler Installations table - tracks which handlers are installed per user
+    const handlerInstallations = new dynamodb.Table(this, 'HandlerInstallations', {
+      partitionKey: { name: 'user_guid', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'handler_id', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      pointInTimeRecovery: true,
+    });
+
+    handlerInstallations.addGlobalSecondaryIndex({
+      indexName: 'handler-index',
+      partitionKey: { name: 'handler_id', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'installed_at', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
     // ===== S3 BUCKETS =====
 
     // S3 bucket for membership terms PDFs (shared by VettIDStack and AdminStack)
     const termsBucket = new s3.Bucket(this, 'MembershipTermsBucket', {
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      versioned: true,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: true,
+    });
+
+    // S3 bucket for WASM handler packages
+    const handlersBucket = new s3.Bucket(this, 'HandlerPackagesBucket', {
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       versioned: true,
       encryption: s3.BucketEncryption.S3_MANAGED,
@@ -414,6 +466,8 @@ export class InfrastructureStack extends cdk.Stack {
       natsAccounts,
       natsTokens,
       vaultInstances,
+      handlers,
+      handlerInstallations,
     };
 
     // ===== AUTH LAMBDA FUNCTIONS =====
@@ -770,6 +824,7 @@ export class InfrastructureStack extends cdk.Stack {
 
     // Export resources
     this.termsBucket = termsBucket;
+    this.handlersBucket = handlersBucket;
     this.memberUserPool = memberUserPool;
     this.adminUserPool = adminUserPool;
     this.memberAppClient = memberAppClient;

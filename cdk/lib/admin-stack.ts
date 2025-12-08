@@ -81,6 +81,12 @@ export class AdminStack extends cdk.Stack {
   public readonly getAuditLog!: lambdaNode.NodejsFunction;
   public readonly generateNatsControlToken!: lambdaNode.NodejsFunction;
 
+  // Handler registry admin functions
+  public readonly uploadHandler!: lambdaNode.NodejsFunction;
+  public readonly signHandler!: lambdaNode.NodejsFunction;
+  public readonly revokeHandler!: lambdaNode.NodejsFunction;
+  public readonly listRegistryHandlers!: lambdaNode.NodejsFunction;
+
   constructor(scope: Construct, id: string, props: AdminStackProps) {
     super(scope, id, props);
 
@@ -976,6 +982,56 @@ export class AdminStack extends cdk.Stack {
     this.removeNotification = removeNotification;
     this.getAuditLog = getAuditLog;
     this.generateNatsControlToken = generateNatsControlToken;
+
+    // ===== HANDLER REGISTRY ADMIN FUNCTIONS =====
+
+    const handlerEnv = {
+      TABLE_HANDLERS: tables.handlers.tableName,
+      BUCKET_HANDLERS: props.infrastructure.handlersBucket.bucketName,
+    };
+
+    const uploadHandler = new lambdaNode.NodejsFunction(this, 'UploadHandlerFn', {
+      entry: 'lambda/handlers/admin/uploadHandler.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: { ...defaultEnv, ...handlerEnv },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const signHandler = new lambdaNode.NodejsFunction(this, 'SignHandlerFn', {
+      entry: 'lambda/handlers/admin/signHandler.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: { ...defaultEnv, ...handlerEnv },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const revokeHandler = new lambdaNode.NodejsFunction(this, 'RevokeHandlerFn', {
+      entry: 'lambda/handlers/admin/revokeHandler.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: { ...defaultEnv, ...handlerEnv },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const listRegistryHandlers = new lambdaNode.NodejsFunction(this, 'ListRegistryHandlersFn', {
+      entry: 'lambda/handlers/admin/listRegistryHandlers.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: { ...defaultEnv, ...handlerEnv },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    // Handler registry table permissions
+    tables.handlers.grantReadWriteData(uploadHandler);
+    tables.handlers.grantReadWriteData(signHandler);
+    tables.handlers.grantReadWriteData(revokeHandler);
+    tables.handlers.grantReadData(listRegistryHandlers);
+
+    // S3 bucket permissions for handler packages
+    props.infrastructure.handlersBucket.grantReadWrite(uploadHandler);
+    props.infrastructure.handlersBucket.grantRead(signHandler);
+
+    this.uploadHandler = uploadHandler;
+    this.signHandler = signHandler;
+    this.revokeHandler = revokeHandler;
+    this.listRegistryHandlers = listRegistryHandlers;
 
     // ===== NATS CONTROL PERMISSIONS =====
     tables.natsAccounts.grantReadData(generateNatsControlToken);

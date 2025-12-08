@@ -43,6 +43,14 @@ export class VaultStack extends cdk.Stack {
   public readonly terminateVault!: lambdaNode.NodejsFunction;
   public readonly getVaultHealth!: lambdaNode.NodejsFunction;
 
+  // Handler registry functions (public endpoints)
+  public readonly listHandlers!: lambdaNode.NodejsFunction;
+  public readonly getHandler!: lambdaNode.NodejsFunction;
+  public readonly installHandler!: lambdaNode.NodejsFunction;
+  public readonly uninstallHandler!: lambdaNode.NodejsFunction;
+  public readonly listInstalledHandlers!: lambdaNode.NodejsFunction;
+  public readonly executeHandler!: lambdaNode.NodejsFunction;
+
   constructor(scope: Construct, id: string, props: VaultStackProps) {
     super(scope, id, props);
 
@@ -201,6 +209,57 @@ export class VaultStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(30),
     });
 
+    // ===== HANDLER REGISTRY =====
+
+    const handlerEnv = {
+      TABLE_HANDLERS: tables.handlers.tableName,
+      TABLE_HANDLER_INSTALLATIONS: tables.handlerInstallations.tableName,
+      TABLE_VAULT_INSTANCES: tables.vaultInstances.tableName,
+      BUCKET_HANDLERS: props.infrastructure.handlersBucket.bucketName,
+    };
+
+    this.listHandlers = new lambdaNode.NodejsFunction(this, 'ListHandlersFn', {
+      entry: 'lambda/handlers/registry/listHandlers.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: handlerEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    this.getHandler = new lambdaNode.NodejsFunction(this, 'GetHandlerFn', {
+      entry: 'lambda/handlers/registry/getHandler.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: handlerEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    this.installHandler = new lambdaNode.NodejsFunction(this, 'InstallHandlerFn', {
+      entry: 'lambda/handlers/registry/installHandler.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: handlerEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    this.uninstallHandler = new lambdaNode.NodejsFunction(this, 'UninstallHandlerFn', {
+      entry: 'lambda/handlers/registry/uninstallHandler.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: handlerEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    this.listInstalledHandlers = new lambdaNode.NodejsFunction(this, 'ListInstalledHandlersFn', {
+      entry: 'lambda/handlers/registry/listInstalledHandlers.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: handlerEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    this.executeHandler = new lambdaNode.NodejsFunction(this, 'ExecuteHandlerFn', {
+      entry: 'lambda/handlers/registry/executeHandler.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: handlerEnv,
+      timeout: cdk.Duration.seconds(60), // Longer timeout for handler execution
+    });
+
     // ===== PERMISSIONS =====
 
     // Grant table permissions
@@ -321,5 +380,29 @@ export class VaultStack extends cdk.Stack {
       actions: ['iam:PassRole'],
       resources: [`arn:aws:iam::${this.account}:role/vettid-vault-*`],
     }));
+
+    // ===== HANDLER REGISTRY PERMISSIONS =====
+
+    // Grant handlers table access
+    tables.handlers.grantReadData(this.listHandlers);
+    tables.handlers.grantReadData(this.getHandler);
+    tables.handlers.grantReadData(this.installHandler);
+    tables.handlers.grantReadWriteData(this.installHandler);
+    tables.handlers.grantReadWriteData(this.uninstallHandler);
+    tables.handlers.grantReadData(this.listInstalledHandlers);
+
+    // Grant handler installations table access
+    tables.handlerInstallations.grantReadData(this.listHandlers);
+    tables.handlerInstallations.grantReadData(this.getHandler);
+    tables.handlerInstallations.grantReadWriteData(this.installHandler);
+    tables.handlerInstallations.grantReadWriteData(this.uninstallHandler);
+    tables.handlerInstallations.grantReadData(this.listInstalledHandlers);
+    tables.handlerInstallations.grantReadData(this.executeHandler);
+
+    // Grant vault instances table access for execute
+    tables.vaultInstances.grantReadData(this.executeHandler);
+
+    // Grant S3 access for handler downloads
+    props.infrastructure.handlersBucket.grantRead(this.getHandler);
   }
 }
