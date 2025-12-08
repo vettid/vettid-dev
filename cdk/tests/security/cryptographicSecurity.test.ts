@@ -608,7 +608,7 @@ describe('Cryptographic Security Tests', () => {
           );
 
           // Should not show timing vulnerability
-          expect(result.isVulnerable).toBe(false);
+          expect(result.vulnerable).toBe(false);
         });
       });
     });

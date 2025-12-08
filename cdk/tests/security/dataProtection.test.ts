@@ -556,9 +556,10 @@ describe('Data Protection Security Tests', () => {
 
         const findings = scanForSensitiveData(testData);
 
-        expect(findings.length).toBeGreaterThan(0);
-        expect(findings.some(f => f.pattern === 'ssn')).toBe(true);
-        expect(findings.some(f => f.pattern === 'email')).toBe(true);
+        expect(findings.found).toBe(true);
+        expect(findings.matches.length).toBeGreaterThan(0);
+        expect(findings.matches.some((f: { pattern: string }) => f.pattern === 'ssn')).toBe(true);
+        expect(findings.matches.some((f: { pattern: string }) => f.pattern === 'email')).toBe(true);
       });
 
       it('should mask sensitive data', () => {
@@ -574,8 +575,8 @@ describe('Data Protection Security Tests', () => {
       SENSITIVE_DATA_PATTERNS.forEach(pattern => {
         it(`should detect and handle ${pattern.name} pattern`, () => {
           // Test the pattern detection
-          expect(pattern.regex).toBeDefined();
-          expect(pattern.replacement).toBeDefined();
+          expect(pattern.pattern).toBeDefined();
+          expect(pattern.severity).toBeDefined();
         });
       });
     });
