@@ -1,122 +1,91 @@
-# Phase 9: Security Hardening & Audit (iOS)
+# Phase 10: Build for Physical Device Testing
 
 ## Overview
-Implement security hardening measures across the iOS app, including secure storage audits, App Transport Security, biometric security, and runtime protection.
+Configure the Xcode project for testing on a physical iOS device with the user's registered Apple ID.
 
-## Tasks
+## Priority Task: Device Build
 
-### 1. Secure Storage Audit
-Review and harden `SecureKeyStore` and `CredentialStore`:
-- Verify Secure Enclave usage for all sensitive keys
-- Audit Keychain access control flags
-- Implement key attestation verification
-- Add secure deletion for sensitive data
-- Review kSecAccessControl settings
-- Verify kSecAttrAccessible settings
+### 1. Configure Signing with Personal Team
+Open Xcode and configure automatic signing:
 
-### 2. App Transport Security (ATS) Configuration
-Update `Info.plist`:
-- Verify ATS is enabled (no NSAllowsArbitraryLoads)
-- Configure certificate pinning via TrustKit or URLSession delegate
-- Set minimum TLS version
-- Configure NSExceptionDomains carefully if needed
-- Enable certificate transparency
+1. Open `VettID.xcodeproj` in Xcode
+2. Select the VettID target
+3. Go to "Signing & Capabilities" tab
+4. Check "Automatically manage signing"
+5. Select your Personal Team (your Apple ID)
+6. Xcode will create a provisioning profile automatically
 
-### 3. Biometric Security Enhancement
-Update authentication flows:
-- Implement LAContext timeout management
-- Add biometric fallback policies
-- Handle biometric enrollment changes (LAContextDomainStateChanged)
-- Implement secure biometric confirmation UI
-- Configure evaluatedPolicyDomainState validation
-- Add device passcode fallback options
+### 2. Update Bundle Identifier (if needed)
+If signing fails due to bundle ID conflict:
+- Change Bundle Identifier to something unique, e.g., `com.yourname.vettid`
+- This is required for free developer accounts
 
-### 4. Runtime Application Self-Protection (RASP)
-Create `Security/RuntimeProtection.swift`:
-- Jailbreak detection with multiple methods
-- Debugger detection (ptrace/sysctl)
-- Simulator detection
-- Tamper detection (binary integrity)
-- Frida/Cycript detection
-- Screen capture/recording notification handling
+### 3. Trust Developer Certificate on Device
+When you first run on device:
+1. Go to Settings > General > VPN & Device Management on your iPhone
+2. Find your developer certificate
+3. Tap "Trust"
 
-### 5. Secure Code Practices
-Review and update:
-- Remove all hardcoded secrets/keys
-- Audit logging for PII exposure (os_log privacy levels)
-- Implement secure pasteboard handling (UIPasteboard expiration)
-- Add UIScreen.isCaptured monitoring
-- Review WKWebView security settings
-- Validate all URL scheme data
+### 4. Build and Run
+```bash
+# From Xcode:
+# 1. Connect your iPhone via USB
+# 2. Select your device from the device dropdown (not simulator)
+# 3. Press Cmd+R to build and run
 
-### 6. API Security Hardening
-Update `APIClient`:
-- Add request signing
-- Implement certificate pinning via URLSessionDelegate
-- Add request replay protection (nonce/timestamp)
-- Implement secure token refresh with rotation
-- Add API response validation
-- Configure URLSession security settings
+# Or from command line:
+xcodebuild -project VettID.xcodeproj \
+  -scheme VettID \
+  -destination 'platform=iOS,name=YOUR_DEVICE_NAME' \
+  -configuration Debug \
+  build
+```
 
-### 7. Memory Security
-Implement secure memory handling:
-- Create `SecureBytes` wrapper with auto-clear (memset_s)
-- Implement secure string handling
-- Add memory scrubbing for sensitive operations
-- Review and fix any memory leak issues
-- Implement NSSecureCoding for sensitive objects
+### 5. Archive for Distribution (Optional)
+If you want to create an IPA for sharing:
+```bash
+# Create archive
+xcodebuild -project VettID.xcodeproj \
+  -scheme VettID \
+  -configuration Release \
+  -archivePath build/VettID.xcarchive \
+  archive
 
-### 8. Cryptographic Security Review
-Audit `CryptoManager`:
-- Verify SecRandomCopyBytes usage
-- Audit key derivation parameters
-- Verify encryption mode usage (CryptoKit)
-- Check for weak algorithms
-- Implement key rotation mechanisms
-- Add cryptographic operation logging
+# Export IPA (Ad Hoc or Development)
+xcodebuild -exportArchive \
+  -archivePath build/VettID.xcarchive \
+  -exportPath build/ \
+  -exportOptionsPlist ExportOptions.plist
+```
 
-### 9. Build Security Configuration
-Update Xcode project settings:
-- Enable Position Independent Executable (PIE)
-- Enable Stack Smashing Protection
-- Enable Automatic Reference Counting (ARC)
-- Disable debugging symbols in release
-- Enable bitcode
-- Configure signing with proper entitlements
+### 6. API Configuration
+Ensure the app is configured to connect to the correct API:
+```swift
+// Update Configuration.swift or similar
+struct APIConfig {
+    static let baseURL = "https://api.vettid.dev"
+}
+```
 
-### 10. Security Testing Integration
-Create `SecurityTests.swift`:
-- Unit tests for jailbreak detection
-- Unit tests for tampering detection
-- Integration tests for secure storage
-- Tests for ATS compliance
-- Tests for biometric security
+## Pre-flight Checklist
+Before building:
+- [ ] iOS 16.0+ target configured
+- [ ] Apple ID added to Xcode (Xcode > Preferences > Accounts)
+- [ ] iPhone connected and trusted
+- [ ] Developer certificate created
+- [ ] Bundle identifier is unique for free account
 
-## Files to Create/Update
-- Security/RuntimeProtection.swift (new)
-- Security/SecureMemory.swift (new)
-- Info.plist (update)
-- CryptoManager.swift (audit/update)
-- SecureKeyStore.swift (audit/update)
-- APIClient.swift (update)
-- Project settings (update)
-- SecurityTests.swift (new)
-
-## Security Checklist
-- [ ] No hardcoded secrets
-- [ ] Certificate pinning enabled
-- [ ] Jailbreak detection implemented
-- [ ] Biometric timeout configured
-- [ ] Secure storage verified (Keychain/Secure Enclave)
-- [ ] Memory cleared after use (memset_s)
-- [ ] Debug symbols stripped in release
-- [ ] Debug checks removed from release
-- [ ] Screen capture monitoring enabled
-- [ ] All inputs validated
+## Deliverables
+- [ ] Project configured for personal team signing
+- [ ] App successfully installed on physical device
+- [ ] All features verified working on device
+- [ ] Confirm API connectivity works
+- [ ] Report any device-specific issues
 
 ## Notes
-- All security measures should be configurable for testing
-- Document any security trade-offs
-- Reference OWASP Mobile Security Testing Guide
-- Use Apple's recommended security APIs
-- Coordinate with Android instance for consistent security posture
+- Free Apple Developer accounts have limitations:
+  - Apps expire after 7 days (need to reinstall)
+  - Limited to 3 apps at a time
+  - No push notifications
+- For TestFlight distribution, a paid Apple Developer account ($99/year) is required
+- The app should work on any iPhone running iOS 16.0 or later
