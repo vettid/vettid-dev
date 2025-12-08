@@ -1676,5 +1676,67 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       integration: new integrations.HttpLambdaIntegration('MarkMessageReadInt', vaultStack.markMessageRead),
       authorizer: this.memberAuthorizer,
     });
+
+    // ===== PHASE 8: BACKUP SYSTEM ROUTES =====
+
+    // Vault backup management
+    this.httpApi.addRoutes({
+      path: '/vault/backup',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('TriggerBackupInt', vaultStack.triggerBackup),
+      authorizer: this.memberAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/vault/backups',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('ListBackupsInt', vaultStack.listBackups),
+      authorizer: this.memberAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/vault/restore',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('RestoreBackupInt', vaultStack.restoreBackup),
+      authorizer: this.memberAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/vault/backups/{backupId}',
+      methods: [apigw.HttpMethod.DELETE],
+      integration: new integrations.HttpLambdaIntegration('DeleteBackupInt', vaultStack.deleteBackup),
+      authorizer: this.memberAuthorizer,
+    });
+
+    // Credential backup
+    this.httpApi.addRoutes({
+      path: '/vault/credentials/backup',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('CreateCredentialBackupInt', vaultStack.createCredentialBackup),
+      authorizer: this.memberAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/vault/credentials/backup',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('GetCredentialBackupStatusInt', vaultStack.getCredentialBackupStatus),
+      authorizer: this.memberAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/vault/credentials/recover',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('DownloadCredentialBackupInt', vaultStack.downloadCredentialBackup),
+      authorizer: this.memberAuthorizer,
+    });
+
+    // Backup settings
+    this.httpApi.addRoutes({
+      path: '/vault/backup/settings',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('GetBackupSettingsInt', vaultStack.getBackupSettings),
+      authorizer: this.memberAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/vault/backup/settings',
+      methods: [apigw.HttpMethod.PUT],
+      integration: new integrations.HttpLambdaIntegration('UpdateBackupSettingsInt', vaultStack.updateBackupSettings),
+      authorizer: this.memberAuthorizer,
+    });
   }
 }

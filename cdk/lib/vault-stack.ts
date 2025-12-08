@@ -70,6 +70,17 @@ export class VaultStack extends cdk.Stack {
   public readonly getUnreadCount!: lambdaNode.NodejsFunction;
   public readonly markMessageRead!: lambdaNode.NodejsFunction;
 
+  // Phase 8: Backup System
+  public readonly triggerBackup!: lambdaNode.NodejsFunction;
+  public readonly listBackups!: lambdaNode.NodejsFunction;
+  public readonly restoreBackup!: lambdaNode.NodejsFunction;
+  public readonly deleteBackup!: lambdaNode.NodejsFunction;
+  public readonly createCredentialBackup!: lambdaNode.NodejsFunction;
+  public readonly getCredentialBackupStatus!: lambdaNode.NodejsFunction;
+  public readonly downloadCredentialBackup!: lambdaNode.NodejsFunction;
+  public readonly getBackupSettings!: lambdaNode.NodejsFunction;
+  public readonly updateBackupSettings!: lambdaNode.NodejsFunction;
+
   constructor(scope: Construct, id: string, props: VaultStackProps) {
     super(scope, id, props);
 
@@ -575,5 +586,136 @@ export class VaultStack extends cdk.Stack {
     tables.messages.grantReadWriteData(this.sendMessage);
     tables.messages.grantReadData(this.getMessageHistory);
     tables.messages.grantReadWriteData(this.markMessageRead);
+
+    // ===== PHASE 8: BACKUP SYSTEM =====
+
+    const backupEnv = {
+      TABLE_BACKUPS: tables.backups.tableName,
+      TABLE_CREDENTIAL_BACKUPS: tables.credentialBackups.tableName,
+      TABLE_BACKUP_SETTINGS: tables.backupSettings.tableName,
+      TABLE_CONNECTIONS: tables.connections.tableName,
+      TABLE_PROFILES: tables.profiles.tableName,
+      TABLE_MESSAGES: tables.messages.tableName,
+      BACKUP_BUCKET: props.infrastructure.backupBucket.bucketName,
+    };
+
+    // Vault backup functions
+    this.triggerBackup = new lambdaNode.NodejsFunction(this, 'TriggerBackupFn', {
+      entry: 'lambda/handlers/backup/triggerBackup.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: backupEnv,
+      timeout: cdk.Duration.seconds(60),
+      memorySize: 512, // More memory for backup operations
+    });
+
+    this.listBackups = new lambdaNode.NodejsFunction(this, 'ListBackupsFn', {
+      entry: 'lambda/handlers/backup/listBackups.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        TABLE_BACKUPS: tables.backups.tableName,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    this.restoreBackup = new lambdaNode.NodejsFunction(this, 'RestoreBackupFn', {
+      entry: 'lambda/handlers/backup/restoreBackup.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: backupEnv,
+      timeout: cdk.Duration.seconds(120),
+      memorySize: 512,
+    });
+
+    this.deleteBackup = new lambdaNode.NodejsFunction(this, 'DeleteBackupFn', {
+      entry: 'lambda/handlers/backup/deleteBackup.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        TABLE_BACKUPS: tables.backups.tableName,
+        BACKUP_BUCKET: props.infrastructure.backupBucket.bucketName,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    // Credential backup functions
+    this.createCredentialBackup = new lambdaNode.NodejsFunction(this, 'CreateCredentialBackupFn', {
+      entry: 'lambda/handlers/backup/createCredentialBackup.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        TABLE_CREDENTIAL_BACKUPS: tables.credentialBackups.tableName,
+        BACKUP_BUCKET: props.infrastructure.backupBucket.bucketName,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    this.getCredentialBackupStatus = new lambdaNode.NodejsFunction(this, 'GetCredentialBackupStatusFn', {
+      entry: 'lambda/handlers/backup/getCredentialBackupStatus.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        TABLE_CREDENTIAL_BACKUPS: tables.credentialBackups.tableName,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    this.downloadCredentialBackup = new lambdaNode.NodejsFunction(this, 'DownloadCredentialBackupFn', {
+      entry: 'lambda/handlers/backup/downloadCredentialBackup.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        TABLE_CREDENTIAL_BACKUPS: tables.credentialBackups.tableName,
+        BACKUP_BUCKET: props.infrastructure.backupBucket.bucketName,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    // Backup settings functions
+    this.getBackupSettings = new lambdaNode.NodejsFunction(this, 'GetBackupSettingsFn', {
+      entry: 'lambda/handlers/backup/getBackupSettings.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        TABLE_BACKUP_SETTINGS: tables.backupSettings.tableName,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    this.updateBackupSettings = new lambdaNode.NodejsFunction(this, 'UpdateBackupSettingsFn', {
+      entry: 'lambda/handlers/backup/updateBackupSettings.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        TABLE_BACKUP_SETTINGS: tables.backupSettings.tableName,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    // ===== PHASE 8 PERMISSIONS =====
+
+    // Backups table permissions
+    tables.backups.grantReadWriteData(this.triggerBackup);
+    tables.backups.grantReadData(this.listBackups);
+    tables.backups.grantReadWriteData(this.restoreBackup);
+    tables.backups.grantReadWriteData(this.deleteBackup);
+
+    // Credential backups table permissions
+    tables.credentialBackups.grantReadWriteData(this.createCredentialBackup);
+    tables.credentialBackups.grantReadData(this.getCredentialBackupStatus);
+    tables.credentialBackups.grantReadWriteData(this.downloadCredentialBackup);
+
+    // Backup settings table permissions
+    tables.backupSettings.grantReadData(this.getBackupSettings);
+    tables.backupSettings.grantReadWriteData(this.updateBackupSettings);
+
+    // S3 backup bucket permissions
+    props.infrastructure.backupBucket.grantReadWrite(this.triggerBackup);
+    props.infrastructure.backupBucket.grantRead(this.restoreBackup);
+    props.infrastructure.backupBucket.grantDelete(this.deleteBackup);
+    props.infrastructure.backupBucket.grantReadWrite(this.createCredentialBackup);
+    props.infrastructure.backupBucket.grantRead(this.downloadCredentialBackup);
+
+    // triggerBackup needs read access to connections, profiles, messages
+    tables.connections.grantReadData(this.triggerBackup);
+    tables.profiles.grantReadData(this.triggerBackup);
+    tables.messages.grantReadData(this.triggerBackup);
+
+    // restoreBackup needs write access to connections, profiles, messages
+    tables.connections.grantReadWriteData(this.restoreBackup);
+    tables.profiles.grantReadWriteData(this.restoreBackup);
+    tables.messages.grantReadWriteData(this.restoreBackup);
   }
 }

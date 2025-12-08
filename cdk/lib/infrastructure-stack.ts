@@ -54,11 +54,16 @@ export class InfrastructureStack extends cdk.Stack {
     connectionInvitations: dynamodb.Table;
     messages: dynamodb.Table;
     profiles: dynamodb.Table;
+    // Phase 8: Backup System
+    backups: dynamodb.Table;
+    credentialBackups: dynamodb.Table;
+    backupSettings: dynamodb.Table;
   };
 
   // S3 Buckets
   public readonly termsBucket!: s3.Bucket;
   public readonly handlersBucket!: s3.Bucket;
+  public readonly backupBucket!: s3.Bucket;
 
   // Cognito resources
   public readonly memberUserPool!: cognito.UserPool;
@@ -501,6 +506,40 @@ export class InfrastructureStack extends cdk.Stack {
       pointInTimeRecovery: true,
     });
 
+    // ===== PHASE 8: BACKUP SYSTEM TABLES =====
+
+    // Backups table - stores vault backup metadata
+    const backups = new dynamodb.Table(this, 'Backups', {
+      partitionKey: { name: 'backup_id', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      pointInTimeRecovery: true,
+    });
+
+    // GSI for querying backups by member (sorted by created_at)
+    backups.addGlobalSecondaryIndex({
+      indexName: 'member-created-index',
+      partitionKey: { name: 'member_guid', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'created_at', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // Credential Backups table - stores encrypted credential backup metadata
+    const credentialBackups = new dynamodb.Table(this, 'CredentialBackups', {
+      partitionKey: { name: 'member_guid', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      pointInTimeRecovery: true,
+    });
+
+    // Backup Settings table - stores per-member backup preferences
+    const backupSettings = new dynamodb.Table(this, 'BackupSettings', {
+      partitionKey: { name: 'member_guid', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      pointInTimeRecovery: true,
+    });
+
     // ===== S3 BUCKETS =====
 
     // S3 bucket for membership terms PDFs (shared by VettIDStack and AdminStack)
@@ -519,6 +558,32 @@ export class InfrastructureStack extends cdk.Stack {
       encryption: s3.BucketEncryption.S3_MANAGED,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       autoDeleteObjects: true,
+    });
+
+    // S3 bucket for vault and credential backups
+    const backupBucket = new s3.Bucket(this, 'VaultBackupsBucket', {
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      versioned: true,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: true,
+      lifecycleRules: [
+        {
+          // Clean up incomplete multipart uploads after 7 days
+          abortIncompleteMultipartUploadAfter: cdk.Duration.days(7),
+        },
+        {
+          // Move old versions to cheaper storage after 30 days
+          noncurrentVersionTransitions: [
+            {
+              storageClass: s3.StorageClass.INFREQUENT_ACCESS,
+              transitionAfter: cdk.Duration.days(30),
+            },
+          ],
+          // Delete old versions after 90 days
+          noncurrentVersionExpiration: cdk.Duration.days(90),
+        },
+      ],
     });
 
     // ===== ASSIGN TO PUBLIC PROPERTIES =====
@@ -553,7 +618,15 @@ export class InfrastructureStack extends cdk.Stack {
       connectionInvitations,
       messages,
       profiles,
+      // Phase 8: Backup System
+      backups,
+      credentialBackups,
+      backupSettings,
     };
+
+    this.termsBucket = termsBucket;
+    this.handlersBucket = handlersBucket;
+    this.backupBucket = backupBucket;
 
     // ===== AUTH LAMBDA FUNCTIONS =====
 
@@ -907,9 +980,7 @@ export class InfrastructureStack extends cdk.Stack {
       serviceToken: applyCognitoUIProvider.serviceToken,
     });
 
-    // Export resources
-    this.termsBucket = termsBucket;
-    this.handlersBucket = handlersBucket;
+    // Export Cognito resources
     this.memberUserPool = memberUserPool;
     this.adminUserPool = adminUserPool;
     this.memberAppClient = memberAppClient;
