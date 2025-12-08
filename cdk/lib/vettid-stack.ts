@@ -1590,5 +1590,91 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       integration: new integrations.HttpLambdaIntegration('ExecuteHandlerInt', vaultStack.executeHandler),
       authorizer: this.memberAuthorizer,
     });
+
+    // ===== PHASE 7: CONNECTIONS & MESSAGING ROUTES =====
+
+    // Connection management
+    this.httpApi.addRoutes({
+      path: '/connections/invite',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('CreateConnectionInviteInt', vaultStack.createConnectionInvite),
+      authorizer: this.memberAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/connections/accept',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('AcceptConnectionInviteInt', vaultStack.acceptConnectionInvite),
+      authorizer: this.memberAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/connections/{connectionId}/revoke',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('RevokeConnectionInt', vaultStack.revokeConnection),
+      authorizer: this.memberAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/connections',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('ListConnectionsInt', vaultStack.listConnections),
+      authorizer: this.memberAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/connections/{connectionId}',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('GetConnectionInt', vaultStack.getConnection),
+      authorizer: this.memberAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/connections/{connectionId}/profile',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('GetConnectionProfileInt', vaultStack.getConnectionProfile),
+      authorizer: this.memberAuthorizer,
+    });
+
+    // Profile management
+    this.httpApi.addRoutes({
+      path: '/profile',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('GetProfileInt', vaultStack.getProfile),
+      authorizer: this.memberAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/profile',
+      methods: [apigw.HttpMethod.PATCH],
+      integration: new integrations.HttpLambdaIntegration('UpdateProfileInt', vaultStack.updateProfile),
+      authorizer: this.memberAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/profile/publish',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('PublishProfileInt', vaultStack.publishProfile),
+      authorizer: this.memberAuthorizer,
+    });
+
+    // Messaging
+    this.httpApi.addRoutes({
+      path: '/messages',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('SendMessageInt', vaultStack.sendMessage),
+      authorizer: this.memberAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/connections/{connectionId}/messages',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('GetMessageHistoryInt', vaultStack.getMessageHistory),
+      authorizer: this.memberAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/messages/unread',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('GetUnreadCountInt', vaultStack.getUnreadCount),
+      authorizer: this.memberAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/messages/{messageId}/read',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('MarkMessageReadInt', vaultStack.markMessageRead),
+      authorizer: this.memberAuthorizer,
+    });
   }
 }

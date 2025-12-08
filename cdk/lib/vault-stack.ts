@@ -51,6 +51,25 @@ export class VaultStack extends cdk.Stack {
   public readonly listInstalledHandlers!: lambdaNode.NodejsFunction;
   public readonly executeHandler!: lambdaNode.NodejsFunction;
 
+  // Phase 7: Connections & Messaging
+  public readonly createConnectionInvite!: lambdaNode.NodejsFunction;
+  public readonly acceptConnectionInvite!: lambdaNode.NodejsFunction;
+  public readonly revokeConnection!: lambdaNode.NodejsFunction;
+  public readonly listConnections!: lambdaNode.NodejsFunction;
+  public readonly getConnection!: lambdaNode.NodejsFunction;
+  public readonly getConnectionProfile!: lambdaNode.NodejsFunction;
+
+  // Profile management
+  public readonly getProfile!: lambdaNode.NodejsFunction;
+  public readonly updateProfile!: lambdaNode.NodejsFunction;
+  public readonly publishProfile!: lambdaNode.NodejsFunction;
+
+  // Messaging
+  public readonly sendMessage!: lambdaNode.NodejsFunction;
+  public readonly getMessageHistory!: lambdaNode.NodejsFunction;
+  public readonly getUnreadCount!: lambdaNode.NodejsFunction;
+  public readonly markMessageRead!: lambdaNode.NodejsFunction;
+
   constructor(scope: Construct, id: string, props: VaultStackProps) {
     super(scope, id, props);
 
@@ -404,5 +423,157 @@ export class VaultStack extends cdk.Stack {
 
     // Grant S3 access for handler downloads
     props.infrastructure.handlersBucket.grantRead(this.getHandler);
+
+    // ===== PHASE 7: CONNECTIONS & MESSAGING =====
+
+    const connectionsEnv = {
+      TABLE_CONNECTIONS: tables.connections.tableName,
+      TABLE_INVITATIONS: tables.connectionInvitations.tableName,
+      TABLE_PROFILES: tables.profiles.tableName,
+      TABLE_MESSAGES: tables.messages.tableName,
+    };
+
+    // Connection management functions
+    this.createConnectionInvite = new lambdaNode.NodejsFunction(this, 'CreateConnectionInviteFn', {
+      entry: 'lambda/handlers/connections/createInvite.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: connectionsEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    this.acceptConnectionInvite = new lambdaNode.NodejsFunction(this, 'AcceptConnectionInviteFn', {
+      entry: 'lambda/handlers/connections/acceptInvite.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: connectionsEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    this.revokeConnection = new lambdaNode.NodejsFunction(this, 'RevokeConnectionFn', {
+      entry: 'lambda/handlers/connections/revokeConnection.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: connectionsEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    this.listConnections = new lambdaNode.NodejsFunction(this, 'ListConnectionsFn', {
+      entry: 'lambda/handlers/connections/listConnections.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: connectionsEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    this.getConnection = new lambdaNode.NodejsFunction(this, 'GetConnectionFn', {
+      entry: 'lambda/handlers/connections/getConnection.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: connectionsEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    this.getConnectionProfile = new lambdaNode.NodejsFunction(this, 'GetConnectionProfileFn', {
+      entry: 'lambda/handlers/connections/getConnectionProfile.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: connectionsEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    // Profile management functions
+    this.getProfile = new lambdaNode.NodejsFunction(this, 'GetProfileFn', {
+      entry: 'lambda/handlers/profile/getProfile.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        TABLE_PROFILES: tables.profiles.tableName,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    this.updateProfile = new lambdaNode.NodejsFunction(this, 'UpdateProfileFn', {
+      entry: 'lambda/handlers/profile/updateProfile.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        TABLE_PROFILES: tables.profiles.tableName,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    this.publishProfile = new lambdaNode.NodejsFunction(this, 'PublishProfileFn', {
+      entry: 'lambda/handlers/profile/publishProfile.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        TABLE_PROFILES: tables.profiles.tableName,
+        TABLE_CONNECTIONS: tables.connections.tableName,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    // Messaging functions
+    this.sendMessage = new lambdaNode.NodejsFunction(this, 'SendMessageFn', {
+      entry: 'lambda/handlers/messaging/sendMessage.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        TABLE_CONNECTIONS: tables.connections.tableName,
+        TABLE_MESSAGES: tables.messages.tableName,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    this.getMessageHistory = new lambdaNode.NodejsFunction(this, 'GetMessageHistoryFn', {
+      entry: 'lambda/handlers/messaging/getMessageHistory.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        TABLE_CONNECTIONS: tables.connections.tableName,
+        TABLE_MESSAGES: tables.messages.tableName,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    this.getUnreadCount = new lambdaNode.NodejsFunction(this, 'GetUnreadCountFn', {
+      entry: 'lambda/handlers/messaging/getUnreadCount.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        TABLE_CONNECTIONS: tables.connections.tableName,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    this.markMessageRead = new lambdaNode.NodejsFunction(this, 'MarkMessageReadFn', {
+      entry: 'lambda/handlers/messaging/markAsRead.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        TABLE_CONNECTIONS: tables.connections.tableName,
+        TABLE_MESSAGES: tables.messages.tableName,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    // ===== PHASE 7 PERMISSIONS =====
+
+    // Connection invitations - createConnectionInvite needs read/write
+    tables.connectionInvitations.grantReadWriteData(this.createConnectionInvite);
+    tables.connectionInvitations.grantReadWriteData(this.acceptConnectionInvite);
+
+    // Connections table permissions
+    tables.connections.grantReadWriteData(this.acceptConnectionInvite);
+    tables.connections.grantReadWriteData(this.revokeConnection);
+    tables.connections.grantReadData(this.listConnections);
+    tables.connections.grantReadData(this.getConnection);
+    tables.connections.grantReadData(this.getConnectionProfile);
+    tables.connections.grantReadWriteData(this.publishProfile);
+    tables.connections.grantReadData(this.sendMessage);
+    tables.connections.grantReadWriteData(this.sendMessage); // Needs write for unread_count
+    tables.connections.grantReadData(this.getMessageHistory);
+    tables.connections.grantReadData(this.getUnreadCount);
+    tables.connections.grantReadWriteData(this.markMessageRead);
+
+    // Profiles table permissions
+    tables.profiles.grantReadWriteData(this.getProfile); // Creates default if missing
+    tables.profiles.grantReadWriteData(this.updateProfile);
+    tables.profiles.grantReadData(this.publishProfile);
+    tables.profiles.grantReadData(this.getConnectionProfile);
+    tables.profiles.grantReadData(this.acceptConnectionInvite);
+
+    // Messages table permissions
+    tables.messages.grantReadWriteData(this.sendMessage);
+    tables.messages.grantReadData(this.getMessageHistory);
+    tables.messages.grantReadWriteData(this.markMessageRead);
   }
 }

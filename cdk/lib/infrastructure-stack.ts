@@ -49,6 +49,11 @@ export class InfrastructureStack extends cdk.Stack {
     vaultInstances: dynamodb.Table;
     handlers: dynamodb.Table;
     handlerInstallations: dynamodb.Table;
+    // Phase 7: Connections & Messaging
+    connections: dynamodb.Table;
+    connectionInvitations: dynamodb.Table;
+    messages: dynamodb.Table;
+    profiles: dynamodb.Table;
   };
 
   // S3 Buckets
@@ -421,6 +426,81 @@ export class InfrastructureStack extends cdk.Stack {
       projectionType: dynamodb.ProjectionType.ALL,
     });
 
+    // ===== PHASE 7: CONNECTIONS & MESSAGING TABLES =====
+
+    // Connections table - stores connection relationships between users
+    const connections = new dynamodb.Table(this, 'Connections', {
+      partitionKey: { name: 'owner_guid', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'peer_guid', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      pointInTimeRecovery: true,
+    });
+
+    connections.addGlobalSecondaryIndex({
+      indexName: 'connection-id-index',
+      partitionKey: { name: 'connection_id', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    connections.addGlobalSecondaryIndex({
+      indexName: 'peer-guid-index',
+      partitionKey: { name: 'peer_guid', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'status', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // Connection Invitations table - stores pending connection invitations
+    const connectionInvitations = new dynamodb.Table(this, 'ConnectionInvitations', {
+      partitionKey: { name: 'invitation_code', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      timeToLiveAttribute: 'ttl',
+    });
+
+    connectionInvitations.addGlobalSecondaryIndex({
+      indexName: 'creator-index',
+      partitionKey: { name: 'creator_guid', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'created_at', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    connectionInvitations.addGlobalSecondaryIndex({
+      indexName: 'invitation-id-index',
+      partitionKey: { name: 'invitation_id', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // Messages table - stores encrypted messages between connected users
+    const messages = new dynamodb.Table(this, 'Messages', {
+      partitionKey: { name: 'message_id', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      pointInTimeRecovery: true,
+    });
+
+    messages.addGlobalSecondaryIndex({
+      indexName: 'connection-sent-index',
+      partitionKey: { name: 'connection_id', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'sent_at', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    messages.addGlobalSecondaryIndex({
+      indexName: 'recipient-index',
+      partitionKey: { name: 'recipient_guid', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'sent_at', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // Profiles table - stores user profile information
+    const profiles = new dynamodb.Table(this, 'Profiles', {
+      partitionKey: { name: 'user_guid', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      pointInTimeRecovery: true,
+    });
+
     // ===== S3 BUCKETS =====
 
     // S3 bucket for membership terms PDFs (shared by VettIDStack and AdminStack)
@@ -468,6 +548,11 @@ export class InfrastructureStack extends cdk.Stack {
       vaultInstances,
       handlers,
       handlerInstallations,
+      // Phase 7: Connections & Messaging
+      connections,
+      connectionInvitations,
+      messages,
+      profiles,
     };
 
     // ===== AUTH LAMBDA FUNCTIONS =====
