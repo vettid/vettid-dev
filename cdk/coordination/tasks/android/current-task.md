@@ -1,7 +1,7 @@
-# Task: Phase 6 - Handler Discovery & Execution
+# Task: Phase 7 - Connections & Messaging UI
 
 ## Phase
-Phase 6: Handler System (WASM)
+Phase 7: Connections & Messaging
 
 ## Assigned To
 Android Instance
@@ -10,603 +10,619 @@ Android Instance
 `github.com/mesmerverse/vettid-android`
 
 ## Status
-Phase 5 complete. Ready for Phase 6 handler discovery and execution.
+Phase 6 complete. Ready for Phase 7 connections & messaging UI.
 
 ## Overview
 
-Phase 6 implements the handler system UI for discovering, installing, and triggering WASM handlers. The mobile app interacts with:
-1. Handler Registry API to list and download handlers
-2. Vault to install and execute handlers
-3. Handler responses via NATS
+Phase 7 implements the connection and messaging system UI. You need to create:
+1. Connection invitation generation and QR code display
+2. Connection invitation scanning and acceptance
+3. Connection list and detail views
+4. Profile viewing and editing
+5. Encrypted messaging UI with conversation views
 
-## New Backend Endpoints
+## API Endpoints (Backend)
 
-### Handler Registry
+### Connections
 ```
-GET  /registry/handlers              # List available handlers
-GET  /registry/handlers/{id}         # Get handler details and download URL
-POST /vault/handlers/install         # Install handler on vault
-POST /vault/handlers/uninstall       # Uninstall handler from vault
-GET  /vault/handlers                 # List installed handlers
-POST /vault/handlers/{id}/execute    # Execute handler with input
+POST /connections/invite          # Generate connection invitation
+POST /connections/accept          # Accept connection invitation
+POST /connections/revoke          # Revoke connection
+GET  /connections                 # List connections
+GET  /connections/{id}            # Get connection details
+GET  /connections/{id}/profile    # Get connection's profile
 ```
 
-## Phase 6 Android Tasks
+### Profiles
+```
+GET  /profile                     # Get own profile
+PUT  /profile                     # Update own profile
+POST /profile/publish             # Publish profile to connections
+```
 
-### 1. Handler Registry Client
+### Messaging
+```
+POST /messages/send               # Send encrypted message
+GET  /messages/{connectionId}     # Get message history
+GET  /messages/unread             # Get unread message count
+POST /messages/{id}/read          # Mark message as read
+```
 
-Add registry API to service client:
+## Phase 7 Android Tasks
+
+### 1. Connection Data Models
+
+Create connection and messaging data models:
 
 ```kotlin
-// api/HandlerRegistryClient.kt
+// data/model/Connection.kt
 
-interface HandlerRegistryClient {
-    @GET("/registry/handlers")
-    suspend fun listHandlers(
-        @Query("category") category: String? = null,
-        @Query("page") page: Int = 1,
-        @Query("limit") limit: Int = 20
-    ): HandlerListResponse
+data class Connection(
+    val connectionId: String,
+    val peerGuid: String,
+    val peerDisplayName: String,
+    val peerAvatarUrl: String?,
+    val status: ConnectionStatus,
+    val createdAt: Long,
+    val lastMessageAt: Long?,
+    val unreadCount: Int
+)
 
-    @GET("/registry/handlers/{id}")
-    suspend fun getHandler(@Path("id") handlerId: String): HandlerDetailResponse
+enum class ConnectionStatus {
+    PENDING,
+    ACTIVE,
+    REVOKED
 }
 
-data class HandlerListResponse(
-    val handlers: List<HandlerSummary>,
-    val total: Int,
-    val page: Int,
-    val has_more: Boolean
+data class ConnectionInvitation(
+    val invitationId: String,
+    val invitationCode: String,
+    val qrCodeData: String,
+    val deepLinkUrl: String,
+    val expiresAt: Long,
+    val creatorDisplayName: String
 )
 
-data class HandlerSummary(
-    val id: String,
-    val name: String,
-    val description: String,
-    val version: String,
-    val category: String,
-    val icon_url: String?,
-    val publisher: String,
-    val installed: Boolean,
-    val installed_version: String?
+// data/model/Message.kt
+
+data class Message(
+    val messageId: String,
+    val connectionId: String,
+    val senderId: String,
+    val content: String,
+    val contentType: MessageContentType,
+    val sentAt: Long,
+    val receivedAt: Long?,
+    val readAt: Long?,
+    val status: MessageStatus
 )
 
-data class HandlerDetailResponse(
-    val id: String,
-    val name: String,
-    val description: String,
-    val version: String,
-    val category: String,
-    val icon_url: String?,
-    val publisher: String,
-    val published_at: String,
-    val size_bytes: Long,
-    val permissions: List<HandlerPermission>,
-    val input_schema: JsonObject,
-    val output_schema: JsonObject,
-    val changelog: String?,
-    val installed: Boolean,
-    val installed_version: String?
-)
-
-data class HandlerPermission(
-    val type: String,  // "network", "storage", "crypto"
-    val scope: String, // e.g., "api.example.com" for network
-    val description: String
-)
-```
-
-### 2. Handler Installation Client
-
-Add vault handler management endpoints:
-
-```kotlin
-// api/VaultHandlerClient.kt
-
-interface VaultHandlerClient {
-    @POST("/vault/handlers/install")
-    suspend fun installHandler(
-        @Body request: InstallHandlerRequest
-    ): InstallHandlerResponse
-
-    @POST("/vault/handlers/uninstall")
-    suspend fun uninstallHandler(
-        @Body request: UninstallHandlerRequest
-    ): UninstallHandlerResponse
-
-    @GET("/vault/handlers")
-    suspend fun listInstalledHandlers(): InstalledHandlersResponse
-
-    @POST("/vault/handlers/{id}/execute")
-    suspend fun executeHandler(
-        @Path("id") handlerId: String,
-        @Body request: ExecuteHandlerRequest
-    ): ExecuteHandlerResponse
+enum class MessageContentType {
+    TEXT,
+    IMAGE,
+    FILE
 }
 
-data class InstallHandlerRequest(
-    val handler_id: String,
-    val version: String
-)
+enum class MessageStatus {
+    SENDING,
+    SENT,
+    DELIVERED,
+    READ,
+    FAILED
+}
 
-data class InstallHandlerResponse(
-    val status: String,  // "installed", "failed"
-    val handler_id: String,
-    val version: String,
-    val installed_at: String?
-)
+// data/model/Profile.kt
 
-data class ExecuteHandlerRequest(
-    val input: JsonObject,
-    val timeout_ms: Long = 30000
-)
-
-data class ExecuteHandlerResponse(
-    val request_id: String,
-    val status: String,  // "success", "error", "timeout"
-    val output: JsonObject?,
-    val error: String?,
-    val execution_time_ms: Long
+data class Profile(
+    val guid: String,
+    val displayName: String,
+    val avatarUrl: String?,
+    val bio: String?,
+    val location: String?,
+    val lastUpdated: Long
 )
 ```
 
-### 3. Handler Discovery ViewModel
+### 2. Connection API Client
 
-Create ViewModel for browsing handlers:
+Create API client for connections:
 
 ```kotlin
-// handlers/HandlerDiscoveryViewModel.kt
+// network/ConnectionApiClient.kt
+
+interface ConnectionApiClient {
+    suspend fun createInvitation(expiresInMinutes: Int = 60): Result<ConnectionInvitation>
+    suspend fun acceptInvitation(invitationCode: String, publicKey: ByteArray): Result<Connection>
+    suspend fun revokeConnection(connectionId: String): Result<Unit>
+    suspend fun listConnections(): Result<List<Connection>>
+    suspend fun getConnection(connectionId: String): Result<Connection>
+    suspend fun getConnectionProfile(connectionId: String): Result<Profile>
+}
+
+// network/ProfileApiClient.kt
+
+interface ProfileApiClient {
+    suspend fun getProfile(): Result<Profile>
+    suspend fun updateProfile(profile: Profile): Result<Profile>
+    suspend fun publishProfile(): Result<Unit>
+}
+
+// network/MessagingApiClient.kt
+
+interface MessagingApiClient {
+    suspend fun sendMessage(connectionId: String, encryptedContent: ByteArray, nonce: ByteArray): Result<Message>
+    suspend fun getMessageHistory(connectionId: String, limit: Int = 50, before: Long? = null): Result<List<Message>>
+    suspend fun getUnreadCount(): Result<Map<String, Int>>
+    suspend fun markAsRead(messageId: String): Result<Unit>
+}
+```
+
+### 3. Connection Crypto Manager
+
+Create crypto manager for per-connection encryption:
+
+```kotlin
+// crypto/ConnectionCryptoManager.kt
+
+class ConnectionCryptoManager @Inject constructor(
+    private val credentialStore: CredentialStore
+) {
+    // Generate X25519 key pair for new connection
+    fun generateConnectionKeyPair(): KeyPair
+
+    // Derive shared secret from X25519 key exchange
+    fun deriveSharedSecret(
+        privateKey: ByteArray,
+        peerPublicKey: ByteArray
+    ): ByteArray
+
+    // Derive per-connection encryption key using HKDF
+    fun deriveConnectionKey(
+        sharedSecret: ByteArray,
+        connectionId: String
+    ): ByteArray
+
+    // Encrypt message with XChaCha20-Poly1305
+    fun encryptMessage(
+        plaintext: String,
+        connectionKey: ByteArray
+    ): EncryptedMessage
+
+    // Decrypt message with XChaCha20-Poly1305
+    fun decryptMessage(
+        ciphertext: ByteArray,
+        nonce: ByteArray,
+        connectionKey: ByteArray
+    ): String
+
+    // Store connection key securely
+    suspend fun storeConnectionKey(connectionId: String, key: ByteArray)
+
+    // Retrieve connection key
+    suspend fun getConnectionKey(connectionId: String): ByteArray?
+}
+
+data class EncryptedMessage(
+    val ciphertext: ByteArray,
+    val nonce: ByteArray
+)
+```
+
+### 4. Connection Invitation UI
+
+Create invitation flow screens:
+
+```kotlin
+// ui/connections/invite/CreateInvitationScreen.kt
+
+@Composable
+fun CreateInvitationScreen(
+    viewModel: CreateInvitationViewModel = hiltViewModel(),
+    onInvitationCreated: (ConnectionInvitation) -> Unit,
+    onBack: () -> Unit
+)
+
+// States: Idle, Creating, Created(invitation), Error
+
+// UI Components:
+// - Expiration time selector (15min, 1hr, 24hr)
+// - Create button
+// - Loading indicator
+// - QR code display (large, centered)
+// - Share button (deep link)
+// - Copy link button
+// - Expiration countdown timer
+
+// ui/connections/invite/ScanInvitationScreen.kt
+
+@Composable
+fun ScanInvitationScreen(
+    viewModel: ScanInvitationViewModel = hiltViewModel(),
+    onConnectionEstablished: (Connection) -> Unit,
+    onBack: () -> Unit
+)
+
+// States: Scanning, Processing, Success(connection), Error
+
+// UI Components:
+// - Camera preview with QR scanner overlay
+// - Manual code entry option
+// - Processing indicator
+// - Connection preview (peer name, avatar)
+// - Accept/Decline buttons
+// - Error display with retry
+```
+
+### 5. Connection List UI
+
+Create connection list screen:
+
+```kotlin
+// ui/connections/list/ConnectionsScreen.kt
+
+@Composable
+fun ConnectionsScreen(
+    viewModel: ConnectionsViewModel = hiltViewModel(),
+    onConnectionClick: (String) -> Unit,
+    onCreateInvitation: () -> Unit,
+    onScanInvitation: () -> Unit
+)
+
+// States: Loading, Empty, Loaded(connections), Error
+
+// UI Components:
+// - FAB with options: Create Invitation, Scan Invitation
+// - Connection list with:
+//   - Avatar
+//   - Display name
+//   - Last message preview
+//   - Unread badge
+//   - Last activity time
+// - Pull-to-refresh
+// - Search/filter
+// - Empty state with onboarding
+
+// ui/connections/list/ConnectionListItem.kt
+
+@Composable
+fun ConnectionListItem(
+    connection: Connection,
+    lastMessage: Message?,
+    onClick: () -> Unit
+)
+```
+
+### 6. Connection Detail UI
+
+Create connection detail screen:
+
+```kotlin
+// ui/connections/detail/ConnectionDetailScreen.kt
+
+@Composable
+fun ConnectionDetailScreen(
+    connectionId: String,
+    viewModel: ConnectionDetailViewModel = hiltViewModel(),
+    onMessageClick: () -> Unit,
+    onBack: () -> Unit
+)
+
+// UI Components:
+// - Large avatar
+// - Display name
+// - Connection status badge
+// - Connected since date
+// - Profile info (bio, location)
+// - Actions:
+//   - Send Message
+//   - View Profile
+//   - Revoke Connection (with confirmation)
+// - Connection stats (messages exchanged, etc.)
+```
+
+### 7. Profile UI
+
+Create profile screens:
+
+```kotlin
+// ui/profile/ProfileScreen.kt
+
+@Composable
+fun ProfileScreen(
+    viewModel: ProfileViewModel = hiltViewModel(),
+    onEditProfile: () -> Unit
+)
+
+// UI Components:
+// - Avatar (with edit option)
+// - Display name
+// - Bio
+// - Location
+// - Edit button
+// - Publish to connections button
+
+// ui/profile/EditProfileScreen.kt
+
+@Composable
+fun EditProfileScreen(
+    viewModel: EditProfileViewModel = hiltViewModel(),
+    onSave: () -> Unit,
+    onBack: () -> Unit
+)
+
+// UI Components:
+// - Avatar picker (camera/gallery)
+// - Display name field (required)
+// - Bio field (optional, multiline)
+// - Location field (optional)
+// - Save button
+// - Validation feedback
+```
+
+### 8. Messaging UI
+
+Create messaging screens:
+
+```kotlin
+// ui/messaging/ConversationScreen.kt
+
+@Composable
+fun ConversationScreen(
+    connectionId: String,
+    viewModel: ConversationViewModel = hiltViewModel(),
+    onBack: () -> Unit,
+    onConnectionDetail: () -> Unit
+)
+
+// States: Loading, Empty, Loaded(messages), Error
+
+// UI Components:
+// - Top bar with connection name/avatar
+// - Message list (LazyColumn, reversed)
+//   - Sent messages (right-aligned, colored)
+//   - Received messages (left-aligned)
+//   - Timestamps (grouped by day)
+//   - Read receipts
+// - Message input field
+// - Send button
+// - Attachment button (future)
+// - Scroll to bottom FAB
+
+// ui/messaging/MessageBubble.kt
+
+@Composable
+fun MessageBubble(
+    message: Message,
+    isSent: Boolean,
+    showTimestamp: Boolean
+)
+
+// ui/messaging/MessageInput.kt
+
+@Composable
+fun MessageInput(
+    value: String,
+    onValueChange: (String) -> Unit,
+    onSend: () -> Unit,
+    enabled: Boolean
+)
+```
+
+### 9. Connection ViewModels
+
+Create ViewModels for connection flows:
+
+```kotlin
+// ui/connections/invite/CreateInvitationViewModel.kt
 
 @HiltViewModel
-class HandlerDiscoveryViewModel @Inject constructor(
-    private val registryClient: HandlerRegistryClient,
-    private val vaultHandlerClient: VaultHandlerClient
+class CreateInvitationViewModel @Inject constructor(
+    private val connectionApiClient: ConnectionApiClient,
+    private val connectionCryptoManager: ConnectionCryptoManager
 ) : ViewModel() {
 
-    private val _state = MutableStateFlow<HandlerDiscoveryState>(HandlerDiscoveryState.Loading)
-    val state: StateFlow<HandlerDiscoveryState> = _state.asStateFlow()
+    val state: StateFlow<CreateInvitationState>
 
-    private val _selectedCategory = MutableStateFlow<String?>(null)
-    val selectedCategory: StateFlow<String?> = _selectedCategory.asStateFlow()
-
-    init {
-        loadHandlers()
-    }
-
-    fun loadHandlers(category: String? = null) {
-        viewModelScope.launch {
-            _state.value = HandlerDiscoveryState.Loading
-            try {
-                val response = registryClient.listHandlers(category = category)
-                _state.value = HandlerDiscoveryState.Loaded(
-                    handlers = response.handlers,
-                    hasMore = response.has_more
-                )
-            } catch (e: Exception) {
-                _state.value = HandlerDiscoveryState.Error(e.message ?: "Failed to load handlers")
-            }
-        }
-    }
-
-    fun selectCategory(category: String?) {
-        _selectedCategory.value = category
-        loadHandlers(category)
-    }
-
-    fun installHandler(handlerId: String, version: String) {
-        viewModelScope.launch {
-            try {
-                val result = vaultHandlerClient.installHandler(
-                    InstallHandlerRequest(handlerId, version)
-                )
-                if (result.status == "installed") {
-                    loadHandlers(_selectedCategory.value)
-                }
-            } catch (e: Exception) {
-                // Handle error
-            }
-        }
-    }
-
-    fun uninstallHandler(handlerId: String) {
-        viewModelScope.launch {
-            try {
-                vaultHandlerClient.uninstallHandler(
-                    UninstallHandlerRequest(handlerId)
-                )
-                loadHandlers(_selectedCategory.value)
-            } catch (e: Exception) {
-                // Handle error
-            }
-        }
-    }
+    fun createInvitation(expiresInMinutes: Int)
+    fun shareInvitation()
+    fun copyLink()
 }
 
-sealed class HandlerDiscoveryState {
-    object Loading : HandlerDiscoveryState()
-    data class Loaded(
-        val handlers: List<HandlerSummary>,
-        val hasMore: Boolean
-    ) : HandlerDiscoveryState()
-    data class Error(val message: String) : HandlerDiscoveryState()
+// ui/connections/invite/ScanInvitationViewModel.kt
+
+@HiltViewModel
+class ScanInvitationViewModel @Inject constructor(
+    private val connectionApiClient: ConnectionApiClient,
+    private val connectionCryptoManager: ConnectionCryptoManager
+) : ViewModel() {
+
+    val state: StateFlow<ScanInvitationState>
+
+    fun onQrCodeScanned(data: String)
+    fun onManualCodeEntered(code: String)
+    fun acceptInvitation()
+    fun declineInvitation()
+}
+
+// ui/connections/list/ConnectionsViewModel.kt
+
+@HiltViewModel
+class ConnectionsViewModel @Inject constructor(
+    private val connectionApiClient: ConnectionApiClient,
+    private val messagingApiClient: MessagingApiClient
+) : ViewModel() {
+
+    val connections: StateFlow<List<ConnectionWithLastMessage>>
+    val isLoading: StateFlow<Boolean>
+
+    fun refresh()
+    fun search(query: String)
+}
+
+// ui/messaging/ConversationViewModel.kt
+
+@HiltViewModel
+class ConversationViewModel @Inject constructor(
+    private val messagingApiClient: MessagingApiClient,
+    private val connectionCryptoManager: ConnectionCryptoManager,
+    savedStateHandle: SavedStateHandle
+) : ViewModel() {
+
+    private val connectionId: String = savedStateHandle["connectionId"]!!
+
+    val messages: StateFlow<List<Message>>
+    val connectionKey: StateFlow<ByteArray?>
+    val sendingState: StateFlow<SendingState>
+
+    fun loadMessages()
+    fun loadMoreMessages()
+    fun sendMessage(content: String)
+    fun markAsRead(messageId: String)
 }
 ```
 
-### 4. Handler Discovery UI
+### 10. QR Code Components
 
-Create handler browsing screens:
+Create QR code scanner and generator:
 
 ```kotlin
-// handlers/HandlerDiscoveryScreen.kt
+// ui/components/QrCodeGenerator.kt
 
 @Composable
-fun HandlerDiscoveryScreen(
-    viewModel: HandlerDiscoveryViewModel = hiltViewModel(),
-    onHandlerSelected: (String) -> Unit
+fun QrCodeDisplay(
+    data: String,
+    size: Dp = 250.dp,
+    modifier: Modifier = Modifier
+)
+
+// ui/components/QrCodeScanner.kt
+
+@Composable
+fun QrCodeScanner(
+    onQrCodeScanned: (String) -> Unit,
+    onError: (Exception) -> Unit,
+    modifier: Modifier = Modifier
+)
+
+// Uses CameraX + ML Kit Barcode Scanning
+// Request camera permission
+// Overlay with scan frame
+```
+
+### 11. Real-time Updates
+
+Integrate NATS for real-time messaging:
+
+```kotlin
+// messaging/MessageSubscriber.kt
+
+class MessageSubscriber @Inject constructor(
+    private val natsClient: NatsClient,
+    private val connectionCryptoManager: ConnectionCryptoManager
 ) {
-    val state by viewModel.state.collectAsState()
-    val selectedCategory by viewModel.selectedCategory.collectAsState()
+    // Subscribe to incoming messages
+    fun subscribeToMessages(
+        onMessage: (Message) -> Unit
+    ): Job
 
-    Column(modifier = Modifier.fillMaxSize()) {
-        // Category tabs
-        CategoryTabs(
-            selectedCategory = selectedCategory,
-            onCategorySelected = { viewModel.selectCategory(it) }
-        )
-
-        when (val currentState = state) {
-            is HandlerDiscoveryState.Loading -> LoadingIndicator()
-            is HandlerDiscoveryState.Loaded -> HandlerList(
-                handlers = currentState.handlers,
-                onHandlerClick = onHandlerSelected,
-                onInstall = { viewModel.installHandler(it.id, it.version) },
-                onUninstall = { viewModel.uninstallHandler(it.id) }
-            )
-            is HandlerDiscoveryState.Error -> ErrorCard(
-                message = currentState.message,
-                onRetry = { viewModel.loadHandlers() }
-            )
-        }
-    }
+    // Subscribe to connection events
+    fun subscribeToConnectionEvents(
+        onEvent: (ConnectionEvent) -> Unit
+    ): Job
 }
 
-@Composable
-fun CategoryTabs(
-    selectedCategory: String?,
-    onCategorySelected: (String?) -> Unit
-) {
-    val categories = listOf(
-        null to "All",
-        "messaging" to "Messaging",
-        "social" to "Social",
-        "productivity" to "Productivity",
-        "utilities" to "Utilities"
-    )
-
-    ScrollableTabRow(
-        selectedTabIndex = categories.indexOfFirst { it.first == selectedCategory }
-    ) {
-        categories.forEach { (category, label) ->
-            Tab(
-                selected = selectedCategory == category,
-                onClick = { onCategorySelected(category) },
-                text = { Text(label) }
-            )
-        }
-    }
-}
-
-@Composable
-fun HandlerList(
-    handlers: List<HandlerSummary>,
-    onHandlerClick: (String) -> Unit,
-    onInstall: (HandlerSummary) -> Unit,
-    onUninstall: (HandlerSummary) -> Unit
-) {
-    LazyColumn {
-        items(handlers) { handler ->
-            HandlerListItem(
-                handler = handler,
-                onClick = { onHandlerClick(handler.id) },
-                onInstall = { onInstall(handler) },
-                onUninstall = { onUninstall(handler) }
-            )
-        }
-    }
-}
-
-@Composable
-fun HandlerListItem(
-    handler: HandlerSummary,
-    onClick: () -> Unit,
-    onInstall: () -> Unit,
-    onUninstall: () -> Unit
-) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(8.dp)
-            .clickable(onClick = onClick)
-    ) {
-        Row(
-            modifier = Modifier.padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            // Handler icon
-            AsyncImage(
-                model = handler.icon_url,
-                contentDescription = handler.name,
-                modifier = Modifier.size(48.dp)
-            )
-
-            Spacer(modifier = Modifier.width(16.dp))
-
-            Column(modifier = Modifier.weight(1f)) {
-                Text(handler.name, style = MaterialTheme.typography.titleMedium)
-                Text(handler.description, style = MaterialTheme.typography.bodySmall)
-                Text("v${handler.version} by ${handler.publisher}",
-                    style = MaterialTheme.typography.labelSmall)
-            }
-
-            // Install/Uninstall button
-            if (handler.installed) {
-                OutlinedButton(onClick = onUninstall) {
-                    Text("Uninstall")
-                }
-            } else {
-                Button(onClick = onInstall) {
-                    Text("Install")
-                }
-            }
-        }
-    }
+sealed class ConnectionEvent {
+    data class InvitationAccepted(val connection: Connection) : ConnectionEvent()
+    data class ConnectionRevoked(val connectionId: String) : ConnectionEvent()
+    data class ProfileUpdated(val connectionId: String, val profile: Profile) : ConnectionEvent()
 }
 ```
 
-### 5. Handler Detail Screen
+### 12. Navigation Integration
 
-Create handler detail view:
+Add connection routes to navigation:
 
 ```kotlin
-// handlers/HandlerDetailScreen.kt
+// Update VettIDApp.kt navigation graph
 
-@Composable
-fun HandlerDetailScreen(
-    handlerId: String,
-    viewModel: HandlerDetailViewModel = hiltViewModel()
-) {
-    val state by viewModel.state.collectAsState()
-
-    LaunchedEffect(handlerId) {
-        viewModel.loadHandler(handlerId)
-    }
-
-    when (val currentState = state) {
-        is HandlerDetailState.Loading -> LoadingIndicator()
-        is HandlerDetailState.Loaded -> HandlerDetailContent(
-            handler = currentState.handler,
-            onInstall = { viewModel.installHandler() },
-            onUninstall = { viewModel.uninstallHandler() },
-            onExecute = { input -> viewModel.executeHandler(input) }
-        )
-        is HandlerDetailState.Error -> ErrorCard(currentState.message)
-    }
-}
-
-@Composable
-fun HandlerDetailContent(
-    handler: HandlerDetailResponse,
-    onInstall: () -> Unit,
-    onUninstall: () -> Unit,
-    onExecute: (JsonObject) -> Unit
-) {
-    LazyColumn(modifier = Modifier.padding(16.dp)) {
-        item {
-            // Header
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                AsyncImage(
-                    model = handler.icon_url,
-                    contentDescription = handler.name,
-                    modifier = Modifier.size(64.dp)
-                )
-                Spacer(modifier = Modifier.width(16.dp))
-                Column {
-                    Text(handler.name, style = MaterialTheme.typography.headlineMedium)
-                    Text("v${handler.version} by ${handler.publisher}")
-                }
-            }
-        }
-
-        item {
-            Spacer(modifier = Modifier.height(16.dp))
-            Text(handler.description, style = MaterialTheme.typography.bodyLarge)
-        }
-
-        // Permissions section
-        item {
-            Spacer(modifier = Modifier.height(24.dp))
-            Text("Permissions", style = MaterialTheme.typography.titleMedium)
-            handler.permissions.forEach { permission ->
-                PermissionItem(permission)
-            }
-        }
-
-        // Install/Execute buttons
-        item {
-            Spacer(modifier = Modifier.height(24.dp))
-            if (handler.installed) {
-                Row {
-                    Button(
-                        onClick = { onExecute(JsonObject(emptyMap())) },
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text("Execute")
-                    }
-                    Spacer(modifier = Modifier.width(8.dp))
-                    OutlinedButton(onClick = onUninstall) {
-                        Text("Uninstall")
-                    }
-                }
-            } else {
-                Button(
-                    onClick = onInstall,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("Install")
-                }
-            }
-        }
-
-        // Changelog
-        handler.changelog?.let { changelog ->
-            item {
-                Spacer(modifier = Modifier.height(24.dp))
-                Text("Changelog", style = MaterialTheme.typography.titleMedium)
-                Text(changelog, style = MaterialTheme.typography.bodySmall)
-            }
-        }
-    }
-}
+// New routes:
+// - connections (list)
+// - connections/create-invitation
+// - connections/scan-invitation
+// - connections/{connectionId}
+// - connections/{connectionId}/messages
+// - profile
+// - profile/edit
 ```
 
-### 6. Handler Execution UI
+## Dependencies
 
-Create input form and result display:
-
+Add to `build.gradle.kts`:
 ```kotlin
-// handlers/HandlerExecutionScreen.kt
+// QR Code generation
+implementation("com.google.zxing:core:3.5.2")
 
-@Composable
-fun HandlerExecutionScreen(
-    handlerId: String,
-    inputSchema: JsonObject,
-    viewModel: HandlerExecutionViewModel = hiltViewModel()
-) {
-    val state by viewModel.state.collectAsState()
-    var inputValues by remember { mutableStateOf(mutableMapOf<String, Any>()) }
+// QR Code scanning (CameraX + ML Kit)
+implementation("androidx.camera:camera-camera2:1.3.1")
+implementation("androidx.camera:camera-lifecycle:1.3.1")
+implementation("androidx.camera:camera-view:1.3.1")
+implementation("com.google.mlkit:barcode-scanning:17.2.0")
 
-    Column(modifier = Modifier.padding(16.dp)) {
-        Text("Execute Handler", style = MaterialTheme.typography.headlineMedium)
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        // Dynamic input form based on schema
-        DynamicInputForm(
-            schema = inputSchema,
-            values = inputValues,
-            onValueChange = { key, value ->
-                inputValues = inputValues.toMutableMap().apply { put(key, value) }
-            }
-        )
-
-        Spacer(modifier = Modifier.height(24.dp))
-
-        Button(
-            onClick = { viewModel.execute(handlerId, JsonObject(inputValues)) },
-            enabled = state !is HandlerExecutionState.Executing,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            if (state is HandlerExecutionState.Executing) {
-                CircularProgressIndicator(modifier = Modifier.size(24.dp))
-            } else {
-                Text("Execute")
-            }
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        // Result display
-        when (val currentState = state) {
-            is HandlerExecutionState.Success -> {
-                Card(modifier = Modifier.fillMaxWidth()) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Text("Success", color = Color.Green)
-                        Text("Execution time: ${currentState.executionTimeMs}ms")
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text("Output:", style = MaterialTheme.typography.labelMedium)
-                        Text(currentState.output.toString())
-                    }
-                }
-            }
-            is HandlerExecutionState.Error -> {
-                Card(modifier = Modifier.fillMaxWidth()) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Text("Error", color = Color.Red)
-                        Text(currentState.message)
-                    }
-                }
-            }
-            else -> {}
-        }
-    }
-}
-```
-
-### 7. Unit Tests
-
-```kotlin
-class HandlerDiscoveryViewModelTest {
-    @Test fun `loadHandlers updates state with handler list`()
-    @Test fun `selectCategory filters handlers`()
-    @Test fun `installHandler calls API and refreshes list`()
-    @Test fun `uninstallHandler calls API and refreshes list`()
-}
-
-class HandlerDetailViewModelTest {
-    @Test fun `loadHandler fetches handler details`()
-    @Test fun `executeHandler sends input and receives output`()
-    @Test fun `executeHandler handles timeout`()
-}
-
-class HandlerExecutionViewModelTest {
-    @Test fun `execute sends request and updates state`()
-    @Test fun `execute handles error response`()
-    @Test fun `execute shows loading state during execution`()
-}
+// Image loading for avatars (already have Coil)
+// implementation("io.coil-kt:coil-compose:2.5.0")
 ```
 
 ## Deliverables
 
-- [ ] HandlerRegistryClient for registry API
-- [ ] VaultHandlerClient for vault handler management
-- [ ] HandlerDiscoveryViewModel and UI
-- [ ] HandlerDetailScreen with permissions display
-- [ ] HandlerExecutionScreen with dynamic input form
-- [ ] Navigation integration for handler flows
+- [ ] Connection data models (Connection, Invitation, Message, Profile)
+- [ ] ConnectionApiClient implementation
+- [ ] MessagingApiClient implementation
+- [ ] ProfileApiClient implementation
+- [ ] ConnectionCryptoManager (X25519, XChaCha20-Poly1305)
+- [ ] CreateInvitationScreen with QR code display
+- [ ] ScanInvitationScreen with camera/ML Kit
+- [ ] ConnectionsScreen (list with last message)
+- [ ] ConnectionDetailScreen
+- [ ] ProfileScreen and EditProfileScreen
+- [ ] ConversationScreen with message bubbles
+- [ ] MessageSubscriber for real-time updates
+- [ ] Navigation integration
 - [ ] Unit tests for ViewModels
 
 ## Acceptance Criteria
 
-- [ ] User can browse available handlers by category
-- [ ] User can view handler details and permissions
-- [ ] User can install/uninstall handlers
-- [ ] User can execute installed handlers
-- [ ] Handler execution shows input form based on schema
-- [ ] Handler results displayed correctly
-- [ ] Error states handled gracefully
+- [ ] Can create and display connection invitation QR code
+- [ ] Can scan QR code and accept invitation
+- [ ] X25519 key exchange establishes shared secret
+- [ ] Per-connection encryption keys stored securely
+- [ ] Connection list shows all connections with unread counts
+- [ ] Can view and edit own profile
+- [ ] Messages encrypted with XChaCha20-Poly1305
+- [ ] Real-time message delivery via NATS
+- [ ] Proper error handling and loading states
 
 ## Notes
 
-- Handler icons may be null - show placeholder
-- Input schema drives dynamic form generation
-- Consider caching handler list for offline browsing
-- Permissions should be clearly explained to user
+- Use ZXing for QR generation, ML Kit for scanning
+- Store connection keys in EncryptedSharedPreferences
+- Test encryption with known test vectors
+- Handle offline scenarios (queue messages)
+- Consider message pagination for long conversations
 
 ## Status Update
 
 ```bash
 cd /path/to/vettid-android
 git pull
-# Create handler UI components
+# Implement connections & messaging UI
+./gradlew test  # Verify tests pass
 git add .
-git commit -m "Phase 6: Add handler discovery and execution UI"
+git commit -m "Phase 7: Add connections and messaging UI"
 git push
 
-# Update status in backend repo
-cd /path/to/vettid-dev
-git pull
-# Edit cdk/coordination/status/android.json
+# Update status
+# Edit cdk/coordination/status/android.json (in vettid-dev repo)
 git add cdk/coordination/status/android.json
-git commit -m "Update Android status: Phase 6 handler UI complete"
+git commit -m "Update Android status: Phase 7 connections & messaging complete"
 git push
 ```

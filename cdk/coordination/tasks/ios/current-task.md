@@ -1,7 +1,7 @@
-# Task: Phase 6 - Handler Discovery & Execution
+# Task: Phase 7 - Connections & Messaging UI
 
 ## Phase
-Phase 6: Handler System (WASM)
+Phase 7: Connections & Messaging
 
 ## Assigned To
 iOS Instance
@@ -10,362 +10,322 @@ iOS Instance
 `github.com/mesmerverse/vettid-ios`
 
 ## Status
-Phase 5 complete. Ready for Phase 6 handler discovery and execution.
+Phase 6 complete. Ready for Phase 7 connections & messaging UI.
 
 ## Overview
 
-Phase 6 implements the handler system UI for discovering, installing, and triggering WASM handlers. The mobile app interacts with:
-1. Handler Registry API to list and download handlers
-2. Vault to install and execute handlers
-3. Handler responses via NATS
+Phase 7 implements the connection and messaging system UI. You need to create:
+1. Connection invitation generation and QR code display
+2. Connection invitation scanning and acceptance
+3. Connection list and detail views
+4. Profile viewing and editing
+5. Encrypted messaging UI with conversation views
 
-## New Backend Endpoints
+## API Endpoints (Backend)
 
-### Handler Registry
+### Connections
 ```
-GET  /registry/handlers              # List available handlers
-GET  /registry/handlers/{id}         # Get handler details and download URL
-POST /vault/handlers/install         # Install handler on vault
-POST /vault/handlers/uninstall       # Uninstall handler from vault
-GET  /vault/handlers                 # List installed handlers
-POST /vault/handlers/{id}/execute    # Execute handler with input
+POST /connections/invite          # Generate connection invitation
+POST /connections/accept          # Accept connection invitation
+POST /connections/revoke          # Revoke connection
+GET  /connections                 # List connections
+GET  /connections/{id}            # Get connection details
+GET  /connections/{id}/profile    # Get connection's profile
 ```
 
-## Phase 6 iOS Tasks
+### Profiles
+```
+GET  /profile                     # Get own profile
+PUT  /profile                     # Update own profile
+POST /profile/publish             # Publish profile to connections
+```
 
-### 1. Handler Registry Client
+### Messaging
+```
+POST /messages/send               # Send encrypted message
+GET  /messages/{connectionId}     # Get message history
+GET  /messages/unread             # Get unread message count
+POST /messages/{id}/read          # Mark message as read
+```
 
-Add registry API to APIClient:
+## Phase 7 iOS Tasks
+
+### 1. Connection Data Models
+
+Create connection and messaging data models:
 
 ```swift
-// Services/HandlerRegistryClient.swift
+// Models/Connection.swift
+
+struct Connection: Codable, Identifiable {
+    let id: String           // connectionId
+    let peerGuid: String
+    let peerDisplayName: String
+    let peerAvatarUrl: String?
+    let status: ConnectionStatus
+    let createdAt: Date
+    let lastMessageAt: Date?
+    let unreadCount: Int
+}
+
+enum ConnectionStatus: String, Codable {
+    case pending
+    case active
+    case revoked
+}
+
+struct ConnectionInvitation: Codable {
+    let invitationId: String
+    let invitationCode: String
+    let qrCodeData: String
+    let deepLinkUrl: String
+    let expiresAt: Date
+    let creatorDisplayName: String
+}
+
+// Models/Message.swift
+
+struct Message: Codable, Identifiable {
+    let id: String           // messageId
+    let connectionId: String
+    let senderId: String
+    let content: String
+    let contentType: MessageContentType
+    let sentAt: Date
+    let receivedAt: Date?
+    let readAt: Date?
+    let status: MessageStatus
+}
+
+enum MessageContentType: String, Codable {
+    case text
+    case image
+    case file
+}
+
+enum MessageStatus: String, Codable {
+    case sending
+    case sent
+    case delivered
+    case read
+    case failed
+}
+
+// Models/Profile.swift
+
+struct Profile: Codable {
+    let guid: String
+    var displayName: String
+    var avatarUrl: String?
+    var bio: String?
+    var location: String?
+    let lastUpdated: Date
+}
+```
+
+### 2. Connection API Client
+
+Create API client extensions for connections:
+
+```swift
+// Services/ConnectionAPIClient.swift
 
 extension APIClient {
-    func listHandlers(
-        category: String? = nil,
-        page: Int = 1,
-        limit: Int = 20
-    ) async throws -> HandlerListResponse
-
-    func getHandler(id: String) async throws -> HandlerDetailResponse
+    func createInvitation(expiresInMinutes: Int = 60) async throws -> ConnectionInvitation
+    func acceptInvitation(code: String, publicKey: Data) async throws -> Connection
+    func revokeConnection(connectionId: String) async throws
+    func listConnections() async throws -> [Connection]
+    func getConnection(id: String) async throws -> Connection
+    func getConnectionProfile(connectionId: String) async throws -> Profile
 }
 
-struct HandlerListResponse: Codable {
-    let handlers: [HandlerSummary]
-    let total: Int
-    let page: Int
-    let has_more: Bool
-}
-
-struct HandlerSummary: Codable, Identifiable {
-    let id: String
-    let name: String
-    let description: String
-    let version: String
-    let category: String
-    let icon_url: String?
-    let publisher: String
-    let installed: Bool
-    let installed_version: String?
-}
-
-struct HandlerDetailResponse: Codable {
-    let id: String
-    let name: String
-    let description: String
-    let version: String
-    let category: String
-    let icon_url: String?
-    let publisher: String
-    let published_at: String
-    let size_bytes: Int
-    let permissions: [HandlerPermission]
-    let input_schema: [String: AnyCodableValue]
-    let output_schema: [String: AnyCodableValue]
-    let changelog: String?
-    let installed: Bool
-    let installed_version: String?
-}
-
-struct HandlerPermission: Codable {
-    let type: String      // "network", "storage", "crypto"
-    let scope: String     // e.g., "api.example.com" for network
-    let description: String
-}
-```
-
-### 2. Handler Installation Client
-
-Add vault handler management endpoints:
-
-```swift
-// Services/VaultHandlerClient.swift
+// Services/ProfileAPIClient.swift
 
 extension APIClient {
-    func installHandler(
-        handlerId: String,
-        version: String
-    ) async throws -> InstallHandlerResponse
-
-    func uninstallHandler(handlerId: String) async throws -> UninstallHandlerResponse
-
-    func listInstalledHandlers() async throws -> InstalledHandlersResponse
-
-    func executeHandler(
-        handlerId: String,
-        input: [String: AnyCodableValue],
-        timeoutMs: Int = 30000
-    ) async throws -> ExecuteHandlerResponse
+    func getProfile() async throws -> Profile
+    func updateProfile(_ profile: Profile) async throws -> Profile
+    func publishProfile() async throws
 }
 
-struct InstallHandlerRequest: Encodable {
-    let handler_id: String
-    let version: String
-}
+// Services/MessagingAPIClient.swift
 
-struct InstallHandlerResponse: Codable {
-    let status: String      // "installed", "failed"
-    let handler_id: String
-    let version: String
-    let installed_at: String?
-}
+extension APIClient {
+    func sendMessage(
+        connectionId: String,
+        encryptedContent: Data,
+        nonce: Data
+    ) async throws -> Message
 
-struct ExecuteHandlerRequest: Encodable {
-    let input: [String: AnyCodableValue]
-    let timeout_ms: Int
-}
+    func getMessageHistory(
+        connectionId: String,
+        limit: Int = 50,
+        before: Date? = nil
+    ) async throws -> [Message]
 
-struct ExecuteHandlerResponse: Codable {
-    let request_id: String
-    let status: String      // "success", "error", "timeout"
-    let output: [String: AnyCodableValue]?
-    let error: String?
-    let execution_time_ms: Int
+    func getUnreadCount() async throws -> [String: Int]
+
+    func markAsRead(messageId: String) async throws
 }
 ```
 
-### 3. Handler Discovery ViewModel
+### 3. Connection Crypto Manager
 
-Create ViewModel for browsing handlers:
+Create crypto manager for per-connection encryption:
 
 ```swift
-// Handlers/HandlerDiscoveryViewModel.swift
+// Crypto/ConnectionCryptoManager.swift
 
-@MainActor
-class HandlerDiscoveryViewModel: ObservableObject {
-    @Published var state: HandlerDiscoveryState = .loading
-    @Published var selectedCategory: String? = nil
-    @Published var installingHandlerId: String? = nil
+class ConnectionCryptoManager {
+    private let credentialStore: CredentialStore
 
-    private let apiClient: APIClient
-
-    init(apiClient: APIClient) {
-        self.apiClient = apiClient
+    init(credentialStore: CredentialStore) {
+        self.credentialStore = credentialStore
     }
 
-    func loadHandlers() async {
-        state = .loading
-        do {
-            let response = try await apiClient.listHandlers(category: selectedCategory)
-            state = .loaded(handlers: response.handlers, hasMore: response.has_more)
-        } catch {
-            state = .error(error.localizedDescription)
-        }
-    }
+    // Generate X25519 key pair for new connection
+    func generateConnectionKeyPair() throws -> (publicKey: Data, privateKey: Data)
 
-    func selectCategory(_ category: String?) {
-        selectedCategory = category
-        Task { await loadHandlers() }
-    }
+    // Derive shared secret from X25519 key exchange
+    func deriveSharedSecret(
+        privateKey: Data,
+        peerPublicKey: Data
+    ) throws -> Data
 
-    func installHandler(_ handler: HandlerSummary) async {
-        installingHandlerId = handler.id
-        do {
-            let result = try await apiClient.installHandler(
-                handlerId: handler.id,
-                version: handler.version
-            )
-            if result.status == "installed" {
-                await loadHandlers()
-            }
-        } catch {
-            // Handle error
-        }
-        installingHandlerId = nil
-    }
+    // Derive per-connection encryption key using HKDF
+    func deriveConnectionKey(
+        sharedSecret: Data,
+        connectionId: String
+    ) throws -> Data
 
-    func uninstallHandler(_ handler: HandlerSummary) async {
-        do {
-            _ = try await apiClient.uninstallHandler(handlerId: handler.id)
-            await loadHandlers()
-        } catch {
-            // Handle error
-        }
-    }
+    // Encrypt message with XChaCha20-Poly1305
+    func encryptMessage(
+        plaintext: String,
+        connectionKey: Data
+    ) throws -> EncryptedMessage
+
+    // Decrypt message with XChaCha20-Poly1305
+    func decryptMessage(
+        ciphertext: Data,
+        nonce: Data,
+        connectionKey: Data
+    ) throws -> String
+
+    // Store connection key securely in Keychain
+    func storeConnectionKey(connectionId: String, key: Data) throws
+
+    // Retrieve connection key from Keychain
+    func getConnectionKey(connectionId: String) throws -> Data?
 }
 
-enum HandlerDiscoveryState {
-    case loading
-    case loaded(handlers: [HandlerSummary], hasMore: Bool)
-    case error(String)
+struct EncryptedMessage {
+    let ciphertext: Data
+    let nonce: Data
 }
 ```
 
-### 4. Handler Discovery View
+### 4. Connection Invitation Views
 
-Create handler browsing screens:
+Create invitation flow views:
 
 ```swift
-// Handlers/HandlerDiscoveryView.swift
+// Views/Connections/CreateInvitationView.swift
 
-struct HandlerDiscoveryView: View {
-    @StateObject var viewModel: HandlerDiscoveryViewModel
-    @State private var selectedHandler: HandlerSummary?
+struct CreateInvitationView: View {
+    @StateObject private var viewModel = CreateInvitationViewModel()
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationView {
-            VStack(spacing: 0) {
-                // Category picker
-                CategoryPicker(
-                    selectedCategory: $viewModel.selectedCategory,
-                    onSelect: { viewModel.selectCategory($0) }
-                )
-
-                // Handler list
+            VStack(spacing: 24) {
                 switch viewModel.state {
-                case .loading:
-                    ProgressView()
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                case .idle:
+                    expirationPicker
+                    createButton
 
-                case .loaded(let handlers, _):
-                    List(handlers) { handler in
-                        HandlerListRow(
-                            handler: handler,
-                            isInstalling: viewModel.installingHandlerId == handler.id,
-                            onTap: { selectedHandler = handler },
-                            onInstall: { Task { await viewModel.installHandler(handler) } },
-                            onUninstall: { Task { await viewModel.uninstallHandler(handler) } }
-                        )
-                    }
-                    .listStyle(.plain)
+                case .creating:
+                    ProgressView("Creating invitation...")
+
+                case .created(let invitation):
+                    qrCodeDisplay(invitation)
+                    shareButtons(invitation)
+                    expirationTimer(invitation)
 
                 case .error(let message):
                     ErrorView(message: message) {
-                        Task { await viewModel.loadHandlers() }
+                        viewModel.reset()
                     }
                 }
             }
-            .navigationTitle("Handlers")
-            .sheet(item: $selectedHandler) { handler in
-                HandlerDetailView(handlerId: handler.id)
-            }
-        }
-        .task {
-            await viewModel.loadHandlers()
-        }
-    }
-}
-
-struct CategoryPicker: View {
-    @Binding var selectedCategory: String?
-    let onSelect: (String?) -> Void
-
-    let categories: [(String?, String)] = [
-        (nil, "All"),
-        ("messaging", "Messaging"),
-        ("social", "Social"),
-        ("productivity", "Productivity"),
-        ("utilities", "Utilities")
-    ]
-
-    var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 12) {
-                ForEach(categories, id: \.0) { category, label in
-                    CategoryChip(
-                        label: label,
-                        isSelected: selectedCategory == category,
-                        action: { onSelect(category) }
-                    )
+            .padding()
+            .navigationTitle("Create Invitation")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
                 }
             }
-            .padding(.horizontal)
         }
-        .padding(.vertical, 8)
-        .background(Color(.systemBackground))
     }
 }
 
-struct HandlerListRow: View {
-    let handler: HandlerSummary
-    let isInstalling: Bool
-    let onTap: () -> Void
-    let onInstall: () -> Void
-    let onUninstall: () -> Void
+// Views/Connections/ScanInvitationView.swift
+
+struct ScanInvitationView: View {
+    @StateObject private var viewModel = ScanInvitationViewModel()
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        HStack(spacing: 12) {
-            // Handler icon
-            AsyncImage(url: URL(string: handler.icon_url ?? "")) { image in
-                image.resizable().aspectRatio(contentMode: .fit)
-            } placeholder: {
-                Image(systemName: "cube.box")
-                    .foregroundColor(.secondary)
+        NavigationView {
+            ZStack {
+                switch viewModel.state {
+                case .scanning:
+                    QRCodeScannerView(
+                        onScan: { viewModel.onQrCodeScanned($0) }
+                    )
+                    scanOverlay
+
+                case .processing:
+                    ProgressView("Connecting...")
+
+                case .preview(let peerInfo):
+                    ConnectionPreviewView(
+                        peerInfo: peerInfo,
+                        onAccept: { viewModel.acceptInvitation() },
+                        onDecline: { dismiss() }
+                    )
+
+                case .success(let connection):
+                    ConnectionSuccessView(connection: connection) {
+                        dismiss()
+                    }
+
+                case .error(let message):
+                    ErrorView(message: message) {
+                        viewModel.reset()
+                    }
+                }
             }
-            .frame(width: 48, height: 48)
-            .background(Color(.systemGray6))
-            .cornerRadius(8)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(handler.name)
-                    .font(.headline)
-                Text(handler.description)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .lineLimit(2)
-                Text("v\(handler.version) by \(handler.publisher)")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-            }
-
-            Spacer()
-
-            // Install/Uninstall button
-            if isInstalling {
-                ProgressView()
-            } else if handler.installed {
-                Button("Uninstall", action: onUninstall)
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-            } else {
-                Button("Install", action: onInstall)
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
+            .navigationTitle("Scan Invitation")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
             }
         }
-        .padding(.vertical, 8)
-        .contentShape(Rectangle())
-        .onTapGesture(perform: onTap)
     }
 }
 ```
 
-### 5. Handler Detail View
+### 5. Connection List View
 
-Create handler detail screen:
+Create connection list screen:
 
 ```swift
-// Handlers/HandlerDetailView.swift
+// Views/Connections/ConnectionsListView.swift
 
-struct HandlerDetailView: View {
-    let handlerId: String
-    @StateObject private var viewModel: HandlerDetailViewModel
-    @Environment(\.dismiss) private var dismiss
-
-    init(handlerId: String) {
-        self.handlerId = handlerId
-        self._viewModel = StateObject(wrappedValue: HandlerDetailViewModel())
-    }
+struct ConnectionsListView: View {
+    @StateObject private var viewModel = ConnectionsViewModel()
+    @State private var showCreateInvitation = false
+    @State private var showScanInvitation = false
 
     var body: some View {
         NavigationView {
@@ -374,335 +334,726 @@ struct HandlerDetailView: View {
                 case .loading:
                     ProgressView()
 
-                case .loaded(let handler):
-                    HandlerDetailContent(
-                        handler: handler,
-                        isInstalling: viewModel.isInstalling,
-                        onInstall: { Task { await viewModel.installHandler() } },
-                        onUninstall: { Task { await viewModel.uninstallHandler() } },
-                        onExecute: { viewModel.showExecutionSheet = true }
+                case .empty:
+                    EmptyConnectionsView(
+                        onCreateInvitation: { showCreateInvitation = true },
+                        onScanInvitation: { showScanInvitation = true }
                     )
+
+                case .loaded(let connections):
+                    List(connections) { connection in
+                        NavigationLink(destination: ConnectionDetailView(connectionId: connection.id)) {
+                            ConnectionListRow(
+                                connection: connection,
+                                lastMessage: viewModel.lastMessage(for: connection.id)
+                            )
+                        }
+                    }
+                    .listStyle(.plain)
+                    .refreshable {
+                        await viewModel.refresh()
+                    }
 
                 case .error(let message):
                     ErrorView(message: message) {
-                        Task { await viewModel.loadHandler(handlerId) }
+                        Task { await viewModel.refresh() }
                     }
                 }
             }
-            .navigationTitle("Handler Details")
-            .navigationBarTitleDisplayMode(.inline)
+            .navigationTitle("Connections")
             .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Done") { dismiss() }
+                ToolbarItem(placement: .primaryAction) {
+                    Menu {
+                        Button(action: { showCreateInvitation = true }) {
+                            Label("Create Invitation", systemImage: "qrcode")
+                        }
+                        Button(action: { showScanInvitation = true }) {
+                            Label("Scan Invitation", systemImage: "qrcode.viewfinder")
+                        }
+                    } label: {
+                        Image(systemName: "plus")
+                    }
                 }
             }
+            .searchable(text: $viewModel.searchQuery)
         }
-        .sheet(isPresented: $viewModel.showExecutionSheet) {
-            if case .loaded(let handler) = viewModel.state {
-                HandlerExecutionView(
-                    handler: handler,
-                    viewModel: HandlerExecutionViewModel()
-                )
-            }
+        .sheet(isPresented: $showCreateInvitation) {
+            CreateInvitationView()
+        }
+        .sheet(isPresented: $showScanInvitation) {
+            ScanInvitationView()
         }
         .task {
-            await viewModel.loadHandler(handlerId)
+            await viewModel.loadConnections()
         }
     }
 }
 
-struct HandlerDetailContent: View {
-    let handler: HandlerDetailResponse
-    let isInstalling: Bool
-    let onInstall: () -> Void
-    let onUninstall: () -> Void
-    let onExecute: () -> Void
+// Views/Connections/ConnectionListRow.swift
+
+struct ConnectionListRow: View {
+    let connection: Connection
+    let lastMessage: Message?
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                // Header
-                HStack(spacing: 16) {
-                    AsyncImage(url: URL(string: handler.icon_url ?? "")) { image in
-                        image.resizable().aspectRatio(contentMode: .fit)
-                    } placeholder: {
-                        Image(systemName: "cube.box")
-                    }
-                    .frame(width: 64, height: 64)
-                    .background(Color(.systemGray6))
-                    .cornerRadius(12)
+        HStack(spacing: 12) {
+            // Avatar
+            AsyncImage(url: URL(string: connection.peerAvatarUrl ?? "")) { image in
+                image.resizable().aspectRatio(contentMode: .fill)
+            } placeholder: {
+                Image(systemName: "person.circle.fill")
+                    .foregroundColor(.secondary)
+            }
+            .frame(width: 50, height: 50)
+            .clipShape(Circle())
 
-                    VStack(alignment: .leading) {
-                        Text(handler.name)
-                            .font(.title2)
-                            .fontWeight(.bold)
-                        Text("v\(handler.version) by \(handler.publisher)")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                    }
-                }
-
-                Text(handler.description)
-                    .font(.body)
-
-                // Permissions section
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Permissions")
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text(connection.peerDisplayName)
                         .font(.headline)
-
-                    ForEach(handler.permissions, id: \.type) { permission in
-                        PermissionRow(permission: permission)
-                    }
-                }
-
-                // Action buttons
-                if handler.installed {
-                    HStack(spacing: 12) {
-                        Button(action: onExecute) {
-                            Label("Execute", systemImage: "play.fill")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.borderedProminent)
-
-                        Button(action: onUninstall) {
-                            Label("Uninstall", systemImage: "trash")
-                        }
-                        .buttonStyle(.bordered)
-                    }
-                } else {
-                    Button(action: onInstall) {
-                        if isInstalling {
-                            ProgressView()
-                                .frame(maxWidth: .infinity)
-                        } else {
-                            Label("Install", systemImage: "arrow.down.circle")
-                                .frame(maxWidth: .infinity)
-                        }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(isInstalling)
-                }
-
-                // Changelog
-                if let changelog = handler.changelog {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Changelog")
-                            .font(.headline)
-                        Text(changelog)
+                    Spacer()
+                    if let lastMessageAt = connection.lastMessageAt {
+                        Text(lastMessageAt, style: .relative)
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
                 }
+
+                if let lastMessage = lastMessage {
+                    Text(lastMessage.content)
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
             }
-            .padding()
-        }
-    }
-}
 
-struct PermissionRow: View {
-    let permission: HandlerPermission
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: iconForPermission(permission.type))
-                .foregroundColor(.blue)
-                .frame(width: 24)
-
-            VStack(alignment: .leading) {
-                Text(permission.type.capitalized)
-                    .font(.subheadline)
-                    .fontWeight(.medium)
-                Text(permission.description)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+            // Unread badge
+            if connection.unreadCount > 0 {
+                Text("\(connection.unreadCount)")
+                    .font(.caption2)
+                    .fontWeight(.bold)
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.blue)
+                    .clipShape(Capsule())
             }
         }
         .padding(.vertical, 4)
     }
+}
+```
 
-    private func iconForPermission(_ type: String) -> String {
-        switch type {
-        case "network": return "network"
-        case "storage": return "externaldrive"
-        case "crypto": return "lock.shield"
-        default: return "questionmark.circle"
+### 6. Connection Detail View
+
+Create connection detail screen:
+
+```swift
+// Views/Connections/ConnectionDetailView.swift
+
+struct ConnectionDetailView: View {
+    let connectionId: String
+    @StateObject private var viewModel = ConnectionDetailViewModel()
+    @State private var showRevokeConfirmation = false
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 24) {
+                // Avatar and name
+                VStack(spacing: 12) {
+                    AsyncImage(url: URL(string: viewModel.connection?.peerAvatarUrl ?? "")) { image in
+                        image.resizable().aspectRatio(contentMode: .fill)
+                    } placeholder: {
+                        Image(systemName: "person.circle.fill")
+                            .resizable()
+                            .foregroundColor(.secondary)
+                    }
+                    .frame(width: 100, height: 100)
+                    .clipShape(Circle())
+
+                    Text(viewModel.connection?.peerDisplayName ?? "")
+                        .font(.title)
+                        .fontWeight(.bold)
+
+                    ConnectionStatusBadge(status: viewModel.connection?.status ?? .active)
+                }
+
+                // Profile info
+                if let profile = viewModel.peerProfile {
+                    ProfileInfoSection(profile: profile)
+                }
+
+                // Actions
+                VStack(spacing: 12) {
+                    NavigationLink(destination: ConversationView(connectionId: connectionId)) {
+                        Label("Send Message", systemImage: "message.fill")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+
+                    Button(role: .destructive) {
+                        showRevokeConfirmation = true
+                    } label: {
+                        Label("Revoke Connection", systemImage: "xmark.circle")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                }
+                .padding(.horizontal)
+
+                // Connection stats
+                if let stats = viewModel.connectionStats {
+                    ConnectionStatsSection(stats: stats)
+                }
+            }
+            .padding()
+        }
+        .navigationTitle("Connection")
+        .navigationBarTitleDisplayMode(.inline)
+        .confirmationDialog(
+            "Revoke Connection",
+            isPresented: $showRevokeConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Revoke", role: .destructive) {
+                Task { await viewModel.revokeConnection() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This will permanently end the connection. You won't be able to message each other.")
+        }
+        .task {
+            await viewModel.loadConnection(connectionId)
         }
     }
 }
 ```
 
-### 6. Handler Execution View
+### 7. Profile Views
 
-Create input form and result display:
+Create profile screens:
 
 ```swift
-// Handlers/HandlerExecutionView.swift
+// Views/Profile/ProfileView.swift
 
-struct HandlerExecutionView: View {
-    let handler: HandlerDetailResponse
-    @StateObject var viewModel: HandlerExecutionViewModel
-    @Environment(\.dismiss) private var dismiss
+struct ProfileView: View {
+    @StateObject private var viewModel = ProfileViewModel()
+    @State private var showEditProfile = false
 
     var body: some View {
         NavigationView {
-            VStack(spacing: 20) {
-                // Dynamic input form
-                DynamicInputForm(
-                    schema: handler.input_schema,
-                    values: $viewModel.inputValues
-                )
-
-                // Execute button
-                Button(action: {
-                    Task {
-                        await viewModel.execute(
-                            handlerId: handler.id,
-                            input: viewModel.inputValues
-                        )
+            ScrollView {
+                VStack(spacing: 24) {
+                    // Avatar
+                    AsyncImage(url: URL(string: viewModel.profile?.avatarUrl ?? "")) { image in
+                        image.resizable().aspectRatio(contentMode: .fill)
+                    } placeholder: {
+                        Image(systemName: "person.circle.fill")
+                            .resizable()
+                            .foregroundColor(.secondary)
                     }
-                }) {
-                    if viewModel.isExecuting {
-                        ProgressView()
-                            .frame(maxWidth: .infinity)
-                    } else {
-                        Text("Execute")
-                            .frame(maxWidth: .infinity)
+                    .frame(width: 120, height: 120)
+                    .clipShape(Circle())
+
+                    // Display name
+                    Text(viewModel.profile?.displayName ?? "")
+                        .font(.title)
+                        .fontWeight(.bold)
+
+                    // Bio
+                    if let bio = viewModel.profile?.bio, !bio.isEmpty {
+                        Text(bio)
+                            .font(.body)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
                     }
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(viewModel.isExecuting)
 
-                // Result display
-                if let result = viewModel.result {
-                    ExecutionResultView(result: result)
-                }
+                    // Location
+                    if let location = viewModel.profile?.location, !location.isEmpty {
+                        Label(location, systemImage: "location")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    }
 
-                if let error = viewModel.errorMessage {
-                    Text(error)
-                        .foregroundColor(.red)
-                        .font(.caption)
-                }
+                    // Actions
+                    VStack(spacing: 12) {
+                        Button(action: { showEditProfile = true }) {
+                            Label("Edit Profile", systemImage: "pencil")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
 
-                Spacer()
+                        Button(action: { Task { await viewModel.publishProfile() } }) {
+                            Label("Publish to Connections", systemImage: "arrow.up.circle")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(viewModel.isPublishing)
+                    }
+                    .padding(.horizontal)
+                }
+                .padding()
             }
-            .padding()
-            .navigationTitle("Execute \(handler.name)")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Done") { dismiss() }
-                }
+            .navigationTitle("Profile")
+        }
+        .sheet(isPresented: $showEditProfile) {
+            EditProfileView(profile: viewModel.profile) { updatedProfile in
+                Task { await viewModel.updateProfile(updatedProfile) }
             }
+        }
+        .task {
+            await viewModel.loadProfile()
         }
     }
 }
 
-struct ExecutionResultView: View {
-    let result: ExecuteHandlerResponse
+// Views/Profile/EditProfileView.swift
+
+struct EditProfileView: View {
+    let profile: Profile?
+    let onSave: (Profile) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var displayName: String = ""
+    @State private var bio: String = ""
+    @State private var location: String = ""
+    @State private var showImagePicker = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Image(systemName: result.status == "success" ? "checkmark.circle.fill" : "xmark.circle.fill")
-                    .foregroundColor(result.status == "success" ? .green : .red)
-                Text(result.status.capitalized)
-                    .fontWeight(.semibold)
-                Spacer()
-                Text("\(result.execution_time_ms)ms")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
+        NavigationView {
+            Form {
+                Section {
+                    // Avatar picker
+                    HStack {
+                        Spacer()
+                        Button(action: { showImagePicker = true }) {
+                            Image(systemName: "camera.circle.fill")
+                                .resizable()
+                                .frame(width: 100, height: 100)
+                                .foregroundColor(.blue)
+                        }
+                        Spacer()
+                    }
+                }
+                .listRowBackground(Color.clear)
 
-            if let output = result.output {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Output:")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    Text(formatOutput(output))
-                        .font(.system(.caption, design: .monospaced))
-                        .padding(8)
-                        .background(Color(.systemGray6))
-                        .cornerRadius(4)
+                Section("Display Name") {
+                    TextField("Display Name", text: $displayName)
+                }
+
+                Section("Bio") {
+                    TextEditor(text: $bio)
+                        .frame(minHeight: 100)
+                }
+
+                Section("Location") {
+                    TextField("Location (optional)", text: $location)
                 }
             }
-
-            if let error = result.error {
-                Text(error)
-                    .foregroundColor(.red)
-                    .font(.caption)
+            .navigationTitle("Edit Profile")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        let updated = Profile(
+                            guid: profile?.guid ?? "",
+                            displayName: displayName,
+                            avatarUrl: profile?.avatarUrl,
+                            bio: bio.isEmpty ? nil : bio,
+                            location: location.isEmpty ? nil : location,
+                            lastUpdated: Date()
+                        )
+                        onSave(updated)
+                        dismiss()
+                    }
+                    .disabled(displayName.isEmpty)
+                }
             }
         }
-        .padding()
-        .background(Color(.systemGray6))
-        .cornerRadius(12)
-    }
-
-    private func formatOutput(_ output: [String: AnyCodableValue]) -> String {
-        // Convert to JSON string for display
-        if let data = try? JSONEncoder().encode(output),
-           let string = String(data: data, encoding: .utf8) {
-            return string
+        .onAppear {
+            displayName = profile?.displayName ?? ""
+            bio = profile?.bio ?? ""
+            location = profile?.location ?? ""
         }
-        return "Unable to display output"
     }
 }
 ```
 
-### 7. Unit Tests
+### 8. Messaging Views
+
+Create messaging screens:
 
 ```swift
-// VettIDTests/HandlerDiscoveryViewModelTests.swift
+// Views/Messaging/ConversationView.swift
 
-class HandlerDiscoveryViewModelTests: XCTestCase {
-    func testLoadHandlers_updatesStateWithHandlerList() async { }
-    func testSelectCategory_filtersHandlers() async { }
-    func testInstallHandler_callsAPIAndRefreshesList() async { }
-    func testUninstallHandler_callsAPIAndRefreshesList() async { }
+struct ConversationView: View {
+    let connectionId: String
+    @StateObject private var viewModel = ConversationViewModel()
+    @State private var messageText = ""
+    @FocusState private var isInputFocused: Bool
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Messages list
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 8) {
+                        ForEach(viewModel.groupedMessages, id: \.date) { group in
+                            DateDivider(date: group.date)
+
+                            ForEach(group.messages) { message in
+                                MessageBubble(
+                                    message: message,
+                                    isSent: message.senderId == viewModel.currentUserId
+                                )
+                                .id(message.id)
+                            }
+                        }
+                    }
+                    .padding()
+                }
+                .onAppear {
+                    if let lastMessage = viewModel.messages.last {
+                        proxy.scrollTo(lastMessage.id, anchor: .bottom)
+                    }
+                }
+            }
+
+            Divider()
+
+            // Message input
+            MessageInputView(
+                text: $messageText,
+                isFocused: $isInputFocused,
+                onSend: {
+                    Task {
+                        await viewModel.sendMessage(messageText)
+                        messageText = ""
+                    }
+                }
+            )
+        }
+        .navigationTitle(viewModel.connectionName)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                NavigationLink(destination: ConnectionDetailView(connectionId: connectionId)) {
+                    Image(systemName: "info.circle")
+                }
+            }
+        }
+        .task {
+            viewModel.connectionId = connectionId
+            await viewModel.loadMessages()
+        }
+    }
 }
 
-// VettIDTests/HandlerDetailViewModelTests.swift
+// Views/Messaging/MessageBubble.swift
 
-class HandlerDetailViewModelTests: XCTestCase {
-    func testLoadHandler_fetchesHandlerDetails() async { }
-    func testExecuteHandler_sendsInputAndReceivesOutput() async { }
-    func testExecuteHandler_handlesTimeout() async { }
+struct MessageBubble: View {
+    let message: Message
+    let isSent: Bool
+
+    var body: some View {
+        HStack {
+            if isSent { Spacer(minLength: 60) }
+
+            VStack(alignment: isSent ? .trailing : .leading, spacing: 4) {
+                Text(message.content)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(isSent ? Color.blue : Color(.systemGray5))
+                    .foregroundColor(isSent ? .white : .primary)
+                    .cornerRadius(16)
+
+                HStack(spacing: 4) {
+                    Text(message.sentAt, style: .time)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+
+                    if isSent {
+                        MessageStatusIcon(status: message.status)
+                    }
+                }
+            }
+
+            if !isSent { Spacer(minLength: 60) }
+        }
+    }
 }
 
-// VettIDTests/HandlerExecutionViewModelTests.swift
+// Views/Messaging/MessageInputView.swift
 
-class HandlerExecutionViewModelTests: XCTestCase {
-    func testExecute_sendsRequestAndUpdatesState() async { }
-    func testExecute_handlesErrorResponse() async { }
-    func testExecute_showsLoadingStateDuringExecution() async { }
+struct MessageInputView: View {
+    @Binding var text: String
+    var isFocused: FocusState<Bool>.Binding
+    let onSend: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            TextField("Message", text: $text, axis: .vertical)
+                .textFieldStyle(.roundedBorder)
+                .lineLimit(1...5)
+                .focused(isFocused)
+
+            Button(action: onSend) {
+                Image(systemName: "arrow.up.circle.fill")
+                    .font(.title2)
+            }
+            .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+        .padding()
+        .background(Color(.systemBackground))
+    }
 }
+```
+
+### 9. Connection ViewModels
+
+Create ViewModels for connection flows:
+
+```swift
+// ViewModels/CreateInvitationViewModel.swift
+
+@MainActor
+class CreateInvitationViewModel: ObservableObject {
+    @Published var state: CreateInvitationState = .idle
+    @Published var expirationMinutes = 60
+
+    private let apiClient: APIClient
+    private let cryptoManager: ConnectionCryptoManager
+
+    func createInvitation() async
+    func shareInvitation()
+    func copyLink()
+    func reset()
+}
+
+// ViewModels/ScanInvitationViewModel.swift
+
+@MainActor
+class ScanInvitationViewModel: ObservableObject {
+    @Published var state: ScanInvitationState = .scanning
+
+    private let apiClient: APIClient
+    private let cryptoManager: ConnectionCryptoManager
+
+    func onQrCodeScanned(_ data: String)
+    func onManualCodeEntered(_ code: String)
+    func acceptInvitation() async
+    func reset()
+}
+
+// ViewModels/ConnectionsViewModel.swift
+
+@MainActor
+class ConnectionsViewModel: ObservableObject {
+    @Published var state: ConnectionsListState = .loading
+    @Published var searchQuery = ""
+
+    private let apiClient: APIClient
+    private let messagingClient: MessagingAPIClient
+    private var lastMessages: [String: Message] = [:]
+
+    func loadConnections() async
+    func refresh() async
+    func lastMessage(for connectionId: String) -> Message?
+}
+
+// ViewModels/ConversationViewModel.swift
+
+@MainActor
+class ConversationViewModel: ObservableObject {
+    @Published var messages: [Message] = []
+    @Published var connectionName = ""
+    @Published var isSending = false
+
+    var connectionId: String = ""
+    var currentUserId: String { credentialStore.currentUserId }
+
+    var groupedMessages: [MessageGroup] { /* group by date */ }
+
+    private let apiClient: APIClient
+    private let cryptoManager: ConnectionCryptoManager
+    private let messageSubscriber: MessageSubscriber
+
+    func loadMessages() async
+    func loadMoreMessages() async
+    func sendMessage(_ content: String) async
+    func markAsRead(_ messageId: String) async
+}
+```
+
+### 10. QR Code Components
+
+Create QR code scanner and generator:
+
+```swift
+// Views/Components/QRCodeGenerator.swift
+
+struct QRCodeView: View {
+    let data: String
+    let size: CGFloat
+
+    var body: some View {
+        if let image = generateQRCode(from: data) {
+            Image(uiImage: image)
+                .interpolation(.none)
+                .resizable()
+                .scaledToFit()
+                .frame(width: size, height: size)
+        }
+    }
+
+    private func generateQRCode(from string: String) -> UIImage? {
+        let context = CIContext()
+        let filter = CIFilter.qrCodeGenerator()
+        filter.message = Data(string.utf8)
+
+        if let outputImage = filter.outputImage,
+           let cgImage = context.createCGImage(outputImage, from: outputImage.extent) {
+            return UIImage(cgImage: cgImage)
+        }
+        return nil
+    }
+}
+
+// Views/Components/QRCodeScannerView.swift
+
+struct QRCodeScannerView: UIViewControllerRepresentable {
+    let onScan: (String) -> Void
+
+    func makeUIViewController(context: Context) -> ScannerViewController {
+        let controller = ScannerViewController()
+        controller.delegate = context.coordinator
+        return controller
+    }
+
+    func updateUIViewController(_ uiViewController: ScannerViewController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onScan: onScan)
+    }
+
+    class Coordinator: NSObject, ScannerDelegate {
+        let onScan: (String) -> Void
+
+        init(onScan: @escaping (String) -> Void) {
+            self.onScan = onScan
+        }
+
+        func didScanCode(_ code: String) {
+            onScan(code)
+        }
+    }
+}
+
+// Uses AVFoundation for camera + code scanning
+```
+
+### 11. Real-time Updates
+
+Integrate NATS for real-time messaging:
+
+```swift
+// Services/MessageSubscriber.swift
+
+class MessageSubscriber {
+    private let natsClient: NatsClient
+    private let cryptoManager: ConnectionCryptoManager
+
+    init(natsClient: NatsClient, cryptoManager: ConnectionCryptoManager) {
+        self.natsClient = natsClient
+        self.cryptoManager = cryptoManager
+    }
+
+    // Subscribe to incoming messages
+    func subscribeToMessages(
+        onMessage: @escaping (Message) -> Void
+    ) -> AnyCancellable
+
+    // Subscribe to connection events
+    func subscribeToConnectionEvents(
+        onEvent: @escaping (ConnectionEvent) -> Void
+    ) -> AnyCancellable
+}
+
+enum ConnectionEvent {
+    case invitationAccepted(Connection)
+    case connectionRevoked(String)
+    case profileUpdated(connectionId: String, profile: Profile)
+}
+```
+
+### 12. Navigation Integration
+
+Add connection routes to navigation:
+
+```swift
+// Update main app navigation
+
+// Tab: Connections
+// - ConnectionsListView
+//   - CreateInvitationView (sheet)
+//   - ScanInvitationView (sheet)
+//   - ConnectionDetailView (push)
+//     - ConversationView (push)
+
+// Tab: Profile
+// - ProfileView
+//   - EditProfileView (sheet)
+```
+
+## Dependencies
+
+Add to Package.swift or via SPM:
+```swift
+// QR Code generation uses CoreImage (built-in)
+// QR Code scanning uses AVFoundation (built-in)
+
+// For advanced crypto (if CryptoKit insufficient):
+// .package(url: "https://github.com/jedisct1/swift-sodium.git", from: "0.9.1")
 ```
 
 ## Deliverables
 
-- [ ] APIClient extensions for registry and handler management
-- [ ] HandlerDiscoveryViewModel and HandlerDiscoveryView
-- [ ] HandlerDetailView with permissions display
-- [ ] HandlerExecutionView with dynamic input form
-- [ ] DynamicInputForm component for schema-driven forms
-- [ ] Navigation integration for handler flows
+- [ ] Connection data models (Connection, Invitation, Message, Profile)
+- [ ] APIClient extensions for connections, profiles, messaging
+- [ ] ConnectionCryptoManager (X25519, XChaCha20-Poly1305)
+- [ ] CreateInvitationView with QR code display
+- [ ] ScanInvitationView with AVFoundation scanner
+- [ ] ConnectionsListView with search and unread badges
+- [ ] ConnectionDetailView with revocation
+- [ ] ProfileView and EditProfileView
+- [ ] ConversationView with message bubbles
+- [ ] MessageSubscriber for real-time updates
+- [ ] Navigation integration
 - [ ] Unit tests for ViewModels
 
 ## Acceptance Criteria
 
-- [ ] User can browse available handlers by category
-- [ ] User can view handler details and permissions
-- [ ] User can install/uninstall handlers
-- [ ] User can execute installed handlers
-- [ ] Handler execution shows input form based on schema
-- [ ] Handler results displayed correctly
-- [ ] Error states handled gracefully
+- [ ] Can create and display connection invitation QR code
+- [ ] Can scan QR code and accept invitation
+- [ ] X25519 key exchange establishes shared secret
+- [ ] Per-connection encryption keys stored in Keychain
+- [ ] Connection list shows all connections with unread counts
+- [ ] Can view and edit own profile
+- [ ] Messages encrypted with XChaCha20-Poly1305
+- [ ] Real-time message delivery via NATS
+- [ ] Proper error handling and loading states
 
 ## Notes
 
-- Handler icons may be null - show SF Symbol placeholder
-- Input schema drives dynamic form generation using SwiftUI
-- Consider caching handler list for offline browsing
-- Permissions should be clearly explained to user
+- Use CoreImage CIFilter.qrCodeGenerator() for QR generation
+- Use AVFoundation for QR scanning
+- Store connection keys in Keychain with kSecAttrAccessible
+- Test encryption with known test vectors
+- Handle offline scenarios (queue messages)
+- Consider message pagination for long conversations
 - Use async/await throughout for clean async code
 
 ## Status Update
@@ -710,16 +1061,15 @@ class HandlerExecutionViewModelTests: XCTestCase {
 ```bash
 cd /path/to/vettid-ios
 git pull
-# Create handler UI components
+# Implement connections & messaging UI
+swift test  # Verify tests pass
 git add .
-git commit -m "Phase 6: Add handler discovery and execution UI"
+git commit -m "Phase 7: Add connections and messaging UI"
 git push
 
-# Update status in backend repo
-cd /path/to/vettid-dev
-git pull
-# Edit cdk/coordination/status/ios.json
+# Update status
+# Edit cdk/coordination/status/ios.json (in vettid-dev repo)
 git add cdk/coordination/status/ios.json
-git commit -m "Update iOS status: Phase 6 handler UI complete"
+git commit -m "Update iOS status: Phase 7 connections & messaging complete"
 git push
 ```

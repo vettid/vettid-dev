@@ -1,7 +1,7 @@
-# Task: Phase 6 - Handler System Testing
+# Task: Phase 7 - Connections & Messaging Testing
 
 ## Phase
-Phase 6: Handler System (WASM)
+Phase 7: Connections & Messaging
 
 ## Assigned To
 Testing Instance
@@ -10,305 +10,379 @@ Testing Instance
 `github.com/mesmerverse/vettid-dev` (cdk/tests/)
 
 ## Status
-Phase 5 complete. Ready for Phase 6 handler system testing.
+Phase 6 complete. Ready for Phase 7 connections & messaging testing.
 
 ## Overview
 
-Phase 6 implements the WASM handler system for the Vault Manager. You need to create tests for:
-1. Handler package verification and signatures
-2. WASM execution in sandboxed environment
-3. Resource limits and egress control
-4. First-party handler functionality
+Phase 7 implements the connection and messaging system. You need to create tests for:
+1. Connection invitation generation and acceptance
+2. Per-connection key exchange (X25519)
+3. Profile publishing and sharing
+4. End-to-end encrypted messaging
 
 ## New Backend Endpoints
 
-### Handler Registry
+### Connections
 ```
-GET  /registry/handlers              # List available handlers
-GET  /registry/handlers/{id}         # Get handler details and download URL
-POST /admin/registry/handlers        # Upload new handler (admin)
-POST /admin/registry/handlers/sign   # Sign handler package (admin)
-POST /admin/registry/handlers/revoke # Revoke handler version (admin)
+POST /connections/invite          # Generate connection invitation
+POST /connections/accept          # Accept connection invitation
+POST /connections/revoke          # Revoke connection
+GET  /connections                 # List connections
+GET  /connections/{id}            # Get connection details
+GET  /connections/{id}/profile    # Get connection's profile
 ```
 
-## Phase 6 Testing Tasks
+### Profiles
+```
+GET  /profile                     # Get own profile
+PUT  /profile                     # Update own profile
+POST /profile/publish             # Publish profile to connections
+```
 
-### 1. Handler Verification Tests
+### Messaging
+```
+POST /messages/send               # Send encrypted message
+GET  /messages/{connectionId}     # Get message history
+GET  /messages/unread             # Get unread message count
+POST /messages/{id}/read          # Mark message as read
+```
 
-Create handler signature and verification tests:
+## Phase 7 Testing Tasks
+
+### 1. Connection Invitation Tests
+
+Create connection invitation flow tests:
 
 ```typescript
-// tests/integration/registry/handlerVerification.test.ts
+// tests/integration/connections/createInvitation.test.ts
 
-describe('Handler Verification', () => {
-  describe('Package Signature', () => {
-    it('should verify valid Ed25519 signature');
-    it('should reject invalid signature');
-    it('should reject expired signature');
-    it('should reject revoked handler');
-    it('should verify signature chain for updates');
+describe('Create Connection Invitation', () => {
+  describe('Invitation Generation', () => {
+    it('should generate unique invitation code');
+    it('should include owner public key in invitation');
+    it('should set configurable expiration time');
+    it('should enforce max pending invitations limit');
+    it('should require authenticated user');
   });
 
-  describe('Manifest Validation', () => {
-    it('should validate required manifest fields');
-    it('should validate handler version format');
-    it('should validate input/output schema');
-    it('should validate permission declarations');
-    it('should reject manifest with undeclared capabilities');
+  describe('Invitation Payload', () => {
+    it('should include invitation ID');
+    it('should include creator display name');
+    it('should include creator avatar URL if set');
+    it('should include QR code data');
+    it('should include deep link URL');
   });
 
-  describe('WASM Validation', () => {
-    it('should validate WASM magic bytes');
-    it('should validate required exports');
-    it('should reject WASM with forbidden imports');
-    it('should validate memory limits');
+  describe('Invitation Storage', () => {
+    it('should store invitation in DynamoDB');
+    it('should set TTL for automatic cleanup');
+    it('should track invitation status (pending/accepted/expired/revoked)');
   });
 });
 ```
 
-### 2. Handler Execution Tests
+### 2. Connection Acceptance Tests
 
-Create WASM execution tests:
+Create connection acceptance tests:
 
 ```typescript
-// tests/integration/registry/handlerExecution.test.ts
+// tests/integration/connections/acceptInvitation.test.ts
 
-describe('Handler Execution', () => {
-  describe('Basic Execution', () => {
-    it('should execute handler with valid input');
-    it('should return handler output');
-    it('should capture handler logs');
-    it('should handle handler errors gracefully');
-    it('should timeout long-running handlers');
+describe('Accept Connection Invitation', () => {
+  describe('Invitation Validation', () => {
+    it('should validate invitation code exists');
+    it('should reject expired invitations');
+    it('should reject already-accepted invitations');
+    it('should reject revoked invitations');
+    it('should reject self-connection attempts');
   });
 
-  describe('Input/Output', () => {
-    it('should validate input against schema');
-    it('should validate output against schema');
-    it('should pass context to handler');
-    it('should sanitize sensitive data in logs');
+  describe('Key Exchange', () => {
+    it('should perform X25519 key exchange');
+    it('should derive shared secret using HKDF');
+    it('should generate per-connection encryption key');
+    it('should store key securely in vault');
   });
 
-  describe('State Management', () => {
-    it('should persist handler state');
-    it('should isolate state between executions');
-    it('should cleanup state on handler uninstall');
+  describe('Connection Establishment', () => {
+    it('should create connection record for both parties');
+    it('should set connection status to active');
+    it('should exchange initial profiles');
+    it('should notify inviter of acceptance via NATS');
   });
 });
 ```
 
-### 3. Sandbox Isolation Tests
+### 3. Connection Revocation Tests
 
-Create sandbox security tests:
+Create connection revocation tests:
 
 ```typescript
-// tests/integration/registry/handlerSandbox.test.ts
+// tests/integration/connections/revokeConnection.test.ts
 
-describe('Handler Sandbox', () => {
-  describe('Memory Isolation', () => {
-    it('should enforce memory limits');
-    it('should terminate handler exceeding memory');
-    it('should not leak memory between executions');
-    it('should prevent reading outside allocated memory');
+describe('Revoke Connection', () => {
+  describe('Revocation Authorization', () => {
+    it('should allow owner to revoke connection');
+    it('should reject revocation by non-owner');
+    it('should handle already-revoked connections');
   });
 
-  describe('CPU Isolation', () => {
-    it('should enforce execution time limits');
-    it('should terminate runaway handlers');
-    it('should track CPU usage per handler');
+  describe('Revocation Effects', () => {
+    it('should update connection status to revoked');
+    it('should delete shared encryption key');
+    it('should remove from both parties connection list');
+    it('should notify other party via NATS');
+    it('should prevent future message exchange');
   });
 
-  describe('Filesystem Isolation', () => {
-    it('should prevent filesystem access');
-    it('should prevent reading environment variables');
-    it('should prevent process spawning');
-  });
-
-  describe('Network Isolation', () => {
-    it('should block unauthorized network access');
-    it('should allow declared egress endpoints');
-    it('should enforce rate limits on egress');
-    it('should timeout slow network requests');
+  describe('Data Cleanup', () => {
+    it('should retain message history for owner');
+    it('should mark messages as from-revoked-connection');
+    it('should clean up pending invitations');
   });
 });
 ```
 
-### 4. Egress Control Tests
+### 4. Profile Management Tests
 
-Create network egress tests:
+Create profile management tests:
 
 ```typescript
-// tests/integration/registry/egressControl.test.ts
+// tests/integration/profile/profileManagement.test.ts
 
-describe('Egress Control', () => {
-  describe('Allowlist Enforcement', () => {
-    it('should allow requests to declared hosts');
-    it('should block requests to undeclared hosts');
-    it('should support wildcard patterns');
-    it('should enforce HTTPS only');
+describe('Profile Management', () => {
+  describe('Profile Schema', () => {
+    it('should validate required fields (display_name)');
+    it('should validate optional fields (avatar_url, bio, location)');
+    it('should enforce field length limits');
+    it('should sanitize input for XSS prevention');
   });
 
-  describe('Rate Limiting', () => {
-    it('should enforce requests per minute limit');
-    it('should enforce bandwidth limit');
-    it('should queue excess requests');
-    it('should reject when queue full');
+  describe('Profile Updates', () => {
+    it('should update profile fields');
+    it('should version profile updates');
+    it('should track last_updated timestamp');
+    it('should publish update to connections');
   });
 
-  describe('Request Validation', () => {
-    it('should validate request headers');
-    it('should strip sensitive headers');
-    it('should inject authentication for known APIs');
-    it('should log egress requests for audit');
+  describe('Profile Publishing', () => {
+    it('should encrypt profile for each connection');
+    it('should send via MessageSpace');
+    it('should handle offline connections (queue)');
+    it('should respect connection visibility settings');
+  });
+
+  describe('Profile Retrieval', () => {
+    it('should return own profile');
+    it('should return connection profile');
+    it('should reject non-connection profile requests');
+    it('should return cached profile if connection offline');
   });
 });
 ```
 
-### 5. First-Party Handler Tests
+### 5. Encrypted Messaging Tests
 
-Create tests for built-in handlers:
+Create end-to-end messaging tests:
 
 ```typescript
-// tests/integration/handlers/messagingSendText.test.ts
+// tests/integration/messaging/sendMessage.test.ts
 
-describe('Messaging Send Text Handler', () => {
-  it('should send text message to connection');
-  it('should encrypt message with connection key');
-  it('should queue message for offline recipient');
-  it('should return delivery receipt');
-  it('should reject message to non-connected user');
-  it('should enforce message size limit');
+describe('Send Message', () => {
+  describe('Message Encryption', () => {
+    it('should encrypt message with connection key');
+    it('should use XChaCha20-Poly1305 AEAD');
+    it('should include unique nonce per message');
+    it('should authenticate sender');
+  });
+
+  describe('Message Delivery', () => {
+    it('should send via OwnerSpace topic');
+    it('should queue for offline recipient');
+    it('should return delivery receipt');
+    it('should handle large messages (chunking)');
+  });
+
+  describe('Message Validation', () => {
+    it('should enforce message size limit');
+    it('should validate connection is active');
+    it('should reject messages to revoked connections');
+    it('should validate message content type');
+  });
 });
 
-// tests/integration/handlers/profileUpdate.test.ts
+// tests/integration/messaging/receiveMessage.test.ts
 
-describe('Profile Update Handler', () => {
-  it('should update profile fields');
-  it('should publish profile to MessageSpace');
-  it('should validate profile schema');
-  it('should reject unauthorized fields');
-  it('should version profile updates');
-});
+describe('Receive Message', () => {
+  describe('Message Decryption', () => {
+    it('should decrypt message with connection key');
+    it('should verify message authenticity');
+    it('should reject tampered messages');
+    it('should handle decryption failures gracefully');
+  });
 
-// tests/integration/handlers/connectionInvite.test.ts
+  describe('Message Storage', () => {
+    it('should store decrypted message locally');
+    it('should index by connection and timestamp');
+    it('should support message search');
+    it('should handle duplicate message IDs');
+  });
 
-describe('Connection Invite Handler', () => {
-  it('should generate invite code');
-  it('should include owner public key');
-  it('should set invite expiration');
-  it('should enforce max pending invites');
-  it('should revoke existing invite');
+  describe('Message Status', () => {
+    it('should track unread count');
+    it('should mark messages as read');
+    it('should send read receipts');
+  });
 });
 ```
 
-### 6. Registry API Tests
+### 6. Message History Tests
 
-Create registry endpoint tests:
+Create message history tests:
 
 ```typescript
-// tests/integration/registry/listHandlers.test.ts
+// tests/integration/messaging/messageHistory.test.ts
 
-describe('List Handlers', () => {
-  it('should return available handlers');
-  it('should filter by category');
-  it('should paginate results');
-  it('should include version information');
-  it('should indicate installed status');
-});
+describe('Message History', () => {
+  describe('History Retrieval', () => {
+    it('should return messages in chronological order');
+    it('should support pagination');
+    it('should filter by connection');
+    it('should filter by date range');
+  });
 
-// tests/integration/registry/uploadHandler.test.ts
+  describe('History Sync', () => {
+    it('should sync history across devices');
+    it('should handle conflicts');
+    it('should respect message retention settings');
+  });
 
-describe('Upload Handler (Admin)', () => {
-  it('should upload handler package');
-  it('should validate package structure');
-  it('should store in S3 with versioning');
-  it('should require admin authentication');
-  it('should reject duplicate versions');
+  describe('History Search', () => {
+    it('should search message content');
+    it('should return matching messages with context');
+    it('should respect search result limits');
+  });
 });
 ```
 
-### 7. E2E Handler Flow Tests
+### 7. E2E Connection Flow Tests
 
 Create end-to-end tests:
 
 ```typescript
-// tests/e2e/handlerLifecycle.test.ts
+// tests/e2e/connectionFlow.test.ts
 
-describe('Handler Lifecycle E2E', () => {
-  it('should complete: upload → sign → list → install → execute → uninstall');
-  it('should complete: upload → revoke → verify rejection');
-  it('should handle: version upgrade with state migration');
-  it('should handle: handler crash recovery');
+describe('Connection Flow E2E', () => {
+  it('should complete: invite → accept → exchange profiles → send message → receive message');
+  it('should complete: invite → accept → send messages → revoke → verify blocked');
+  it('should handle: offline connection → queue messages → deliver on reconnect');
+  it('should handle: key rotation → re-encrypt pending messages');
+  it('should handle: profile update → propagate to all connections');
+});
+
+// tests/e2e/messagingFlow.test.ts
+
+describe('Messaging Flow E2E', () => {
+  it('should deliver message within 500ms (online recipient)');
+  it('should queue and deliver message (offline recipient)');
+  it('should handle concurrent message exchange');
+  it('should maintain message order');
+  it('should handle message deletion');
 });
 ```
 
 ## Test Utilities
 
-Create mock handler packages:
+Create connection and messaging test utilities:
 
 ```typescript
-// tests/fixtures/handlers/mockHandler.ts
+// tests/fixtures/connections/mockConnection.ts
 
-export function createMockHandlerPackage(options: {
-  name: string;
-  version: string;
-  manifest: Partial<HandlerManifest>;
-  wasmBehavior: 'success' | 'error' | 'timeout' | 'memory-exceed';
-}): HandlerPackage;
+export function createMockInvitation(options: {
+  creatorGuid: string;
+  expiresIn?: number;
+}): ConnectionInvitation;
 
-export function createValidSignature(
-  packageHash: Buffer,
-  privateKey: Buffer
+export function createMockConnection(options: {
+  ownerGuid: string;
+  peerGuid: string;
+  status?: 'active' | 'revoked';
+}): Connection;
+
+export function createMockKeyPair(): {
+  publicKey: Buffer;
+  privateKey: Buffer;
+};
+
+export function deriveSharedKey(
+  privateKey: Buffer,
+  peerPublicKey: Buffer
 ): Buffer;
 
-export function createMockManifest(
-  overrides?: Partial<HandlerManifest>
-): HandlerManifest;
+// tests/fixtures/messaging/mockMessage.ts
+
+export function createMockMessage(options: {
+  senderId: string;
+  connectionId: string;
+  content: string;
+}): EncryptedMessage;
+
+export function encryptMessage(
+  content: string,
+  sharedKey: Buffer
+): { ciphertext: Buffer; nonce: Buffer };
+
+export function decryptMessage(
+  ciphertext: Buffer,
+  nonce: Buffer,
+  sharedKey: Buffer
+): string;
 ```
 
 ## Deliverables
 
-- [ ] handlerVerification.test.ts (signature, manifest, WASM validation)
-- [ ] handlerExecution.test.ts (execution, I/O, state)
-- [ ] handlerSandbox.test.ts (memory, CPU, filesystem, network isolation)
-- [ ] egressControl.test.ts (allowlist, rate limiting, request validation)
-- [ ] messagingSendText.test.ts (first-party handler)
-- [ ] profileUpdate.test.ts (first-party handler)
-- [ ] connectionInvite.test.ts (first-party handler)
-- [ ] listHandlers.test.ts, uploadHandler.test.ts (registry API)
-- [ ] handlerLifecycle.test.ts (E2E)
-- [ ] Mock handler package fixtures
+- [ ] createInvitation.test.ts (invitation generation)
+- [ ] acceptInvitation.test.ts (connection acceptance)
+- [ ] revokeConnection.test.ts (connection revocation)
+- [ ] profileManagement.test.ts (profile CRUD)
+- [ ] sendMessage.test.ts (message sending)
+- [ ] receiveMessage.test.ts (message receiving)
+- [ ] messageHistory.test.ts (history and search)
+- [ ] connectionFlow.test.ts (E2E connection tests)
+- [ ] messagingFlow.test.ts (E2E messaging tests)
+- [ ] Mock connection and messaging fixtures
 
 ## Acceptance Criteria
 
-- [ ] All handler verification tests pass
-- [ ] Sandbox isolation prevents unauthorized access
-- [ ] Egress control enforces declared permissions
-- [ ] First-party handlers function correctly
-- [ ] Registry API tests cover CRUD operations
-- [ ] E2E tests cover full handler lifecycle
+- [ ] Connection invitation tests cover generation, validation, expiration
+- [ ] Key exchange tests verify X25519 ECDH flow
+- [ ] Profile tests cover schema, updates, publishing
+- [ ] Messaging tests verify E2E encryption
+- [ ] Message history tests cover pagination and search
+- [ ] E2E tests cover complete connection and messaging flows
 
 ## Notes
 
-- WASM execution tests can use mock runtime initially
-- First-party handler tests simulate vault manager behavior
-- Sandbox tests should verify security boundaries thoroughly
-- Consider fuzzing for manifest/WASM validation
+- Use mock NATS for pub/sub testing
+- Test both online and offline scenarios
+- Verify encryption with known test vectors
+- Test concurrent operations for race conditions
+- Consider message size limits and chunking
 
 ## Status Update
 
 ```bash
 cd /path/to/vettid-dev/cdk
 git pull
-# Create handler system tests
+# Create connection and messaging tests
 npm run test:unit  # Verify tests pass
 git add tests/
-git commit -m "Phase 6: Add handler system tests"
+git commit -m "Phase 7: Add connections and messaging tests"
 git push
 
 # Update status
 # Edit cdk/coordination/status/testing.json
 git add cdk/coordination/status/testing.json
-git commit -m "Update Testing status: Phase 6 handler system tests complete"
+git commit -m "Update Testing status: Phase 7 connections & messaging tests complete"
 git push
 ```
