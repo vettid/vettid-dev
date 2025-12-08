@@ -1,7 +1,7 @@
 {
   "instance": "ios",
-  "phase": 5,
-  "task": "Vault communication",
+  "phase": 6,
+  "task": "Handler discovery and execution UI",
   "status": "completed",
   "blockers": [],
   "completedTasks": [
@@ -51,10 +51,22 @@
     "Implemented VaultHealthView - Status cards, component indicators, resource stats",
     "Added VaultEventClientTests - Event types, message encoding, response decoding",
     "Added VaultHealthViewModelTests - State transitions, health info formatting",
-    "Added VaultResponseHandlerTests - Error types, API response decoding"
+    "Added VaultResponseHandlerTests - Error types, API response decoding",
+    "Added handler registry API - listHandlers (with pagination/filtering), getHandler",
+    "Added handler management API - installHandler, uninstallHandler, listInstalledHandlers, executeHandler",
+    "Implemented HandlerDiscoveryViewModel - Category filtering, pagination, install/uninstall tracking",
+    "Implemented HandlerDiscoveryView - CategoryPicker, HandlerListRow, EmptyHandlersView",
+    "Implemented HandlerDetailViewModel - Handler loading, install/uninstall from detail",
+    "Implemented HandlerDetailView - PermissionRow (type icons), MetadataItem components",
+    "Implemented HandlerExecutionViewModel - Input management, execution state, result storage",
+    "Implemented HandlerExecutionView - DynamicInputForm, DynamicInputField, ExecutionResultView",
+    "Added HandlerDiscoveryViewModelTests - State, category selection, pagination tests",
+    "Added HandlerDetailViewModelTests - Loading, auth error, state equality tests",
+    "Added HandlerExecutionViewModelTests - Input management, response decoding tests",
+    "Added HandlerTypesTests - All handler API types decoding tests"
   ],
-  "lastUpdated": "2025-12-07T20:45:00Z",
-  "notes": "Phase 5 complete. Vault communication fully implemented with VaultEventClient (event submission via NATS), VaultResponseHandler actor (request/response correlation with timeout), VaultHealthViewModel (30-second polling), and VaultHealthView (comprehensive status UI with component indicators, resource stats, lifecycle actions). API endpoints for vault lifecycle management (provision, initialize, stop, terminate, health) added to APIClient. Unit tests cover event types, response handling, and state management.",
+  "lastUpdated": "2025-12-07T21:17:00Z",
+  "notes": "Phase 6 complete. Handler discovery and execution UI fully implemented. Added APIClient extensions for registry (list/get handlers with pagination and category filtering) and management (install/uninstall/execute handlers) endpoints. Created HandlerDiscoveryViewModel with category filtering and pagination support. Built HandlerDiscoveryView with CategoryPicker chips, HandlerListRow with install/uninstall buttons. HandlerDetailView shows handler info, permissions with type-specific icons, and execution option. HandlerExecutionView dynamically generates input forms from JSON schema and displays results. All ViewModels use @MainActor with @Sendable closures for thread safety. Comprehensive unit tests for all ViewModels.",
   "repository": "https://github.com/mesmerverse/vettid-ios",
-  "latestCommit": "204e04d"
+  "latestCommit": "1784582"
 }
