@@ -1462,6 +1462,12 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
   public addVaultRoutes(vaultStack: any): void {
     // Vault Enrollment
     this.httpApi.addRoutes({
+      path: '/vault/enroll/session',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('CreateEnrollmentSessionInt', vaultStack.createEnrollmentSession),
+      authorizer: this.memberAuthorizer,
+    });
+    this.httpApi.addRoutes({
       path: '/vault/enroll/start',
       methods: [apigw.HttpMethod.POST],
       integration: new integrations.HttpLambdaIntegration('EnrollStartInt', vaultStack.enrollStart),

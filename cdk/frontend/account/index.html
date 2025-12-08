@@ -4335,10 +4335,245 @@ async function terminateVault() {
   }
 }
 
+let enrollmentSession = null;
+let enrollmentPollInterval = null;
+
 async function startEnrollment() {
-  // For now, show a message that enrollment is done via mobile app
-  showToast('Enrollment is initiated from the VettID mobile app. Please download the app to continue.', 'info');
-  // TODO: In Phase 2, implement enrollment flow with QR code display
+  try {
+    const token = idToken();
+    if (!token) throw new Error('No authentication token');
+
+    showToast('Creating enrollment session...', 'info');
+
+    // Create enrollment session on backend
+    const res = await fetch(API_URL + '/vault/enroll/session', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => ({}));
+      throw new Error(errorData.message || 'Failed to create enrollment session');
+    }
+
+    enrollmentSession = await res.json();
+    showEnrollmentModal(enrollmentSession);
+
+  } catch (error) {
+    console.error('Error starting enrollment:', error);
+    showToast('Failed to start enrollment: ' + error.message, 'error');
+  }
+}
+
+function showEnrollmentModal(session) {
+  // Generate QR code data as JSON string
+  const qrData = JSON.stringify(session.qr_data);
+
+  const modal = document.createElement('div');
+  modal.id = 'enrollmentModal';
+  modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.9);display:flex;align-items:center;justify-content:center;z-index:9999;';
+  modal.innerHTML = `
+    <div style="background:#0a0a0a;border:1px solid var(--accent);border-radius:12px;padding:32px;max-width:480px;width:90%;text-align:center;">
+      <h3 style="margin:0 0 8px 0;color:var(--accent);">Enroll Your Mobile Device</h3>
+      <p style="color:var(--gray);margin-bottom:24px;font-size:0.95rem;">
+        Scan this QR code with the VettID app on your mobile device to complete enrollment.
+      </p>
+
+      <div id="enrollmentQRContainer" style="background:#fff;padding:20px;border-radius:8px;display:inline-block;margin-bottom:20px;">
+        <div id="enrollmentQRCode" style="width:200px;height:200px;display:flex;align-items:center;justify-content:center;">
+          <div style="color:#000;">Loading QR code...</div>
+        </div>
+      </div>
+
+      <div id="enrollmentStatus" style="margin-bottom:20px;">
+        <div style="display:flex;align-items:center;justify-content:center;gap:12px;padding:16px;background:#050505;border-radius:8px;border:1px solid #333;">
+          <div id="enrollmentSpinner" style="width:20px;height:20px;border:2px solid var(--accent);border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite;"></div>
+          <span style="color:var(--gray);">Waiting for mobile app to scan...</span>
+        </div>
+      </div>
+
+      <div style="margin-bottom:20px;padding:16px;background:#050505;border-radius:8px;border:1px solid #333;">
+        <div style="color:var(--gray);font-size:0.85rem;margin-bottom:8px;">Session expires in:</div>
+        <div id="enrollmentTimer" style="color:var(--accent);font-size:1.2rem;font-weight:600;">15:00</div>
+      </div>
+
+      <div style="display:flex;gap:12px;justify-content:center;">
+        <button onclick="closeEnrollmentModal()" class="btn" style="padding:12px 24px;background:#333;">
+          Cancel
+        </button>
+      </div>
+
+      <p style="color:var(--gray);margin-top:20px;font-size:0.8rem;">
+        Don't have the VettID app? Download it from the
+        <a href="#" style="color:var(--accent);">App Store</a> or
+        <a href="#" style="color:var(--accent);">Google Play</a>
+      </p>
+    </div>
+  `;
+
+  document.body.appendChild(modal);
+  modal.onclick = (e) => { if (e.target === modal) closeEnrollmentModal(); };
+
+  // Generate QR code
+  generateQRCode(qrData);
+
+  // Start countdown timer
+  startEnrollmentTimer(new Date(session.expires_at));
+
+  // Start polling for enrollment status
+  startEnrollmentPoll();
+}
+
+function generateQRCode(data) {
+  const container = document.getElementById('enrollmentQRCode');
+  if (!container) return;
+
+  // Use a simple QR code library via CDN or generate SVG
+  // For now, we'll create a simple SVG-based QR placeholder and use qrcode.js if available
+  // In production, you'd include a QR library like qrcode.js
+
+  // Check if QRCode library is loaded, otherwise show manual code
+  if (typeof QRCode !== 'undefined') {
+    container.innerHTML = '';
+    new QRCode(container, {
+      text: data,
+      width: 200,
+      height: 200,
+      colorDark: '#000000',
+      colorLight: '#ffffff',
+      correctLevel: QRCode.CorrectLevel.M
+    });
+  } else {
+    // Fallback: Load QRCode library dynamically
+    const script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js';
+    script.onload = () => {
+      container.innerHTML = '';
+      // Use the browser version which creates a canvas
+      QRCode.toCanvas(container, data, { width: 200, margin: 0 }, (error) => {
+        if (error) {
+          console.error('QR generation error:', error);
+          container.innerHTML = '<div style="color:#000;font-size:0.8rem;">QR Error</div>';
+        }
+      });
+    };
+    script.onerror = () => {
+      // Final fallback: show session token
+      container.innerHTML = `
+        <div style="color:#000;font-size:0.7rem;word-break:break-all;max-width:180px;">
+          <div style="font-weight:600;margin-bottom:8px;">Manual Code:</div>
+          ${enrollmentSession?.session_token?.substring(0, 20)}...
+        </div>
+      `;
+    };
+    document.head.appendChild(script);
+  }
+}
+
+function startEnrollmentTimer(expiresAt) {
+  const timerEl = document.getElementById('enrollmentTimer');
+  if (!timerEl) return;
+
+  const updateTimer = () => {
+    const now = new Date();
+    const diff = expiresAt - now;
+
+    if (diff <= 0) {
+      timerEl.textContent = 'Expired';
+      timerEl.style.color = '#ef4444';
+      stopEnrollmentPoll();
+      return;
+    }
+
+    const minutes = Math.floor(diff / 60000);
+    const seconds = Math.floor((diff % 60000) / 1000);
+    timerEl.textContent = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+
+    if (diff < 60000) {
+      timerEl.style.color = '#f59e0b';
+    }
+  };
+
+  updateTimer();
+  const timerInterval = setInterval(() => {
+    if (!document.getElementById('enrollmentTimer')) {
+      clearInterval(timerInterval);
+      return;
+    }
+    updateTimer();
+  }, 1000);
+}
+
+function startEnrollmentPoll() {
+  stopEnrollmentPoll();
+
+  enrollmentPollInterval = setInterval(async () => {
+    try {
+      const token = idToken();
+      const res = await fetch(API_URL + '/vault/status', {
+        method: 'GET',
+        headers: { 'Authorization': 'Bearer ' + token }
+      });
+
+      if (res.ok) {
+        const status = await res.json();
+
+        // Check if enrollment completed
+        if (status.status === 'enrolled' || status.status === 'active') {
+          stopEnrollmentPoll();
+          updateEnrollmentStatus('success', 'Enrollment complete!');
+
+          setTimeout(() => {
+            closeEnrollmentModal();
+            showToast('Mobile device enrolled successfully!', 'success');
+            loadVaultStatus();
+          }, 1500);
+        } else if (status.status === 'pending') {
+          updateEnrollmentStatus('pending', 'Mobile app connected, completing enrollment...');
+        }
+      }
+    } catch (e) {
+      console.error('Error polling enrollment status:', e);
+    }
+  }, 3000); // Poll every 3 seconds
+}
+
+function stopEnrollmentPoll() {
+  if (enrollmentPollInterval) {
+    clearInterval(enrollmentPollInterval);
+    enrollmentPollInterval = null;
+  }
+}
+
+function updateEnrollmentStatus(state, message) {
+  const statusEl = document.getElementById('enrollmentStatus');
+  if (!statusEl) return;
+
+  if (state === 'success') {
+    statusEl.innerHTML = `
+      <div style="display:flex;align-items:center;justify-content:center;gap:12px;padding:16px;background:#050a05;border-radius:8px;border:1px solid #10b981;">
+        <span style="font-size:1.5rem;">✓</span>
+        <span style="color:#10b981;font-weight:600;">${message}</span>
+      </div>
+    `;
+  } else if (state === 'pending') {
+    statusEl.innerHTML = `
+      <div style="display:flex;align-items:center;justify-content:center;gap:12px;padding:16px;background:#0a0a05;border-radius:8px;border:1px solid #f59e0b;">
+        <div style="width:20px;height:20px;border:2px solid #f59e0b;border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite;"></div>
+        <span style="color:#f59e0b;">${message}</span>
+      </div>
+    `;
+  }
+}
+
+function closeEnrollmentModal() {
+  stopEnrollmentPoll();
+  const modal = document.getElementById('enrollmentModal');
+  if (modal) modal.remove();
+  enrollmentSession = null;
 }
 
 function startVaultStatusPolling() {

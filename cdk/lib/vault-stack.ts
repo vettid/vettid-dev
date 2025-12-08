@@ -27,6 +27,7 @@ export class VaultStack extends cdk.Stack {
   public readonly enrollStart!: lambdaNode.NodejsFunction;
   public readonly enrollSetPassword!: lambdaNode.NodejsFunction;
   public readonly enrollFinalize!: lambdaNode.NodejsFunction;
+  public readonly createEnrollmentSession!: lambdaNode.NodejsFunction;
   public readonly actionRequest!: lambdaNode.NodejsFunction;
   public readonly authExecute!: lambdaNode.NodejsFunction;
 
@@ -123,6 +124,17 @@ export class VaultStack extends cdk.Stack {
       environment: {
         ...defaultEnv,
         USER_POOL_ID: memberUserPool.userPoolId,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    // Web-initiated enrollment session (for QR code flow)
+    this.createEnrollmentSession = new lambdaNode.NodejsFunction(this, 'CreateEnrollmentSessionFn', {
+      entry: 'lambda/handlers/vault/createEnrollmentSession.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+        API_URL: 'https://tiqpij5mue.execute-api.us-east-1.amazonaws.com',
       },
       timeout: cdk.Duration.seconds(30),
     });
@@ -296,6 +308,9 @@ export class VaultStack extends cdk.Stack {
     tables.enrollmentSessions.grantReadWriteData(this.enrollStart);
     tables.enrollmentSessions.grantReadWriteData(this.enrollSetPassword);
     tables.enrollmentSessions.grantReadWriteData(this.enrollFinalize);
+    tables.enrollmentSessions.grantReadWriteData(this.createEnrollmentSession);
+    tables.credentials.grantReadData(this.createEnrollmentSession);
+    tables.audit.grantReadWriteData(this.createEnrollmentSession);
 
     tables.credentials.grantReadWriteData(this.enrollFinalize);
     tables.credentials.grantReadData(this.actionRequest);

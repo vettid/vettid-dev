@@ -327,8 +327,18 @@ async function checkVaultDeployed() {
 - [x] Status polling every 30 seconds
 - [x] Getting Started step 4 integration
 
-### Phase 2-6: Remaining
-- [ ] Phase 2: Mobile App Enrollment Flow (QR code display)
+### Phase 2: Mobile App Enrollment Flow - COMPLETE
+- [x] New backend endpoint: POST /vault/enroll/session
+- [x] Creates web-initiated enrollment session for member
+- [x] Returns session_token and QR code data
+- [x] Enrollment modal with QR code display
+- [x] 15-minute session expiry timer
+- [x] Status polling every 3 seconds
+- [x] Auto-detection of enrollment completion
+- [x] QR code generation (dynamic loading of qrcode.js library)
+- [x] App Store/Google Play download links placeholder
+
+### Phase 3-6: Remaining
 - [ ] Phase 3: Vault Provisioning details & Lifecycle
 - [ ] Phase 4: Backup Services Tab
 - [ ] Phase 5: Credential Backup & Recovery
