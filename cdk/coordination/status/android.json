@@ -1,7 +1,7 @@
 {
   "instance": "android",
-  "phase": 6,
-  "task": "Phase 6 handler discovery & execution UI complete",
+  "phase": 7,
+  "task": "Phase 7 connections & messaging UI complete",
   "status": "completed",
   "blockers": [],
   "completedTasks": [
@@ -57,9 +57,28 @@
     "HandlerExecutionViewModel with dynamic form parsing from JSON schema",
     "HandlerExecutionScreen with dynamic input fields, execution progress, output display",
     "Navigation integration for handler flows (discovery, detail, execution)",
-    "Unit tests for HandlerDiscoveryViewModel, HandlerDetailViewModel, HandlerExecutionViewModel"
+    "Unit tests for HandlerDiscoveryViewModel, HandlerDetailViewModel, HandlerExecutionViewModel",
+    "Connection data models (Connection, ConnectionInvitation, Message, Profile, ConnectionStatus, MessageStatus)",
+    "ConnectionApiClient for invitation and connection management (create/accept invitation, list/get/revoke connections)",
+    "ProfileApiClient for profile management (get, update, publish)",
+    "MessagingApiClient for encrypted messaging (send, history, unread counts, mark read)",
+    "ConnectionCryptoManager with X25519 key exchange and ChaCha20-Poly1305 encryption",
+    "CreateInvitationScreen with QR code generation (ZXing), expiration timer, share/copy actions",
+    "CreateInvitationViewModel with expiration options and key pair generation",
+    "ScanInvitationScreen using existing QrCodeScanner, manual code entry, connection preview",
+    "ScanInvitationViewModel with QR parsing, key exchange, and connection acceptance",
+    "ConnectionsScreen with search filtering, FAB menu for create/scan, connection list with unread badges",
+    "ConnectionsViewModel with search, refresh, and connection loading",
+    "ConnectionDetailScreen with avatar, status badge, profile info, revoke action",
+    "ConnectionDetailViewModel for connection details and revoke functionality",
+    "ProfileScreen with view/edit modes, avatar display, bio/location editing",
+    "ProfileViewModel with edit state management and profile update/publish",
+    "ConversationScreen with message bubbles, scroll-to-bottom FAB, message input",
+    "ConversationViewModel with message encryption/decryption, pagination, real-time updates",
+    "MessageSubscriber for NATS real-time message and connection events",
+    "Navigation integration with Connections tab and Profile tab in MainScreen"
   ],
-  "lastUpdated": "2025-12-07T20:15:00Z",
-  "notes": "Phase 6 handler discovery & execution UI complete. HandlerRegistryClient provides access to handler marketplace (list, get, search, categories). VaultHandlerClient manages handler lifecycle (install/uninstall/execute/config). HandlerDiscoveryScreen displays handlers with category tabs, search, pagination, and quick install/uninstall. HandlerDetailScreen shows full handler info including permissions, stats, changelog. HandlerExecutionScreen generates dynamic forms from JSON schema with support for string, integer, boolean, select, and array field types. Navigation integrated via VettIDApp.kt with handler routes. Coil added for async image loading. All ViewModels tested.",
+  "lastUpdated": "2025-12-08T05:30:00Z",
+  "notes": "Phase 7 connections & messaging UI complete. Connection data models support full lifecycle (pending, active, revoked). ConnectionApiClient handles invitation creation/acceptance and connection management. ProfileApiClient provides profile viewing, editing, and publishing to connections. MessagingApiClient implements encrypted messaging with pagination. ConnectionCryptoManager handles X25519 ECDH key exchange and ChaCha20-Poly1305 AEAD encryption for per-connection message security. CreateInvitationScreen generates QR codes via ZXing with expiration countdown. ScanInvitationScreen reuses existing QrCodeScanner component with manual entry fallback. ConnectionsScreen displays connection list with unread message counts and search filtering. ConversationScreen shows message bubbles with read receipts and status indicators. MessageSubscriber integrates with NatsConnectionManager for real-time message and connection event delivery. All screens use Material 3 design with proper loading/error states. Navigation updated with Connections and Profile tabs.",
   "repository": "https://github.com/mesmerverse/vettid-android"
 }
