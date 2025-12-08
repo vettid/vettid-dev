@@ -3742,72 +3742,112 @@ document.getElementById('bulkDeleteInvites').onclick=async()=>{
 };
 
 // Membership Terms Management
-async function loadCurrentTerms(){
+// Lazy load download URL for a terms version
+async function getTermsDownloadUrl(versionId){
+  await refresh();
+  const res=await fetch(API_URL+'/admin/membership-terms/'+encodeURIComponent(versionId)+'/download',{
+    headers:{'Authorization':'Bearer '+idToken()}
+  });
+  if(!res.ok)throw new Error('Failed to get download URL');
+  const data=await res.json();
+  return data.download_url;
+}
+
+// View terms button click handler (lazy loads URL)
+async function viewTerms(versionId,btn){
+  const originalText=btn.textContent;
+  btn.textContent='Loading...';
+  btn.disabled=true;
+  try{
+    const url=await getTermsDownloadUrl(versionId);
+    window.open(url,'_blank');
+  }catch(e){
+    showToast('Failed to load terms: '+(e.message||e),'error');
+  }finally{
+    btn.textContent=originalText;
+    btn.disabled=false;
+  }
+}
+
+// State for pagination
+let termsNextCursor=null;
+let termsHasMore=false;
+
+async function loadCurrentTerms(append=false){
   if(!isAdmin())return;
   const currentDisplay=document.getElementById('currentTermsDisplay');
   const previousDisplay=document.getElementById('previousTermsDisplay');
 
-  // Show loading skeletons
-  showGridLoadingSkeleton('currentTermsDisplay', 1);
-  showGridLoadingSkeleton('previousTermsDisplay', 2);
+  // Show loading skeletons only on initial load
+  if(!append){
+    showGridLoadingSkeleton('currentTermsDisplay', 1);
+    showGridLoadingSkeleton('previousTermsDisplay', 2);
+    termsNextCursor=null;
+  }
 
   try{
     await refresh();
 
-    // Load all terms
-    const allRes=await fetch(API_URL+'/admin/membership-terms',{
+    // Load terms with pagination
+    let url=API_URL+'/admin/membership-terms?limit=20';
+    if(append&&termsNextCursor){
+      url+='&cursor='+encodeURIComponent(termsNextCursor);
+    }
+    const allRes=await fetch(url,{
       headers:{'Authorization':'Bearer '+idToken()}
     });
     if(!allRes.ok){
       throw new Error('Failed to load membership terms');
     }
-    const allTerms=await allRes.json();
+    const data=await allRes.json();
+    const current=data.current;
+    const previous=data.previous||[];
+    termsHasMore=data.pagination?.has_more||false;
+    termsNextCursor=data.pagination?.next_cursor||null;
 
-    // Separate current and previous versions
-    const current=allTerms.find(t=>t.is_current===true);
-    const previous=allTerms.filter(t=>t.is_current!==true).sort((a,b)=>new Date(b.created_at)-new Date(a.created_at));
-
-    // Display current version
-    if(current){
-      const createdDate=new Date(current.created_at).toLocaleString();
-      currentDisplay.innerHTML=`
-        <div style="background:var(--bg-card);border:1px solid #10b981;border-radius:8px;padding:12px;box-sizing:border-box;min-width:0;display:flex;flex-direction:column;">
-          <div style="margin-bottom:8px;">
-            <span style="display:inline-block;background:linear-gradient(135deg,#10b981 0%,#059669 100%);color:#fff;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;">Current Version</span>
-          </div>
-          <h4 style="margin:0 0 8px 0;font-weight:700;font-size:0.95rem;">Version ${current.version_id}</h4>
-          <div style="margin-bottom:12px;padding:10px;background:var(--bg-input);border-radius:6px;border:1px solid var(--border);">
-            <div style="margin-bottom:6px;font-size:0.8rem;">
-              <span style="color:var(--gray);">Created:</span> <span style="font-weight:600;">${createdDate}</span>
+    // Display current version (only on initial load)
+    if(!append){
+      if(current){
+        const createdDate=new Date(current.created_at).toLocaleString();
+        currentDisplay.innerHTML=`
+          <div style="background:var(--bg-card);border:1px solid #10b981;border-radius:8px;padding:12px;box-sizing:border-box;min-width:0;display:flex;flex-direction:column;">
+            <div style="margin-bottom:8px;">
+              <span style="display:inline-block;background:linear-gradient(135deg,#10b981 0%,#059669 100%);color:#fff;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;">Current Version</span>
             </div>
-            <div style="margin-bottom:6px;font-size:0.8rem;">
-              <span style="color:var(--gray);">Created by:</span> <span style="font-weight:600;">${current.created_by}</span>
+            <h4 style="margin:0 0 8px 0;font-weight:700;font-size:0.95rem;">Version ${current.version_id}</h4>
+            <div style="margin-bottom:12px;padding:10px;background:var(--bg-input);border-radius:6px;border:1px solid var(--border);">
+              <div style="margin-bottom:6px;font-size:0.8rem;">
+                <span style="color:var(--gray);">Created:</span> <span style="font-weight:600;">${createdDate}</span>
+              </div>
+              <div style="margin-bottom:6px;font-size:0.8rem;">
+                <span style="color:var(--gray);">Created by:</span> <span style="font-weight:600;">${current.created_by}</span>
+              </div>
+            </div>
+            <div style="margin-top:auto;">
+              <button onclick="viewTerms('${current.version_id}',this)" class='btn' style='display:block;width:100%;box-sizing:border-box;text-align:center;background:linear-gradient(135deg,#ffd93d 0%,#ffc125 100%);color:#000;padding:8px 12px;font-size:0.8rem;font-weight:600;border-radius:12px;border:none;cursor:pointer;'>View Terms</button>
             </div>
           </div>
-          <div style="margin-top:auto;">
-            <a href='${current.download_url}' target='_blank' class='btn' style='display:block;width:100%;box-sizing:border-box;text-align:center;text-decoration:none;background:linear-gradient(135deg,#ffd93d 0%,#ffc125 100%);color:#000;padding:8px 12px;font-size:0.8rem;font-weight:600;border-radius:12px;'>View Terms</a>
-          </div>
-        </div>
-      `;
-    }else{
-      currentDisplay.innerHTML="<p class='muted' style='grid-column:1/-1;text-align:center;padding:40px;'>No current terms found. Create the first version above.</p>";
+        `;
+      }else{
+        currentDisplay.innerHTML="<p class='muted' style='grid-column:1/-1;text-align:center;padding:40px;'>No current terms found. Create the first version above.</p>";
+      }
     }
 
     // Display previous versions
     if(previous.length>0){
-      previousDisplay.innerHTML=previous.map(term=>{
+      const termsHtml=previous.map(term=>{
         const createdDate=new Date(term.created_at).toLocaleString();
         return `
           <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:12px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;">
             <div style="flex:1;min-width:200px;">
               <div style="margin-bottom:4px;">
-                <a href='${term.download_url}' target='_blank' style="color:var(--accent);text-decoration:none;font-weight:700;font-size:0.95rem;display:inline-flex;align-items:center;gap:6px;">
+                <button onclick="viewTerms('${term.version_id}',this)" style="background:none;border:none;color:var(--accent);cursor:pointer;font-weight:700;font-size:0.95rem;display:inline-flex;align-items:center;gap:6px;padding:0;">
                   Version ${term.version_id}
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <path d="M14 3v4a1 1 0 0 0 1 1h4"></path>
                     <path d="M17 21h-10a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2h7l5 5v11a2 2 0 0 1 -2 2z"></path>
                   </svg>
-                </a>
+                </button>
               </div>
               <div style="font-size:0.8rem;color:var(--gray);">
                 <span>Created: ${createdDate}</span>
@@ -3817,13 +3857,35 @@ async function loadCurrentTerms(){
           </div>
         `;
       }).join('');
-    }else{
+
+      if(append){
+        // Remove existing load more button before appending
+        const existingBtn=previousDisplay.querySelector('.load-more-terms');
+        if(existingBtn)existingBtn.remove();
+        previousDisplay.insertAdjacentHTML('beforeend',termsHtml);
+      }else{
+        previousDisplay.innerHTML=termsHtml;
+      }
+
+      // Add load more button if there are more results
+      if(termsHasMore){
+        previousDisplay.insertAdjacentHTML('beforeend',`
+          <div class="load-more-terms" style="grid-column:1/-1;text-align:center;padding:12px;">
+            <button onclick="loadCurrentTerms(true)" class="btn btn-secondary" style="padding:8px 24px;">Load More</button>
+          </div>
+        `);
+      }
+    }else if(!append){
       previousDisplay.innerHTML="<p class='muted' style='text-align:center;padding:20px;'>No previous versions</p>";
     }
   }catch(e){
     console.error('Error loading membership terms:',e);
-    currentDisplay.innerHTML="<p class='muted' style='grid-column:1/-1;text-align:center;padding:20px;'>Error loading membership terms. Please try refreshing the page.</p>";
-    previousDisplay.innerHTML="<p class='muted' style='text-align:center;padding:20px;'>Error loading previous versions.</p>";
+    if(!append){
+      currentDisplay.innerHTML="<p class='muted' style='grid-column:1/-1;text-align:center;padding:20px;'>Error loading membership terms. Please try refreshing the page.</p>";
+      previousDisplay.innerHTML="<p class='muted' style='text-align:center;padding:20px;'>Error loading previous versions.</p>";
+    }else{
+      showToast('Failed to load more terms','error');
+    }
   }
 }
 
