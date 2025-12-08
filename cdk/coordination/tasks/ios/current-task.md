@@ -1,7 +1,7 @@
-# Task: Phase 5 - Vault Communication
+# Task: Phase 6 - Handler Discovery & Execution
 
 ## Phase
-Phase 5: Vault Instance (EC2)
+Phase 6: Handler System (WASM)
 
 ## Assigned To
 iOS Instance
@@ -10,539 +10,709 @@ iOS Instance
 `github.com/mesmerverse/vettid-ios`
 
 ## Status
-Phase 4 complete. Ready for Phase 5 vault communication.
+Phase 5 complete. Ready for Phase 6 handler discovery and execution.
 
 ## Overview
 
-Phase 5 connects the mobile app to the user's vault instance. With NATS infrastructure in place from Phase 4, you now need to:
-1. Implement event submission to the vault
-2. Handle responses from the vault
-3. Display vault health status
-4. Handle vault lifecycle events (provisioning, stop, terminate)
+Phase 6 implements the handler system UI for discovering, installing, and triggering WASM handlers. The mobile app interacts with:
+1. Handler Registry API to list and download handlers
+2. Vault to install and execute handlers
+3. Handler responses via NATS
 
 ## New Backend Endpoints
 
-### Vault Lifecycle
+### Handler Registry
 ```
-POST /vault/provision    # Start provisioning vault EC2 instance
-POST /vault/initialize   # Initialize vault after EC2 is running
-POST /vault/stop         # Stop vault (preserve state)
-POST /vault/terminate    # Terminate vault (cleanup)
-GET  /vault/health       # Get vault health status
+GET  /registry/handlers              # List available handlers
+GET  /registry/handlers/{id}         # Get handler details and download URL
+POST /vault/handlers/install         # Install handler on vault
+POST /vault/handlers/uninstall       # Uninstall handler from vault
+GET  /vault/handlers                 # List installed handlers
+POST /vault/handlers/{id}/execute    # Execute handler with input
 ```
 
-## Phase 5 iOS Tasks
+## Phase 6 iOS Tasks
 
-### 1. Vault Lifecycle API
+### 1. Handler Registry Client
 
-Add vault lifecycle endpoints to APIClient:
+Add registry API to APIClient:
 
 ```swift
-// Services/APIClient.swift
+// Services/HandlerRegistryClient.swift
 
 extension APIClient {
-    func provisionVault() async throws -> ProvisionResponse
-    func initializeVault() async throws -> InitializeResponse
-    func stopVault() async throws -> StopResponse
-    func terminateVault() async throws -> TerminateResponse
-    func getVaultHealth() async throws -> VaultHealthResponse
+    func listHandlers(
+        category: String? = nil,
+        page: Int = 1,
+        limit: Int = 20
+    ) async throws -> HandlerListResponse
+
+    func getHandler(id: String) async throws -> HandlerDetailResponse
 }
 
-struct ProvisionResponse: Codable {
-    let instance_id: String
-    let status: String  // "provisioning", "running", "failed"
-    let region: String
-    let availability_zone: String
-    let private_ip: String?
-    let estimated_ready_at: String
+struct HandlerListResponse: Codable {
+    let handlers: [HandlerSummary]
+    let total: Int
+    let page: Int
+    let has_more: Bool
 }
 
-struct InitializeResponse: Codable {
-    let status: String  // "initialized", "failed"
-    let local_nats_status: String
-    let central_nats_status: String
-    let owner_space_id: String
-    let message_space_id: String
+struct HandlerSummary: Codable, Identifiable {
+    let id: String
+    let name: String
+    let description: String
+    let version: String
+    let category: String
+    let icon_url: String?
+    let publisher: String
+    let installed: Bool
+    let installed_version: String?
 }
 
-struct VaultHealthResponse: Codable {
-    let status: String  // "healthy", "unhealthy", "degraded"
-    let uptime_seconds: Int
-    let local_nats: NatsHealth
-    let central_nats: CentralNatsHealth
-    let vault_manager: VaultManagerHealth
-    let last_event_at: String?
+struct HandlerDetailResponse: Codable {
+    let id: String
+    let name: String
+    let description: String
+    let version: String
+    let category: String
+    let icon_url: String?
+    let publisher: String
+    let published_at: String
+    let size_bytes: Int
+    let permissions: [HandlerPermission]
+    let input_schema: [String: AnyCodableValue]
+    let output_schema: [String: AnyCodableValue]
+    let changelog: String?
+    let installed: Bool
+    let installed_version: String?
 }
 
-struct NatsHealth: Codable {
-    let status: String
-    let connections: Int
-}
-
-struct CentralNatsHealth: Codable {
-    let status: String
-    let latency_ms: Int
-}
-
-struct VaultManagerHealth: Codable {
-    let status: String
-    let memory_mb: Int
-    let cpu_percent: Float
-    let handlers_loaded: Int
+struct HandlerPermission: Codable {
+    let type: String      // "network", "storage", "crypto"
+    let scope: String     // e.g., "api.example.com" for network
+    let description: String
 }
 ```
 
-### 2. Event Submission via NATS
+### 2. Handler Installation Client
 
-Implement event submission through OwnerSpaceClient:
+Add vault handler management endpoints:
 
 ```swift
-// NATS/VaultEventClient.swift
+// Services/VaultHandlerClient.swift
 
-class VaultEventClient {
-    private let ownerSpaceClient: OwnerSpaceClient
+extension APIClient {
+    func installHandler(
+        handlerId: String,
+        version: String
+    ) async throws -> InstallHandlerResponse
 
-    init(ownerSpaceClient: OwnerSpaceClient) {
-        self.ownerSpaceClient = ownerSpaceClient
-    }
+    func uninstallHandler(handlerId: String) async throws -> UninstallHandlerResponse
 
-    /// Submit an event to the vault for processing
-    func submitEvent(_ event: VaultEvent) async throws -> String {
-        let requestId = UUID().uuidString
-        let message = VaultEventMessage(
-            request_id: requestId,
-            event_type: event.type,
-            payload: event.payload,
-            timestamp: ISO8601DateFormatter().string(from: Date())
-        )
+    func listInstalledHandlers() async throws -> InstalledHandlersResponse
 
-        try await ownerSpaceClient.sendToVault(
-            message: message,
-            topic: "events.\(event.type)"
-        )
-
-        return requestId
-    }
-
-    /// Subscribe to event responses from vault
-    func subscribeToResponses() -> AsyncStream<VaultEventResponse> {
-        ownerSpaceClient.subscribeToVaultResponses(
-            topic: "responses.>",
-            type: VaultEventResponse.self
-        )
-    }
+    func executeHandler(
+        handlerId: String,
+        input: [String: AnyCodableValue],
+        timeoutMs: Int = 30000
+    ) async throws -> ExecuteHandlerResponse
 }
 
-struct VaultEventMessage: Encodable {
-    let request_id: String
-    let event_type: String
-    let payload: [String: AnyCodable]
-    let timestamp: String
+struct InstallHandlerRequest: Encodable {
+    let handler_id: String
+    let version: String
 }
 
-struct VaultEventResponse: Decodable {
+struct InstallHandlerResponse: Codable {
+    let status: String      // "installed", "failed"
+    let handler_id: String
+    let version: String
+    let installed_at: String?
+}
+
+struct ExecuteHandlerRequest: Encodable {
+    let input: [String: AnyCodableValue]
+    let timeout_ms: Int
+}
+
+struct ExecuteHandlerResponse: Codable {
     let request_id: String
-    let status: String  // "success", "error"
-    let result: [String: AnyCodable]?
+    let status: String      // "success", "error", "timeout"
+    let output: [String: AnyCodableValue]?
     let error: String?
-    let processed_at: String
-}
-
-enum VaultEvent {
-    case sendMessage(recipient: String, content: String)
-    case updateProfile(updates: [String: Any])
-    case createConnection(inviteCode: String)
-
-    var type: String {
-        switch self {
-        case .sendMessage: return "messaging.send"
-        case .updateProfile: return "profile.update"
-        case .createConnection: return "connection.create"
-        }
-    }
-
-    var payload: [String: AnyCodable] {
-        switch self {
-        case .sendMessage(let recipient, let content):
-            return ["recipient": AnyCodable(recipient), "content": AnyCodable(content)]
-        case .updateProfile(let updates):
-            return updates.mapValues { AnyCodable($0) }
-        case .createConnection(let inviteCode):
-            return ["invite_code": AnyCodable(inviteCode)]
-        }
-    }
+    let execution_time_ms: Int
 }
 ```
 
-### 3. Vault Health ViewModel
+### 3. Handler Discovery ViewModel
 
-Create ViewModel for vault health monitoring:
+Create ViewModel for browsing handlers:
 
 ```swift
-// Vault/VaultHealthViewModel.swift
+// Handlers/HandlerDiscoveryViewModel.swift
 
 @MainActor
-class VaultHealthViewModel: ObservableObject {
-    @Published var healthState: VaultHealthState = .loading
+class HandlerDiscoveryViewModel: ObservableObject {
+    @Published var state: HandlerDiscoveryState = .loading
+    @Published var selectedCategory: String? = nil
+    @Published var installingHandlerId: String? = nil
 
     private let apiClient: APIClient
-    private let natsConnectionManager: NatsConnectionManager
-    private var healthCheckTask: Task<Void, Never>?
 
-    init(apiClient: APIClient, natsConnectionManager: NatsConnectionManager) {
+    init(apiClient: APIClient) {
         self.apiClient = apiClient
-        self.natsConnectionManager = natsConnectionManager
     }
 
-    func startHealthMonitoring() {
-        healthCheckTask?.cancel()
-        healthCheckTask = Task {
-            while !Task.isCancelled {
-                await checkHealth()
-                try? await Task.sleep(nanoseconds: 30_000_000_000) // 30 seconds
-            }
-        }
-    }
-
-    func stopHealthMonitoring() {
-        healthCheckTask?.cancel()
-        healthCheckTask = nil
-    }
-
-    private func checkHealth() async {
+    func loadHandlers() async {
+        state = .loading
         do {
-            let health = try await apiClient.getVaultHealth()
-            healthState = .loaded(VaultHealthInfo(
-                status: HealthStatus(rawValue: health.status) ?? .unhealthy,
-                uptime: TimeInterval(health.uptime_seconds),
-                localNats: health.local_nats.status == "running",
-                centralNats: health.central_nats.status == "connected",
-                centralLatency: health.central_nats.latency_ms,
-                vaultManager: health.vault_manager.status == "running",
-                handlersLoaded: health.vault_manager.handlers_loaded,
-                lastEventAt: health.last_event_at.flatMap { ISO8601DateFormatter().date(from: $0) }
-            ))
+            let response = try await apiClient.listHandlers(category: selectedCategory)
+            state = .loaded(handlers: response.handlers, hasMore: response.has_more)
         } catch {
-            healthState = .error(error.localizedDescription)
+            state = .error(error.localizedDescription)
         }
     }
 
-    func provisionVault() async {
-        healthState = .provisioning
+    func selectCategory(_ category: String?) {
+        selectedCategory = category
+        Task { await loadHandlers() }
+    }
 
+    func installHandler(_ handler: HandlerSummary) async {
+        installingHandlerId = handler.id
         do {
-            let provision = try await apiClient.provisionVault()
-            // Poll for completion
-            await pollForProvisioning(instanceId: provision.instance_id)
-        } catch {
-            healthState = .error(error.localizedDescription)
-        }
-    }
-
-    private func pollForProvisioning(instanceId: String) async {
-        for _ in 0..<60 { // Max 2 minutes
-            try? await Task.sleep(nanoseconds: 2_000_000_000) // 2 seconds
-            do {
-                let health = try await apiClient.getVaultHealth()
-                if health.status == "healthy" {
-                    await checkHealth()
-                    return
-                }
-            } catch {
-                // Still provisioning
+            let result = try await apiClient.installHandler(
+                handlerId: handler.id,
+                version: handler.version
+            )
+            if result.status == "installed" {
+                await loadHandlers()
             }
+        } catch {
+            // Handle error
         }
-        healthState = .error("Provisioning timeout")
+        installingHandlerId = nil
     }
 
-    deinit {
-        healthCheckTask?.cancel()
+    func uninstallHandler(_ handler: HandlerSummary) async {
+        do {
+            _ = try await apiClient.uninstallHandler(handlerId: handler.id)
+            await loadHandlers()
+        } catch {
+            // Handle error
+        }
     }
 }
 
-enum VaultHealthState {
+enum HandlerDiscoveryState {
     case loading
-    case provisioning
-    case notProvisioned
-    case loaded(VaultHealthInfo)
+    case loaded(handlers: [HandlerSummary], hasMore: Bool)
     case error(String)
-}
-
-struct VaultHealthInfo {
-    let status: HealthStatus
-    let uptime: TimeInterval
-    let localNats: Bool
-    let centralNats: Bool
-    let centralLatency: Int
-    let vaultManager: Bool
-    let handlersLoaded: Int
-    let lastEventAt: Date?
-}
-
-enum HealthStatus: String {
-    case healthy
-    case degraded
-    case unhealthy
 }
 ```
 
-### 4. Vault Health View
+### 4. Handler Discovery View
 
-Create health display components:
+Create handler browsing screens:
 
 ```swift
-// Vault/VaultHealthView.swift
+// Handlers/HandlerDiscoveryView.swift
 
-struct VaultHealthView: View {
-    @StateObject var viewModel: VaultHealthViewModel
+struct HandlerDiscoveryView: View {
+    @StateObject var viewModel: HandlerDiscoveryViewModel
+    @State private var selectedHandler: HandlerSummary?
 
     var body: some View {
         NavigationView {
-            VStack(spacing: 16) {
-                switch viewModel.healthState {
+            VStack(spacing: 0) {
+                // Category picker
+                CategoryPicker(
+                    selectedCategory: $viewModel.selectedCategory,
+                    onSelect: { viewModel.selectCategory($0) }
+                )
+
+                // Handler list
+                switch viewModel.state {
                 case .loading:
                     ProgressView()
-                case .provisioning:
-                    ProvisioningView()
-                case .notProvisioned:
-                    NotProvisionedView(onProvision: {
-                        Task { await viewModel.provisionVault() }
-                    })
-                case .loaded(let info):
-                    VaultHealthDetailsView(info: info)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                case .loaded(let handlers, _):
+                    List(handlers) { handler in
+                        HandlerListRow(
+                            handler: handler,
+                            isInstalling: viewModel.installingHandlerId == handler.id,
+                            onTap: { selectedHandler = handler },
+                            onInstall: { Task { await viewModel.installHandler(handler) } },
+                            onUninstall: { Task { await viewModel.uninstallHandler(handler) } }
+                        )
+                    }
+                    .listStyle(.plain)
+
                 case .error(let message):
-                    ErrorView(message: message, onRetry: {
-                        viewModel.startHealthMonitoring()
-                    })
+                    ErrorView(message: message) {
+                        Task { await viewModel.loadHandlers() }
+                    }
                 }
             }
-            .padding()
-            .navigationTitle("Vault Health")
+            .navigationTitle("Handlers")
+            .sheet(item: $selectedHandler) { handler in
+                HandlerDetailView(handlerId: handler.id)
+            }
         }
-        .onAppear {
-            viewModel.startHealthMonitoring()
-        }
-        .onDisappear {
-            viewModel.stopHealthMonitoring()
+        .task {
+            await viewModel.loadHandlers()
         }
     }
 }
 
-struct VaultHealthDetailsView: View {
-    let info: VaultHealthInfo
+struct CategoryPicker: View {
+    @Binding var selectedCategory: String?
+    let onSelect: (String?) -> Void
+
+    let categories: [(String?, String)] = [
+        (nil, "All"),
+        ("messaging", "Messaging"),
+        ("social", "Social"),
+        ("productivity", "Productivity"),
+        ("utilities", "Utilities")
+    ]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            // Status header
-            HStack {
-                Circle()
-                    .fill(statusColor)
-                    .frame(width: 16, height: 16)
-                Text(info.status.rawValue.capitalized)
-                    .font(.title2)
-                    .fontWeight(.semibold)
-            }
-
-            Divider()
-
-            // Component status
-            ComponentStatusRow(
-                title: "Local NATS",
-                isActive: info.localNats
-            )
-            ComponentStatusRow(
-                title: "Central NATS",
-                isActive: info.centralNats,
-                detail: "\(info.centralLatency)ms"
-            )
-            ComponentStatusRow(
-                title: "Vault Manager",
-                isActive: info.vaultManager
-            )
-
-            Divider()
-
-            // Stats
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Handlers Loaded: \(info.handlersLoaded)")
-                Text("Uptime: \(formatUptime(info.uptime))")
-                if let lastEvent = info.lastEventAt {
-                    Text("Last Event: \(lastEvent, style: .relative)")
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 12) {
+                ForEach(categories, id: \.0) { category, label in
+                    CategoryChip(
+                        label: label,
+                        isSelected: selectedCategory == category,
+                        action: { onSelect(category) }
+                    )
                 }
             }
-            .font(.subheadline)
-            .foregroundColor(.secondary)
+            .padding(.horizontal)
+        }
+        .padding(.vertical, 8)
+        .background(Color(.systemBackground))
+    }
+}
+
+struct HandlerListRow: View {
+    let handler: HandlerSummary
+    let isInstalling: Bool
+    let onTap: () -> Void
+    let onInstall: () -> Void
+    let onUninstall: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            // Handler icon
+            AsyncImage(url: URL(string: handler.icon_url ?? "")) { image in
+                image.resizable().aspectRatio(contentMode: .fit)
+            } placeholder: {
+                Image(systemName: "cube.box")
+                    .foregroundColor(.secondary)
+            }
+            .frame(width: 48, height: 48)
+            .background(Color(.systemGray6))
+            .cornerRadius(8)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(handler.name)
+                    .font(.headline)
+                Text(handler.description)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(2)
+                Text("v\(handler.version) by \(handler.publisher)")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+
+            Spacer()
+
+            // Install/Uninstall button
+            if isInstalling {
+                ProgressView()
+            } else if handler.installed {
+                Button("Uninstall", action: onUninstall)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+            } else {
+                Button("Install", action: onInstall)
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+            }
+        }
+        .padding(.vertical, 8)
+        .contentShape(Rectangle())
+        .onTapGesture(perform: onTap)
+    }
+}
+```
+
+### 5. Handler Detail View
+
+Create handler detail screen:
+
+```swift
+// Handlers/HandlerDetailView.swift
+
+struct HandlerDetailView: View {
+    let handlerId: String
+    @StateObject private var viewModel: HandlerDetailViewModel
+    @Environment(\.dismiss) private var dismiss
+
+    init(handlerId: String) {
+        self.handlerId = handlerId
+        self._viewModel = StateObject(wrappedValue: HandlerDetailViewModel())
+    }
+
+    var body: some View {
+        NavigationView {
+            Group {
+                switch viewModel.state {
+                case .loading:
+                    ProgressView()
+
+                case .loaded(let handler):
+                    HandlerDetailContent(
+                        handler: handler,
+                        isInstalling: viewModel.isInstalling,
+                        onInstall: { Task { await viewModel.installHandler() } },
+                        onUninstall: { Task { await viewModel.uninstallHandler() } },
+                        onExecute: { viewModel.showExecutionSheet = true }
+                    )
+
+                case .error(let message):
+                    ErrorView(message: message) {
+                        Task { await viewModel.loadHandler(handlerId) }
+                    }
+                }
+            }
+            .navigationTitle("Handler Details")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .sheet(isPresented: $viewModel.showExecutionSheet) {
+            if case .loaded(let handler) = viewModel.state {
+                HandlerExecutionView(
+                    handler: handler,
+                    viewModel: HandlerExecutionViewModel()
+                )
+            }
+        }
+        .task {
+            await viewModel.loadHandler(handlerId)
+        }
+    }
+}
+
+struct HandlerDetailContent: View {
+    let handler: HandlerDetailResponse
+    let isInstalling: Bool
+    let onInstall: () -> Void
+    let onUninstall: () -> Void
+    let onExecute: () -> Void
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                // Header
+                HStack(spacing: 16) {
+                    AsyncImage(url: URL(string: handler.icon_url ?? "")) { image in
+                        image.resizable().aspectRatio(contentMode: .fit)
+                    } placeholder: {
+                        Image(systemName: "cube.box")
+                    }
+                    .frame(width: 64, height: 64)
+                    .background(Color(.systemGray6))
+                    .cornerRadius(12)
+
+                    VStack(alignment: .leading) {
+                        Text(handler.name)
+                            .font(.title2)
+                            .fontWeight(.bold)
+                        Text("v\(handler.version) by \(handler.publisher)")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                Text(handler.description)
+                    .font(.body)
+
+                // Permissions section
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Permissions")
+                        .font(.headline)
+
+                    ForEach(handler.permissions, id: \.type) { permission in
+                        PermissionRow(permission: permission)
+                    }
+                }
+
+                // Action buttons
+                if handler.installed {
+                    HStack(spacing: 12) {
+                        Button(action: onExecute) {
+                            Label("Execute", systemImage: "play.fill")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+
+                        Button(action: onUninstall) {
+                            Label("Uninstall", systemImage: "trash")
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                } else {
+                    Button(action: onInstall) {
+                        if isInstalling {
+                            ProgressView()
+                                .frame(maxWidth: .infinity)
+                        } else {
+                            Label("Install", systemImage: "arrow.down.circle")
+                                .frame(maxWidth: .infinity)
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(isInstalling)
+                }
+
+                // Changelog
+                if let changelog = handler.changelog {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Changelog")
+                            .font(.headline)
+                        Text(changelog)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+            .padding()
+        }
+    }
+}
+
+struct PermissionRow: View {
+    let permission: HandlerPermission
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: iconForPermission(permission.type))
+                .foregroundColor(.blue)
+                .frame(width: 24)
+
+            VStack(alignment: .leading) {
+                Text(permission.type.capitalized)
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                Text(permission.description)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func iconForPermission(_ type: String) -> String {
+        switch type {
+        case "network": return "network"
+        case "storage": return "externaldrive"
+        case "crypto": return "lock.shield"
+        default: return "questionmark.circle"
+        }
+    }
+}
+```
+
+### 6. Handler Execution View
+
+Create input form and result display:
+
+```swift
+// Handlers/HandlerExecutionView.swift
+
+struct HandlerExecutionView: View {
+    let handler: HandlerDetailResponse
+    @StateObject var viewModel: HandlerExecutionViewModel
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationView {
+            VStack(spacing: 20) {
+                // Dynamic input form
+                DynamicInputForm(
+                    schema: handler.input_schema,
+                    values: $viewModel.inputValues
+                )
+
+                // Execute button
+                Button(action: {
+                    Task {
+                        await viewModel.execute(
+                            handlerId: handler.id,
+                            input: viewModel.inputValues
+                        )
+                    }
+                }) {
+                    if viewModel.isExecuting {
+                        ProgressView()
+                            .frame(maxWidth: .infinity)
+                    } else {
+                        Text("Execute")
+                            .frame(maxWidth: .infinity)
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(viewModel.isExecuting)
+
+                // Result display
+                if let result = viewModel.result {
+                    ExecutionResultView(result: result)
+                }
+
+                if let error = viewModel.errorMessage {
+                    Text(error)
+                        .foregroundColor(.red)
+                        .font(.caption)
+                }
+
+                Spacer()
+            }
+            .padding()
+            .navigationTitle("Execute \(handler.name)")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+struct ExecutionResultView: View {
+    let result: ExecuteHandlerResponse
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Image(systemName: result.status == "success" ? "checkmark.circle.fill" : "xmark.circle.fill")
+                    .foregroundColor(result.status == "success" ? .green : .red)
+                Text(result.status.capitalized)
+                    .fontWeight(.semibold)
+                Spacer()
+                Text("\(result.execution_time_ms)ms")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            if let output = result.output {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Output:")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Text(formatOutput(output))
+                        .font(.system(.caption, design: .monospaced))
+                        .padding(8)
+                        .background(Color(.systemGray6))
+                        .cornerRadius(4)
+                }
+            }
+
+            if let error = result.error {
+                Text(error)
+                    .foregroundColor(.red)
+                    .font(.caption)
+            }
         }
         .padding()
         .background(Color(.systemGray6))
         .cornerRadius(12)
     }
 
-    private var statusColor: Color {
-        switch info.status {
-        case .healthy: return .green
-        case .degraded: return .yellow
-        case .unhealthy: return .red
+    private func formatOutput(_ output: [String: AnyCodableValue]) -> String {
+        // Convert to JSON string for display
+        if let data = try? JSONEncoder().encode(output),
+           let string = String(data: data, encoding: .utf8) {
+            return string
         }
-    }
-
-    private func formatUptime(_ interval: TimeInterval) -> String {
-        let hours = Int(interval) / 3600
-        let minutes = (Int(interval) % 3600) / 60
-        return "\(hours)h \(minutes)m"
-    }
-}
-
-struct ComponentStatusRow: View {
-    let title: String
-    let isActive: Bool
-    var detail: String? = nil
-
-    var body: some View {
-        HStack {
-            Image(systemName: isActive ? "checkmark.circle.fill" : "xmark.circle.fill")
-                .foregroundColor(isActive ? .green : .red)
-            Text(title)
-            Spacer()
-            if let detail = detail {
-                Text(detail)
-                    .foregroundColor(.secondary)
-            }
-        }
+        return "Unable to display output"
     }
 }
 ```
 
-### 5. Event Response Handler
-
-Handle responses from vault events:
+### 7. Unit Tests
 
 ```swift
-// NATS/VaultResponseHandler.swift
+// VettIDTests/HandlerDiscoveryViewModelTests.swift
 
-actor VaultResponseHandler {
-    private let vaultEventClient: VaultEventClient
-    private var pendingRequests: [String: CheckedContinuation<VaultEventResponse, Error>] = [:]
-    private var responseTask: Task<Void, Never>?
-
-    init(vaultEventClient: VaultEventClient) {
-        self.vaultEventClient = vaultEventClient
-        startListening()
-    }
-
-    private func startListening() {
-        responseTask = Task {
-            for await response in vaultEventClient.subscribeToResponses() {
-                if let continuation = pendingRequests.removeValue(forKey: response.request_id) {
-                    continuation.resume(returning: response)
-                }
-            }
-        }
-    }
-
-    func submitAndAwait(
-        _ event: VaultEvent,
-        timeout: TimeInterval = 30
-    ) async throws -> VaultEventResponse {
-        let requestId = try await vaultEventClient.submitEvent(event)
-
-        return try await withCheckedThrowingContinuation { continuation in
-            Task {
-                await self.registerPending(requestId: requestId, continuation: continuation)
-
-                // Set up timeout
-                Task {
-                    try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
-                    await self.handleTimeout(requestId: requestId)
-                }
-            }
-        }
-    }
-
-    private func registerPending(
-        requestId: String,
-        continuation: CheckedContinuation<VaultEventResponse, Error>
-    ) {
-        pendingRequests[requestId] = continuation
-    }
-
-    private func handleTimeout(requestId: String) {
-        if let continuation = pendingRequests.removeValue(forKey: requestId) {
-            continuation.resume(throwing: VaultError.responseTimeout)
-        }
-    }
-
-    deinit {
-        responseTask?.cancel()
-    }
+class HandlerDiscoveryViewModelTests: XCTestCase {
+    func testLoadHandlers_updatesStateWithHandlerList() async { }
+    func testSelectCategory_filtersHandlers() async { }
+    func testInstallHandler_callsAPIAndRefreshesList() async { }
+    func testUninstallHandler_callsAPIAndRefreshesList() async { }
 }
 
-enum VaultError: Error {
-    case responseTimeout
-    case eventSubmissionFailed
-}
-```
+// VettIDTests/HandlerDetailViewModelTests.swift
 
-### 6. Unit Tests
-
-```swift
-// VettIDTests/VaultEventClientTests.swift
-
-class VaultEventClientTests: XCTestCase {
-    func testSubmitEvent_sendsToCorrectTopic() async { }
-    func testSubscribeToResponses_receivesVaultMessages() { }
+class HandlerDetailViewModelTests: XCTestCase {
+    func testLoadHandler_fetchesHandlerDetails() async { }
+    func testExecuteHandler_sendsInputAndReceivesOutput() async { }
+    func testExecuteHandler_handlesTimeout() async { }
 }
 
-// VettIDTests/VaultHealthViewModelTests.swift
+// VettIDTests/HandlerExecutionViewModelTests.swift
 
-class VaultHealthViewModelTests: XCTestCase {
-    func testCheckHealth_updatesStateCorrectly() async { }
-    func testProvisionVault_pollsUntilReady() async { }
-    func testTimeout_duringProvisioning_showsError() async { }
-}
-
-// VettIDTests/VaultResponseHandlerTests.swift
-
-class VaultResponseHandlerTests: XCTestCase {
-    func testSubmitAndAwait_matchesRequestToResponse() async { }
-    func testSubmitAndAwait_timesOutAfterDuration() async { }
+class HandlerExecutionViewModelTests: XCTestCase {
+    func testExecute_sendsRequestAndUpdatesState() async { }
+    func testExecute_handlesErrorResponse() async { }
+    func testExecute_showsLoadingStateDuringExecution() async { }
 }
 ```
 
 ## Deliverables
 
-- [ ] APIClient with vault lifecycle endpoints
-- [ ] VaultEventClient for NATS event submission
-- [ ] VaultHealthViewModel for health monitoring
-- [ ] VaultHealthView with SwiftUI status UI
-- [ ] VaultResponseHandler for request/response correlation
-- [ ] Unit tests for new components
+- [ ] APIClient extensions for registry and handler management
+- [ ] HandlerDiscoveryViewModel and HandlerDiscoveryView
+- [ ] HandlerDetailView with permissions display
+- [ ] HandlerExecutionView with dynamic input form
+- [ ] DynamicInputForm component for schema-driven forms
+- [ ] Navigation integration for handler flows
+- [ ] Unit tests for ViewModels
 
 ## Acceptance Criteria
 
-- [ ] App can provision vault via API
-- [ ] App polls for provisioning completion
-- [ ] App displays vault health status
-- [ ] App submits events via NATS to vault
-- [ ] App receives and correlates responses
-- [ ] Health monitoring updates every 30 seconds
-- [ ] Error states displayed with retry option
+- [ ] User can browse available handlers by category
+- [ ] User can view handler details and permissions
+- [ ] User can install/uninstall handlers
+- [ ] User can execute installed handlers
+- [ ] Handler execution shows input form based on schema
+- [ ] Handler results displayed correctly
+- [ ] Error states handled gracefully
 
 ## Notes
 
-- iOS notes: nats.swift SPM integration still pending - may need to use mock for now
-- Vault provisioning may take 1-2 minutes - show appropriate progress UI
-- Consider battery impact of 30-second health polling - adjust interval as needed
-- Use async/await and actors for thread-safe response handling
+- Handler icons may be null - show SF Symbol placeholder
+- Input schema drives dynamic form generation using SwiftUI
+- Consider caching handler list for offline browsing
+- Permissions should be clearly explained to user
+- Use async/await throughout for clean async code
 
 ## Status Update
 
 ```bash
 cd /path/to/vettid-ios
 git pull
-# Create vault communication components
+# Create handler UI components
 git add .
-git commit -m "Phase 5: Add vault communication"
+git commit -m "Phase 6: Add handler discovery and execution UI"
 git push
 
 # Update status in backend repo
@@ -550,6 +720,6 @@ cd /path/to/vettid-dev
 git pull
 # Edit cdk/coordination/status/ios.json
 git add cdk/coordination/status/ios.json
-git commit -m "Update iOS status: Phase 5 vault communication complete"
+git commit -m "Update iOS status: Phase 6 handler UI complete"
 git push
 ```

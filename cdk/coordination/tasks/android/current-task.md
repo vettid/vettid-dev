@@ -1,7 +1,7 @@
-# Task: Phase 5 - Vault Communication
+# Task: Phase 6 - Handler Discovery & Execution
 
 ## Phase
-Phase 5: Vault Instance (EC2)
+Phase 6: Handler System (WASM)
 
 ## Assigned To
 Android Instance
@@ -10,461 +10,596 @@ Android Instance
 `github.com/mesmerverse/vettid-android`
 
 ## Status
-Phase 4 complete. Ready for Phase 5 vault communication.
+Phase 5 complete. Ready for Phase 6 handler discovery and execution.
 
 ## Overview
 
-Phase 5 connects the mobile app to the user's vault instance. With NATS infrastructure in place from Phase 4, you now need to:
-1. Implement event submission to the vault
-2. Handle responses from the vault
-3. Display vault health status
-4. Handle vault lifecycle events (provisioning, stop, terminate)
+Phase 6 implements the handler system UI for discovering, installing, and triggering WASM handlers. The mobile app interacts with:
+1. Handler Registry API to list and download handlers
+2. Vault to install and execute handlers
+3. Handler responses via NATS
 
 ## New Backend Endpoints
 
-### Vault Lifecycle
+### Handler Registry
 ```
-POST /vault/provision    # Start provisioning vault EC2 instance
-POST /vault/initialize   # Initialize vault after EC2 is running
-POST /vault/stop         # Stop vault (preserve state)
-POST /vault/terminate    # Terminate vault (cleanup)
-GET  /vault/health       # Get vault health status
+GET  /registry/handlers              # List available handlers
+GET  /registry/handlers/{id}         # Get handler details and download URL
+POST /vault/handlers/install         # Install handler on vault
+POST /vault/handlers/uninstall       # Uninstall handler from vault
+GET  /vault/handlers                 # List installed handlers
+POST /vault/handlers/{id}/execute    # Execute handler with input
 ```
 
-## Phase 5 Android Tasks
+## Phase 6 Android Tasks
 
-### 1. Vault Provisioning Client
+### 1. Handler Registry Client
 
-Add vault lifecycle API to VaultServiceClient:
+Add registry API to service client:
 
 ```kotlin
-// api/VaultServiceClient.kt
+// api/HandlerRegistryClient.kt
 
-interface VaultServiceClient {
-    // Existing endpoints...
+interface HandlerRegistryClient {
+    @GET("/registry/handlers")
+    suspend fun listHandlers(
+        @Query("category") category: String? = null,
+        @Query("page") page: Int = 1,
+        @Query("limit") limit: Int = 20
+    ): HandlerListResponse
 
-    @POST("/vault/provision")
-    suspend fun provisionVault(): ProvisionResponse
-
-    @POST("/vault/initialize")
-    suspend fun initializeVault(): InitializeResponse
-
-    @POST("/vault/stop")
-    suspend fun stopVault(): StopResponse
-
-    @POST("/vault/terminate")
-    suspend fun terminateVault(): TerminateResponse
-
-    @GET("/vault/health")
-    suspend fun getVaultHealth(): VaultHealthResponse
+    @GET("/registry/handlers/{id}")
+    suspend fun getHandler(@Path("id") handlerId: String): HandlerDetailResponse
 }
 
-data class ProvisionResponse(
-    val instance_id: String,
-    val status: String,  // "provisioning", "running", "failed"
-    val region: String,
-    val availability_zone: String,
-    val private_ip: String?,
-    val estimated_ready_at: String
+data class HandlerListResponse(
+    val handlers: List<HandlerSummary>,
+    val total: Int,
+    val page: Int,
+    val has_more: Boolean
 )
 
-data class InitializeResponse(
-    val status: String,  // "initialized", "failed"
-    val local_nats_status: String,
-    val central_nats_status: String,
-    val owner_space_id: String,
-    val message_space_id: String
+data class HandlerSummary(
+    val id: String,
+    val name: String,
+    val description: String,
+    val version: String,
+    val category: String,
+    val icon_url: String?,
+    val publisher: String,
+    val installed: Boolean,
+    val installed_version: String?
 )
 
-data class VaultHealthResponse(
-    val status: String,  // "healthy", "unhealthy", "degraded"
-    val uptime_seconds: Long,
-    val local_nats: NatsHealth,
-    val central_nats: CentralNatsHealth,
-    val vault_manager: VaultManagerHealth,
-    val last_event_at: String?
+data class HandlerDetailResponse(
+    val id: String,
+    val name: String,
+    val description: String,
+    val version: String,
+    val category: String,
+    val icon_url: String?,
+    val publisher: String,
+    val published_at: String,
+    val size_bytes: Long,
+    val permissions: List<HandlerPermission>,
+    val input_schema: JsonObject,
+    val output_schema: JsonObject,
+    val changelog: String?,
+    val installed: Boolean,
+    val installed_version: String?
 )
 
-data class NatsHealth(
-    val status: String,
-    val connections: Int
-)
-
-data class CentralNatsHealth(
-    val status: String,
-    val latency_ms: Long
-)
-
-data class VaultManagerHealth(
-    val status: String,
-    val memory_mb: Int,
-    val cpu_percent: Float,
-    val handlers_loaded: Int
+data class HandlerPermission(
+    val type: String,  // "network", "storage", "crypto"
+    val scope: String, // e.g., "api.example.com" for network
+    val description: String
 )
 ```
 
-### 2. Event Submission via NATS
+### 2. Handler Installation Client
 
-Implement event submission through OwnerSpaceClient:
+Add vault handler management endpoints:
 
 ```kotlin
-// nats/VaultEventClient.kt
+// api/VaultHandlerClient.kt
 
-class VaultEventClient @Inject constructor(
-    private val ownerSpaceClient: OwnerSpaceClient
-) {
-    /**
-     * Submit an event to the vault for processing
-     */
-    suspend fun submitEvent(event: VaultEvent): Result<String> {
-        val requestId = UUID.randomUUID().toString()
-        val message = VaultEventMessage(
-            request_id = requestId,
-            event_type = event.type,
-            payload = event.payload,
-            timestamp = Instant.now().toString()
-        )
+interface VaultHandlerClient {
+    @POST("/vault/handlers/install")
+    suspend fun installHandler(
+        @Body request: InstallHandlerRequest
+    ): InstallHandlerResponse
 
-        return ownerSpaceClient.sendToVault(
-            message = message,
-            topic = "events.${event.type}"
-        ).map { requestId }
-    }
+    @POST("/vault/handlers/uninstall")
+    suspend fun uninstallHandler(
+        @Body request: UninstallHandlerRequest
+    ): UninstallHandlerResponse
 
-    /**
-     * Subscribe to event responses from vault
-     */
-    fun subscribeToResponses(): Flow<VaultEventResponse> {
-        return ownerSpaceClient.subscribeToVaultResponses(
-            topic = "responses.>",
-            type = VaultEventResponse::class
-        )
-    }
+    @GET("/vault/handlers")
+    suspend fun listInstalledHandlers(): InstalledHandlersResponse
+
+    @POST("/vault/handlers/{id}/execute")
+    suspend fun executeHandler(
+        @Path("id") handlerId: String,
+        @Body request: ExecuteHandlerRequest
+    ): ExecuteHandlerResponse
 }
 
-data class VaultEventMessage(
-    val request_id: String,
-    val event_type: String,
-    val payload: JsonObject,
-    val timestamp: String
+data class InstallHandlerRequest(
+    val handler_id: String,
+    val version: String
 )
 
-data class VaultEventResponse(
+data class InstallHandlerResponse(
+    val status: String,  // "installed", "failed"
+    val handler_id: String,
+    val version: String,
+    val installed_at: String?
+)
+
+data class ExecuteHandlerRequest(
+    val input: JsonObject,
+    val timeout_ms: Long = 30000
+)
+
+data class ExecuteHandlerResponse(
     val request_id: String,
-    val status: String,  // "success", "error"
-    val result: JsonObject?,
+    val status: String,  // "success", "error", "timeout"
+    val output: JsonObject?,
     val error: String?,
-    val processed_at: String
+    val execution_time_ms: Long
 )
-
-sealed class VaultEvent(val type: String, val payload: JsonObject) {
-    class SendMessage(recipient: String, content: String) : VaultEvent(
-        "messaging.send",
-        JsonObject(mapOf("recipient" to recipient, "content" to content))
-    )
-
-    class UpdateProfile(updates: Map<String, Any>) : VaultEvent(
-        "profile.update",
-        JsonObject(updates)
-    )
-
-    class CreateConnection(inviteCode: String) : VaultEvent(
-        "connection.create",
-        JsonObject(mapOf("invite_code" to inviteCode))
-    )
-}
 ```
 
-### 3. Vault Health ViewModel
+### 3. Handler Discovery ViewModel
 
-Create ViewModel for vault health monitoring:
+Create ViewModel for browsing handlers:
 
 ```kotlin
-// vault/VaultHealthViewModel.kt
+// handlers/HandlerDiscoveryViewModel.kt
 
 @HiltViewModel
-class VaultHealthViewModel @Inject constructor(
-    private val vaultService: VaultServiceClient,
-    private val natsConnectionManager: NatsConnectionManager
+class HandlerDiscoveryViewModel @Inject constructor(
+    private val registryClient: HandlerRegistryClient,
+    private val vaultHandlerClient: VaultHandlerClient
 ) : ViewModel() {
 
-    private val _healthState = MutableStateFlow<VaultHealthState>(VaultHealthState.Loading)
-    val healthState: StateFlow<VaultHealthState> = _healthState.asStateFlow()
+    private val _state = MutableStateFlow<HandlerDiscoveryState>(HandlerDiscoveryState.Loading)
+    val state: StateFlow<HandlerDiscoveryState> = _state.asStateFlow()
 
-    private var healthCheckJob: Job? = null
+    private val _selectedCategory = MutableStateFlow<String?>(null)
+    val selectedCategory: StateFlow<String?> = _selectedCategory.asStateFlow()
 
     init {
-        startHealthMonitoring()
+        loadHandlers()
     }
 
-    fun startHealthMonitoring() {
-        healthCheckJob?.cancel()
-        healthCheckJob = viewModelScope.launch {
-            while (isActive) {
-                checkHealth()
-                delay(30_000) // Check every 30 seconds
-            }
-        }
-    }
-
-    private suspend fun checkHealth() {
-        try {
-            val health = vaultService.getVaultHealth()
-            _healthState.value = VaultHealthState.Loaded(
-                status = when (health.status) {
-                    "healthy" -> HealthStatus.Healthy
-                    "degraded" -> HealthStatus.Degraded
-                    else -> HealthStatus.Unhealthy
-                },
-                uptime = Duration.ofSeconds(health.uptime_seconds),
-                localNats = health.local_nats.status == "running",
-                centralNats = health.central_nats.status == "connected",
-                centralLatency = health.central_nats.latency_ms,
-                vaultManager = health.vault_manager.status == "running",
-                handlersLoaded = health.vault_manager.handlers_loaded,
-                lastEventAt = health.last_event_at?.let { Instant.parse(it) }
-            )
-        } catch (e: Exception) {
-            _healthState.value = VaultHealthState.Error(e.message ?: "Health check failed")
-        }
-    }
-
-    fun provisionVault() {
+    fun loadHandlers(category: String? = null) {
         viewModelScope.launch {
-            _healthState.value = VaultHealthState.Provisioning
+            _state.value = HandlerDiscoveryState.Loading
             try {
-                val provision = vaultService.provisionVault()
-                // Poll for completion
-                pollForProvisioning(provision.instance_id)
+                val response = registryClient.listHandlers(category = category)
+                _state.value = HandlerDiscoveryState.Loaded(
+                    handlers = response.handlers,
+                    hasMore = response.has_more
+                )
             } catch (e: Exception) {
-                _healthState.value = VaultHealthState.Error(e.message ?: "Provisioning failed")
+                _state.value = HandlerDiscoveryState.Error(e.message ?: "Failed to load handlers")
             }
         }
     }
 
-    private suspend fun pollForProvisioning(instanceId: String) {
-        repeat(60) { // Max 2 minutes
-            delay(2000)
+    fun selectCategory(category: String?) {
+        _selectedCategory.value = category
+        loadHandlers(category)
+    }
+
+    fun installHandler(handlerId: String, version: String) {
+        viewModelScope.launch {
             try {
-                val health = vaultService.getVaultHealth()
-                if (health.status == "healthy") {
-                    checkHealth()
-                    return
+                val result = vaultHandlerClient.installHandler(
+                    InstallHandlerRequest(handlerId, version)
+                )
+                if (result.status == "installed") {
+                    loadHandlers(_selectedCategory.value)
                 }
             } catch (e: Exception) {
-                // Still provisioning
+                // Handle error
             }
         }
-        _healthState.value = VaultHealthState.Error("Provisioning timeout")
     }
 
-    override fun onCleared() {
-        healthCheckJob?.cancel()
-        super.onCleared()
+    fun uninstallHandler(handlerId: String) {
+        viewModelScope.launch {
+            try {
+                vaultHandlerClient.uninstallHandler(
+                    UninstallHandlerRequest(handlerId)
+                )
+                loadHandlers(_selectedCategory.value)
+            } catch (e: Exception) {
+                // Handle error
+            }
+        }
     }
 }
 
-sealed class VaultHealthState {
-    object Loading : VaultHealthState()
-    object Provisioning : VaultHealthState()
-    object NotProvisioned : VaultHealthState()
+sealed class HandlerDiscoveryState {
+    object Loading : HandlerDiscoveryState()
     data class Loaded(
-        val status: HealthStatus,
-        val uptime: Duration,
-        val localNats: Boolean,
-        val centralNats: Boolean,
-        val centralLatency: Long,
-        val vaultManager: Boolean,
-        val handlersLoaded: Int,
-        val lastEventAt: Instant?
-    ) : VaultHealthState()
-    data class Error(val message: String) : VaultHealthState()
+        val handlers: List<HandlerSummary>,
+        val hasMore: Boolean
+    ) : HandlerDiscoveryState()
+    data class Error(val message: String) : HandlerDiscoveryState()
 }
-
-enum class HealthStatus { Healthy, Degraded, Unhealthy }
 ```
 
-### 4. Vault Health UI
+### 4. Handler Discovery UI
 
-Create health display components:
+Create handler browsing screens:
 
 ```kotlin
-// vault/VaultHealthScreen.kt
+// handlers/HandlerDiscoveryScreen.kt
 
 @Composable
-fun VaultHealthScreen(
-    viewModel: VaultHealthViewModel = hiltViewModel()
+fun HandlerDiscoveryScreen(
+    viewModel: HandlerDiscoveryViewModel = hiltViewModel(),
+    onHandlerSelected: (String) -> Unit
 ) {
-    val state by viewModel.healthState.collectAsState()
+    val state by viewModel.state.collectAsState()
+    val selectedCategory by viewModel.selectedCategory.collectAsState()
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp)
-    ) {
-        Text("Vault Health", style = MaterialTheme.typography.headlineMedium)
-        Spacer(modifier = Modifier.height(16.dp))
+    Column(modifier = Modifier.fillMaxSize()) {
+        // Category tabs
+        CategoryTabs(
+            selectedCategory = selectedCategory,
+            onCategorySelected = { viewModel.selectCategory(it) }
+        )
 
         when (val currentState = state) {
-            is VaultHealthState.Loading -> LoadingIndicator()
-            is VaultHealthState.Provisioning -> ProvisioningIndicator()
-            is VaultHealthState.NotProvisioned -> NotProvisionedCard(
-                onProvision = { viewModel.provisionVault() }
+            is HandlerDiscoveryState.Loading -> LoadingIndicator()
+            is HandlerDiscoveryState.Loaded -> HandlerList(
+                handlers = currentState.handlers,
+                onHandlerClick = onHandlerSelected,
+                onInstall = { viewModel.installHandler(it.id, it.version) },
+                onUninstall = { viewModel.uninstallHandler(it.id) }
             )
-            is VaultHealthState.Loaded -> VaultHealthDetails(currentState)
-            is VaultHealthState.Error -> ErrorCard(
+            is HandlerDiscoveryState.Error -> ErrorCard(
                 message = currentState.message,
-                onRetry = { viewModel.startHealthMonitoring() }
+                onRetry = { viewModel.loadHandlers() }
             )
         }
     }
 }
 
 @Composable
-fun VaultHealthDetails(state: VaultHealthState.Loaded) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            // Status header
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                StatusIndicator(state.status)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = state.status.name,
-                    style = MaterialTheme.typography.titleLarge
-                )
-            }
+fun CategoryTabs(
+    selectedCategory: String?,
+    onCategorySelected: (String?) -> Unit
+) {
+    val categories = listOf(
+        null to "All",
+        "messaging" to "Messaging",
+        "social" to "Social",
+        "productivity" to "Productivity",
+        "utilities" to "Utilities"
+    )
 
-            Divider(modifier = Modifier.padding(vertical = 12.dp))
-
-            // Component status
-            ComponentStatusRow("Local NATS", state.localNats)
-            ComponentStatusRow("Central NATS", state.centralNats, "${state.centralLatency}ms")
-            ComponentStatusRow("Vault Manager", state.vaultManager)
-
-            Divider(modifier = Modifier.padding(vertical = 12.dp))
-
-            // Stats
-            Text("Handlers Loaded: ${state.handlersLoaded}")
-            Text("Uptime: ${state.uptime.toHours()}h ${state.uptime.toMinutesPart()}m")
-            state.lastEventAt?.let {
-                Text("Last Event: ${formatRelativeTime(it)}")
-            }
+    ScrollableTabRow(
+        selectedTabIndex = categories.indexOfFirst { it.first == selectedCategory }
+    ) {
+        categories.forEach { (category, label) ->
+            Tab(
+                selected = selectedCategory == category,
+                onClick = { onCategorySelected(category) },
+                text = { Text(label) }
+            )
         }
     }
 }
 
 @Composable
-fun StatusIndicator(status: HealthStatus) {
-    val color = when (status) {
-        HealthStatus.Healthy -> Color.Green
-        HealthStatus.Degraded -> Color.Yellow
-        HealthStatus.Unhealthy -> Color.Red
-    }
-    Box(
-        modifier = Modifier
-            .size(16.dp)
-            .background(color, CircleShape)
-    )
-}
-```
-
-### 5. Event Response Handler
-
-Handle responses from vault events:
-
-```kotlin
-// nats/VaultResponseHandler.kt
-
-@Singleton
-class VaultResponseHandler @Inject constructor(
-    private val vaultEventClient: VaultEventClient
+fun HandlerList(
+    handlers: List<HandlerSummary>,
+    onHandlerClick: (String) -> Unit,
+    onInstall: (HandlerSummary) -> Unit,
+    onUninstall: (HandlerSummary) -> Unit
 ) {
-    private val pendingRequests = ConcurrentHashMap<String, CompletableDeferred<VaultEventResponse>>()
-
-    init {
-        // Start listening for responses
-        CoroutineScope(Dispatchers.IO).launch {
-            vaultEventClient.subscribeToResponses().collect { response ->
-                pendingRequests.remove(response.request_id)?.complete(response)
-            }
+    LazyColumn {
+        items(handlers) { handler ->
+            HandlerListItem(
+                handler = handler,
+                onClick = { onHandlerClick(handler.id) },
+                onInstall = { onInstall(handler) },
+                onUninstall = { onUninstall(handler) }
+            )
         }
     }
+}
 
-    suspend fun submitAndAwait(
-        event: VaultEvent,
-        timeout: Duration = Duration.ofSeconds(30)
-    ): Result<VaultEventResponse> {
-        val deferred = CompletableDeferred<VaultEventResponse>()
+@Composable
+fun HandlerListItem(
+    handler: HandlerSummary,
+    onClick: () -> Unit,
+    onInstall: () -> Unit,
+    onUninstall: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(8.dp)
+            .clickable(onClick = onClick)
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Handler icon
+            AsyncImage(
+                model = handler.icon_url,
+                contentDescription = handler.name,
+                modifier = Modifier.size(48.dp)
+            )
 
-        return try {
-            val requestId = vaultEventClient.submitEvent(event).getOrThrow()
-            pendingRequests[requestId] = deferred
+            Spacer(modifier = Modifier.width(16.dp))
 
-            withTimeout(timeout.toMillis()) {
-                Result.success(deferred.await())
+            Column(modifier = Modifier.weight(1f)) {
+                Text(handler.name, style = MaterialTheme.typography.titleMedium)
+                Text(handler.description, style = MaterialTheme.typography.bodySmall)
+                Text("v${handler.version} by ${handler.publisher}",
+                    style = MaterialTheme.typography.labelSmall)
             }
-        } catch (e: TimeoutCancellationException) {
-            Result.failure(Exception("Vault response timeout"))
-        } catch (e: Exception) {
-            Result.failure(e)
+
+            // Install/Uninstall button
+            if (handler.installed) {
+                OutlinedButton(onClick = onUninstall) {
+                    Text("Uninstall")
+                }
+            } else {
+                Button(onClick = onInstall) {
+                    Text("Install")
+                }
+            }
         }
     }
 }
 ```
 
-### 6. Unit Tests
+### 5. Handler Detail Screen
+
+Create handler detail view:
 
 ```kotlin
-class VaultEventClientTest {
-    @Test fun `submitEvent sends to correct topic`()
-    @Test fun `subscribeToResponses receives vault messages`()
+// handlers/HandlerDetailScreen.kt
+
+@Composable
+fun HandlerDetailScreen(
+    handlerId: String,
+    viewModel: HandlerDetailViewModel = hiltViewModel()
+) {
+    val state by viewModel.state.collectAsState()
+
+    LaunchedEffect(handlerId) {
+        viewModel.loadHandler(handlerId)
+    }
+
+    when (val currentState = state) {
+        is HandlerDetailState.Loading -> LoadingIndicator()
+        is HandlerDetailState.Loaded -> HandlerDetailContent(
+            handler = currentState.handler,
+            onInstall = { viewModel.installHandler() },
+            onUninstall = { viewModel.uninstallHandler() },
+            onExecute = { input -> viewModel.executeHandler(input) }
+        )
+        is HandlerDetailState.Error -> ErrorCard(currentState.message)
+    }
 }
 
-class VaultHealthViewModelTest {
-    @Test fun `checkHealth updates state correctly`()
-    @Test fun `provisionVault polls until ready`()
-    @Test fun `timeout during provisioning shows error`()
+@Composable
+fun HandlerDetailContent(
+    handler: HandlerDetailResponse,
+    onInstall: () -> Unit,
+    onUninstall: () -> Unit,
+    onExecute: (JsonObject) -> Unit
+) {
+    LazyColumn(modifier = Modifier.padding(16.dp)) {
+        item {
+            // Header
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                AsyncImage(
+                    model = handler.icon_url,
+                    contentDescription = handler.name,
+                    modifier = Modifier.size(64.dp)
+                )
+                Spacer(modifier = Modifier.width(16.dp))
+                Column {
+                    Text(handler.name, style = MaterialTheme.typography.headlineMedium)
+                    Text("v${handler.version} by ${handler.publisher}")
+                }
+            }
+        }
+
+        item {
+            Spacer(modifier = Modifier.height(16.dp))
+            Text(handler.description, style = MaterialTheme.typography.bodyLarge)
+        }
+
+        // Permissions section
+        item {
+            Spacer(modifier = Modifier.height(24.dp))
+            Text("Permissions", style = MaterialTheme.typography.titleMedium)
+            handler.permissions.forEach { permission ->
+                PermissionItem(permission)
+            }
+        }
+
+        // Install/Execute buttons
+        item {
+            Spacer(modifier = Modifier.height(24.dp))
+            if (handler.installed) {
+                Row {
+                    Button(
+                        onClick = { onExecute(JsonObject(emptyMap())) },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Execute")
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    OutlinedButton(onClick = onUninstall) {
+                        Text("Uninstall")
+                    }
+                }
+            } else {
+                Button(
+                    onClick = onInstall,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Install")
+                }
+            }
+        }
+
+        // Changelog
+        handler.changelog?.let { changelog ->
+            item {
+                Spacer(modifier = Modifier.height(24.dp))
+                Text("Changelog", style = MaterialTheme.typography.titleMedium)
+                Text(changelog, style = MaterialTheme.typography.bodySmall)
+            }
+        }
+    }
+}
+```
+
+### 6. Handler Execution UI
+
+Create input form and result display:
+
+```kotlin
+// handlers/HandlerExecutionScreen.kt
+
+@Composable
+fun HandlerExecutionScreen(
+    handlerId: String,
+    inputSchema: JsonObject,
+    viewModel: HandlerExecutionViewModel = hiltViewModel()
+) {
+    val state by viewModel.state.collectAsState()
+    var inputValues by remember { mutableStateOf(mutableMapOf<String, Any>()) }
+
+    Column(modifier = Modifier.padding(16.dp)) {
+        Text("Execute Handler", style = MaterialTheme.typography.headlineMedium)
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Dynamic input form based on schema
+        DynamicInputForm(
+            schema = inputSchema,
+            values = inputValues,
+            onValueChange = { key, value ->
+                inputValues = inputValues.toMutableMap().apply { put(key, value) }
+            }
+        )
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        Button(
+            onClick = { viewModel.execute(handlerId, JsonObject(inputValues)) },
+            enabled = state !is HandlerExecutionState.Executing,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            if (state is HandlerExecutionState.Executing) {
+                CircularProgressIndicator(modifier = Modifier.size(24.dp))
+            } else {
+                Text("Execute")
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Result display
+        when (val currentState = state) {
+            is HandlerExecutionState.Success -> {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text("Success", color = Color.Green)
+                        Text("Execution time: ${currentState.executionTimeMs}ms")
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text("Output:", style = MaterialTheme.typography.labelMedium)
+                        Text(currentState.output.toString())
+                    }
+                }
+            }
+            is HandlerExecutionState.Error -> {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text("Error", color = Color.Red)
+                        Text(currentState.message)
+                    }
+                }
+            }
+            else -> {}
+        }
+    }
+}
+```
+
+### 7. Unit Tests
+
+```kotlin
+class HandlerDiscoveryViewModelTest {
+    @Test fun `loadHandlers updates state with handler list`()
+    @Test fun `selectCategory filters handlers`()
+    @Test fun `installHandler calls API and refreshes list`()
+    @Test fun `uninstallHandler calls API and refreshes list`()
 }
 
-class VaultResponseHandlerTest {
-    @Test fun `submitAndAwait matches request to response`()
-    @Test fun `submitAndAwait times out after duration`()
+class HandlerDetailViewModelTest {
+    @Test fun `loadHandler fetches handler details`()
+    @Test fun `executeHandler sends input and receives output`()
+    @Test fun `executeHandler handles timeout`()
+}
+
+class HandlerExecutionViewModelTest {
+    @Test fun `execute sends request and updates state`()
+    @Test fun `execute handles error response`()
+    @Test fun `execute shows loading state during execution`()
 }
 ```
 
 ## Deliverables
 
-- [ ] VaultServiceClient with lifecycle endpoints
-- [ ] VaultEventClient for NATS event submission
-- [ ] VaultHealthViewModel for health monitoring
-- [ ] VaultHealthScreen with status UI
-- [ ] VaultResponseHandler for request/response correlation
-- [ ] Unit tests for new components
+- [ ] HandlerRegistryClient for registry API
+- [ ] VaultHandlerClient for vault handler management
+- [ ] HandlerDiscoveryViewModel and UI
+- [ ] HandlerDetailScreen with permissions display
+- [ ] HandlerExecutionScreen with dynamic input form
+- [ ] Navigation integration for handler flows
+- [ ] Unit tests for ViewModels
 
 ## Acceptance Criteria
 
-- [ ] App can provision vault via API
-- [ ] App polls for provisioning completion
-- [ ] App displays vault health status
-- [ ] App submits events via NATS to vault
-- [ ] App receives and correlates responses
-- [ ] Health monitoring updates every 30 seconds
-- [ ] Error states displayed with retry option
+- [ ] User can browse available handlers by category
+- [ ] User can view handler details and permissions
+- [ ] User can install/uninstall handlers
+- [ ] User can execute installed handlers
+- [ ] Handler execution shows input form based on schema
+- [ ] Handler results displayed correctly
+- [ ] Error states handled gracefully
 
 ## Notes
 
-- Android notes duplicate response types in Phase 2/3 code - resolve before starting
-- Vault provisioning may take 1-2 minutes - show appropriate progress UI
-- Consider battery impact of 30-second health polling - adjust interval as needed
+- Handler icons may be null - show placeholder
+- Input schema drives dynamic form generation
+- Consider caching handler list for offline browsing
+- Permissions should be clearly explained to user
 
 ## Status Update
 
 ```bash
 cd /path/to/vettid-android
 git pull
-# Create vault communication components
+# Create handler UI components
 git add .
-git commit -m "Phase 5: Add vault communication"
+git commit -m "Phase 6: Add handler discovery and execution UI"
 git push
 
 # Update status in backend repo
@@ -472,6 +607,6 @@ cd /path/to/vettid-dev
 git pull
 # Edit cdk/coordination/status/android.json
 git add cdk/coordination/status/android.json
-git commit -m "Update Android status: Phase 5 vault communication complete"
+git commit -m "Update Android status: Phase 6 handler UI complete"
 git push
 ```

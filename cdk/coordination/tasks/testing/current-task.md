@@ -1,245 +1,314 @@
-# Task: Phase 5 - Vault Instance Testing
+# Task: Phase 6 - Handler System Testing
 
 ## Phase
-Phase 5: Vault Instance (EC2)
+Phase 6: Handler System (WASM)
 
 ## Assigned To
 Testing Instance
 
 ## Repository
-`github.com/mesmerverse/vettid-dev`
+`github.com/mesmerverse/vettid-dev` (cdk/tests/)
 
 ## Status
-Phase 4 complete. Ready for Phase 5 vault instance testing.
+Phase 5 complete. Ready for Phase 6 handler system testing.
 
 ## Overview
 
-Phase 5 introduces the Vault Instance - an EC2-based service that runs on ARM64 t4g.nano instances. The vault instance:
-- Runs a local NATS server
-- Connects to the central NATS cluster
-- Executes the Vault Manager service (Go)
-- Processes events from the mobile app via NATS
+Phase 6 implements the WASM handler system for the Vault Manager. You need to create tests for:
+1. Handler package verification and signatures
+2. WASM execution in sandboxed environment
+3. Resource limits and egress control
+4. First-party handler functionality
 
-## New Infrastructure
+## New Backend Endpoints
 
-### Vault Provisioning Handlers
-- `POST /vault/provision` - Spin up EC2 instance for user
-- `POST /vault/initialize` - Configure vault after provision
-- `POST /vault/stop` - Stop vault instance
-- `POST /vault/terminate` - Terminate vault instance
-- `GET /vault/health` - Health check endpoint
-
-### Vault Manager Service
-The Vault Manager is a Go service running on each vault instance:
+### Handler Registry
 ```
-vault-manager/
-├── cmd/main.go
-├── internal/
-│   ├── nats/         # NATS client (local + central)
-│   ├── events/       # Event processing
-│   ├── handlers/     # WASM handler execution
-│   └── health/       # Health monitoring
-└── configs/
+GET  /registry/handlers              # List available handlers
+GET  /registry/handlers/{id}         # Get handler details and download URL
+POST /admin/registry/handlers        # Upload new handler (admin)
+POST /admin/registry/handlers/sign   # Sign handler package (admin)
+POST /admin/registry/handlers/revoke # Revoke handler version (admin)
 ```
 
-## Phase 5 Testing Tasks
+## Phase 6 Testing Tasks
 
-### 1. Vault Provisioning Tests
+### 1. Handler Verification Tests
 
-Create tests for provisioning lifecycle:
+Create handler signature and verification tests:
 
-```
-cdk/tests/integration/vault/
-├── provisioning.test.ts      # EC2 instance provisioning
-├── initialization.test.ts    # Vault configuration
-├── healthCheck.test.ts       # Health endpoint
-└── gracefulShutdown.test.ts  # Stop/terminate flow
-```
-
-#### provisioning.test.ts
 ```typescript
-describe('POST /vault/provision', () => {
-  it('should provision vault for authenticated member');
-  it('should return instance_id and provisioning status');
-  it('should reject duplicate provisioning for same user');
-  it('should assign unique security group per instance');
-  it('should use correct AMI (ARM64, hardened)');
-  it('should apply correct instance tags');
-  it('should timeout if provisioning takes >2 minutes');
-  it('should require active NATS account');
-});
-```
+// tests/integration/registry/handlerVerification.test.ts
 
-#### initialization.test.ts
-```typescript
-describe('POST /vault/initialize', () => {
-  it('should configure vault after EC2 is running');
-  it('should assign OwnerSpace namespace');
-  it('should assign MessageSpace namespace');
-  it('should start local NATS server');
-  it('should connect to central NATS cluster');
-  it('should install user credentials');
-  it('should return initialization status');
-  it('should fail gracefully if EC2 not ready');
-});
-```
-
-#### healthCheck.test.ts
-```typescript
-describe('GET /vault/health', () => {
-  it('should return healthy for running vault');
-  it('should include local NATS status');
-  it('should include central NATS connection status');
-  it('should include Vault Manager process status');
-  it('should include memory/CPU usage');
-  it('should return unhealthy with details on failure');
-  it('should require vault to be provisioned');
-});
-```
-
-#### gracefulShutdown.test.ts
-```typescript
-describe('Vault Lifecycle', () => {
-  describe('POST /vault/stop', () => {
-    it('should stop vault gracefully');
-    it('should flush pending events');
-    it('should disconnect from central NATS');
-    it('should preserve state for restart');
+describe('Handler Verification', () => {
+  describe('Package Signature', () => {
+    it('should verify valid Ed25519 signature');
+    it('should reject invalid signature');
+    it('should reject expired signature');
+    it('should reject revoked handler');
+    it('should verify signature chain for updates');
   });
 
-  describe('POST /vault/terminate', () => {
-    it('should terminate EC2 instance');
-    it('should clean up security group');
-    it('should revoke NATS credentials');
-    it('should update vault status to terminated');
-    it('should be idempotent');
+  describe('Manifest Validation', () => {
+    it('should validate required manifest fields');
+    it('should validate handler version format');
+    it('should validate input/output schema');
+    it('should validate permission declarations');
+    it('should reject manifest with undeclared capabilities');
+  });
+
+  describe('WASM Validation', () => {
+    it('should validate WASM magic bytes');
+    it('should validate required exports');
+    it('should reject WASM with forbidden imports');
+    it('should validate memory limits');
   });
 });
 ```
 
-### 2. E2E Vault Lifecycle Tests
+### 2. Handler Execution Tests
+
+Create WASM execution tests:
 
 ```typescript
-// tests/e2e/vaultLifecycle.test.ts
-describe('Full Vault Lifecycle', () => {
-  it('should complete: provision → initialize → health → stop → terminate');
-  it('should allow restart after stop');
-  it('should recover from initialization failure');
-  it('should handle concurrent health checks');
-});
-```
+// tests/integration/registry/handlerExecution.test.ts
 
-### 3. NATS Integration Tests
-
-```typescript
-// tests/integration/vault/natsIntegration.test.ts
-describe('Vault NATS Integration', () => {
-  it('should relay messages from central to local NATS');
-  it('should relay messages from local to central NATS');
-  it('should handle central NATS disconnection');
-  it('should reconnect automatically after network issues');
-  it('should buffer messages during reconnection');
-});
-```
-
-### 4. Vault Manager Mock Tests
-
-```typescript
-// tests/integration/vault/vaultManager.test.ts
-describe('Vault Manager', () => {
-  describe('Event Processing', () => {
-    it('should process events from forVault topic');
-    it('should publish responses to forApp topic');
-    it('should handle malformed events gracefully');
-    it('should enforce rate limits');
+describe('Handler Execution', () => {
+  describe('Basic Execution', () => {
+    it('should execute handler with valid input');
+    it('should return handler output');
+    it('should capture handler logs');
+    it('should handle handler errors gracefully');
+    it('should timeout long-running handlers');
   });
 
-  describe('Control Topic', () => {
-    it('should accept commands from control topic');
-    it('should process shutdown command');
-    it('should process backup command');
-    it('should reject unauthorized commands');
+  describe('Input/Output', () => {
+    it('should validate input against schema');
+    it('should validate output against schema');
+    it('should pass context to handler');
+    it('should sanitize sensitive data in logs');
   });
 
-  describe('Health Reporting', () => {
-    it('should report health to monitoring endpoint');
-    it('should include handler execution metrics');
-    it('should include NATS connection metrics');
+  describe('State Management', () => {
+    it('should persist handler state');
+    it('should isolate state between executions');
+    it('should cleanup state on handler uninstall');
   });
 });
 ```
 
-## Response Structures
+### 3. Sandbox Isolation Tests
 
-### Provision Response
+Create sandbox security tests:
+
 ```typescript
-{
-  instance_id: string;
-  status: 'provisioning' | 'running' | 'failed';
-  region: string;
-  availability_zone: string;
-  private_ip?: string;
-  estimated_ready_at: string;
-}
+// tests/integration/registry/handlerSandbox.test.ts
+
+describe('Handler Sandbox', () => {
+  describe('Memory Isolation', () => {
+    it('should enforce memory limits');
+    it('should terminate handler exceeding memory');
+    it('should not leak memory between executions');
+    it('should prevent reading outside allocated memory');
+  });
+
+  describe('CPU Isolation', () => {
+    it('should enforce execution time limits');
+    it('should terminate runaway handlers');
+    it('should track CPU usage per handler');
+  });
+
+  describe('Filesystem Isolation', () => {
+    it('should prevent filesystem access');
+    it('should prevent reading environment variables');
+    it('should prevent process spawning');
+  });
+
+  describe('Network Isolation', () => {
+    it('should block unauthorized network access');
+    it('should allow declared egress endpoints');
+    it('should enforce rate limits on egress');
+    it('should timeout slow network requests');
+  });
+});
 ```
 
-### Initialize Response
+### 4. Egress Control Tests
+
+Create network egress tests:
+
 ```typescript
-{
-  status: 'initialized' | 'failed';
-  local_nats_status: 'running' | 'stopped';
-  central_nats_status: 'connected' | 'disconnected';
-  owner_space_id: string;
-  message_space_id: string;
-}
+// tests/integration/registry/egressControl.test.ts
+
+describe('Egress Control', () => {
+  describe('Allowlist Enforcement', () => {
+    it('should allow requests to declared hosts');
+    it('should block requests to undeclared hosts');
+    it('should support wildcard patterns');
+    it('should enforce HTTPS only');
+  });
+
+  describe('Rate Limiting', () => {
+    it('should enforce requests per minute limit');
+    it('should enforce bandwidth limit');
+    it('should queue excess requests');
+    it('should reject when queue full');
+  });
+
+  describe('Request Validation', () => {
+    it('should validate request headers');
+    it('should strip sensitive headers');
+    it('should inject authentication for known APIs');
+    it('should log egress requests for audit');
+  });
+});
 ```
 
-### Health Response
+### 5. First-Party Handler Tests
+
+Create tests for built-in handlers:
+
 ```typescript
-{
-  status: 'healthy' | 'unhealthy' | 'degraded';
-  uptime_seconds: number;
-  local_nats: {
-    status: 'running' | 'stopped';
-    connections: number;
-  };
-  central_nats: {
-    status: 'connected' | 'disconnected';
-    latency_ms: number;
-  };
-  vault_manager: {
-    status: 'running' | 'stopped';
-    memory_mb: number;
-    cpu_percent: number;
-    handlers_loaded: number;
-  };
-  last_event_at?: string;
-}
+// tests/integration/handlers/messagingSendText.test.ts
+
+describe('Messaging Send Text Handler', () => {
+  it('should send text message to connection');
+  it('should encrypt message with connection key');
+  it('should queue message for offline recipient');
+  it('should return delivery receipt');
+  it('should reject message to non-connected user');
+  it('should enforce message size limit');
+});
+
+// tests/integration/handlers/profileUpdate.test.ts
+
+describe('Profile Update Handler', () => {
+  it('should update profile fields');
+  it('should publish profile to MessageSpace');
+  it('should validate profile schema');
+  it('should reject unauthorized fields');
+  it('should version profile updates');
+});
+
+// tests/integration/handlers/connectionInvite.test.ts
+
+describe('Connection Invite Handler', () => {
+  it('should generate invite code');
+  it('should include owner public key');
+  it('should set invite expiration');
+  it('should enforce max pending invites');
+  it('should revoke existing invite');
+});
 ```
+
+### 6. Registry API Tests
+
+Create registry endpoint tests:
+
+```typescript
+// tests/integration/registry/listHandlers.test.ts
+
+describe('List Handlers', () => {
+  it('should return available handlers');
+  it('should filter by category');
+  it('should paginate results');
+  it('should include version information');
+  it('should indicate installed status');
+});
+
+// tests/integration/registry/uploadHandler.test.ts
+
+describe('Upload Handler (Admin)', () => {
+  it('should upload handler package');
+  it('should validate package structure');
+  it('should store in S3 with versioning');
+  it('should require admin authentication');
+  it('should reject duplicate versions');
+});
+```
+
+### 7. E2E Handler Flow Tests
+
+Create end-to-end tests:
+
+```typescript
+// tests/e2e/handlerLifecycle.test.ts
+
+describe('Handler Lifecycle E2E', () => {
+  it('should complete: upload → sign → list → install → execute → uninstall');
+  it('should complete: upload → revoke → verify rejection');
+  it('should handle: version upgrade with state migration');
+  it('should handle: handler crash recovery');
+});
+```
+
+## Test Utilities
+
+Create mock handler packages:
+
+```typescript
+// tests/fixtures/handlers/mockHandler.ts
+
+export function createMockHandlerPackage(options: {
+  name: string;
+  version: string;
+  manifest: Partial<HandlerManifest>;
+  wasmBehavior: 'success' | 'error' | 'timeout' | 'memory-exceed';
+}): HandlerPackage;
+
+export function createValidSignature(
+  packageHash: Buffer,
+  privateKey: Buffer
+): Buffer;
+
+export function createMockManifest(
+  overrides?: Partial<HandlerManifest>
+): HandlerManifest;
+```
+
+## Deliverables
+
+- [ ] handlerVerification.test.ts (signature, manifest, WASM validation)
+- [ ] handlerExecution.test.ts (execution, I/O, state)
+- [ ] handlerSandbox.test.ts (memory, CPU, filesystem, network isolation)
+- [ ] egressControl.test.ts (allowlist, rate limiting, request validation)
+- [ ] messagingSendText.test.ts (first-party handler)
+- [ ] profileUpdate.test.ts (first-party handler)
+- [ ] connectionInvite.test.ts (first-party handler)
+- [ ] listHandlers.test.ts, uploadHandler.test.ts (registry API)
+- [ ] handlerLifecycle.test.ts (E2E)
+- [ ] Mock handler package fixtures
 
 ## Acceptance Criteria
 
-- [ ] Provisioning tests validate EC2 lifecycle
-- [ ] Initialization tests verify NATS setup
-- [ ] Health check tests cover all status scenarios
-- [ ] Graceful shutdown tests verify cleanup
-- [ ] E2E tests cover full lifecycle
-- [ ] NATS relay tests verify message routing
-- [ ] All tests use mocks (no actual EC2 provisioning in CI)
+- [ ] All handler verification tests pass
+- [ ] Sandbox isolation prevents unauthorized access
+- [ ] Egress control enforces declared permissions
+- [ ] First-party handlers function correctly
+- [ ] Registry API tests cover CRUD operations
+- [ ] E2E tests cover full handler lifecycle
+
+## Notes
+
+- WASM execution tests can use mock runtime initially
+- First-party handler tests simulate vault manager behavior
+- Sandbox tests should verify security boundaries thoroughly
+- Consider fuzzing for manifest/WASM validation
 
 ## Status Update
 
 ```bash
-cd /path/to/vettid-dev
+cd /path/to/vettid-dev/cdk
 git pull
-# Create test files
-git add cdk/tests/integration/vault/
-git commit -m "Phase 5: Add vault instance tests"
+# Create handler system tests
+npm run test:unit  # Verify tests pass
+git add tests/
+git commit -m "Phase 6: Add handler system tests"
 git push
 
 # Update status
 # Edit cdk/coordination/status/testing.json
 git add cdk/coordination/status/testing.json
-git commit -m "Update Testing status: Phase 5 vault instance tests"
+git commit -m "Update Testing status: Phase 6 handler system tests complete"
 git push
 ```
