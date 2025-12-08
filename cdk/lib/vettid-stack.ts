@@ -1461,12 +1461,9 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
    */
   public addVaultRoutes(vaultStack: any): void {
     // Vault Enrollment
-    this.httpApi.addRoutes({
-      path: '/vault/enroll/session',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('CreateEnrollmentSessionInt', vaultStack.createEnrollmentSession),
-      authorizer: this.memberAuthorizer,
-    });
+    // Note: /vault/enroll/session endpoint temporarily disabled due to CloudFormation 500 resource limit
+    // The createEnrollmentSession Lambda exists in VaultStack but route not wired up
+    // TODO: Refactor to move more routes to separate stacks to enable this endpoint
     this.httpApi.addRoutes({
       path: '/vault/enroll/start',
       methods: [apigw.HttpMethod.POST],

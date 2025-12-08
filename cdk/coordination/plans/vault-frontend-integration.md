@@ -327,16 +327,22 @@ async function checkVaultDeployed() {
 - [x] Status polling every 30 seconds
 - [x] Getting Started step 4 integration
 
-### Phase 2: Mobile App Enrollment Flow - COMPLETE
-- [x] New backend endpoint: POST /vault/enroll/session
-- [x] Creates web-initiated enrollment session for member
-- [x] Returns session_token and QR code data
-- [x] Enrollment modal with QR code display
+### Phase 2: Mobile App Enrollment Flow - PARTIAL
+- [x] Backend handler: createEnrollmentSession.ts (created but route disabled)
+- [ ] API route: POST /vault/enroll/session (blocked by CloudFormation 500 resource limit)
+- [x] Enrollment modal with QR code display (ready when endpoint enabled)
 - [x] 15-minute session expiry timer
 - [x] Status polling every 3 seconds
 - [x] Auto-detection of enrollment completion
 - [x] QR code generation (dynamic loading of qrcode.js library)
+- [x] Fallback: Manual enrollment instructions modal (shows when endpoint unavailable)
 - [x] App Store/Google Play download links placeholder
+
+**Note**: The QR code enrollment flow is fully implemented but the API route is disabled
+due to CloudFormation's 500 resource limit. Currently showing manual enrollment
+instructions as fallback. To enable:
+1. Refactor to move routes to separate stacks, OR
+2. Consolidate existing Lambda functions to reduce resource count
 
 ### Phase 3-6: Remaining
 - [ ] Phase 3: Vault Provisioning details & Lifecycle

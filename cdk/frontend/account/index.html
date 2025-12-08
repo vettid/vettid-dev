@@ -4355,6 +4355,11 @@ async function startEnrollment() {
     });
 
     if (!res.ok) {
+      // If endpoint not available (404 or 403), show manual enrollment instructions
+      if (res.status === 404 || res.status === 403) {
+        showManualEnrollmentModal();
+        return;
+      }
       const errorData = await res.json().catch(() => ({}));
       throw new Error(errorData.message || 'Failed to create enrollment session');
     }
@@ -4364,8 +4369,63 @@ async function startEnrollment() {
 
   } catch (error) {
     console.error('Error starting enrollment:', error);
-    showToast('Failed to start enrollment: ' + error.message, 'error');
+    // Network error or other issue - show manual enrollment
+    showManualEnrollmentModal();
   }
+}
+
+function showManualEnrollmentModal() {
+  const modal = document.createElement('div');
+  modal.id = 'enrollmentModal';
+  modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.9);display:flex;align-items:center;justify-content:center;z-index:9999;';
+  modal.innerHTML = `
+    <div style="background:#0a0a0a;border:1px solid var(--accent);border-radius:12px;padding:32px;max-width:480px;width:90%;text-align:center;">
+      <h3 style="margin:0 0 8px 0;color:var(--accent);">Enroll Your Mobile Device</h3>
+      <p style="color:var(--gray);margin-bottom:24px;font-size:0.95rem;">
+        To enroll your mobile device with VettID, follow these steps:
+      </p>
+
+      <div style="text-align:left;background:#050505;border-radius:8px;padding:20px;margin-bottom:24px;border:1px solid #333;">
+        <div style="display:flex;gap:12px;margin-bottom:16px;">
+          <div style="flex-shrink:0;width:28px;height:28px;background:var(--accent);border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;color:#000;">1</div>
+          <div>
+            <div style="color:var(--text);font-weight:600;margin-bottom:4px;">Download the VettID App</div>
+            <div style="color:var(--gray);font-size:0.9rem;">Available on iOS App Store and Google Play</div>
+          </div>
+        </div>
+        <div style="display:flex;gap:12px;margin-bottom:16px;">
+          <div style="flex-shrink:0;width:28px;height:28px;background:var(--accent);border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;color:#000;">2</div>
+          <div>
+            <div style="color:var(--text);font-weight:600;margin-bottom:4px;">Sign In with Your Account</div>
+            <div style="color:var(--gray);font-size:0.9rem;">Use the same email you registered with</div>
+          </div>
+        </div>
+        <div style="display:flex;gap:12px;">
+          <div style="flex-shrink:0;width:28px;height:28px;background:var(--accent);border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;color:#000;">3</div>
+          <div>
+            <div style="color:var(--text);font-weight:600;margin-bottom:4px;">Complete Enrollment</div>
+            <div style="color:var(--gray);font-size:0.9rem;">Follow the in-app instructions to set up your vault</div>
+          </div>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:12px;justify-content:center;margin-bottom:20px;">
+        <a href="#" style="display:inline-flex;align-items:center;gap:8px;padding:12px 20px;background:#000;border:1px solid #333;border-radius:8px;color:var(--text);text-decoration:none;">
+          <span style="font-size:1.2rem;"></span> App Store
+        </a>
+        <a href="#" style="display:inline-flex;align-items:center;gap:8px;padding:12px 20px;background:#000;border:1px solid #333;border-radius:8px;color:var(--text);text-decoration:none;">
+          <span style="font-size:1.2rem;"></span> Google Play
+        </a>
+      </div>
+
+      <button onclick="closeEnrollmentModal()" class="btn" style="padding:12px 24px;background:#333;">
+        Close
+      </button>
+    </div>
+  `;
+
+  document.body.appendChild(modal);
+  modal.onclick = (e) => { if (e.target === modal) closeEnrollmentModal(); };
 }
 
 function showEnrollmentModal(session) {
