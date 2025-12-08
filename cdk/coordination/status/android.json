@@ -1,7 +1,7 @@
 {
   "instance": "android",
-  "phase": 7,
-  "task": "Phase 7 connections & messaging UI complete",
+  "phase": 8,
+  "task": "Phase 8 backup system UI complete",
   "status": "completed",
   "blockers": [],
   "completedTasks": [
@@ -76,9 +76,28 @@
     "ConversationScreen with message bubbles, scroll-to-bottom FAB, message input",
     "ConversationViewModel with message encryption/decryption, pagination, real-time updates",
     "MessageSubscriber for NATS real-time message and connection events",
-    "Navigation integration with Connections tab and Profile tab in MainScreen"
+    "Navigation integration with Connections tab and Profile tab in MainScreen",
+    "Backup data models (Backup, BackupType, BackupStatus, BackupSettings, BackupFrequency, CredentialBackupStatus, RestoreResult)",
+    "BackupApiClient for backup management (triggerBackup, listBackups, getBackup, restoreBackup, deleteBackup, getBackupSettings, updateBackupSettings)",
+    "CredentialBackupApiClient for credential backup/recovery (createCredentialBackup, getCredentialBackupStatus, downloadCredentialBackup, recoverCredentials)",
+    "RecoveryPhraseManager with BIP-39 mnemonic generation, validation, checksum verification, Argon2id key derivation",
+    "Bip39WordList with 2048 English words, validation, and autocomplete suggestions",
+    "BackupListScreen with backup list, create backup FAB, type/status badges, delete with confirmation",
+    "BackupListViewModel with backup loading, creation, and deletion",
+    "BackupDetailScreen with backup info, contents summary, restore/delete actions, restore progress",
+    "BackupDetailViewModel with backup loading, restore, and delete functionality",
+    "BackupSettingsScreen with auto-backup toggle, frequency selector, time picker, retention period, WiFi-only toggle",
+    "BackupSettingsViewModel with settings loading, updating, and backup-now functionality",
+    "CredentialBackupScreen with recovery phrase generation, 24-word grid display, copy to clipboard, phrase verification",
+    "CredentialBackupViewModel with phrase generation, verification workflow, encrypted backup upload",
+    "CredentialRecoveryScreen with 24-word input grid, autocomplete suggestions, paste from clipboard, validation feedback",
+    "CredentialRecoveryViewModel with phrase entry, validation, backup download, decryption, and credential restoration",
+    "BackupWorker with WorkManager for scheduled automatic backups, WiFi-only constraint, battery-not-low constraint",
+    "Navigation integration for backup flows (backups list, detail, settings, credential backup, credential recovery)",
+    "VaultTab in MainScreen with backup management and credential backup buttons",
+    "DI configuration for OkHttpClient, BackupApiClient, CredentialBackupApiClient, RecoveryPhraseManager"
   ],
-  "lastUpdated": "2025-12-08T05:30:00Z",
-  "notes": "Phase 7 connections & messaging UI complete. Connection data models support full lifecycle (pending, active, revoked). ConnectionApiClient handles invitation creation/acceptance and connection management. ProfileApiClient provides profile viewing, editing, and publishing to connections. MessagingApiClient implements encrypted messaging with pagination. ConnectionCryptoManager handles X25519 ECDH key exchange and ChaCha20-Poly1305 AEAD encryption for per-connection message security. CreateInvitationScreen generates QR codes via ZXing with expiration countdown. ScanInvitationScreen reuses existing QrCodeScanner component with manual entry fallback. ConnectionsScreen displays connection list with unread message counts and search filtering. ConversationScreen shows message bubbles with read receipts and status indicators. MessageSubscriber integrates with NatsConnectionManager for real-time message and connection event delivery. All screens use Material 3 design with proper loading/error states. Navigation updated with Connections and Profile tabs.",
+  "lastUpdated": "2025-12-08T06:30:00Z",
+  "notes": "Phase 8 backup system UI complete. Backup data models support full backup lifecycle (auto/manual, complete/partial/failed/in_progress). BackupApiClient handles vault backup management with trigger, list, get, restore, delete, and settings endpoints. CredentialBackupApiClient handles credential backup and recovery with phrase-derived encryption. RecoveryPhraseManager implements BIP-39 mnemonic generation with 256-bit entropy (24 words), SHA-256 checksum validation, and Argon2id key derivation for AES-GCM encryption. BackupListScreen displays backups with type/status badges and supports create/delete operations. BackupDetailScreen shows backup info and contents with restore/delete actions. BackupSettingsScreen provides auto-backup configuration with frequency, time, retention, and WiFi-only settings. CredentialBackupScreen generates and displays 24-word recovery phrase with verification step. CredentialRecoveryScreen allows phrase entry with BIP-39 autocomplete for credential recovery. BackupWorker uses WorkManager for scheduled automatic backups with network and battery constraints. All screens use Material 3 design with proper loading/error states. Navigation updated with Vault tab and backup routes.",
   "repository": "https://github.com/mesmerverse/vettid-android"
 }
