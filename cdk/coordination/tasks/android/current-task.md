@@ -1,7 +1,7 @@
-# Task: Phase 7 - Connections & Messaging UI
+# Task: Phase 8 - Backup System UI
 
 ## Phase
-Phase 7: Connections & Messaging
+Phase 8: Backup System
 
 ## Assigned To
 Android Instance
@@ -10,619 +10,562 @@ Android Instance
 `github.com/mesmerverse/vettid-android`
 
 ## Status
-Phase 6 complete. Ready for Phase 7 connections & messaging UI.
+Phase 7 complete. Ready for Phase 8 backup system UI.
 
 ## Overview
 
-Phase 7 implements the connection and messaging system UI. You need to create:
-1. Connection invitation generation and QR code display
-2. Connection invitation scanning and acceptance
-3. Connection list and detail views
-4. Profile viewing and editing
-5. Encrypted messaging UI with conversation views
+Phase 8 implements the backup and recovery system UI. You need to create:
+1. Backup management screen (list, create, restore)
+2. Credential backup with recovery phrase
+3. Recovery flow for device loss
+4. Backup settings configuration
+5. Background backup scheduling
 
 ## API Endpoints (Backend)
 
-### Connections
+### Backup Management
 ```
-POST /connections/invite          # Generate connection invitation
-POST /connections/accept          # Accept connection invitation
-POST /connections/revoke          # Revoke connection
-GET  /connections                 # List connections
-GET  /connections/{id}            # Get connection details
-GET  /connections/{id}/profile    # Get connection's profile
+POST /vault/backup                # Trigger manual backup
+GET  /vault/backups               # List available backups
+POST /vault/restore               # Initiate restore from backup
+DELETE /vault/backups/{id}        # Delete specific backup
 ```
 
-### Profiles
+### Credential Backup
 ```
-GET  /profile                     # Get own profile
-PUT  /profile                     # Update own profile
-POST /profile/publish             # Publish profile to connections
-```
-
-### Messaging
-```
-POST /messages/send               # Send encrypted message
-GET  /messages/{connectionId}     # Get message history
-GET  /messages/unread             # Get unread message count
-POST /messages/{id}/read          # Mark message as read
+POST /vault/credentials/backup    # Create credential backup
+GET  /vault/credentials/backup    # Get credential backup status
+POST /vault/credentials/recover   # Recover credentials from backup
 ```
 
-## Phase 7 Android Tasks
+### Backup Settings
+```
+GET  /vault/backup/settings       # Get backup settings
+PUT  /vault/backup/settings       # Update backup settings
+```
 
-### 1. Connection Data Models
+## Phase 8 Android Tasks
 
-Create connection and messaging data models:
+### 1. Backup Data Models
+
+Create backup data models:
 
 ```kotlin
-// data/model/Connection.kt
+// data/model/Backup.kt
 
-data class Connection(
-    val connectionId: String,
-    val peerGuid: String,
-    val peerDisplayName: String,
-    val peerAvatarUrl: String?,
-    val status: ConnectionStatus,
+data class Backup(
+    val backupId: String,
     val createdAt: Long,
-    val lastMessageAt: Long?,
-    val unreadCount: Int
+    val sizeBytes: Long,
+    val type: BackupType,
+    val status: BackupStatus,
+    val encryptionMethod: String
 )
 
-enum class ConnectionStatus {
-    PENDING,
-    ACTIVE,
-    REVOKED
+enum class BackupType {
+    AUTO,
+    MANUAL
 }
 
-data class ConnectionInvitation(
-    val invitationId: String,
-    val invitationCode: String,
-    val qrCodeData: String,
-    val deepLinkUrl: String,
-    val expiresAt: Long,
-    val creatorDisplayName: String
-)
-
-// data/model/Message.kt
-
-data class Message(
-    val messageId: String,
-    val connectionId: String,
-    val senderId: String,
-    val content: String,
-    val contentType: MessageContentType,
-    val sentAt: Long,
-    val receivedAt: Long?,
-    val readAt: Long?,
-    val status: MessageStatus
-)
-
-enum class MessageContentType {
-    TEXT,
-    IMAGE,
-    FILE
-}
-
-enum class MessageStatus {
-    SENDING,
-    SENT,
-    DELIVERED,
-    READ,
+enum class BackupStatus {
+    COMPLETE,
+    PARTIAL,
     FAILED
 }
 
-// data/model/Profile.kt
+data class BackupSettings(
+    val autoBackupEnabled: Boolean,
+    val backupFrequency: BackupFrequency,
+    val backupTimeUtc: String,  // HH:mm format
+    val retentionDays: Int,
+    val includeMessages: Boolean,
+    val wifiOnly: Boolean
+)
 
-data class Profile(
-    val guid: String,
-    val displayName: String,
-    val avatarUrl: String?,
-    val bio: String?,
-    val location: String?,
-    val lastUpdated: Long
+enum class BackupFrequency {
+    DAILY,
+    WEEKLY,
+    MONTHLY
+}
+
+data class CredentialBackupStatus(
+    val exists: Boolean,
+    val createdAt: Long?,
+    val lastVerifiedAt: Long?
 )
 ```
 
-### 2. Connection API Client
+### 2. Backup API Client
 
-Create API client for connections:
+Create API client for backups:
 
 ```kotlin
-// network/ConnectionApiClient.kt
+// network/BackupApiClient.kt
 
-interface ConnectionApiClient {
-    suspend fun createInvitation(expiresInMinutes: Int = 60): Result<ConnectionInvitation>
-    suspend fun acceptInvitation(invitationCode: String, publicKey: ByteArray): Result<Connection>
-    suspend fun revokeConnection(connectionId: String): Result<Unit>
-    suspend fun listConnections(): Result<List<Connection>>
-    suspend fun getConnection(connectionId: String): Result<Connection>
-    suspend fun getConnectionProfile(connectionId: String): Result<Profile>
+interface BackupApiClient {
+    suspend fun triggerBackup(): Result<Backup>
+    suspend fun listBackups(): Result<List<Backup>>
+    suspend fun restoreBackup(backupId: String): Result<RestoreResult>
+    suspend fun deleteBackup(backupId: String): Result<Unit>
+
+    suspend fun getBackupSettings(): Result<BackupSettings>
+    suspend fun updateBackupSettings(settings: BackupSettings): Result<BackupSettings>
 }
 
-// network/ProfileApiClient.kt
+// network/CredentialBackupApiClient.kt
 
-interface ProfileApiClient {
-    suspend fun getProfile(): Result<Profile>
-    suspend fun updateProfile(profile: Profile): Result<Profile>
-    suspend fun publishProfile(): Result<Unit>
+interface CredentialBackupApiClient {
+    suspend fun createCredentialBackup(encryptedBlob: ByteArray): Result<Unit>
+    suspend fun getCredentialBackupStatus(): Result<CredentialBackupStatus>
+    suspend fun downloadCredentialBackup(): Result<ByteArray>
 }
 
-// network/MessagingApiClient.kt
-
-interface MessagingApiClient {
-    suspend fun sendMessage(connectionId: String, encryptedContent: ByteArray, nonce: ByteArray): Result<Message>
-    suspend fun getMessageHistory(connectionId: String, limit: Int = 50, before: Long? = null): Result<List<Message>>
-    suspend fun getUnreadCount(): Result<Map<String, Int>>
-    suspend fun markAsRead(messageId: String): Result<Unit>
-}
+data class RestoreResult(
+    val success: Boolean,
+    val restoredItems: Int,
+    val conflicts: List<String>,
+    val requiresReauth: Boolean
+)
 ```
 
-### 3. Connection Crypto Manager
+### 3. Recovery Phrase Manager
 
-Create crypto manager for per-connection encryption:
+Create recovery phrase utilities:
 
 ```kotlin
-// crypto/ConnectionCryptoManager.kt
+// crypto/RecoveryPhraseManager.kt
 
-class ConnectionCryptoManager @Inject constructor(
-    private val credentialStore: CredentialStore
-) {
-    // Generate X25519 key pair for new connection
-    fun generateConnectionKeyPair(): KeyPair
+class RecoveryPhraseManager @Inject constructor() {
+    // Generate 24-word recovery phrase (BIP-39)
+    fun generateRecoveryPhrase(): List<String>
 
-    // Derive shared secret from X25519 key exchange
-    fun deriveSharedSecret(
-        privateKey: ByteArray,
-        peerPublicKey: ByteArray
+    // Validate phrase against BIP-39 word list
+    fun validatePhrase(phrase: List<String>): Boolean
+
+    // Derive encryption key from phrase
+    fun deriveKeyFromPhrase(
+        phrase: List<String>,
+        salt: ByteArray
     ): ByteArray
 
-    // Derive per-connection encryption key using HKDF
-    fun deriveConnectionKey(
-        sharedSecret: ByteArray,
-        connectionId: String
+    // Encrypt credential blob for backup
+    fun encryptCredentialBackup(
+        credentialBlob: ByteArray,
+        phrase: List<String>
+    ): EncryptedCredentialBackup
+
+    // Decrypt credential backup
+    fun decryptCredentialBackup(
+        encryptedBackup: ByteArray,
+        phrase: List<String>
     ): ByteArray
-
-    // Encrypt message with XChaCha20-Poly1305
-    fun encryptMessage(
-        plaintext: String,
-        connectionKey: ByteArray
-    ): EncryptedMessage
-
-    // Decrypt message with XChaCha20-Poly1305
-    fun decryptMessage(
-        ciphertext: ByteArray,
-        nonce: ByteArray,
-        connectionKey: ByteArray
-    ): String
-
-    // Store connection key securely
-    suspend fun storeConnectionKey(connectionId: String, key: ByteArray)
-
-    // Retrieve connection key
-    suspend fun getConnectionKey(connectionId: String): ByteArray?
 }
 
-data class EncryptedMessage(
+data class EncryptedCredentialBackup(
     val ciphertext: ByteArray,
+    val salt: ByteArray,
     val nonce: ByteArray
 )
 ```
 
-### 4. Connection Invitation UI
+### 4. Backup List Screen
 
-Create invitation flow screens:
-
-```kotlin
-// ui/connections/invite/CreateInvitationScreen.kt
-
-@Composable
-fun CreateInvitationScreen(
-    viewModel: CreateInvitationViewModel = hiltViewModel(),
-    onInvitationCreated: (ConnectionInvitation) -> Unit,
-    onBack: () -> Unit
-)
-
-// States: Idle, Creating, Created(invitation), Error
-
-// UI Components:
-// - Expiration time selector (15min, 1hr, 24hr)
-// - Create button
-// - Loading indicator
-// - QR code display (large, centered)
-// - Share button (deep link)
-// - Copy link button
-// - Expiration countdown timer
-
-// ui/connections/invite/ScanInvitationScreen.kt
-
-@Composable
-fun ScanInvitationScreen(
-    viewModel: ScanInvitationViewModel = hiltViewModel(),
-    onConnectionEstablished: (Connection) -> Unit,
-    onBack: () -> Unit
-)
-
-// States: Scanning, Processing, Success(connection), Error
-
-// UI Components:
-// - Camera preview with QR scanner overlay
-// - Manual code entry option
-// - Processing indicator
-// - Connection preview (peer name, avatar)
-// - Accept/Decline buttons
-// - Error display with retry
-```
-
-### 5. Connection List UI
-
-Create connection list screen:
+Create backup list UI:
 
 ```kotlin
-// ui/connections/list/ConnectionsScreen.kt
+// ui/backup/BackupListScreen.kt
 
 @Composable
-fun ConnectionsScreen(
-    viewModel: ConnectionsViewModel = hiltViewModel(),
-    onConnectionClick: (String) -> Unit,
-    onCreateInvitation: () -> Unit,
-    onScanInvitation: () -> Unit
+fun BackupListScreen(
+    viewModel: BackupListViewModel = hiltViewModel(),
+    onBackupClick: (String) -> Unit,
+    onCreateBackup: () -> Unit,
+    onSettings: () -> Unit
 )
 
-// States: Loading, Empty, Loaded(connections), Error
+// States: Loading, Empty, Loaded(backups), Error
 
 // UI Components:
-// - FAB with options: Create Invitation, Scan Invitation
-// - Connection list with:
-//   - Avatar
-//   - Display name
-//   - Last message preview
-//   - Unread badge
-//   - Last activity time
+// - Toolbar with settings icon
+// - Create Backup FAB
+// - Backup list:
+//   - Backup date/time
+//   - Backup type (auto/manual) badge
+//   - Backup size
+//   - Status indicator
+//   - Swipe to delete
 // - Pull-to-refresh
-// - Search/filter
-// - Empty state with onboarding
+// - Empty state with explanation
 
-// ui/connections/list/ConnectionListItem.kt
+// ui/backup/BackupListItem.kt
 
 @Composable
-fun ConnectionListItem(
-    connection: Connection,
-    lastMessage: Message?,
-    onClick: () -> Unit
+fun BackupListItem(
+    backup: Backup,
+    onClick: () -> Unit,
+    onDelete: () -> Unit
 )
 ```
 
-### 6. Connection Detail UI
+### 5. Backup Detail Screen
 
-Create connection detail screen:
+Create backup detail/restore UI:
 
 ```kotlin
-// ui/connections/detail/ConnectionDetailScreen.kt
+// ui/backup/BackupDetailScreen.kt
 
 @Composable
-fun ConnectionDetailScreen(
-    connectionId: String,
-    viewModel: ConnectionDetailViewModel = hiltViewModel(),
-    onMessageClick: () -> Unit,
+fun BackupDetailScreen(
+    backupId: String,
+    viewModel: BackupDetailViewModel = hiltViewModel(),
+    onRestoreComplete: () -> Unit,
     onBack: () -> Unit
 )
 
 // UI Components:
-// - Large avatar
-// - Display name
-// - Connection status badge
-// - Connected since date
-// - Profile info (bio, location)
-// - Actions:
-//   - Send Message
-//   - View Profile
-//   - Revoke Connection (with confirmation)
-// - Connection stats (messages exchanged, etc.)
+// - Backup info card:
+//   - Created date/time
+//   - Backup type
+//   - Size
+//   - Encryption info
+// - Contents preview:
+//   - Handlers count
+//   - Connections count
+//   - Messages count
+// - Restore button (with confirmation dialog)
+// - Delete button (with confirmation dialog)
+// - Restore progress dialog
+
+// States: Loading, Loaded, Restoring(progress), RestoreComplete, Error
 ```
 
-### 7. Profile UI
+### 6. Backup Settings Screen
 
-Create profile screens:
+Create backup settings UI:
 
 ```kotlin
-// ui/profile/ProfileScreen.kt
+// ui/backup/BackupSettingsScreen.kt
 
 @Composable
-fun ProfileScreen(
-    viewModel: ProfileViewModel = hiltViewModel(),
-    onEditProfile: () -> Unit
-)
-
-// UI Components:
-// - Avatar (with edit option)
-// - Display name
-// - Bio
-// - Location
-// - Edit button
-// - Publish to connections button
-
-// ui/profile/EditProfileScreen.kt
-
-@Composable
-fun EditProfileScreen(
-    viewModel: EditProfileViewModel = hiltViewModel(),
-    onSave: () -> Unit,
+fun BackupSettingsScreen(
+    viewModel: BackupSettingsViewModel = hiltViewModel(),
     onBack: () -> Unit
 )
 
 // UI Components:
-// - Avatar picker (camera/gallery)
-// - Display name field (required)
-// - Bio field (optional, multiline)
-// - Location field (optional)
-// - Save button
-// - Validation feedback
-```
+// - Auto-backup toggle
+// - Backup frequency selector (daily/weekly/monthly)
+// - Backup time picker
+// - Retention period selector
+// - Include messages toggle
+// - WiFi only toggle
+// - Last backup info
+// - Backup now button
 
-### 8. Messaging UI
-
-Create messaging screens:
-
-```kotlin
-// ui/messaging/ConversationScreen.kt
+// ui/backup/BackupSettingsItem.kt
 
 @Composable
-fun ConversationScreen(
-    connectionId: String,
-    viewModel: ConversationViewModel = hiltViewModel(),
-    onBack: () -> Unit,
-    onConnectionDetail: () -> Unit
+fun BackupFrequencySelector(
+    frequency: BackupFrequency,
+    onSelect: (BackupFrequency) -> Unit
 )
 
-// States: Loading, Empty, Loaded(messages), Error
+@Composable
+fun BackupTimeSelector(
+    time: String,
+    onSelect: (String) -> Unit
+)
+```
+
+### 7. Credential Backup Screen
+
+Create credential backup UI:
+
+```kotlin
+// ui/backup/CredentialBackupScreen.kt
+
+@Composable
+fun CredentialBackupScreen(
+    viewModel: CredentialBackupViewModel = hiltViewModel(),
+    onComplete: () -> Unit,
+    onBack: () -> Unit
+)
+
+// States: Initial, GeneratingPhrase, ShowingPhrase, VerifyingPhrase, Complete, Error
 
 // UI Components:
-// - Top bar with connection name/avatar
-// - Message list (LazyColumn, reversed)
-//   - Sent messages (right-aligned, colored)
-//   - Received messages (left-aligned)
-//   - Timestamps (grouped by day)
-//   - Read receipts
-// - Message input field
-// - Send button
-// - Attachment button (future)
-// - Scroll to bottom FAB
+// - Explanation of credential backup
+// - Generate backup button
+// - Recovery phrase display (24 words in grid)
+// - Copy phrase button
+// - "I've written it down" confirmation
+// - Phrase verification step (select words)
+// - Success confirmation
 
-// ui/messaging/MessageBubble.kt
+// ui/backup/RecoveryPhraseDisplay.kt
 
 @Composable
-fun MessageBubble(
-    message: Message,
-    isSent: Boolean,
-    showTimestamp: Boolean
+fun RecoveryPhraseDisplay(
+    words: List<String>,
+    onCopy: () -> Unit
 )
 
-// ui/messaging/MessageInput.kt
-
-@Composable
-fun MessageInput(
-    value: String,
-    onValueChange: (String) -> Unit,
-    onSend: () -> Unit,
-    enabled: Boolean
-)
+// Shows 24 words in 4x6 or 3x8 grid
+// Numbered words
+// Copy to clipboard option
+// Warning about not sharing
 ```
 
-### 9. Connection ViewModels
+### 8. Credential Recovery Screen
 
-Create ViewModels for connection flows:
+Create credential recovery UI:
 
 ```kotlin
-// ui/connections/invite/CreateInvitationViewModel.kt
+// ui/recovery/CredentialRecoveryScreen.kt
+
+@Composable
+fun CredentialRecoveryScreen(
+    viewModel: CredentialRecoveryViewModel = hiltViewModel(),
+    onRecoveryComplete: () -> Unit,
+    onBack: () -> Unit
+)
+
+// States: EnteringPhrase, Validating, Recovering, Complete, Error
+
+// UI Components:
+// - Instructions
+// - Word entry (24 text fields or word-by-word entry)
+// - Auto-complete from BIP-39 word list
+// - Validation feedback per word
+// - Recover button
+// - Progress indicator
+// - Success/Error result
+
+// ui/recovery/RecoveryPhraseInput.kt
+
+@Composable
+fun RecoveryPhraseInput(
+    words: List<String>,
+    onWordChange: (Int, String) -> Unit,
+    wordErrors: List<Boolean>
+)
+
+// Features:
+// - 24 input fields
+// - Auto-complete suggestions
+// - Invalid word highlighting
+// - Paste from clipboard option
+```
+
+### 9. Backup ViewModels
+
+Create ViewModels:
+
+```kotlin
+// ui/backup/BackupListViewModel.kt
 
 @HiltViewModel
-class CreateInvitationViewModel @Inject constructor(
-    private val connectionApiClient: ConnectionApiClient,
-    private val connectionCryptoManager: ConnectionCryptoManager
+class BackupListViewModel @Inject constructor(
+    private val backupApiClient: BackupApiClient
 ) : ViewModel() {
 
-    val state: StateFlow<CreateInvitationState>
+    val state: StateFlow<BackupListState>
 
-    fun createInvitation(expiresInMinutes: Int)
-    fun shareInvitation()
-    fun copyLink()
-}
-
-// ui/connections/invite/ScanInvitationViewModel.kt
-
-@HiltViewModel
-class ScanInvitationViewModel @Inject constructor(
-    private val connectionApiClient: ConnectionApiClient,
-    private val connectionCryptoManager: ConnectionCryptoManager
-) : ViewModel() {
-
-    val state: StateFlow<ScanInvitationState>
-
-    fun onQrCodeScanned(data: String)
-    fun onManualCodeEntered(code: String)
-    fun acceptInvitation()
-    fun declineInvitation()
-}
-
-// ui/connections/list/ConnectionsViewModel.kt
-
-@HiltViewModel
-class ConnectionsViewModel @Inject constructor(
-    private val connectionApiClient: ConnectionApiClient,
-    private val messagingApiClient: MessagingApiClient
-) : ViewModel() {
-
-    val connections: StateFlow<List<ConnectionWithLastMessage>>
-    val isLoading: StateFlow<Boolean>
-
+    fun loadBackups()
+    fun createBackup()
+    fun deleteBackup(backupId: String)
     fun refresh()
-    fun search(query: String)
 }
 
-// ui/messaging/ConversationViewModel.kt
+// ui/backup/BackupDetailViewModel.kt
 
 @HiltViewModel
-class ConversationViewModel @Inject constructor(
-    private val messagingApiClient: MessagingApiClient,
-    private val connectionCryptoManager: ConnectionCryptoManager,
+class BackupDetailViewModel @Inject constructor(
+    private val backupApiClient: BackupApiClient,
     savedStateHandle: SavedStateHandle
 ) : ViewModel() {
 
-    private val connectionId: String = savedStateHandle["connectionId"]!!
+    private val backupId: String = savedStateHandle["backupId"]!!
 
-    val messages: StateFlow<List<Message>>
-    val connectionKey: StateFlow<ByteArray?>
-    val sendingState: StateFlow<SendingState>
+    val state: StateFlow<BackupDetailState>
 
-    fun loadMessages()
-    fun loadMoreMessages()
-    fun sendMessage(content: String)
-    fun markAsRead(messageId: String)
+    fun loadBackup()
+    fun restoreBackup()
+    fun deleteBackup()
+}
+
+// ui/backup/CredentialBackupViewModel.kt
+
+@HiltViewModel
+class CredentialBackupViewModel @Inject constructor(
+    private val recoveryPhraseManager: RecoveryPhraseManager,
+    private val credentialBackupApiClient: CredentialBackupApiClient,
+    private val credentialStore: CredentialStore
+) : ViewModel() {
+
+    val state: StateFlow<CredentialBackupState>
+    val recoveryPhrase: StateFlow<List<String>?>
+
+    fun generateBackup()
+    fun confirmWrittenDown()
+    fun verifyWord(index: Int, word: String): Boolean
+    fun completeBackup()
+}
+
+// ui/recovery/CredentialRecoveryViewModel.kt
+
+@HiltViewModel
+class CredentialRecoveryViewModel @Inject constructor(
+    private val recoveryPhraseManager: RecoveryPhraseManager,
+    private val credentialBackupApiClient: CredentialBackupApiClient,
+    private val credentialStore: CredentialStore
+) : ViewModel() {
+
+    val state: StateFlow<CredentialRecoveryState>
+    val enteredWords: StateFlow<List<String>>
+    val wordValidation: StateFlow<List<Boolean>>
+
+    fun setWord(index: Int, word: String)
+    fun validatePhrase(): Boolean
+    fun recoverCredentials()
+    fun getSuggestions(partial: String): List<String>
 }
 ```
 
-### 10. QR Code Components
+### 10. Background Backup Worker
 
-Create QR code scanner and generator:
-
-```kotlin
-// ui/components/QrCodeGenerator.kt
-
-@Composable
-fun QrCodeDisplay(
-    data: String,
-    size: Dp = 250.dp,
-    modifier: Modifier = Modifier
-)
-
-// ui/components/QrCodeScanner.kt
-
-@Composable
-fun QrCodeScanner(
-    onQrCodeScanned: (String) -> Unit,
-    onError: (Exception) -> Unit,
-    modifier: Modifier = Modifier
-)
-
-// Uses CameraX + ML Kit Barcode Scanning
-// Request camera permission
-// Overlay with scan frame
-```
-
-### 11. Real-time Updates
-
-Integrate NATS for real-time messaging:
+Create WorkManager backup worker:
 
 ```kotlin
-// messaging/MessageSubscriber.kt
+// worker/BackupWorker.kt
 
-class MessageSubscriber @Inject constructor(
-    private val natsClient: NatsClient,
-    private val connectionCryptoManager: ConnectionCryptoManager
-) {
-    // Subscribe to incoming messages
-    fun subscribeToMessages(
-        onMessage: (Message) -> Unit
-    ): Job
+@HiltWorker
+class BackupWorker @AssistedInject constructor(
+    @Assisted context: Context,
+    @Assisted params: WorkerParameters,
+    private val backupApiClient: BackupApiClient,
+    private val backupSettingsStore: BackupSettingsStore
+) : CoroutineWorker(context, params) {
 
-    // Subscribe to connection events
-    fun subscribeToConnectionEvents(
-        onEvent: (ConnectionEvent) -> Unit
-    ): Job
+    override suspend fun doWork(): Result {
+        // Check if auto-backup enabled
+        // Check if WiFi required and connected
+        // Trigger backup
+        // Handle success/failure
+        // Schedule next backup
+    }
+
+    companion object {
+        fun schedule(context: Context, settings: BackupSettings)
+        fun cancel(context: Context)
+    }
 }
 
-sealed class ConnectionEvent {
-    data class InvitationAccepted(val connection: Connection) : ConnectionEvent()
-    data class ConnectionRevoked(val connectionId: String) : ConnectionEvent()
-    data class ProfileUpdated(val connectionId: String, val profile: Profile) : ConnectionEvent()
+// Schedule with PeriodicWorkRequest
+// Constraints: network, battery not low
+// BackoffPolicy for retries
+```
+
+### 11. BIP-39 Word List
+
+Add BIP-39 word list resource:
+
+```kotlin
+// util/Bip39WordList.kt
+
+object Bip39WordList {
+    val words: List<String> = listOf(
+        "abandon", "ability", "able", "about", "above", ...
+        // 2048 words total
+    )
+
+    fun isValidWord(word: String): Boolean
+    fun getSuggestions(prefix: String): List<String>
 }
 ```
 
 ### 12. Navigation Integration
 
-Add connection routes to navigation:
+Add backup routes to navigation:
 
 ```kotlin
 // Update VettIDApp.kt navigation graph
 
 // New routes:
-// - connections (list)
-// - connections/create-invitation
-// - connections/scan-invitation
-// - connections/{connectionId}
-// - connections/{connectionId}/messages
-// - profile
-// - profile/edit
+// - backups (list)
+// - backups/settings
+// - backups/{backupId}
+// - backup/credential
+// - recovery/credential
+
+// Settings screen should link to:
+// - Backup settings
+// - Credential backup
 ```
 
 ## Dependencies
 
 Add to `build.gradle.kts`:
 ```kotlin
-// QR Code generation
-implementation("com.google.zxing:core:3.5.2")
+// WorkManager for background backups
+implementation("androidx.work:work-runtime-ktx:2.9.0")
 
-// QR Code scanning (CameraX + ML Kit)
-implementation("androidx.camera:camera-camera2:1.3.1")
-implementation("androidx.camera:camera-lifecycle:1.3.1")
-implementation("androidx.camera:camera-view:1.3.1")
-implementation("com.google.mlkit:barcode-scanning:17.2.0")
-
-// Image loading for avatars (already have Coil)
-// implementation("io.coil-kt:coil-compose:2.5.0")
+// For BIP-39 (if using library instead of word list)
+// implementation("cash.z.ecc.android:kotlin-bip39:1.0.6")
 ```
 
 ## Deliverables
 
-- [ ] Connection data models (Connection, Invitation, Message, Profile)
-- [ ] ConnectionApiClient implementation
-- [ ] MessagingApiClient implementation
-- [ ] ProfileApiClient implementation
-- [ ] ConnectionCryptoManager (X25519, XChaCha20-Poly1305)
-- [ ] CreateInvitationScreen with QR code display
-- [ ] ScanInvitationScreen with camera/ML Kit
-- [ ] ConnectionsScreen (list with last message)
-- [ ] ConnectionDetailScreen
-- [ ] ProfileScreen and EditProfileScreen
-- [ ] ConversationScreen with message bubbles
-- [ ] MessageSubscriber for real-time updates
+- [ ] Backup data models
+- [ ] BackupApiClient implementation
+- [ ] RecoveryPhraseManager (BIP-39)
+- [ ] BackupListScreen with list and delete
+- [ ] BackupDetailScreen with restore
+- [ ] BackupSettingsScreen with all options
+- [ ] CredentialBackupScreen with phrase display
+- [ ] CredentialRecoveryScreen with phrase input
+- [ ] BackupWorker for scheduled backups
+- [ ] BIP-39 word list and validation
 - [ ] Navigation integration
 - [ ] Unit tests for ViewModels
 
 ## Acceptance Criteria
 
-- [ ] Can create and display connection invitation QR code
-- [ ] Can scan QR code and accept invitation
-- [ ] X25519 key exchange establishes shared secret
-- [ ] Per-connection encryption keys stored securely
-- [ ] Connection list shows all connections with unread counts
-- [ ] Can view and edit own profile
-- [ ] Messages encrypted with XChaCha20-Poly1305
-- [ ] Real-time message delivery via NATS
-- [ ] Proper error handling and loading states
+- [ ] Can view list of backups with metadata
+- [ ] Can trigger manual backup
+- [ ] Can restore from backup with confirmation
+- [ ] Can delete backups
+- [ ] Backup settings persist and work
+- [ ] Auto-backup runs on schedule
+- [ ] Can create credential backup with recovery phrase
+- [ ] Recovery phrase displays correctly (24 words)
+- [ ] Can recover credentials using phrase
+- [ ] Phrase validation works correctly
+- [ ] WiFi-only setting respected
 
 ## Notes
 
-- Use ZXing for QR generation, ML Kit for scanning
-- Store connection keys in EncryptedSharedPreferences
-- Test encryption with known test vectors
-- Handle offline scenarios (queue messages)
-- Consider message pagination for long conversations
+- Store BIP-39 word list as string resource
+- Use Argon2id for key derivation (already have)
+- Test with known recovery phrases
+- Consider phrase entry UX (word-by-word vs all at once)
+- Handle backup during low battery gracefully
+- Show notification for background backup completion
 
 ## Status Update
 
 ```bash
 cd /path/to/vettid-android
 git pull
-# Implement connections & messaging UI
+# Implement backup system UI
 ./gradlew test  # Verify tests pass
 git add .
-git commit -m "Phase 7: Add connections and messaging UI"
+git commit -m "Phase 8: Add backup system UI"
 git push
 
 # Update status
 # Edit cdk/coordination/status/android.json (in vettid-dev repo)
 git add cdk/coordination/status/android.json
-git commit -m "Update Android status: Phase 7 connections & messaging complete"
+git commit -m "Update Android status: Phase 8 backup UI complete"
 git push
 ```

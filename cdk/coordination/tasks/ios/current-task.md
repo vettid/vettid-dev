@@ -1,7 +1,7 @@
-# Task: Phase 7 - Connections & Messaging UI
+# Task: Phase 8 - Backup System UI
 
 ## Phase
-Phase 7: Connections & Messaging
+Phase 8: Backup System
 
 ## Assigned To
 iOS Instance
@@ -10,322 +10,186 @@ iOS Instance
 `github.com/mesmerverse/vettid-ios`
 
 ## Status
-Phase 6 complete. Ready for Phase 7 connections & messaging UI.
+Phase 7 complete. Ready for Phase 8 backup system UI.
 
 ## Overview
 
-Phase 7 implements the connection and messaging system UI. You need to create:
-1. Connection invitation generation and QR code display
-2. Connection invitation scanning and acceptance
-3. Connection list and detail views
-4. Profile viewing and editing
-5. Encrypted messaging UI with conversation views
+Phase 8 implements the backup and recovery system UI. You need to create:
+1. Backup management screen (list, create, restore)
+2. Credential backup with recovery phrase
+3. Recovery flow for device loss
+4. Backup settings configuration
+5. Background backup scheduling
 
 ## API Endpoints (Backend)
 
-### Connections
+### Backup Management
 ```
-POST /connections/invite          # Generate connection invitation
-POST /connections/accept          # Accept connection invitation
-POST /connections/revoke          # Revoke connection
-GET  /connections                 # List connections
-GET  /connections/{id}            # Get connection details
-GET  /connections/{id}/profile    # Get connection's profile
+POST /vault/backup                # Trigger manual backup
+GET  /vault/backups               # List available backups
+POST /vault/restore               # Initiate restore from backup
+DELETE /vault/backups/{id}        # Delete specific backup
 ```
 
-### Profiles
+### Credential Backup
 ```
-GET  /profile                     # Get own profile
-PUT  /profile                     # Update own profile
-POST /profile/publish             # Publish profile to connections
-```
-
-### Messaging
-```
-POST /messages/send               # Send encrypted message
-GET  /messages/{connectionId}     # Get message history
-GET  /messages/unread             # Get unread message count
-POST /messages/{id}/read          # Mark message as read
+POST /vault/credentials/backup    # Create credential backup
+GET  /vault/credentials/backup    # Get credential backup status
+POST /vault/credentials/recover   # Recover credentials from backup
 ```
 
-## Phase 7 iOS Tasks
+### Backup Settings
+```
+GET  /vault/backup/settings       # Get backup settings
+PUT  /vault/backup/settings       # Update backup settings
+```
 
-### 1. Connection Data Models
+## Phase 8 iOS Tasks
 
-Create connection and messaging data models:
+### 1. Backup Data Models
+
+Create backup data models:
 
 ```swift
-// Models/Connection.swift
+// Models/Backup.swift
 
-struct Connection: Codable, Identifiable {
-    let id: String           // connectionId
-    let peerGuid: String
-    let peerDisplayName: String
-    let peerAvatarUrl: String?
-    let status: ConnectionStatus
+struct Backup: Codable, Identifiable {
+    let id: String           // backupId
     let createdAt: Date
-    let lastMessageAt: Date?
-    let unreadCount: Int
+    let sizeBytes: Int64
+    let type: BackupType
+    let status: BackupStatus
+    let encryptionMethod: String
 }
 
-enum ConnectionStatus: String, Codable {
-    case pending
-    case active
-    case revoked
+enum BackupType: String, Codable {
+    case auto
+    case manual
 }
 
-struct ConnectionInvitation: Codable {
-    let invitationId: String
-    let invitationCode: String
-    let qrCodeData: String
-    let deepLinkUrl: String
-    let expiresAt: Date
-    let creatorDisplayName: String
-}
-
-// Models/Message.swift
-
-struct Message: Codable, Identifiable {
-    let id: String           // messageId
-    let connectionId: String
-    let senderId: String
-    let content: String
-    let contentType: MessageContentType
-    let sentAt: Date
-    let receivedAt: Date?
-    let readAt: Date?
-    let status: MessageStatus
-}
-
-enum MessageContentType: String, Codable {
-    case text
-    case image
-    case file
-}
-
-enum MessageStatus: String, Codable {
-    case sending
-    case sent
-    case delivered
-    case read
+enum BackupStatus: String, Codable {
+    case complete
+    case partial
     case failed
 }
 
-// Models/Profile.swift
+struct BackupSettings: Codable {
+    var autoBackupEnabled: Bool
+    var backupFrequency: BackupFrequency
+    var backupTimeUtc: String  // HH:mm format
+    var retentionDays: Int
+    var includeMessages: Bool
+    var wifiOnly: Bool
+}
 
-struct Profile: Codable {
-    let guid: String
-    var displayName: String
-    var avatarUrl: String?
-    var bio: String?
-    var location: String?
-    let lastUpdated: Date
+enum BackupFrequency: String, Codable, CaseIterable {
+    case daily
+    case weekly
+    case monthly
+}
+
+struct CredentialBackupStatus: Codable {
+    let exists: Bool
+    let createdAt: Date?
+    let lastVerifiedAt: Date?
 }
 ```
 
-### 2. Connection API Client
+### 2. Backup API Client
 
-Create API client extensions for connections:
+Create API client extensions for backups:
 
 ```swift
-// Services/ConnectionAPIClient.swift
+// Services/BackupAPIClient.swift
 
 extension APIClient {
-    func createInvitation(expiresInMinutes: Int = 60) async throws -> ConnectionInvitation
-    func acceptInvitation(code: String, publicKey: Data) async throws -> Connection
-    func revokeConnection(connectionId: String) async throws
-    func listConnections() async throws -> [Connection]
-    func getConnection(id: String) async throws -> Connection
-    func getConnectionProfile(connectionId: String) async throws -> Profile
+    func triggerBackup() async throws -> Backup
+    func listBackups() async throws -> [Backup]
+    func restoreBackup(backupId: String) async throws -> RestoreResult
+    func deleteBackup(backupId: String) async throws
+
+    func getBackupSettings() async throws -> BackupSettings
+    func updateBackupSettings(_ settings: BackupSettings) async throws -> BackupSettings
 }
 
-// Services/ProfileAPIClient.swift
+// Services/CredentialBackupAPIClient.swift
 
 extension APIClient {
-    func getProfile() async throws -> Profile
-    func updateProfile(_ profile: Profile) async throws -> Profile
-    func publishProfile() async throws
+    func createCredentialBackup(encryptedBlob: Data) async throws
+    func getCredentialBackupStatus() async throws -> CredentialBackupStatus
+    func downloadCredentialBackup() async throws -> Data
 }
 
-// Services/MessagingAPIClient.swift
-
-extension APIClient {
-    func sendMessage(
-        connectionId: String,
-        encryptedContent: Data,
-        nonce: Data
-    ) async throws -> Message
-
-    func getMessageHistory(
-        connectionId: String,
-        limit: Int = 50,
-        before: Date? = nil
-    ) async throws -> [Message]
-
-    func getUnreadCount() async throws -> [String: Int]
-
-    func markAsRead(messageId: String) async throws
+struct RestoreResult: Codable {
+    let success: Bool
+    let restoredItems: Int
+    let conflicts: [String]
+    let requiresReauth: Bool
 }
 ```
 
-### 3. Connection Crypto Manager
+### 3. Recovery Phrase Manager
 
-Create crypto manager for per-connection encryption:
+Create recovery phrase utilities:
 
 ```swift
-// Crypto/ConnectionCryptoManager.swift
+// Crypto/RecoveryPhraseManager.swift
 
-class ConnectionCryptoManager {
-    private let credentialStore: CredentialStore
+class RecoveryPhraseManager {
+    // BIP-39 word list
+    private let wordList: [String]
 
-    init(credentialStore: CredentialStore) {
-        self.credentialStore = credentialStore
-    }
+    init()
 
-    // Generate X25519 key pair for new connection
-    func generateConnectionKeyPair() throws -> (publicKey: Data, privateKey: Data)
+    // Generate 24-word recovery phrase (BIP-39)
+    func generateRecoveryPhrase() -> [String]
 
-    // Derive shared secret from X25519 key exchange
-    func deriveSharedSecret(
-        privateKey: Data,
-        peerPublicKey: Data
+    // Validate phrase against BIP-39 word list
+    func validatePhrase(_ phrase: [String]) -> Bool
+
+    // Validate single word
+    func isValidWord(_ word: String) -> Bool
+
+    // Get autocomplete suggestions
+    func getSuggestions(for prefix: String) -> [String]
+
+    // Derive encryption key from phrase using Argon2id
+    func deriveKeyFromPhrase(
+        _ phrase: [String],
+        salt: Data
     ) throws -> Data
 
-    // Derive per-connection encryption key using HKDF
-    func deriveConnectionKey(
-        sharedSecret: Data,
-        connectionId: String
+    // Encrypt credential blob for backup
+    func encryptCredentialBackup(
+        _ credentialBlob: Data,
+        phrase: [String]
+    ) throws -> EncryptedCredentialBackup
+
+    // Decrypt credential backup
+    func decryptCredentialBackup(
+        _ encryptedBackup: Data,
+        phrase: [String]
     ) throws -> Data
-
-    // Encrypt message with XChaCha20-Poly1305
-    func encryptMessage(
-        plaintext: String,
-        connectionKey: Data
-    ) throws -> EncryptedMessage
-
-    // Decrypt message with XChaCha20-Poly1305
-    func decryptMessage(
-        ciphertext: Data,
-        nonce: Data,
-        connectionKey: Data
-    ) throws -> String
-
-    // Store connection key securely in Keychain
-    func storeConnectionKey(connectionId: String, key: Data) throws
-
-    // Retrieve connection key from Keychain
-    func getConnectionKey(connectionId: String) throws -> Data?
 }
 
-struct EncryptedMessage {
+struct EncryptedCredentialBackup {
     let ciphertext: Data
+    let salt: Data
     let nonce: Data
 }
 ```
 
-### 4. Connection Invitation Views
+### 4. Backup List View
 
-Create invitation flow views:
-
-```swift
-// Views/Connections/CreateInvitationView.swift
-
-struct CreateInvitationView: View {
-    @StateObject private var viewModel = CreateInvitationViewModel()
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        NavigationView {
-            VStack(spacing: 24) {
-                switch viewModel.state {
-                case .idle:
-                    expirationPicker
-                    createButton
-
-                case .creating:
-                    ProgressView("Creating invitation...")
-
-                case .created(let invitation):
-                    qrCodeDisplay(invitation)
-                    shareButtons(invitation)
-                    expirationTimer(invitation)
-
-                case .error(let message):
-                    ErrorView(message: message) {
-                        viewModel.reset()
-                    }
-                }
-            }
-            .padding()
-            .navigationTitle("Create Invitation")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-            }
-        }
-    }
-}
-
-// Views/Connections/ScanInvitationView.swift
-
-struct ScanInvitationView: View {
-    @StateObject private var viewModel = ScanInvitationViewModel()
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        NavigationView {
-            ZStack {
-                switch viewModel.state {
-                case .scanning:
-                    QRCodeScannerView(
-                        onScan: { viewModel.onQrCodeScanned($0) }
-                    )
-                    scanOverlay
-
-                case .processing:
-                    ProgressView("Connecting...")
-
-                case .preview(let peerInfo):
-                    ConnectionPreviewView(
-                        peerInfo: peerInfo,
-                        onAccept: { viewModel.acceptInvitation() },
-                        onDecline: { dismiss() }
-                    )
-
-                case .success(let connection):
-                    ConnectionSuccessView(connection: connection) {
-                        dismiss()
-                    }
-
-                case .error(let message):
-                    ErrorView(message: message) {
-                        viewModel.reset()
-                    }
-                }
-            }
-            .navigationTitle("Scan Invitation")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-            }
-        }
-    }
-}
-```
-
-### 5. Connection List View
-
-Create connection list screen:
+Create backup list UI:
 
 ```swift
-// Views/Connections/ConnectionsListView.swift
+// Views/Backup/BackupListView.swift
 
-struct ConnectionsListView: View {
-    @StateObject private var viewModel = ConnectionsViewModel()
-    @State private var showCreateInvitation = false
-    @State private var showScanInvitation = false
+struct BackupListView: View {
+    @StateObject private var viewModel = BackupListViewModel()
+    @State private var showSettings = false
+    @State private var showCreateBackup = false
 
     var body: some View {
         NavigationView {
@@ -335,108 +199,77 @@ struct ConnectionsListView: View {
                     ProgressView()
 
                 case .empty:
-                    EmptyConnectionsView(
-                        onCreateInvitation: { showCreateInvitation = true },
-                        onScanInvitation: { showScanInvitation = true }
-                    )
+                    EmptyBackupView(onCreate: { showCreateBackup = true })
 
-                case .loaded(let connections):
-                    List(connections) { connection in
-                        NavigationLink(destination: ConnectionDetailView(connectionId: connection.id)) {
-                            ConnectionListRow(
-                                connection: connection,
-                                lastMessage: viewModel.lastMessage(for: connection.id)
-                            )
+                case .loaded(let backups):
+                    List {
+                        ForEach(backups) { backup in
+                            NavigationLink(destination: BackupDetailView(backupId: backup.id)) {
+                                BackupListRow(backup: backup)
+                            }
+                        }
+                        .onDelete { indexSet in
+                            viewModel.deleteBackups(at: indexSet)
                         }
                     }
-                    .listStyle(.plain)
                     .refreshable {
                         await viewModel.refresh()
                     }
 
                 case .error(let message):
                     ErrorView(message: message) {
-                        Task { await viewModel.refresh() }
+                        Task { await viewModel.loadBackups() }
                     }
                 }
             }
-            .navigationTitle("Connections")
+            .navigationTitle("Backups")
             .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(action: { showSettings = true }) {
+                        Image(systemName: "gearshape")
+                    }
+                }
                 ToolbarItem(placement: .primaryAction) {
-                    Menu {
-                        Button(action: { showCreateInvitation = true }) {
-                            Label("Create Invitation", systemImage: "qrcode")
-                        }
-                        Button(action: { showScanInvitation = true }) {
-                            Label("Scan Invitation", systemImage: "qrcode.viewfinder")
-                        }
-                    } label: {
+                    Button(action: { showCreateBackup = true }) {
                         Image(systemName: "plus")
                     }
                 }
             }
-            .searchable(text: $viewModel.searchQuery)
         }
-        .sheet(isPresented: $showCreateInvitation) {
-            CreateInvitationView()
+        .sheet(isPresented: $showSettings) {
+            BackupSettingsView()
         }
-        .sheet(isPresented: $showScanInvitation) {
-            ScanInvitationView()
+        .sheet(isPresented: $showCreateBackup) {
+            CreateBackupView(onComplete: { Task { await viewModel.refresh() } })
         }
         .task {
-            await viewModel.loadConnections()
+            await viewModel.loadBackups()
         }
     }
 }
 
-// Views/Connections/ConnectionListRow.swift
+// Views/Backup/BackupListRow.swift
 
-struct ConnectionListRow: View {
-    let connection: Connection
-    let lastMessage: Message?
+struct BackupListRow: View {
+    let backup: Backup
 
     var body: some View {
-        HStack(spacing: 12) {
-            // Avatar
-            AsyncImage(url: URL(string: connection.peerAvatarUrl ?? "")) { image in
-                image.resizable().aspectRatio(contentMode: .fill)
-            } placeholder: {
-                Image(systemName: "person.circle.fill")
+        HStack {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(backup.createdAt, style: .date)
+                    .font(.headline)
+                Text(backup.createdAt, style: .time)
+                    .font(.subheadline)
                     .foregroundColor(.secondary)
             }
-            .frame(width: 50, height: 50)
-            .clipShape(Circle())
 
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text(connection.peerDisplayName)
-                        .font(.headline)
-                    Spacer()
-                    if let lastMessageAt = connection.lastMessageAt {
-                        Text(lastMessageAt, style: .relative)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                }
+            Spacer()
 
-                if let lastMessage = lastMessage {
-                    Text(lastMessage.content)
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-                }
-            }
-
-            // Unread badge
-            if connection.unreadCount > 0 {
-                Text("\(connection.unreadCount)")
-                    .font(.caption2)
-                    .fontWeight(.bold)
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Color.blue)
-                    .clipShape(Capsule())
+            VStack(alignment: .trailing, spacing: 4) {
+                BackupTypeBadge(type: backup.type)
+                Text(formatBytes(backup.sizeBytes))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             }
         }
         .padding(.vertical, 4)
@@ -444,632 +277,584 @@ struct ConnectionListRow: View {
 }
 ```
 
-### 6. Connection Detail View
+### 5. Backup Detail View
 
-Create connection detail screen:
+Create backup detail/restore UI:
 
 ```swift
-// Views/Connections/ConnectionDetailView.swift
+// Views/Backup/BackupDetailView.swift
 
-struct ConnectionDetailView: View {
-    let connectionId: String
-    @StateObject private var viewModel = ConnectionDetailViewModel()
-    @State private var showRevokeConfirmation = false
+struct BackupDetailView: View {
+    let backupId: String
+    @StateObject private var viewModel = BackupDetailViewModel()
+    @State private var showRestoreConfirmation = false
+    @State private var showDeleteConfirmation = false
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         ScrollView {
             VStack(spacing: 24) {
-                // Avatar and name
-                VStack(spacing: 12) {
-                    AsyncImage(url: URL(string: viewModel.connection?.peerAvatarUrl ?? "")) { image in
-                        image.resizable().aspectRatio(contentMode: .fill)
-                    } placeholder: {
-                        Image(systemName: "person.circle.fill")
-                            .resizable()
-                            .foregroundColor(.secondary)
-                    }
-                    .frame(width: 100, height: 100)
-                    .clipShape(Circle())
+                // Backup info card
+                BackupInfoCard(backup: viewModel.backup)
 
-                    Text(viewModel.connection?.peerDisplayName ?? "")
-                        .font(.title)
-                        .fontWeight(.bold)
-
-                    ConnectionStatusBadge(status: viewModel.connection?.status ?? .active)
-                }
-
-                // Profile info
-                if let profile = viewModel.peerProfile {
-                    ProfileInfoSection(profile: profile)
+                // Contents preview
+                if let contents = viewModel.backupContents {
+                    BackupContentsCard(contents: contents)
                 }
 
                 // Actions
                 VStack(spacing: 12) {
-                    NavigationLink(destination: ConversationView(connectionId: connectionId)) {
-                        Label("Send Message", systemImage: "message.fill")
+                    Button(action: { showRestoreConfirmation = true }) {
+                        Label("Restore from Backup", systemImage: "arrow.counterclockwise")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
 
-                    Button(role: .destructive) {
-                        showRevokeConfirmation = true
-                    } label: {
-                        Label("Revoke Connection", systemImage: "xmark.circle")
+                    Button(role: .destructive, action: { showDeleteConfirmation = true }) {
+                        Label("Delete Backup", systemImage: "trash")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.bordered)
                 }
                 .padding(.horizontal)
-
-                // Connection stats
-                if let stats = viewModel.connectionStats {
-                    ConnectionStatsSection(stats: stats)
-                }
             }
             .padding()
         }
-        .navigationTitle("Connection")
+        .navigationTitle("Backup Details")
         .navigationBarTitleDisplayMode(.inline)
-        .confirmationDialog(
-            "Revoke Connection",
-            isPresented: $showRevokeConfirmation,
-            titleVisibility: .visible
-        ) {
-            Button("Revoke", role: .destructive) {
-                Task { await viewModel.revokeConnection() }
+        .confirmationDialog("Restore Backup", isPresented: $showRestoreConfirmation, titleVisibility: .visible) {
+            Button("Restore") {
+                Task { await viewModel.restoreBackup() }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This will permanently end the connection. You won't be able to message each other.")
+            Text("This will replace your current data with the backup. This action cannot be undone.")
+        }
+        .confirmationDialog("Delete Backup", isPresented: $showDeleteConfirmation, titleVisibility: .visible) {
+            Button("Delete", role: .destructive) {
+                Task {
+                    await viewModel.deleteBackup()
+                    dismiss()
+                }
+            }
+            Button("Cancel", role: .cancel) {}
         }
         .task {
-            await viewModel.loadConnection(connectionId)
+            await viewModel.loadBackup(backupId)
         }
     }
 }
 ```
 
-### 7. Profile Views
+### 6. Backup Settings View
 
-Create profile screens:
+Create backup settings UI:
 
 ```swift
-// Views/Profile/ProfileView.swift
+// Views/Backup/BackupSettingsView.swift
 
-struct ProfileView: View {
-    @StateObject private var viewModel = ProfileViewModel()
-    @State private var showEditProfile = false
-
-    var body: some View {
-        NavigationView {
-            ScrollView {
-                VStack(spacing: 24) {
-                    // Avatar
-                    AsyncImage(url: URL(string: viewModel.profile?.avatarUrl ?? "")) { image in
-                        image.resizable().aspectRatio(contentMode: .fill)
-                    } placeholder: {
-                        Image(systemName: "person.circle.fill")
-                            .resizable()
-                            .foregroundColor(.secondary)
-                    }
-                    .frame(width: 120, height: 120)
-                    .clipShape(Circle())
-
-                    // Display name
-                    Text(viewModel.profile?.displayName ?? "")
-                        .font(.title)
-                        .fontWeight(.bold)
-
-                    // Bio
-                    if let bio = viewModel.profile?.bio, !bio.isEmpty {
-                        Text(bio)
-                            .font(.body)
-                            .foregroundColor(.secondary)
-                            .multilineTextAlignment(.center)
-                    }
-
-                    // Location
-                    if let location = viewModel.profile?.location, !location.isEmpty {
-                        Label(location, systemImage: "location")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                    }
-
-                    // Actions
-                    VStack(spacing: 12) {
-                        Button(action: { showEditProfile = true }) {
-                            Label("Edit Profile", systemImage: "pencil")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.borderedProminent)
-
-                        Button(action: { Task { await viewModel.publishProfile() } }) {
-                            Label("Publish to Connections", systemImage: "arrow.up.circle")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(viewModel.isPublishing)
-                    }
-                    .padding(.horizontal)
-                }
-                .padding()
-            }
-            .navigationTitle("Profile")
-        }
-        .sheet(isPresented: $showEditProfile) {
-            EditProfileView(profile: viewModel.profile) { updatedProfile in
-                Task { await viewModel.updateProfile(updatedProfile) }
-            }
-        }
-        .task {
-            await viewModel.loadProfile()
-        }
-    }
-}
-
-// Views/Profile/EditProfileView.swift
-
-struct EditProfileView: View {
-    let profile: Profile?
-    let onSave: (Profile) -> Void
-
+struct BackupSettingsView: View {
+    @StateObject private var viewModel = BackupSettingsViewModel()
     @Environment(\.dismiss) private var dismiss
-    @State private var displayName: String = ""
-    @State private var bio: String = ""
-    @State private var location: String = ""
-    @State private var showImagePicker = false
 
     var body: some View {
         NavigationView {
             Form {
-                Section {
-                    // Avatar picker
-                    HStack {
-                        Spacer()
-                        Button(action: { showImagePicker = true }) {
-                            Image(systemName: "camera.circle.fill")
-                                .resizable()
-                                .frame(width: 100, height: 100)
-                                .foregroundColor(.blue)
+                Section("Automatic Backup") {
+                    Toggle("Enable Auto-Backup", isOn: $viewModel.settings.autoBackupEnabled)
+
+                    if viewModel.settings.autoBackupEnabled {
+                        Picker("Frequency", selection: $viewModel.settings.backupFrequency) {
+                            ForEach(BackupFrequency.allCases, id: \.self) { frequency in
+                                Text(frequency.rawValue.capitalized)
+                            }
                         }
-                        Spacer()
+
+                        DatePicker("Time", selection: $viewModel.backupTime, displayedComponents: .hourAndMinute)
+
+                        Toggle("WiFi Only", isOn: $viewModel.settings.wifiOnly)
                     }
                 }
-                .listRowBackground(Color.clear)
 
-                Section("Display Name") {
-                    TextField("Display Name", text: $displayName)
-                }
+                Section("Content") {
+                    Toggle("Include Messages", isOn: $viewModel.settings.includeMessages)
 
-                Section("Bio") {
-                    TextEditor(text: $bio)
-                        .frame(minHeight: 100)
+                    Stepper("Keep \(viewModel.settings.retentionDays) days", value: $viewModel.settings.retentionDays, in: 7...365, step: 7)
                 }
 
-                Section("Location") {
-                    TextField("Location (optional)", text: $location)
-                }
-            }
-            .navigationTitle("Edit Profile")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
-                        let updated = Profile(
-                            guid: profile?.guid ?? "",
-                            displayName: displayName,
-                            avatarUrl: profile?.avatarUrl,
-                            bio: bio.isEmpty ? nil : bio,
-                            location: location.isEmpty ? nil : location,
-                            lastUpdated: Date()
-                        )
-                        onSave(updated)
-                        dismiss()
+                Section {
+                    if let lastBackup = viewModel.lastBackupDate {
+                        HStack {
+                            Text("Last Backup")
+                            Spacer()
+                            Text(lastBackup, style: .relative)
+                                .foregroundColor(.secondary)
+                        }
                     }
-                    .disabled(displayName.isEmpty)
+
+                    Button("Backup Now") {
+                        Task { await viewModel.backupNow() }
+                    }
+                    .disabled(viewModel.isBackingUp)
                 }
-            }
-        }
-        .onAppear {
-            displayName = profile?.displayName ?? ""
-            bio = profile?.bio ?? ""
-            location = profile?.location ?? ""
-        }
-    }
-}
-```
 
-### 8. Messaging Views
-
-Create messaging screens:
-
-```swift
-// Views/Messaging/ConversationView.swift
-
-struct ConversationView: View {
-    let connectionId: String
-    @StateObject private var viewModel = ConversationViewModel()
-    @State private var messageText = ""
-    @FocusState private var isInputFocused: Bool
-
-    var body: some View {
-        VStack(spacing: 0) {
-            // Messages list
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(spacing: 8) {
-                        ForEach(viewModel.groupedMessages, id: \.date) { group in
-                            DateDivider(date: group.date)
-
-                            ForEach(group.messages) { message in
-                                MessageBubble(
-                                    message: message,
-                                    isSent: message.senderId == viewModel.currentUserId
-                                )
-                                .id(message.id)
+                Section("Credential Backup") {
+                    NavigationLink(destination: CredentialBackupView()) {
+                        HStack {
+                            Text("Recovery Phrase")
+                            Spacer()
+                            if viewModel.credentialBackupExists {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundColor(.green)
+                            } else {
+                                Text("Not Set")
+                                    .foregroundColor(.secondary)
                             }
                         }
                     }
-                    .padding()
-                }
-                .onAppear {
-                    if let lastMessage = viewModel.messages.last {
-                        proxy.scrollTo(lastMessage.id, anchor: .bottom)
-                    }
                 }
             }
-
-            Divider()
-
-            // Message input
-            MessageInputView(
-                text: $messageText,
-                isFocused: $isInputFocused,
-                onSend: {
-                    Task {
-                        await viewModel.sendMessage(messageText)
-                        messageText = ""
+            .navigationTitle("Backup Settings")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") {
+                        Task {
+                            await viewModel.saveSettings()
+                            dismiss()
+                        }
                     }
-                }
-            )
-        }
-        .navigationTitle(viewModel.connectionName)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
-                NavigationLink(destination: ConnectionDetailView(connectionId: connectionId)) {
-                    Image(systemName: "info.circle")
                 }
             }
         }
         .task {
-            viewModel.connectionId = connectionId
-            await viewModel.loadMessages()
+            await viewModel.loadSettings()
         }
     }
 }
+```
 
-// Views/Messaging/MessageBubble.swift
+### 7. Credential Backup View
 
-struct MessageBubble: View {
-    let message: Message
-    let isSent: Bool
+Create credential backup UI:
+
+```swift
+// Views/Backup/CredentialBackupView.swift
+
+struct CredentialBackupView: View {
+    @StateObject private var viewModel = CredentialBackupViewModel()
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        HStack {
-            if isSent { Spacer(minLength: 60) }
+        VStack(spacing: 24) {
+            switch viewModel.state {
+            case .initial:
+                InitialBackupView(onGenerate: { viewModel.generateBackup() })
 
-            VStack(alignment: isSent ? .trailing : .leading, spacing: 4) {
-                Text(message.content)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(isSent ? Color.blue : Color(.systemGray5))
-                    .foregroundColor(isSent ? .white : .primary)
-                    .cornerRadius(16)
+            case .generating:
+                ProgressView("Generating recovery phrase...")
 
-                HStack(spacing: 4) {
-                    Text(message.sentAt, style: .time)
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
+            case .showingPhrase(let words):
+                RecoveryPhraseDisplayView(
+                    words: words,
+                    onConfirm: { viewModel.confirmWrittenDown() }
+                )
 
-                    if isSent {
-                        MessageStatusIcon(status: message.status)
+            case .verifying(let words, let verifyIndices):
+                RecoveryPhraseVerifyView(
+                    originalWords: words,
+                    verifyIndices: verifyIndices,
+                    onVerify: { viewModel.completeBackup() }
+                )
+
+            case .complete:
+                BackupCompleteView(onDone: { dismiss() })
+
+            case .error(let message):
+                ErrorView(message: message) {
+                    viewModel.reset()
+                }
+            }
+        }
+        .padding()
+        .navigationTitle("Credential Backup")
+    }
+}
+
+// Views/Backup/RecoveryPhraseDisplayView.swift
+
+struct RecoveryPhraseDisplayView: View {
+    let words: [String]
+    let onConfirm: () -> Void
+    @State private var showCopied = false
+
+    var body: some View {
+        VStack(spacing: 24) {
+            // Warning
+            WarningBanner(
+                message: "Write down these 24 words in order. Never share them with anyone."
+            )
+
+            // Word grid (4x6)
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 4), spacing: 8) {
+                ForEach(Array(words.enumerated()), id: \.offset) { index, word in
+                    HStack(spacing: 4) {
+                        Text("\(index + 1).")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Text(word)
+                            .font(.system(.body, design: .monospaced))
                     }
+                    .padding(.vertical, 8)
+                    .padding(.horizontal, 4)
+                    .background(Color(.systemGray6))
+                    .cornerRadius(8)
                 }
             }
 
-            if !isSent { Spacer(minLength: 60) }
+            // Copy button
+            Button(action: {
+                UIPasteboard.general.string = words.joined(separator: " ")
+                showCopied = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                    showCopied = false
+                }
+            }) {
+                Label(showCopied ? "Copied!" : "Copy to Clipboard", systemImage: showCopied ? "checkmark" : "doc.on.doc")
+            }
+
+            Spacer()
+
+            // Confirm button
+            Button("I've Written It Down") {
+                onConfirm()
+            }
+            .buttonStyle(.borderedProminent)
         }
     }
 }
+```
 
-// Views/Messaging/MessageInputView.swift
+### 8. Credential Recovery View
 
-struct MessageInputView: View {
-    @Binding var text: String
-    var isFocused: FocusState<Bool>.Binding
-    let onSend: () -> Void
+Create credential recovery UI:
+
+```swift
+// Views/Recovery/CredentialRecoveryView.swift
+
+struct CredentialRecoveryView: View {
+    @StateObject private var viewModel = CredentialRecoveryViewModel()
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        HStack(spacing: 12) {
-            TextField("Message", text: $text, axis: .vertical)
-                .textFieldStyle(.roundedBorder)
-                .lineLimit(1...5)
-                .focused(isFocused)
+        VStack(spacing: 24) {
+            switch viewModel.state {
+            case .entering:
+                RecoveryPhraseInputView(
+                    words: $viewModel.enteredWords,
+                    wordValidation: viewModel.wordValidation,
+                    suggestions: viewModel.currentSuggestions,
+                    onWordChange: { index, word in
+                        viewModel.setWord(index, word)
+                    },
+                    onRecover: {
+                        Task { await viewModel.recoverCredentials() }
+                    }
+                )
 
-            Button(action: onSend) {
-                Image(systemName: "arrow.up.circle.fill")
-                    .font(.title2)
+            case .validating:
+                ProgressView("Validating phrase...")
+
+            case .recovering:
+                ProgressView("Recovering credentials...")
+
+            case .complete:
+                RecoveryCompleteView(onDone: { dismiss() })
+
+            case .error(let message):
+                ErrorView(message: message) {
+                    viewModel.reset()
+                }
             }
-            .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
         .padding()
-        .background(Color(.systemBackground))
+        .navigationTitle("Recover Credentials")
     }
 }
-```
 
-### 9. Connection ViewModels
+// Views/Recovery/RecoveryPhraseInputView.swift
 
-Create ViewModels for connection flows:
-
-```swift
-// ViewModels/CreateInvitationViewModel.swift
-
-@MainActor
-class CreateInvitationViewModel: ObservableObject {
-    @Published var state: CreateInvitationState = .idle
-    @Published var expirationMinutes = 60
-
-    private let apiClient: APIClient
-    private let cryptoManager: ConnectionCryptoManager
-
-    func createInvitation() async
-    func shareInvitation()
-    func copyLink()
-    func reset()
-}
-
-// ViewModels/ScanInvitationViewModel.swift
-
-@MainActor
-class ScanInvitationViewModel: ObservableObject {
-    @Published var state: ScanInvitationState = .scanning
-
-    private let apiClient: APIClient
-    private let cryptoManager: ConnectionCryptoManager
-
-    func onQrCodeScanned(_ data: String)
-    func onManualCodeEntered(_ code: String)
-    func acceptInvitation() async
-    func reset()
-}
-
-// ViewModels/ConnectionsViewModel.swift
-
-@MainActor
-class ConnectionsViewModel: ObservableObject {
-    @Published var state: ConnectionsListState = .loading
-    @Published var searchQuery = ""
-
-    private let apiClient: APIClient
-    private let messagingClient: MessagingAPIClient
-    private var lastMessages: [String: Message] = [:]
-
-    func loadConnections() async
-    func refresh() async
-    func lastMessage(for connectionId: String) -> Message?
-}
-
-// ViewModels/ConversationViewModel.swift
-
-@MainActor
-class ConversationViewModel: ObservableObject {
-    @Published var messages: [Message] = []
-    @Published var connectionName = ""
-    @Published var isSending = false
-
-    var connectionId: String = ""
-    var currentUserId: String { credentialStore.currentUserId }
-
-    var groupedMessages: [MessageGroup] { /* group by date */ }
-
-    private let apiClient: APIClient
-    private let cryptoManager: ConnectionCryptoManager
-    private let messageSubscriber: MessageSubscriber
-
-    func loadMessages() async
-    func loadMoreMessages() async
-    func sendMessage(_ content: String) async
-    func markAsRead(_ messageId: String) async
-}
-```
-
-### 10. QR Code Components
-
-Create QR code scanner and generator:
-
-```swift
-// Views/Components/QRCodeGenerator.swift
-
-struct QRCodeView: View {
-    let data: String
-    let size: CGFloat
+struct RecoveryPhraseInputView: View {
+    @Binding var words: [String]
+    let wordValidation: [Bool]
+    let suggestions: [String]
+    let onWordChange: (Int, String) -> Void
+    let onRecover: () -> Void
+    @FocusState private var focusedField: Int?
 
     var body: some View {
-        if let image = generateQRCode(from: data) {
-            Image(uiImage: image)
-                .interpolation(.none)
-                .resizable()
-                .scaledToFit()
-                .frame(width: size, height: size)
-        }
-    }
+        ScrollView {
+            VStack(spacing: 16) {
+                Text("Enter your 24-word recovery phrase")
+                    .font(.headline)
 
-    private func generateQRCode(from string: String) -> UIImage? {
-        let context = CIContext()
-        let filter = CIFilter.qrCodeGenerator()
-        filter.message = Data(string.utf8)
+                // Word input grid (3x8)
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 3), spacing: 8) {
+                    ForEach(0..<24, id: \.self) { index in
+                        HStack(spacing: 4) {
+                            Text("\(index + 1).")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .frame(width: 20)
 
-        if let outputImage = filter.outputImage,
-           let cgImage = context.createCGImage(outputImage, from: outputImage.extent) {
-            return UIImage(cgImage: cgImage)
+                            TextField("", text: Binding(
+                                get: { words[index] },
+                                set: { onWordChange(index, $0) }
+                            ))
+                            .textFieldStyle(.roundedBorder)
+                            .autocapitalization(.none)
+                            .disableAutocorrection(true)
+                            .focused($focusedField, equals: index)
+                            .foregroundColor(wordValidation[index] ? .primary : .red)
+                        }
+                    }
+                }
+
+                // Suggestions
+                if !suggestions.isEmpty && focusedField != nil {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack {
+                            ForEach(suggestions, id: \.self) { suggestion in
+                                Button(suggestion) {
+                                    if let index = focusedField {
+                                        onWordChange(index, suggestion)
+                                        focusedField = index < 23 ? index + 1 : nil
+                                    }
+                                }
+                                .buttonStyle(.bordered)
+                            }
+                        }
+                    }
+                }
+
+                Spacer()
+
+                // Recover button
+                Button("Recover") {
+                    onRecover()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!wordValidation.allSatisfy { $0 })
+            }
         }
-        return nil
     }
 }
-
-// Views/Components/QRCodeScannerView.swift
-
-struct QRCodeScannerView: UIViewControllerRepresentable {
-    let onScan: (String) -> Void
-
-    func makeUIViewController(context: Context) -> ScannerViewController {
-        let controller = ScannerViewController()
-        controller.delegate = context.coordinator
-        return controller
-    }
-
-    func updateUIViewController(_ uiViewController: ScannerViewController, context: Context) {}
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(onScan: onScan)
-    }
-
-    class Coordinator: NSObject, ScannerDelegate {
-        let onScan: (String) -> Void
-
-        init(onScan: @escaping (String) -> Void) {
-            self.onScan = onScan
-        }
-
-        func didScanCode(_ code: String) {
-            onScan(code)
-        }
-    }
-}
-
-// Uses AVFoundation for camera + code scanning
 ```
 
-### 11. Real-time Updates
+### 9. Backup ViewModels
 
-Integrate NATS for real-time messaging:
+Create ViewModels:
 
 ```swift
-// Services/MessageSubscriber.swift
+// ViewModels/BackupListViewModel.swift
 
-class MessageSubscriber {
-    private let natsClient: NatsClient
-    private let cryptoManager: ConnectionCryptoManager
+@MainActor
+class BackupListViewModel: ObservableObject {
+    @Published var state: BackupListState = .loading
 
-    init(natsClient: NatsClient, cryptoManager: ConnectionCryptoManager) {
-        self.natsClient = natsClient
-        self.cryptoManager = cryptoManager
-    }
+    private let apiClient: APIClient
 
-    // Subscribe to incoming messages
-    func subscribeToMessages(
-        onMessage: @escaping (Message) -> Void
-    ) -> AnyCancellable
-
-    // Subscribe to connection events
-    func subscribeToConnectionEvents(
-        onEvent: @escaping (ConnectionEvent) -> Void
-    ) -> AnyCancellable
+    func loadBackups() async
+    func refresh() async
+    func deleteBackups(at indexSet: IndexSet)
 }
 
-enum ConnectionEvent {
-    case invitationAccepted(Connection)
-    case connectionRevoked(String)
-    case profileUpdated(connectionId: String, profile: Profile)
+// ViewModels/BackupDetailViewModel.swift
+
+@MainActor
+class BackupDetailViewModel: ObservableObject {
+    @Published var backup: Backup?
+    @Published var backupContents: BackupContents?
+    @Published var isRestoring = false
+
+    private let apiClient: APIClient
+
+    func loadBackup(_ id: String) async
+    func restoreBackup() async
+    func deleteBackup() async
+}
+
+// ViewModels/CredentialBackupViewModel.swift
+
+@MainActor
+class CredentialBackupViewModel: ObservableObject {
+    @Published var state: CredentialBackupState = .initial
+    @Published var recoveryPhrase: [String] = []
+
+    private let recoveryPhraseManager: RecoveryPhraseManager
+    private let apiClient: APIClient
+    private let credentialStore: CredentialStore
+
+    func generateBackup()
+    func confirmWrittenDown()
+    func completeBackup() async
+    func reset()
+}
+
+// ViewModels/CredentialRecoveryViewModel.swift
+
+@MainActor
+class CredentialRecoveryViewModel: ObservableObject {
+    @Published var state: CredentialRecoveryState = .entering
+    @Published var enteredWords: [String] = Array(repeating: "", count: 24)
+    @Published var wordValidation: [Bool] = Array(repeating: true, count: 24)
+    @Published var currentSuggestions: [String] = []
+
+    private let recoveryPhraseManager: RecoveryPhraseManager
+    private let apiClient: APIClient
+    private let credentialStore: CredentialStore
+
+    func setWord(_ index: Int, _ word: String)
+    func getSuggestions(for prefix: String)
+    func recoverCredentials() async
+    func reset()
+}
+```
+
+### 10. Background Backup Task
+
+Create BGTaskScheduler backup task:
+
+```swift
+// Services/BackupBackgroundTask.swift
+
+class BackupBackgroundTask {
+    static let identifier = "dev.vettid.backup"
+
+    static func register() {
+        BGTaskScheduler.shared.register(forTaskWithIdentifier: identifier, using: nil) { task in
+            handleBackupTask(task as! BGProcessingTask)
+        }
+    }
+
+    static func schedule(settings: BackupSettings) {
+        let request = BGProcessingTaskRequest(identifier: identifier)
+        request.requiresNetworkConnectivity = true
+        request.requiresExternalPower = false
+
+        // Calculate next backup time based on settings
+        request.earliestBeginDate = calculateNextBackupDate(settings)
+
+        try? BGTaskScheduler.shared.submit(request)
+    }
+
+    static func cancel() {
+        BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: identifier)
+    }
+
+    private static func handleBackupTask(_ task: BGProcessingTask) {
+        // Check WiFi if required
+        // Trigger backup
+        // Schedule next backup
+        // Complete task
+    }
+}
+```
+
+### 11. BIP-39 Word List
+
+Add BIP-39 word list:
+
+```swift
+// Crypto/BIP39WordList.swift
+
+struct BIP39WordList {
+    static let words: [String] = [
+        "abandon", "ability", "able", "about", "above",
+        // ... 2048 words total
+    ]
+
+    static func isValidWord(_ word: String) -> Bool {
+        words.contains(word.lowercased())
+    }
+
+    static func getSuggestions(for prefix: String) -> [String] {
+        guard prefix.count >= 2 else { return [] }
+        let lowercased = prefix.lowercased()
+        return words.filter { $0.hasPrefix(lowercased) }.prefix(5).map { $0 }
+    }
 }
 ```
 
 ### 12. Navigation Integration
 
-Add connection routes to navigation:
+Add backup routes to navigation:
 
 ```swift
 // Update main app navigation
 
-// Tab: Connections
-// - ConnectionsListView
-//   - CreateInvitationView (sheet)
-//   - ScanInvitationView (sheet)
-//   - ConnectionDetailView (push)
-//     - ConversationView (push)
+// Tab: Settings
+// - BackupSettingsView
+//   - BackupListView (push)
+//     - BackupDetailView (push)
+//   - CredentialBackupView (push)
 
-// Tab: Profile
-// - ProfileView
-//   - EditProfileView (sheet)
-```
-
-## Dependencies
-
-Add to Package.swift or via SPM:
-```swift
-// QR Code generation uses CoreImage (built-in)
-// QR Code scanning uses AVFoundation (built-in)
-
-// For advanced crypto (if CryptoKit insufficient):
-// .package(url: "https://github.com/jedisct1/swift-sodium.git", from: "0.9.1")
+// Recovery (entry point from login/onboarding)
+// - CredentialRecoveryView
 ```
 
 ## Deliverables
 
-- [ ] Connection data models (Connection, Invitation, Message, Profile)
-- [ ] APIClient extensions for connections, profiles, messaging
-- [ ] ConnectionCryptoManager (X25519, XChaCha20-Poly1305)
-- [ ] CreateInvitationView with QR code display
-- [ ] ScanInvitationView with AVFoundation scanner
-- [ ] ConnectionsListView with search and unread badges
-- [ ] ConnectionDetailView with revocation
-- [ ] ProfileView and EditProfileView
-- [ ] ConversationView with message bubbles
-- [ ] MessageSubscriber for real-time updates
+- [ ] Backup data models with Codable
+- [ ] APIClient extensions for backup endpoints
+- [ ] RecoveryPhraseManager (BIP-39)
+- [ ] BackupListView with list and swipe-to-delete
+- [ ] BackupDetailView with restore
+- [ ] BackupSettingsView with all options
+- [ ] CredentialBackupView with phrase display
+- [ ] CredentialRecoveryView with phrase input
+- [ ] BackupBackgroundTask for scheduled backups
+- [ ] BIP-39 word list and validation
 - [ ] Navigation integration
 - [ ] Unit tests for ViewModels
 
 ## Acceptance Criteria
 
-- [ ] Can create and display connection invitation QR code
-- [ ] Can scan QR code and accept invitation
-- [ ] X25519 key exchange establishes shared secret
-- [ ] Per-connection encryption keys stored in Keychain
-- [ ] Connection list shows all connections with unread counts
-- [ ] Can view and edit own profile
-- [ ] Messages encrypted with XChaCha20-Poly1305
-- [ ] Real-time message delivery via NATS
-- [ ] Proper error handling and loading states
+- [ ] Can view list of backups with metadata
+- [ ] Can trigger manual backup
+- [ ] Can restore from backup with confirmation
+- [ ] Can delete backups
+- [ ] Backup settings persist and work
+- [ ] Auto-backup runs on schedule via BGTask
+- [ ] Can create credential backup with recovery phrase
+- [ ] Recovery phrase displays correctly (24 words)
+- [ ] Can recover credentials using phrase
+- [ ] Phrase validation with autocomplete works
+- [ ] WiFi-only setting respected
 
 ## Notes
 
-- Use CoreImage CIFilter.qrCodeGenerator() for QR generation
-- Use AVFoundation for QR scanning
-- Store connection keys in Keychain with kSecAttrAccessible
-- Test encryption with known test vectors
-- Handle offline scenarios (queue messages)
-- Consider message pagination for long conversations
-- Use async/await throughout for clean async code
+- Use CryptoKit for key derivation where possible
+- Argon2id via existing PasswordHasher for phrase key derivation
+- BGProcessingTask for background backups (iOS 13+)
+- Consider iCloud Keychain integration for backup
+- Test phrase entry UX for accessibility
+- Handle app termination during backup gracefully
 
 ## Status Update
 
 ```bash
 cd /path/to/vettid-ios
 git pull
-# Implement connections & messaging UI
+# Implement backup system UI
 swift test  # Verify tests pass
 git add .
-git commit -m "Phase 7: Add connections and messaging UI"
+git commit -m "Phase 8: Add backup system UI"
 git push
 
 # Update status
 # Edit cdk/coordination/status/ios.json (in vettid-dev repo)
 git add cdk/coordination/status/ios.json
-git commit -m "Update iOS status: Phase 7 connections & messaging complete"
+git commit -m "Update iOS status: Phase 8 backup UI complete"
 git push
 ```

@@ -1,7 +1,7 @@
-# Task: Phase 7 - Connections & Messaging Testing
+# Task: Phase 8 - Backup System Testing
 
 ## Phase
-Phase 7: Connections & Messaging
+Phase 8: Backup System
 
 ## Assigned To
 Testing Instance
@@ -10,379 +10,391 @@ Testing Instance
 `github.com/mesmerverse/vettid-dev` (cdk/tests/)
 
 ## Status
-Phase 6 complete. Ready for Phase 7 connections & messaging testing.
+Phase 7 complete. Ready for Phase 8 backup system testing.
 
 ## Overview
 
-Phase 7 implements the connection and messaging system. You need to create tests for:
-1. Connection invitation generation and acceptance
-2. Per-connection key exchange (X25519)
-3. Profile publishing and sharing
-4. End-to-end encrypted messaging
+Phase 8 implements the backup and recovery system. You need to create tests for:
+1. Automated vault backup creation and encryption
+2. Backup listing and management
+3. Backup restoration
+4. Credential backup service (recovery phrase)
+5. Backup cleanup and retention policies
 
 ## New Backend Endpoints
 
-### Connections
+### Backup Management
 ```
-POST /connections/invite          # Generate connection invitation
-POST /connections/accept          # Accept connection invitation
-POST /connections/revoke          # Revoke connection
-GET  /connections                 # List connections
-GET  /connections/{id}            # Get connection details
-GET  /connections/{id}/profile    # Get connection's profile
+POST /vault/backup                # Trigger manual backup
+GET  /vault/backups               # List available backups
+POST /vault/restore               # Initiate restore from backup
+DELETE /vault/backups/{id}        # Delete specific backup
 ```
 
-### Profiles
+### Credential Backup
 ```
-GET  /profile                     # Get own profile
-PUT  /profile                     # Update own profile
-POST /profile/publish             # Publish profile to connections
-```
-
-### Messaging
-```
-POST /messages/send               # Send encrypted message
-GET  /messages/{connectionId}     # Get message history
-GET  /messages/unread             # Get unread message count
-POST /messages/{id}/read          # Mark message as read
+POST /vault/credentials/backup    # Create credential backup
+GET  /vault/credentials/backup    # Get credential backup status
+POST /vault/credentials/recover   # Recover credentials from backup
 ```
 
-## Phase 7 Testing Tasks
+### Backup Settings
+```
+GET  /vault/backup/settings       # Get backup settings
+PUT  /vault/backup/settings       # Update backup settings
+```
 
-### 1. Connection Invitation Tests
+## Phase 8 Testing Tasks
 
-Create connection invitation flow tests:
+### 1. Backup Creation Tests
+
+Create backup creation tests:
 
 ```typescript
-// tests/integration/connections/createInvitation.test.ts
+// tests/integration/backup/createBackup.test.ts
 
-describe('Create Connection Invitation', () => {
-  describe('Invitation Generation', () => {
-    it('should generate unique invitation code');
-    it('should include owner public key in invitation');
-    it('should set configurable expiration time');
-    it('should enforce max pending invitations limit');
+describe('Create Backup', () => {
+  describe('Manual Backup', () => {
+    it('should create backup on demand');
+    it('should encrypt backup with member key');
+    it('should generate unique backup ID');
+    it('should store backup metadata');
     it('should require authenticated user');
   });
 
-  describe('Invitation Payload', () => {
-    it('should include invitation ID');
-    it('should include creator display name');
-    it('should include creator avatar URL if set');
-    it('should include QR code data');
-    it('should include deep link URL');
+  describe('Automatic Backup', () => {
+    it('should trigger daily backup at scheduled time');
+    it('should skip if recent backup exists');
+    it('should handle failed backup gracefully');
+    it('should retry on transient failures');
   });
 
-  describe('Invitation Storage', () => {
-    it('should store invitation in DynamoDB');
-    it('should set TTL for automatic cleanup');
-    it('should track invitation status (pending/accepted/expired/revoked)');
-  });
-});
-```
-
-### 2. Connection Acceptance Tests
-
-Create connection acceptance tests:
-
-```typescript
-// tests/integration/connections/acceptInvitation.test.ts
-
-describe('Accept Connection Invitation', () => {
-  describe('Invitation Validation', () => {
-    it('should validate invitation code exists');
-    it('should reject expired invitations');
-    it('should reject already-accepted invitations');
-    it('should reject revoked invitations');
-    it('should reject self-connection attempts');
+  describe('Backup Content', () => {
+    it('should include vault state');
+    it('should include handler configurations');
+    it('should include connection keys');
+    it('should include message history (encrypted)');
+    it('should exclude temporary data');
   });
 
-  describe('Key Exchange', () => {
-    it('should perform X25519 key exchange');
-    it('should derive shared secret using HKDF');
-    it('should generate per-connection encryption key');
-    it('should store key securely in vault');
-  });
-
-  describe('Connection Establishment', () => {
-    it('should create connection record for both parties');
-    it('should set connection status to active');
-    it('should exchange initial profiles');
-    it('should notify inviter of acceptance via NATS');
+  describe('Backup Encryption', () => {
+    it('should use XChaCha20-Poly1305');
+    it('should derive key from member credentials');
+    it('should include encryption metadata');
+    it('should be decryptable with correct key');
   });
 });
 ```
 
-### 3. Connection Revocation Tests
+### 2. Backup Listing Tests
 
-Create connection revocation tests:
-
-```typescript
-// tests/integration/connections/revokeConnection.test.ts
-
-describe('Revoke Connection', () => {
-  describe('Revocation Authorization', () => {
-    it('should allow owner to revoke connection');
-    it('should reject revocation by non-owner');
-    it('should handle already-revoked connections');
-  });
-
-  describe('Revocation Effects', () => {
-    it('should update connection status to revoked');
-    it('should delete shared encryption key');
-    it('should remove from both parties connection list');
-    it('should notify other party via NATS');
-    it('should prevent future message exchange');
-  });
-
-  describe('Data Cleanup', () => {
-    it('should retain message history for owner');
-    it('should mark messages as from-revoked-connection');
-    it('should clean up pending invitations');
-  });
-});
-```
-
-### 4. Profile Management Tests
-
-Create profile management tests:
+Create backup listing tests:
 
 ```typescript
-// tests/integration/profile/profileManagement.test.ts
+// tests/integration/backup/listBackups.test.ts
 
-describe('Profile Management', () => {
-  describe('Profile Schema', () => {
-    it('should validate required fields (display_name)');
-    it('should validate optional fields (avatar_url, bio, location)');
-    it('should enforce field length limits');
-    it('should sanitize input for XSS prevention');
-  });
-
-  describe('Profile Updates', () => {
-    it('should update profile fields');
-    it('should version profile updates');
-    it('should track last_updated timestamp');
-    it('should publish update to connections');
-  });
-
-  describe('Profile Publishing', () => {
-    it('should encrypt profile for each connection');
-    it('should send via MessageSpace');
-    it('should handle offline connections (queue)');
-    it('should respect connection visibility settings');
-  });
-
-  describe('Profile Retrieval', () => {
-    it('should return own profile');
-    it('should return connection profile');
-    it('should reject non-connection profile requests');
-    it('should return cached profile if connection offline');
-  });
-});
-```
-
-### 5. Encrypted Messaging Tests
-
-Create end-to-end messaging tests:
-
-```typescript
-// tests/integration/messaging/sendMessage.test.ts
-
-describe('Send Message', () => {
-  describe('Message Encryption', () => {
-    it('should encrypt message with connection key');
-    it('should use XChaCha20-Poly1305 AEAD');
-    it('should include unique nonce per message');
-    it('should authenticate sender');
-  });
-
-  describe('Message Delivery', () => {
-    it('should send via OwnerSpace topic');
-    it('should queue for offline recipient');
-    it('should return delivery receipt');
-    it('should handle large messages (chunking)');
-  });
-
-  describe('Message Validation', () => {
-    it('should enforce message size limit');
-    it('should validate connection is active');
-    it('should reject messages to revoked connections');
-    it('should validate message content type');
-  });
-});
-
-// tests/integration/messaging/receiveMessage.test.ts
-
-describe('Receive Message', () => {
-  describe('Message Decryption', () => {
-    it('should decrypt message with connection key');
-    it('should verify message authenticity');
-    it('should reject tampered messages');
-    it('should handle decryption failures gracefully');
-  });
-
-  describe('Message Storage', () => {
-    it('should store decrypted message locally');
-    it('should index by connection and timestamp');
-    it('should support message search');
-    it('should handle duplicate message IDs');
-  });
-
-  describe('Message Status', () => {
-    it('should track unread count');
-    it('should mark messages as read');
-    it('should send read receipts');
-  });
-});
-```
-
-### 6. Message History Tests
-
-Create message history tests:
-
-```typescript
-// tests/integration/messaging/messageHistory.test.ts
-
-describe('Message History', () => {
-  describe('History Retrieval', () => {
-    it('should return messages in chronological order');
+describe('List Backups', () => {
+  describe('Backup Query', () => {
+    it('should return all backups for member');
+    it('should sort by creation date (newest first)');
     it('should support pagination');
-    it('should filter by connection');
-    it('should filter by date range');
+    it('should return backup metadata');
   });
 
-  describe('History Sync', () => {
-    it('should sync history across devices');
-    it('should handle conflicts');
-    it('should respect message retention settings');
+  describe('Backup Metadata', () => {
+    it('should include backup ID');
+    it('should include creation timestamp');
+    it('should include size in bytes');
+    it('should include backup type (auto/manual)');
+    it('should include status (complete/partial)');
   });
 
-  describe('History Search', () => {
-    it('should search message content');
-    it('should return matching messages with context');
-    it('should respect search result limits');
+  describe('Access Control', () => {
+    it('should only return own backups');
+    it('should reject unauthenticated requests');
+    it('should reject cross-member access');
   });
 });
 ```
 
-### 7. E2E Connection Flow Tests
+### 3. Backup Restoration Tests
+
+Create backup restoration tests:
+
+```typescript
+// tests/integration/backup/restoreBackup.test.ts
+
+describe('Restore Backup', () => {
+  describe('Restore Validation', () => {
+    it('should validate backup exists');
+    it('should validate backup integrity');
+    it('should validate backup is decryptable');
+    it('should reject corrupted backups');
+  });
+
+  describe('Restore Process', () => {
+    it('should decrypt backup with member key');
+    it('should restore vault state');
+    it('should restore handler configurations');
+    it('should restore connection keys');
+    it('should trigger vault reinitialize');
+  });
+
+  describe('Restore Conflicts', () => {
+    it('should handle version conflicts');
+    it('should preserve newer local data option');
+    it('should overwrite with backup data option');
+    it('should merge option with conflict resolution');
+  });
+
+  describe('Restore Notification', () => {
+    it('should notify user of restore progress');
+    it('should notify connections of potential key update');
+    it('should log restore event for audit');
+  });
+});
+```
+
+### 4. Credential Backup Tests
+
+Create credential backup tests:
+
+```typescript
+// tests/integration/backup/credentialBackup.test.ts
+
+describe('Credential Backup', () => {
+  describe('Backup Creation', () => {
+    it('should generate 24-word recovery phrase');
+    it('should derive backup key from phrase');
+    it('should encrypt credential blob');
+    it('should store encrypted backup in S3');
+  });
+
+  describe('Recovery Phrase', () => {
+    it('should use BIP-39 word list');
+    it('should include checksum word');
+    it('should be unique per backup');
+    it('should not be stored on server');
+  });
+
+  describe('Backup Encryption', () => {
+    it('should use Argon2id for key derivation');
+    it('should use unique salt per backup');
+    it('should encrypt with XChaCha20-Poly1305');
+  });
+
+  describe('Backup Status', () => {
+    it('should track backup existence');
+    it('should track last backup date');
+    it('should not expose backup contents');
+  });
+});
+```
+
+### 5. Credential Recovery Tests
+
+Create credential recovery tests:
+
+```typescript
+// tests/integration/backup/credentialRecovery.test.ts
+
+describe('Credential Recovery', () => {
+  describe('Recovery Process', () => {
+    it('should validate recovery phrase');
+    it('should derive key from phrase');
+    it('should download encrypted backup');
+    it('should decrypt credential blob');
+  });
+
+  describe('Phrase Validation', () => {
+    it('should validate word count (24)');
+    it('should validate words in BIP-39 list');
+    it('should validate checksum');
+    it('should reject invalid phrases');
+  });
+
+  describe('Recovery States', () => {
+    it('should handle no backup exists');
+    it('should handle wrong recovery phrase');
+    it('should handle corrupted backup');
+    it('should handle successful recovery');
+  });
+
+  describe('Post-Recovery', () => {
+    it('should create new device credential');
+    it('should mark old devices as untrusted');
+    it('should require re-authentication');
+    it('should notify user of recovery');
+  });
+});
+```
+
+### 6. Backup Retention Tests
+
+Create backup retention tests:
+
+```typescript
+// tests/integration/backup/backupRetention.test.ts
+
+describe('Backup Retention', () => {
+  describe('Retention Policy', () => {
+    it('should keep last 3 daily backups');
+    it('should keep last 4 weekly backups');
+    it('should keep last 12 monthly backups');
+    it('should delete older backups automatically');
+  });
+
+  describe('Manual Delete', () => {
+    it('should allow deleting specific backup');
+    it('should prevent deleting only backup');
+    it('should require authentication');
+    it('should log deletion event');
+  });
+
+  describe('Storage Quota', () => {
+    it('should enforce storage limits');
+    it('should warn when approaching limit');
+    it('should delete oldest on limit exceeded');
+  });
+});
+```
+
+### 7. Backup Settings Tests
+
+Create backup settings tests:
+
+```typescript
+// tests/integration/backup/backupSettings.test.ts
+
+describe('Backup Settings', () => {
+  describe('Get Settings', () => {
+    it('should return current backup settings');
+    it('should return default settings if not set');
+  });
+
+  describe('Update Settings', () => {
+    it('should update auto-backup enabled');
+    it('should update backup time');
+    it('should update retention policy');
+    it('should validate settings values');
+  });
+
+  describe('Settings Options', () => {
+    it('should support enable/disable auto-backup');
+    it('should support backup frequency (daily/weekly)');
+    it('should support backup time of day');
+    it('should support retention count');
+  });
+});
+```
+
+### 8. E2E Backup Flow Tests
 
 Create end-to-end tests:
 
 ```typescript
-// tests/e2e/connectionFlow.test.ts
+// tests/e2e/backup/backupFlow.test.ts
 
-describe('Connection Flow E2E', () => {
-  it('should complete: invite → accept → exchange profiles → send message → receive message');
-  it('should complete: invite → accept → send messages → revoke → verify blocked');
-  it('should handle: offline connection → queue messages → deliver on reconnect');
-  it('should handle: key rotation → re-encrypt pending messages');
-  it('should handle: profile update → propagate to all connections');
+describe('Backup Flow E2E', () => {
+  it('should complete: create backup → list → verify → delete');
+  it('should complete: create backup → corrupt → restore fails');
+  it('should complete: create backup → restore → verify state');
+  it('should complete: auto backup → retention cleanup');
+  it('should complete: credential backup → recovery phrase → recover');
 });
 
-// tests/e2e/messagingFlow.test.ts
+// tests/e2e/backup/recoveryFlow.test.ts
 
-describe('Messaging Flow E2E', () => {
-  it('should deliver message within 500ms (online recipient)');
-  it('should queue and deliver message (offline recipient)');
-  it('should handle concurrent message exchange');
-  it('should maintain message order');
-  it('should handle message deletion');
+describe('Recovery Flow E2E', () => {
+  it('should recover from device loss using backup');
+  it('should recover credentials using recovery phrase');
+  it('should handle new device enrollment post-recovery');
+  it('should sync with connections after recovery');
 });
 ```
 
 ## Test Utilities
 
-Create connection and messaging test utilities:
+Create backup test utilities:
 
 ```typescript
-// tests/fixtures/connections/mockConnection.ts
+// tests/fixtures/backup/mockBackup.ts
 
-export function createMockInvitation(options: {
-  creatorGuid: string;
-  expiresIn?: number;
-}): ConnectionInvitation;
+export function createMockBackup(options: {
+  memberId: string;
+  type?: 'auto' | 'manual';
+  size?: number;
+}): Backup;
 
-export function createMockConnection(options: {
-  ownerGuid: string;
-  peerGuid: string;
-  status?: 'active' | 'revoked';
-}): Connection;
+export function createMockCredentialBackup(options: {
+  memberId: string;
+  recoveryPhrase?: string[];
+}): CredentialBackup;
 
-export function createMockKeyPair(): {
-  publicKey: Buffer;
-  privateKey: Buffer;
-};
-
-export function deriveSharedKey(
-  privateKey: Buffer,
-  peerPublicKey: Buffer
-): Buffer;
-
-// tests/fixtures/messaging/mockMessage.ts
-
-export function createMockMessage(options: {
-  senderId: string;
-  connectionId: string;
-  content: string;
-}): EncryptedMessage;
-
-export function encryptMessage(
-  content: string,
-  sharedKey: Buffer
+export function encryptTestBackup(
+  data: any,
+  key: Buffer
 ): { ciphertext: Buffer; nonce: Buffer };
 
-export function decryptMessage(
+export function decryptTestBackup(
   ciphertext: Buffer,
   nonce: Buffer,
-  sharedKey: Buffer
-): string;
+  key: Buffer
+): any;
+
+export function generateTestRecoveryPhrase(): string[];
+
+export function deriveKeyFromPhrase(
+  phrase: string[],
+  salt: Buffer
+): Buffer;
 ```
 
 ## Deliverables
 
-- [ ] createInvitation.test.ts (invitation generation)
-- [ ] acceptInvitation.test.ts (connection acceptance)
-- [ ] revokeConnection.test.ts (connection revocation)
-- [ ] profileManagement.test.ts (profile CRUD)
-- [ ] sendMessage.test.ts (message sending)
-- [ ] receiveMessage.test.ts (message receiving)
-- [ ] messageHistory.test.ts (history and search)
-- [ ] connectionFlow.test.ts (E2E connection tests)
-- [ ] messagingFlow.test.ts (E2E messaging tests)
-- [ ] Mock connection and messaging fixtures
+- [ ] createBackup.test.ts (backup creation)
+- [ ] listBackups.test.ts (backup listing)
+- [ ] restoreBackup.test.ts (backup restoration)
+- [ ] credentialBackup.test.ts (credential backup)
+- [ ] credentialRecovery.test.ts (credential recovery)
+- [ ] backupRetention.test.ts (retention policies)
+- [ ] backupSettings.test.ts (settings management)
+- [ ] backupFlow.test.ts (E2E backup tests)
+- [ ] recoveryFlow.test.ts (E2E recovery tests)
+- [ ] Mock backup fixtures
 
 ## Acceptance Criteria
 
-- [ ] Connection invitation tests cover generation, validation, expiration
-- [ ] Key exchange tests verify X25519 ECDH flow
-- [ ] Profile tests cover schema, updates, publishing
-- [ ] Messaging tests verify E2E encryption
-- [ ] Message history tests cover pagination and search
-- [ ] E2E tests cover complete connection and messaging flows
+- [ ] Backup creation tests cover encryption and storage
+- [ ] Backup listing tests cover pagination and metadata
+- [ ] Restoration tests cover decryption and state recovery
+- [ ] Credential backup tests cover recovery phrase generation
+- [ ] Recovery tests cover phrase validation and decryption
+- [ ] Retention tests cover automatic cleanup
+- [ ] E2E tests cover complete backup/restore flows
 
 ## Notes
 
-- Use mock NATS for pub/sub testing
-- Test both online and offline scenarios
-- Verify encryption with known test vectors
-- Test concurrent operations for race conditions
-- Consider message size limits and chunking
+- Use mock S3 for storage testing
+- Test encryption with known test vectors
+- Verify backup integrity with checksums
+- Test concurrent backup operations
+- Consider large backup file handling
 
 ## Status Update
 
 ```bash
 cd /path/to/vettid-dev/cdk
 git pull
-# Create connection and messaging tests
+# Create backup system tests
 npm run test:unit  # Verify tests pass
 git add tests/
-git commit -m "Phase 7: Add connections and messaging tests"
+git commit -m "Phase 8: Add backup system tests"
 git push
 
 # Update status
 # Edit cdk/coordination/status/testing.json
 git add cdk/coordination/status/testing.json
-git commit -m "Update Testing status: Phase 7 connections & messaging tests complete"
+git commit -m "Update Testing status: Phase 8 backup testing complete"
 git push
 ```
