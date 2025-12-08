@@ -25,10 +25,15 @@ const TABLE_TRANSACTION_KEYS = process.env.TABLE_TRANSACTION_KEYS!;
 // Number of transaction keys to generate per enrollment
 const INITIAL_TRANSACTION_KEY_COUNT = 20;
 
+// Feature flag: require device attestation (Android Play Integrity / iOS App Attest)
+// Set to 'false' to skip attestation verification (faster enrollment, less security)
+const REQUIRE_ATTESTATION = process.env.REQUIRE_ATTESTATION !== 'false';
+
 interface EnrollStartRequest {
   invitation_code: string;
   device_id: string;
   device_type: 'android' | 'ios';
+  skip_attestation?: boolean;  // Client can request to skip if server allows
 }
 
 /**
@@ -83,8 +88,11 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       return badRequest('This invitation code has expired');
     }
 
-    // Generate attestation challenge for device verification
-    const attestationChallenge = generateAttestationChallenge(body.device_type);
+    // Determine if attestation is required
+    const skipAttestation = !REQUIRE_ATTESTATION || body.skip_attestation === true;
+
+    // Generate attestation challenge (even if skipping, for optional future use)
+    const attestationChallenge = skipAttestation ? null : generateAttestationChallenge(body.device_type);
 
     // Generate user GUID for this enrollment
     const userGuid = generateSecureId('user', 32);
@@ -135,24 +143,34 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     // Select the first key for password encryption
     const passwordKeyId = transactionKeys[0].key_id;
 
-    // Create enrollment session with attestation step
+    // Determine next step based on attestation requirement
+    const nextStep = skipAttestation ? 'set_password' : 'attestation_required';
+
+    // Create enrollment session
+    const sessionItem: Record<string, any> = {
+      session_id: sessionId,
+      user_guid: userGuid,
+      invitation_code: body.invitation_code,
+      device_id: body.device_id,
+      device_type: body.device_type,
+      attestation_skipped: skipAttestation,
+      status: 'STARTED',
+      step: nextStep,
+      password_key_id: passwordKeyId,
+      created_at: now.toISOString(),
+      expires_at: expiresAt.toISOString(),
+      expires_at_ttl: Math.floor(expiresAt.getTime() / 1000),
+    };
+
+    // Only add attestation fields if attestation is required
+    if (attestationChallenge) {
+      sessionItem.attestation_challenge = attestationChallenge.challenge;
+      sessionItem.attestation_challenge_expires = attestationChallenge.expiresAt;
+    }
+
     await ddb.send(new PutItemCommand({
       TableName: TABLE_ENROLLMENT_SESSIONS,
-      Item: marshall({
-        session_id: sessionId,
-        user_guid: userGuid,
-        invitation_code: body.invitation_code,
-        device_id: body.device_id,
-        device_type: body.device_type,
-        attestation_challenge: attestationChallenge.challenge,
-        attestation_challenge_expires: attestationChallenge.expiresAt,
-        status: 'STARTED',
-        step: 'attestation_required',  // Changed: require attestation first
-        password_key_id: passwordKeyId,
-        created_at: now.toISOString(),
-        expires_at: expiresAt.toISOString(),
-        expires_at_ttl: Math.floor(expiresAt.getTime() / 1000),
-      }),
+      Item: marshall(sessionItem),
     }));
 
     // Mark invitation as pending (not fully used until enrollment completes)
@@ -179,16 +197,24 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       device_id: body.device_id.substring(0, 8) + '...',  // Partial for privacy
     }, requestId);
 
-    return ok({
+    // Build response
+    const response: Record<string, any> = {
       enrollment_session_id: sessionId,
       user_guid: userGuid,
-      attestation_challenge: attestationChallenge.challenge,
-      attestation_endpoint: body.device_type === 'android'
-        ? '/vault/enroll/attestation/android'
-        : '/vault/enroll/attestation/ios',
       transaction_keys: transactionKeys,
-      next_step: 'attestation_required',
-    });
+      next_step: nextStep,
+      attestation_required: !skipAttestation,
+    };
+
+    // Only include attestation fields if required
+    if (attestationChallenge) {
+      response.attestation_challenge = attestationChallenge.challenge;
+      response.attestation_endpoint = body.device_type === 'android'
+        ? '/vault/enroll/attestation/android'
+        : '/vault/enroll/attestation/ios';
+    }
+
+    return ok(response);
 
   } catch (error: any) {
     console.error('Enrollment start error:', error);
