@@ -948,13 +948,64 @@ async function selectSubscriptionType(subscriptionTypeId) {
 <div id="deploy-vault" class="tab-content">
   <!-- Deploy a Vault Sub-tab -->
   <div id="vault-deploy" class="sub-tab-content active">
-    <div class="card">
-      <h3>Deploy a Vault</h3>
-      <p class="muted" style="margin-bottom:20px;font-size:0.95rem;">Deploy an encrypted vault for storing API keys, deployment tokens, and other sensitive credentials needed for automated deployments.</p>
+    <div class="card" id="vaultStatusCard">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+        <h3 style="margin:0;">Vault Status</h3>
+        <button onclick="loadVaultStatus()" class="btn" style="padding:6px 12px;font-size:0.85rem;background:#333;" title="Refresh">↻ Refresh</button>
+      </div>
+      <p class="muted" style="margin-bottom:20px;font-size:0.95rem;">Deploy and manage your secure vault instance for credential storage and automated deployments.</p>
 
-      <div style="margin-top:24px;padding:24px;background:#050505;border-radius:4px;border:1px solid #333;text-align:center;">
-        <p style="color:var(--gray);font-size:1rem;">Coming soon</p>
-        <p style="color:var(--gray);margin-top:8px;font-size:0.85rem;">Secure credential management</p>
+      <!-- Vault Status Content - Dynamic -->
+      <div id="vaultStatusContent">
+        <div style="padding:24px;background:#050505;border-radius:4px;border:1px solid #333;text-align:center;">
+          <div class="skeleton" style="height:24px;width:120px;margin:0 auto 12px auto;border-radius:4px;"></div>
+          <div class="skeleton" style="height:16px;width:200px;margin:0 auto;border-radius:4px;"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Health Dashboard Card - Only shown when vault is active -->
+    <div class="card" id="vaultHealthCard" style="display:none;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+        <h3 style="margin:0;">Health Dashboard</h3>
+        <span id="vaultHealthBadge" class="status-badge" style="padding:4px 12px;border-radius:12px;font-size:0.8rem;font-weight:600;">--</span>
+      </div>
+
+      <div id="vaultHealthContent" class="grid" style="gap:12px;">
+        <!-- Health metrics will be populated here -->
+      </div>
+
+      <div style="margin-top:20px;padding-top:16px;border-top:1px solid #333;">
+        <div style="display:flex;gap:12px;flex-wrap:wrap;">
+          <button id="vaultStopBtn" onclick="stopVault()" class="btn" style="padding:10px 20px;background:linear-gradient(135deg,#f59e0b 0%,#d97706 100%);">
+            ⏹ Stop Vault
+          </button>
+          <button id="vaultTerminateBtn" onclick="confirmTerminateVault()" class="btn" style="padding:10px 20px;background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);">
+            ⛔ Terminate
+          </button>
+        </div>
+        <p class="muted" style="margin-top:12px;font-size:0.8rem;">Stopping preserves data. Terminating is permanent and cannot be undone.</p>
+      </div>
+    </div>
+
+    <!-- Provisioning Card - Shown during provisioning -->
+    <div class="card" id="vaultProvisioningCard" style="display:none;">
+      <h3>Provisioning Your Vault</h3>
+      <div style="margin-top:20px;">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">
+          <div style="width:24px;height:24px;border:3px solid var(--accent);border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite;"></div>
+          <span id="provisioningStatus" style="color:var(--text);">Launching instance...</span>
+        </div>
+        <div style="background:#050505;border-radius:4px;padding:16px;border:1px solid #333;">
+          <div style="display:flex;justify-content:space-between;margin-bottom:8px;">
+            <span class="muted">Progress</span>
+            <span id="provisioningProgress" style="color:var(--accent);">0%</span>
+          </div>
+          <div style="height:8px;background:#222;border-radius:4px;overflow:hidden;">
+            <div id="provisioningProgressBar" style="height:100%;background:linear-gradient(90deg,var(--accent),#f59e0b);width:0%;transition:width 0.5s ease;"></div>
+          </div>
+        </div>
+        <p class="muted" style="margin-top:12px;font-size:0.85rem;">This usually takes 2-3 minutes. You can leave this page and come back.</p>
       </div>
     </div>
   </div>
@@ -3620,6 +3671,20 @@ async function checkStepCompletion() {
       steps.hasSubscription = true;
     }
 
+    // Check vault deployment status
+    try {
+      const vaultRes = await fetch(API_URL + '/vault/status', {
+        method: 'GET',
+        headers: { 'Authorization': 'Bearer ' + token }
+      });
+      if (vaultRes.ok) {
+        const vaultData = await vaultRes.json();
+        steps.vaultDeployed = vaultData.status === 'active';
+      }
+    } catch (e) {
+      console.error('Error checking vault status:', e);
+    }
+
     // Check if user has voted
     try {
       const votesRes = await fetch(API_URL + '/votes/history', {
@@ -3691,7 +3756,7 @@ async function populateGettingStartedSteps() {
       accessible: hasSubscription,
       tab: 'deploy-vault',
       cardId: null,
-      note: hasSubscription ? 'Coming soon' : 'Complete step 3 to unlock'
+      note: hasSubscription ? null : 'Complete step 3 to unlock'
     },
     {
       number: 5,
@@ -3758,6 +3823,546 @@ document.getElementById('gotItBtn').onclick = async () => {
   await markGettingStartedComplete();
   switchToTab('account');
 };
+
+// ---- Vault Services Functions ----
+let vaultStatusInterval = null;
+let vaultStatus = null;
+
+async function loadVaultStatus() {
+  const statusContent = document.getElementById('vaultStatusContent');
+  if (!statusContent) return;
+
+  try {
+    const token = idToken();
+    if (!token) throw new Error('No authentication token');
+
+    const res = await fetch(API_URL + '/vault/status', {
+      method: 'GET',
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+
+    if (!res.ok) {
+      if (res.status === 404) {
+        // Not enrolled yet
+        vaultStatus = { status: 'not_enrolled' };
+        renderVaultStatusContent(vaultStatus);
+        return;
+      }
+      throw new Error('Failed to load vault status');
+    }
+
+    vaultStatus = await res.json();
+    renderVaultStatusContent(vaultStatus);
+
+    // If active, also load health data
+    if (vaultStatus.status === 'active') {
+      await loadVaultHealth();
+    } else {
+      document.getElementById('vaultHealthCard').style.display = 'none';
+    }
+  } catch (error) {
+    console.error('Error loading vault status:', error);
+    statusContent.innerHTML = `
+      <div style="padding:24px;background:#1a0a0a;border-radius:4px;border:1px solid #ef4444;text-align:center;">
+        <div style="font-size:2rem;margin-bottom:12px;">⚠</div>
+        <div style="color:#ef4444;font-weight:600;margin-bottom:8px;">Error Loading Status</div>
+        <p class="muted" style="margin:0;">${error.message}</p>
+        <button onclick="loadVaultStatus()" class="btn" style="margin-top:16px;padding:8px 16px;background:#333;">Try Again</button>
+      </div>
+    `;
+  }
+}
+
+function renderVaultStatusContent(status) {
+  const statusContent = document.getElementById('vaultStatusContent');
+  const healthCard = document.getElementById('vaultHealthCard');
+  const provisioningCard = document.getElementById('vaultProvisioningCard');
+
+  if (!statusContent) return;
+
+  // Hide provisioning card by default
+  if (provisioningCard) provisioningCard.style.display = 'none';
+
+  switch (status.status) {
+    case 'not_enrolled':
+      healthCard.style.display = 'none';
+      statusContent.innerHTML = `
+        <div style="padding:24px;background:#050505;border-radius:4px;border:1px solid #333;text-align:center;">
+          <div style="font-size:3rem;margin-bottom:16px;">🔐</div>
+          <div style="font-size:1.2rem;font-weight:600;color:var(--text);margin-bottom:8px;">Set Up Your Vault</div>
+          <p class="muted" style="margin-bottom:20px;max-width:400px;margin-left:auto;margin-right:auto;">
+            Your vault provides secure credential storage and enables automated deployments.
+            Start by enrolling your mobile device.
+          </p>
+          <button onclick="startEnrollment()" class="btn" style="padding:12px 24px;background:linear-gradient(135deg,var(--accent) 0%,#2563eb 100%);font-weight:600;">
+            Start Enrollment
+          </button>
+        </div>
+      `;
+      break;
+
+    case 'pending':
+      healthCard.style.display = 'none';
+      statusContent.innerHTML = `
+        <div style="padding:24px;background:#0a0a05;border-radius:4px;border:1px solid #f59e0b;text-align:center;">
+          <div style="width:40px;height:40px;border:3px solid #f59e0b;border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 16px;"></div>
+          <div style="font-size:1.2rem;font-weight:600;color:#f59e0b;margin-bottom:8px;">Enrollment In Progress</div>
+          <p class="muted" style="margin-bottom:8px;">Complete the enrollment process on your mobile device.</p>
+          <p class="muted" style="font-size:0.85rem;">Session started: ${status.started_at ? new Date(status.started_at).toLocaleString() : 'Unknown'}</p>
+        </div>
+      `;
+      break;
+
+    case 'enrolled':
+      healthCard.style.display = 'none';
+      statusContent.innerHTML = `
+        <div style="padding:24px;background:#050a05;border-radius:4px;border:1px solid #10b981;text-align:center;">
+          <div style="font-size:3rem;margin-bottom:16px;">✓</div>
+          <div style="font-size:1.2rem;font-weight:600;color:#10b981;margin-bottom:8px;">Ready to Deploy</div>
+          <p class="muted" style="margin-bottom:20px;">
+            Your mobile device is enrolled. Now provision your vault instance to begin using VettID services.
+          </p>
+          <button onclick="provisionVault()" class="btn" style="padding:12px 24px;background:linear-gradient(135deg,#10b981 0%,#059669 100%);font-weight:600;">
+            Provision Vault
+          </button>
+        </div>
+      `;
+      break;
+
+    case 'provisioning':
+      healthCard.style.display = 'none';
+      if (provisioningCard) provisioningCard.style.display = 'block';
+      statusContent.innerHTML = `
+        <div style="padding:24px;background:#050505;border-radius:4px;border:1px solid var(--accent);text-align:center;">
+          <div style="font-size:1.2rem;font-weight:600;color:var(--accent);margin-bottom:8px;">Provisioning...</div>
+          <p class="muted">Your vault is being provisioned. This may take a few minutes.</p>
+        </div>
+      `;
+      // Start polling for provisioning completion
+      startProvisioningPoll();
+      break;
+
+    case 'active':
+      healthCard.style.display = 'block';
+      const uptime = status.uptime ? formatUptime(status.uptime) : 'Unknown';
+      statusContent.innerHTML = `
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:16px;">
+          <div style="padding:16px;background:#050505;border-radius:4px;border:1px solid #333;">
+            <div class="muted" style="font-size:0.8rem;margin-bottom:4px;">Status</div>
+            <div style="display:flex;align-items:center;gap:8px;">
+              <span style="width:10px;height:10px;background:#10b981;border-radius:50%;"></span>
+              <span style="color:#10b981;font-weight:600;">Active</span>
+            </div>
+          </div>
+          <div style="padding:16px;background:#050505;border-radius:4px;border:1px solid #333;">
+            <div class="muted" style="font-size:0.8rem;margin-bottom:4px;">Instance ID</div>
+            <div style="color:var(--text);font-family:monospace;font-size:0.9rem;">${status.instance_id || 'N/A'}</div>
+          </div>
+          <div style="padding:16px;background:#050505;border-radius:4px;border:1px solid #333;">
+            <div class="muted" style="font-size:0.8rem;margin-bottom:4px;">Uptime</div>
+            <div style="color:var(--text);font-weight:600;">${uptime}</div>
+          </div>
+          <div style="padding:16px;background:#050505;border-radius:4px;border:1px solid #333;">
+            <div class="muted" style="font-size:0.8rem;margin-bottom:4px;">Last Sync</div>
+            <div style="color:var(--text);font-size:0.9rem;">${status.last_sync ? new Date(status.last_sync).toLocaleString() : 'Never'}</div>
+          </div>
+        </div>
+      `;
+      break;
+
+    case 'stopped':
+      healthCard.style.display = 'none';
+      statusContent.innerHTML = `
+        <div style="padding:24px;background:#0a0a05;border-radius:4px;border:1px solid #f59e0b;text-align:center;">
+          <div style="font-size:3rem;margin-bottom:16px;">⏸</div>
+          <div style="font-size:1.2rem;font-weight:600;color:#f59e0b;margin-bottom:8px;">Vault Stopped</div>
+          <p class="muted" style="margin-bottom:20px;">
+            Your vault instance is stopped. Start it to resume services.
+          </p>
+          <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;">
+            <button onclick="startVault()" class="btn" style="padding:12px 24px;background:linear-gradient(135deg,#10b981 0%,#059669 100%);font-weight:600;">
+              Start Vault
+            </button>
+            <button onclick="confirmTerminateVault()" class="btn" style="padding:12px 24px;background:#333;color:#ef4444;">
+              Terminate
+            </button>
+          </div>
+        </div>
+      `;
+      break;
+
+    default:
+      healthCard.style.display = 'none';
+      statusContent.innerHTML = `
+        <div style="padding:24px;background:#050505;border-radius:4px;border:1px solid #333;text-align:center;">
+          <div class="muted">Unknown status: ${status.status}</div>
+        </div>
+      `;
+  }
+}
+
+function formatUptime(seconds) {
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+  return `${Math.floor(seconds / 86400)}d ${Math.floor((seconds % 86400) / 3600)}h`;
+}
+
+async function loadVaultHealth() {
+  const healthCard = document.getElementById('vaultHealthCard');
+  const healthContent = document.getElementById('vaultHealthContent');
+  const healthBadge = document.getElementById('vaultHealthBadge');
+
+  if (!healthCard || !healthContent) return;
+
+  try {
+    const token = idToken();
+    if (!token) throw new Error('No authentication token');
+
+    const res = await fetch(API_URL + '/vault/health', {
+      method: 'GET',
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+
+    if (!res.ok) throw new Error('Failed to load vault health');
+
+    const health = await res.json();
+    renderHealthDashboard(health);
+  } catch (error) {
+    console.error('Error loading vault health:', error);
+    healthContent.innerHTML = `
+      <div style="padding:16px;background:#1a0a0a;border-radius:4px;border:1px solid #ef4444;text-align:center;">
+        <span style="color:#ef4444;">Error loading health data</span>
+      </div>
+    `;
+    healthBadge.textContent = 'Error';
+    healthBadge.style.background = '#ef4444';
+    healthBadge.style.color = '#fff';
+  }
+}
+
+function renderHealthDashboard(health) {
+  const healthContent = document.getElementById('vaultHealthContent');
+  const healthBadge = document.getElementById('vaultHealthBadge');
+
+  if (!healthContent) return;
+
+  // Determine overall health status
+  const isHealthy = health.ec2_status === 'running' &&
+                    health.nats_central === 'connected' &&
+                    health.nats_local === 'connected';
+  const isDegraded = !isHealthy && health.ec2_status === 'running';
+
+  if (healthBadge) {
+    if (isHealthy) {
+      healthBadge.textContent = 'Healthy';
+      healthBadge.style.background = '#10b981';
+      healthBadge.style.color = '#000';
+    } else if (isDegraded) {
+      healthBadge.textContent = 'Degraded';
+      healthBadge.style.background = '#f59e0b';
+      healthBadge.style.color = '#000';
+    } else {
+      healthBadge.textContent = 'Unhealthy';
+      healthBadge.style.background = '#ef4444';
+      healthBadge.style.color = '#fff';
+    }
+  }
+
+  const statusIcon = (connected) => connected ?
+    '<span style="color:#10b981;">●</span>' :
+    '<span style="color:#ef4444;">●</span>';
+
+  const statusText = (val, goodVal) => val === goodVal ?
+    `<span style="color:#10b981;">${val}</span>` :
+    `<span style="color:#ef4444;">${val}</span>`;
+
+  healthContent.innerHTML = `
+    <div style="padding:16px;background:#050505;border-radius:4px;border:1px solid #333;">
+      <div class="muted" style="font-size:0.75rem;margin-bottom:6px;text-transform:uppercase;">EC2 Instance</div>
+      <div style="display:flex;align-items:center;gap:8px;">
+        ${statusIcon(health.ec2_status === 'running')}
+        ${statusText(health.ec2_status || 'unknown', 'running')}
+      </div>
+    </div>
+    <div style="padding:16px;background:#050505;border-radius:4px;border:1px solid #333;">
+      <div class="muted" style="font-size:0.75rem;margin-bottom:6px;text-transform:uppercase;">NATS Central</div>
+      <div style="display:flex;align-items:center;gap:8px;">
+        ${statusIcon(health.nats_central === 'connected')}
+        ${statusText(health.nats_central || 'unknown', 'connected')}
+      </div>
+    </div>
+    <div style="padding:16px;background:#050505;border-radius:4px;border:1px solid #333;">
+      <div class="muted" style="font-size:0.75rem;margin-bottom:6px;text-transform:uppercase;">NATS Local</div>
+      <div style="display:flex;align-items:center;gap:8px;">
+        ${statusIcon(health.nats_local === 'connected')}
+        ${statusText(health.nats_local || 'unknown', 'connected')}
+      </div>
+    </div>
+    <div style="padding:16px;background:#050505;border-radius:4px;border:1px solid #333;">
+      <div class="muted" style="font-size:0.75rem;margin-bottom:6px;text-transform:uppercase;">CPU Usage</div>
+      <div style="color:var(--text);font-weight:600;">${health.cpu_percent !== undefined ? health.cpu_percent + '%' : 'N/A'}</div>
+      ${health.cpu_percent !== undefined ? `
+        <div style="margin-top:8px;height:4px;background:#222;border-radius:2px;overflow:hidden;">
+          <div style="height:100%;width:${health.cpu_percent}%;background:${health.cpu_percent > 80 ? '#ef4444' : health.cpu_percent > 60 ? '#f59e0b' : '#10b981'};"></div>
+        </div>
+      ` : ''}
+    </div>
+    <div style="padding:16px;background:#050505;border-radius:4px;border:1px solid #333;">
+      <div class="muted" style="font-size:0.75rem;margin-bottom:6px;text-transform:uppercase;">Memory Usage</div>
+      <div style="color:var(--text);font-weight:600;">${health.memory_percent !== undefined ? health.memory_percent + '%' : 'N/A'}</div>
+      ${health.memory_percent !== undefined ? `
+        <div style="margin-top:8px;height:4px;background:#222;border-radius:2px;overflow:hidden;">
+          <div style="height:100%;width:${health.memory_percent}%;background:${health.memory_percent > 80 ? '#ef4444' : health.memory_percent > 60 ? '#f59e0b' : '#10b981'};"></div>
+        </div>
+      ` : ''}
+    </div>
+    <div style="padding:16px;background:#050505;border-radius:4px;border:1px solid #333;">
+      <div class="muted" style="font-size:0.75rem;margin-bottom:6px;text-transform:uppercase;">Disk Usage</div>
+      <div style="color:var(--text);font-weight:600;">${health.disk_percent !== undefined ? health.disk_percent + '%' : 'N/A'}</div>
+      ${health.disk_percent !== undefined ? `
+        <div style="margin-top:8px;height:4px;background:#222;border-radius:2px;overflow:hidden;">
+          <div style="height:100%;width:${health.disk_percent}%;background:${health.disk_percent > 80 ? '#ef4444' : health.disk_percent > 60 ? '#f59e0b' : '#10b981'};"></div>
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+async function provisionVault() {
+  try {
+    const token = idToken();
+    if (!token) throw new Error('No authentication token');
+
+    showToast('Provisioning vault...', 'info');
+
+    const res = await fetch(API_URL + '/vault/provision', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => ({}));
+      throw new Error(errorData.message || 'Failed to provision vault');
+    }
+
+    const data = await res.json();
+    showToast('Vault provisioning started', 'success');
+
+    // Update status to show provisioning state
+    vaultStatus = { status: 'provisioning' };
+    renderVaultStatusContent(vaultStatus);
+
+    // Start polling for completion
+    startProvisioningPoll();
+  } catch (error) {
+    console.error('Error provisioning vault:', error);
+    showToast('Failed to provision vault: ' + error.message, 'error');
+  }
+}
+
+let provisioningPollInterval = null;
+
+function startProvisioningPoll() {
+  stopProvisioningPoll();
+
+  const provisioningCard = document.getElementById('vaultProvisioningCard');
+  if (provisioningCard) provisioningCard.style.display = 'block';
+
+  let progress = 0;
+  provisioningPollInterval = setInterval(async () => {
+    // Update progress bar (simulated)
+    progress = Math.min(progress + Math.random() * 10, 90);
+    const progressBar = document.getElementById('provisioningProgressBar');
+    const progressText = document.getElementById('provisioningProgress');
+    if (progressBar) progressBar.style.width = progress + '%';
+    if (progressText) progressText.textContent = Math.round(progress) + '%';
+
+    // Check actual status
+    try {
+      const token = idToken();
+      const res = await fetch(API_URL + '/vault/status', {
+        method: 'GET',
+        headers: { 'Authorization': 'Bearer ' + token }
+      });
+
+      if (res.ok) {
+        const status = await res.json();
+        if (status.status === 'active') {
+          stopProvisioningPoll();
+          if (progressBar) progressBar.style.width = '100%';
+          if (progressText) progressText.textContent = '100%';
+
+          setTimeout(() => {
+            showToast('Vault provisioned successfully!', 'success');
+            loadVaultStatus();
+          }, 500);
+        }
+      }
+    } catch (e) {
+      console.error('Error polling provision status:', e);
+    }
+  }, 5000);
+}
+
+function stopProvisioningPoll() {
+  if (provisioningPollInterval) {
+    clearInterval(provisioningPollInterval);
+    provisioningPollInterval = null;
+  }
+}
+
+async function stopVault() {
+  try {
+    const token = idToken();
+    if (!token) throw new Error('No authentication token');
+
+    showToast('Stopping vault...', 'info');
+
+    const res = await fetch(API_URL + '/vault/stop', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => ({}));
+      throw new Error(errorData.message || 'Failed to stop vault');
+    }
+
+    showToast('Vault stopped', 'success');
+    await loadVaultStatus();
+  } catch (error) {
+    console.error('Error stopping vault:', error);
+    showToast('Failed to stop vault: ' + error.message, 'error');
+  }
+}
+
+async function startVault() {
+  try {
+    const token = idToken();
+    if (!token) throw new Error('No authentication token');
+
+    showToast('Starting vault...', 'info');
+
+    const res = await fetch(API_URL + '/vault/initialize', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => ({}));
+      throw new Error(errorData.message || 'Failed to start vault');
+    }
+
+    showToast('Vault starting...', 'success');
+    await loadVaultStatus();
+  } catch (error) {
+    console.error('Error starting vault:', error);
+    showToast('Failed to start vault: ' + error.message, 'error');
+  }
+}
+
+function confirmTerminateVault() {
+  const modal = document.createElement('div');
+  modal.id = 'terminateVaultModal';
+  modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.8);display:flex;align-items:center;justify-content:center;z-index:9999;';
+  modal.innerHTML = `
+    <div style="background:#0a0a0a;border:1px solid #ef4444;border-radius:12px;padding:32px;max-width:420px;width:90%;text-align:center;">
+      <div style="font-size:3rem;margin-bottom:16px;">⚠️</div>
+      <h3 style="margin:0 0 12px 0;color:#ef4444;">Terminate Vault?</h3>
+      <p style="color:var(--gray);margin-bottom:24px;line-height:1.6;">
+        This action is <strong style="color:#ef4444;">permanent and cannot be undone</strong>.
+        Your vault instance will be destroyed and all local data will be lost.
+      </p>
+      <p style="color:var(--gray);margin-bottom:24px;font-size:0.9rem;">
+        If you have credential backups, they will remain safe. You can provision a new vault and restore from backup.
+      </p>
+      <div style="display:flex;gap:12px;justify-content:center;">
+        <button onclick="closeTerminateModal()" class="btn" style="padding:12px 24px;background:#333;">
+          Cancel
+        </button>
+        <button onclick="terminateVault()" class="btn" style="padding:12px 24px;background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);font-weight:600;">
+          Terminate Vault
+        </button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  modal.onclick = (e) => { if (e.target === modal) closeTerminateModal(); };
+}
+
+function closeTerminateModal() {
+  const modal = document.getElementById('terminateVaultModal');
+  if (modal) modal.remove();
+}
+
+async function terminateVault() {
+  closeTerminateModal();
+
+  try {
+    const token = idToken();
+    if (!token) throw new Error('No authentication token');
+
+    showToast('Terminating vault...', 'info');
+
+    const res = await fetch(API_URL + '/vault/terminate', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => ({}));
+      throw new Error(errorData.message || 'Failed to terminate vault');
+    }
+
+    showToast('Vault terminated', 'success');
+    await loadVaultStatus();
+  } catch (error) {
+    console.error('Error terminating vault:', error);
+    showToast('Failed to terminate vault: ' + error.message, 'error');
+  }
+}
+
+async function startEnrollment() {
+  // For now, show a message that enrollment is done via mobile app
+  showToast('Enrollment is initiated from the VettID mobile app. Please download the app to continue.', 'info');
+  // TODO: In Phase 2, implement enrollment flow with QR code display
+}
+
+function startVaultStatusPolling() {
+  stopVaultStatusPolling();
+  loadVaultStatus();
+  vaultStatusInterval = setInterval(loadVaultStatus, 30000); // Poll every 30s
+}
+
+function stopVaultStatusPolling() {
+  if (vaultStatusInterval) {
+    clearInterval(vaultStatusInterval);
+    vaultStatusInterval = null;
+  }
+}
+
+// Initialize vault status when vault tab is activated
+document.addEventListener('DOMContentLoaded', () => {
+  const vaultTab = document.querySelector('.tab[data-tab="deploy-vault"]');
+  if (vaultTab) {
+    vaultTab.addEventListener('click', () => {
+      startVaultStatusPolling();
+    });
+  }
+});
 
 // Initialize
 if (checkAuth()) {

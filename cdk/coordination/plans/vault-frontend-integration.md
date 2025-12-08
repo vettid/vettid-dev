@@ -314,18 +314,38 @@ async function checkVaultDeployed() {
 - Subscription status check working
 - QR code library (for enrollment) - can use inline SVG generation
 
+## Implementation Status
+
+### Phase 1: Vault Status Dashboard - COMPLETE
+- [x] Status card with refresh button
+- [x] Health dashboard card (hidden until vault active)
+- [x] Provisioning progress card
+- [x] All state rendering (not_enrolled, pending, enrolled, provisioning, active, stopped)
+- [x] Health metrics grid (EC2, NATS Central, NATS Local, CPU, Memory, Disk)
+- [x] Action handlers (provision, stop, start, terminate)
+- [x] Terminate confirmation modal
+- [x] Status polling every 30 seconds
+- [x] Getting Started step 4 integration
+
+### Phase 2-6: Remaining
+- [ ] Phase 2: Mobile App Enrollment Flow (QR code display)
+- [ ] Phase 3: Vault Provisioning details & Lifecycle
+- [ ] Phase 4: Backup Services Tab
+- [ ] Phase 5: Credential Backup & Recovery
+- [ ] Phase 6: BYOV (Bring Your Own Vault)
+
 ## Testing Checklist
 
-- [ ] Vault status loads correctly for all states
-- [ ] Health dashboard updates in real-time
-- [ ] Provision flow works end-to-end
-- [ ] Stop/Start/Terminate work correctly
+- [x] Vault status loads correctly for all states
+- [x] Health dashboard updates in real-time
+- [x] Provision flow works end-to-end
+- [x] Stop/Start/Terminate work correctly
 - [ ] Backup list displays correctly
 - [ ] Backup settings save and load
 - [ ] Trigger backup works
 - [ ] Restore backup works
 - [ ] Credential backup phrase displays
-- [ ] Getting Started step 4 marks complete
-- [ ] Error states handled gracefully
-- [ ] Loading states shown during API calls
+- [x] Getting Started step 4 marks complete
+- [x] Error states handled gracefully
+- [x] Loading states shown during API calls
 - [ ] Token refresh works when expired
