@@ -4,11 +4,18 @@ import {
   aws_lambda_nodejs as lambdaNode,
   aws_lambda as lambda,
   aws_iam as iam,
+  aws_apigatewayv2 as apigw,
+  aws_apigatewayv2_authorizers as authorizers,
+  aws_apigatewayv2_integrations as integrations,
 } from 'aws-cdk-lib';
 import { InfrastructureStack } from './infrastructure-stack';
+import { LedgerStack } from './ledger-stack';
 
 export interface VaultStackProps extends cdk.StackProps {
   infrastructure: InfrastructureStack;
+  httpApi: apigw.HttpApi;
+  memberAuthorizer: apigw.IHttpRouteAuthorizer;
+  ledger?: LedgerStack;  // Optional until Ledger is deployed
 }
 
 /**
@@ -42,6 +49,7 @@ export class VaultStack extends cdk.Stack {
   public readonly initializeVault!: lambdaNode.NodejsFunction;
   public readonly stopVault!: lambdaNode.NodejsFunction;
   public readonly terminateVault!: lambdaNode.NodejsFunction;
+  public readonly getVaultStatus!: lambdaNode.NodejsFunction;
   public readonly getVaultHealth!: lambdaNode.NodejsFunction;
 
   // Handler registry functions (public endpoints)
@@ -81,6 +89,21 @@ export class VaultStack extends cdk.Stack {
   public readonly downloadCredentialBackup!: lambdaNode.NodejsFunction;
   public readonly getBackupSettings!: lambdaNode.NodejsFunction;
   public readonly updateBackupSettings!: lambdaNode.NodejsFunction;
+
+  // BYOV (Bring Your Own Vault)
+  public readonly registerByovVault!: lambdaNode.NodejsFunction;
+  public readonly getByovStatus!: lambdaNode.NodejsFunction;
+  public readonly verifyByovVault!: lambdaNode.NodejsFunction;
+  public readonly updateByovVault!: lambdaNode.NodejsFunction;
+  public readonly deleteByovVault!: lambdaNode.NodejsFunction;
+
+  // Ledger (Protean Credential System) - Phase 1
+  public readonly ledgerVerifyPassword?: lambdaNode.NodejsFunction;
+  public readonly ledgerValidateLAT?: lambdaNode.NodejsFunction;
+  public readonly ledgerGetTransactionKeys?: lambdaNode.NodejsFunction;
+  public readonly ledgerReplenishTransactionKeys?: lambdaNode.NodejsFunction;
+  public readonly ledgerCreateCredential?: lambdaNode.NodejsFunction;
+  public readonly ledgerRotateKeys?: lambdaNode.NodejsFunction;
 
   constructor(scope: Construct, id: string, props: VaultStackProps) {
     super(scope, id, props);
@@ -251,6 +274,17 @@ export class VaultStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(30),
     });
 
+    this.getVaultStatus = new lambdaNode.NodejsFunction(this, 'GetVaultStatusFn', {
+      entry: 'lambda/handlers/vault/getVaultStatus.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        TABLE_ENROLLMENT_SESSIONS: tables.enrollmentSessions.tableName,
+        TABLE_CREDENTIALS: tables.credentials.tableName,
+        TABLE_TRANSACTION_KEYS: tables.transactionKeys.tableName,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
     // ===== HANDLER REGISTRY =====
 
     const handlerEnv = {
@@ -381,6 +415,11 @@ export class VaultStack extends cdk.Stack {
     tables.vaultInstances.grantReadWriteData(this.stopVault);
     tables.vaultInstances.grantReadWriteData(this.terminateVault);
     tables.vaultInstances.grantReadWriteData(this.getVaultHealth);
+
+    // Grant getVaultStatus access to enrollment sessions, credentials, and transaction keys
+    tables.enrollmentSessions.grantReadData(this.getVaultStatus);
+    tables.credentials.grantReadData(this.getVaultStatus);
+    tables.transactionKeys.grantReadData(this.getVaultStatus);
 
     // provisionVault needs to check credentials and NATS accounts
     tables.credentials.grantReadData(this.provisionVault);
@@ -699,6 +738,50 @@ export class VaultStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(30),
     });
 
+    // ===== BYOV (Bring Your Own Vault) =====
+
+    const byovEnv = {
+      TABLE_VAULT_INSTANCES: tables.vaultInstances.tableName,
+      TABLE_AUDIT: tables.audit.tableName,
+    };
+
+    this.registerByovVault = new lambdaNode.NodejsFunction(this, 'RegisterByovVaultFn', {
+      entry: 'lambda/handlers/vault/registerByovVault.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: byovEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    this.getByovStatus = new lambdaNode.NodejsFunction(this, 'GetByovStatusFn', {
+      entry: 'lambda/handlers/vault/getByovStatus.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        TABLE_VAULT_INSTANCES: tables.vaultInstances.tableName,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    this.verifyByovVault = new lambdaNode.NodejsFunction(this, 'VerifyByovVaultFn', {
+      entry: 'lambda/handlers/vault/verifyByovVault.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: byovEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    this.updateByovVault = new lambdaNode.NodejsFunction(this, 'UpdateByovVaultFn', {
+      entry: 'lambda/handlers/vault/updateByovVault.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: byovEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    this.deleteByovVault = new lambdaNode.NodejsFunction(this, 'DeleteByovVaultFn', {
+      entry: 'lambda/handlers/vault/deleteByovVault.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: byovEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
     // ===== PHASE 8 PERMISSIONS =====
 
     // Backups table permissions
@@ -732,5 +815,211 @@ export class VaultStack extends cdk.Stack {
     tables.connections.grantReadWriteData(this.restoreBackup);
     tables.profiles.grantReadWriteData(this.restoreBackup);
     tables.messages.grantReadWriteData(this.restoreBackup);
+
+    // ===== BYOV PERMISSIONS =====
+
+    // Grant vault instances table access for BYOV functions
+    tables.vaultInstances.grantReadWriteData(this.registerByovVault);
+    tables.vaultInstances.grantReadData(this.getByovStatus);
+    tables.vaultInstances.grantReadWriteData(this.verifyByovVault);
+    tables.vaultInstances.grantReadWriteData(this.updateByovVault);
+    tables.vaultInstances.grantReadWriteData(this.deleteByovVault);
+
+    // Grant audit table access for BYOV functions
+    tables.audit.grantReadWriteData(this.registerByovVault);
+    tables.audit.grantReadWriteData(this.verifyByovVault);
+    tables.audit.grantReadWriteData(this.updateByovVault);
+    tables.audit.grantReadWriteData(this.deleteByovVault);
+
+    // ===== LEDGER (PROTEAN CREDENTIAL SYSTEM) - Phase 1 =====
+    // Only created if LedgerStack is provided
+    if (props.ledger) {
+      const ledgerDbEnv = props.ledger.getDatabaseEnv();
+      const ledgerVpcConfig = props.ledger.getLambdaVpcConfig();
+
+      // Password verification
+      this.ledgerVerifyPassword = new lambdaNode.NodejsFunction(this, 'LedgerVerifyPasswordFn', {
+        entry: 'lambda/handlers/ledger/verifyPassword.ts',
+        runtime: lambda.Runtime.NODEJS_22_X,
+        environment: ledgerDbEnv,
+        ...ledgerVpcConfig,
+        timeout: cdk.Duration.seconds(30),
+        memorySize: 256, // Argon2id needs more memory
+      });
+      props.ledger.grantDatabaseAccess(this.ledgerVerifyPassword);
+
+      // LAT validation and rotation
+      this.ledgerValidateLAT = new lambdaNode.NodejsFunction(this, 'LedgerValidateLATFn', {
+        entry: 'lambda/handlers/ledger/validateLAT.ts',
+        runtime: lambda.Runtime.NODEJS_22_X,
+        environment: ledgerDbEnv,
+        ...ledgerVpcConfig,
+        timeout: cdk.Duration.seconds(30),
+      });
+      props.ledger.grantDatabaseAccess(this.ledgerValidateLAT);
+
+      // Get transaction keys
+      this.ledgerGetTransactionKeys = new lambdaNode.NodejsFunction(this, 'LedgerGetTransactionKeysFn', {
+        entry: 'lambda/handlers/ledger/getTransactionKeys.ts',
+        runtime: lambda.Runtime.NODEJS_22_X,
+        environment: ledgerDbEnv,
+        ...ledgerVpcConfig,
+        timeout: cdk.Duration.seconds(30),
+      });
+      props.ledger.grantDatabaseAccess(this.ledgerGetTransactionKeys);
+
+      // Replenish transaction keys
+      this.ledgerReplenishTransactionKeys = new lambdaNode.NodejsFunction(this, 'LedgerReplenishTransactionKeysFn', {
+        entry: 'lambda/handlers/ledger/replenishTransactionKeys.ts',
+        runtime: lambda.Runtime.NODEJS_22_X,
+        environment: ledgerDbEnv,
+        ...ledgerVpcConfig,
+        timeout: cdk.Duration.seconds(30),
+      });
+      props.ledger.grantDatabaseAccess(this.ledgerReplenishTransactionKeys);
+
+      // Create credential (CEK)
+      this.ledgerCreateCredential = new lambdaNode.NodejsFunction(this, 'LedgerCreateCredentialFn', {
+        entry: 'lambda/handlers/ledger/createCredential.ts',
+        runtime: lambda.Runtime.NODEJS_22_X,
+        environment: ledgerDbEnv,
+        ...ledgerVpcConfig,
+        timeout: cdk.Duration.seconds(30),
+      });
+      props.ledger.grantDatabaseAccess(this.ledgerCreateCredential);
+
+      // Rotate keys
+      this.ledgerRotateKeys = new lambdaNode.NodejsFunction(this, 'LedgerRotateKeysFn', {
+        entry: 'lambda/handlers/ledger/rotateKeys.ts',
+        runtime: lambda.Runtime.NODEJS_22_X,
+        environment: ledgerDbEnv,
+        ...ledgerVpcConfig,
+        timeout: cdk.Duration.seconds(30),
+      });
+      props.ledger.grantDatabaseAccess(this.ledgerRotateKeys);
+    }
+
+    // Add API routes - done here to keep route resources in VaultStack
+    this.addRoutes(props.httpApi, props.memberAuthorizer);
+  }
+
+  /**
+   * Helper to create a route in this stack's scope (avoids cyclic dependency)
+   */
+  private route(
+    id: string,
+    httpApi: apigw.HttpApi,
+    path: string,
+    method: apigw.HttpMethod,
+    handler: lambdaNode.NodejsFunction,
+    authorizer: apigw.IHttpRouteAuthorizer,
+  ): void {
+    new apigw.HttpRoute(this, id, {
+      httpApi,
+      routeKey: apigw.HttpRouteKey.with(path, method),
+      integration: new integrations.HttpLambdaIntegration(`${id}Int`, handler),
+      authorizer,
+    });
+  }
+
+  /**
+   * Add vault routes to the HTTP API
+   * Routes are created in VaultStack to stay under CloudFormation's 500 resource limit
+   * Using HttpRoute directly (not httpApi.addRoutes) to avoid cyclic dependencies
+   */
+  private addRoutes(httpApi: apigw.HttpApi, memberAuthorizer: apigw.IHttpRouteAuthorizer): void {
+    // Vault Enrollment
+    this.route('CreateEnrollmentSession', httpApi, '/vault/enroll/session', apigw.HttpMethod.POST, this.createEnrollmentSession, memberAuthorizer);
+    this.route('EnrollStart', httpApi, '/vault/enroll/start', apigw.HttpMethod.POST, this.enrollStart, memberAuthorizer);
+    this.route('EnrollSetPassword', httpApi, '/vault/enroll/set-password', apigw.HttpMethod.POST, this.enrollSetPassword, memberAuthorizer);
+    this.route('EnrollFinalize', httpApi, '/vault/enroll/finalize', apigw.HttpMethod.POST, this.enrollFinalize, memberAuthorizer);
+
+    // Vault Authentication
+    this.route('ActionRequest', httpApi, '/vault/action/request', apigw.HttpMethod.POST, this.actionRequest, memberAuthorizer);
+    this.route('AuthExecute', httpApi, '/vault/auth/execute', apigw.HttpMethod.POST, this.authExecute, memberAuthorizer);
+
+    // NATS Account Management
+    this.route('NatsCreateAccount', httpApi, '/vault/nats/account', apigw.HttpMethod.POST, this.natsCreateAccount, memberAuthorizer);
+    this.route('NatsGenerateToken', httpApi, '/vault/nats/token', apigw.HttpMethod.POST, this.natsGenerateToken, memberAuthorizer);
+    this.route('NatsRevokeToken', httpApi, '/vault/nats/token/revoke', apigw.HttpMethod.POST, this.natsRevokeToken, memberAuthorizer);
+    this.route('NatsGetStatus', httpApi, '/vault/nats/status', apigw.HttpMethod.GET, this.natsGetStatus, memberAuthorizer);
+
+    // Vault Lifecycle Management
+    this.route('ProvisionVault', httpApi, '/vault/provision', apigw.HttpMethod.POST, this.provisionVault, memberAuthorizer);
+    this.route('InitializeVault', httpApi, '/vault/initialize', apigw.HttpMethod.POST, this.initializeVault, memberAuthorizer);
+    this.route('StopVault', httpApi, '/vault/stop', apigw.HttpMethod.POST, this.stopVault, memberAuthorizer);
+    this.route('TerminateVault', httpApi, '/vault/terminate', apigw.HttpMethod.POST, this.terminateVault, memberAuthorizer);
+    this.route('GetVaultHealth', httpApi, '/vault/health', apigw.HttpMethod.GET, this.getVaultHealth, memberAuthorizer);
+    this.route('GetVaultStatus', httpApi, '/vault/status', apigw.HttpMethod.GET, this.getVaultStatus, memberAuthorizer);
+
+    // Handler Registry Routes
+    this.route('ListHandlers', httpApi, '/registry/handlers', apigw.HttpMethod.GET, this.listHandlers, memberAuthorizer);
+    this.route('GetHandler', httpApi, '/registry/handlers/{id}', apigw.HttpMethod.GET, this.getHandler, memberAuthorizer);
+    this.route('InstallHandler', httpApi, '/vault/handlers/install', apigw.HttpMethod.POST, this.installHandler, memberAuthorizer);
+    this.route('UninstallHandler', httpApi, '/vault/handlers/uninstall', apigw.HttpMethod.POST, this.uninstallHandler, memberAuthorizer);
+    this.route('ListInstalledHandlers', httpApi, '/vault/handlers', apigw.HttpMethod.GET, this.listInstalledHandlers, memberAuthorizer);
+    this.route('ExecuteHandler', httpApi, '/vault/handlers/{id}/execute', apigw.HttpMethod.POST, this.executeHandler, memberAuthorizer);
+
+    // Connections & Messaging Routes
+    this.route('CreateConnectionInvite', httpApi, '/connections/invite', apigw.HttpMethod.POST, this.createConnectionInvite, memberAuthorizer);
+    this.route('AcceptConnectionInvite', httpApi, '/connections/accept', apigw.HttpMethod.POST, this.acceptConnectionInvite, memberAuthorizer);
+    this.route('RevokeConnection', httpApi, '/connections/{connectionId}/revoke', apigw.HttpMethod.POST, this.revokeConnection, memberAuthorizer);
+    this.route('ListConnections', httpApi, '/connections', apigw.HttpMethod.GET, this.listConnections, memberAuthorizer);
+    this.route('GetConnection', httpApi, '/connections/{connectionId}', apigw.HttpMethod.GET, this.getConnection, memberAuthorizer);
+    this.route('GetConnectionProfile', httpApi, '/connections/{connectionId}/profile', apigw.HttpMethod.GET, this.getConnectionProfile, memberAuthorizer);
+
+    // Profile management
+    this.route('GetProfile', httpApi, '/profile', apigw.HttpMethod.GET, this.getProfile, memberAuthorizer);
+    this.route('UpdateProfile', httpApi, '/profile', apigw.HttpMethod.PATCH, this.updateProfile, memberAuthorizer);
+    this.route('PublishProfile', httpApi, '/profile/publish', apigw.HttpMethod.POST, this.publishProfile, memberAuthorizer);
+
+    // Messaging
+    this.route('SendMessage', httpApi, '/messages', apigw.HttpMethod.POST, this.sendMessage, memberAuthorizer);
+    this.route('GetMessageHistory', httpApi, '/connections/{connectionId}/messages', apigw.HttpMethod.GET, this.getMessageHistory, memberAuthorizer);
+    this.route('GetUnreadCount', httpApi, '/messages/unread', apigw.HttpMethod.GET, this.getUnreadCount, memberAuthorizer);
+    this.route('MarkMessageRead', httpApi, '/messages/{messageId}/read', apigw.HttpMethod.POST, this.markMessageRead, memberAuthorizer);
+
+    // Backup System Routes
+    this.route('TriggerBackup', httpApi, '/vault/backup', apigw.HttpMethod.POST, this.triggerBackup, memberAuthorizer);
+    this.route('ListBackups', httpApi, '/vault/backups', apigw.HttpMethod.GET, this.listBackups, memberAuthorizer);
+    this.route('RestoreBackup', httpApi, '/vault/restore', apigw.HttpMethod.POST, this.restoreBackup, memberAuthorizer);
+    this.route('DeleteBackup', httpApi, '/vault/backups/{backupId}', apigw.HttpMethod.DELETE, this.deleteBackup, memberAuthorizer);
+
+    // Credential backup
+    this.route('CreateCredentialBackup', httpApi, '/vault/credentials/backup', apigw.HttpMethod.POST, this.createCredentialBackup, memberAuthorizer);
+    this.route('GetCredentialBackupStatus', httpApi, '/vault/credentials/backup', apigw.HttpMethod.GET, this.getCredentialBackupStatus, memberAuthorizer);
+    this.route('DownloadCredentialBackup', httpApi, '/vault/credentials/recover', apigw.HttpMethod.POST, this.downloadCredentialBackup, memberAuthorizer);
+
+    // Backup settings
+    this.route('GetBackupSettings', httpApi, '/vault/backup/settings', apigw.HttpMethod.GET, this.getBackupSettings, memberAuthorizer);
+    this.route('UpdateBackupSettings', httpApi, '/vault/backup/settings', apigw.HttpMethod.PUT, this.updateBackupSettings, memberAuthorizer);
+
+    // BYOV (Bring Your Own Vault) Routes
+    this.route('RegisterByovVault', httpApi, '/vault/byov/register', apigw.HttpMethod.POST, this.registerByovVault, memberAuthorizer);
+    this.route('GetByovStatus', httpApi, '/vault/byov/status', apigw.HttpMethod.GET, this.getByovStatus, memberAuthorizer);
+    this.route('VerifyByovVault', httpApi, '/vault/byov/verify', apigw.HttpMethod.POST, this.verifyByovVault, memberAuthorizer);
+    this.route('UpdateByovVault', httpApi, '/vault/byov', apigw.HttpMethod.PATCH, this.updateByovVault, memberAuthorizer);
+    this.route('DeleteByovVault', httpApi, '/vault/byov', apigw.HttpMethod.DELETE, this.deleteByovVault, memberAuthorizer);
+
+    // Ledger (Protean Credential System) Routes - Phase 1
+    // Only added if Ledger Lambda functions are created
+    if (this.ledgerVerifyPassword) {
+      this.route('LedgerVerifyPassword', httpApi, '/vault/auth/verify-password', apigw.HttpMethod.POST, this.ledgerVerifyPassword, memberAuthorizer);
+    }
+    if (this.ledgerValidateLAT) {
+      this.route('LedgerValidateLAT', httpApi, '/vault/auth/validate-lat', apigw.HttpMethod.POST, this.ledgerValidateLAT, memberAuthorizer);
+    }
+    if (this.ledgerGetTransactionKeys) {
+      this.route('LedgerGetTransactionKeys', httpApi, '/vault/transaction-keys', apigw.HttpMethod.GET, this.ledgerGetTransactionKeys, memberAuthorizer);
+    }
+    if (this.ledgerReplenishTransactionKeys) {
+      this.route('LedgerReplenishTransactionKeys', httpApi, '/vault/transaction-keys/replenish', apigw.HttpMethod.POST, this.ledgerReplenishTransactionKeys, memberAuthorizer);
+    }
+    if (this.ledgerCreateCredential) {
+      this.route('LedgerCreateCredential', httpApi, '/vault/credentials/create', apigw.HttpMethod.POST, this.ledgerCreateCredential, memberAuthorizer);
+    }
+    if (this.ledgerRotateKeys) {
+      this.route('LedgerRotateKeys', httpApi, '/vault/credentials/rotate', apigw.HttpMethod.POST, this.ledgerRotateKeys, memberAuthorizer);
+    }
   }
 }

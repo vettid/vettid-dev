@@ -23,7 +23,10 @@ import {
   createDecipheriv,
   timingSafeEqual,
   KeyObject,
+  sign,
+  verify,
 } from 'crypto';
+import argon2 from 'argon2';
 
 // ============================================
 // Types
@@ -50,6 +53,16 @@ export interface TransactionKeyPair {
 export interface LAT {
   token: string;    // 64 hex chars (32 bytes)
   version: number;
+}
+
+export interface Ed25519KeyPair {
+  publicKey: Buffer;   // 32 bytes raw Ed25519 public key
+  privateKey: Buffer;  // 64 bytes raw Ed25519 private key (32-byte seed + 32-byte public)
+}
+
+export interface SignedMessage {
+  message: Buffer;
+  signature: Buffer;   // 64-byte Ed25519 signature
 }
 
 // ============================================
@@ -288,73 +301,63 @@ export function decryptWithTransactionKey(encrypted: EncryptedBlob, ltkPrivateKe
 }
 
 // ============================================
-// Password Hashing (Argon2id simulation)
+// Password Hashing (Argon2id)
 // ============================================
 
 /**
  * Argon2id parameters matching specification
- * In production, use hash-wasm or argon2 npm package
+ * These values provide strong security while remaining usable on Lambda
  */
 const ARGON2_PARAMS = {
-  type: 'argon2id',
+  type: argon2.argon2id,
   timeCost: 3,          // 3 iterations
   memoryCost: 65536,    // 64 MB
   parallelism: 4,       // 4 threads
   hashLength: 32,       // 32-byte output
-  saltLength: 16,       // 16-byte salt
 };
 
 /**
  * Hash password using Argon2id
  *
- * Note: This is a PBKDF2 fallback implementation.
- * For production, install and use the 'argon2' npm package:
- *
- * import argon2 from 'argon2';
- * const hash = await argon2.hash(password, {
- *   type: argon2.argon2id,
- *   memoryCost: 65536,
- *   timeCost: 3,
- *   parallelism: 4,
- * });
+ * Argon2id is the recommended algorithm for password hashing as it provides
+ * resistance against both GPU cracking attacks (Argon2i) and side-channel
+ * attacks (Argon2d).
  *
  * @param password Plain text password
- * @returns PHC-formatted hash string
+ * @returns PHC-formatted hash string (e.g., $argon2id$v=19$m=65536,t=3,p=4$<salt>$<hash>)
  */
 export async function hashPassword(password: string): Promise<string> {
-  const salt = randomBytes(ARGON2_PARAMS.saltLength);
+  // argon2 library automatically generates a 16-byte salt if not provided
+  const hash = await argon2.hash(password, {
+    type: ARGON2_PARAMS.type,
+    memoryCost: ARGON2_PARAMS.memoryCost,
+    timeCost: ARGON2_PARAMS.timeCost,
+    parallelism: ARGON2_PARAMS.parallelism,
+    hashLength: ARGON2_PARAMS.hashLength,
+  });
 
-  // PBKDF2 fallback - replace with actual Argon2id in production
-  const { pbkdf2Sync } = await import('crypto');
-  const hash = pbkdf2Sync(
-    password,
-    salt,
-    100000, // iterations (adjust for ~100ms target)
-    ARGON2_PARAMS.hashLength,
-    'sha256'
-  );
-
-  // Return in PHC format (compatible with Argon2 format)
-  const saltB64 = salt.toString('base64').replace(/=/g, '');
-  const hashB64 = hash.toString('base64').replace(/=/g, '');
-
-  // Using $pbkdf2-sha256$ prefix to indicate fallback
-  // In production with actual Argon2id: $argon2id$v=19$m=65536,t=3,p=4$<salt>$<hash>
-  return `$pbkdf2-sha256$i=100000$${saltB64}$${hashB64}`;
+  return hash;
 }
 
 /**
  * Verify password against stored hash
+ *
+ * Supports both Argon2id and legacy PBKDF2 hashes for migration purposes.
+ * New hashes should always use Argon2id.
  *
  * @param storedHash PHC-formatted hash string
  * @param password Plain text password to verify
  * @returns true if password matches
  */
 export async function verifyPassword(storedHash: string, password: string): Promise<boolean> {
-  const parts = storedHash.split('$').filter(Boolean);
+  // Argon2id format: $argon2id$v=19$m=65536,t=3,p=4$<salt>$<hash>
+  if (storedHash.startsWith('$argon2')) {
+    return await argon2.verify(storedHash, password);
+  }
 
+  // Legacy PBKDF2 format for migration: $pbkdf2-sha256$i=100000$<salt>$<hash>
+  const parts = storedHash.split('$').filter(Boolean);
   if (parts[0] === 'pbkdf2-sha256') {
-    // PBKDF2 fallback format
     const iterations = parseInt(parts[1].replace('i=', ''), 10);
     const salt = Buffer.from(parts[2], 'base64');
     const expectedHash = Buffer.from(parts[3], 'base64');
@@ -363,15 +366,20 @@ export async function verifyPassword(storedHash: string, password: string): Prom
     const computedHash = pbkdf2Sync(password, salt, iterations, expectedHash.length, 'sha256');
 
     return timingSafeEqual(computedHash, expectedHash);
-  } else if (parts[0] === 'argon2id') {
-    // Argon2id format - requires argon2 package
-    // In production:
-    // import argon2 from 'argon2';
-    // return await argon2.verify(storedHash, password);
-    throw new Error('Argon2id verification requires argon2 package');
   }
 
   throw new Error(`Unsupported hash format: ${parts[0]}`);
+}
+
+/**
+ * Check if a hash needs to be upgraded to Argon2id
+ * Used for transparent migration of legacy PBKDF2 hashes
+ *
+ * @param storedHash PHC-formatted hash string
+ * @returns true if hash should be rehashed with Argon2id
+ */
+export function needsRehash(storedHash: string): boolean {
+  return !storedHash.startsWith('$argon2id');
 }
 
 // ============================================
@@ -495,4 +503,210 @@ export function unpackEncryptedBlob(packed: Buffer, nonceLength: number = 12): E
   const ciphertext = packed.slice(nonceLength + 32);
 
   return { ciphertext, nonce, ephemeralPublicKey };
+}
+
+// ============================================
+// Ed25519 Signing Operations
+// ============================================
+
+/**
+ * Generate an Ed25519 key pair for signing
+ * @returns Raw public key (32 bytes) and private key (seed, 32 bytes)
+ */
+export function generateEd25519KeyPair(): Ed25519KeyPair {
+  const keyPair = generateKeyPairSync('ed25519');
+
+  // Export to DER format and extract raw bytes
+  const publicKeyDer = keyPair.publicKey.export({ type: 'spki', format: 'der' });
+  const privateKeyDer = keyPair.privateKey.export({ type: 'pkcs8', format: 'der' });
+
+  // Ed25519 public key in SPKI has 12-byte header
+  // Ed25519 private key in PKCS8 has 16-byte header, contains 32-byte seed
+  const publicKey = publicKeyDer.slice(12);
+  const privateKey = privateKeyDer.slice(16);
+
+  return { publicKey, privateKey };
+}
+
+/**
+ * Convert raw Ed25519 private key to KeyObject for crypto operations
+ */
+function rawEd25519ToPrivateKeyObject(rawPrivateKey: Buffer): KeyObject {
+  // PKCS8 header for Ed25519 private key
+  const pkcs8Header = Buffer.from([
+    0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06,
+    0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20,
+  ]);
+  const pkcs8Der = Buffer.concat([pkcs8Header, rawPrivateKey]);
+  return createPrivateKey({ key: pkcs8Der, format: 'der', type: 'pkcs8' });
+}
+
+/**
+ * Convert raw Ed25519 public key to KeyObject for crypto operations
+ */
+function rawEd25519ToPublicKeyObject(rawPublicKey: Buffer): KeyObject {
+  // SPKI header for Ed25519 public key
+  const spkiHeader = Buffer.from([
+    0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65,
+    0x70, 0x03, 0x21, 0x00,
+  ]);
+  const spkiDer = Buffer.concat([spkiHeader, rawPublicKey]);
+  return createPublicKey({ key: spkiDer, format: 'der', type: 'spki' });
+}
+
+/**
+ * Sign a message using Ed25519
+ *
+ * @param message Data to sign
+ * @param privateKey Raw 32-byte Ed25519 private key (seed)
+ * @returns 64-byte Ed25519 signature
+ */
+export function signMessage(message: Buffer, privateKey: Buffer): Buffer {
+  const privateKeyObject = rawEd25519ToPrivateKeyObject(privateKey);
+
+  const signature = sign(null, message, privateKeyObject);
+  return signature;
+}
+
+/**
+ * Verify an Ed25519 signature
+ *
+ * @param message Original message
+ * @param signature 64-byte Ed25519 signature
+ * @param publicKey Raw 32-byte Ed25519 public key
+ * @returns true if signature is valid
+ */
+export function verifySignature(message: Buffer, signature: Buffer, publicKey: Buffer): boolean {
+  try {
+    const publicKeyObject = rawEd25519ToPublicKeyObject(publicKey);
+    return verify(null, message, publicKeyObject, signature);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Sign a JSON payload with timestamp for request signing
+ *
+ * @param payload JSON object to sign
+ * @param privateKey Raw 32-byte Ed25519 private key
+ * @returns Signed payload with signature and timestamp
+ */
+export function signPayload(
+  payload: Record<string, unknown>,
+  privateKey: Buffer
+): {
+  payload: Record<string, unknown>;
+  timestamp: string;
+  signature: string;
+} {
+  const timestamp = new Date().toISOString();
+  const payloadWithTimestamp = { ...payload, timestamp };
+  const message = Buffer.from(JSON.stringify(payloadWithTimestamp), 'utf8');
+  const signature = signMessage(message, privateKey);
+
+  return {
+    payload: payloadWithTimestamp,
+    timestamp,
+    signature: signature.toString('base64'),
+  };
+}
+
+/**
+ * Verify a signed payload
+ *
+ * @param signedPayload Payload with signature and timestamp
+ * @param publicKey Raw 32-byte Ed25519 public key
+ * @param maxAgeMs Maximum age of timestamp in milliseconds (default 5 minutes)
+ * @returns true if signature is valid and timestamp is recent
+ */
+export function verifySignedPayload(
+  signedPayload: {
+    payload: Record<string, unknown>;
+    timestamp: string;
+    signature: string;
+  },
+  publicKey: Buffer,
+  maxAgeMs: number = 5 * 60 * 1000
+): boolean {
+  // Check timestamp freshness
+  const timestampDate = new Date(signedPayload.timestamp);
+  const now = Date.now();
+  const age = now - timestampDate.getTime();
+
+  if (age < 0 || age > maxAgeMs) {
+    return false; // Timestamp is in the future or too old
+  }
+
+  // Verify signature
+  const message = Buffer.from(JSON.stringify(signedPayload.payload), 'utf8');
+  const signature = Buffer.from(signedPayload.signature, 'base64');
+
+  return verifySignature(message, signature, publicKey);
+}
+
+/**
+ * Generate a cryptographically secure random challenge
+ *
+ * @param length Length in bytes (default 32)
+ * @returns Random challenge as hex string
+ */
+export function generateChallenge(length: number = 32): string {
+  return randomBytes(length).toString('hex');
+}
+
+/**
+ * Sign a challenge response for attestation verification
+ *
+ * @param challenge Challenge string (hex)
+ * @param additionalData Additional data to include in signature
+ * @param privateKey Raw 32-byte Ed25519 private key
+ * @returns Challenge response with signature
+ */
+export function signChallengeResponse(
+  challenge: string,
+  additionalData: Record<string, unknown>,
+  privateKey: Buffer
+): {
+  challenge: string;
+  data: Record<string, unknown>;
+  signature: string;
+} {
+  const message = Buffer.concat([
+    Buffer.from(challenge, 'hex'),
+    Buffer.from(JSON.stringify(additionalData), 'utf8'),
+  ]);
+
+  const signature = signMessage(message, privateKey);
+
+  return {
+    challenge,
+    data: additionalData,
+    signature: signature.toString('base64'),
+  };
+}
+
+/**
+ * Verify a challenge response
+ *
+ * @param response Challenge response with signature
+ * @param publicKey Raw 32-byte Ed25519 public key
+ * @returns true if signature is valid
+ */
+export function verifyChallengeResponse(
+  response: {
+    challenge: string;
+    data: Record<string, unknown>;
+    signature: string;
+  },
+  publicKey: Buffer
+): boolean {
+  const message = Buffer.concat([
+    Buffer.from(response.challenge, 'hex'),
+    Buffer.from(JSON.stringify(response.data), 'utf8'),
+  ]);
+
+  const signature = Buffer.from(response.signature, 'base64');
+
+  return verifySignature(message, signature, publicKey);
 }

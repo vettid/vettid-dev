@@ -5,7 +5,8 @@
  * - X25519 key generation and ECDH
  * - HKDF-SHA256 key derivation
  * - ChaCha20-Poly1305 encryption/decryption
- * - Password hashing with PBKDF2 (Argon2id fallback)
+ * - Password hashing with Argon2id
+ * - Ed25519 signing and verification
  * - LAT generation and verification
  * - Transaction key pool management
  * - Serialization helpers
@@ -26,6 +27,7 @@ import {
   decryptWithTransactionKey,
   hashPassword,
   verifyPassword,
+  needsRehash,
   generateLAT,
   hashLATToken,
   verifyLATToken,
@@ -34,10 +36,19 @@ import {
   deserializeEncryptedBlob,
   packEncryptedBlob,
   unpackEncryptedBlob,
+  generateEd25519KeyPair,
+  signMessage,
+  verifySignature,
+  signPayload,
+  verifySignedPayload,
+  generateChallenge,
+  signChallengeResponse,
+  verifyChallengeResponse,
   X25519KeyPair,
   EncryptedBlob,
   LAT,
   TransactionKeyPair,
+  Ed25519KeyPair,
 } from '../../../lambda/common/crypto';
 
 // ============================================
@@ -339,16 +350,20 @@ describe('ChaCha20-Poly1305 Encryption', () => {
 });
 
 // ============================================
-// Password Hashing Tests
+// Password Hashing Tests (Argon2id)
 // ============================================
 
-describe('Password Hashing', () => {
+describe('Password Hashing (Argon2id)', () => {
   describe('hashPassword', () => {
-    it('should return PHC-formatted hash string', async () => {
+    it('should return Argon2id PHC-formatted hash string', async () => {
       const hash = await hashPassword('test-password');
 
-      expect(hash).toMatch(/^\$pbkdf2-sha256\$/);
-      expect(hash).toContain('$i=100000$');
+      // Argon2id format: $argon2id$v=19$m=65536,t=3,p=4$<salt>$<hash>
+      expect(hash).toMatch(/^\$argon2id\$/);
+      expect(hash).toContain('$v=19$');
+      expect(hash).toContain('m=65536');
+      expect(hash).toContain('t=3');
+      expect(hash).toContain('p=4');
     });
 
     it('should produce different hash for same password (random salt)', async () => {
@@ -358,14 +373,15 @@ describe('Password Hashing', () => {
       expect(hash1).not.toBe(hash2);
     });
 
-    it('should produce hash with 4 components', async () => {
+    it('should produce hash with expected components', async () => {
       const hash = await hashPassword('test');
       const parts = hash.split('$').filter(Boolean);
 
-      // Format: $pbkdf2-sha256$i=100000$salt$hash
-      expect(parts.length).toBe(4);
-      expect(parts[0]).toBe('pbkdf2-sha256');
-      expect(parts[1]).toMatch(/^i=\d+$/);
+      // Format: argon2id$v=19$m=65536,t=3,p=4$salt$hash
+      expect(parts.length).toBe(5);
+      expect(parts[0]).toBe('argon2id');
+      expect(parts[1]).toBe('v=19');
+      expect(parts[2]).toMatch(/^m=\d+,t=\d+,p=\d+$/);
     });
   });
 
@@ -413,8 +429,33 @@ describe('Password Hashing', () => {
       await expect(verifyPassword('$unsupported$v=1$salt$hash', 'test')).rejects.toThrow('Unsupported hash format');
     });
 
-    it('should throw for Argon2id format (not implemented)', async () => {
-      await expect(verifyPassword('$argon2id$v=19$m=65536,t=3,p=4$salt$hash', 'test')).rejects.toThrow('Argon2id verification requires argon2 package');
+    it('should verify legacy PBKDF2 hash', async () => {
+      // Legacy format: $pbkdf2-sha256$i=100000$<salt>$<hash>
+      // This hash was generated for password 'test-password' with known salt
+      const { pbkdf2Sync } = await import('crypto');
+      const salt = Buffer.from('testsalt12345678');
+      const hash = pbkdf2Sync('legacy-password', salt, 100000, 32, 'sha256');
+      const legacyHash = `$pbkdf2-sha256$i=100000$${salt.toString('base64')}$${hash.toString('base64')}`;
+
+      const result = await verifyPassword(legacyHash, 'legacy-password');
+      expect(result).toBe(true);
+    });
+  });
+
+  describe('needsRehash', () => {
+    it('should return false for Argon2id hash', async () => {
+      const hash = await hashPassword('test');
+      expect(needsRehash(hash)).toBe(false);
+    });
+
+    it('should return true for PBKDF2 hash', () => {
+      const pbkdf2Hash = '$pbkdf2-sha256$i=100000$salt$hash';
+      expect(needsRehash(pbkdf2Hash)).toBe(true);
+    });
+
+    it('should return true for argon2i (not argon2id)', () => {
+      const argon2iHash = '$argon2i$v=19$m=65536$salt$hash';
+      expect(needsRehash(argon2iHash)).toBe(true);
     });
   });
 });
@@ -807,7 +848,7 @@ describe('Edge Cases', () => {
 
     it('should hash empty password', async () => {
       const hash = await hashPassword('');
-      expect(hash).toMatch(/^\$pbkdf2-sha256\$/);
+      expect(hash).toMatch(/^\$argon2id\$/);
     });
   });
 
@@ -847,6 +888,329 @@ describe('Edge Cases', () => {
 
       const result = await verifyPassword(hash, password);
       expect(result).toBe(true);
+    });
+  });
+});
+
+// ============================================
+// Ed25519 Signing Tests
+// ============================================
+
+describe('Ed25519 Signing', () => {
+  describe('generateEd25519KeyPair', () => {
+    it('should generate valid 32-byte public key', () => {
+      const keyPair = generateEd25519KeyPair();
+
+      expect(keyPair.publicKey).toBeInstanceOf(Buffer);
+      expect(keyPair.publicKey.length).toBe(32);
+    });
+
+    it('should generate valid 32-byte private key (seed)', () => {
+      const keyPair = generateEd25519KeyPair();
+
+      expect(keyPair.privateKey).toBeInstanceOf(Buffer);
+      expect(keyPair.privateKey.length).toBe(32);
+    });
+
+    it('should generate unique key pairs', () => {
+      const keyPair1 = generateEd25519KeyPair();
+      const keyPair2 = generateEd25519KeyPair();
+
+      expect(keyPair1.publicKey.equals(keyPair2.publicKey)).toBe(false);
+      expect(keyPair1.privateKey.equals(keyPair2.privateKey)).toBe(false);
+    });
+
+    it('should generate cryptographically random keys', () => {
+      const keyPairs = Array.from({ length: 100 }, () => generateEd25519KeyPair());
+      const publicKeys = new Set(keyPairs.map(kp => kp.publicKey.toString('hex')));
+
+      expect(publicKeys.size).toBe(100);
+    });
+  });
+
+  describe('signMessage / verifySignature', () => {
+    it('should sign and verify a message', () => {
+      const keyPair = generateEd25519KeyPair();
+      const message = Buffer.from('Hello, World!');
+
+      const signature = signMessage(message, keyPair.privateKey);
+      const valid = verifySignature(message, signature, keyPair.publicKey);
+
+      expect(valid).toBe(true);
+    });
+
+    it('should produce 64-byte signature', () => {
+      const keyPair = generateEd25519KeyPair();
+      const message = Buffer.from('Test message');
+
+      const signature = signMessage(message, keyPair.privateKey);
+
+      expect(signature.length).toBe(64);
+    });
+
+    it('should reject tampered message', () => {
+      const keyPair = generateEd25519KeyPair();
+      const message = Buffer.from('Original message');
+      const tamperedMessage = Buffer.from('Tampered message');
+
+      const signature = signMessage(message, keyPair.privateKey);
+      const valid = verifySignature(tamperedMessage, signature, keyPair.publicKey);
+
+      expect(valid).toBe(false);
+    });
+
+    it('should reject wrong public key', () => {
+      const keyPair1 = generateEd25519KeyPair();
+      const keyPair2 = generateEd25519KeyPair();
+      const message = Buffer.from('Test message');
+
+      const signature = signMessage(message, keyPair1.privateKey);
+      const valid = verifySignature(message, signature, keyPair2.publicKey);
+
+      expect(valid).toBe(false);
+    });
+
+    it('should reject modified signature', () => {
+      const keyPair = generateEd25519KeyPair();
+      const message = Buffer.from('Test message');
+
+      const signature = signMessage(message, keyPair.privateKey);
+      signature[0] ^= 0xff; // Flip bits in signature
+
+      const valid = verifySignature(message, signature, keyPair.publicKey);
+
+      expect(valid).toBe(false);
+    });
+
+    it('should be deterministic for same key and message', () => {
+      const keyPair = generateEd25519KeyPair();
+      const message = Buffer.from('Same message');
+
+      const signature1 = signMessage(message, keyPair.privateKey);
+      const signature2 = signMessage(message, keyPair.privateKey);
+
+      expect(signature1.equals(signature2)).toBe(true);
+    });
+
+    it('should produce different signatures for different messages', () => {
+      const keyPair = generateEd25519KeyPair();
+      const message1 = Buffer.from('Message 1');
+      const message2 = Buffer.from('Message 2');
+
+      const signature1 = signMessage(message1, keyPair.privateKey);
+      const signature2 = signMessage(message2, keyPair.privateKey);
+
+      expect(signature1.equals(signature2)).toBe(false);
+    });
+
+    it('should handle empty message', () => {
+      const keyPair = generateEd25519KeyPair();
+      const empty = Buffer.alloc(0);
+
+      const signature = signMessage(empty, keyPair.privateKey);
+      const valid = verifySignature(empty, signature, keyPair.publicKey);
+
+      expect(valid).toBe(true);
+    });
+
+    it('should handle large message', () => {
+      const keyPair = generateEd25519KeyPair();
+      const large = Buffer.alloc(1024 * 1024, 0x42);
+
+      const signature = signMessage(large, keyPair.privateKey);
+      const valid = verifySignature(large, signature, keyPair.publicKey);
+
+      expect(valid).toBe(true);
+    });
+  });
+
+  describe('signPayload / verifySignedPayload', () => {
+    it('should sign and verify JSON payload', () => {
+      const keyPair = generateEd25519KeyPair();
+      const payload = { action: 'transfer', amount: 100 };
+
+      const signed = signPayload(payload, keyPair.privateKey);
+      const valid = verifySignedPayload(signed, keyPair.publicKey);
+
+      expect(valid).toBe(true);
+    });
+
+    it('should include timestamp in payload', () => {
+      const keyPair = generateEd25519KeyPair();
+      const payload = { test: 'data' };
+
+      const signed = signPayload(payload, keyPair.privateKey);
+
+      expect(signed.timestamp).toBeDefined();
+      expect(signed.payload.timestamp).toBe(signed.timestamp);
+    });
+
+    it('should include base64 signature', () => {
+      const keyPair = generateEd25519KeyPair();
+      const payload = { test: 'data' };
+
+      const signed = signPayload(payload, keyPair.privateKey);
+
+      // Should be valid base64
+      expect(() => Buffer.from(signed.signature, 'base64')).not.toThrow();
+      // Decoded should be 64 bytes
+      expect(Buffer.from(signed.signature, 'base64').length).toBe(64);
+    });
+
+    it('should reject tampered payload', () => {
+      const keyPair = generateEd25519KeyPair();
+      const payload = { amount: 100 };
+
+      const signed = signPayload(payload, keyPair.privateKey);
+      signed.payload.amount = 1000; // Tamper with payload
+
+      const valid = verifySignedPayload(signed, keyPair.publicKey);
+
+      expect(valid).toBe(false);
+    });
+
+    it('should reject expired timestamp', () => {
+      const keyPair = generateEd25519KeyPair();
+      const payload = { test: 'data' };
+
+      const signed = signPayload(payload, keyPair.privateKey);
+      // Set timestamp to 10 minutes ago
+      const oldTime = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+      signed.timestamp = oldTime;
+      signed.payload.timestamp = oldTime;
+      // Re-sign with old timestamp
+      const message = Buffer.from(JSON.stringify(signed.payload), 'utf8');
+      signed.signature = signMessage(message, keyPair.privateKey).toString('base64');
+
+      // Default maxAge is 5 minutes
+      const valid = verifySignedPayload(signed, keyPair.publicKey);
+
+      expect(valid).toBe(false);
+    });
+
+    it('should accept timestamp within maxAge', () => {
+      const keyPair = generateEd25519KeyPair();
+      const payload = { test: 'data' };
+
+      const signed = signPayload(payload, keyPair.privateKey);
+      // Use longer maxAge (10 minutes)
+      const valid = verifySignedPayload(signed, keyPair.publicKey, 10 * 60 * 1000);
+
+      expect(valid).toBe(true);
+    });
+
+    it('should reject future timestamp', () => {
+      const keyPair = generateEd25519KeyPair();
+      const payload = { test: 'data' };
+
+      const signed = signPayload(payload, keyPair.privateKey);
+      // Set timestamp to 10 minutes in future
+      const futureTime = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+      signed.timestamp = futureTime;
+      signed.payload.timestamp = futureTime;
+      // Re-sign with future timestamp
+      const message = Buffer.from(JSON.stringify(signed.payload), 'utf8');
+      signed.signature = signMessage(message, keyPair.privateKey).toString('base64');
+
+      const valid = verifySignedPayload(signed, keyPair.publicKey);
+
+      expect(valid).toBe(false);
+    });
+  });
+
+  describe('generateChallenge', () => {
+    it('should generate 64-character hex challenge (32 bytes)', () => {
+      const challenge = generateChallenge();
+
+      expect(challenge).toMatch(/^[0-9a-f]{64}$/);
+      expect(challenge.length).toBe(64);
+    });
+
+    it('should support custom length', () => {
+      const challenge16 = generateChallenge(16);
+      const challenge64 = generateChallenge(64);
+
+      expect(challenge16.length).toBe(32); // 16 bytes = 32 hex chars
+      expect(challenge64.length).toBe(128); // 64 bytes = 128 hex chars
+    });
+
+    it('should generate unique challenges', () => {
+      const challenges = Array.from({ length: 100 }, () => generateChallenge());
+      const unique = new Set(challenges);
+
+      expect(unique.size).toBe(100);
+    });
+  });
+
+  describe('signChallengeResponse / verifyChallengeResponse', () => {
+    it('should sign and verify challenge response', () => {
+      const keyPair = generateEd25519KeyPair();
+      const challenge = generateChallenge();
+      const data = { deviceId: 'device-123', timestamp: Date.now() };
+
+      const response = signChallengeResponse(challenge, data, keyPair.privateKey);
+      const valid = verifyChallengeResponse(response, keyPair.publicKey);
+
+      expect(valid).toBe(true);
+    });
+
+    it('should include original challenge in response', () => {
+      const keyPair = generateEd25519KeyPair();
+      const challenge = generateChallenge();
+      const data = { test: 'value' };
+
+      const response = signChallengeResponse(challenge, data, keyPair.privateKey);
+
+      expect(response.challenge).toBe(challenge);
+    });
+
+    it('should include original data in response', () => {
+      const keyPair = generateEd25519KeyPair();
+      const challenge = generateChallenge();
+      const data = { foo: 'bar', num: 42 };
+
+      const response = signChallengeResponse(challenge, data, keyPair.privateKey);
+
+      expect(response.data).toEqual(data);
+    });
+
+    it('should reject wrong challenge', () => {
+      const keyPair = generateEd25519KeyPair();
+      const challenge = generateChallenge();
+      const wrongChallenge = generateChallenge();
+      const data = { test: 'value' };
+
+      const response = signChallengeResponse(challenge, data, keyPair.privateKey);
+      response.challenge = wrongChallenge; // Replace with wrong challenge
+
+      const valid = verifyChallengeResponse(response, keyPair.publicKey);
+
+      expect(valid).toBe(false);
+    });
+
+    it('should reject modified data', () => {
+      const keyPair = generateEd25519KeyPair();
+      const challenge = generateChallenge();
+      const data = { amount: 100 };
+
+      const response = signChallengeResponse(challenge, data, keyPair.privateKey);
+      response.data.amount = 1000; // Tamper with data
+
+      const valid = verifyChallengeResponse(response, keyPair.publicKey);
+
+      expect(valid).toBe(false);
+    });
+
+    it('should reject wrong public key', () => {
+      const keyPair1 = generateEd25519KeyPair();
+      const keyPair2 = generateEd25519KeyPair();
+      const challenge = generateChallenge();
+      const data = { test: 'value' };
+
+      const response = signChallengeResponse(challenge, data, keyPair1.privateKey);
+      const valid = verifyChallengeResponse(response, keyPair2.publicKey);
+
+      expect(valid).toBe(false);
     });
   });
 });
