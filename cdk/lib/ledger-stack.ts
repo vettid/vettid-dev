@@ -108,9 +108,10 @@ export class LedgerStack extends cdk.Stack {
     this.databaseName = 'ledger';
 
     // Create Aurora Serverless v2 cluster
+    // Using PostgreSQL 16 for best performance and security
     this.cluster = new rds.DatabaseCluster(this, 'LedgerCluster', {
       engine: rds.DatabaseClusterEngine.auroraPostgres({
-        version: rds.AuroraPostgresEngineVersion.VER_15_4,
+        version: rds.AuroraPostgresEngineVersion.VER_16_6,
       }),
       serverlessV2MinCapacity: 0.5,  // Minimum ACUs (can scale to 0.5 for dev)
       serverlessV2MaxCapacity: isProd ? 16 : 4,  // Maximum ACUs

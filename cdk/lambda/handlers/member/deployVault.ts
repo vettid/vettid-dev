@@ -59,10 +59,9 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     const userGuid = claims.user_guid;
     const email = claims.email;
 
-    // Check if user already has an enrolled vault
+    // Check if user already has an enrolled vault (user_guid is the partition key)
     const existingCredential = await ddb.send(new QueryCommand({
       TableName: TABLE_CREDENTIALS,
-      IndexName: 'user-guid-index',
       KeyConditionExpression: 'user_guid = :guid',
       ExpressionAttributeValues: marshall({
         ':guid': userGuid,

@@ -90,6 +90,13 @@ export class InfrastructureStack extends cdk.Stack {
       pointInTimeRecovery: true
     });
 
+    // GSI for looking up invites by user_guid (used by deployVault to find pending invites)
+    invites.addGlobalSecondaryIndex({
+      indexName: 'user-guid-index',
+      partitionKey: { name: 'user_guid', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
     // Registrations table with GSI
     const registrations = new dynamodb.Table(this, 'Registrations', {
       partitionKey: { name: 'registration_id', type: dynamodb.AttributeType.STRING },
@@ -110,6 +117,13 @@ export class InfrastructureStack extends cdk.Stack {
     registrations.addGlobalSecondaryIndex({
       indexName: 'email-index',
       partitionKey: { name: 'email', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // User GUID index for looking up registrations by user_guid (used by sendBulkEmail for subscribers)
+    registrations.addGlobalSecondaryIndex({
+      indexName: 'user-guid-index',
+      partitionKey: { name: 'user_guid', type: dynamodb.AttributeType.STRING },
       projectionType: dynamodb.ProjectionType.ALL,
     });
 

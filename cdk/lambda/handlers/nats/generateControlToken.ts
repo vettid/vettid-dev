@@ -19,7 +19,7 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { DynamoDBClient, GetItemCommand, PutItemCommand } from '@aws-sdk/client-dynamodb';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
-import { randomUUID, createHash } from 'crypto';
+import { randomUUID } from 'crypto';
 import {
   ok,
   badRequest,
@@ -34,6 +34,7 @@ import {
   parseJsonBody,
   ValidationError,
 } from '../../common/util';
+import { generateUserCredentials, formatCredsFile } from '../../common/nats-jwt';
 
 const ddb = new DynamoDBClient({});
 
@@ -53,6 +54,7 @@ interface ControlTokenResponse {
   token_id: string;
   nats_jwt: string;
   nats_seed: string;
+  nats_creds: string;  // Full creds file content
   nats_endpoint: string;
   expires_at: string;
   target_user_guid: string;
@@ -114,19 +116,30 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
 
     // Control token permissions - can only write to control topic
     const ownerSpace = account.owner_space_id;
+    const messageSpace = account.message_space_id || `MessageSpace.${body.user_guid}`;
     const controlTopic = `${ownerSpace}.control`;
+    const accountSeed = account.account_seed;
+
+    if (!accountSeed) {
+      return internalError('NATS account missing signing key. Please recreate account.', origin);
+    }
 
     const publishPerms = [controlTopic];
     const subscribePerms: string[] = []; // Control tokens don't need to subscribe
 
-    // Generate NATS credentials
-    const { jwt, seed } = generateControlCredentials(
-      body.user_guid,
-      tokenId,
-      publishPerms,
-      subscribePerms,
-      expiresAt
+    // Generate real NATS user credentials
+    const expiresAtDate = new Date(expiresAt);
+    const credentials = await generateUserCredentials(
+      `control-${body.user_guid.substring(0, 8)}`,
+      accountSeed,
+      'control',
+      ownerSpace,
+      messageSpace,
+      expiresAtDate
     );
+
+    const jwt = credentials.jwt;
+    const seed = credentials.seed;
 
     // Store token record
     const tokenRecord = {
@@ -159,6 +172,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       token_id: tokenId,
       nats_jwt: jwt,
       nats_seed: seed,
+      nats_creds: formatCredsFile(jwt, seed),
       nats_endpoint: `nats://${NATS_DOMAIN}:4222`,
       expires_at: expiresAt,
       target_user_guid: body.user_guid,
@@ -175,45 +189,3 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     return internalError('Failed to generate NATS control token', origin);
   }
 };
-
-/**
- * Generate NATS control credentials
- */
-function generateControlCredentials(
-  targetUserGuid: string,
-  tokenId: string,
-  publishPerms: string[],
-  subscribePerms: string[],
-  expiresAt: string
-): { jwt: string; seed: string } {
-  // Placeholder JWT structure (not a real NATS JWT)
-  const jwtPayload = {
-    jti: tokenId,
-    iat: Math.floor(Date.now() / 1000),
-    exp: Math.floor(new Date(expiresAt).getTime() / 1000),
-    iss: 'vettid-operator',
-    sub: `control:${targetUserGuid}`,
-    nats: {
-      pub: {
-        allow: publishPerms,
-      },
-      sub: {
-        allow: subscribePerms,
-      },
-      subs: 0,
-      data: 1024 * 1024, // 1MB max payload for control messages
-      payload: 1024 * 1024,
-    },
-  };
-
-  const header = Buffer.from(JSON.stringify({ typ: 'JWT', alg: 'ed25519-nkey' })).toString('base64url');
-  const payload = Buffer.from(JSON.stringify(jwtPayload)).toString('base64url');
-  const signature = createHash('sha256')
-    .update(`${header}.${payload}.${tokenId}`)
-    .digest('base64url');
-
-  const jwt = `${header}.${payload}.${signature}`;
-  const seed = `SUAC${createHash('sha256').update(tokenId).digest('hex').substring(0, 48).toUpperCase()}`;
-
-  return { jwt, seed };
-}

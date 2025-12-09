@@ -181,6 +181,15 @@ export class NatsStack extends cdk.Stack {
     this.operatorSecret.grantRead(natsRole);
     this.internalCaSecret.grantRead(natsRole);
 
+    // Grant permissions to discover cluster peers
+    natsRole.addToPolicy(new iam.PolicyStatement({
+      actions: [
+        'ec2:DescribeInstances',
+        'autoscaling:DescribeAutoScalingInstances',
+      ],
+      resources: ['*'],
+    }));
+
     // User data script to install and configure NATS
     const userData = ec2.UserData.forLinux();
     userData.addCommands(
@@ -245,8 +254,26 @@ export class NatsStack extends cdk.Stack {
       'chmod 644 /etc/nats/certs/*.crt 2>/dev/null || true',
       'chown -R nats:nats /etc/nats',
       '',
-      '# Get cluster peer IPs from tags (will be empty on first boot)',
-      '# This requires the ASG instances to be tagged with cluster membership',
+      '# Discover cluster peers via ASG',
+      'REGION=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/region)',
+      '',
+      '# Find ASG name',
+      'ASG_NAME=$(aws autoscaling describe-auto-scaling-instances --instance-ids $INSTANCE_ID --region $REGION --query "AutoScalingInstances[0].AutoScalingGroupName" --output text)',
+      '',
+      '# Get all peer IPs (excluding self)',
+      'PEER_IPS=$(aws ec2 describe-instances \\',
+      '  --filters "Name=tag:aws:autoscaling:groupName,Values=$ASG_NAME" "Name=instance-state-name,Values=running" \\',
+      '  --region $REGION \\',
+      '  --query "Reservations[*].Instances[?PrivateIpAddress!=\\`$PRIVATE_IP\\`].PrivateIpAddress" \\',
+      '  --output text)',
+      '',
+      '# Build routes array',
+      'ROUTES=""',
+      'for IP in $PEER_IPS; do',
+      '  if [ -n "$IP" ]; then',
+      '    ROUTES="${ROUTES}    nats-route://${IP}:6222\\n"',
+      '  fi',
+      'done',
       '',
       '# Create NATS configuration',
       'cat > /etc/nats/nats.conf << EOF',
@@ -271,12 +298,11 @@ export class NatsStack extends cdk.Stack {
       'cluster {',
       '  name: vettid-nats',
       '  port: 6222',
+      '  listen: 0.0.0.0:6222',
       '  ${CLUSTER_TLS_CONFIG}',
-      '  ',
+      '',
       '  routes: [',
-      '    # Routes will be discovered via gossip protocol',
-      '    # Initial seed routes populated by ASG lifecycle hook',
-      '  ]',
+      '$(echo -e "$ROUTES")  ]',
       '}',
       '',
       '# Logging',

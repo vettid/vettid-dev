@@ -99,10 +99,17 @@ When the Orchestrator completes a phase:
 
 - **API Endpoints**: See `specs/vault-services-api.yaml`
 - **NATS Topics**: See `specs/nats-topics.md`
+- **NATS API (Mobile)**: See `specs/nats-api.md` - REST API for NATS credential management
 - **Credential Format**: See `specs/credential-format.md`
 
 ## Current Phase
 
-**Phase 0: Foundation & Coordination Setup**
+**Phase 5: Vault Instance EC2 / Phase 11: NATS Integration**
+
+The backend has completed NATS account management. Mobile developers should refer to:
+- `specs/nats-api.md` - REST API for obtaining NATS credentials
+- `specs/nats-topics.md` - Topic structure and message formats
+- `tasks/android/current-task.md` - Android NATS integration guide
+- `tasks/ios/current-task.md` - iOS NATS integration guide
 
 See `cdk/docs/DEVELOPMENT_PLAN.md` for full phase details.

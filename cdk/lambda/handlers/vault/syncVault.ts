@@ -57,10 +57,9 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     }
     const { claims } = claimsResult;
 
-    // Look up credential by user_guid
+    // Look up credential by user_guid (user_guid is the partition key)
     const credentialResult = await ddb.send(new QueryCommand({
       TableName: TABLE_CREDENTIALS,
-      IndexName: 'user-guid-index',
       KeyConditionExpression: 'user_guid = :guid',
       ExpressionAttributeValues: marshall({
         ':guid': claims.user_guid,

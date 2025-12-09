@@ -159,10 +159,22 @@ const AWS_REGION = window.VettIDConfig.region;
 const poolData = { UserPoolId: USER_POOL_ID, ClientId: CLIENT_ID };
 const userPool = new AmazonCognitoIdentity.CognitoUserPool(poolData);
 
-// Check if SDK has any cached user and clear it to prevent auto-auth
-const currentUser = userPool.getCurrentUser();
-if (currentUser) {
-  currentUser.signOut();
+// Check if user already has valid tokens - redirect to account page
+const existingTokens = localStorage.getItem('tokens');
+if (existingTokens) {
+  try {
+    const tokens = JSON.parse(existingTokens);
+    if (tokens.id_token) {
+      const { payload } = parseJwt(tokens.id_token);
+      // Check if token is not expired (with 5 min buffer)
+      if (payload.exp && payload.exp * 1000 > Date.now() + 300000) {
+        window.location.href = '/account';
+      }
+    }
+  } catch (e) {
+    // Invalid tokens, clear them
+    localStorage.removeItem('tokens');
+  }
 }
 
 // ---- Token storage ----

@@ -9,7 +9,9 @@ import {
   forbidden,
   internalError,
   requireUserClaims,
+  addMinutesIso,
 } from '../../common/util';
+import { generateUserCredentials, formatCredsFile } from '../../common/nats-jwt';
 
 const ddb = new DynamoDBClient({});
 const ec2 = new EC2Client({});
@@ -97,6 +99,29 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
 
     const natsInfo = unmarshall(natsAccount.Item);
 
+    // Generate NATS credentials for the vault instance
+    // These are passed via user data and stored locally by vault-manager
+    const ownerSpace = natsInfo.owner_space_id;
+    const messageSpace = natsInfo.message_space_id;
+    const accountSeed = natsInfo.account_seed;
+
+    if (!accountSeed) {
+      return internalError('NATS account missing signing key.');
+    }
+
+    // Generate vault credentials valid for 30 days (will be refreshed via NATS)
+    const expiresAt = new Date(addMinutesIso(60 * 24 * 30)); // 30 days
+    const vaultCreds = await generateUserCredentials(
+      userGuid,
+      accountSeed,
+      'vault',
+      ownerSpace,
+      messageSpace,
+      expiresAt
+    );
+
+    const natsCreds = formatCredsFile(vaultCreds.jwt, vaultCreds.seed);
+
     // Select a random subnet from available subnets
     const subnetIds = VAULT_SUBNET_IDS.split(',').filter(s => s.trim());
     let selectedSubnet = subnetIds.length > 0
@@ -116,18 +141,36 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     }
 
     // Prepare user data script for vault initialization
+    // NATS credentials are embedded and stored locally by vault-manager on first boot
     const userData = Buffer.from(`#!/bin/bash
 # Vault instance initialization script
 export VAULT_USER_GUID="${userGuid}"
-export OWNER_SPACE_ID="${natsInfo.owner_space_id}"
-export MESSAGE_SPACE_ID="${natsInfo.message_space_id}"
+export OWNER_SPACE_ID="${ownerSpace}"
+export MESSAGE_SPACE_ID="${messageSpace}"
 export NATS_ENDPOINT="nats.vettid.dev:4222"
 
-# Signal readiness to Vault Services API
-curl -X POST https://api.vettid.dev/vault/internal/ready \
-  -H "X-Vault-User-Guid: ${userGuid}" \
-  -H "Content-Type: application/json" \
-  -d '{"status": "ready"}'
+# Write NATS credentials to disk for vault-manager to consume
+# These will be moved to encrypted storage and this file deleted on first boot
+mkdir -p /var/lib/vault-manager
+cat > /var/lib/vault-manager/nats.creds << 'NATSCREDS'
+${natsCreds}
+NATSCREDS
+chmod 600 /var/lib/vault-manager/nats.creds
+
+# Write vault config
+cat > /var/lib/vault-manager/config.json << 'CONFIG'
+{
+  "user_guid": "${userGuid}",
+  "owner_space_id": "${ownerSpace}",
+  "message_space_id": "${messageSpace}",
+  "nats_endpoint": "nats.vettid.dev:4222"
+}
+CONFIG
+chmod 600 /var/lib/vault-manager/config.json
+
+# Start vault-manager service (reads creds and stores in encrypted local db)
+systemctl enable vault-manager
+systemctl start vault-manager
 `).toString('base64');
 
     // Launch EC2 instance

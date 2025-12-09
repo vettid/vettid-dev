@@ -5,6 +5,7 @@ import { InfrastructureStack } from '../lib/infrastructure-stack';
 import { VettIdStack } from '../lib/vettid-stack';
 import { AdminStack } from '../lib/admin-stack';
 import { VaultStack } from '../lib/vault-stack';
+import { VaultInfrastructureStack } from '../lib/vault-infrastructure-stack';
 import { NatsStack } from '../lib/nats-stack';
 import { LedgerStack } from '../lib/ledger-stack';
 
@@ -41,18 +42,24 @@ const ledger = new LedgerStack(app, 'VettID-Ledger', {
   environment: (process.env.ENVIRONMENT as 'development' | 'staging' | 'production') || 'development',
 });
 
-// 5. Deploy vault stack (vault Lambda functions + API routes)
+// 5. Deploy Vault Infrastructure stack (VPC, Security Groups, IAM for vault EC2 instances)
+// This provides the networking and IAM resources for vault provisioning
+const vaultInfra = new VaultInfrastructureStack(app, 'VettID-VaultInfra', { env });
+
+// 6. Deploy vault stack (vault Lambda functions + API routes)
 // Routes are added in VaultStack to stay under CloudFormation's 500 resource limit
 // Pass ledger stack to enable Protean Credential System Lambda handlers
+// Pass vaultInfra to enable vault EC2 provisioning with proper VPC/IAM config
 const vault = new VaultStack(app, 'VettID-Vault', {
   env,
   infrastructure,
   httpApi: core.httpApi,
   memberAuthorizer: core.memberAuthorizer,
   ledger,  // Enable Ledger (Protean Credential System) handlers
+  vaultInfra,  // Enable vault EC2 provisioning
 });
 
-// 6. Deploy NATS infrastructure stack (VPC, EC2 cluster, NLB)
+// 7. Deploy NATS infrastructure stack (VPC, EC2 cluster, NLB)
 // Note: This stack requires the Route 53 hosted zone ID for nats.vettid.dev
 // To deploy, provide the hosted zone ID via context or environment variable
 const nats = new NatsStack(app, 'VettID-NATS', {

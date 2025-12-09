@@ -6,11 +6,15 @@ import {
   aws_iam as iam,
   aws_events as events,
   aws_events_targets as targets_events,
+  aws_apigatewayv2 as apigw,
+  aws_apigatewayv2_integrations as integrations,
 } from 'aws-cdk-lib';
 import { InfrastructureStack } from './infrastructure-stack';
 
 export interface AdminStackProps extends cdk.StackProps {
   infrastructure: InfrastructureStack;
+  httpApi: apigw.HttpApi;
+  adminAuthorizer: apigw.IHttpRouteAuthorizer;
 }
 
 /**
@@ -390,6 +394,11 @@ export class AdminStack extends cdk.Stack {
 
     // ===== NATS CONTROL =====
 
+    // NATS operator secret for signing JWTs
+    const natsOperatorSecret = cdk.aws_secretsmanager.Secret.fromSecretNameV2(
+      this, 'NatsOperatorSecret', 'vettid/nats/operator-key'
+    );
+
     const generateNatsControlToken = new lambdaNode.NodejsFunction(this, 'GenerateNatsControlTokenFn', {
       entry: 'lambda/handlers/nats/generateControlToken.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
@@ -398,9 +407,13 @@ export class AdminStack extends cdk.Stack {
         TABLE_NATS_ACCOUNTS: tables.natsAccounts.tableName,
         TABLE_NATS_TOKENS: tables.natsTokens.tableName,
         NATS_DOMAIN: 'nats.vettid.dev',
+        NATS_OPERATOR_SECRET_ARN: natsOperatorSecret.secretArn,
       },
       timeout: cdk.Duration.seconds(30),
     });
+
+    // Grant access to NATS operator secret
+    natsOperatorSecret.grantRead(generateNatsControlToken);
 
     // ===== MEMBERSHIP MANAGEMENT =====
 
@@ -1046,5 +1059,124 @@ export class AdminStack extends cdk.Stack {
       description: 'Delete soft-deleted accounts older than 30 days',
     });
     dailyCleanupRule.addTarget(new targets_events.LambdaFunction(cleanupExpiredAccounts));
+
+    // Add API routes - done here to keep route resources in AdminStack
+    this.addRoutes(props.httpApi, props.adminAuthorizer);
+  }
+
+  /**
+   * Helper to create a route in this stack's scope (avoids cyclic dependency)
+   */
+  private route(
+    id: string,
+    httpApi: apigw.HttpApi,
+    path: string,
+    method: apigw.HttpMethod,
+    handler: lambdaNode.NodejsFunction,
+    authorizer: apigw.IHttpRouteAuthorizer,
+  ): void {
+    new apigw.HttpRoute(this, id, {
+      httpApi,
+      routeKey: apigw.HttpRouteKey.with(path, method),
+      integration: new integrations.HttpLambdaIntegration(`${id}Int`, handler),
+      authorizer,
+    });
+  }
+
+  /**
+   * Add admin routes to the HTTP API
+   * Routes are created in AdminStack to stay under CloudFormation's 500 resource limit
+   * Using HttpRoute directly (not httpApi.addRoutes) to avoid cyclic dependencies
+   */
+  private addRoutes(httpApi: apigw.HttpApi, adminAuthorizer: apigw.IHttpRouteAuthorizer): void {
+    // Registration Management
+    this.route('ListRegistrations', httpApi, '/admin/registrations', apigw.HttpMethod.GET, this.listRegistrations, adminAuthorizer);
+    this.route('ApproveRegistration', httpApi, '/admin/registrations/{registration_id}/approve', apigw.HttpMethod.POST, this.approveRegistration, adminAuthorizer);
+    this.route('RejectRegistration', httpApi, '/admin/registrations/{registration_id}/reject', apigw.HttpMethod.POST, this.rejectRegistration, adminAuthorizer);
+
+    // Invite Management
+    this.route('CreateInvite', httpApi, '/admin/invites', apigw.HttpMethod.POST, this.createInvite, adminAuthorizer);
+    this.route('ListInvites', httpApi, '/admin/invites', apigw.HttpMethod.GET, this.listInvites, adminAuthorizer);
+    this.route('ExpireInvite', httpApi, '/admin/invites/{code}/expire', apigw.HttpMethod.POST, this.expireInvite, adminAuthorizer);
+    this.route('DeleteInvite', httpApi, '/admin/invites/{code}', apigw.HttpMethod.DELETE, this.deleteInvite, adminAuthorizer);
+
+    // User Management
+    this.route('DisableUser', httpApi, '/admin/users/{user_id}/disable', apigw.HttpMethod.POST, this.disableUser, adminAuthorizer);
+    this.route('EnableUser', httpApi, '/admin/users/{user_id}/enable', apigw.HttpMethod.POST, this.enableUser, adminAuthorizer);
+    this.route('DeleteUser', httpApi, '/admin/users/{user_id}', apigw.HttpMethod.DELETE, this.deleteUser, adminAuthorizer);
+    this.route('PermanentlyDeleteUser', httpApi, '/admin/users/{user_id}/permanently-delete', apigw.HttpMethod.DELETE, this.permanentlyDeleteUser, adminAuthorizer);
+
+    // Admin Management
+    this.route('ListAdmins', httpApi, '/admin/admins', apigw.HttpMethod.GET, this.listAdmins, adminAuthorizer);
+    this.route('AddAdmin', httpApi, '/admin/admins', apigw.HttpMethod.POST, this.addAdmin, adminAuthorizer);
+    this.route('RemoveAdmin', httpApi, '/admin/admins/{username}', apigw.HttpMethod.DELETE, this.removeAdmin, adminAuthorizer);
+    this.route('DisableAdmin', httpApi, '/admin/admins/{username}/disable', apigw.HttpMethod.POST, this.disableAdmin, adminAuthorizer);
+    this.route('EnableAdmin', httpApi, '/admin/admins/{username}/enable', apigw.HttpMethod.POST, this.enableAdmin, adminAuthorizer);
+    this.route('UpdateAdminType', httpApi, '/admin/admins/{username}/type', apigw.HttpMethod.PUT, this.updateAdminType, adminAuthorizer);
+    this.route('ResetAdminPassword', httpApi, '/admin/admins/{username}/reset-password', apigw.HttpMethod.POST, this.resetAdminPassword, adminAuthorizer);
+    this.route('ChangePassword', httpApi, '/admin/change-password', apigw.HttpMethod.POST, this.changePassword, adminAuthorizer);
+    this.route('SetupMfaGet', httpApi, '/admin/mfa', apigw.HttpMethod.GET, this.setupMfa, adminAuthorizer);
+    this.route('SetupMfaPost', httpApi, '/admin/mfa', apigw.HttpMethod.POST, this.setupMfa, adminAuthorizer);
+
+    // Pending Admin Invitation routes (2-step flow)
+    this.route('ListPendingAdmins', httpApi, '/admin/pending-admins', apigw.HttpMethod.GET, this.listPendingAdmins, adminAuthorizer);
+    this.route('InviteAdmin', httpApi, '/admin/pending-admins', apigw.HttpMethod.POST, this.inviteAdmin, adminAuthorizer);
+    this.route('ActivateAdmin', httpApi, '/admin/pending-admins/{email}/activate', apigw.HttpMethod.POST, this.activateAdmin, adminAuthorizer);
+    this.route('CancelPendingAdmin', httpApi, '/admin/pending-admins/{email}', apigw.HttpMethod.DELETE, this.cancelPendingAdmin, adminAuthorizer);
+    this.route('ResendAdminVerification', httpApi, '/admin/pending-admins/{email}/resend', apigw.HttpMethod.POST, this.resendAdminVerification, adminAuthorizer);
+
+    // Membership Management routes
+    this.route('ListMembershipRequests', httpApi, '/admin/membership-requests', apigw.HttpMethod.GET, this.listMembershipRequests, adminAuthorizer);
+    this.route('ApproveMembership', httpApi, '/admin/membership-requests/{id}/approve', apigw.HttpMethod.POST, this.approveMembership, adminAuthorizer);
+    this.route('DenyMembership', httpApi, '/admin/membership-requests/{id}/deny', apigw.HttpMethod.POST, this.denyMembership, adminAuthorizer);
+    this.route('CreateMembershipTerms', httpApi, '/admin/membership-terms', apigw.HttpMethod.POST, this.createMembershipTerms, adminAuthorizer);
+    this.route('GetCurrentMembershipTerms', httpApi, '/admin/membership-terms/current', apigw.HttpMethod.GET, this.getCurrentMembershipTerms, adminAuthorizer);
+    this.route('ListMembershipTerms', httpApi, '/admin/membership-terms', apigw.HttpMethod.GET, this.listMembershipTerms, adminAuthorizer);
+    this.route('GetTermsDownloadUrl', httpApi, '/admin/membership-terms/{version_id}/download', apigw.HttpMethod.GET, this.getTermsDownloadUrl, adminAuthorizer);
+
+    // Proposal Management routes
+    this.route('CreateProposal', httpApi, '/admin/proposals', apigw.HttpMethod.POST, this.createProposal, adminAuthorizer);
+    this.route('ListProposals', httpApi, '/admin/proposals', apigw.HttpMethod.GET, this.listProposals, adminAuthorizer);
+    this.route('SuspendProposal', httpApi, '/admin/proposals/{id}/suspend', apigw.HttpMethod.POST, this.suspendProposal, adminAuthorizer);
+    this.route('GetProposalVoteCounts', httpApi, '/admin/proposals/{proposal_id}/vote-counts', apigw.HttpMethod.GET, this.getProposalVoteCounts, adminAuthorizer);
+
+    // Subscription Management routes
+    this.route('ListSubscriptions', httpApi, '/admin/subscriptions', apigw.HttpMethod.GET, this.listSubscriptions, adminAuthorizer);
+    this.route('ExtendSubscription', httpApi, '/admin/subscriptions/{id}/extend', apigw.HttpMethod.POST, this.extendSubscription, adminAuthorizer);
+    this.route('ReactivateSubscription', httpApi, '/admin/subscriptions/{id}/reactivate', apigw.HttpMethod.POST, this.reactivateSubscription, adminAuthorizer);
+    this.route('CreateSubscriptionType', httpApi, '/admin/subscription-types', apigw.HttpMethod.POST, this.createSubscriptionType, adminAuthorizer);
+    this.route('ListSubscriptionTypes', httpApi, '/admin/subscription-types', apigw.HttpMethod.GET, this.listSubscriptionTypes, adminAuthorizer);
+    this.route('EnableSubscriptionType', httpApi, '/admin/subscription-types/{id}/enable', apigw.HttpMethod.POST, this.enableSubscriptionType, adminAuthorizer);
+    this.route('DisableSubscriptionType', httpApi, '/admin/subscription-types/{id}/disable', apigw.HttpMethod.POST, this.disableSubscriptionType, adminAuthorizer);
+
+    // Waitlist Management routes
+    this.route('ListWaitlist', httpApi, '/admin/waitlist', apigw.HttpMethod.GET, this.listWaitlist, adminAuthorizer);
+    this.route('SendWaitlistInvites', httpApi, '/admin/waitlist/send-invites', apigw.HttpMethod.POST, this.sendWaitlistInvites, adminAuthorizer);
+    this.route('DeleteWaitlistEntries', httpApi, '/admin/waitlist', apigw.HttpMethod.DELETE, this.deleteWaitlistEntries, adminAuthorizer);
+
+    // System Monitoring routes
+    this.route('GetSystemHealth', httpApi, '/admin/system-health', apigw.HttpMethod.GET, this.getSystemHealth, adminAuthorizer);
+    this.route('GetSystemLogs', httpApi, '/admin/system-logs', apigw.HttpMethod.GET, this.getSystemLogs, adminAuthorizer);
+
+    // Email Management routes
+    this.route('SendBulkEmail', httpApi, '/admin/send-bulk-email', apigw.HttpMethod.POST, this.sendBulkEmail, adminAuthorizer);
+    this.route('ListSentEmails', httpApi, '/admin/sent-emails', apigw.HttpMethod.GET, this.listSentEmails, adminAuthorizer);
+
+    // Notification Management routes
+    this.route('GetNotifications', httpApi, '/admin/notifications/{type}', apigw.HttpMethod.GET, this.getNotifications, adminAuthorizer);
+    this.route('AddNotification', httpApi, '/admin/notifications/{type}', apigw.HttpMethod.POST, this.addNotification, adminAuthorizer);
+    this.route('RemoveNotification', httpApi, '/admin/notifications/{type}/{email}', apigw.HttpMethod.DELETE, this.removeNotification, adminAuthorizer);
+
+    // Audit Log route
+    this.route('GetAuditLog', httpApi, '/admin/audit', apigw.HttpMethod.GET, this.getAuditLog, adminAuthorizer);
+
+    // NATS Control - Admin-only endpoint for issuing control tokens
+    this.route('GenerateNatsControlToken', httpApi, '/admin/nats/control-token', apigw.HttpMethod.POST, this.generateNatsControlToken, adminAuthorizer);
+
+    // Handler Registry Admin - Admin-only endpoints for managing handler registry
+    this.route('ListRegistryHandlers', httpApi, '/admin/registry/handlers', apigw.HttpMethod.GET, this.listRegistryHandlers, adminAuthorizer);
+    this.route('UploadHandler', httpApi, '/admin/registry/handlers', apigw.HttpMethod.POST, this.uploadHandler, adminAuthorizer);
+    this.route('SignHandler', httpApi, '/admin/registry/handlers/sign', apigw.HttpMethod.POST, this.signHandler, adminAuthorizer);
+    this.route('RevokeHandler', httpApi, '/admin/registry/handlers/revoke', apigw.HttpMethod.POST, this.revokeHandler, adminAuthorizer);
   }
 }

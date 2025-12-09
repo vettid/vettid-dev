@@ -54,11 +54,10 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     // Use user_guid from claims (which maps to Cognito sub)
     const userGuid = claims.user_guid;
 
-    // Look up credential by user_guid
+    // Look up credential by user_guid (user_guid is the partition key)
     // First, check if there's a completed enrollment
     const credentialResult = await ddb.send(new QueryCommand({
       TableName: TABLE_CREDENTIALS,
-      IndexName: 'user-guid-index',
       KeyConditionExpression: 'user_guid = :guid',
       ExpressionAttributeValues: marshall({
         ':guid': userGuid,
@@ -99,14 +98,15 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       return ok(response);
     }
 
-    // Check for pending enrollment session
+    // Check for pending enrollment session (using user-index GSI)
     const sessionResult = await ddb.send(new QueryCommand({
       TableName: TABLE_ENROLLMENT_SESSIONS,
-      IndexName: 'user-guid-index',
+      IndexName: 'user-index',
       KeyConditionExpression: 'user_guid = :guid',
       ExpressionAttributeValues: marshall({
         ':guid': userGuid,
       }),
+      ScanIndexForward: false, // Get most recent first
       Limit: 1,
     }));
 

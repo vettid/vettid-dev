@@ -20,7 +20,7 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { DynamoDBClient, GetItemCommand, PutItemCommand } from '@aws-sdk/client-dynamodb';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
-import { randomUUID, createHash } from 'crypto';
+import { randomUUID } from 'crypto';
 import {
   ok,
   badRequest,
@@ -35,6 +35,7 @@ import {
   parseJsonBody,
   ValidationError,
 } from '../../common/util';
+import { generateUserCredentials, formatCredsFile } from '../../common/nats-jwt';
 
 const ddb = new DynamoDBClient({});
 
@@ -66,6 +67,7 @@ interface GenerateTokenResponse {
   token_id: string;
   nats_jwt: string;
   nats_seed: string;
+  nats_creds: string;  // Full creds file content for easy use
   nats_endpoint: string;
   expires_at: string;
   permissions: {
@@ -131,10 +133,16 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     const expiresAt = addMinutesIso(validityMinutes);
     const tokenId = `nats_${randomUUID()}`;
 
-    // Define permissions based on client type
+    // Get account details for credential generation
     const ownerSpace = account.owner_space_id;
     const messageSpace = account.message_space_id;
+    const accountSeed = account.account_seed;
 
+    if (!accountSeed) {
+      return internalError('NATS account missing signing key. Please recreate account.', origin);
+    }
+
+    // Define permissions based on client type
     let publishPerms: string[];
     let subscribePerms: string[];
 
@@ -162,15 +170,19 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       ];
     }
 
-    // Generate NATS credentials
-    // In production, this would use the nkeys library and proper JWT signing
-    const { jwt, seed } = generateNatsCredentials(
+    // Generate real NATS user credentials using nkeys
+    const expiresAtDate = new Date(expiresAt);
+    const credentials = await generateUserCredentials(
       userGuid,
-      tokenId,
-      publishPerms,
-      subscribePerms,
-      expiresAt
+      accountSeed,
+      body.client_type,
+      ownerSpace,
+      messageSpace,
+      expiresAtDate
     );
+
+    const jwt = credentials.jwt;
+    const seed = credentials.seed;
 
     // Store token record
     const tokenRecord: NatsTokenRecord = {
@@ -202,6 +214,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       token_id: tokenId,
       nats_jwt: jwt,
       nats_seed: seed,
+      nats_creds: formatCredsFile(jwt, seed),
       nats_endpoint: `nats://${NATS_DOMAIN}:4222`,
       expires_at: expiresAt,
       permissions: {
@@ -216,61 +229,3 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     return internalError('Failed to generate NATS token', origin);
   }
 };
-
-/**
- * Generate NATS credentials
- *
- * In production, this would use the nkeys library to:
- * 1. Generate a user key pair (nkeys.createUser())
- * 2. Sign a JWT with the account signing key
- *
- * For now, we generate placeholder credentials that demonstrate the structure
- */
-function generateNatsCredentials(
-  userGuid: string,
-  tokenId: string,
-  publishPerms: string[],
-  subscribePerms: string[],
-  expiresAt: string
-): { jwt: string; seed: string } {
-  // In production, use nkeys library:
-  // const userKeys = nkeys.createUser();
-  // const userPublicKey = userKeys.getPublicKey();
-  // const userSeed = new TextDecoder().decode(userKeys.getSeed());
-
-  // Placeholder JWT structure (not a real NATS JWT)
-  const jwtPayload = {
-    jti: tokenId,
-    iat: Math.floor(Date.now() / 1000),
-    exp: Math.floor(new Date(expiresAt).getTime() / 1000),
-    iss: 'vettid-operator', // Would be operator public key
-    sub: userGuid,
-    nats: {
-      pub: {
-        allow: publishPerms,
-      },
-      sub: {
-        allow: subscribePerms,
-      },
-      subs: -1, // Unlimited subscriptions
-      data: -1, // Unlimited data
-      payload: -1, // Unlimited payload
-    },
-  };
-
-  // In production, this would be signed with the account signing key
-  const header = Buffer.from(JSON.stringify({ typ: 'JWT', alg: 'ed25519-nkey' })).toString('base64url');
-  const payload = Buffer.from(JSON.stringify(jwtPayload)).toString('base64url');
-
-  // Placeholder signature (not cryptographically valid)
-  const signature = createHash('sha256')
-    .update(`${header}.${payload}.${tokenId}`)
-    .digest('base64url');
-
-  const jwt = `${header}.${payload}.${signature}`;
-
-  // Placeholder seed (would be real nkey seed in production)
-  const seed = `SUAM${createHash('sha256').update(tokenId).digest('hex').substring(0, 48).toUpperCase()}`;
-
-  return { jwt, seed };
-}

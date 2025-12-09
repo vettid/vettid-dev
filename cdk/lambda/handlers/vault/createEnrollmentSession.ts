@@ -42,10 +42,9 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     const userGuid = claims.user_guid;
     const userEmail = claims.email;
 
-    // Check if user already has an active credential
+    // Check if user already has an active credential (user_guid is the partition key)
     const credentialResult = await ddb.send(new QueryCommand({
       TableName: TABLE_CREDENTIALS,
-      IndexName: 'user-guid-index',
       KeyConditionExpression: 'user_guid = :guid',
       ExpressionAttributeValues: marshall({
         ':guid': userGuid,
@@ -60,10 +59,10 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       }
     }
 
-    // Check for existing pending session
+    // Check for existing pending session (using user-index GSI)
     const existingSession = await ddb.send(new QueryCommand({
       TableName: TABLE_ENROLLMENT_SESSIONS,
-      IndexName: 'user-guid-index',
+      IndexName: 'user-index',
       KeyConditionExpression: 'user_guid = :guid',
       FilterExpression: '#status = :pending AND expires_at > :now',
       ExpressionAttributeNames: {
@@ -74,6 +73,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
         ':pending': 'WEB_INITIATED',
         ':now': new Date().toISOString(),
       }),
+      ScanIndexForward: false, // Most recent first
       Limit: 1,
     }));
 

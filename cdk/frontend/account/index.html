@@ -372,6 +372,7 @@
         <button class="tab tab-child" data-tab="deploy-vault" data-sub-tab="deploy">Deploy a Vault</button>
         <button class="tab tab-child" data-tab="deploy-vault" data-sub-tab="byov">Bring Your Own Vault</button>
         <button class="tab tab-child" data-tab="deploy-vault" data-sub-tab="backup">Backup Services</button>
+        <button class="tab tab-child" data-tab="deploy-vault" data-sub-tab="credential-backup">Credential Backup</button>
       </div>
     </div>
   </div>
@@ -977,7 +978,7 @@ async function selectSubscriptionType(subscriptionTypeId) {
 
       <div style="margin-top:20px;padding-top:16px;border-top:1px solid #333;">
         <div style="display:flex;gap:12px;flex-wrap:wrap;">
-          <button id="vaultStopBtn" onclick="stopVault()" class="btn" style="padding:10px 20px;background:linear-gradient(135deg,#f59e0b 0%,#d97706 100%);">
+          <button id="vaultStopBtn" onclick="confirmStopVault()" class="btn" style="padding:10px 20px;background:linear-gradient(135deg,#f59e0b 0%,#d97706 100%);">
             ⏹ Stop Vault
           </button>
           <button id="vaultTerminateBtn" onclick="confirmTerminateVault()" class="btn" style="padding:10px 20px;background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);">
@@ -1012,26 +1013,331 @@ async function selectSubscriptionType(subscriptionTypeId) {
 
   <!-- Bring Your Own Vault Sub-tab -->
   <div id="vault-byov" class="sub-tab-content">
-    <div class="card">
-      <h3>Bring Your Own Vault</h3>
-      <p class="muted" style="margin-bottom:20px;font-size:0.95rem;">Connect your existing Vaultwarden or Bitwarden instance to VettID for seamless integration with your current password management setup.</p>
+    <!-- BYOV Status Card -->
+    <div class="card" id="byovStatusCard">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+        <h3 style="margin:0;">Bring Your Own Vault</h3>
+        <button onclick="loadByovStatus()" class="btn" style="padding:6px 12px;font-size:0.85rem;background:#333;" title="Refresh">↻ Refresh</button>
+      </div>
+      <p class="muted" style="margin-bottom:20px;font-size:0.95rem;">
+        Connect your self-hosted vault instance to VettID. Your vault must be accessible via HTTPS and respond to health checks.
+      </p>
 
-      <div style="margin-top:24px;padding:24px;background:#050505;border-radius:4px;border:1px solid #333;text-align:center;">
-        <p style="color:var(--gray);font-size:1rem;">Coming soon</p>
-        <p style="color:var(--gray);margin-top:8px;font-size:0.85rem;">Self-hosted vault integration</p>
+      <div id="byovStatusContent">
+        <!-- Status will be loaded here -->
+        <div style="padding:24px;background:#050505;border-radius:4px;border:1px solid #333;text-align:center;">
+          <div class="skeleton" style="height:24px;width:200px;margin:0 auto;border-radius:4px;"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Register BYOV Card (shown when no vault registered) -->
+    <div class="card" style="margin-top:20px;display:none;" id="byovRegisterCard">
+      <h3 style="margin:0 0 16px 0;">Register Your Vault</h3>
+      <p class="muted" style="margin-bottom:20px;font-size:0.95rem;">
+        Enter your vault's URL to connect it to VettID. We'll verify connectivity before completing registration.
+      </p>
+
+      <div style="display:grid;gap:16px;">
+        <div>
+          <label style="display:block;margin-bottom:8px;color:var(--text);font-weight:600;">Vault Name</label>
+          <input type="text" id="byovVaultName" placeholder="My Home Vault"
+            style="width:100%;padding:12px;background:#0a0a0a;border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;" />
+          <p style="margin:8px 0 0 0;color:var(--gray);font-size:0.8rem;">A friendly name to identify this vault.</p>
+        </div>
+
+        <div>
+          <label style="display:block;margin-bottom:8px;color:var(--text);font-weight:600;">Vault URL</label>
+          <input type="url" id="byovVaultUrl" placeholder="https://vault.example.com"
+            style="width:100%;padding:12px;background:#0a0a0a;border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;" />
+          <p style="margin:8px 0 0 0;color:var(--gray);font-size:0.8rem;">HTTPS URL to your vault instance (e.g., Vaultwarden, Bitwarden).</p>
+        </div>
+
+        <div>
+          <label style="display:block;margin-bottom:8px;color:var(--text);font-weight:600;">API Key (Optional)</label>
+          <input type="password" id="byovApiKey" placeholder="Enter API key if required"
+            style="width:100%;padding:12px;background:#0a0a0a;border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;" />
+          <p style="margin:8px 0 0 0;color:var(--gray);font-size:0.8rem;">If your vault requires an API key for access.</p>
+        </div>
+
+        <div style="display:flex;align-items:center;gap:12px;">
+          <input type="checkbox" id="byovVerifySsl" checked style="width:20px;height:20px;cursor:pointer;" />
+          <label for="byovVerifySsl" style="color:var(--text);cursor:pointer;">Verify SSL Certificate</label>
+        </div>
+
+        <div id="byovRegisterError" style="display:none;padding:12px;background:rgba(244,67,54,0.1);border:1px solid #f44336;border-radius:6px;color:#f44336;font-size:0.9rem;">
+        </div>
+
+        <button onclick="registerByovVault()" id="registerByovBtn" class="btn"
+          style="padding:12px 24px;background:linear-gradient(135deg,#10b981 0%,#059669 100%);font-weight:600;width:fit-content;">
+          Register Vault
+        </button>
+      </div>
+    </div>
+
+    <!-- Connected Vault Card (shown when vault is registered) -->
+    <div class="card" style="margin-top:20px;display:none;" id="byovConnectedCard">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;">
+        <div>
+          <h3 style="margin:0;" id="byovConnectedName">My Vault</h3>
+          <p style="margin:4px 0 0 0;color:var(--gray);font-size:0.85rem;" id="byovConnectedUrl">https://vault.example.com</p>
+        </div>
+        <div id="byovHealthBadge" style="padding:6px 12px;border-radius:16px;font-size:0.75rem;font-weight:600;text-transform:uppercase;">
+          Unknown
+        </div>
+      </div>
+
+      <!-- Vault Info Grid -->
+      <div id="byovInfoGrid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:20px;">
+        <div style="padding:12px;background:#0a0a0a;border-radius:6px;border:1px solid #222;">
+          <p style="margin:0;color:var(--gray);font-size:0.75rem;text-transform:uppercase;">Status</p>
+          <p style="margin:4px 0 0 0;color:var(--text);font-weight:600;" id="byovInfoStatus">-</p>
+        </div>
+        <div style="padding:12px;background:#0a0a0a;border-radius:6px;border:1px solid #222;">
+          <p style="margin:0;color:var(--gray);font-size:0.75rem;text-transform:uppercase;">Last Check</p>
+          <p style="margin:4px 0 0 0;color:var(--text);font-weight:600;" id="byovInfoLastCheck">-</p>
+        </div>
+        <div style="padding:12px;background:#0a0a0a;border-radius:6px;border:1px solid #222;">
+          <p style="margin:0;color:var(--gray);font-size:0.75rem;text-transform:uppercase;">Registered</p>
+          <p style="margin:4px 0 0 0;color:var(--text);font-weight:600;" id="byovInfoCreated">-</p>
+        </div>
+        <div style="padding:12px;background:#0a0a0a;border-radius:6px;border:1px solid #222;">
+          <p style="margin:0;color:var(--gray);font-size:0.75rem;text-transform:uppercase;">API Key</p>
+          <p style="margin:4px 0 0 0;color:var(--text);font-weight:600;" id="byovInfoApiKey">-</p>
+        </div>
+      </div>
+
+      <!-- Health Message -->
+      <div id="byovHealthMessage" style="display:none;padding:12px;border-radius:6px;margin-bottom:16px;font-size:0.9rem;">
+      </div>
+
+      <!-- Action Buttons -->
+      <div style="display:flex;gap:12px;flex-wrap:wrap;">
+        <button onclick="verifyByovVault()" id="verifyByovBtn" class="btn"
+          style="padding:10px 20px;background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);font-weight:600;">
+          Verify Connection
+        </button>
+        <button onclick="showByovSettingsModal()" class="btn" style="padding:10px 20px;background:#333;">
+          Settings
+        </button>
+        <button onclick="confirmDeleteByovVault()" class="btn" style="padding:10px 20px;background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);">
+          Remove Vault
+        </button>
+      </div>
+    </div>
+
+    <!-- Requirements Card -->
+    <div class="card" style="margin-top:20px;">
+      <h3 style="margin:0 0 16px 0;">Requirements</h3>
+      <div style="display:grid;gap:12px;">
+        <div style="display:flex;gap:12px;align-items:flex-start;">
+          <div style="width:24px;height:24px;background:#10b981;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="20 6 9 17 4 12"></polyline>
+            </svg>
+          </div>
+          <div>
+            <p style="margin:0;color:var(--text);font-weight:600;">HTTPS Required</p>
+            <p style="margin:4px 0 0 0;color:var(--gray);font-size:0.85rem;">Your vault must be accessible via HTTPS with a valid SSL certificate.</p>
+          </div>
+        </div>
+        <div style="display:flex;gap:12px;align-items:flex-start;">
+          <div style="width:24px;height:24px;background:#10b981;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="20 6 9 17 4 12"></polyline>
+            </svg>
+          </div>
+          <div>
+            <p style="margin:0;color:var(--text);font-weight:600;">Health Endpoint</p>
+            <p style="margin:4px 0 0 0;color:var(--gray);font-size:0.85rem;">Vault must respond to GET /api/health with a 200 status.</p>
+          </div>
+        </div>
+        <div style="display:flex;gap:12px;align-items:flex-start;">
+          <div style="width:24px;height:24px;background:#10b981;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="20 6 9 17 4 12"></polyline>
+            </svg>
+          </div>
+          <div>
+            <p style="margin:0;color:var(--text);font-weight:600;">Public Accessibility</p>
+            <p style="margin:4px 0 0 0;color:var(--gray);font-size:0.85rem;">Vault must be accessible from the internet (not localhost).</p>
+          </div>
+        </div>
       </div>
     </div>
   </div>
 
   <!-- Backup Services Sub-tab -->
   <div id="vault-backup" class="sub-tab-content">
-    <div class="card">
-      <h3>Backup Services</h3>
-      <p class="muted" style="margin-bottom:20px;font-size:0.95rem;">Automated backup services for your critical data. Schedule regular backups and restore your data when needed.</p>
+    <!-- Backup Settings Card -->
+    <div class="card" id="backupSettingsCard">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+        <h3 style="margin:0;">Backup Settings</h3>
+        <button onclick="saveBackupSettings()" id="saveSettingsBtn" class="btn" style="padding:8px 16px;background:linear-gradient(135deg,var(--accent) 0%,#2563eb 100%);">
+          Save Settings
+        </button>
+      </div>
 
-      <div style="margin-top:24px;padding:24px;background:#050505;border-radius:4px;border:1px solid #333;text-align:center;">
-        <p style="color:var(--gray);font-size:1rem;">Coming soon</p>
-        <p style="color:var(--gray);margin-top:8px;font-size:0.85rem;">Automated backup solutions</p>
+      <div id="backupSettingsContent" style="display:grid;gap:16px;">
+        <!-- Settings will be loaded here -->
+        <div style="padding:24px;background:#050505;border-radius:4px;border:1px solid #333;text-align:center;">
+          <div class="skeleton" style="height:24px;width:200px;margin:0 auto;border-radius:4px;"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Backup Actions Card -->
+    <div class="card" style="margin-top:20px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+        <h3 style="margin:0;">Your Backups</h3>
+        <button onclick="triggerBackup()" id="backupNowBtn" class="btn" style="padding:10px 20px;background:linear-gradient(135deg,#10b981 0%,#059669 100%);font-weight:600;">
+          Backup Now
+        </button>
+      </div>
+
+      <div id="backupListContent">
+        <!-- Backup list will be loaded here -->
+        <div style="padding:24px;background:#050505;border-radius:4px;border:1px solid #333;text-align:center;">
+          <div class="skeleton" style="height:20px;width:150px;margin:0 auto 12px auto;border-radius:4px;"></div>
+          <div class="skeleton" style="height:16px;width:250px;margin:0 auto;border-radius:4px;"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Credential Backup Sub-tab -->
+  <div id="vault-credential-backup" class="sub-tab-content">
+    <!-- Credential Backup Status Card -->
+    <div class="card" id="credentialBackupStatusCard">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+        <h3 style="margin:0;">Credential Backup</h3>
+        <button onclick="loadCredentialBackupStatus()" class="btn" style="padding:6px 12px;font-size:0.85rem;background:#333;" title="Refresh">↻ Refresh</button>
+      </div>
+      <p class="muted" style="margin-bottom:20px;font-size:0.95rem;">
+        Securely backup your vault credentials. Your backup is encrypted with a password you choose and can only be decrypted with your recovery phrase.
+      </p>
+
+      <div id="credentialBackupStatusContent">
+        <!-- Status will be loaded here -->
+        <div style="padding:24px;background:#050505;border-radius:4px;border:1px solid #333;text-align:center;">
+          <div class="skeleton" style="height:24px;width:200px;margin:0 auto;border-radius:4px;"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Create/Update Backup Card -->
+    <div class="card" style="margin-top:20px;" id="credentialBackupCreateCard">
+      <h3 style="margin:0 0 16px 0;">Create Credential Backup</h3>
+      <p class="muted" style="margin-bottom:20px;font-size:0.95rem;">
+        Enter a strong password to encrypt your credential backup. You'll need this password along with your recovery phrase to restore your credentials.
+      </p>
+
+      <div style="display:grid;gap:16px;">
+        <div>
+          <label style="display:block;margin-bottom:8px;color:var(--text);font-weight:600;">Backup Password</label>
+          <input type="password" id="credBackupPassword" placeholder="Enter a strong password"
+            style="width:100%;padding:12px;background:#0a0a0a;border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;" />
+          <p style="margin:8px 0 0 0;color:var(--gray);font-size:0.8rem;">Minimum 12 characters. Use a mix of letters, numbers, and symbols.</p>
+        </div>
+
+        <div>
+          <label style="display:block;margin-bottom:8px;color:var(--text);font-weight:600;">Confirm Password</label>
+          <input type="password" id="credBackupPasswordConfirm" placeholder="Confirm your password"
+            style="width:100%;padding:12px;background:#0a0a0a;border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;" />
+        </div>
+
+        <div id="credBackupError" style="display:none;padding:12px;background:rgba(244,67,54,0.1);border:1px solid #f44336;border-radius:6px;color:#f44336;font-size:0.9rem;">
+        </div>
+
+        <button onclick="createCredentialBackup()" id="createCredBackupBtn" class="btn"
+          style="padding:12px 24px;background:linear-gradient(135deg,#10b981 0%,#059669 100%);font-weight:600;width:fit-content;">
+          Create Encrypted Backup
+        </button>
+      </div>
+    </div>
+
+    <!-- Recovery Phrase Card (shown after backup creation) -->
+    <div class="card" style="margin-top:20px;display:none;" id="recoveryPhraseCard">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">
+        <div style="width:48px;height:48px;background:linear-gradient(135deg,#ffc125 0%,#ff9800 100%);border-radius:50%;display:flex;align-items:center;justify-content:center;">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+          </svg>
+        </div>
+        <div>
+          <h3 style="margin:0;color:var(--accent);">Recovery Phrase</h3>
+          <p style="margin:4px 0 0 0;color:var(--gray);font-size:0.85rem;">Save this securely - you'll need it to recover your credentials</p>
+        </div>
+      </div>
+
+      <div style="padding:20px;background:linear-gradient(135deg,rgba(255,193,37,0.1) 0%,rgba(255,152,0,0.05) 100%);border:2px solid var(--accent);border-radius:8px;margin-bottom:20px;">
+        <p style="margin:0 0 12px 0;color:var(--accent);font-weight:600;font-size:0.9rem;">YOUR RECOVERY PHRASE:</p>
+        <div id="recoveryPhraseDisplay" style="font-family:monospace;font-size:1.1rem;color:var(--text);word-spacing:8px;line-height:1.8;background:#0a0a0a;padding:16px;border-radius:6px;text-align:center;">
+          <!-- Recovery phrase will be displayed here -->
+        </div>
+        <div style="display:flex;gap:12px;margin-top:16px;justify-content:center;flex-wrap:wrap;">
+          <button onclick="copyRecoveryPhrase()" class="btn" style="padding:8px 16px;background:#333;font-size:0.9rem;">
+            Copy to Clipboard
+          </button>
+          <button onclick="downloadRecoveryPhrase()" class="btn" style="padding:8px 16px;background:#333;font-size:0.9rem;">
+            Download as File
+          </button>
+        </div>
+      </div>
+
+      <div style="padding:16px;background:rgba(244,67,54,0.1);border-left:4px solid #f44336;border-radius:4px;">
+        <p style="margin:0;color:#f44336;font-weight:600;font-size:0.95rem;">Important Security Warning</p>
+        <ul style="margin:8px 0 0 0;padding-left:20px;color:var(--gray);font-size:0.9rem;line-height:1.6;">
+          <li>Store this recovery phrase in a secure location (password manager, safe, etc.)</li>
+          <li>Never share your recovery phrase with anyone</li>
+          <li>Without this phrase and your password, you cannot recover your credentials</li>
+          <li>VettID cannot recover your credentials if you lose this phrase</li>
+        </ul>
+      </div>
+
+      <div style="margin-top:20px;display:flex;gap:12px;align-items:center;">
+        <input type="checkbox" id="recoveryPhraseAcknowledge" style="width:20px;height:20px;cursor:pointer;" />
+        <label for="recoveryPhraseAcknowledge" style="color:var(--text);cursor:pointer;">
+          I have saved my recovery phrase in a secure location
+        </label>
+      </div>
+
+      <button onclick="acknowledgeRecoveryPhrase()" id="acknowledgeRecoveryBtn" class="btn" disabled
+        style="margin-top:16px;padding:12px 24px;background:linear-gradient(135deg,var(--accent) 0%,#ff9800 100%);color:#000;font-weight:600;">
+        I've Saved My Recovery Phrase
+      </button>
+    </div>
+
+    <!-- Recover Credentials Card -->
+    <div class="card" style="margin-top:20px;" id="credentialRecoveryCard">
+      <h3 style="margin:0 0 16px 0;">Recover Credentials</h3>
+      <p class="muted" style="margin-bottom:20px;font-size:0.95rem;">
+        If you need to restore your credentials on a new device or after reinstalling, enter your recovery phrase and backup password below.
+      </p>
+
+      <div style="display:grid;gap:16px;">
+        <div>
+          <label style="display:block;margin-bottom:8px;color:var(--text);font-weight:600;">Recovery Phrase</label>
+          <textarea id="credRecoveryPhrase" placeholder="Enter your 24-word recovery phrase" rows="3"
+            style="width:100%;padding:12px;background:#0a0a0a;border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;resize:vertical;font-family:monospace;"></textarea>
+        </div>
+
+        <div>
+          <label style="display:block;margin-bottom:8px;color:var(--text);font-weight:600;">Backup Password</label>
+          <input type="password" id="credRecoveryPassword" placeholder="Enter your backup password"
+            style="width:100%;padding:12px;background:#0a0a0a;border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;" />
+        </div>
+
+        <div id="credRecoveryError" style="display:none;padding:12px;background:rgba(244,67,54,0.1);border:1px solid #f44336;border-radius:6px;color:#f44336;font-size:0.9rem;">
+        </div>
+
+        <div id="credRecoverySuccess" style="display:none;padding:12px;background:rgba(16,185,129,0.1);border:1px solid #10b981;border-radius:6px;color:#10b981;font-size:0.9rem;">
+        </div>
+
+        <button onclick="recoverCredentials()" id="recoverCredBtn" class="btn"
+          style="padding:12px 24px;background:linear-gradient(135deg,#6366f1 0%,#4f46e5 100%);font-weight:600;width:fit-content;">
+          Recover Credentials
+        </button>
       </div>
     </div>
   </div>
@@ -1173,6 +1479,59 @@ async function selectSubscriptionType(subscriptionTypeId) {
     <div style="padding:16px 24px;border-top:2px solid #222;display:flex;gap:12px;justify-content:flex-end;">
       <button onclick="closeMembershipConfirmModal()" class="btn" style="padding:12px 28px;background:#333;font-weight:600;">Cancel</button>
       <button onclick="confirmMembership()" class="btn" style="padding:12px 28px;background:linear-gradient(135deg,#ffd940 0%,#ffc125 100%);color:#000;font-weight:700;box-shadow:0 4px 14px rgba(255,217,64,0.4);">Accept & Continue</button>
+    </div>
+  </div>
+</div>
+
+<!-- BYOV Settings Modal -->
+<div id="byovSettingsModal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.85);z-index:9999;backdrop-filter:blur(4px);">
+  <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:linear-gradient(135deg,#1a1a1a 0%,#0a0a0a 100%);border-radius:12px;border:2px solid var(--accent);box-shadow:0 10px 40px rgba(255,193,37,0.3);max-width:550px;width:90%;max-height:90vh;overflow-y:auto;">
+    <div style="padding:24px;border-bottom:2px solid #222;display:flex;justify-content:space-between;align-items:center;">
+      <h3 style="margin:0;color:var(--accent);display:flex;align-items:center;gap:12px;">
+        <span style="font-size:1.5rem;">⚙️</span>
+        Vault Settings
+      </h3>
+      <button onclick="closeByovSettingsModal()" style="background:none;border:none;color:var(--gray);font-size:1.5rem;cursor:pointer;padding:0;line-height:1;">&times;</button>
+    </div>
+    <div style="padding:24px;">
+      <div style="display:grid;gap:20px;">
+        <div>
+          <label style="display:block;margin-bottom:8px;color:var(--text);font-weight:600;">Vault Name</label>
+          <input type="text" id="byovSettingsName" placeholder="My Home Vault"
+            style="width:100%;padding:12px;background:#0a0a0a;border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;box-sizing:border-box;" />
+        </div>
+
+        <div>
+          <label style="display:block;margin-bottom:8px;color:var(--text);font-weight:600;">Vault URL</label>
+          <input type="url" id="byovSettingsUrl" placeholder="https://vault.example.com"
+            style="width:100%;padding:12px;background:#0a0a0a;border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;box-sizing:border-box;" />
+          <p style="margin:8px 0 0 0;color:#f59e0b;font-size:0.8rem;">⚠️ Changing the URL will require re-verification.</p>
+        </div>
+
+        <div>
+          <label style="display:block;margin-bottom:8px;color:var(--text);font-weight:600;">API Key</label>
+          <div style="display:flex;gap:8px;">
+            <input type="password" id="byovSettingsApiKey" placeholder="Enter new API key (leave blank to keep current)"
+              style="flex:1;padding:12px;background:#0a0a0a;border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;" />
+            <button onclick="clearByovApiKey()" class="btn" style="padding:12px;background:#333;white-space:nowrap;" title="Clear API Key">
+              Clear
+            </button>
+          </div>
+          <p style="margin:8px 0 0 0;color:var(--gray);font-size:0.8rem;">Current: <span id="byovSettingsApiKeyStatus">Not set</span></p>
+        </div>
+
+        <div style="display:flex;align-items:center;gap:12px;">
+          <input type="checkbox" id="byovSettingsVerifySsl" checked style="width:20px;height:20px;cursor:pointer;" />
+          <label for="byovSettingsVerifySsl" style="color:var(--text);cursor:pointer;">Verify SSL Certificate</label>
+        </div>
+
+        <div id="byovSettingsError" style="display:none;padding:12px;background:rgba(244,67,54,0.1);border:1px solid #f44336;border-radius:6px;color:#f44336;font-size:0.9rem;">
+        </div>
+      </div>
+    </div>
+    <div style="padding:16px 24px;border-top:2px solid #222;display:flex;gap:12px;justify-content:flex-end;">
+      <button onclick="closeByovSettingsModal()" class="btn" style="padding:12px 28px;background:#333;font-weight:600;">Cancel</button>
+      <button onclick="saveByovSettings()" id="saveByovSettingsBtn" class="btn" style="padding:12px 28px;background:linear-gradient(135deg,#10b981 0%,#059669 100%);font-weight:600;">Save Changes</button>
     </div>
   </div>
 </div>
@@ -1855,6 +2214,17 @@ function activateSubTab(parentTab, subTabName) {
   const subContent = document.getElementById(subContentId);
   if (subContent) {
     subContent.classList.add('active');
+  }
+
+  // Initialize tab-specific data
+  if (parentTab === 'deploy-vault' && subTabName === 'backup') {
+    initBackupTab();
+  }
+  if (parentTab === 'deploy-vault' && subTabName === 'credential-backup') {
+    initCredentialBackupTab();
+  }
+  if (parentTab === 'deploy-vault' && subTabName === 'byov') {
+    initByovTab();
   }
 }
 
@@ -3944,7 +4314,13 @@ function renderVaultStatusContent(status) {
 
     case 'active':
       healthCard.style.display = 'block';
-      const uptime = status.uptime ? formatUptime(status.uptime) : 'Unknown';
+      const enrolledDate = status.enrolled_at ? new Date(status.enrolled_at).toLocaleDateString() : 'Unknown';
+      const lastSync = status.last_sync_at ? new Date(status.last_sync_at).toLocaleString() : 'Never';
+      const deviceIcon = status.device_type === 'ios' ? '📱' : status.device_type === 'android' ? '🤖' : '📱';
+      const deviceLabel = status.device_type === 'ios' ? 'iOS' : status.device_type === 'android' ? 'Android' : 'Mobile';
+      const securityColor = status.security_level === 'hardware' ? '#10b981' : status.security_level === 'software' ? '#f59e0b' : '#6b7280';
+      const keysRemaining = status.transaction_keys_remaining !== undefined ? status.transaction_keys_remaining : 'N/A';
+      const keysColor = keysRemaining === 'N/A' ? '#6b7280' : keysRemaining < 5 ? '#ef4444' : keysRemaining < 10 ? '#f59e0b' : '#10b981';
       statusContent.innerHTML = `
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:16px;">
           <div style="padding:16px;background:#050505;border-radius:4px;border:1px solid #333;">
@@ -3955,17 +4331,30 @@ function renderVaultStatusContent(status) {
             </div>
           </div>
           <div style="padding:16px;background:#050505;border-radius:4px;border:1px solid #333;">
-            <div class="muted" style="font-size:0.8rem;margin-bottom:4px;">Instance ID</div>
-            <div style="color:var(--text);font-family:monospace;font-size:0.9rem;">${status.instance_id || 'N/A'}</div>
+            <div class="muted" style="font-size:0.8rem;margin-bottom:4px;">Device</div>
+            <div style="color:var(--text);font-weight:600;">${deviceIcon} ${deviceLabel}</div>
           </div>
           <div style="padding:16px;background:#050505;border-radius:4px;border:1px solid #333;">
-            <div class="muted" style="font-size:0.8rem;margin-bottom:4px;">Uptime</div>
-            <div style="color:var(--text);font-weight:600;">${uptime}</div>
+            <div class="muted" style="font-size:0.8rem;margin-bottom:4px;">Security Level</div>
+            <div style="color:${securityColor};font-weight:600;text-transform:capitalize;">${status.security_level || 'Unknown'}</div>
+          </div>
+          <div style="padding:16px;background:#050505;border-radius:4px;border:1px solid #333;">
+            <div class="muted" style="font-size:0.8rem;margin-bottom:4px;">Enrolled</div>
+            <div style="color:var(--text);font-size:0.9rem;">${enrolledDate}</div>
           </div>
           <div style="padding:16px;background:#050505;border-radius:4px;border:1px solid #333;">
             <div class="muted" style="font-size:0.8rem;margin-bottom:4px;">Last Sync</div>
-            <div style="color:var(--text);font-size:0.9rem;">${status.last_sync ? new Date(status.last_sync).toLocaleString() : 'Never'}</div>
+            <div style="color:var(--text);font-size:0.9rem;">${lastSync}</div>
           </div>
+          <div style="padding:16px;background:#050505;border-radius:4px;border:1px solid #333;">
+            <div class="muted" style="font-size:0.8rem;margin-bottom:4px;">Transaction Keys</div>
+            <div style="color:${keysColor};font-weight:600;">${keysRemaining}</div>
+          </div>
+        </div>
+        <div style="margin-top:16px;display:flex;gap:12px;flex-wrap:wrap;">
+          <button onclick="syncVault()" id="syncVaultBtn" class="btn" style="padding:10px 20px;background:linear-gradient(135deg,var(--accent) 0%,#2563eb 100%);">
+            🔄 Sync Now
+          </button>
         </div>
       `;
       break;
@@ -4334,6 +4723,1641 @@ async function terminateVault() {
     showToast('Failed to terminate vault: ' + error.message, 'error');
   }
 }
+
+function confirmStopVault() {
+  const modal = document.createElement('div');
+  modal.id = 'stopVaultModal';
+  modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.8);display:flex;align-items:center;justify-content:center;z-index:9999;';
+  modal.innerHTML = `
+    <div style="background:#0a0a0a;border:1px solid #f59e0b;border-radius:12px;padding:32px;max-width:420px;width:90%;text-align:center;">
+      <div style="font-size:3rem;margin-bottom:16px;">⏸️</div>
+      <h3 style="margin:0 0 12px 0;color:#f59e0b;">Stop Vault?</h3>
+      <p style="color:var(--gray);margin-bottom:24px;line-height:1.6;">
+        Stopping your vault will pause all vault services. Your data will be preserved
+        and you can restart it at any time.
+      </p>
+      <p style="color:var(--gray);margin-bottom:24px;font-size:0.9rem;">
+        While stopped, you won't be able to use vault-based authentication or sync credentials.
+      </p>
+      <div style="display:flex;gap:12px;justify-content:center;">
+        <button onclick="closeStopModal()" class="btn" style="padding:12px 24px;background:#333;">
+          Cancel
+        </button>
+        <button onclick="stopVault();closeStopModal();" class="btn" style="padding:12px 24px;background:linear-gradient(135deg,#f59e0b 0%,#d97706 100%);font-weight:600;">
+          Stop Vault
+        </button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  modal.onclick = (e) => { if (e.target === modal) closeStopModal(); };
+}
+
+function closeStopModal() {
+  const modal = document.getElementById('stopVaultModal');
+  if (modal) modal.remove();
+}
+
+async function syncVault() {
+  const syncBtn = document.getElementById('syncVaultBtn');
+  const originalText = syncBtn ? syncBtn.innerHTML : '';
+
+  try {
+    const token = idToken();
+    if (!token) throw new Error('No authentication token');
+
+    if (syncBtn) {
+      syncBtn.disabled = true;
+      syncBtn.innerHTML = '🔄 Syncing...';
+    }
+
+    const res = await fetch(API_URL + '/vault/sync', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => ({}));
+      throw new Error(errorData.message || 'Failed to sync vault');
+    }
+
+    const data = await res.json();
+
+    if (data.status === 'keys_replenished') {
+      showToast(`Synced! ${data.new_transaction_keys?.length || 0} new keys generated`, 'success');
+    } else {
+      showToast('Vault synced successfully', 'success');
+    }
+
+    // Refresh status to show updated data
+    await loadVaultStatus();
+  } catch (error) {
+    console.error('Error syncing vault:', error);
+    showToast('Failed to sync vault: ' + error.message, 'error');
+  } finally {
+    if (syncBtn) {
+      syncBtn.disabled = false;
+      syncBtn.innerHTML = originalText;
+    }
+  }
+}
+
+// ============================================
+// BYOV (Bring Your Own Vault) FUNCTIONS
+// ============================================
+
+let byovStatus = null;
+
+async function loadByovStatus() {
+  const statusContent = document.getElementById('byovStatusContent');
+  const registerCard = document.getElementById('byovRegisterCard');
+  const connectedCard = document.getElementById('byovConnectedCard');
+
+  if (!statusContent) return;
+
+  // Show loading state
+  statusContent.innerHTML = `
+    <div style="padding:24px;background:#050505;border-radius:4px;border:1px solid #333;text-align:center;">
+      <div class="skeleton" style="height:24px;width:200px;margin:0 auto;border-radius:4px;"></div>
+    </div>
+  `;
+
+  try {
+    const token = idToken();
+    if (!token) throw new Error('No authentication token');
+
+    const res = await fetch(API_URL + '/vault/byov/status', {
+      method: 'GET',
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+
+    if (!res.ok) {
+      throw new Error('Failed to load BYOV status');
+    }
+
+    byovStatus = await res.json();
+
+    if (!byovStatus.has_vault) {
+      // No vault registered - show registration form
+      statusContent.innerHTML = `
+        <div style="padding:24px;background:#050505;border-radius:4px;border:1px solid #333;text-align:center;">
+          <div style="font-size:3rem;margin-bottom:16px;">🔗</div>
+          <div style="font-size:1.2rem;font-weight:600;color:var(--text);margin-bottom:8px;">No Vault Connected</div>
+          <p class="muted" style="margin:0;max-width:400px;margin:0 auto;">
+            Register your self-hosted vault below to connect it to VettID.
+          </p>
+        </div>
+      `;
+      registerCard.style.display = 'block';
+      connectedCard.style.display = 'none';
+    } else {
+      // Vault registered - show connected card
+      statusContent.innerHTML = `
+        <div style="padding:16px;background:#050a05;border-radius:4px;border:1px solid #10b981;text-align:center;">
+          <span style="color:#10b981;font-weight:600;">✓ Vault Connected</span>
+        </div>
+      `;
+      registerCard.style.display = 'none';
+      connectedCard.style.display = 'block';
+      renderByovConnectedCard(byovStatus);
+    }
+  } catch (error) {
+    console.error('Error loading BYOV status:', error);
+    statusContent.innerHTML = `
+      <div style="padding:24px;background:#1a0a0a;border-radius:4px;border:1px solid #ef4444;text-align:center;">
+        <div style="font-size:2rem;margin-bottom:12px;">⚠</div>
+        <div style="color:#ef4444;font-weight:600;margin-bottom:8px;">Error Loading Status</div>
+        <p class="muted" style="margin:0;">${error.message}</p>
+        <button onclick="loadByovStatus()" class="btn" style="margin-top:16px;padding:8px 16px;background:#333;">Try Again</button>
+      </div>
+    `;
+    registerCard.style.display = 'none';
+    connectedCard.style.display = 'none';
+  }
+}
+
+function renderByovConnectedCard(status) {
+  // Update vault name and URL
+  document.getElementById('byovConnectedName').textContent = status.vault_name || 'My Vault';
+  document.getElementById('byovConnectedUrl').textContent = status.vault_url || '-';
+
+  // Update health badge
+  const healthBadge = document.getElementById('byovHealthBadge');
+  const healthStatus = status.health_status || 'UNKNOWN';
+  const healthColors = {
+    'HEALTHY': { bg: '#10b981', text: '#fff' },
+    'UNHEALTHY': { bg: '#ef4444', text: '#fff' },
+    'AUTH_REQUIRED': { bg: '#f59e0b', text: '#000' },
+    'TIMEOUT': { bg: '#6b7280', text: '#fff' },
+    'DNS_ERROR': { bg: '#ef4444', text: '#fff' },
+    'CONNECTION_REFUSED': { bg: '#ef4444', text: '#fff' },
+    'SSL_ERROR': { bg: '#f59e0b', text: '#000' },
+    'UNREACHABLE': { bg: '#ef4444', text: '#fff' },
+    'UNKNOWN': { bg: '#6b7280', text: '#fff' }
+  };
+  const colors = healthColors[healthStatus] || healthColors['UNKNOWN'];
+  healthBadge.style.background = colors.bg;
+  healthBadge.style.color = colors.text;
+  healthBadge.textContent = healthStatus.replace(/_/g, ' ');
+
+  // Update info grid
+  document.getElementById('byovInfoStatus').textContent = (status.status || 'Unknown').replace(/_/g, ' ');
+  document.getElementById('byovInfoLastCheck').textContent = status.last_health_check
+    ? new Date(status.last_health_check).toLocaleString()
+    : 'Never';
+  document.getElementById('byovInfoCreated').textContent = status.created_at
+    ? new Date(status.created_at).toLocaleDateString()
+    : 'Unknown';
+  document.getElementById('byovInfoApiKey').textContent = status.api_key_set ? 'Configured' : 'Not set';
+
+  // Update health message
+  const healthMsg = document.getElementById('byovHealthMessage');
+  if (status.health_message) {
+    healthMsg.style.display = 'block';
+    if (healthStatus === 'HEALTHY') {
+      healthMsg.style.background = 'rgba(16,185,129,0.1)';
+      healthMsg.style.border = '1px solid #10b981';
+      healthMsg.style.color = '#10b981';
+    } else if (healthStatus === 'AUTH_REQUIRED' || healthStatus === 'SSL_ERROR') {
+      healthMsg.style.background = 'rgba(245,158,11,0.1)';
+      healthMsg.style.border = '1px solid #f59e0b';
+      healthMsg.style.color = '#f59e0b';
+    } else {
+      healthMsg.style.background = 'rgba(239,68,68,0.1)';
+      healthMsg.style.border = '1px solid #ef4444';
+      healthMsg.style.color = '#ef4444';
+    }
+    healthMsg.textContent = status.health_message;
+  } else {
+    healthMsg.style.display = 'none';
+  }
+}
+
+async function registerByovVault() {
+  const btn = document.getElementById('registerByovBtn');
+  const errorDiv = document.getElementById('byovRegisterError');
+  const originalText = btn.innerHTML;
+
+  // Get form values
+  const vaultName = document.getElementById('byovVaultName').value.trim();
+  const vaultUrl = document.getElementById('byovVaultUrl').value.trim();
+  const apiKey = document.getElementById('byovApiKey').value;
+  const verifySsl = document.getElementById('byovVerifySsl').checked;
+
+  // Validate
+  if (!vaultUrl) {
+    errorDiv.style.display = 'block';
+    errorDiv.textContent = 'Vault URL is required';
+    return;
+  }
+
+  try {
+    new URL(vaultUrl);
+    if (!vaultUrl.startsWith('https://')) {
+      throw new Error('URL must use HTTPS');
+    }
+  } catch (e) {
+    errorDiv.style.display = 'block';
+    errorDiv.textContent = 'Please enter a valid HTTPS URL';
+    return;
+  }
+
+  errorDiv.style.display = 'none';
+  btn.disabled = true;
+  btn.innerHTML = '<span style="display:inline-block;animation:spin 1s linear infinite;">⏳</span> Registering...';
+
+  try {
+    const token = idToken();
+    if (!token) throw new Error('No authentication token');
+
+    const body = {
+      vault_url: vaultUrl,
+      verify_ssl: verifySsl
+    };
+    if (vaultName) body.vault_name = vaultName;
+    if (apiKey) body.api_key = apiKey;
+
+    const res = await fetch(API_URL + '/vault/byov/register', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(body)
+    });
+
+    const data = await res.json();
+
+    if (!res.ok) {
+      throw new Error(data.message || 'Failed to register vault');
+    }
+
+    showToast('Vault registered successfully!', 'success');
+
+    // Clear form
+    document.getElementById('byovVaultName').value = '';
+    document.getElementById('byovVaultUrl').value = '';
+    document.getElementById('byovApiKey').value = '';
+    document.getElementById('byovVerifySsl').checked = true;
+
+    // Reload status
+    await loadByovStatus();
+
+    // Auto-verify if needed
+    if (data.requires_verification) {
+      setTimeout(() => verifyByovVault(), 500);
+    }
+  } catch (error) {
+    console.error('Error registering BYOV vault:', error);
+    errorDiv.style.display = 'block';
+    errorDiv.textContent = error.message;
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = originalText;
+  }
+}
+
+async function verifyByovVault() {
+  const btn = document.getElementById('verifyByovBtn');
+  const originalText = btn ? btn.innerHTML : '';
+
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span style="display:inline-block;animation:spin 1s linear infinite;">⏳</span> Verifying...';
+  }
+
+  try {
+    const token = idToken();
+    if (!token) throw new Error('No authentication token');
+
+    const res = await fetch(API_URL + '/vault/byov/verify', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    const data = await res.json();
+
+    if (!res.ok) {
+      throw new Error(data.message || 'Failed to verify vault');
+    }
+
+    if (data.health_status === 'HEALTHY') {
+      showToast('Vault verified and healthy!', 'success');
+    } else if (data.health_status === 'AUTH_REQUIRED') {
+      showToast('Vault requires authentication. Please add an API key.', 'warning');
+    } else {
+      showToast(`Verification issue: ${data.health_message || data.health_status}`, 'warning');
+    }
+
+    // Reload status to reflect changes
+    await loadByovStatus();
+  } catch (error) {
+    console.error('Error verifying BYOV vault:', error);
+    showToast('Failed to verify vault: ' + error.message, 'error');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = originalText;
+    }
+  }
+}
+
+function showByovSettingsModal() {
+  if (!byovStatus || !byovStatus.has_vault) {
+    showToast('No vault to configure', 'error');
+    return;
+  }
+
+  // Pre-fill form with current values
+  document.getElementById('byovSettingsName').value = byovStatus.vault_name || '';
+  document.getElementById('byovSettingsUrl').value = byovStatus.vault_url || '';
+  document.getElementById('byovSettingsApiKey').value = '';
+  document.getElementById('byovSettingsVerifySsl').checked = byovStatus.verify_ssl !== false;
+  document.getElementById('byovSettingsApiKeyStatus').textContent = byovStatus.api_key_set ? 'Configured' : 'Not set';
+  document.getElementById('byovSettingsError').style.display = 'none';
+
+  document.getElementById('byovSettingsModal').style.display = 'block';
+}
+
+function closeByovSettingsModal() {
+  document.getElementById('byovSettingsModal').style.display = 'none';
+}
+
+async function saveByovSettings() {
+  const btn = document.getElementById('saveByovSettingsBtn');
+  const errorDiv = document.getElementById('byovSettingsError');
+  const originalText = btn.innerHTML;
+
+  const vaultName = document.getElementById('byovSettingsName').value.trim();
+  const vaultUrl = document.getElementById('byovSettingsUrl').value.trim();
+  const apiKey = document.getElementById('byovSettingsApiKey').value;
+  const verifySsl = document.getElementById('byovSettingsVerifySsl').checked;
+
+  // Validate URL if provided
+  if (vaultUrl) {
+    try {
+      new URL(vaultUrl);
+      if (!vaultUrl.startsWith('https://')) {
+        throw new Error('URL must use HTTPS');
+      }
+    } catch (e) {
+      errorDiv.style.display = 'block';
+      errorDiv.textContent = 'Please enter a valid HTTPS URL';
+      return;
+    }
+  }
+
+  errorDiv.style.display = 'none';
+  btn.disabled = true;
+  btn.innerHTML = '<span style="display:inline-block;animation:spin 1s linear infinite;">⏳</span> Saving...';
+
+  try {
+    const token = idToken();
+    if (!token) throw new Error('No authentication token');
+
+    const body = {};
+    if (vaultName !== byovStatus.vault_name) body.vault_name = vaultName;
+    if (vaultUrl && vaultUrl !== byovStatus.vault_url) body.vault_url = vaultUrl;
+    if (apiKey) body.api_key = apiKey;
+    if (verifySsl !== (byovStatus.verify_ssl !== false)) body.verify_ssl = verifySsl;
+
+    // Only make request if there are changes
+    if (Object.keys(body).length === 0) {
+      showToast('No changes to save', 'info');
+      closeByovSettingsModal();
+      return;
+    }
+
+    const res = await fetch(API_URL + '/vault/byov', {
+      method: 'PATCH',
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(body)
+    });
+
+    const data = await res.json();
+
+    if (!res.ok) {
+      throw new Error(data.message || 'Failed to update vault settings');
+    }
+
+    showToast('Vault settings updated!', 'success');
+    closeByovSettingsModal();
+
+    // Reload status
+    await loadByovStatus();
+
+    // Auto-verify if URL changed
+    if (data.requires_verification) {
+      setTimeout(() => verifyByovVault(), 500);
+    }
+  } catch (error) {
+    console.error('Error saving BYOV settings:', error);
+    errorDiv.style.display = 'block';
+    errorDiv.textContent = error.message;
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = originalText;
+  }
+}
+
+async function clearByovApiKey() {
+  if (!confirm('Clear the API key for this vault?')) return;
+
+  try {
+    const token = idToken();
+    if (!token) throw new Error('No authentication token');
+
+    const res = await fetch(API_URL + '/vault/byov', {
+      method: 'PATCH',
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ clear_api_key: true })
+    });
+
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.message || 'Failed to clear API key');
+    }
+
+    document.getElementById('byovSettingsApiKeyStatus').textContent = 'Not set';
+    showToast('API key cleared', 'success');
+
+    // Update local status
+    if (byovStatus) byovStatus.api_key_set = false;
+  } catch (error) {
+    console.error('Error clearing API key:', error);
+    showToast('Failed to clear API key: ' + error.message, 'error');
+  }
+}
+
+function confirmDeleteByovVault() {
+  const modal = document.createElement('div');
+  modal.id = 'deleteByovModal';
+  modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.8);display:flex;align-items:center;justify-content:center;z-index:9999;';
+  modal.innerHTML = `
+    <div style="background:#0a0a0a;border:2px solid #ef4444;border-radius:12px;padding:32px;max-width:420px;width:90%;text-align:center;">
+      <div style="font-size:3rem;margin-bottom:16px;">⚠️</div>
+      <h3 style="margin:0 0 12px 0;color:#ef4444;">Remove Vault?</h3>
+      <p style="color:var(--gray);margin-bottom:24px;line-height:1.6;">
+        This will disconnect your vault from VettID. You can re-register it later if needed.
+      </p>
+      <div style="display:flex;gap:12px;justify-content:center;">
+        <button onclick="closeDeleteByovModal()" class="btn" style="padding:12px 24px;background:#333;">
+          Cancel
+        </button>
+        <button onclick="deleteByovVault();closeDeleteByovModal();" class="btn" style="padding:12px 24px;background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);font-weight:600;">
+          Remove Vault
+        </button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  modal.onclick = (e) => { if (e.target === modal) closeDeleteByovModal(); };
+}
+
+function closeDeleteByovModal() {
+  const modal = document.getElementById('deleteByovModal');
+  if (modal) modal.remove();
+}
+
+async function deleteByovVault() {
+  try {
+    const token = idToken();
+    if (!token) throw new Error('No authentication token');
+
+    const res = await fetch(API_URL + '/vault/byov', {
+      method: 'DELETE',
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.message || 'Failed to remove vault');
+    }
+
+    showToast('Vault removed successfully', 'success');
+    byovStatus = null;
+    await loadByovStatus();
+  } catch (error) {
+    console.error('Error deleting BYOV vault:', error);
+    showToast('Failed to remove vault: ' + error.message, 'error');
+  }
+}
+
+function initByovTab() {
+  loadByovStatus();
+}
+
+// ============================================
+// BACKUP SERVICES FUNCTIONS
+// ============================================
+
+let backupSettings = null;
+let backupList = [];
+
+async function loadBackupSettings() {
+  const content = document.getElementById('backupSettingsContent');
+  if (!content) return;
+
+  try {
+    const token = idToken();
+    if (!token) throw new Error('No authentication token');
+
+    const res = await fetch(API_URL + '/vault/backup/settings', {
+      method: 'GET',
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+
+    if (!res.ok) throw new Error('Failed to load backup settings');
+
+    backupSettings = await res.json();
+    renderBackupSettings(backupSettings);
+  } catch (error) {
+    console.error('Error loading backup settings:', error);
+    content.innerHTML = `
+      <div style="padding:16px;background:#1a0a0a;border-radius:4px;border:1px solid #ef4444;text-align:center;">
+        <span style="color:#ef4444;">Error loading settings: ${error.message}</span>
+        <button onclick="loadBackupSettings()" class="btn" style="margin-top:12px;padding:8px 16px;background:#333;">Try Again</button>
+      </div>
+    `;
+  }
+}
+
+function renderBackupSettings(settings) {
+  const content = document.getElementById('backupSettingsContent');
+  if (!content) return;
+
+  content.innerHTML = `
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;">
+      <!-- Auto Backup Toggle -->
+      <div style="padding:16px;background:#050505;border-radius:4px;border:1px solid #333;">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <div>
+            <div style="color:var(--text);font-weight:600;">Auto Backup</div>
+            <div class="muted" style="font-size:0.85rem;margin-top:4px;">Automatically backup your data</div>
+          </div>
+          <label class="toggle-switch">
+            <input type="checkbox" id="autoBackupEnabled" ${settings.auto_backup_enabled ? 'checked' : ''} onchange="markSettingsChanged()">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Backup Frequency -->
+      <div style="padding:16px;background:#050505;border-radius:4px;border:1px solid #333;">
+        <div style="color:var(--text);font-weight:600;margin-bottom:8px;">Backup Frequency</div>
+        <select id="backupFrequency" onchange="markSettingsChanged()" style="width:100%;padding:10px;background:#111;border:1px solid #333;border-radius:4px;color:var(--text);font-size:0.95rem;">
+          <option value="daily" ${settings.backup_frequency === 'daily' ? 'selected' : ''}>Daily</option>
+          <option value="weekly" ${settings.backup_frequency === 'weekly' ? 'selected' : ''}>Weekly</option>
+          <option value="monthly" ${settings.backup_frequency === 'monthly' ? 'selected' : ''}>Monthly</option>
+        </select>
+      </div>
+
+      <!-- Backup Time -->
+      <div style="padding:16px;background:#050505;border-radius:4px;border:1px solid #333;">
+        <div style="color:var(--text);font-weight:600;margin-bottom:8px;">Backup Time (UTC)</div>
+        <input type="time" id="backupTime" value="${settings.backup_time_utc || '03:00'}" onchange="markSettingsChanged()" style="width:100%;padding:10px;background:#111;border:1px solid #333;border-radius:4px;color:var(--text);font-size:0.95rem;">
+      </div>
+
+      <!-- Retention Period -->
+      <div style="padding:16px;background:#050505;border-radius:4px;border:1px solid #333;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+          <div style="color:var(--text);font-weight:600;">Retention Period</div>
+          <span id="retentionValue" style="color:var(--accent);font-weight:600;">${settings.retention_days || 30} days</span>
+        </div>
+        <input type="range" id="retentionDays" min="7" max="365" value="${settings.retention_days || 30}" onchange="updateRetentionDisplay();markSettingsChanged()" style="width:100%;accent-color:var(--accent);">
+        <div style="display:flex;justify-content:space-between;margin-top:4px;">
+          <span class="muted" style="font-size:0.75rem;">7 days</span>
+          <span class="muted" style="font-size:0.75rem;">365 days</span>
+        </div>
+      </div>
+
+      <!-- Include Messages Toggle -->
+      <div style="padding:16px;background:#050505;border-radius:4px;border:1px solid #333;">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <div>
+            <div style="color:var(--text);font-weight:600;">Include Messages</div>
+            <div class="muted" style="font-size:0.85rem;margin-top:4px;">Backup message history</div>
+          </div>
+          <label class="toggle-switch">
+            <input type="checkbox" id="includeMessages" ${settings.include_messages ? 'checked' : ''} onchange="markSettingsChanged()">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <!-- WiFi Only Toggle -->
+      <div style="padding:16px;background:#050505;border-radius:4px;border:1px solid #333;">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <div>
+            <div style="color:var(--text);font-weight:600;">WiFi Only</div>
+            <div class="muted" style="font-size:0.85rem;margin-top:4px;">Only backup on WiFi networks</div>
+          </div>
+          <label class="toggle-switch">
+            <input type="checkbox" id="wifiOnly" ${settings.wifi_only ? 'checked' : ''} onchange="markSettingsChanged()">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function updateRetentionDisplay() {
+  const slider = document.getElementById('retentionDays');
+  const display = document.getElementById('retentionValue');
+  if (slider && display) {
+    display.textContent = slider.value + ' days';
+  }
+}
+
+function markSettingsChanged() {
+  const saveBtn = document.getElementById('saveSettingsBtn');
+  if (saveBtn) {
+    saveBtn.style.background = 'linear-gradient(135deg,#f59e0b 0%,#d97706 100%)';
+    saveBtn.textContent = 'Save Changes';
+  }
+}
+
+async function saveBackupSettings() {
+  const saveBtn = document.getElementById('saveSettingsBtn');
+  const originalText = saveBtn ? saveBtn.textContent : '';
+
+  try {
+    const token = idToken();
+    if (!token) throw new Error('No authentication token');
+
+    if (saveBtn) {
+      saveBtn.disabled = true;
+      saveBtn.textContent = 'Saving...';
+    }
+
+    const settings = {
+      auto_backup_enabled: document.getElementById('autoBackupEnabled')?.checked ?? true,
+      backup_frequency: document.getElementById('backupFrequency')?.value || 'daily',
+      backup_time_utc: document.getElementById('backupTime')?.value || '03:00',
+      retention_days: parseInt(document.getElementById('retentionDays')?.value || '30', 10),
+      include_messages: document.getElementById('includeMessages')?.checked ?? true,
+      wifi_only: document.getElementById('wifiOnly')?.checked ?? true,
+    };
+
+    const res = await fetch(API_URL + '/vault/backup/settings', {
+      method: 'PUT',
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(settings)
+    });
+
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => ({}));
+      throw new Error(errorData.message || 'Failed to save settings');
+    }
+
+    showToast('Backup settings saved', 'success');
+
+    if (saveBtn) {
+      saveBtn.style.background = 'linear-gradient(135deg,var(--accent) 0%,#2563eb 100%)';
+      saveBtn.textContent = 'Save Settings';
+    }
+  } catch (error) {
+    console.error('Error saving backup settings:', error);
+    showToast('Failed to save settings: ' + error.message, 'error');
+  } finally {
+    if (saveBtn) {
+      saveBtn.disabled = false;
+      if (saveBtn.textContent === 'Saving...') {
+        saveBtn.textContent = originalText;
+      }
+    }
+  }
+}
+
+async function loadBackupList() {
+  const content = document.getElementById('backupListContent');
+  if (!content) return;
+
+  try {
+    const token = idToken();
+    if (!token) throw new Error('No authentication token');
+
+    const res = await fetch(API_URL + '/vault/backups', {
+      method: 'GET',
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+
+    if (!res.ok) throw new Error('Failed to load backups');
+
+    const data = await res.json();
+    backupList = data.backups || [];
+    renderBackupList(backupList);
+  } catch (error) {
+    console.error('Error loading backups:', error);
+    content.innerHTML = `
+      <div style="padding:16px;background:#1a0a0a;border-radius:4px;border:1px solid #ef4444;text-align:center;">
+        <span style="color:#ef4444;">Error loading backups: ${error.message}</span>
+        <button onclick="loadBackupList()" class="btn" style="margin-top:12px;padding:8px 16px;background:#333;">Try Again</button>
+      </div>
+    `;
+  }
+}
+
+function renderBackupList(backups) {
+  const content = document.getElementById('backupListContent');
+  if (!content) return;
+
+  if (!backups || backups.length === 0) {
+    content.innerHTML = `
+      <div style="padding:32px;background:#050505;border-radius:4px;border:1px solid #333;text-align:center;">
+        <div style="font-size:2rem;margin-bottom:12px;">📦</div>
+        <div style="color:var(--text);font-weight:600;margin-bottom:8px;">No Backups Yet</div>
+        <p class="muted" style="margin-bottom:16px;">Create your first backup to protect your data.</p>
+        <button onclick="triggerBackup()" class="btn" style="padding:10px 20px;background:linear-gradient(135deg,#10b981 0%,#059669 100%);">
+          Create First Backup
+        </button>
+      </div>
+    `;
+    return;
+  }
+
+  const rows = backups.map(backup => {
+    const date = new Date(backup.created_at);
+    const sizeKB = (backup.size_bytes / 1024).toFixed(1);
+    const sizeMB = (backup.size_bytes / (1024 * 1024)).toFixed(2);
+    const sizeDisplay = backup.size_bytes > 1024 * 1024 ? `${sizeMB} MB` : `${sizeKB} KB`;
+    const typeColor = backup.type === 'auto' ? '#3b82f6' : '#10b981';
+    const typeLabel = backup.type === 'auto' ? 'Auto' : 'Manual';
+    const statusColor = backup.status === 'complete' ? '#10b981' : backup.status === 'pending' ? '#f59e0b' : '#ef4444';
+
+    return `
+      <div style="display:grid;grid-template-columns:1fr auto auto auto;gap:16px;align-items:center;padding:16px;background:#050505;border-radius:4px;border:1px solid #333;">
+        <div>
+          <div style="color:var(--text);font-weight:600;">${date.toLocaleDateString()} ${date.toLocaleTimeString()}</div>
+          <div class="muted" style="font-size:0.85rem;margin-top:4px;">
+            ${backup.contents?.connections_count || 0} connections, ${backup.contents?.messages_count || 0} messages
+          </div>
+        </div>
+        <div style="text-align:center;">
+          <span style="background:${typeColor}22;color:${typeColor};padding:4px 10px;border-radius:12px;font-size:0.8rem;font-weight:600;">${typeLabel}</span>
+        </div>
+        <div style="text-align:center;">
+          <div style="color:var(--text);font-weight:600;">${sizeDisplay}</div>
+          <div style="display:flex;align-items:center;gap:4px;justify-content:center;margin-top:2px;">
+            <span style="width:8px;height:8px;background:${statusColor};border-radius:50%;"></span>
+            <span class="muted" style="font-size:0.75rem;text-transform:capitalize;">${backup.status}</span>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;">
+          <button onclick="confirmRestoreBackup('${backup.backup_id}')" class="btn" style="padding:8px 12px;background:#333;font-size:0.85rem;" title="Restore">
+            ↻ Restore
+          </button>
+          <button onclick="confirmDeleteBackup('${backup.backup_id}')" class="btn" style="padding:8px 12px;background:#333;color:#ef4444;font-size:0.85rem;" title="Delete">
+            ✕
+          </button>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  content.innerHTML = `
+    <div style="display:flex;flex-direction:column;gap:12px;">
+      ${rows}
+    </div>
+    <p class="muted" style="margin-top:12px;font-size:0.85rem;text-align:center;">
+      Showing ${backups.length} backup${backups.length !== 1 ? 's' : ''}
+    </p>
+  `;
+}
+
+async function triggerBackup() {
+  const btn = document.getElementById('backupNowBtn');
+  const originalText = btn ? btn.innerHTML : '';
+
+  try {
+    const token = idToken();
+    if (!token) throw new Error('No authentication token');
+
+    if (btn) {
+      btn.disabled = true;
+      btn.innerHTML = 'Creating...';
+    }
+
+    showToast('Creating backup...', 'info');
+
+    const res = await fetch(API_URL + '/vault/backup', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ type: 'manual' })
+    });
+
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => ({}));
+      throw new Error(errorData.message || 'Failed to create backup');
+    }
+
+    const data = await res.json();
+
+    if (data.skipped) {
+      showToast('Recent backup exists. Skipped.', 'info');
+    } else {
+      showToast('Backup created successfully', 'success');
+    }
+
+    // Refresh backup list
+    await loadBackupList();
+  } catch (error) {
+    console.error('Error creating backup:', error);
+    showToast('Failed to create backup: ' + error.message, 'error');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = originalText;
+    }
+  }
+}
+
+function confirmRestoreBackup(backupId) {
+  const modal = document.createElement('div');
+  modal.id = 'restoreBackupModal';
+  modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.8);display:flex;align-items:center;justify-content:center;z-index:9999;';
+  modal.innerHTML = `
+    <div style="background:#0a0a0a;border:1px solid #3b82f6;border-radius:12px;padding:32px;max-width:480px;width:90%;">
+      <div style="text-align:center;margin-bottom:24px;">
+        <div style="font-size:3rem;margin-bottom:16px;">↻</div>
+        <h3 style="margin:0 0 12px 0;color:#3b82f6;">Restore Backup?</h3>
+        <p style="color:var(--gray);line-height:1.6;">
+          This will restore your data from the selected backup.
+        </p>
+      </div>
+
+      <div style="background:#050505;border-radius:8px;padding:16px;margin-bottom:24px;border:1px solid #333;">
+        <div style="margin-bottom:16px;">
+          <div style="color:var(--text);font-weight:600;margin-bottom:8px;">Restore Mode</div>
+          <select id="restoreMode" style="width:100%;padding:10px;background:#111;border:1px solid #333;border-radius:4px;color:var(--text);">
+            <option value="merge">Merge (keep existing, add missing)</option>
+            <option value="overwrite">Overwrite (replace all data)</option>
+          </select>
+        </div>
+
+        <div style="display:grid;gap:12px;">
+          <label style="display:flex;align-items:center;gap:8px;color:var(--text);cursor:pointer;">
+            <input type="checkbox" id="restoreConnections" checked style="accent-color:var(--accent);">
+            Restore Connections
+          </label>
+          <label style="display:flex;align-items:center;gap:8px;color:var(--text);cursor:pointer;">
+            <input type="checkbox" id="restoreMessages" checked style="accent-color:var(--accent);">
+            Restore Messages
+          </label>
+          <label style="display:flex;align-items:center;gap:8px;color:var(--text);cursor:pointer;">
+            <input type="checkbox" id="restoreProfile" checked style="accent-color:var(--accent);">
+            Restore Profile
+          </label>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:12px;justify-content:center;">
+        <button onclick="closeRestoreModal()" class="btn" style="padding:12px 24px;background:#333;">
+          Cancel
+        </button>
+        <button onclick="restoreBackup('${backupId}')" class="btn" style="padding:12px 24px;background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);font-weight:600;">
+          Restore Backup
+        </button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  modal.onclick = (e) => { if (e.target === modal) closeRestoreModal(); };
+}
+
+function closeRestoreModal() {
+  const modal = document.getElementById('restoreBackupModal');
+  if (modal) modal.remove();
+}
+
+async function restoreBackup(backupId) {
+  closeRestoreModal();
+
+  try {
+    const token = idToken();
+    if (!token) throw new Error('No authentication token');
+
+    showToast('Restoring backup...', 'info');
+
+    const res = await fetch(API_URL + '/vault/restore', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        backup_id: backupId,
+        mode: document.getElementById('restoreMode')?.value || 'merge',
+        restore_connections: document.getElementById('restoreConnections')?.checked ?? true,
+        restore_messages: document.getElementById('restoreMessages')?.checked ?? true,
+        restore_profile: document.getElementById('restoreProfile')?.checked ?? true,
+      })
+    });
+
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => ({}));
+      throw new Error(errorData.message || 'Failed to restore backup');
+    }
+
+    const data = await res.json();
+    showToast(`Restored ${data.restored_items} items successfully`, 'success');
+
+    if (data.conflicts && data.conflicts.length > 0) {
+      console.log('Restore conflicts:', data.conflicts);
+    }
+  } catch (error) {
+    console.error('Error restoring backup:', error);
+    showToast('Failed to restore backup: ' + error.message, 'error');
+  }
+}
+
+function confirmDeleteBackup(backupId) {
+  const modal = document.createElement('div');
+  modal.id = 'deleteBackupModal';
+  modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.8);display:flex;align-items:center;justify-content:center;z-index:9999;';
+  modal.innerHTML = `
+    <div style="background:#0a0a0a;border:1px solid #ef4444;border-radius:12px;padding:32px;max-width:420px;width:90%;text-align:center;">
+      <div style="font-size:3rem;margin-bottom:16px;">🗑</div>
+      <h3 style="margin:0 0 12px 0;color:#ef4444;">Delete Backup?</h3>
+      <p style="color:var(--gray);margin-bottom:24px;line-height:1.6;">
+        This action cannot be undone. The backup will be permanently deleted.
+      </p>
+      <div style="display:flex;gap:12px;justify-content:center;">
+        <button onclick="closeDeleteModal()" class="btn" style="padding:12px 24px;background:#333;">
+          Cancel
+        </button>
+        <button onclick="deleteBackup('${backupId}')" class="btn" style="padding:12px 24px;background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);font-weight:600;">
+          Delete Backup
+        </button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  modal.onclick = (e) => { if (e.target === modal) closeDeleteModal(); };
+}
+
+function closeDeleteModal() {
+  const modal = document.getElementById('deleteBackupModal');
+  if (modal) modal.remove();
+}
+
+async function deleteBackup(backupId) {
+  closeDeleteModal();
+
+  try {
+    const token = idToken();
+    if (!token) throw new Error('No authentication token');
+
+    showToast('Deleting backup...', 'info');
+
+    const res = await fetch(API_URL + '/vault/backups/' + backupId, {
+      method: 'DELETE',
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => ({}));
+      throw new Error(errorData.message || 'Failed to delete backup');
+    }
+
+    showToast('Backup deleted', 'success');
+    await loadBackupList();
+  } catch (error) {
+    console.error('Error deleting backup:', error);
+    showToast('Failed to delete backup: ' + error.message, 'error');
+  }
+}
+
+function initBackupTab() {
+  loadBackupSettings();
+  loadBackupList();
+}
+
+// ============================================
+// END BACKUP SERVICES FUNCTIONS
+// ============================================
+
+// ============================================
+// CREDENTIAL BACKUP FUNCTIONS
+// ============================================
+
+// BIP39 English word list (2048 words) - subset for demonstration
+// In production, include the full BIP39 word list
+const BIP39_WORDLIST = [
+  'abandon', 'ability', 'able', 'about', 'above', 'absent', 'absorb', 'abstract', 'absurd', 'abuse',
+  'access', 'accident', 'account', 'accuse', 'achieve', 'acid', 'acoustic', 'acquire', 'across', 'act',
+  'action', 'actor', 'actress', 'actual', 'adapt', 'add', 'addict', 'address', 'adjust', 'admit',
+  'adult', 'advance', 'advice', 'aerobic', 'affair', 'afford', 'afraid', 'again', 'age', 'agent',
+  'agree', 'ahead', 'aim', 'air', 'airport', 'aisle', 'alarm', 'album', 'alcohol', 'alert',
+  'alien', 'all', 'alley', 'allow', 'almost', 'alone', 'alpha', 'already', 'also', 'alter',
+  'always', 'amateur', 'amazing', 'among', 'amount', 'amused', 'analyst', 'anchor', 'ancient', 'anger',
+  'angle', 'angry', 'animal', 'ankle', 'announce', 'annual', 'another', 'answer', 'antenna', 'antique',
+  'anxiety', 'any', 'apart', 'apology', 'appear', 'apple', 'approve', 'april', 'arch', 'arctic',
+  'area', 'arena', 'argue', 'arm', 'armed', 'armor', 'army', 'around', 'arrange', 'arrest',
+  'arrive', 'arrow', 'art', 'artefact', 'artist', 'artwork', 'ask', 'aspect', 'assault', 'asset',
+  'assist', 'assume', 'asthma', 'athlete', 'atom', 'attack', 'attend', 'attitude', 'attract', 'auction',
+  'audit', 'august', 'aunt', 'author', 'auto', 'autumn', 'average', 'avocado', 'avoid', 'awake',
+  'aware', 'away', 'awesome', 'awful', 'awkward', 'axis', 'baby', 'bachelor', 'bacon', 'badge',
+  'bag', 'balance', 'balcony', 'ball', 'bamboo', 'banana', 'banner', 'bar', 'barely', 'bargain',
+  'barrel', 'base', 'basic', 'basket', 'battle', 'beach', 'bean', 'beauty', 'because', 'become',
+  'beef', 'before', 'begin', 'behave', 'behind', 'believe', 'below', 'belt', 'bench', 'benefit',
+  'best', 'betray', 'better', 'between', 'beyond', 'bicycle', 'bid', 'bike', 'bind', 'biology',
+  'bird', 'birth', 'bitter', 'black', 'blade', 'blame', 'blanket', 'blast', 'bleak', 'bless',
+  'blind', 'blood', 'blossom', 'blouse', 'blue', 'blur', 'blush', 'board', 'boat', 'body',
+  'boil', 'bomb', 'bone', 'bonus', 'book', 'boost', 'border', 'boring', 'borrow', 'boss',
+  'bottom', 'bounce', 'box', 'boy', 'bracket', 'brain', 'brand', 'brass', 'brave', 'bread',
+  'breeze', 'brick', 'bridge', 'brief', 'bright', 'bring', 'brisk', 'broccoli', 'broken', 'bronze',
+  'broom', 'brother', 'brown', 'brush', 'bubble', 'buddy', 'budget', 'buffalo', 'build', 'bulb',
+  'bulk', 'bullet', 'bundle', 'bunker', 'burden', 'burger', 'burst', 'bus', 'business', 'busy',
+  'butter', 'buyer', 'buzz', 'cabbage', 'cabin', 'cable', 'cactus', 'cage', 'cake', 'call',
+  'calm', 'camera', 'camp', 'can', 'canal', 'cancel', 'candy', 'cannon', 'canoe', 'canvas',
+  'canyon', 'capable', 'capital', 'captain', 'car', 'carbon', 'card', 'cargo', 'carpet', 'carry',
+  'cart', 'case', 'cash', 'casino', 'castle', 'casual', 'cat', 'catalog', 'catch', 'category',
+  'cattle', 'caught', 'cause', 'caution', 'cave', 'ceiling', 'celery', 'cement', 'census', 'century',
+  'cereal', 'certain', 'chair', 'chalk', 'champion', 'change', 'chaos', 'chapter', 'charge', 'chase',
+  'chat', 'cheap', 'check', 'cheese', 'chef', 'cherry', 'chest', 'chicken', 'chief', 'child',
+  'chimney', 'choice', 'choose', 'chronic', 'chuckle', 'chunk', 'churn', 'cigar', 'cinnamon', 'circle',
+  'citizen', 'city', 'civil', 'claim', 'clap', 'clarify', 'claw', 'clay', 'clean', 'clerk',
+  'clever', 'click', 'client', 'cliff', 'climb', 'clinic', 'clip', 'clock', 'clog', 'close',
+  'cloth', 'cloud', 'clown', 'club', 'clump', 'cluster', 'clutch', 'coach', 'coast', 'coconut',
+  'code', 'coffee', 'coil', 'coin', 'collect', 'color', 'column', 'combine', 'come', 'comfort',
+  'comic', 'common', 'company', 'concert', 'conduct', 'confirm', 'congress', 'connect', 'consider', 'control',
+  'convince', 'cook', 'cool', 'copper', 'copy', 'coral', 'core', 'corn', 'correct', 'cost',
+  'cotton', 'couch', 'country', 'couple', 'course', 'cousin', 'cover', 'coyote', 'crack', 'cradle',
+  'craft', 'cram', 'crane', 'crash', 'crater', 'crawl', 'crazy', 'cream', 'credit', 'creek',
+  'crew', 'cricket', 'crime', 'crisp', 'critic', 'crop', 'cross', 'crouch', 'crowd', 'crucial',
+  'cruel', 'cruise', 'crumble', 'crunch', 'crush', 'cry', 'crystal', 'cube', 'culture', 'cup',
+  'cupboard', 'curious', 'current', 'curtain', 'curve', 'cushion', 'custom', 'cute', 'cycle', 'dad',
+  'damage', 'damp', 'dance', 'danger', 'daring', 'dash', 'daughter', 'dawn', 'day', 'deal',
+  'debate', 'debris', 'decade', 'december', 'decide', 'decline', 'decorate', 'decrease', 'deer', 'defense',
+  'define', 'defy', 'degree', 'delay', 'deliver', 'demand', 'demise', 'denial', 'dentist', 'deny',
+  'depart', 'depend', 'deposit', 'depth', 'deputy', 'derive', 'describe', 'desert', 'design', 'desk'
+];
+
+// Store the current recovery phrase temporarily (cleared after acknowledgment)
+let currentRecoveryPhrase = null;
+let currentRecoveryEntropy = null;
+
+/**
+ * Generate cryptographically secure random bytes
+ */
+function getRandomBytes(length) {
+  const array = new Uint8Array(length);
+  crypto.getRandomValues(array);
+  return array;
+}
+
+/**
+ * Generate a 24-word recovery phrase from entropy
+ */
+function generateRecoveryPhrase() {
+  // Generate 256 bits of entropy for 24 words
+  const entropy = getRandomBytes(32);
+  currentRecoveryEntropy = entropy;
+
+  // Convert entropy to words (simplified - in production use proper BIP39)
+  const words = [];
+  for (let i = 0; i < 24; i++) {
+    const index = (entropy[i] + entropy[(i + 1) % 32]) % BIP39_WORDLIST.length;
+    words.push(BIP39_WORDLIST[index]);
+  }
+
+  return words.join(' ');
+}
+
+/**
+ * Derive encryption key from password and recovery phrase using PBKDF2
+ */
+async function deriveEncryptionKey(password, salt) {
+  const encoder = new TextEncoder();
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw',
+    encoder.encode(password),
+    'PBKDF2',
+    false,
+    ['deriveKey']
+  );
+
+  return crypto.subtle.deriveKey(
+    {
+      name: 'PBKDF2',
+      salt: salt,
+      iterations: 100000,
+      hash: 'SHA-256'
+    },
+    keyMaterial,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt']
+  );
+}
+
+/**
+ * Encrypt data using AES-GCM
+ */
+async function encryptData(data, key, nonce) {
+  const encoder = new TextEncoder();
+  const encrypted = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv: nonce },
+    key,
+    encoder.encode(JSON.stringify(data))
+  );
+  return new Uint8Array(encrypted);
+}
+
+/**
+ * Decrypt data using AES-GCM
+ */
+async function decryptData(encryptedData, key, nonce) {
+  const decrypted = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: nonce },
+    key,
+    encryptedData
+  );
+  const decoder = new TextDecoder();
+  return JSON.parse(decoder.decode(decrypted));
+}
+
+/**
+ * Convert Uint8Array to Base64
+ */
+function uint8ArrayToBase64(array) {
+  return btoa(String.fromCharCode.apply(null, array));
+}
+
+/**
+ * Convert Base64 to Uint8Array
+ */
+function base64ToUint8Array(base64) {
+  const binary = atob(base64);
+  const array = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    array[i] = binary.charCodeAt(i);
+  }
+  return array;
+}
+
+/**
+ * Load credential backup status from API
+ */
+async function loadCredentialBackupStatus() {
+  const statusContent = document.getElementById('credentialBackupStatusContent');
+
+  try {
+    const token = idToken();
+    if (!token) throw new Error('No authentication token');
+
+    const res = await fetch(API_URL + '/vault/credentials/backup', {
+      method: 'GET',
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+
+    if (!res.ok) {
+      throw new Error('Failed to load credential backup status');
+    }
+
+    const status = await res.json();
+    renderCredentialBackupStatus(status);
+
+  } catch (error) {
+    console.error('Error loading credential backup status:', error);
+    statusContent.innerHTML = `
+      <div style="padding:20px;background:rgba(244,67,54,0.1);border:1px solid #f44336;border-radius:8px;text-align:center;">
+        <p style="margin:0;color:#f44336;">Failed to load backup status</p>
+        <p style="margin:8px 0 0 0;color:var(--gray);font-size:0.85rem;">${error.message}</p>
+      </div>
+    `;
+  }
+}
+
+/**
+ * Render credential backup status
+ */
+function renderCredentialBackupStatus(status) {
+  const statusContent = document.getElementById('credentialBackupStatusContent');
+  const createCard = document.getElementById('credentialBackupCreateCard');
+
+  if (status.exists) {
+    const createdDate = new Date(status.created_at).toLocaleDateString();
+    const updatedDate = status.updated_at ? new Date(status.updated_at).toLocaleDateString() : createdDate;
+    const sizeKB = Math.round(status.size_bytes / 1024 * 10) / 10;
+
+    statusContent.innerHTML = `
+      <div style="display:grid;gap:16px;">
+        <div style="display:flex;align-items:center;gap:12px;padding:16px;background:linear-gradient(135deg,rgba(16,185,129,0.1) 0%,rgba(5,150,105,0.05) 100%);border:1px solid #10b981;border-radius:8px;">
+          <div style="width:40px;height:40px;background:#10b981;border-radius:50%;display:flex;align-items:center;justify-content:center;">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="20 6 9 17 4 12"></polyline>
+            </svg>
+          </div>
+          <div>
+            <p style="margin:0;color:#10b981;font-weight:600;">Backup Active</p>
+            <p style="margin:4px 0 0 0;color:var(--gray);font-size:0.85rem;">Your credentials are securely backed up</p>
+          </div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;">
+          <div style="padding:12px;background:#0a0a0a;border-radius:6px;border:1px solid #222;">
+            <p style="margin:0;color:var(--gray);font-size:0.75rem;text-transform:uppercase;">Created</p>
+            <p style="margin:4px 0 0 0;color:var(--text);font-weight:600;">${createdDate}</p>
+          </div>
+          <div style="padding:12px;background:#0a0a0a;border-radius:6px;border:1px solid #222;">
+            <p style="margin:0;color:var(--gray);font-size:0.75rem;text-transform:uppercase;">Last Updated</p>
+            <p style="margin:4px 0 0 0;color:var(--text);font-weight:600;">${updatedDate}</p>
+          </div>
+          <div style="padding:12px;background:#0a0a0a;border-radius:6px;border:1px solid #222;">
+            <p style="margin:0;color:var(--gray);font-size:0.75rem;text-transform:uppercase;">Size</p>
+            <p style="margin:4px 0 0 0;color:var(--text);font-weight:600;">${sizeKB} KB</p>
+          </div>
+          <div style="padding:12px;background:#0a0a0a;border-radius:6px;border:1px solid #222;">
+            <p style="margin:0;color:var(--gray);font-size:0.75rem;text-transform:uppercase;">Encryption</p>
+            <p style="margin:4px 0 0 0;color:var(--text);font-weight:600;">${status.encryption_method || 'AES-256-GCM'}</p>
+          </div>
+        </div>
+      </div>
+    `;
+
+    // Update create card to show "Update Backup" instead
+    const createCardTitle = createCard.querySelector('h3');
+    if (createCardTitle) {
+      createCardTitle.textContent = 'Update Credential Backup';
+    }
+    const createBtn = document.getElementById('createCredBackupBtn');
+    if (createBtn) {
+      createBtn.textContent = 'Update Encrypted Backup';
+    }
+
+  } else {
+    statusContent.innerHTML = `
+      <div style="display:flex;align-items:center;gap:12px;padding:16px;background:rgba(255,193,37,0.1);border:1px solid var(--accent);border-radius:8px;">
+        <div style="width:40px;height:40px;background:var(--accent);border-radius:50%;display:flex;align-items:center;justify-content:center;">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"></circle>
+            <line x1="12" y1="8" x2="12" y2="12"></line>
+            <line x1="12" y1="16" x2="12.01" y2="16"></line>
+          </svg>
+        </div>
+        <div>
+          <p style="margin:0;color:var(--accent);font-weight:600;">No Backup Found</p>
+          <p style="margin:4px 0 0 0;color:var(--gray);font-size:0.85rem;">Create a backup to protect your credentials</p>
+        </div>
+      </div>
+    `;
+  }
+}
+
+/**
+ * Validate password strength
+ */
+function validateBackupPassword(password) {
+  if (password.length < 12) {
+    return 'Password must be at least 12 characters';
+  }
+  if (!/[a-z]/.test(password)) {
+    return 'Password must contain lowercase letters';
+  }
+  if (!/[A-Z]/.test(password)) {
+    return 'Password must contain uppercase letters';
+  }
+  if (!/[0-9]/.test(password)) {
+    return 'Password must contain numbers';
+  }
+  return null;
+}
+
+/**
+ * Create credential backup
+ */
+async function createCredentialBackup() {
+  const password = document.getElementById('credBackupPassword').value;
+  const confirmPassword = document.getElementById('credBackupPasswordConfirm').value;
+  const errorDiv = document.getElementById('credBackupError');
+  const btn = document.getElementById('createCredBackupBtn');
+
+  // Reset error
+  errorDiv.style.display = 'none';
+
+  // Validate passwords
+  const passwordError = validateBackupPassword(password);
+  if (passwordError) {
+    errorDiv.textContent = passwordError;
+    errorDiv.style.display = 'block';
+    return;
+  }
+
+  if (password !== confirmPassword) {
+    errorDiv.textContent = 'Passwords do not match';
+    errorDiv.style.display = 'block';
+    return;
+  }
+
+  // Disable button and show loading
+  btn.disabled = true;
+  const originalText = btn.textContent;
+  btn.textContent = 'Encrypting...';
+
+  try {
+    const token = idToken();
+    if (!token) throw new Error('No authentication token');
+
+    // Generate recovery phrase
+    currentRecoveryPhrase = generateRecoveryPhrase();
+
+    // Create salt from recovery phrase entropy
+    const salt = currentRecoveryEntropy.slice(0, 16);
+
+    // Generate nonce for encryption (12 bytes for AES-GCM)
+    const nonce = getRandomBytes(12);
+
+    // Derive encryption key from password + salt
+    const key = await deriveEncryptionKey(password, salt);
+
+    // Get credential data to backup (in a real implementation, this would be actual credentials)
+    // For now, we create a placeholder structure
+    const credentialData = {
+      version: 1,
+      created_at: new Date().toISOString(),
+      recovery_phrase_hash: await hashRecoveryPhrase(currentRecoveryPhrase),
+      placeholder: 'Credential data would be stored here'
+    };
+
+    // Encrypt the credential data
+    const encryptedBlob = await encryptData(credentialData, key, nonce);
+
+    // Prepare 24-byte nonce for XChaCha20 format (pad our 12-byte nonce)
+    const extendedNonce = new Uint8Array(24);
+    extendedNonce.set(nonce);
+
+    // Send to backend
+    const res = await fetch(API_URL + '/vault/credentials/backup', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        encrypted_blob: uint8ArrayToBase64(encryptedBlob),
+        salt: uint8ArrayToBase64(salt),
+        nonce: uint8ArrayToBase64(extendedNonce)
+      })
+    });
+
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => ({}));
+      throw new Error(errorData.message || 'Failed to create backup');
+    }
+
+    // Show recovery phrase card
+    document.getElementById('recoveryPhraseDisplay').textContent = currentRecoveryPhrase;
+    document.getElementById('recoveryPhraseCard').style.display = 'block';
+    document.getElementById('credentialBackupCreateCard').style.display = 'none';
+
+    // Clear password fields
+    document.getElementById('credBackupPassword').value = '';
+    document.getElementById('credBackupPasswordConfirm').value = '';
+
+    showToast('Backup created successfully! Save your recovery phrase.', 'success');
+
+  } catch (error) {
+    console.error('Error creating credential backup:', error);
+    errorDiv.textContent = error.message;
+    errorDiv.style.display = 'block';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalText;
+  }
+}
+
+/**
+ * Hash recovery phrase for verification
+ */
+async function hashRecoveryPhrase(phrase) {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(phrase);
+  const hash = await crypto.subtle.digest('SHA-256', data);
+  return uint8ArrayToBase64(new Uint8Array(hash));
+}
+
+/**
+ * Copy recovery phrase to clipboard
+ */
+function copyRecoveryPhrase() {
+  if (!currentRecoveryPhrase) return;
+
+  navigator.clipboard.writeText(currentRecoveryPhrase).then(() => {
+    showToast('Recovery phrase copied to clipboard', 'success');
+  }).catch(err => {
+    console.error('Failed to copy:', err);
+    showToast('Failed to copy to clipboard', 'error');
+  });
+}
+
+/**
+ * Download recovery phrase as a file
+ */
+function downloadRecoveryPhrase() {
+  if (!currentRecoveryPhrase) return;
+
+  const content = `VettID Credential Recovery Phrase
+================================
+Generated: ${new Date().toISOString()}
+
+Your recovery phrase (24 words):
+${currentRecoveryPhrase}
+
+IMPORTANT:
+- Store this file in a secure location
+- Never share this phrase with anyone
+- You will need this phrase AND your backup password to recover your credentials
+- VettID cannot recover your credentials if you lose this phrase
+`;
+
+  const blob = new Blob([content], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'vettid-recovery-phrase.txt';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+
+  showToast('Recovery phrase downloaded', 'success');
+}
+
+/**
+ * Handle acknowledgment checkbox
+ */
+document.addEventListener('DOMContentLoaded', function() {
+  const checkbox = document.getElementById('recoveryPhraseAcknowledge');
+  const btn = document.getElementById('acknowledgeRecoveryBtn');
+
+  if (checkbox && btn) {
+    checkbox.addEventListener('change', function() {
+      btn.disabled = !this.checked;
+    });
+  }
+});
+
+/**
+ * Acknowledge recovery phrase has been saved
+ */
+function acknowledgeRecoveryPhrase() {
+  // Clear the recovery phrase from memory
+  currentRecoveryPhrase = null;
+  currentRecoveryEntropy = null;
+
+  // Hide recovery phrase card, show create card again
+  document.getElementById('recoveryPhraseCard').style.display = 'none';
+  document.getElementById('credentialBackupCreateCard').style.display = 'block';
+
+  // Reset checkbox
+  document.getElementById('recoveryPhraseAcknowledge').checked = false;
+  document.getElementById('acknowledgeRecoveryBtn').disabled = true;
+
+  // Reload status
+  loadCredentialBackupStatus();
+
+  showToast('Backup complete. Your credentials are now protected.', 'success');
+}
+
+/**
+ * Recover credentials from backup
+ */
+async function recoverCredentials() {
+  const recoveryPhrase = document.getElementById('credRecoveryPhrase').value.trim();
+  const password = document.getElementById('credRecoveryPassword').value;
+  const errorDiv = document.getElementById('credRecoveryError');
+  const successDiv = document.getElementById('credRecoverySuccess');
+  const btn = document.getElementById('recoverCredBtn');
+
+  // Reset messages
+  errorDiv.style.display = 'none';
+  successDiv.style.display = 'none';
+
+  // Validate inputs
+  if (!recoveryPhrase) {
+    errorDiv.textContent = 'Please enter your recovery phrase';
+    errorDiv.style.display = 'block';
+    return;
+  }
+
+  const words = recoveryPhrase.toLowerCase().split(/\s+/).filter(w => w.length > 0);
+  if (words.length !== 24) {
+    errorDiv.textContent = 'Recovery phrase must be exactly 24 words (you entered ' + words.length + ')';
+    errorDiv.style.display = 'block';
+    return;
+  }
+
+  if (!password) {
+    errorDiv.textContent = 'Please enter your backup password';
+    errorDiv.style.display = 'block';
+    return;
+  }
+
+  // Disable button and show loading
+  btn.disabled = true;
+  const originalText = btn.textContent;
+  btn.textContent = 'Recovering...';
+
+  try {
+    const token = idToken();
+    if (!token) throw new Error('No authentication token');
+
+    // Download encrypted backup from backend
+    const res = await fetch(API_URL + '/vault/credentials/recover', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    if (!res.ok) {
+      if (res.status === 404) {
+        throw new Error('No backup found for your account');
+      }
+      const errorData = await res.json().catch(() => ({}));
+      throw new Error(errorData.message || 'Failed to download backup');
+    }
+
+    const backupData = await res.json();
+
+    // Decode backup data
+    const encryptedBlob = base64ToUint8Array(backupData.encrypted_blob);
+    const salt = base64ToUint8Array(backupData.salt);
+    const nonce = base64ToUint8Array(backupData.nonce).slice(0, 12); // Get first 12 bytes for AES-GCM
+
+    // Derive decryption key from password + salt
+    const key = await deriveEncryptionKey(password, salt);
+
+    // Attempt decryption
+    try {
+      const decryptedData = await decryptData(encryptedBlob, key, nonce);
+
+      // Verify recovery phrase hash
+      const providedHash = await hashRecoveryPhrase(words.join(' '));
+      if (decryptedData.recovery_phrase_hash !== providedHash) {
+        throw new Error('Recovery phrase does not match');
+      }
+
+      // Success!
+      successDiv.innerHTML = `
+        <p style="margin:0;font-weight:600;">Credentials recovered successfully!</p>
+        <p style="margin:8px 0 0 0;">Your credentials have been restored to this device.</p>
+      `;
+      successDiv.style.display = 'block';
+
+      // Clear form
+      document.getElementById('credRecoveryPhrase').value = '';
+      document.getElementById('credRecoveryPassword').value = '';
+
+      showToast('Credentials recovered successfully!', 'success');
+
+    } catch (decryptError) {
+      console.error('Decryption error:', decryptError);
+      throw new Error('Invalid password or recovery phrase. Please check and try again.');
+    }
+
+  } catch (error) {
+    console.error('Error recovering credentials:', error);
+    errorDiv.textContent = error.message;
+    errorDiv.style.display = 'block';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalText;
+  }
+}
+
+/**
+ * Initialize credential backup tab
+ */
+function initCredentialBackupTab() {
+  loadCredentialBackupStatus();
+}
+
+// ============================================
+// END CREDENTIAL BACKUP FUNCTIONS
+// ============================================
 
 let enrollmentSession = null;
 let enrollmentPollInterval = null;

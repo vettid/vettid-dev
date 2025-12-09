@@ -13,7 +13,6 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { DynamoDBClient, PutItemCommand, GetItemCommand } from '@aws-sdk/client-dynamodb';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
-import { createHash } from 'crypto';
 import {
   ok,
   badRequest,
@@ -24,6 +23,7 @@ import {
   getRequestId,
   nowIso,
 } from '../../common/util';
+import { generateAccountCredentials } from '../../common/nats-jwt';
 
 const ddb = new DynamoDBClient({});
 
@@ -35,6 +35,8 @@ interface NatsAccountRecord {
   owner_space_id: string;
   message_space_id: string;
   account_public_key: string;
+  account_seed: string;  // Stored encrypted, used to sign user JWTs
+  account_jwt: string;   // Account JWT signed by operator
   status: 'active' | 'suspended' | 'revoked';
   created_at: string;
   updated_at: string;
@@ -83,9 +85,8 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     const ownerSpaceId = `OwnerSpace.${userGuid}`;
     const messageSpaceId = `MessageSpace.${userGuid}`;
 
-    // Generate account signing key (in production, this would use nkeys library)
-    // For now, we create a placeholder that will be populated by the NATS operator
-    const accountPublicKey = generateAccountPlaceholder(userGuid);
+    // Generate account credentials using nkeys
+    const accountCredentials = await generateAccountCredentials(userGuid);
 
     const now = nowIso();
 
@@ -94,7 +95,9 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       user_guid: userGuid,
       owner_space_id: ownerSpaceId,
       message_space_id: messageSpaceId,
-      account_public_key: accountPublicKey,
+      account_public_key: accountCredentials.publicKey,
+      account_seed: accountCredentials.seed,
+      account_jwt: accountCredentials.accountJwt,
       status: 'active',
       created_at: now,
       updated_at: now,
@@ -132,12 +135,3 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     return internalError('Failed to create NATS account', origin);
   }
 };
-
-/**
- * Generate a placeholder account key identifier
- * In production, this would use the nkeys library to generate proper NATS account keys
- */
-function generateAccountPlaceholder(userGuid: string): string {
-  const hash = createHash('sha256').update(userGuid).digest('hex').substring(0, 32);
-  return `A${hash.toUpperCase()}`;
-}

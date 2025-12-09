@@ -7,15 +7,18 @@ import {
   aws_apigatewayv2 as apigw,
   aws_apigatewayv2_authorizers as authorizers,
   aws_apigatewayv2_integrations as integrations,
+  custom_resources as cr,
 } from 'aws-cdk-lib';
 import { InfrastructureStack } from './infrastructure-stack';
 import { LedgerStack } from './ledger-stack';
+import { VaultInfrastructureStack } from './vault-infrastructure-stack';
 
 export interface VaultStackProps extends cdk.StackProps {
   infrastructure: InfrastructureStack;
   httpApi: apigw.HttpApi;
   memberAuthorizer: apigw.IHttpRouteAuthorizer;
   ledger?: LedgerStack;  // Optional until Ledger is deployed
+  vaultInfra?: VaultInfrastructureStack;  // Optional until VaultInfra is deployed
 }
 
 /**
@@ -37,6 +40,10 @@ export class VaultStack extends cdk.Stack {
   public readonly createEnrollmentSession!: lambdaNode.NodejsFunction;
   public readonly actionRequest!: lambdaNode.NodejsFunction;
   public readonly authExecute!: lambdaNode.NodejsFunction;
+
+  // Device attestation handlers (Phase 2)
+  public readonly verifyAndroidAttestation!: lambdaNode.NodejsFunction;
+  public readonly verifyIosAttestation!: lambdaNode.NodejsFunction;
 
   // NATS account management functions
   public readonly natsCreateAccount!: lambdaNode.NodejsFunction;
@@ -162,6 +169,28 @@ export class VaultStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(30),
     });
 
+    // ===== DEVICE ATTESTATION (Phase 2) =====
+
+    this.verifyAndroidAttestation = new lambdaNode.NodejsFunction(this, 'VerifyAndroidAttestationFn', {
+      entry: 'lambda/handlers/attestation/verifyAndroidAttestation.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+        TABLE_AUDIT: tables.audit.tableName,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    this.verifyIosAttestation = new lambdaNode.NodejsFunction(this, 'VerifyIosAttestationFn', {
+      entry: 'lambda/handlers/attestation/verifyIosAttestation.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+        TABLE_AUDIT: tables.audit.tableName,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
     // ===== VAULT AUTHENTICATION =====
 
     this.actionRequest = new lambdaNode.NodejsFunction(this, 'ActionRequestFn', {
@@ -183,11 +212,17 @@ export class VaultStack extends cdk.Stack {
 
     // ===== NATS ACCOUNT MANAGEMENT =====
 
+    // NATS operator secret for signing JWTs
+    const natsOperatorSecret = cdk.aws_secretsmanager.Secret.fromSecretNameV2(
+      this, 'NatsOperatorSecret', 'vettid/nats/operator-key'
+    );
+
     const natsEnv = {
       TABLE_NATS_ACCOUNTS: tables.natsAccounts.tableName,
       TABLE_NATS_TOKENS: tables.natsTokens.tableName,
       TABLE_AUDIT: tables.audit.tableName,
       NATS_DOMAIN: 'nats.vettid.dev',
+      NATS_OPERATOR_SECRET_ARN: natsOperatorSecret.secretArn,
     };
 
     this.natsCreateAccount = new lambdaNode.NodejsFunction(this, 'NatsCreateAccountFn', {
@@ -220,15 +255,18 @@ export class VaultStack extends cdk.Stack {
 
     // ===== VAULT LIFECYCLE MANAGEMENT =====
 
+    // Get vault EC2 configuration from VaultInfrastructureStack if provided
+    const vaultConfig = props.vaultInfra?.vaultConfig;
+
     const vaultLifecycleEnv = {
       TABLE_VAULT_INSTANCES: tables.vaultInstances.tableName,
       TABLE_CREDENTIALS: tables.credentials.tableName,
       TABLE_NATS_ACCOUNTS: tables.natsAccounts.tableName,
       VAULT_AMI_ID: process.env.VAULT_AMI_ID || 'ami-placeholder',
       VAULT_INSTANCE_TYPE: 't4g.nano',
-      VAULT_SECURITY_GROUP: '', // Set via CDK context or env
-      VAULT_SUBNET_IDS: '', // Set via CDK context or env
-      VAULT_IAM_PROFILE: '', // Set via CDK context or env
+      VAULT_SECURITY_GROUP: vaultConfig?.securityGroupId || '',
+      VAULT_SUBNET_IDS: vaultConfig?.subnetIds || '',
+      VAULT_IAM_PROFILE: vaultConfig?.iamProfileName || '',
     };
 
     this.provisionVault = new lambdaNode.NodejsFunction(this, 'ProvisionVaultFn', {
@@ -372,6 +410,12 @@ export class VaultStack extends cdk.Stack {
     tables.audit.grantReadWriteData(this.actionRequest);
     tables.audit.grantReadWriteData(this.authExecute);
 
+    // ===== DEVICE ATTESTATION PERMISSIONS (Phase 2) =====
+    tables.enrollmentSessions.grantReadWriteData(this.verifyAndroidAttestation);
+    tables.enrollmentSessions.grantReadWriteData(this.verifyIosAttestation);
+    tables.audit.grantReadWriteData(this.verifyAndroidAttestation);
+    tables.audit.grantReadWriteData(this.verifyIosAttestation);
+
     // Grant Cognito permissions for enrollment finalization
     this.enrollFinalize.addToRolePolicy(new iam.PolicyStatement({
       actions: [
@@ -406,6 +450,10 @@ export class VaultStack extends cdk.Stack {
     tables.audit.grantReadWriteData(this.natsCreateAccount);
     tables.audit.grantReadWriteData(this.natsGenerateToken);
     tables.audit.grantReadWriteData(this.natsRevokeToken);
+
+    // Grant NATS operator secret access for JWT signing
+    natsOperatorSecret.grantRead(this.natsCreateAccount);
+    natsOperatorSecret.grantRead(this.natsGenerateToken);
 
     // ===== VAULT LIFECYCLE PERMISSIONS =====
 
@@ -897,6 +945,31 @@ export class VaultStack extends cdk.Stack {
         timeout: cdk.Duration.seconds(30),
       });
       props.ledger.grantDatabaseAccess(this.ledgerRotateKeys);
+
+      // Database migration Lambda
+      const runMigration = new lambdaNode.NodejsFunction(this, 'LedgerRunMigrationFn', {
+        entry: 'lambda/handlers/ledger/runMigration.ts',
+        runtime: lambda.Runtime.NODEJS_22_X,
+        environment: ledgerDbEnv,
+        ...ledgerVpcConfig,
+        timeout: cdk.Duration.minutes(5),  // Migrations may take time
+        memorySize: 256,
+      });
+      props.ledger.grantDatabaseAccess(runMigration);
+
+      // Custom resource to run migrations on deploy
+      const migrationProvider = new cr.Provider(this, 'MigrationProvider', {
+        onEventHandler: runMigration,
+      });
+
+      new cdk.CustomResource(this, 'LedgerMigration', {
+        serviceToken: migrationProvider.serviceToken,
+        properties: {
+          // Change this to force migration re-run (e.g., bump version)
+          version: '2',  // Bumped from 1 to 2 to re-run after SSL fix
+          action: 'run',
+        },
+      });
     }
 
     // Add API routes - done here to keep route resources in VaultStack
@@ -933,6 +1006,10 @@ export class VaultStack extends cdk.Stack {
     this.route('EnrollStart', httpApi, '/vault/enroll/start', apigw.HttpMethod.POST, this.enrollStart, memberAuthorizer);
     this.route('EnrollSetPassword', httpApi, '/vault/enroll/set-password', apigw.HttpMethod.POST, this.enrollSetPassword, memberAuthorizer);
     this.route('EnrollFinalize', httpApi, '/vault/enroll/finalize', apigw.HttpMethod.POST, this.enrollFinalize, memberAuthorizer);
+
+    // Device Attestation (Phase 2)
+    this.route('VerifyAndroidAttestation', httpApi, '/vault/enroll/attestation/android', apigw.HttpMethod.POST, this.verifyAndroidAttestation, memberAuthorizer);
+    this.route('VerifyIosAttestation', httpApi, '/vault/enroll/attestation/ios', apigw.HttpMethod.POST, this.verifyIosAttestation, memberAuthorizer);
 
     // Vault Authentication
     this.route('ActionRequest', httpApi, '/vault/action/request', apigw.HttpMethod.POST, this.actionRequest, memberAuthorizer);
