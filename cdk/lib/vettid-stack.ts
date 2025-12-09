@@ -1098,6 +1098,173 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       authorizer: this.memberAuthorizer,
     });
 
+    // ===== BACKUP HANDLERS (Phase 8) =====
+
+    const backupEnv = {
+      ...defaultEnv,
+      TABLE_BACKUPS: tables.backups.tableName,
+      TABLE_CREDENTIAL_BACKUPS: tables.credentialBackups.tableName,
+      TABLE_BACKUP_SETTINGS: tables.backupSettings.tableName,
+      TABLE_PROFILES: tables.profiles.tableName,
+      TABLE_CONNECTIONS: tables.connections.tableName,
+      BACKUP_BUCKET: props.infrastructure.backupBucket.bucketName,
+    };
+
+    const triggerBackup = new lambdaNode.NodejsFunction(this, 'TriggerBackupFn', {
+      entry: 'lambda/handlers/backup/triggerBackup.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: backupEnv,
+      timeout: cdk.Duration.seconds(30),
+      description: 'Trigger manual vault backup',
+    });
+
+    const listBackups = new lambdaNode.NodejsFunction(this, 'ListBackupsFn', {
+      entry: 'lambda/handlers/backup/listBackups.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: backupEnv,
+      timeout: cdk.Duration.seconds(10),
+      description: 'List available backups',
+    });
+
+    const restoreBackup = new lambdaNode.NodejsFunction(this, 'RestoreBackupFn', {
+      entry: 'lambda/handlers/backup/restoreBackup.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: backupEnv,
+      timeout: cdk.Duration.seconds(60),
+      description: 'Restore from backup',
+    });
+
+    const deleteBackup = new lambdaNode.NodejsFunction(this, 'DeleteBackupFn', {
+      entry: 'lambda/handlers/backup/deleteBackup.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: backupEnv,
+      timeout: cdk.Duration.seconds(10),
+      description: 'Delete a backup',
+    });
+
+    const getBackupSettings = new lambdaNode.NodejsFunction(this, 'GetBackupSettingsFn', {
+      entry: 'lambda/handlers/backup/getBackupSettings.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: backupEnv,
+      timeout: cdk.Duration.seconds(10),
+      description: 'Get backup settings',
+    });
+
+    const updateBackupSettings = new lambdaNode.NodejsFunction(this, 'UpdateBackupSettingsFn', {
+      entry: 'lambda/handlers/backup/updateBackupSettings.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: backupEnv,
+      timeout: cdk.Duration.seconds(10),
+      description: 'Update backup settings',
+    });
+
+    const createCredentialBackup = new lambdaNode.NodejsFunction(this, 'CreateCredentialBackupFn', {
+      entry: 'lambda/handlers/backup/createCredentialBackup.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: backupEnv,
+      timeout: cdk.Duration.seconds(30),
+      description: 'Create credential backup',
+    });
+
+    const downloadCredentialBackup = new lambdaNode.NodejsFunction(this, 'DownloadCredentialBackupFn', {
+      entry: 'lambda/handlers/backup/downloadCredentialBackup.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: backupEnv,
+      timeout: cdk.Duration.seconds(30),
+      description: 'Download credential backup',
+    });
+
+    const getCredentialBackupStatus = new lambdaNode.NodejsFunction(this, 'GetCredentialBackupStatusFn', {
+      entry: 'lambda/handlers/backup/getCredentialBackupStatus.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: backupEnv,
+      timeout: cdk.Duration.seconds(10),
+      description: 'Get credential backup status',
+    });
+
+    // Backup handler grants
+    tables.backups.grantReadWriteData(triggerBackup);
+    tables.profiles.grantReadData(triggerBackup);
+    tables.connections.grantReadData(triggerBackup);
+    props.infrastructure.backupBucket.grantReadWrite(triggerBackup);
+
+    tables.backups.grantReadData(listBackups);
+
+    tables.backups.grantReadWriteData(restoreBackup);
+    tables.profiles.grantReadWriteData(restoreBackup);
+    tables.connections.grantReadWriteData(restoreBackup);
+    props.infrastructure.backupBucket.grantRead(restoreBackup);
+
+    tables.backups.grantReadWriteData(deleteBackup);
+    props.infrastructure.backupBucket.grantDelete(deleteBackup);
+
+    tables.backupSettings.grantReadData(getBackupSettings);
+    tables.backupSettings.grantReadWriteData(updateBackupSettings);
+
+    tables.credentialBackups.grantReadWriteData(createCredentialBackup);
+    props.infrastructure.backupBucket.grantReadWrite(createCredentialBackup);
+
+    tables.credentialBackups.grantReadData(downloadCredentialBackup);
+    props.infrastructure.backupBucket.grantRead(downloadCredentialBackup);
+
+    tables.credentialBackups.grantReadData(getCredentialBackupStatus);
+
+    // Backup API routes
+    this.httpApi.addRoutes({
+      path: '/member/backups/trigger',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('TriggerBackupInt', triggerBackup),
+      authorizer: this.memberAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/member/backups',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('ListBackupsInt', listBackups),
+      authorizer: this.memberAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/member/backups/{backupId}/restore',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('RestoreBackupInt', restoreBackup),
+      authorizer: this.memberAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/member/backups/{backupId}',
+      methods: [apigw.HttpMethod.DELETE],
+      integration: new integrations.HttpLambdaIntegration('DeleteBackupInt', deleteBackup),
+      authorizer: this.memberAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/member/backups/settings',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('GetBackupSettingsInt', getBackupSettings),
+      authorizer: this.memberAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/member/backups/settings',
+      methods: [apigw.HttpMethod.PUT],
+      integration: new integrations.HttpLambdaIntegration('UpdateBackupSettingsInt', updateBackupSettings),
+      authorizer: this.memberAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/member/backups/credentials',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('CreateCredentialBackupInt', createCredentialBackup),
+      authorizer: this.memberAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/member/backups/credentials',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('DownloadCredentialBackupInt', downloadCredentialBackup),
+      authorizer: this.memberAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/member/backups/credentials/status',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('GetCredentialBackupStatusInt', getCredentialBackupStatus),
+      authorizer: this.memberAuthorizer,
+    });
+
     // API Gateway throttling (default stage)
     // Note: HTTP API v2 has account-level throttling by default (10,000 RPS burst, 5,000 RPS steady)
     // Additional per-route throttling can be configured via CfnStage
