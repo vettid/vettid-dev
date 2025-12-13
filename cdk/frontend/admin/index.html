@@ -987,8 +987,8 @@
           </div>
 
           <!-- Handlers Table -->
-          <div style="overflow-x:auto;">
-            <table id="handlersTable">
+          <div style="overflow-x:auto;overflow-y:visible;">
+            <table id="handlersTable" style="overflow:visible;">
               <thead>
                 <tr>
                   <th>Handler</th>
@@ -3473,28 +3473,26 @@ window.toggleActionDropdown = function(btn) {
   document.querySelectorAll('.action-dropdown-menu.active').forEach(m => {
     if (m !== menu) {
       m.classList.remove('active');
-      m.style.removeProperty('bottom');
-      m.style.removeProperty('top');
+      m.style.cssText = '';
     }
   });
 
-  // Check if dropdown would go off-screen and flip it upward if needed
+  // Use fixed positioning to escape any overflow:hidden containers
   const btnRect = btn.getBoundingClientRect();
   const menuHeight = 120; // Approximate menu height
   const spaceBelow = window.innerHeight - btnRect.bottom;
 
+  menu.style.position = 'fixed';
+  menu.style.right = (window.innerWidth - btnRect.right) + 'px';
+
   if (spaceBelow < menuHeight && btnRect.top > menuHeight) {
     // Open upward
-    menu.style.bottom = '100%';
+    menu.style.bottom = (window.innerHeight - btnRect.top + 4) + 'px';
     menu.style.top = 'auto';
-    menu.style.marginBottom = '4px';
-    menu.style.marginTop = '0';
   } else {
     // Open downward (default)
-    menu.style.top = '100%';
+    menu.style.top = (btnRect.bottom + 4) + 'px';
     menu.style.bottom = 'auto';
-    menu.style.marginTop = '4px';
-    menu.style.marginBottom = '0';
   }
 
   menu.classList.toggle('active');
