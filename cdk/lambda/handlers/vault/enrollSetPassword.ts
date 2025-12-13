@@ -22,6 +22,7 @@ interface SetPasswordRequest {
   encrypted_password_hash: string;
   key_id: string;
   nonce: string;
+  ephemeral_public_key: string;  // Mobile's ephemeral X25519 public key for ECDH
 }
 
 /**
@@ -67,6 +68,9 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     }
     if (!body.nonce) {
       return badRequest('nonce is required', origin);
+    }
+    if (!body.ephemeral_public_key) {
+      return badRequest('ephemeral_public_key is required', origin);
     }
 
     // Get enrollment session
@@ -146,11 +150,11 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       }),
     }));
 
-    // Update session with encrypted password hash
+    // Update session with encrypted password hash and ephemeral key
     await ddb.send(new UpdateItemCommand({
       TableName: TABLE_ENROLLMENT_SESSIONS,
       Key: marshall({ session_id: sessionId }),
-      UpdateExpression: 'SET #step = :step, encrypted_password_hash = :hash, password_nonce = :nonce, password_set_at = :set_at',
+      UpdateExpression: 'SET #step = :step, encrypted_password_hash = :hash, password_nonce = :nonce, password_ephemeral_key = :ephemeral, password_set_at = :set_at',
       ExpressionAttributeNames: {
         '#step': 'step',
       },
@@ -158,6 +162,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
         ':step': 'password_set',
         ':hash': body.encrypted_password_hash,
         ':nonce': body.nonce,
+        ':ephemeral': body.ephemeral_public_key,
         ':set_at': new Date().toISOString(),
       }),
     }));
