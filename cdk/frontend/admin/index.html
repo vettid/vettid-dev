@@ -3471,8 +3471,32 @@ window.toggleActionDropdown = function(btn) {
   const menu = btn.nextElementSibling;
   // Close all other dropdowns first
   document.querySelectorAll('.action-dropdown-menu.active').forEach(m => {
-    if (m !== menu) m.classList.remove('active');
+    if (m !== menu) {
+      m.classList.remove('active');
+      m.style.removeProperty('bottom');
+      m.style.removeProperty('top');
+    }
   });
+
+  // Check if dropdown would go off-screen and flip it upward if needed
+  const btnRect = btn.getBoundingClientRect();
+  const menuHeight = 120; // Approximate menu height
+  const spaceBelow = window.innerHeight - btnRect.bottom;
+
+  if (spaceBelow < menuHeight && btnRect.top > menuHeight) {
+    // Open upward
+    menu.style.bottom = '100%';
+    menu.style.top = 'auto';
+    menu.style.marginBottom = '4px';
+    menu.style.marginTop = '0';
+  } else {
+    // Open downward (default)
+    menu.style.top = '100%';
+    menu.style.bottom = 'auto';
+    menu.style.marginTop = '4px';
+    menu.style.marginBottom = '0';
+  }
+
   menu.classList.toggle('active');
 };
 
