@@ -210,20 +210,24 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
 
     // Store credential metadata
     const credentialId = generateSecureId('cred', 16);
+    const credentialItem: Record<string, any> = {
+      user_guid: userGuid,
+      credential_id: credentialId,
+      status: 'ACTIVE',
+      cek_version: cekVersion,
+      lat_version: lat.version,
+      device_id: session.device_id,
+      created_at: now.toISOString(),
+      last_action_at: now.toISOString(),
+      failed_auth_count: 0,
+    };
+    // Only add invitation_code if it exists (QR code flow may not have one)
+    if (session.invitation_code) {
+      credentialItem.invitation_code = session.invitation_code;
+    }
     await ddb.send(new PutItemCommand({
       TableName: TABLE_CREDENTIALS,
-      Item: marshall({
-        user_guid: userGuid,
-        credential_id: credentialId,
-        status: 'ACTIVE',
-        cek_version: cekVersion,
-        lat_version: lat.version,
-        device_id: session.device_id,
-        invitation_code: session.invitation_code,
-        created_at: now.toISOString(),
-        last_action_at: now.toISOString(),
-        failed_auth_count: 0,
-      }),
+      Item: marshall(credentialItem),
     }));
 
     // Get remaining unused transaction keys using the user-index GSI
