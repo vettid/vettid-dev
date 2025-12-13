@@ -1,5 +1,5 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
-import { DynamoDBClient, GetItemCommand, PutItemCommand, UpdateItemCommand } from '@aws-sdk/client-dynamodb';
+import { DynamoDBClient, GetItemCommand, PutItemCommand, UpdateItemCommand, QueryCommand, BatchWriteItemCommand } from '@aws-sdk/client-dynamodb';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import {
   ok,
@@ -28,6 +28,54 @@ const INITIAL_TRANSACTION_KEY_COUNT = 20;
 // Feature flag: require device attestation (Android Play Integrity / iOS App Attest)
 // Set to 'false' to skip attestation verification (faster enrollment, less security)
 const REQUIRE_ATTESTATION = process.env.REQUIRE_ATTESTATION !== 'false';
+
+/**
+ * Clean up old transaction keys for a user before starting new enrollment.
+ * This prevents accumulation of keys from failed/abandoned enrollment attempts.
+ */
+async function cleanupOldTransactionKeys(userGuid: string): Promise<number> {
+  let deletedCount = 0;
+  let lastEvaluatedKey: any = undefined;
+
+  do {
+    // Query all transaction keys for this user using GSI
+    const queryResult = await ddb.send(new QueryCommand({
+      TableName: TABLE_TRANSACTION_KEYS,
+      IndexName: 'user-index',
+      KeyConditionExpression: 'user_guid = :guid',
+      ExpressionAttributeValues: marshall({
+        ':guid': userGuid,
+      }),
+      ExclusiveStartKey: lastEvaluatedKey,
+    }));
+
+    if (queryResult.Items && queryResult.Items.length > 0) {
+      // Delete in batches of 25 (DynamoDB BatchWriteItem limit)
+      const items = queryResult.Items.map(item => unmarshall(item));
+
+      for (let i = 0; i < items.length; i += 25) {
+        const batch = items.slice(i, i + 25);
+        const deleteRequests = batch.map(item => ({
+          DeleteRequest: {
+            Key: marshall({ transaction_id: item.transaction_id }),
+          },
+        }));
+
+        await ddb.send(new BatchWriteItemCommand({
+          RequestItems: {
+            [TABLE_TRANSACTION_KEYS]: deleteRequests,
+          },
+        }));
+
+        deletedCount += batch.length;
+      }
+    }
+
+    lastEvaluatedKey = queryResult.LastEvaluatedKey;
+  } while (lastEvaluatedKey);
+
+  return deletedCount;
+}
 
 interface EnrollStartRequest {
   // For invitation code flow (legacy)
@@ -168,6 +216,12 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
 
     // Generate attestation challenge (even if skipping, for optional future use)
     const attestationChallenge = skipAttestation ? null : generateAttestationChallenge(deviceType);
+
+    // Clean up any old transaction keys from previous enrollment attempts
+    const deletedKeysCount = await cleanupOldTransactionKeys(userGuid);
+    if (deletedKeysCount > 0) {
+      console.log(`Cleaned up ${deletedKeysCount} old transaction keys for user ${userGuid}`);
+    }
 
     // Generate transaction keys (LTK/UTK pairs)
     const transactionKeys: Array<{
