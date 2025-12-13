@@ -8,7 +8,6 @@ import {
   notFound,
   conflict,
   internalError,
-  parseJsonBody,
   getRequestId,
   putAudit,
   generateSecureId,
@@ -63,7 +62,15 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       sessionId?: string;
     } | undefined;
 
-    const body = parseJsonBody<FinalizeRequest>(event);
+    // Parse body - may be empty for QR code flow where session comes from authorizer
+    let body: FinalizeRequest = {};
+    if (event.body) {
+      try {
+        body = JSON.parse(event.body) as FinalizeRequest;
+      } catch {
+        return badRequest('Invalid JSON in request body', origin);
+      }
+    }
 
     // Get session_id from authorizer context or request body
     const sessionId = authContext?.sessionId || body.enrollment_session_id;
