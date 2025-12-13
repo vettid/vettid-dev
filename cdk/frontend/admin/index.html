@@ -6931,8 +6931,7 @@ function formatBytes(bytes) {
 async function loadHandlers() {
   if (!isAdmin()) return;
 
-  const tbody = document.querySelector('#handlersTable tbody');
-  tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--gray);padding:40px;">Loading handlers...</td></tr>';
+  showLoadingSkeleton('handlersTable');
 
   try {
     const response = await api('/admin/registry/handlers');
