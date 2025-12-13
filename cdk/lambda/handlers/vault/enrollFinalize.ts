@@ -116,11 +116,13 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     // Generate CEK (Credential Encryption Key)
     const cekKeyPair = generateX25519KeyPair();
     const cekVersion = 1;
+    const credentialKeyId = generateSecureId('cek', 16);
 
     // Store CEK private key (encrypted at rest by DynamoDB)
     await ddb.send(new PutItemCommand({
       TableName: TABLE_CREDENTIAL_KEYS,
       Item: marshall({
+        credential_id: credentialKeyId,  // Primary key
         user_guid: userGuid,
         version: cekVersion,
         private_key: cekKeyPair.privateKey.toString('base64'),
@@ -133,15 +135,14 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
 
     // Generate LAT (Ledger Auth Token) using crypto utilities
     const lat = generateLAT(1);
-    const latId = generateSecureId('lat', 16);
+    const latTokenHash = hashLATToken(lat.token);
 
     await ddb.send(new PutItemCommand({
       TableName: TABLE_LEDGER_AUTH_TOKENS,
       Item: marshall({
+        token: latTokenHash,  // Primary key - store hash as the key
         user_guid: userGuid,
         version: lat.version,
-        lat_id: latId,
-        token_hash: hashLATToken(lat.token),  // Store hash, not raw token
         status: 'ACTIVE',
         created_at: now.toISOString(),
       }),
@@ -208,10 +209,12 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     const serializedBlob = serializeEncryptedBlob(encryptedBlobData);
 
     // Store credential metadata
+    const credentialId = generateSecureId('cred', 16);
     await ddb.send(new PutItemCommand({
       TableName: TABLE_CREDENTIALS,
       Item: marshall({
         user_guid: userGuid,
+        credential_id: credentialId,
         status: 'ACTIVE',
         cek_version: cekVersion,
         lat_version: lat.version,
@@ -292,12 +295,12 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       status: 'enrolled',
       credential_package: {
         user_guid: userGuid,
+        credential_id: credentialId,
         encrypted_blob: serializedBlob.ciphertext,
         ephemeral_public_key: serializedBlob.ephemeral_public_key,
         nonce: serializedBlob.nonce,
         cek_version: cekVersion,
         ledger_auth_token: {
-          lat_id: latId,
           token: lat.token,  // Send raw token to mobile (will be stored for verification)
           version: lat.version,
         },
