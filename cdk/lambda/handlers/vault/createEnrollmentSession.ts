@@ -98,7 +98,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     const sessionId = generateSecureId('enroll', 32);
     const sessionToken = generateSecureId('est', 48); // Enrollment Session Token
     const nowMs = Date.now();
-    const expiresAtMs = nowMs + 7 * 60 * 1000; // 7 minutes
+    const expiresAtMs = nowMs + 5 * 60 * 1000; // 5 minutes
 
     // Create web-initiated enrollment session
     // Note: created_at and expires_at stored as numbers (Unix timestamps in ms) for GSI compatibility
