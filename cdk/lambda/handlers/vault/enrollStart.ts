@@ -297,6 +297,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       enrollment_session_id: sessionId,
       user_guid: userGuid,
       transaction_keys: transactionKeys,
+      password_key_id: passwordKeyId,  // The key_id to use for password encryption
       next_step: nextStep,
       attestation_required: !skipAttestation,
     };
