@@ -3467,14 +3467,14 @@ if(userDropdownBtn){
 }
 
 // Global action dropdown toggle function
-function toggleActionDropdown(btn) {
+window.toggleActionDropdown = function(btn) {
   const menu = btn.nextElementSibling;
   // Close all other dropdowns first
   document.querySelectorAll('.action-dropdown-menu.active').forEach(m => {
     if (m !== menu) m.classList.remove('active');
   });
   menu.classList.toggle('active');
-}
+};
 
 // Close dropdown when clicking outside
 document.addEventListener('click',()=>{
