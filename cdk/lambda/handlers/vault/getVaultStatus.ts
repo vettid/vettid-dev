@@ -68,9 +68,10 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     if (credentialResult.Items && credentialResult.Items.length > 0) {
       const credential = unmarshall(credentialResult.Items[0]);
 
-      // Get transaction key count
+      // Get transaction key count using user-index GSI
       const tkResult = await ddb.send(new QueryCommand({
         TableName: TABLE_TRANSACTION_KEYS,
+        IndexName: 'user-index',
         KeyConditionExpression: 'user_guid = :guid',
         FilterExpression: '#status = :unused',
         ExpressionAttributeNames: {
