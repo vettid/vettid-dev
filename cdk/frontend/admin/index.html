@@ -469,6 +469,7 @@
           </button>
           <div class="tab-children" id="siteManagementChildren">
             <button class="tab tab-child" data-tab="site-management" data-sub-tab="system-health">System Health</button>
+            <button class="tab tab-child" data-tab="site-management" data-sub-tab="service-registry">Service Registry</button>
             <button class="tab tab-child" data-tab="site-management" data-sub-tab="subscription-types">Subscription Types</button>
             <button class="tab tab-child" data-tab="site-management" data-sub-tab="membership-terms">Membership Terms</button>
             <button class="tab tab-child" data-tab="site-management" data-sub-tab="email">Email</button>
@@ -937,6 +938,71 @@
             <div id="systemLogsContainer" style="max-height:400px;overflow-y:auto;background:var(--bg-logs);border-radius:4px;padding:12px;font-family:monospace;font-size:0.75rem;line-height:1.6;">
               <div style="color:var(--gray);">Loading logs...</div>
             </div>
+          </div>
+        </div>
+
+        <!-- Service Registry Sub-Tab -->
+        <div id="service-registry" class="sub-tab-content">
+          <h3 style="margin-top:0;">Service Registry</h3>
+          <p class="muted">Manage vault handlers (WASM services) that users can install and execute in their vaults.</p>
+
+          <!-- Action Buttons -->
+          <div style="display:flex;gap:12px;margin:16px 0;flex-wrap:wrap;">
+            <button id="uploadHandlerBtn" class="btn" style="background:linear-gradient(135deg,#4caf50 0%,#2e7d32 100%);">Upload Handler</button>
+            <button id="refreshHandlersBtn" class="btn">Refresh</button>
+          </div>
+
+          <!-- Status Filter Badges -->
+          <div style="display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap;">
+            <button class="btn handler-filter active" data-filter="all" style="background:linear-gradient(135deg,#6b7280 0%,#4b5563 100%);padding:10px 20px;font-weight:600;">
+              All <span id="allHandlersCount" style="background:var(--bg-button-secondary);color:#fff;border-radius:12px;padding:2px 8px;margin-left:8px;font-size:0.75rem;">0</span>
+            </button>
+            <button class="btn handler-filter" data-filter="active" style="background:linear-gradient(135deg,#10b981 0%,#059669 100%);padding:10px 20px;font-weight:600;">
+              Active <span id="activeHandlersCount" style="background:#065f46;color:#fff;border-radius:12px;padding:2px 8px;margin-left:8px;font-size:0.75rem;">0</span>
+            </button>
+            <button class="btn handler-filter" data-filter="pending" style="background:linear-gradient(135deg,#f59e0b 0%,#d97706 100%);padding:10px 20px;font-weight:600;">
+              Pending <span id="pendingHandlersCount" style="background:#92400e;color:#fff;border-radius:12px;padding:2px 8px;margin-left:8px;font-size:0.75rem;">0</span>
+            </button>
+            <button class="btn handler-filter" data-filter="revoked" style="background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);padding:10px 20px;font-weight:600;">
+              Revoked <span id="revokedHandlersCount" style="background:#991b1b;color:#fff;border-radius:12px;padding:2px 8px;margin-left:8px;font-size:0.75rem;">0</span>
+            </button>
+          </div>
+
+          <!-- Category Filter -->
+          <div style="display:flex;gap:12px;margin-bottom:20px;align-items:center;flex-wrap:wrap;">
+            <label style="font-size:0.9rem;color:var(--gray);">Category:</label>
+            <select id="handlerCategoryFilter" style="padding:8px 12px;min-width:150px;">
+              <option value="">All Categories</option>
+              <option value="messaging">Messaging</option>
+              <option value="social">Social</option>
+              <option value="productivity">Productivity</option>
+              <option value="utilities">Utilities</option>
+              <option value="finance">Finance</option>
+              <option value="health">Health</option>
+              <option value="other">Other</option>
+            </select>
+            <input id="handlerSearchInput" type="text" placeholder="Search handlers..." style="padding:8px 12px;min-width:200px;" />
+          </div>
+
+          <!-- Handlers Table -->
+          <div style="overflow-x:auto;">
+            <table id="handlersTable">
+              <thead>
+                <tr>
+                  <th>Handler</th>
+                  <th>Category</th>
+                  <th>Version</th>
+                  <th>Publisher</th>
+                  <th>Status</th>
+                  <th>Installs</th>
+                  <th>Published</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr><td colspan="8" style="text-align:center;color:var(--gray);padding:40px;">Loading handlers...</td></tr>
+              </tbody>
+            </table>
           </div>
         </div>
 
@@ -3330,6 +3396,7 @@ document.querySelectorAll('.tab').forEach(tab => {
       if (subTab === 'membership-terms') loadCurrentTerms();
       if (subTab === 'email') loadSentEmails();
       if (subTab === 'notifications') loadAllNotifications();
+      if (subTab === 'service-registry') loadHandlers();
 
       // Close sidebar on mobile
       if (window.innerWidth <= 768) {
@@ -6828,6 +6895,540 @@ document.addEventListener('DOMContentLoaded', function() {
   }
 });
 
+// ============================================
+// SERVICE REGISTRY MANAGEMENT
+// ============================================
+
+let handlersData = [];
+let handlerStatusFilter = 'all';
+let handlerCategoryFilter = '';
+let handlerSearchTerm = '';
+let currentHandlerId = null;
+let pendingUploadUrl = null;
+
+// Format bytes to human readable
+function formatBytes(bytes) {
+  if (!bytes || bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
+
+// Load handlers from API
+async function loadHandlers() {
+  if (!isAdmin()) return;
+
+  const tbody = document.querySelector('#handlersTable tbody');
+  tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--gray);padding:40px;">Loading handlers...</td></tr>';
+
+  try {
+    const response = await api('/admin/registry/handlers');
+    handlersData = response.handlers || [];
+    renderHandlers();
+  } catch (err) {
+    console.error('Error loading handlers:', err);
+    tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:#ef4444;padding:40px;">Error loading handlers: ${escapeHtml(err.message)}</td></tr>`;
+    showToast('Failed to load handlers', 'error');
+  }
+}
+
+// Render handlers table
+function renderHandlers() {
+  const tbody = document.querySelector('#handlersTable tbody');
+
+  // Update counts
+  const allCount = handlersData.length;
+  const activeCount = handlersData.filter(h => h.status === 'active').length;
+  const pendingCount = handlersData.filter(h => h.status === 'pending').length;
+  const revokedCount = handlersData.filter(h => h.status === 'revoked').length;
+
+  document.getElementById('allHandlersCount').textContent = allCount;
+  document.getElementById('activeHandlersCount').textContent = activeCount;
+  document.getElementById('pendingHandlersCount').textContent = pendingCount;
+  document.getElementById('revokedHandlersCount').textContent = revokedCount;
+
+  // Apply filters
+  let filtered = handlersData.filter(h => {
+    // Status filter
+    if (handlerStatusFilter !== 'all' && h.status !== handlerStatusFilter) return false;
+    // Category filter
+    if (handlerCategoryFilter && h.category !== handlerCategoryFilter) return false;
+    // Search filter
+    if (handlerSearchTerm) {
+      const term = handlerSearchTerm.toLowerCase();
+      const searchable = [h.handler_id, h.name, h.description, h.publisher].join(' ').toLowerCase();
+      if (!searchable.includes(term)) return false;
+    }
+    return true;
+  });
+
+  if (filtered.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:var(--gray);padding:40px;">
+      <div style="font-size:2rem;margin-bottom:8px;">📦</div>
+      <div>No handlers found</div>
+      <div style="font-size:0.85rem;opacity:0.7;margin-top:4px;">Try adjusting your filters or upload a new handler</div>
+    </td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = '';
+  filtered.forEach(h => {
+    const tr = document.createElement('tr');
+    tr.style.cursor = 'pointer';
+    tr.onclick = () => openHandlerDetails(h.handler_id);
+
+    // Status badge
+    const statusColors = {
+      active: 'background:linear-gradient(135deg,#10b981 0%,#059669 100%);color:#fff;',
+      pending: 'background:linear-gradient(135deg,#f59e0b 0%,#d97706 100%);color:#fff;',
+      revoked: 'background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);color:#fff;'
+    };
+    const statusStyle = statusColors[h.status] || 'background:var(--bg-tertiary);';
+
+    // Category icons
+    const categoryIcons = {
+      messaging: '💬',
+      social: '👥',
+      productivity: '📊',
+      utilities: '🔧',
+      finance: '💰',
+      health: '❤️',
+      other: '📦'
+    };
+    const icon = categoryIcons[h.category] || '📦';
+
+    const publishedDate = h.published_at ? new Date(h.published_at).toLocaleDateString() : '—';
+
+    tr.innerHTML = `
+      <td>
+        <div style="display:flex;align-items:center;gap:10px;">
+          <span style="font-size:1.2rem;">${icon}</span>
+          <div>
+            <div style="font-weight:600;">${escapeHtml(h.name)}</div>
+            <div style="font-size:0.8rem;color:var(--gray);font-family:monospace;">${escapeHtml(h.handler_id)}</div>
+          </div>
+        </div>
+      </td>
+      <td style="text-transform:capitalize;">${escapeHtml(h.category || '—')}</td>
+      <td><code style="background:var(--bg-tertiary);padding:2px 6px;border-radius:4px;">${escapeHtml(h.current_version || '—')}</code></td>
+      <td>${escapeHtml(h.publisher || '—')}</td>
+      <td><span style="padding:4px 10px;border-radius:4px;font-size:0.75rem;font-weight:700;text-transform:uppercase;${statusStyle}">${escapeHtml(h.status)}</span></td>
+      <td>${h.install_count || 0}</td>
+      <td>${publishedDate}</td>
+      <td>
+        <div class="action-dropdown" onclick="event.stopPropagation();">
+          <button class="action-dropdown-btn" onclick="toggleActionDropdown(this)">⋮</button>
+          <div class="action-dropdown-menu">
+            <button class="action-dropdown-item" onclick="openHandlerDetails('${escapeHtml(h.handler_id)}')">View Details</button>
+            ${h.status === 'pending' ? `<button class="action-dropdown-item" onclick="signHandler('${escapeHtml(h.handler_id)}')">Sign & Activate</button>` : ''}
+            ${h.status === 'active' ? `<button class="action-dropdown-item" onclick="openRevokeModal('${escapeHtml(h.handler_id)}', '${escapeHtml(h.name)}')">Revoke</button>` : ''}
+          </div>
+        </div>
+      </td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+// Open handler details modal
+async function openHandlerDetails(handlerId) {
+  currentHandlerId = handlerId;
+  const handler = handlersData.find(h => h.handler_id === handlerId);
+  if (!handler) {
+    showToast('Handler not found', 'error');
+    return;
+  }
+
+  // Populate details
+  document.getElementById('handlerDetailName').textContent = handler.name;
+  document.getElementById('handlerDetailId').textContent = handler.handler_id;
+  document.getElementById('handlerDetailVersion').textContent = handler.current_version || '—';
+  document.getElementById('handlerDetailCategory').textContent = handler.category || '—';
+  document.getElementById('handlerDetailPublisher').textContent = handler.publisher || '—';
+  document.getElementById('handlerDetailInstalls').textContent = handler.install_count || 0;
+  document.getElementById('handlerDetailSize').textContent = formatBytes(handler.size_bytes);
+  document.getElementById('handlerDetailPublished').textContent = handler.published_at ? new Date(handler.published_at).toLocaleString() : '—';
+  document.getElementById('handlerDetailDescription').textContent = handler.description || 'No description provided.';
+
+  // Status badge
+  const statusEl = document.getElementById('handlerDetailStatus');
+  const statusColors = {
+    active: 'background:#10b981;color:#fff;',
+    pending: 'background:#f59e0b;color:#fff;',
+    revoked: 'background:#ef4444;color:#fff;'
+  };
+  statusEl.textContent = handler.status;
+  statusEl.style.cssText = statusColors[handler.status] || '';
+
+  // Changelog
+  const changelogSection = document.getElementById('handlerChangelogSection');
+  if (handler.changelog) {
+    changelogSection.style.display = 'block';
+    document.getElementById('handlerDetailChangelog').textContent = handler.changelog;
+  } else {
+    changelogSection.style.display = 'none';
+  }
+
+  // Versions
+  const versionsEl = document.getElementById('handlerDetailVersions');
+  const versions = handler.versions || [handler.current_version];
+  versionsEl.innerHTML = versions.map(v =>
+    `<span style="padding:4px 10px;background:var(--bg-tertiary);border-radius:4px;font-size:0.85rem;font-family:monospace;${v === handler.current_version ? 'border:1px solid var(--accent);' : ''}">${escapeHtml(v)}</span>`
+  ).join('');
+
+  // Permissions
+  const permSection = document.getElementById('handlerPermissionsSection');
+  const permEl = document.getElementById('handlerDetailPermissions');
+  if (handler.permissions && handler.permissions.length > 0) {
+    permSection.style.display = 'block';
+    permEl.innerHTML = handler.permissions.map(p => `
+      <div style="padding:10px;background:var(--bg-input);border-radius:4px;border-left:3px solid var(--accent);">
+        <div style="font-weight:600;margin-bottom:2px;">${escapeHtml(p.type)} <span style="color:var(--gray);font-weight:400;">(${escapeHtml(p.scope)})</span></div>
+        <div style="font-size:0.85rem;color:var(--gray);">${escapeHtml(p.description || '')}</div>
+      </div>
+    `).join('');
+  } else {
+    permSection.style.display = 'none';
+  }
+
+  // Audit trail
+  document.getElementById('handlerDetailCreatedAt').textContent = handler.created_at ? new Date(handler.created_at).toLocaleString() : '—';
+  document.getElementById('handlerDetailCreatedBy').textContent = handler.created_by || '—';
+  document.getElementById('handlerDetailUpdatedAt').textContent = handler.updated_at ? new Date(handler.updated_at).toLocaleString() : '—';
+
+  // Signed info
+  const signedInfo = document.getElementById('handlerSignedInfo');
+  if (handler.signed_at) {
+    signedInfo.style.display = 'block';
+    document.getElementById('handlerDetailSignedAt').textContent = new Date(handler.signed_at).toLocaleString();
+    document.getElementById('handlerDetailSignedBy').textContent = handler.signed_by || '—';
+  } else {
+    signedInfo.style.display = 'none';
+  }
+
+  // Revoked info
+  const revokedInfo = document.getElementById('handlerRevokedInfo');
+  const revocationReason = document.getElementById('handlerRevocationReason');
+  if (handler.revoked_at) {
+    revokedInfo.style.display = 'block';
+    document.getElementById('handlerDetailRevokedAt').textContent = new Date(handler.revoked_at).toLocaleString();
+    document.getElementById('handlerDetailRevokedBy').textContent = handler.revoked_by || '—';
+    if (handler.revocation_reason) {
+      revocationReason.style.display = 'block';
+      document.getElementById('handlerDetailRevocationReason').textContent = handler.revocation_reason;
+    } else {
+      revocationReason.style.display = 'none';
+    }
+  } else {
+    revokedInfo.style.display = 'none';
+    revocationReason.style.display = 'none';
+  }
+
+  // Action buttons
+  const signBtn = document.getElementById('signHandlerBtn');
+  const revokeBtn = document.getElementById('revokeHandlerBtn');
+  signBtn.style.display = handler.status === 'pending' ? 'inline-block' : 'none';
+  revokeBtn.style.display = handler.status === 'active' ? 'inline-block' : 'none';
+  signBtn.onclick = () => signHandler(handlerId);
+  revokeBtn.onclick = () => openRevokeModal(handlerId, handler.name);
+
+  document.getElementById('handlerDetailsModal').classList.add('active');
+}
+
+function closeHandlerDetailsModal() {
+  document.getElementById('handlerDetailsModal').classList.remove('active');
+  currentHandlerId = null;
+}
+
+// Upload handler modal
+function openUploadHandlerModal() {
+  // Reset form
+  document.getElementById('handlerIdInput').value = '';
+  document.getElementById('handlerNameInput').value = '';
+  document.getElementById('handlerVersionInput').value = '1.0.0';
+  document.getElementById('handlerCategoryInput').value = '';
+  document.getElementById('handlerPublisherInput').value = '';
+  document.getElementById('handlerDescriptionInput').value = '';
+  document.getElementById('handlerIconInput').value = '';
+  document.getElementById('handlerChangelogInput').value = '';
+  document.getElementById('uploadHandlerResult').style.display = 'none';
+  document.getElementById('uploadHandlerMsg').textContent = '';
+  document.getElementById('createHandlerBtn').disabled = false;
+  pendingUploadUrl = null;
+
+  document.getElementById('uploadHandlerModal').classList.add('active');
+}
+
+function closeUploadHandlerModal() {
+  document.getElementById('uploadHandlerModal').classList.remove('active');
+  pendingUploadUrl = null;
+  // Refresh handlers if we uploaded something
+  loadHandlers();
+}
+
+// Create handler (step 1)
+async function createHandler() {
+  const handlerId = document.getElementById('handlerIdInput').value.trim();
+  const name = document.getElementById('handlerNameInput').value.trim();
+  const version = document.getElementById('handlerVersionInput').value.trim();
+  const category = document.getElementById('handlerCategoryInput').value;
+  const publisher = document.getElementById('handlerPublisherInput').value.trim();
+  const description = document.getElementById('handlerDescriptionInput').value.trim();
+  const iconUrl = document.getElementById('handlerIconInput').value.trim();
+  const changelog = document.getElementById('handlerChangelogInput').value.trim();
+
+  // Validation
+  if (!handlerId || !name || !version || !category || !publisher || !description) {
+    showToast('Please fill in all required fields', 'error');
+    return;
+  }
+
+  // Validate handler ID format
+  if (!/^[a-z0-9-]+$/.test(handlerId)) {
+    showToast('Handler ID must contain only lowercase letters, numbers, and hyphens', 'error');
+    return;
+  }
+
+  // Validate version format
+  if (!/^\d+\.\d+\.\d+$/.test(version)) {
+    showToast('Version must be in semantic format (X.Y.Z)', 'error');
+    return;
+  }
+
+  const msgEl = document.getElementById('uploadHandlerMsg');
+  const createBtn = document.getElementById('createHandlerBtn');
+
+  try {
+    createBtn.disabled = true;
+    msgEl.textContent = 'Creating handler...';
+    msgEl.style.color = 'var(--gray)';
+
+    const payload = {
+      handler_id: handlerId,
+      name,
+      version,
+      category,
+      publisher,
+      description
+    };
+    if (iconUrl) payload.icon_url = iconUrl;
+    if (changelog) payload.changelog = changelog;
+
+    const response = await api('/admin/registry/handlers', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
+
+    pendingUploadUrl = response.upload_url;
+
+    // Show upload section
+    document.getElementById('uploadHandlerResult').style.display = 'block';
+    msgEl.textContent = 'Handler metadata saved. Now upload the WASM file.';
+    msgEl.style.color = '#10b981';
+    createBtn.style.display = 'none';
+
+    showToast('Handler created! Upload WASM to complete.', 'success');
+  } catch (err) {
+    console.error('Error creating handler:', err);
+    msgEl.textContent = 'Error: ' + err.message;
+    msgEl.style.color = '#ef4444';
+    createBtn.disabled = false;
+    showToast('Failed to create handler', 'error');
+  }
+}
+
+// Upload WASM file (step 2)
+async function uploadWasmFile() {
+  const fileInput = document.getElementById('wasmFileInput');
+  const file = fileInput.files[0];
+
+  if (!file) {
+    showToast('Please select a WASM file', 'error');
+    return;
+  }
+
+  if (!pendingUploadUrl) {
+    showToast('No upload URL available', 'error');
+    return;
+  }
+
+  const progressSection = document.getElementById('wasmUploadProgress');
+  const progressBar = document.getElementById('wasmUploadBar');
+  const progressPercent = document.getElementById('wasmUploadPercent');
+  const uploadBtn = document.getElementById('uploadWasmBtn');
+
+  try {
+    uploadBtn.disabled = true;
+    progressSection.style.display = 'block';
+
+    // Use XMLHttpRequest for progress tracking
+    await new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+
+      xhr.upload.addEventListener('progress', (e) => {
+        if (e.lengthComputable) {
+          const percent = Math.round((e.loaded / e.total) * 100);
+          progressBar.style.width = percent + '%';
+          progressPercent.textContent = percent + '%';
+        }
+      });
+
+      xhr.addEventListener('load', () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve();
+        } else {
+          reject(new Error('Upload failed with status ' + xhr.status));
+        }
+      });
+
+      xhr.addEventListener('error', () => reject(new Error('Upload failed')));
+
+      xhr.open('PUT', pendingUploadUrl);
+      xhr.setRequestHeader('Content-Type', 'application/wasm');
+      xhr.send(file);
+    });
+
+    showToast('WASM uploaded successfully! Handler is now pending review.', 'success');
+    closeUploadHandlerModal();
+  } catch (err) {
+    console.error('Error uploading WASM:', err);
+    showToast('Failed to upload WASM: ' + err.message, 'error');
+    uploadBtn.disabled = false;
+  }
+}
+
+// Sign handler
+async function signHandler(handlerId) {
+  if (!confirm('Sign and activate this handler? It will become available for users to install.')) return;
+
+  try {
+    await api('/admin/registry/handlers/sign', {
+      method: 'POST',
+      body: JSON.stringify({ handler_id: handlerId })
+    });
+
+    showToast('Handler signed and activated!', 'success');
+    closeHandlerDetailsModal();
+    loadHandlers();
+  } catch (err) {
+    console.error('Error signing handler:', err);
+    showToast('Failed to sign handler: ' + err.message, 'error');
+  }
+}
+
+// Revoke handler modal
+function openRevokeModal(handlerId, handlerName) {
+  currentHandlerId = handlerId;
+  document.getElementById('revokeHandlerName').textContent = handlerName;
+  document.getElementById('revocationReasonInput').value = '';
+  document.getElementById('revokeHandlerMsg').textContent = '';
+  document.getElementById('revokeHandlerModal').classList.add('active');
+}
+
+function closeRevokeHandlerModal() {
+  document.getElementById('revokeHandlerModal').classList.remove('active');
+}
+
+async function revokeHandler() {
+  const reason = document.getElementById('revocationReasonInput').value.trim();
+  if (!reason) {
+    showToast('Please provide a revocation reason', 'error');
+    return;
+  }
+
+  const msgEl = document.getElementById('revokeHandlerMsg');
+  const confirmBtn = document.getElementById('confirmRevokeBtn');
+
+  try {
+    confirmBtn.disabled = true;
+    msgEl.textContent = 'Revoking handler...';
+    msgEl.style.color = 'var(--gray)';
+
+    await api('/admin/registry/handlers/revoke', {
+      method: 'POST',
+      body: JSON.stringify({
+        handler_id: currentHandlerId,
+        reason
+      })
+    });
+
+    showToast('Handler revoked successfully', 'success');
+    closeRevokeHandlerModal();
+    closeHandlerDetailsModal();
+    loadHandlers();
+  } catch (err) {
+    console.error('Error revoking handler:', err);
+    msgEl.textContent = 'Error: ' + err.message;
+    msgEl.style.color = '#ef4444';
+    confirmBtn.disabled = false;
+    showToast('Failed to revoke handler', 'error');
+  }
+}
+
+// Event listeners for service registry
+document.addEventListener('DOMContentLoaded', function() {
+  // Upload handler button
+  const uploadBtn = document.getElementById('uploadHandlerBtn');
+  if (uploadBtn) uploadBtn.onclick = openUploadHandlerModal;
+
+  // Refresh handlers button
+  const refreshBtn = document.getElementById('refreshHandlersBtn');
+  if (refreshBtn) refreshBtn.onclick = loadHandlers;
+
+  // Create handler button
+  const createBtn = document.getElementById('createHandlerBtn');
+  if (createBtn) createBtn.onclick = createHandler;
+
+  // WASM file input
+  const wasmInput = document.getElementById('wasmFileInput');
+  if (wasmInput) {
+    wasmInput.onchange = function() {
+      document.getElementById('uploadWasmBtn').disabled = !this.files.length;
+    };
+  }
+
+  // Upload WASM button
+  const uploadWasmBtn = document.getElementById('uploadWasmBtn');
+  if (uploadWasmBtn) uploadWasmBtn.onclick = uploadWasmFile;
+
+  // Confirm revoke button
+  const confirmRevokeBtn = document.getElementById('confirmRevokeBtn');
+  if (confirmRevokeBtn) confirmRevokeBtn.onclick = revokeHandler;
+
+  // Status filter buttons
+  document.querySelectorAll('.handler-filter').forEach(btn => {
+    btn.onclick = function() {
+      document.querySelectorAll('.handler-filter').forEach(b => b.classList.remove('active'));
+      this.classList.add('active');
+      handlerStatusFilter = this.dataset.filter;
+      renderHandlers();
+    };
+  });
+
+  // Category filter
+  const categoryFilter = document.getElementById('handlerCategoryFilter');
+  if (categoryFilter) {
+    categoryFilter.onchange = function() {
+      handlerCategoryFilter = this.value;
+      renderHandlers();
+    };
+  }
+
+  // Search input
+  const searchInput = document.getElementById('handlerSearchInput');
+  if (searchInput) {
+    let searchTimeout;
+    searchInput.oninput = function() {
+      clearTimeout(searchTimeout);
+      searchTimeout = setTimeout(() => {
+        handlerSearchTerm = this.value;
+        renderHandlers();
+      }, 300);
+    };
+  }
+});
+
 </script>
 
 <!-- Select Notification Admin Modal -->
@@ -7261,6 +7862,249 @@ document.addEventListener('DOMContentLoaded', function() {
       </div>
 
       <div id="analyticsMsg" style="margin-top:12px;text-align:center;color:var(--gray);"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Upload Handler Modal -->
+<div id="uploadHandlerModal" class="modal-overlay">
+  <div class="modal" style="max-width:600px;">
+    <div class="modal-header">
+      <h3 class="modal-title">Upload Handler</h3>
+      <button class="modal-close" onclick="closeUploadHandlerModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <p style="margin-bottom:16px;color:var(--gray);font-size:0.9rem;">
+        Upload a new handler or add a new version to an existing handler.
+      </p>
+
+      <!-- Handler ID -->
+      <div style="margin-bottom:16px;">
+        <label for="handlerIdInput" style="display:block;margin-bottom:6px;font-size:0.9rem;font-weight:600;">
+          Handler ID <span style="color:#ef4444;">*</span>
+        </label>
+        <input type="text" id="handlerIdInput" placeholder="e.g., signal-encryption" style="width:100%;" />
+        <div style="font-size:0.75rem;color:var(--gray);margin-top:4px;">Lowercase letters, numbers, and hyphens only</div>
+      </div>
+
+      <!-- Handler Name -->
+      <div style="margin-bottom:16px;">
+        <label for="handlerNameInput" style="display:block;margin-bottom:6px;font-size:0.9rem;font-weight:600;">
+          Display Name <span style="color:#ef4444;">*</span>
+        </label>
+        <input type="text" id="handlerNameInput" placeholder="e.g., Signal Encryption" style="width:100%;" />
+      </div>
+
+      <!-- Version -->
+      <div style="margin-bottom:16px;">
+        <label for="handlerVersionInput" style="display:block;margin-bottom:6px;font-size:0.9rem;font-weight:600;">
+          Version <span style="color:#ef4444;">*</span>
+        </label>
+        <input type="text" id="handlerVersionInput" placeholder="e.g., 1.0.0" style="width:100%;" />
+        <div style="font-size:0.75rem;color:var(--gray);margin-top:4px;">Semantic versioning (X.Y.Z)</div>
+      </div>
+
+      <!-- Category -->
+      <div style="margin-bottom:16px;">
+        <label for="handlerCategoryInput" style="display:block;margin-bottom:6px;font-size:0.9rem;font-weight:600;">
+          Category <span style="color:#ef4444;">*</span>
+        </label>
+        <select id="handlerCategoryInput" style="width:100%;">
+          <option value="">Select category...</option>
+          <option value="messaging">Messaging</option>
+          <option value="social">Social</option>
+          <option value="productivity">Productivity</option>
+          <option value="utilities">Utilities</option>
+          <option value="finance">Finance</option>
+          <option value="health">Health</option>
+          <option value="other">Other</option>
+        </select>
+      </div>
+
+      <!-- Publisher -->
+      <div style="margin-bottom:16px;">
+        <label for="handlerPublisherInput" style="display:block;margin-bottom:6px;font-size:0.9rem;font-weight:600;">
+          Publisher <span style="color:#ef4444;">*</span>
+        </label>
+        <input type="text" id="handlerPublisherInput" placeholder="e.g., VettID Team" style="width:100%;" />
+      </div>
+
+      <!-- Description -->
+      <div style="margin-bottom:16px;">
+        <label for="handlerDescriptionInput" style="display:block;margin-bottom:6px;font-size:0.9rem;font-weight:600;">
+          Description <span style="color:#ef4444;">*</span>
+        </label>
+        <textarea id="handlerDescriptionInput" placeholder="Describe what this handler does..." style="width:100%;min-height:80px;resize:vertical;"></textarea>
+      </div>
+
+      <!-- Icon URL (optional) -->
+      <div style="margin-bottom:16px;">
+        <label for="handlerIconInput" style="display:block;margin-bottom:6px;font-size:0.9rem;font-weight:600;">
+          Icon URL <span style="color:var(--gray);font-weight:400;">(optional)</span>
+        </label>
+        <input type="url" id="handlerIconInput" placeholder="https://example.com/icon.png" style="width:100%;" />
+      </div>
+
+      <!-- Changelog (optional) -->
+      <div style="margin-bottom:16px;">
+        <label for="handlerChangelogInput" style="display:block;margin-bottom:6px;font-size:0.9rem;font-weight:600;">
+          Changelog <span style="color:var(--gray);font-weight:400;">(optional)</span>
+        </label>
+        <textarea id="handlerChangelogInput" placeholder="What's new in this version..." style="width:100%;min-height:60px;resize:vertical;"></textarea>
+      </div>
+
+      <!-- Upload Result -->
+      <div id="uploadHandlerResult" style="display:none;margin-bottom:16px;padding:16px;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;">
+        <h4 style="margin:0 0 12px 0;color:var(--accent);font-size:0.95rem;">Handler Created - Upload WASM</h4>
+        <p style="font-size:0.85rem;color:var(--gray);margin-bottom:12px;">
+          Now upload your WASM file to complete the handler registration.
+        </p>
+        <input type="file" id="wasmFileInput" accept=".wasm" style="margin-bottom:12px;width:100%;" />
+        <button id="uploadWasmBtn" class="btn" style="width:100%;background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);" disabled>Upload WASM File</button>
+        <div id="wasmUploadProgress" style="display:none;margin-top:12px;">
+          <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+            <span style="font-size:0.85rem;color:var(--gray);">Uploading...</span>
+            <span id="wasmUploadPercent" style="font-size:0.85rem;font-weight:600;">0%</span>
+          </div>
+          <div style="background:var(--bg-tertiary);border-radius:4px;height:6px;overflow:hidden;">
+            <div id="wasmUploadBar" style="background:linear-gradient(135deg,#10b981 0%,#059669 100%);height:100%;width:0%;transition:width 0.3s ease;"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Actions -->
+      <div style="display:flex;gap:12px;">
+        <button id="createHandlerBtn" class="btn" style="flex:1;background:linear-gradient(135deg,#10b981 0%,#059669 100%);">Create Handler</button>
+        <button onclick="closeUploadHandlerModal()" class="btn" style="flex:1;background:var(--bg-button-secondary);">Cancel</button>
+      </div>
+
+      <div id="uploadHandlerMsg" style="margin-top:12px;text-align:center;"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Handler Details Modal -->
+<div id="handlerDetailsModal" class="modal-overlay">
+  <div class="modal" style="max-width:700px;max-height:90vh;overflow-y:auto;">
+    <div class="modal-header">
+      <h3 class="modal-title">Handler Details</h3>
+      <button class="modal-close" onclick="closeHandlerDetailsModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <!-- Handler Header -->
+      <div style="display:flex;gap:16px;align-items:flex-start;margin-bottom:20px;padding-bottom:16px;border-bottom:1px solid var(--border);">
+        <div id="handlerIcon" style="width:64px;height:64px;background:var(--bg-tertiary);border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:2rem;flex-shrink:0;">📦</div>
+        <div style="flex:1;">
+          <h2 id="handlerDetailName" style="margin:0 0 4px 0;font-size:1.4rem;"></h2>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <span id="handlerDetailId" style="font-size:0.85rem;color:var(--gray);font-family:monospace;"></span>
+            <span id="handlerDetailStatus" style="padding:4px 10px;border-radius:4px;font-size:0.75rem;font-weight:700;text-transform:uppercase;"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Info Grid -->
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:20px;">
+        <div style="padding:12px;background:var(--bg-input);border-radius:6px;">
+          <div style="font-size:0.75rem;color:var(--gray);margin-bottom:4px;">Version</div>
+          <div id="handlerDetailVersion" style="font-weight:600;"></div>
+        </div>
+        <div style="padding:12px;background:var(--bg-input);border-radius:6px;">
+          <div style="font-size:0.75rem;color:var(--gray);margin-bottom:4px;">Category</div>
+          <div id="handlerDetailCategory" style="font-weight:600;text-transform:capitalize;"></div>
+        </div>
+        <div style="padding:12px;background:var(--bg-input);border-radius:6px;">
+          <div style="font-size:0.75rem;color:var(--gray);margin-bottom:4px;">Publisher</div>
+          <div id="handlerDetailPublisher" style="font-weight:600;"></div>
+        </div>
+        <div style="padding:12px;background:var(--bg-input);border-radius:6px;">
+          <div style="font-size:0.75rem;color:var(--gray);margin-bottom:4px;">Installs</div>
+          <div id="handlerDetailInstalls" style="font-weight:600;"></div>
+        </div>
+        <div style="padding:12px;background:var(--bg-input);border-radius:6px;">
+          <div style="font-size:0.75rem;color:var(--gray);margin-bottom:4px;">Size</div>
+          <div id="handlerDetailSize" style="font-weight:600;"></div>
+        </div>
+        <div style="padding:12px;background:var(--bg-input);border-radius:6px;">
+          <div style="font-size:0.75rem;color:var(--gray);margin-bottom:4px;">Published</div>
+          <div id="handlerDetailPublished" style="font-weight:600;"></div>
+        </div>
+      </div>
+
+      <!-- Description -->
+      <div style="margin-bottom:20px;">
+        <h4 style="margin:0 0 8px 0;font-size:0.95rem;color:var(--accent);">Description</h4>
+        <p id="handlerDetailDescription" style="margin:0;color:var(--gray);line-height:1.6;"></p>
+      </div>
+
+      <!-- Changelog -->
+      <div id="handlerChangelogSection" style="margin-bottom:20px;display:none;">
+        <h4 style="margin:0 0 8px 0;font-size:0.95rem;color:var(--accent);">Changelog</h4>
+        <p id="handlerDetailChangelog" style="margin:0;color:var(--gray);line-height:1.6;white-space:pre-wrap;"></p>
+      </div>
+
+      <!-- Versions -->
+      <div style="margin-bottom:20px;">
+        <h4 style="margin:0 0 8px 0;font-size:0.95rem;color:var(--accent);">All Versions</h4>
+        <div id="handlerDetailVersions" style="display:flex;gap:8px;flex-wrap:wrap;"></div>
+      </div>
+
+      <!-- Permissions -->
+      <div id="handlerPermissionsSection" style="margin-bottom:20px;display:none;">
+        <h4 style="margin:0 0 8px 0;font-size:0.95rem;color:var(--accent);">Permissions</h4>
+        <div id="handlerDetailPermissions" style="display:flex;flex-direction:column;gap:8px;"></div>
+      </div>
+
+      <!-- Audit Info -->
+      <div style="margin-bottom:20px;padding:16px;background:var(--bg-input);border-radius:6px;">
+        <h4 style="margin:0 0 12px 0;font-size:0.95rem;color:var(--accent);">Audit Trail</h4>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;font-size:0.85rem;">
+          <div><span style="color:var(--gray);">Created:</span> <span id="handlerDetailCreatedAt"></span> by <span id="handlerDetailCreatedBy"></span></div>
+          <div><span style="color:var(--gray);">Updated:</span> <span id="handlerDetailUpdatedAt"></span></div>
+          <div id="handlerSignedInfo" style="display:none;"><span style="color:var(--gray);">Signed:</span> <span id="handlerDetailSignedAt"></span> by <span id="handlerDetailSignedBy"></span></div>
+          <div id="handlerRevokedInfo" style="display:none;"><span style="color:#ef4444;">Revoked:</span> <span id="handlerDetailRevokedAt"></span> by <span id="handlerDetailRevokedBy"></span></div>
+        </div>
+        <div id="handlerRevocationReason" style="display:none;margin-top:12px;padding:12px;background:rgba(239,68,68,0.1);border:1px solid #ef4444;border-radius:4px;">
+          <span style="color:#ef4444;font-weight:600;">Revocation Reason:</span>
+          <span id="handlerDetailRevocationReason"></span>
+        </div>
+      </div>
+
+      <!-- Action Buttons -->
+      <div id="handlerDetailActions" style="display:flex;gap:12px;flex-wrap:wrap;">
+        <button id="signHandlerBtn" class="btn" style="background:linear-gradient(135deg,#10b981 0%,#059669 100%);display:none;">Sign & Activate</button>
+        <button id="revokeHandlerBtn" class="btn" style="background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);display:none;">Revoke Handler</button>
+        <button onclick="closeHandlerDetailsModal()" class="btn" style="background:var(--bg-button-secondary);">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Revoke Handler Modal -->
+<div id="revokeHandlerModal" class="modal-overlay">
+  <div class="modal" style="max-width:500px;">
+    <div class="modal-header">
+      <h3 class="modal-title">Revoke Handler</h3>
+      <button class="modal-close" onclick="closeRevokeHandlerModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <p style="margin-bottom:16px;color:var(--gray);">
+        Are you sure you want to revoke <strong id="revokeHandlerName"></strong>? This will prevent new installations but existing installations will remain.
+      </p>
+
+      <div style="margin-bottom:16px;">
+        <label for="revocationReasonInput" style="display:block;margin-bottom:6px;font-size:0.9rem;font-weight:600;">
+          Revocation Reason <span style="color:#ef4444;">*</span>
+        </label>
+        <textarea id="revocationReasonInput" placeholder="Why is this handler being revoked?" style="width:100%;min-height:80px;resize:vertical;"></textarea>
+      </div>
+
+      <div style="display:flex;gap:12px;">
+        <button id="confirmRevokeBtn" class="btn" style="flex:1;background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);">Revoke Handler</button>
+        <button onclick="closeRevokeHandlerModal()" class="btn" style="flex:1;background:var(--bg-button-secondary);">Cancel</button>
+      </div>
+
+      <div id="revokeHandlerMsg" style="margin-top:12px;text-align:center;"></div>
     </div>
   </div>
 </div>
