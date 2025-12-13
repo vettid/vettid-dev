@@ -974,6 +974,8 @@
             <select id="handlerCategoryFilter" style="padding:8px 12px;min-width:150px;">
               <option value="">All Categories</option>
               <option value="messaging">Messaging</option>
+              <option value="connections">Connections</option>
+              <option value="profile">Profile</option>
               <option value="social">Social</option>
               <option value="productivity">Productivity</option>
               <option value="utilities">Utilities</option>
@@ -6989,6 +6991,8 @@ function renderHandlers() {
     // Category icons
     const categoryIcons = {
       messaging: '💬',
+      connections: '🔗',
+      profile: '👤',
       social: '👥',
       productivity: '📊',
       utilities: '🔧',
@@ -7912,6 +7916,8 @@ document.addEventListener('DOMContentLoaded', function() {
         <select id="handlerCategoryInput" style="width:100%;">
           <option value="">Select category...</option>
           <option value="messaging">Messaging</option>
+          <option value="connections">Connections</option>
+          <option value="profile">Profile</option>
           <option value="social">Social</option>
           <option value="productivity">Productivity</option>
           <option value="utilities">Utilities</option>

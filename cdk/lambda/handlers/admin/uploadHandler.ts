@@ -87,7 +87,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     }
 
     // Valid categories
-    const validCategories = ['messaging', 'social', 'productivity', 'utilities', 'finance', 'health', 'other'];
+    const validCategories = ['messaging', 'social', 'productivity', 'utilities', 'finance', 'health', 'profile', 'connections', 'other'];
     if (!validCategories.includes(body.category)) {
       return badRequest(`category must be one of: ${validCategories.join(', ')}`);
     }
