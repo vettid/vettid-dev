@@ -4,16 +4,14 @@ import {
   aws_ec2 as ec2,
   aws_rds as rds,
   aws_secretsmanager as secretsmanager,
-  aws_lambda_nodejs as lambdaNode,
   aws_lambda as lambda,
-  aws_iam as iam,
 } from 'aws-cdk-lib';
 
 /**
  * VettID Ledger Stack
  *
  * Contains the Protean Credential System database:
- * - Aurora PostgreSQL Serverless v2 for Ledger database
+ * - RDS PostgreSQL (provisioned) for Ledger database
  * - VPC with private subnets for database isolation
  * - Secrets Manager for database credentials
  * - Lambda functions for Ledger operations
@@ -40,7 +38,7 @@ export class LedgerStack extends cdk.Stack {
   public readonly lambdaSecurityGroup: ec2.SecurityGroup;
 
   // Database resources
-  public readonly cluster: rds.DatabaseCluster;
+  public readonly instance: rds.DatabaseInstance;
   public readonly databaseSecret: secretsmanager.ISecret;
 
   // Database connection info for Lambda handlers
@@ -102,48 +100,45 @@ export class LedgerStack extends cdk.Stack {
     );
 
     // ============================================
-    // Aurora PostgreSQL Serverless v2
+    // RDS PostgreSQL (Provisioned)
     // ============================================
 
     this.databaseName = 'ledger';
 
-    // Create Aurora Serverless v2 cluster
+    // Create RDS PostgreSQL instance
     // Using PostgreSQL 16 for best performance and security
-    this.cluster = new rds.DatabaseCluster(this, 'LedgerCluster', {
-      engine: rds.DatabaseClusterEngine.auroraPostgres({
-        version: rds.AuroraPostgresEngineVersion.VER_16_6,
+    // db.t4g.small: 2 vCPU, 2GB RAM - cost-effective for dev/small workloads
+    this.instance = new rds.DatabaseInstance(this, 'LedgerInstance', {
+      engine: rds.DatabaseInstanceEngine.postgres({
+        version: rds.PostgresEngineVersion.VER_16_6,
       }),
-      serverlessV2MinCapacity: 0.5,  // Minimum ACUs (can scale to 0.5 for dev)
-      serverlessV2MaxCapacity: isProd ? 16 : 4,  // Maximum ACUs
-      writer: rds.ClusterInstance.serverlessV2('Writer', {
-        publiclyAccessible: false,
-      }),
-      readers: isProd
-        ? [
-            rds.ClusterInstance.serverlessV2('Reader1', {
-              scaleWithWriter: true,
-            }),
-          ]
-        : [],
+      instanceType: ec2.InstanceType.of(
+        ec2.InstanceClass.T4G,
+        isProd ? ec2.InstanceSize.MEDIUM : ec2.InstanceSize.SMALL
+      ),
       vpc: this.vpc,
       vpcSubnets: {
         subnetType: ec2.SubnetType.PRIVATE_ISOLATED,
       },
       securityGroups: [this.databaseSecurityGroup],
-      defaultDatabaseName: this.databaseName,
+      databaseName: this.databaseName,
+      allocatedStorage: 20,
+      maxAllocatedStorage: isProd ? 100 : 50, // Auto-scaling storage
+      storageType: rds.StorageType.GP3,
       storageEncrypted: true,
+      multiAz: isProd,
+      publiclyAccessible: false,
       deletionProtection: isProd,
-      backup: {
-        retention: cdk.Duration.days(isProd ? 35 : 7),
-      },
+      backupRetention: cdk.Duration.days(isProd ? 35 : 7),
       monitoringInterval: isProd ? cdk.Duration.seconds(60) : undefined,
       cloudwatchLogsExports: isProd ? ['postgresql'] : undefined,
       removalPolicy: isProd ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
+      autoMinorVersionUpgrade: true,
     });
 
     // Store the secret reference
-    this.databaseSecret = this.cluster.secret!;
-    this.databaseEndpoint = this.cluster.clusterEndpoint.hostname;
+    this.databaseSecret = this.instance.secret!;
+    this.databaseEndpoint = this.instance.instanceEndpoint.hostname;
 
     // ============================================
     // VPC Endpoints for Lambda Access
@@ -152,14 +147,6 @@ export class LedgerStack extends cdk.Stack {
     // Secrets Manager endpoint for Lambda to retrieve credentials
     this.vpc.addInterfaceEndpoint('SecretsManagerEndpoint', {
       service: ec2.InterfaceVpcEndpointAwsService.SECRETS_MANAGER,
-      subnets: {
-        subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS,
-      },
-    });
-
-    // RDS Data API endpoint (optional, for simpler queries)
-    this.vpc.addInterfaceEndpoint('RdsDataEndpoint', {
-      service: ec2.InterfaceVpcEndpointAwsService.RDS_DATA,
       subnets: {
         subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS,
       },
@@ -175,16 +162,16 @@ export class LedgerStack extends cdk.Stack {
       exportName: 'VettID-Ledger-VpcId',
     });
 
-    new cdk.CfnOutput(this, 'LedgerClusterEndpoint', {
-      value: this.cluster.clusterEndpoint.hostname,
-      description: 'Aurora cluster endpoint',
-      exportName: 'VettID-Ledger-ClusterEndpoint',
+    new cdk.CfnOutput(this, 'LedgerInstanceEndpoint', {
+      value: this.instance.instanceEndpoint.hostname,
+      description: 'RDS instance endpoint',
+      exportName: 'VettID-Ledger-InstanceEndpoint',
     });
 
-    new cdk.CfnOutput(this, 'LedgerClusterPort', {
-      value: this.cluster.clusterEndpoint.port.toString(),
-      description: 'Aurora cluster port',
-      exportName: 'VettID-Ledger-ClusterPort',
+    new cdk.CfnOutput(this, 'LedgerInstancePort', {
+      value: this.instance.instanceEndpoint.port.toString(),
+      description: 'RDS instance port',
+      exportName: 'VettID-Ledger-InstancePort',
     });
 
     new cdk.CfnOutput(this, 'LedgerSecretArn', {
@@ -241,19 +228,5 @@ export class LedgerStack extends cdk.Stack {
   public grantDatabaseAccess(lambdaFunction: lambda.IFunction): void {
     // Grant permission to read database secret
     this.databaseSecret.grantRead(lambdaFunction);
-
-    // Grant RDS Data API access (if using Data API)
-    lambdaFunction.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: [
-          'rds-data:ExecuteStatement',
-          'rds-data:BatchExecuteStatement',
-          'rds-data:BeginTransaction',
-          'rds-data:CommitTransaction',
-          'rds-data:RollbackTransaction',
-        ],
-        resources: [this.cluster.clusterArn],
-      })
-    );
   }
 }

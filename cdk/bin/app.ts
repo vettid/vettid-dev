@@ -55,7 +55,7 @@ const vault = new VaultStack(app, 'VettID-Vault', {
   infrastructure,
   httpApi: core.httpApi,
   memberAuthorizer: core.memberAuthorizer,
-  ledger,  // Enable Ledger (Protean Credential System) handlers
+  ledger,  // Re-enabled after RDS migration
   vaultInfra,  // Enable vault EC2 provisioning
 });
 
