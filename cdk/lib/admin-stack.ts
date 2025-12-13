@@ -89,7 +89,15 @@ export class AdminStack extends cdk.Stack {
   public readonly uploadHandler!: lambdaNode.NodejsFunction;
   public readonly signHandler!: lambdaNode.NodejsFunction;
   public readonly revokeHandler!: lambdaNode.NodejsFunction;
+  public readonly deleteHandler!: lambdaNode.NodejsFunction;
   public readonly listRegistryHandlers!: lambdaNode.NodejsFunction;
+
+  // Supported services admin functions
+  public readonly createService!: lambdaNode.NodejsFunction;
+  public readonly updateService!: lambdaNode.NodejsFunction;
+  public readonly deleteService!: lambdaNode.NodejsFunction;
+  public readonly listServices!: lambdaNode.NodejsFunction;
+  public readonly toggleServiceStatus!: lambdaNode.NodejsFunction;
 
   constructor(scope: Construct, id: string, props: AdminStackProps) {
     super(scope, id, props);
@@ -1024,6 +1032,13 @@ export class AdminStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(30),
     });
 
+    const deleteHandler = new lambdaNode.NodejsFunction(this, 'DeleteHandlerFn', {
+      entry: 'lambda/handlers/admin/deleteHandler.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: { ...defaultEnv, ...handlerEnv },
+      timeout: cdk.Duration.seconds(30),
+    });
+
     const listRegistryHandlers = new lambdaNode.NodejsFunction(this, 'ListRegistryHandlersFn', {
       entry: 'lambda/handlers/admin/listRegistryHandlers.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
@@ -1035,16 +1050,73 @@ export class AdminStack extends cdk.Stack {
     tables.handlers.grantReadWriteData(uploadHandler);
     tables.handlers.grantReadWriteData(signHandler);
     tables.handlers.grantReadWriteData(revokeHandler);
+    tables.handlers.grantReadWriteData(deleteHandler);
     tables.handlers.grantReadData(listRegistryHandlers);
 
     // S3 bucket permissions for handler packages
     props.infrastructure.handlersBucket.grantReadWrite(uploadHandler);
     props.infrastructure.handlersBucket.grantRead(signHandler);
+    props.infrastructure.handlersBucket.grantReadWrite(deleteHandler);
 
     this.uploadHandler = uploadHandler;
     this.signHandler = signHandler;
     this.revokeHandler = revokeHandler;
+    this.deleteHandler = deleteHandler;
     this.listRegistryHandlers = listRegistryHandlers;
+
+    // ===== SUPPORTED SERVICES ADMIN FUNCTIONS =====
+
+    const serviceEnv = {
+      TABLE_SUPPORTED_SERVICES: tables.supportedServices.tableName,
+    };
+
+    const createService = new lambdaNode.NodejsFunction(this, 'CreateServiceFn', {
+      entry: 'lambda/handlers/admin/createService.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: { ...defaultEnv, ...serviceEnv },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const updateService = new lambdaNode.NodejsFunction(this, 'UpdateServiceFn', {
+      entry: 'lambda/handlers/admin/updateService.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: { ...defaultEnv, ...serviceEnv },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const deleteService = new lambdaNode.NodejsFunction(this, 'DeleteServiceFn', {
+      entry: 'lambda/handlers/admin/deleteService.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: { ...defaultEnv, ...serviceEnv },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const listServices = new lambdaNode.NodejsFunction(this, 'ListServicesFn', {
+      entry: 'lambda/handlers/admin/listServices.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: { ...defaultEnv, ...serviceEnv },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const toggleServiceStatus = new lambdaNode.NodejsFunction(this, 'ToggleServiceStatusFn', {
+      entry: 'lambda/handlers/admin/toggleServiceStatus.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: { ...defaultEnv, ...serviceEnv },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    // Supported services table permissions
+    tables.supportedServices.grantReadWriteData(createService);
+    tables.supportedServices.grantReadWriteData(updateService);
+    tables.supportedServices.grantReadWriteData(deleteService);
+    tables.supportedServices.grantReadData(listServices);
+    tables.supportedServices.grantReadWriteData(toggleServiceStatus);
+
+    this.createService = createService;
+    this.updateService = updateService;
+    this.deleteService = deleteService;
+    this.listServices = listServices;
+    this.toggleServiceStatus = toggleServiceStatus;
 
     // ===== NATS CONTROL PERMISSIONS =====
     tables.natsAccounts.grantReadData(generateNatsControlToken);
@@ -1178,5 +1250,13 @@ export class AdminStack extends cdk.Stack {
     this.route('UploadHandler', httpApi, '/admin/registry/handlers', apigw.HttpMethod.POST, this.uploadHandler, adminAuthorizer);
     this.route('SignHandler', httpApi, '/admin/registry/handlers/sign', apigw.HttpMethod.POST, this.signHandler, adminAuthorizer);
     this.route('RevokeHandler', httpApi, '/admin/registry/handlers/revoke', apigw.HttpMethod.POST, this.revokeHandler, adminAuthorizer);
+    this.route('DeleteHandler', httpApi, '/admin/registry/handlers/delete', apigw.HttpMethod.POST, this.deleteHandler, adminAuthorizer);
+
+    // Supported Services Admin - Admin-only endpoints for managing supported services
+    this.route('ListServices', httpApi, '/admin/services', apigw.HttpMethod.GET, this.listServices, adminAuthorizer);
+    this.route('CreateService', httpApi, '/admin/services', apigw.HttpMethod.POST, this.createService, adminAuthorizer);
+    this.route('UpdateService', httpApi, '/admin/services', apigw.HttpMethod.PUT, this.updateService, adminAuthorizer);
+    this.route('DeleteService', httpApi, '/admin/services/delete', apigw.HttpMethod.POST, this.deleteService, adminAuthorizer);
+    this.route('ToggleServiceStatus', httpApi, '/admin/services/status', apigw.HttpMethod.POST, this.toggleServiceStatus, adminAuthorizer);
   }
 }

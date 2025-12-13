@@ -18,18 +18,22 @@ const TABLE_ENROLLMENT_SESSIONS = process.env.TABLE_ENROLLMENT_SESSIONS!;
 const TABLE_TRANSACTION_KEYS = process.env.TABLE_TRANSACTION_KEYS!;
 
 interface SetPasswordRequest {
-  enrollment_session_id: string;
+  enrollment_session_id?: string;  // Optional if using authorizer context
   encrypted_password_hash: string;
   key_id: string;
   nonce: string;
 }
 
 /**
- * POST /api/v1/enroll/set-password
+ * POST /vault/enroll/set-password
  *
  * Set password during enrollment.
  * The password hash is encrypted with the specified UTK before sending.
  * Ledger stores the encrypted hash for later verification.
+ *
+ * Supports two flows:
+ * 1. QR Code Flow: session_id comes from enrollment JWT (authorizer context)
+ * 2. Direct Flow: enrollment_session_id in request body
  *
  * Returns:
  * - status: 'password_set'
@@ -37,79 +41,99 @@ interface SetPasswordRequest {
  */
 export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   const requestId = getRequestId(event);
+  const origin = event.headers?.origin;
 
   try {
+    // Check for authorizer context (QR code flow)
+    // The authorizer property exists but isn't in the base type definition
+    const authContext = (event.requestContext as any)?.authorizer?.lambda as {
+      userGuid?: string;
+      sessionId?: string;
+    } | undefined;
+
     const body = parseJsonBody<SetPasswordRequest>(event);
 
-    if (!body.enrollment_session_id) {
-      return badRequest('enrollment_session_id is required');
+    // Get session_id from authorizer context or request body
+    const sessionId = authContext?.sessionId || body.enrollment_session_id;
+
+    if (!sessionId) {
+      return badRequest('enrollment_session_id is required', origin);
     }
     if (!body.encrypted_password_hash) {
-      return badRequest('encrypted_password_hash is required');
+      return badRequest('encrypted_password_hash is required', origin);
     }
     if (!body.key_id) {
-      return badRequest('key_id is required');
+      return badRequest('key_id is required', origin);
     }
     if (!body.nonce) {
-      return badRequest('nonce is required');
+      return badRequest('nonce is required', origin);
     }
 
     // Get enrollment session
     const sessionResult = await ddb.send(new GetItemCommand({
       TableName: TABLE_ENROLLMENT_SESSIONS,
-      Key: marshall({ session_id: body.enrollment_session_id }),
+      Key: marshall({ session_id: sessionId }),
     }));
 
     if (!sessionResult.Item) {
-      return notFound('Enrollment session not found');
+      return notFound('Enrollment session not found', origin);
     }
 
     const session = unmarshall(sessionResult.Item);
 
-    // Validate session state
-    if (session.status !== 'STARTED') {
-      return conflict(`Invalid session status: ${session.status}`);
+    // If using authorizer context, verify user_guid matches
+    if (authContext?.userGuid && session.user_guid !== authContext.userGuid) {
+      return badRequest('Session does not belong to authenticated user', origin);
     }
 
-    if (session.step !== 'password_required') {
-      return conflict(`Invalid session step: ${session.step}`);
+    // Validate session state
+    if (session.status !== 'STARTED') {
+      return conflict(`Invalid session status: ${session.status}`, origin);
+    }
+
+    if (session.step !== 'set_password' && session.step !== 'password_required') {
+      return conflict(`Invalid session step: ${session.step}`, origin);
     }
 
     // Check session expiry
     if (new Date(session.expires_at) < new Date()) {
-      return badRequest('Enrollment session has expired');
+      return badRequest('Enrollment session has expired', origin);
     }
 
     // Validate the key_id matches the expected one
     if (body.key_id !== session.password_key_id) {
-      return badRequest('Invalid key_id for password encryption');
+      return badRequest('Invalid key_id for password encryption', origin);
     }
 
     // Verify the transaction key exists and is unused
+    // Note: table uses transaction_id as PK (same value as key_id)
     const keyResult = await ddb.send(new GetItemCommand({
       TableName: TABLE_TRANSACTION_KEYS,
       Key: marshall({
-        user_guid: session.user_guid,
-        key_id: body.key_id,
+        transaction_id: body.key_id,
       }),
     }));
 
     if (!keyResult.Item) {
-      return notFound('Transaction key not found');
+      return notFound('Transaction key not found', origin);
     }
 
     const transactionKey = unmarshall(keyResult.Item);
 
+    // Verify the key belongs to this user
+    if (transactionKey.user_guid !== session.user_guid) {
+      return badRequest('Transaction key does not belong to this user', origin);
+    }
+
     if (transactionKey.status !== 'UNUSED') {
-      return conflict('Transaction key has already been used');
+      return conflict('Transaction key has already been used', origin);
     }
 
     // Mark the transaction key as used
     await ddb.send(new UpdateItemCommand({
       TableName: TABLE_TRANSACTION_KEYS,
       Key: marshall({
-        user_guid: session.user_guid,
-        key_id: body.key_id,
+        transaction_id: body.key_id,
       }),
       UpdateExpression: 'SET #status = :status, used_at = :used_at, used_for = :used_for',
       ExpressionAttributeNames: {
@@ -123,10 +147,9 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     }));
 
     // Update session with encrypted password hash
-    // Note: The encrypted hash will be decrypted and re-encrypted with the credential when finalizing
     await ddb.send(new UpdateItemCommand({
       TableName: TABLE_ENROLLMENT_SESSIONS,
-      Key: marshall({ session_id: body.enrollment_session_id }),
+      Key: marshall({ session_id: sessionId }),
       UpdateExpression: 'SET #step = :step, encrypted_password_hash = :hash, password_nonce = :nonce, password_set_at = :set_at',
       ExpressionAttributeNames: {
         '#step': 'step',
@@ -143,18 +166,17 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     await putAudit({
       type: 'enrollment_password_set',
       user_guid: session.user_guid,
-      session_id: body.enrollment_session_id,
+      session_id: sessionId,
       key_id: body.key_id,
     }, requestId);
 
     return ok({
       status: 'password_set',
-      next_step: 'finalize',  // Skip policies for now, can add later
-      // Optional: include policy_options if we want to support set_policies step
-    });
+      next_step: 'finalize',
+    }, origin);
 
   } catch (error: any) {
     console.error('Set password error:', error);
-    return internalError('Failed to set password');
+    return internalError('Failed to set password', origin);
   }
 };

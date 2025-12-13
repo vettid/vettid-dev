@@ -469,7 +469,8 @@
           </button>
           <div class="tab-children" id="siteManagementChildren">
             <button class="tab tab-child" data-tab="site-management" data-sub-tab="system-health">System Health</button>
-            <button class="tab tab-child" data-tab="site-management" data-sub-tab="service-registry">Service Registry</button>
+            <button class="tab tab-child" data-tab="site-management" data-sub-tab="event-handlers">Event Handlers</button>
+            <button class="tab tab-child" data-tab="site-management" data-sub-tab="supported-services">Supported Services</button>
             <button class="tab tab-child" data-tab="site-management" data-sub-tab="subscription-types">Subscription Types</button>
             <button class="tab tab-child" data-tab="site-management" data-sub-tab="membership-terms">Membership Terms</button>
             <button class="tab tab-child" data-tab="site-management" data-sub-tab="email">Email</button>
@@ -941,10 +942,10 @@
           </div>
         </div>
 
-        <!-- Service Registry Sub-Tab -->
-        <div id="service-registry" class="sub-tab-content">
-          <h3 style="margin-top:0;">Service Registry</h3>
-          <p class="muted">Manage vault handlers (WASM services) that users can install and execute in their vaults.</p>
+        <!-- Event Handlers Sub-Tab -->
+        <div id="event-handlers" class="sub-tab-content">
+          <h3 style="margin-top:0;">Event Handlers</h3>
+          <p class="muted">Manage vault event handlers (WASM services) that users can install and execute in their vaults.</p>
 
           <!-- Action Buttons -->
           <div style="display:flex;gap:12px;margin:16px 0;flex-wrap:wrap;">
@@ -1003,6 +1004,74 @@
               </thead>
               <tbody>
                 <tr><td colspan="8" style="text-align:center;color:var(--gray);padding:40px;">Loading handlers...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Supported Services Sub-Tab -->
+        <div id="supported-services" class="sub-tab-content">
+          <h3 style="margin-top:0;">Supported Services</h3>
+          <p class="muted">Manage third-party services and integrations that work with VettID vaults.</p>
+
+          <!-- Action Buttons -->
+          <div style="display:flex;gap:12px;margin:16px 0;flex-wrap:wrap;">
+            <button id="addServiceBtn" class="btn" style="background:linear-gradient(135deg,#4caf50 0%,#2e7d32 100%);">Add Service</button>
+            <button id="refreshServicesBtn" class="btn">Refresh</button>
+          </div>
+
+          <!-- Status Filter Badges -->
+          <div style="display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap;">
+            <button class="btn service-filter active" data-filter="all" style="background:linear-gradient(135deg,#6b7280 0%,#4b5563 100%);padding:10px 20px;font-weight:600;">
+              All <span id="allServicesCount" style="background:var(--bg-button-secondary);color:#fff;border-radius:12px;padding:2px 8px;margin-left:8px;font-size:0.75rem;">0</span>
+            </button>
+            <button class="btn service-filter" data-filter="active" style="background:linear-gradient(135deg,#10b981 0%,#059669 100%);padding:10px 20px;font-weight:600;">
+              Active <span id="activeServicesCount" style="background:#065f46;color:#fff;border-radius:12px;padding:2px 8px;margin-left:8px;font-size:0.75rem;">0</span>
+            </button>
+            <button class="btn service-filter" data-filter="coming-soon" style="background:linear-gradient(135deg,#8b5cf6 0%,#7c3aed 100%);padding:10px 20px;font-weight:600;">
+              Coming Soon <span id="comingSoonServicesCount" style="background:#5b21b6;color:#fff;border-radius:12px;padding:2px 8px;margin-left:8px;font-size:0.75rem;">0</span>
+            </button>
+            <button class="btn service-filter" data-filter="deprecated" style="background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);padding:10px 20px;font-weight:600;">
+              Deprecated <span id="deprecatedServicesCount" style="background:#991b1b;color:#fff;border-radius:12px;padding:2px 8px;margin-left:8px;font-size:0.75rem;">0</span>
+            </button>
+          </div>
+
+          <!-- Service Type Filter -->
+          <div style="display:flex;gap:12px;margin-bottom:20px;align-items:center;flex-wrap:wrap;">
+            <label style="font-size:0.9rem;color:var(--gray);">Service Type:</label>
+            <select id="serviceTypeFilter" style="padding:8px 12px;min-width:150px;">
+              <option value="">All Types</option>
+              <option value="banking">Banking</option>
+              <option value="messaging">Messaging</option>
+              <option value="crypto">Crypto</option>
+              <option value="authentication">Authentication</option>
+              <option value="payments">Payments</option>
+              <option value="storage">Storage</option>
+              <option value="analytics">Analytics</option>
+              <option value="identity">Identity</option>
+              <option value="social">Social</option>
+              <option value="productivity">Productivity</option>
+              <option value="other">Other</option>
+            </select>
+            <input id="serviceSearchInput" type="text" placeholder="Search services..." style="padding:8px 12px;min-width:200px;" />
+          </div>
+
+          <!-- Services Table -->
+          <div style="overflow-x:auto;overflow-y:visible;">
+            <table id="servicesTable" style="overflow:visible;">
+              <thead>
+                <tr>
+                  <th>Service</th>
+                  <th>Type</th>
+                  <th>Status</th>
+                  <th>Connections</th>
+                  <th>Featured</th>
+                  <th>Created</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr><td colspan="7" style="text-align:center;color:var(--gray);padding:40px;">Loading services...</td></tr>
               </tbody>
             </table>
           </div>
@@ -3398,7 +3467,8 @@ document.querySelectorAll('.tab').forEach(tab => {
       if (subTab === 'membership-terms') loadCurrentTerms();
       if (subTab === 'email') loadSentEmails();
       if (subTab === 'notifications') loadAllNotifications();
-      if (subTab === 'service-registry') loadHandlers();
+      if (subTab === 'event-handlers') loadHandlers();
+      if (subTab === 'supported-services') loadServices();
 
       // Close sidebar on mobile
       if (window.innerWidth <= 768) {
@@ -7058,6 +7128,7 @@ function renderHandlers() {
             <button class="action-dropdown-item" onclick="openHandlerDetails('${escapeHtml(h.handler_id)}')">View Details</button>
             ${h.status === 'pending' ? `<button class="action-dropdown-item" onclick="signHandler('${escapeHtml(h.handler_id)}')">Sign & Activate</button>` : ''}
             ${h.status === 'active' ? `<button class="action-dropdown-item" onclick="openRevokeModal('${escapeHtml(h.handler_id)}', '${escapeHtml(h.name)}')">Revoke</button>` : ''}
+            <button class="action-dropdown-item" style="color:#ef4444;" onclick="openDeleteHandlerModal('${escapeHtml(h.handler_id)}', '${escapeHtml(h.name)}')">Delete</button>
           </div>
         </div>
       </td>
@@ -7401,6 +7472,65 @@ async function revokeHandler() {
   }
 }
 
+// Delete handler modal
+let deleteHandlerName = '';
+
+function openDeleteHandlerModal(handlerId, handlerName) {
+  currentHandlerId = handlerId;
+  deleteHandlerName = handlerName;
+  document.getElementById('deleteHandlerName').textContent = handlerName;
+  document.getElementById('deleteHandlerConfirmInput').value = '';
+  document.getElementById('deleteHandlerMsg').textContent = '';
+  document.getElementById('confirmDeleteHandlerBtn').disabled = true;
+  document.getElementById('deleteHandlerModal').classList.add('active');
+}
+
+function closeDeleteHandlerModal() {
+  document.getElementById('deleteHandlerModal').classList.remove('active');
+  deleteHandlerName = '';
+}
+
+function validateDeleteHandlerConfirm() {
+  const input = document.getElementById('deleteHandlerConfirmInput').value.trim();
+  const confirmBtn = document.getElementById('confirmDeleteHandlerBtn');
+  confirmBtn.disabled = input !== deleteHandlerName;
+}
+
+async function deleteHandler() {
+  const confirmInput = document.getElementById('deleteHandlerConfirmInput').value.trim();
+  if (confirmInput !== deleteHandlerName) {
+    showToast('Handler name does not match', 'error');
+    return;
+  }
+
+  const msgEl = document.getElementById('deleteHandlerMsg');
+  const confirmBtn = document.getElementById('confirmDeleteHandlerBtn');
+
+  try {
+    confirmBtn.disabled = true;
+    msgEl.textContent = 'Deleting handler...';
+    msgEl.style.color = 'var(--gray)';
+
+    await api('/admin/registry/handlers/delete', {
+      method: 'POST',
+      body: JSON.stringify({
+        handler_id: currentHandlerId
+      })
+    });
+
+    showToast('Handler deleted successfully', 'success');
+    closeDeleteHandlerModal();
+    closeHandlerDetailsModal();
+    loadHandlers();
+  } catch (err) {
+    console.error('Error deleting handler:', err);
+    msgEl.textContent = 'Error: ' + err.message;
+    msgEl.style.color = '#ef4444';
+    confirmBtn.disabled = false;
+    showToast('Failed to delete handler', 'error');
+  }
+}
+
 // Event listeners for service registry
 document.addEventListener('DOMContentLoaded', function() {
   // Upload handler button
@@ -7431,6 +7561,10 @@ document.addEventListener('DOMContentLoaded', function() {
   const confirmRevokeBtn = document.getElementById('confirmRevokeBtn');
   if (confirmRevokeBtn) confirmRevokeBtn.onclick = revokeHandler;
 
+  // Confirm delete button
+  const confirmDeleteHandlerBtn = document.getElementById('confirmDeleteHandlerBtn');
+  if (confirmDeleteHandlerBtn) confirmDeleteHandlerBtn.onclick = deleteHandler;
+
   // Status filter buttons
   document.querySelectorAll('.handler-filter').forEach(btn => {
     btn.onclick = function() {
@@ -7459,6 +7593,433 @@ document.addEventListener('DOMContentLoaded', function() {
       searchTimeout = setTimeout(() => {
         handlerSearchTerm = this.value;
         renderHandlers();
+      }, 300);
+    };
+  }
+});
+
+// ========================================
+// Supported Services Management
+// ========================================
+
+let servicesData = [];
+let serviceStatusFilter = 'all';
+let serviceTypeFilter = 'all';
+let serviceSearchTerm = '';
+let currentServiceId = null;
+let isEditingService = false;
+
+async function loadServices() {
+  try {
+    const res = await api('/admin/services');
+    servicesData = res.services || [];
+    renderServices();
+  } catch (err) {
+    console.error('Error loading services:', err);
+    showToast('Failed to load services', 'error');
+  }
+}
+
+function renderServices() {
+  const tbody = document.getElementById('servicesTableBody');
+  if (!tbody) return;
+
+  let filtered = servicesData;
+
+  // Apply status filter
+  if (serviceStatusFilter !== 'all') {
+    filtered = filtered.filter(s => s.status === serviceStatusFilter);
+  }
+
+  // Apply type filter
+  if (serviceTypeFilter !== 'all') {
+    filtered = filtered.filter(s => s.service_type === serviceTypeFilter);
+  }
+
+  // Apply search
+  if (serviceSearchTerm) {
+    const term = serviceSearchTerm.toLowerCase();
+    filtered = filtered.filter(s =>
+      (s.name || '').toLowerCase().includes(term) ||
+      (s.description || '').toLowerCase().includes(term) ||
+      (s.service_id || '').toLowerCase().includes(term)
+    );
+  }
+
+  if (filtered.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;color:var(--gray);padding:2rem;">No services found</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = filtered.map(service => {
+    const statusClass = service.status === 'active' ? 'status-active' :
+                        service.status === 'coming-soon' ? 'status-pending' : 'status-rejected';
+    const statusText = service.status === 'coming-soon' ? 'Coming Soon' :
+                       service.status.charAt(0).toUpperCase() + service.status.slice(1);
+    const typeLabel = (service.service_type || 'other').charAt(0).toUpperCase() + (service.service_type || 'other').slice(1);
+
+    return `
+      <tr onclick="openServiceDetails('${service.service_id}')" style="cursor:pointer;">
+        <td>
+          <div style="display:flex;align-items:center;gap:0.75rem;">
+            ${service.icon_url ? `<img src="${service.icon_url}" alt="" style="width:32px;height:32px;border-radius:6px;object-fit:cover;">` :
+              `<div style="width:32px;height:32px;border-radius:6px;background:var(--light);display:flex;align-items:center;justify-content:center;font-weight:600;color:var(--gray);">${(service.name || '?').charAt(0).toUpperCase()}</div>`}
+            <div>
+              <div style="font-weight:500;">${service.name || 'Unnamed'}</div>
+              <div style="font-size:0.75rem;color:var(--gray);">${service.service_id}</div>
+            </div>
+          </div>
+        </td>
+        <td><span class="badge" style="background:var(--light);color:var(--dark);">${typeLabel}</span></td>
+        <td><span class="status-badge ${statusClass}">${statusText}</span></td>
+        <td>${service.connect_count || 0}</td>
+        <td>${service.updated_at ? new Date(service.updated_at).toLocaleDateString() : '-'}</td>
+        <td onclick="event.stopPropagation();">
+          <div class="dropdown" style="position:relative;">
+            <button class="btn btn-secondary btn-sm dropdown-toggle" onclick="toggleServiceDropdown(this, event)">Actions</button>
+            <div class="dropdown-menu" style="display:none;position:absolute;right:0;top:100%;background:white;border:1px solid var(--border);border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,0.15);min-width:140px;z-index:100;">
+              <a href="#" onclick="openEditServiceModal('${service.service_id}');return false;" style="display:block;padding:0.5rem 1rem;color:var(--dark);text-decoration:none;">Edit</a>
+              <a href="#" onclick="toggleServiceStatus('${service.service_id}', '${service.status === 'active' ? 'deprecated' : 'active'}');return false;" style="display:block;padding:0.5rem 1rem;color:var(--dark);text-decoration:none;">${service.status === 'active' ? 'Deprecate' : 'Activate'}</a>
+              <a href="#" onclick="openDeleteServiceModal('${service.service_id}');return false;" style="display:block;padding:0.5rem 1rem;color:#ef4444;text-decoration:none;">Delete</a>
+            </div>
+          </div>
+        </td>
+      </tr>
+    `;
+  }).join('');
+}
+
+function toggleServiceDropdown(btn, event) {
+  event.stopPropagation();
+  const menu = btn.nextElementSibling;
+  const wasVisible = menu.style.display === 'block';
+
+  // Close all dropdowns first
+  document.querySelectorAll('.dropdown-menu').forEach(m => m.style.display = 'none');
+
+  if (!wasVisible) {
+    menu.style.display = 'block';
+    // Close on outside click
+    setTimeout(() => {
+      document.addEventListener('click', function closeDropdown() {
+        menu.style.display = 'none';
+        document.removeEventListener('click', closeDropdown);
+      }, { once: true });
+    }, 0);
+  }
+}
+
+function openServiceModal(editing = false) {
+  isEditingService = editing;
+  const modal = document.getElementById('serviceModal');
+  const title = document.getElementById('serviceModalTitle');
+  const form = document.getElementById('serviceForm');
+
+  title.textContent = editing ? 'Edit Service' : 'Add New Service';
+
+  if (!editing) {
+    form.reset();
+    currentServiceId = null;
+    document.getElementById('serviceIdInput').disabled = false;
+  }
+
+  modal.classList.add('active');
+}
+
+function openEditServiceModal(serviceId) {
+  const service = servicesData.find(s => s.service_id === serviceId);
+  if (!service) return;
+
+  currentServiceId = serviceId;
+  isEditingService = true;
+
+  document.getElementById('serviceIdInput').value = service.service_id;
+  document.getElementById('serviceIdInput').disabled = true;
+  document.getElementById('serviceNameInput').value = service.name || '';
+  document.getElementById('serviceDescInput').value = service.description || '';
+  document.getElementById('serviceTypeSelect').value = service.service_type || 'other';
+  document.getElementById('serviceStatusSelect').value = service.status || 'active';
+  document.getElementById('serviceIconInput').value = service.icon_url || '';
+  document.getElementById('serviceWebsiteInput').value = service.website_url || '';
+  document.getElementById('serviceConnectInput').value = service.connect_url || '';
+  document.getElementById('serviceOrderInput').value = service.sort_order || 100;
+  document.getElementById('serviceDataKeysInput').value = (service.required_user_data || []).join(', ');
+
+  document.getElementById('serviceModalTitle').textContent = 'Edit Service';
+  document.getElementById('serviceModal').classList.add('active');
+}
+
+function closeServiceModal() {
+  document.getElementById('serviceModal').classList.remove('active');
+  currentServiceId = null;
+  isEditingService = false;
+}
+
+async function saveService() {
+  const serviceId = document.getElementById('serviceIdInput').value.trim();
+  const name = document.getElementById('serviceNameInput').value.trim();
+  const description = document.getElementById('serviceDescInput').value.trim();
+  const serviceType = document.getElementById('serviceTypeSelect').value;
+  const status = document.getElementById('serviceStatusSelect').value;
+  const iconUrl = document.getElementById('serviceIconInput').value.trim();
+  const websiteUrl = document.getElementById('serviceWebsiteInput').value.trim();
+  const connectUrl = document.getElementById('serviceConnectInput').value.trim();
+  const sortOrder = parseInt(document.getElementById('serviceOrderInput').value) || 100;
+  const dataKeysStr = document.getElementById('serviceDataKeysInput').value.trim();
+  const requiredUserData = dataKeysStr ? dataKeysStr.split(',').map(s => s.trim()).filter(s => s) : [];
+
+  if (!serviceId || !name) {
+    showToast('Service ID and Name are required', 'error');
+    return;
+  }
+
+  const payload = {
+    service_id: serviceId,
+    name,
+    description,
+    service_type: serviceType,
+    status,
+    icon_url: iconUrl || undefined,
+    website_url: websiteUrl || undefined,
+    connect_url: connectUrl || undefined,
+    sort_order: sortOrder,
+    required_user_data: requiredUserData.length > 0 ? requiredUserData : undefined
+  };
+
+  try {
+    if (isEditingService) {
+      await api('/admin/services', {
+        method: 'PUT',
+        body: JSON.stringify(payload)
+      });
+      showToast('Service updated successfully', 'success');
+    } else {
+      await api('/admin/services', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      });
+      showToast('Service created successfully', 'success');
+    }
+    closeServiceModal();
+    loadServices();
+  } catch (err) {
+    console.error('Error saving service:', err);
+    showToast('Failed to save service: ' + err.message, 'error');
+  }
+}
+
+function openServiceDetails(serviceId) {
+  const service = servicesData.find(s => s.service_id === serviceId);
+  if (!service) return;
+
+  currentServiceId = serviceId;
+
+  const statusClass = service.status === 'active' ? 'status-active' :
+                      service.status === 'coming-soon' ? 'status-pending' : 'status-rejected';
+  const statusText = service.status === 'coming-soon' ? 'Coming Soon' :
+                     service.status.charAt(0).toUpperCase() + service.status.slice(1);
+  const typeLabel = (service.service_type || 'other').charAt(0).toUpperCase() + (service.service_type || 'other').slice(1);
+
+  const content = document.getElementById('serviceDetailsContent');
+  content.innerHTML = `
+    <div style="display:flex;align-items:center;gap:1rem;margin-bottom:1.5rem;">
+      ${service.icon_url ? `<img src="${service.icon_url}" alt="" style="width:64px;height:64px;border-radius:12px;object-fit:cover;">` :
+        `<div style="width:64px;height:64px;border-radius:12px;background:var(--light);display:flex;align-items:center;justify-content:center;font-size:1.5rem;font-weight:600;color:var(--gray);">${(service.name || '?').charAt(0).toUpperCase()}</div>`}
+      <div>
+        <h3 style="margin:0;font-size:1.25rem;">${service.name || 'Unnamed Service'}</h3>
+        <div style="color:var(--gray);font-size:0.875rem;">${service.service_id}</div>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1.5rem;">
+      <div>
+        <div style="color:var(--gray);font-size:0.75rem;margin-bottom:0.25rem;">Status</div>
+        <span class="status-badge ${statusClass}">${statusText}</span>
+      </div>
+      <div>
+        <div style="color:var(--gray);font-size:0.75rem;margin-bottom:0.25rem;">Type</div>
+        <span class="badge" style="background:var(--light);color:var(--dark);">${typeLabel}</span>
+      </div>
+      <div>
+        <div style="color:var(--gray);font-size:0.75rem;margin-bottom:0.25rem;">Connections</div>
+        <div style="font-weight:500;">${service.connect_count || 0}</div>
+      </div>
+      <div>
+        <div style="color:var(--gray);font-size:0.75rem;margin-bottom:0.25rem;">Sort Order</div>
+        <div style="font-weight:500;">${service.sort_order || 100}</div>
+      </div>
+    </div>
+
+    ${service.description ? `
+    <div style="margin-bottom:1.5rem;">
+      <div style="color:var(--gray);font-size:0.75rem;margin-bottom:0.25rem;">Description</div>
+      <div>${service.description}</div>
+    </div>
+    ` : ''}
+
+    <div style="margin-bottom:1.5rem;">
+      <div style="color:var(--gray);font-size:0.75rem;margin-bottom:0.5rem;">Links</div>
+      ${service.website_url ? `<div style="margin-bottom:0.5rem;"><a href="${service.website_url}" target="_blank" style="color:var(--primary);">Website</a></div>` : ''}
+      ${service.connect_url ? `<div><a href="${service.connect_url}" target="_blank" style="color:var(--primary);">Connect URL</a></div>` : ''}
+      ${!service.website_url && !service.connect_url ? '<div style="color:var(--gray);">No links configured</div>' : ''}
+    </div>
+
+    ${service.required_user_data && service.required_user_data.length > 0 ? `
+    <div style="margin-bottom:1.5rem;">
+      <div style="color:var(--gray);font-size:0.75rem;margin-bottom:0.5rem;">Required User Data</div>
+      <div style="display:flex;flex-wrap:wrap;gap:0.5rem;">
+        ${service.required_user_data.map(key => `<span class="badge" style="background:var(--light);color:var(--dark);">${key}</span>`).join('')}
+      </div>
+    </div>
+    ` : ''}
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;font-size:0.875rem;color:var(--gray);">
+      <div>
+        <div style="font-size:0.75rem;">Created</div>
+        <div>${service.created_at ? new Date(service.created_at).toLocaleString() : '-'}</div>
+        ${service.created_by ? `<div style="font-size:0.75rem;">${service.created_by}</div>` : ''}
+      </div>
+      <div>
+        <div style="font-size:0.75rem;">Updated</div>
+        <div>${service.updated_at ? new Date(service.updated_at).toLocaleString() : '-'}</div>
+        ${service.updated_by ? `<div style="font-size:0.75rem;">${service.updated_by}</div>` : ''}
+      </div>
+    </div>
+  `;
+
+  document.getElementById('serviceDetailsModal').classList.add('active');
+}
+
+function closeServiceDetailsModal() {
+  document.getElementById('serviceDetailsModal').classList.remove('active');
+}
+
+function editServiceFromDetails() {
+  closeServiceDetailsModal();
+  openEditServiceModal(currentServiceId);
+}
+
+async function toggleServiceStatus(serviceId, newStatus) {
+  try {
+    await api('/admin/services/status', {
+      method: 'POST',
+      body: JSON.stringify({
+        service_id: serviceId,
+        status: newStatus
+      })
+    });
+    showToast(`Service ${newStatus === 'active' ? 'activated' : 'deprecated'}`, 'success');
+    loadServices();
+  } catch (err) {
+    console.error('Error toggling service status:', err);
+    showToast('Failed to update status', 'error');
+  }
+}
+
+function openDeleteServiceModal(serviceId) {
+  const service = servicesData.find(s => s.service_id === serviceId);
+  if (!service) return;
+
+  currentServiceId = serviceId;
+  document.getElementById('deleteServiceName').textContent = service.name || serviceId;
+  document.getElementById('confirmDeleteServiceInput').value = '';
+  document.getElementById('deleteServiceMsg').textContent = '';
+  document.getElementById('confirmDeleteServiceBtn').disabled = false;
+  document.getElementById('deleteServiceModal').classList.add('active');
+}
+
+function closeDeleteServiceModal() {
+  document.getElementById('deleteServiceModal').classList.remove('active');
+  currentServiceId = null;
+}
+
+async function deleteService() {
+  const confirmInput = document.getElementById('confirmDeleteServiceInput').value.trim();
+  const service = servicesData.find(s => s.service_id === currentServiceId);
+  if (!service) return;
+
+  if (confirmInput !== service.name) {
+    showToast('Service name does not match', 'error');
+    return;
+  }
+
+  const msgEl = document.getElementById('deleteServiceMsg');
+  const confirmBtn = document.getElementById('confirmDeleteServiceBtn');
+
+  try {
+    confirmBtn.disabled = true;
+    msgEl.textContent = 'Deleting service...';
+    msgEl.style.color = 'var(--gray)';
+
+    await api('/admin/services/delete', {
+      method: 'POST',
+      body: JSON.stringify({
+        service_id: currentServiceId
+      })
+    });
+
+    showToast('Service deleted successfully', 'success');
+    closeDeleteServiceModal();
+    loadServices();
+  } catch (err) {
+    console.error('Error deleting service:', err);
+    msgEl.textContent = 'Error: ' + err.message;
+    msgEl.style.color = '#ef4444';
+    confirmBtn.disabled = false;
+    showToast('Failed to delete service', 'error');
+  }
+}
+
+// Event listeners for supported services
+document.addEventListener('DOMContentLoaded', function() {
+  // Add service button
+  const addServiceBtn = document.getElementById('addServiceBtn');
+  if (addServiceBtn) addServiceBtn.onclick = () => openServiceModal(false);
+
+  // Refresh services button
+  const refreshServicesBtn = document.getElementById('refreshServicesBtn');
+  if (refreshServicesBtn) refreshServicesBtn.onclick = loadServices;
+
+  // Save service button
+  const saveServiceBtn = document.getElementById('saveServiceBtn');
+  if (saveServiceBtn) saveServiceBtn.onclick = saveService;
+
+  // Edit from details button
+  const editServiceFromDetailsBtn = document.getElementById('editServiceFromDetailsBtn');
+  if (editServiceFromDetailsBtn) editServiceFromDetailsBtn.onclick = editServiceFromDetails;
+
+  // Confirm delete button
+  const confirmDeleteServiceBtn = document.getElementById('confirmDeleteServiceBtn');
+  if (confirmDeleteServiceBtn) confirmDeleteServiceBtn.onclick = deleteService;
+
+  // Status filter buttons
+  document.querySelectorAll('.service-filter').forEach(btn => {
+    btn.onclick = function() {
+      document.querySelectorAll('.service-filter').forEach(b => b.classList.remove('active'));
+      this.classList.add('active');
+      serviceStatusFilter = this.dataset.filter;
+      renderServices();
+    };
+  });
+
+  // Type filter
+  const typeFilter = document.getElementById('serviceTypeFilter');
+  if (typeFilter) {
+    typeFilter.onchange = function() {
+      serviceTypeFilter = this.value;
+      renderServices();
+    };
+  }
+
+  // Search input
+  const searchInput = document.getElementById('serviceSearchInput');
+  if (searchInput) {
+    let searchTimeout;
+    searchInput.oninput = function() {
+      clearTimeout(searchTimeout);
+      searchTimeout = setTimeout(() => {
+        serviceSearchTerm = this.value;
+        renderServices();
       }, 300);
     };
   }
@@ -8142,6 +8703,260 @@ document.addEventListener('DOMContentLoaded', function() {
       </div>
 
       <div id="revokeHandlerMsg" style="margin-top:12px;text-align:center;"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Delete Handler Modal -->
+<div id="deleteHandlerModal" class="modal-overlay">
+  <div class="modal" style="max-width:500px;">
+    <div class="modal-header">
+      <h3 class="modal-title" style="color:#ef4444;">Delete Handler</h3>
+      <button class="modal-close" onclick="closeDeleteHandlerModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div style="background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);border-radius:8px;padding:16px;margin-bottom:16px;">
+        <div style="display:flex;align-items:flex-start;gap:12px;">
+          <span style="font-size:1.5rem;">&#9888;</span>
+          <div>
+            <div style="font-weight:600;color:#ef4444;margin-bottom:4px;">Warning: This action is irreversible</div>
+            <div style="font-size:0.9rem;color:var(--gray);">
+              Deleting a handler will permanently remove it from the registry, including all versions and WASM packages. This cannot be undone.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <p style="margin-bottom:16px;color:var(--text-primary);">
+        Are you sure you want to permanently delete <strong id="deleteHandlerName" style="color:#ef4444;"></strong>?
+      </p>
+
+      <div style="margin-bottom:16px;">
+        <label for="deleteHandlerConfirmInput" style="display:block;margin-bottom:6px;font-size:0.9rem;font-weight:600;">
+          Type the handler name to confirm <span style="color:#ef4444;">*</span>
+        </label>
+        <input type="text" id="deleteHandlerConfirmInput" placeholder="Enter handler name to confirm" style="width:100%;" oninput="validateDeleteHandlerConfirm()">
+      </div>
+
+      <div style="display:flex;gap:12px;">
+        <button id="confirmDeleteHandlerBtn" class="btn" style="flex:1;background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);" disabled>Delete Permanently</button>
+        <button onclick="closeDeleteHandlerModal()" class="btn" style="flex:1;background:var(--bg-button-secondary);">Cancel</button>
+      </div>
+
+      <div id="deleteHandlerMsg" style="margin-top:12px;text-align:center;"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Add/Edit Service Modal -->
+<div id="serviceModal" class="modal-overlay">
+  <div class="modal" style="max-width:700px;">
+    <div class="modal-header">
+      <h3 class="modal-title" id="serviceModalTitle">Add Service</h3>
+      <button class="modal-close" onclick="closeServiceModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+        <div>
+          <label for="serviceIdInput" style="display:block;margin-bottom:6px;font-size:0.9rem;font-weight:600;">
+            Service ID <span style="color:#ef4444;">*</span>
+          </label>
+          <input type="text" id="serviceIdInput" placeholder="e.g., stripe, github" style="width:100%;">
+          <div style="font-size:0.75rem;color:var(--gray);margin-top:4px;">Lowercase alphanumeric with hyphens only</div>
+        </div>
+        <div>
+          <label for="serviceNameInput" style="display:block;margin-bottom:6px;font-size:0.9rem;font-weight:600;">
+            Name <span style="color:#ef4444;">*</span>
+          </label>
+          <input type="text" id="serviceNameInput" placeholder="e.g., Stripe, GitHub" style="width:100%;">
+        </div>
+      </div>
+
+      <div style="margin-top:16px;">
+        <label for="serviceDescriptionInput" style="display:block;margin-bottom:6px;font-size:0.9rem;font-weight:600;">
+          Description <span style="color:#ef4444;">*</span>
+        </label>
+        <textarea id="serviceDescriptionInput" placeholder="Describe what this service does..." style="width:100%;min-height:80px;resize:vertical;"></textarea>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px;">
+        <div>
+          <label for="serviceTypeInput" style="display:block;margin-bottom:6px;font-size:0.9rem;font-weight:600;">
+            Service Type <span style="color:#ef4444;">*</span>
+          </label>
+          <select id="serviceTypeInput" style="width:100%;padding:8px;">
+            <option value="">Select type...</option>
+            <option value="banking">Banking</option>
+            <option value="messaging">Messaging</option>
+            <option value="crypto">Crypto</option>
+            <option value="authentication">Authentication</option>
+            <option value="payments">Payments</option>
+            <option value="storage">Storage</option>
+            <option value="analytics">Analytics</option>
+            <option value="identity">Identity</option>
+            <option value="social">Social</option>
+            <option value="productivity">Productivity</option>
+            <option value="other">Other</option>
+          </select>
+        </div>
+        <div>
+          <label for="serviceStatusInput" style="display:block;margin-bottom:6px;font-size:0.9rem;font-weight:600;">
+            Status
+          </label>
+          <select id="serviceStatusInput" style="width:100%;padding:8px;">
+            <option value="active">Active</option>
+            <option value="coming-soon">Coming Soon</option>
+            <option value="deprecated">Deprecated</option>
+          </select>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px;">
+        <div>
+          <label for="serviceWebsiteInput" style="display:block;margin-bottom:6px;font-size:0.9rem;font-weight:600;">
+            Website URL <span style="color:#ef4444;">*</span>
+          </label>
+          <input type="url" id="serviceWebsiteInput" placeholder="https://example.com" style="width:100%;">
+        </div>
+        <div>
+          <label for="serviceConnectInput" style="display:block;margin-bottom:6px;font-size:0.9rem;font-weight:600;">
+            Connect URL
+          </label>
+          <input type="url" id="serviceConnectInput" placeholder="https://vault.vettid.dev/connect/..." style="width:100%;">
+          <div style="font-size:0.75rem;color:var(--gray);margin-top:4px;">Link to connect via vault</div>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px;">
+        <div>
+          <label for="serviceLogoInput" style="display:block;margin-bottom:6px;font-size:0.9rem;font-weight:600;">
+            Logo URL
+          </label>
+          <input type="url" id="serviceLogoInput" placeholder="https://example.com/logo.png" style="width:100%;">
+        </div>
+        <div>
+          <label for="serviceDocsInput" style="display:block;margin-bottom:6px;font-size:0.9rem;font-weight:600;">
+            Documentation URL
+          </label>
+          <input type="url" id="serviceDocsInput" placeholder="https://docs.example.com" style="width:100%;">
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px;">
+        <div>
+          <label for="serviceSortOrderInput" style="display:block;margin-bottom:6px;font-size:0.9rem;font-weight:600;">
+            Sort Order
+          </label>
+          <input type="number" id="serviceSortOrderInput" placeholder="100" value="100" style="width:100%;">
+          <div style="font-size:0.75rem;color:var(--gray);margin-top:4px;">Lower numbers appear first</div>
+        </div>
+        <div style="display:flex;align-items:center;padding-top:28px;">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+            <input type="checkbox" id="serviceFeaturedInput" style="width:18px;height:18px;">
+            <span style="font-weight:600;">Featured Service</span>
+          </label>
+        </div>
+      </div>
+
+      <div style="margin-top:16px;">
+        <label for="serviceRequiredDataInput" style="display:block;margin-bottom:6px;font-size:0.9rem;font-weight:600;">
+          Required User Data
+        </label>
+        <input type="text" id="serviceRequiredDataInput" placeholder="email, phone, full_name (comma-separated)" style="width:100%;">
+        <div style="font-size:0.75rem;color:var(--gray);margin-top:4px;">Data keys the user must provide to connect</div>
+      </div>
+
+      <div style="display:flex;gap:12px;margin-top:24px;">
+        <button id="saveServiceBtn" class="btn" style="flex:1;background:linear-gradient(135deg,var(--accent) 0%,var(--accent-dark) 100%);">Save Service</button>
+        <button onclick="closeServiceModal()" class="btn" style="flex:1;background:var(--bg-button-secondary);">Cancel</button>
+      </div>
+
+      <div id="serviceModalMsg" style="margin-top:12px;text-align:center;"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Service Details Modal -->
+<div id="serviceDetailsModal" class="modal-overlay">
+  <div class="modal" style="max-width:700px;">
+    <div class="modal-header">
+      <h3 class="modal-title" id="serviceDetailName">Service Details</h3>
+      <button class="modal-close" onclick="closeServiceDetailsModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div style="display:grid;grid-template-columns:auto 1fr;gap:8px 20px;margin-bottom:20px;">
+        <span style="color:var(--gray);">ID:</span>
+        <span id="serviceDetailId" style="font-family:monospace;"></span>
+        <span style="color:var(--gray);">Type:</span>
+        <span id="serviceDetailType"></span>
+        <span style="color:var(--gray);">Status:</span>
+        <span id="serviceDetailStatus" style="display:inline-block;padding:4px 10px;border-radius:4px;font-size:0.75rem;font-weight:700;text-transform:uppercase;"></span>
+        <span style="color:var(--gray);">Connections:</span>
+        <span id="serviceDetailConnections"></span>
+        <span style="color:var(--gray);">Featured:</span>
+        <span id="serviceDetailFeatured"></span>
+        <span style="color:var(--gray);">Sort Order:</span>
+        <span id="serviceDetailSortOrder"></span>
+      </div>
+
+      <div style="margin-bottom:20px;">
+        <h4 style="margin:0 0 8px 0;font-size:0.9rem;color:var(--gray);">Description</h4>
+        <p id="serviceDetailDescription" style="margin:0;"></p>
+      </div>
+
+      <div style="margin-bottom:20px;">
+        <h4 style="margin:0 0 8px 0;font-size:0.9rem;color:var(--gray);">Links</h4>
+        <div style="display:flex;flex-direction:column;gap:8px;">
+          <div id="serviceDetailWebsiteRow"><span style="color:var(--gray);margin-right:8px;">Website:</span><a id="serviceDetailWebsite" href="#" target="_blank" style="color:var(--accent);"></a></div>
+          <div id="serviceDetailConnectRow" style="display:none;"><span style="color:var(--gray);margin-right:8px;">Connect:</span><a id="serviceDetailConnect" href="#" target="_blank" style="color:var(--accent);"></a></div>
+          <div id="serviceDetailDocsRow" style="display:none;"><span style="color:var(--gray);margin-right:8px;">Docs:</span><a id="serviceDetailDocs" href="#" target="_blank" style="color:var(--accent);"></a></div>
+        </div>
+      </div>
+
+      <div id="serviceDetailRequiredDataSection" style="margin-bottom:20px;display:none;">
+        <h4 style="margin:0 0 8px 0;font-size:0.9rem;color:var(--gray);">Required User Data</h4>
+        <div id="serviceDetailRequiredData" style="display:flex;flex-wrap:wrap;gap:8px;"></div>
+      </div>
+
+      <div style="margin-bottom:20px;">
+        <h4 style="margin:0 0 8px 0;font-size:0.9rem;color:var(--gray);">Audit Trail</h4>
+        <div style="display:grid;grid-template-columns:auto 1fr;gap:4px 20px;font-size:0.9rem;">
+          <span style="color:var(--gray);">Created:</span>
+          <span id="serviceDetailCreatedAt"></span>
+          <span style="color:var(--gray);">Created by:</span>
+          <span id="serviceDetailCreatedBy"></span>
+          <span style="color:var(--gray);">Updated:</span>
+          <span id="serviceDetailUpdatedAt"></span>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:12px;">
+        <button id="editServiceBtn" class="btn" style="flex:1;background:linear-gradient(135deg,var(--accent) 0%,var(--accent-dark) 100%);">Edit Service</button>
+        <button id="deleteServiceBtn" class="btn" style="flex:1;background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);">Delete Service</button>
+        <button onclick="closeServiceDetailsModal()" class="btn" style="flex:1;background:var(--bg-button-secondary);">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Delete Service Modal -->
+<div id="deleteServiceModal" class="modal-overlay">
+  <div class="modal" style="max-width:500px;">
+    <div class="modal-header">
+      <h3 class="modal-title" style="color:#ef4444;">Delete Service</h3>
+      <button class="modal-close" onclick="closeDeleteServiceModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <p style="margin-bottom:16px;color:var(--gray);">
+        Are you sure you want to delete <strong id="deleteServiceName"></strong>? This action cannot be undone.
+      </p>
+
+      <div style="display:flex;gap:12px;">
+        <button id="confirmDeleteServiceBtn" class="btn" style="flex:1;background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);">Delete Service</button>
+        <button onclick="closeDeleteServiceModal()" class="btn" style="flex:1;background:var(--bg-button-secondary);">Cancel</button>
+      </div>
+
+      <div id="deleteServiceMsg" style="margin-top:12px;text-align:center;"></div>
     </div>
   </div>
 </div>

@@ -34,7 +34,7 @@ import {
   verifyPassword as verifyPasswordHash,
   needsRehash,
   hashPassword,
-} from '../../common/crypto';
+} from '../../common/crypto-password';
 import {
   query,
   transaction,

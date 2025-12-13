@@ -31,7 +31,7 @@ import {
   generateX25519KeyPair,
   encryptWithPublicKey,
   serializeEncryptedBlob,
-} from '../../common/crypto';
+} from '../../common/crypto-keys';
 import {
   query,
   transaction,

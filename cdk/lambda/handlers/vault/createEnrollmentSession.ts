@@ -71,7 +71,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       ExpressionAttributeValues: marshall({
         ':guid': userGuid,
         ':pending': 'WEB_INITIATED',
-        ':now': new Date().toISOString(),
+        ':now': Date.now(), // Unix timestamp in milliseconds
       }),
       ScanIndexForward: false, // Most recent first
       Limit: 1,
@@ -97,10 +97,11 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     // Generate new enrollment session
     const sessionId = generateSecureId('enroll', 32);
     const sessionToken = generateSecureId('est', 48); // Enrollment Session Token
-    const now = new Date();
-    const expiresAt = new Date(now.getTime() + 15 * 60 * 1000); // 15 minutes
+    const nowMs = Date.now();
+    const expiresAtMs = nowMs + 7 * 60 * 1000; // 7 minutes
 
     // Create web-initiated enrollment session
+    // Note: created_at and expires_at stored as numbers (Unix timestamps in ms) for GSI compatibility
     await ddb.send(new PutItemCommand({
       TableName: TABLE_ENROLLMENT_SESSIONS,
       Item: marshall({
@@ -110,9 +111,11 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
         user_email: userEmail,
         status: 'WEB_INITIATED',
         step: 'awaiting_mobile',
-        created_at: now.toISOString(),
-        expires_at: expiresAt.toISOString(),
-        expires_at_ttl: Math.floor(expiresAt.getTime() / 1000),
+        created_at: nowMs,
+        created_at_iso: new Date(nowMs).toISOString(), // Human-readable version
+        expires_at: expiresAtMs,
+        expires_at_iso: new Date(expiresAtMs).toISOString(), // Human-readable version
+        ttl: Math.floor(expiresAtMs / 1000), // TTL in seconds for DynamoDB auto-deletion
       }),
     }));
 
@@ -127,7 +130,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     return ok({
       session_id: sessionId,
       session_token: sessionToken,
-      expires_at: expiresAt.toISOString(),
+      expires_at: new Date(expiresAtMs).toISOString(),
       qr_data: {
         type: 'vettid_enrollment',
         version: 1,

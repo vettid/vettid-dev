@@ -34,7 +34,7 @@ import {
   encryptWithPublicKey,
   serializeEncryptedBlob,
   generateTransactionKeyPool,
-} from '../../common/crypto';
+} from '../../common/crypto-keys';
 import {
   query,
   transaction,

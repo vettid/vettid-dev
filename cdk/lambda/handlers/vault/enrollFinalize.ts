@@ -21,8 +21,7 @@ import {
   serializeEncryptedBlob,
   generateLAT,
   hashLATToken,
-  hashPassword,
-} from '../../common/crypto';
+} from '../../common/crypto-keys';
 
 const ddb = new DynamoDBClient({});
 
@@ -34,14 +33,18 @@ const TABLE_LEDGER_AUTH_TOKENS = process.env.TABLE_LEDGER_AUTH_TOKENS!;
 const TABLE_TRANSACTION_KEYS = process.env.TABLE_TRANSACTION_KEYS!;
 
 interface FinalizeRequest {
-  enrollment_session_id: string;
+  enrollment_session_id?: string;  // Optional if using authorizer context
 }
 
 /**
- * POST /api/v1/enroll/finalize
+ * POST /vault/enroll/finalize
  *
  * Finalize enrollment and create the credential.
  * Generates CEK, encrypts credential blob, creates LAT.
+ *
+ * Supports two flows:
+ * 1. QR Code Flow: session_id comes from enrollment JWT (authorizer context)
+ * 2. Direct Flow: enrollment_session_id in request body
  *
  * Returns:
  * - status: 'enrolled'
@@ -50,38 +53,54 @@ interface FinalizeRequest {
  */
 export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   const requestId = getRequestId(event);
+  const origin = event.headers?.origin;
 
   try {
+    // Check for authorizer context (QR code flow)
+    // The authorizer property exists but isn't in the base type definition
+    const authContext = (event.requestContext as any)?.authorizer?.lambda as {
+      userGuid?: string;
+      sessionId?: string;
+    } | undefined;
+
     const body = parseJsonBody<FinalizeRequest>(event);
 
-    if (!body.enrollment_session_id) {
-      return badRequest('enrollment_session_id is required');
+    // Get session_id from authorizer context or request body
+    const sessionId = authContext?.sessionId || body.enrollment_session_id;
+
+    if (!sessionId) {
+      return badRequest('enrollment_session_id is required', origin);
     }
 
     // Get enrollment session
     const sessionResult = await ddb.send(new GetItemCommand({
       TableName: TABLE_ENROLLMENT_SESSIONS,
-      Key: marshall({ session_id: body.enrollment_session_id }),
+      Key: marshall({ session_id: sessionId }),
     }));
 
     if (!sessionResult.Item) {
-      return notFound('Enrollment session not found');
+      return notFound('Enrollment session not found', origin);
     }
 
     const session = unmarshall(sessionResult.Item);
 
+    // If using authorizer context, verify user_guid matches
+    if (authContext?.userGuid && session.user_guid !== authContext.userGuid) {
+      return badRequest('Session does not belong to authenticated user', origin);
+    }
+
     // Validate session state
     if (session.status !== 'STARTED') {
-      return conflict(`Invalid session status: ${session.status}`);
+      return conflict(`Invalid session status: ${session.status}`, origin);
     }
 
     if (session.step !== 'password_set') {
-      return conflict('Password must be set before finalizing enrollment');
+      return conflict('Password must be set before finalizing enrollment', origin);
     }
 
     // Check session expiry
     if (new Date(session.expires_at) < new Date()) {
-      return badRequest('Enrollment session has expired');
+      return badRequest('Enrollment session has expired', origin);
     }
 
     const now = new Date();
@@ -126,16 +145,16 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     let decryptedPasswordHash: string;
     try {
       // Get the LTK (Ledger Transaction Key - private key) that was used
+      // Note: table uses transaction_id as PK (same value as key_id)
       const ltkResult = await ddb.send(new GetItemCommand({
         TableName: TABLE_TRANSACTION_KEYS,
         Key: marshall({
-          user_guid: userGuid,
-          key_id: session.password_key_id,
+          transaction_id: session.password_key_id,
         }),
       }));
 
       if (!ltkResult.Item) {
-        return badRequest('Transaction key not found for password decryption');
+        return badRequest('Transaction key not found for password decryption', origin);
       }
 
       const ltk = unmarshall(ltkResult.Item);
@@ -197,9 +216,10 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       }),
     }));
 
-    // Get remaining unused transaction keys
+    // Get remaining unused transaction keys using the user-index GSI
     const unusedKeysResult = await ddb.send(new QueryCommand({
       TableName: TABLE_TRANSACTION_KEYS,
+      IndexName: 'user-index',
       KeyConditionExpression: 'user_guid = :user_guid',
       FilterExpression: '#status = :status',
       ExpressionAttributeNames: {
@@ -223,7 +243,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     // Mark session as completed
     await ddb.send(new UpdateItemCommand({
       TableName: TABLE_ENROLLMENT_SESSIONS,
-      Key: marshall({ session_id: body.enrollment_session_id }),
+      Key: marshall({ session_id: sessionId }),
       UpdateExpression: 'SET #status = :status, completed_at = :completed_at',
       ExpressionAttributeNames: {
         '#status': 'status',
@@ -234,26 +254,28 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       }),
     }));
 
-    // Mark invitation as used
-    await ddb.send(new UpdateItemCommand({
-      TableName: TABLE_INVITES,
-      Key: marshall({ code: session.invitation_code }),
-      UpdateExpression: 'SET #status = :status, used_at = :used_at, used_by_guid = :user_guid',
-      ExpressionAttributeNames: {
-        '#status': 'status',
-      },
-      ExpressionAttributeValues: marshall({
-        ':status': 'used',
-        ':used_at': now.toISOString(),
-        ':user_guid': userGuid,
-      }),
-    }));
+    // Mark invitation as used (only if there is one - QR code flow may not have invitation)
+    if (session.invitation_code) {
+      await ddb.send(new UpdateItemCommand({
+        TableName: TABLE_INVITES,
+        Key: marshall({ code: session.invitation_code }),
+        UpdateExpression: 'SET #status = :status, used_at = :used_at, used_by_guid = :user_guid',
+        ExpressionAttributeNames: {
+          '#status': 'status',
+        },
+        ExpressionAttributeValues: marshall({
+          ':status': 'used',
+          ':used_at': now.toISOString(),
+          ':user_guid': userGuid,
+        }),
+      }));
+    }
 
     // Audit log
     await putAudit({
       type: 'enrollment_completed',
       user_guid: userGuid,
-      session_id: body.enrollment_session_id,
+      session_id: sessionId,
       cek_version: cekVersion,
       lat_version: lat.version,
       transaction_keys_remaining: remainingKeys.length,
@@ -275,10 +297,10 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
         transaction_keys: remainingKeys,
       },
       vault_status: 'PROVISIONING',
-    });
+    }, origin);
 
   } catch (error: any) {
     console.error('Finalize enrollment error:', error);
-    return internalError('Failed to finalize enrollment');
+    return internalError('Failed to finalize enrollment', origin);
   }
 };

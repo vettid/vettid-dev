@@ -23,7 +23,7 @@ import {
   getRequestId,
   requireUserClaims,
 } from '../../common/util';
-import { generateTransactionKeyPool } from '../../common/crypto';
+import { generateTransactionKeyPool } from '../../common/crypto-keys';
 import {
   query,
   storeTransactionKeys,

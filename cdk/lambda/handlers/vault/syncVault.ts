@@ -11,7 +11,7 @@ import {
   requireUserClaims,
   generateSecureId,
 } from '../../common/util';
-import { generateX25519KeyPair } from '../../common/crypto';
+import { generateX25519KeyPair } from '../../common/crypto-keys';
 
 const ddb = new DynamoDBClient({});
 

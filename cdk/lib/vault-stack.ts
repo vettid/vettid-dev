@@ -33,11 +33,15 @@ export interface VaultStackProps extends cdk.StackProps {
  * Depends on: Infrastructure Stack (for tables, user pool)
  */
 export class VaultStack extends cdk.Stack {
+  private readonly props: VaultStackProps;
+
   // Public Lambda functions to be used by VettIDStack for route creation
   public readonly enrollStart!: lambdaNode.NodejsFunction;
   public readonly enrollSetPassword!: lambdaNode.NodejsFunction;
   public readonly enrollFinalize!: lambdaNode.NodejsFunction;
   public readonly createEnrollmentSession!: lambdaNode.NodejsFunction;
+  public readonly cancelEnrollmentSession!: lambdaNode.NodejsFunction;
+  public readonly authenticateEnrollment!: lambdaNode.NodejsFunction;
   public readonly actionRequest!: lambdaNode.NodejsFunction;
   public readonly authExecute!: lambdaNode.NodejsFunction;
 
@@ -115,6 +119,7 @@ export class VaultStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: VaultStackProps) {
     super(scope, id, props);
 
+    this.props = props;
     const tables = props.infrastructure.tables;
     const memberUserPool = props.infrastructure.memberUserPool;
 
@@ -127,6 +132,8 @@ export class VaultStack extends cdk.Stack {
       TABLE_ACTION_TOKENS: tables.actionTokens.tableName,
       TABLE_ENROLLMENT_SESSIONS: tables.enrollmentSessions.tableName,
       TABLE_REGISTRATIONS: tables.registrations.tableName,
+      TABLE_INVITES: tables.invites.tableName,
+      TABLE_AUDIT: tables.audit.tableName,
     };
 
     // ===== VAULT ENROLLMENT =====
@@ -169,6 +176,31 @@ export class VaultStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(30),
     });
 
+    // Cancel enrollment session
+    this.cancelEnrollmentSession = new lambdaNode.NodejsFunction(this, 'CancelEnrollmentSessionFn', {
+      entry: 'lambda/handlers/vault/cancelEnrollmentSession.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    // Authenticate enrollment (public endpoint for mobile to exchange session_token for JWT)
+    this.authenticateEnrollment = new lambdaNode.NodejsFunction(this, 'AuthenticateEnrollmentFn', {
+      entry: 'lambda/handlers/vault/authenticateEnrollment.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+        TABLE_AUDIT: tables.audit.tableName,
+        ENROLLMENT_JWT_SECRET: 'vettid-enrollment-secret-change-in-production', // TODO: Use Secrets Manager
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    // Note: Enrollment authorizer Lambda is defined in InfrastructureStack
+    // to avoid cyclic dependencies between VettIDStack and VaultStack
+
     // ===== DEVICE ATTESTATION (Phase 2) =====
 
     this.verifyAndroidAttestation = new lambdaNode.NodejsFunction(this, 'VerifyAndroidAttestationFn', {
@@ -203,9 +235,10 @@ export class VaultStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(30),
     });
 
+    // Note: Uses Node.js 20 because argon2 doesn't have pre-built binaries for Node.js 22
     this.authExecute = new lambdaNode.NodejsFunction(this, 'AuthExecuteFn', {
       entry: 'lambda/handlers/vault/authExecute.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
+      runtime: lambda.Runtime.NODEJS_20_X,
       environment: defaultEnv,
       timeout: cdk.Duration.seconds(30),
     });
@@ -383,6 +416,12 @@ export class VaultStack extends cdk.Stack {
     tables.enrollmentSessions.grantReadWriteData(this.createEnrollmentSession);
     tables.credentials.grantReadData(this.createEnrollmentSession);
     tables.audit.grantReadWriteData(this.createEnrollmentSession);
+    tables.enrollmentSessions.grantReadWriteData(this.cancelEnrollmentSession);
+    tables.audit.grantReadWriteData(this.cancelEnrollmentSession);
+
+    // Authenticate enrollment permissions
+    tables.enrollmentSessions.grantReadWriteData(this.authenticateEnrollment);
+    tables.audit.grantReadWriteData(this.authenticateEnrollment);
 
     tables.credentials.grantReadWriteData(this.enrollFinalize);
     tables.credentials.grantReadData(this.actionRequest);
@@ -392,9 +431,19 @@ export class VaultStack extends cdk.Stack {
     tables.credentialKeys.grantReadData(this.actionRequest);
     tables.credentialKeys.grantReadData(this.authExecute);
 
+    // Transaction keys - enrollStart creates them, enrollSetPassword/enrollFinalize use them
+    tables.transactionKeys.grantReadWriteData(this.enrollStart);
+    tables.transactionKeys.grantReadWriteData(this.enrollSetPassword);
+    tables.transactionKeys.grantReadWriteData(this.enrollFinalize);
     tables.transactionKeys.grantReadWriteData(this.actionRequest);
     tables.transactionKeys.grantReadWriteData(this.authExecute);
 
+    // Invites table - enrollStart validates, enrollFinalize marks as used
+    tables.invites.grantReadWriteData(this.enrollStart);
+    tables.invites.grantReadWriteData(this.enrollFinalize);
+
+    // Ledger auth tokens - enrollFinalize creates them
+    tables.ledgerAuthTokens.grantReadWriteData(this.enrollFinalize);
     tables.ledgerAuthTokens.grantReadWriteData(this.authExecute);
 
     tables.actionTokens.grantReadWriteData(this.actionRequest);
@@ -886,9 +935,10 @@ export class VaultStack extends cdk.Stack {
       const ledgerVpcConfig = props.ledger.getLambdaVpcConfig();
 
       // Password verification
+      // Note: Uses Node.js 20 because argon2 doesn't have pre-built binaries for Node.js 22
       this.ledgerVerifyPassword = new lambdaNode.NodejsFunction(this, 'LedgerVerifyPasswordFn', {
         entry: 'lambda/handlers/ledger/verifyPassword.ts',
-        runtime: lambda.Runtime.NODEJS_22_X,
+        runtime: lambda.Runtime.NODEJS_20_X,
         environment: ledgerDbEnv,
         ...ledgerVpcConfig,
         timeout: cdk.Duration.seconds(30),
@@ -1001,15 +1051,39 @@ export class VaultStack extends cdk.Stack {
    * Using HttpRoute directly (not httpApi.addRoutes) to avoid cyclic dependencies
    */
   private addRoutes(httpApi: apigw.HttpApi, memberAuthorizer: apigw.IHttpRouteAuthorizer): void {
-    // Vault Enrollment
-    this.route('CreateEnrollmentSession', httpApi, '/vault/enroll/session', apigw.HttpMethod.POST, this.createEnrollmentSession, memberAuthorizer);
-    this.route('EnrollStart', httpApi, '/vault/enroll/start', apigw.HttpMethod.POST, this.enrollStart, memberAuthorizer);
-    this.route('EnrollSetPassword', httpApi, '/vault/enroll/set-password', apigw.HttpMethod.POST, this.enrollSetPassword, memberAuthorizer);
-    this.route('EnrollFinalize', httpApi, '/vault/enroll/finalize', apigw.HttpMethod.POST, this.enrollFinalize, memberAuthorizer);
+    // Get enrollment authorizer Lambda from infrastructure stack (avoids cyclic dependency)
+    const enrollmentAuthorizerFn = this.props.infrastructure.enrollmentAuthorizerFn;
 
-    // Device Attestation (Phase 2)
-    this.route('VerifyAndroidAttestation', httpApi, '/vault/enroll/attestation/android', apigw.HttpMethod.POST, this.verifyAndroidAttestation, memberAuthorizer);
-    this.route('VerifyIosAttestation', httpApi, '/vault/enroll/attestation/ios', apigw.HttpMethod.POST, this.verifyIosAttestation, memberAuthorizer);
+    // Create custom Lambda authorizer for mobile enrollment endpoints
+    const enrollmentLambdaAuthorizer = new authorizers.HttpLambdaAuthorizer(
+      'EnrollmentAuthorizer',
+      enrollmentAuthorizerFn,
+      {
+        responseTypes: [authorizers.HttpLambdaResponseType.SIMPLE],
+        resultsCacheTtl: cdk.Duration.seconds(0), // Don't cache - tokens are short-lived
+      }
+    );
+
+    // Web-initiated enrollment session management (requires member JWT from web)
+    this.route('CreateEnrollmentSession', httpApi, '/vault/enroll/session', apigw.HttpMethod.POST, this.createEnrollmentSession, memberAuthorizer);
+    this.route('CancelEnrollmentSession', httpApi, '/vault/enroll/cancel', apigw.HttpMethod.POST, this.cancelEnrollmentSession, memberAuthorizer);
+
+    // Public endpoint: Mobile exchanges session_token for enrollment JWT (no auth required)
+    new apigw.HttpRoute(this, 'AuthenticateEnrollment', {
+      httpApi,
+      routeKey: apigw.HttpRouteKey.with('/vault/enroll/authenticate', apigw.HttpMethod.POST),
+      integration: new integrations.HttpLambdaIntegration('AuthenticateEnrollmentInt', this.authenticateEnrollment),
+      // No authorizer - this is a public endpoint
+    });
+
+    // Mobile enrollment endpoints (requires enrollment JWT from authenticate endpoint)
+    this.route('EnrollStart', httpApi, '/vault/enroll/start', apigw.HttpMethod.POST, this.enrollStart, enrollmentLambdaAuthorizer);
+    this.route('EnrollSetPassword', httpApi, '/vault/enroll/set-password', apigw.HttpMethod.POST, this.enrollSetPassword, enrollmentLambdaAuthorizer);
+    this.route('EnrollFinalize', httpApi, '/vault/enroll/finalize', apigw.HttpMethod.POST, this.enrollFinalize, enrollmentLambdaAuthorizer);
+
+    // Device Attestation (Phase 2) - also uses enrollment JWT
+    this.route('VerifyAndroidAttestation', httpApi, '/vault/enroll/attestation/android', apigw.HttpMethod.POST, this.verifyAndroidAttestation, enrollmentLambdaAuthorizer);
+    this.route('VerifyIosAttestation', httpApi, '/vault/enroll/attestation/ios', apigw.HttpMethod.POST, this.verifyIosAttestation, enrollmentLambdaAuthorizer);
 
     // Vault Authentication
     this.route('ActionRequest', httpApi, '/vault/action/request', apigw.HttpMethod.POST, this.actionRequest, memberAuthorizer);

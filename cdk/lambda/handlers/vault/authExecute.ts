@@ -23,8 +23,8 @@ import {
   serializeEncryptedBlob,
   generateLAT,
   hashLATToken,
-  verifyPassword,
-} from '../../common/crypto';
+} from '../../common/crypto-keys';
+import { verifyPassword } from '../../common/crypto-password';
 
 const ddb = new DynamoDBClient({});
 

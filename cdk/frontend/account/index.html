@@ -796,6 +796,9 @@ document.addEventListener('DOMContentLoaded', () => {
 let availableSubscriptionTypes = [];
 let subscriptionStatus = null; // Global state for subscription status
 let membershipStatus = null; // Global state for membership status
+let pinStatusData = null; // Global state for PIN status (cached)
+let vaultStatusData = null; // Global state for vault status (cached)
+let votingHistoryData = null; // Global state for voting history (cached)
 
 // Load subscription types
 async function loadSubscriptionTypes() {
@@ -954,7 +957,7 @@ async function selectSubscriptionType(subscriptionTypeId) {
         <h3 style="margin:0;">Vault Status</h3>
         <button onclick="loadVaultStatus()" class="btn" style="padding:6px 12px;font-size:0.85rem;background:#333;" title="Refresh">↻ Refresh</button>
       </div>
-      <p class="muted" style="margin-bottom:20px;font-size:0.95rem;">Deploy and manage your secure vault instance for credential storage and automated deployments.</p>
+      <p class="muted" style="margin-bottom:20px;font-size:0.95rem;">Deploy and configure your secure vault. Have your mobile phone available.</p>
 
       <!-- Vault Status Content - Dynamic -->
       <div id="vaultStatusContent">
@@ -2267,6 +2270,7 @@ async function loadPinStatus() {
 
     // Handle 404 as "PIN not configured yet" (valid state for new users)
     if (res.status === 404) {
+      pinStatusData = { pin_enabled: false }; // Cache the result
       const statusSpan = document.getElementById('pinStatus');
       const updatedAtP = document.getElementById('pinUpdatedAt');
       const enableBtn = document.getElementById('enablePinBtn');
@@ -2289,6 +2293,7 @@ async function loadPinStatus() {
       throw new Error(`Failed to load PIN status: ${res.status} ${errorText}`);
     }
     const data = await res.json();
+    pinStatusData = data; // Cache the result
 
     const statusSpan = document.getElementById('pinStatus');
     const updatedAtP = document.getElementById('pinUpdatedAt');
@@ -3988,15 +3993,55 @@ function navigateToStep(tabName, cardId, subTabName) {
   }
 }
 
+// Preload vault status for caching (non-blocking, used by Getting Started)
+async function preloadVaultStatus() {
+  if (vaultStatusData !== null) return; // Already cached
+  try {
+    const token = idToken();
+    if (!token) return;
+    const res = await fetch(API_URL + '/vault/status', {
+      method: 'GET',
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+    if (res.ok) {
+      vaultStatusData = await res.json();
+    } else if (res.status === 404) {
+      vaultStatusData = { status: 'not_enrolled' };
+    }
+  } catch (e) {
+    console.error('Error preloading vault status:', e);
+  }
+}
+
+// Preload voting history for caching (non-blocking, used by Getting Started)
+async function preloadVotingHistory() {
+  if (votingHistoryData !== null) return; // Already cached
+  try {
+    const token = idToken();
+    if (!token) return;
+    const res = await fetch(API_URL + '/votes/history', {
+      method: 'GET',
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+    if (res.status === 400 || res.status === 404) {
+      votingHistoryData = { votes: [] };
+    } else if (res.ok) {
+      votingHistoryData = await res.json();
+    }
+  } catch (e) {
+    console.error('Error preloading voting history:', e);
+  }
+}
+
 async function checkStepCompletion() {
   const steps = {
     pinEnabled: false,
     isMember: false,
     membershipPending: false,
     hasSubscription: false,
-    vaultDeployed: false, // Future feature
+    vaultDeployed: false,
     hasVoted: false,
-    backupsConfigured: false // Future feature
+    backupsConfigured: false
   };
 
   if (signedIn()) {
@@ -4005,71 +4050,73 @@ async function checkStepCompletion() {
     const groups = payload['cognito:groups'] || [];
     steps.isMember = groups.includes('member');
 
-    // Check PIN status
-    try {
-      const pinRes = await fetch(API_URL + '/account/security/pin/status', {
-        method: 'GET',
-        headers: { 'Authorization': 'Bearer ' + token }
-      });
-      // Handle 404 as "no PIN configured" (valid state for new users)
-      if (pinRes.status === 404) {
-        steps.pinEnabled = false;
-      } else if (pinRes.ok) {
-        const pinData = await pinRes.json();
-        steps.pinEnabled = pinData.pin_enabled || false;
-      }
-    } catch (e) {
-      console.error('Error checking PIN status:', e);
+    // Use cached PIN status from loadPinStatus() instead of making duplicate API call
+    if (pinStatusData !== null) {
+      steps.pinEnabled = pinStatusData.pin_enabled || false;
     }
 
-    // Check membership status for pending state
-    try {
-      const membershipRes = await fetch(API_URL + '/account/membership/status', {
-        method: 'GET',
-        headers: { 'Authorization': 'Bearer ' + token }
-      });
-      if (membershipRes.ok) {
-        const membershipData = await membershipRes.json();
-        steps.membershipPending = membershipData.membership_status === 'pending';
-      }
-    } catch (e) {
-      console.error('Error checking membership status:', e);
+    // Use cached membership status instead of making duplicate API call
+    if (membershipStatus !== null) {
+      steps.membershipPending = membershipStatus === 'pending';
     }
 
-    // Check subscription status
+    // Use cached subscription status
     if (subscriptionStatus && subscriptionStatus.is_active) {
       steps.hasSubscription = true;
     }
 
-    // Check vault deployment status
-    try {
-      const vaultRes = await fetch(API_URL + '/vault/status', {
-        method: 'GET',
-        headers: { 'Authorization': 'Bearer ' + token }
-      });
-      if (vaultRes.ok) {
-        const vaultData = await vaultRes.json();
-        steps.vaultDeployed = vaultData.status === 'active';
-      }
-    } catch (e) {
-      console.error('Error checking vault status:', e);
+    // Fetch vault status and voting history in parallel (these aren't cached yet)
+    const [vaultResult, votesResult] = await Promise.allSettled([
+      // Vault status - use cached if available
+      vaultStatusData !== null ? Promise.resolve(vaultStatusData) : (async () => {
+        try {
+          const vaultRes = await fetch(API_URL + '/vault/status', {
+            method: 'GET',
+            headers: { 'Authorization': 'Bearer ' + token }
+          });
+          if (vaultRes.ok) {
+            const data = await vaultRes.json();
+            vaultStatusData = data; // Cache it
+            return data;
+          }
+          return null;
+        } catch (e) {
+          console.error('Error checking vault status:', e);
+          return null;
+        }
+      })(),
+      // Voting history - use cached if available
+      votingHistoryData !== null ? Promise.resolve(votingHistoryData) : (async () => {
+        try {
+          const votesRes = await fetch(API_URL + '/votes/history', {
+            method: 'GET',
+            headers: { 'Authorization': 'Bearer ' + token }
+          });
+          if (votesRes.status === 400 || votesRes.status === 404) {
+            const data = { votes: [] };
+            votingHistoryData = data; // Cache it
+            return data;
+          } else if (votesRes.ok) {
+            const data = await votesRes.json();
+            votingHistoryData = data; // Cache it
+            return data;
+          }
+          return null;
+        } catch (e) {
+          console.error('Error checking voting history:', e);
+          return null;
+        }
+      })()
+    ]);
+
+    // Process vault result
+    if (vaultResult.status === 'fulfilled' && vaultResult.value) {
+      steps.vaultDeployed = vaultResult.value.status === 'active';
     }
 
-    // Check if user has voted
-    try {
-      const votesRes = await fetch(API_URL + '/votes/history', {
-        method: 'GET',
-        headers: { 'Authorization': 'Bearer ' + token }
-      });
-      // Handle 400/404 as "no votes yet" (valid state for new users)
-      if (votesRes.status === 400 || votesRes.status === 404) {
-        steps.hasVoted = false;
-      } else if (votesRes.ok) {
-        const votesData = await votesRes.json();
-        steps.hasVoted = votesData.votes && votesData.votes.length > 0;
-      }
-    } catch (e) {
-      console.error('Error checking voting history:', e);
+    // Process votes result
+    if (votesResult.status === 'fulfilled' && votesResult.value) {
+      steps.hasVoted = votesResult.value.votes && votesResult.value.votes.length > 0;
     }
   }
 
@@ -4261,8 +4308,7 @@ function renderVaultStatusContent(status) {
           <div style="font-size:3rem;margin-bottom:16px;">🔐</div>
           <div style="font-size:1.2rem;font-weight:600;color:var(--text);margin-bottom:8px;">Set Up Your Vault</div>
           <p class="muted" style="margin-bottom:20px;max-width:400px;margin-left:auto;margin-right:auto;">
-            Your vault provides secure credential storage and enables automated deployments.
-            Start by enrolling your mobile device.
+            Your vault provides secure storage for your secrets and data. It allows you to securely and privately connect, communicate and transact with other users, apps and services. Start by enrolling your mobile device.
           </p>
           <button onclick="startEnrollment()" class="btn" style="padding:12px 24px;background:linear-gradient(135deg,var(--accent) 0%,#2563eb 100%);font-weight:600;">
             Start Enrollment
@@ -6481,7 +6527,7 @@ function showEnrollmentModal(session) {
 
       <div style="margin-bottom:20px;padding:16px;background:#050505;border-radius:8px;border:1px solid #333;">
         <div style="color:var(--gray);font-size:0.85rem;margin-bottom:8px;">Session expires in:</div>
-        <div id="enrollmentTimer" style="color:var(--accent);font-size:1.2rem;font-weight:600;">15:00</div>
+        <div id="enrollmentTimer" style="color:var(--accent);font-size:1.2rem;font-weight:600;">7:00</div>
       </div>
 
       <div style="display:flex;gap:12px;justify-content:center;">
@@ -6515,12 +6561,8 @@ function generateQRCode(data) {
   const container = document.getElementById('enrollmentQRCode');
   if (!container) return;
 
-  // Use a simple QR code library via CDN or generate SVG
-  // For now, we'll create a simple SVG-based QR placeholder and use qrcode.js if available
-  // In production, you'd include a QR library like qrcode.js
-
-  // Check if QRCode library is loaded, otherwise show manual code
-  if (typeof QRCode !== 'undefined') {
+  // Check if QRCode library is already loaded
+  if (typeof QRCode !== 'undefined' && QRCode.CorrectLevel) {
     container.innerHTML = '';
     new QRCode(container, {
       text: data,
@@ -6531,30 +6573,50 @@ function generateQRCode(data) {
       correctLevel: QRCode.CorrectLevel.M
     });
   } else {
-    // Fallback: Load QRCode library dynamically
+    // Load qrcodejs library (David Shim's version - simpler browser API)
     const script = document.createElement('script');
-    script.src = 'https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js';
+    script.src = 'https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js';
     script.onload = () => {
       container.innerHTML = '';
-      // Use the browser version which creates a canvas
-      QRCode.toCanvas(container, data, { width: 200, margin: 0 }, (error) => {
-        if (error) {
-          console.error('QR generation error:', error);
-          container.innerHTML = '<div style="color:#000;font-size:0.8rem;">QR Error</div>';
-        }
-      });
+      try {
+        new QRCode(container, {
+          text: data,
+          width: 200,
+          height: 200,
+          colorDark: '#000000',
+          colorLight: '#ffffff',
+          correctLevel: QRCode.CorrectLevel.M
+        });
+      } catch (error) {
+        console.error('QR generation error:', error);
+        showManualEnrollmentCode(container, data);
+      }
     };
     script.onerror = () => {
-      // Final fallback: show session token
-      container.innerHTML = `
-        <div style="color:#000;font-size:0.7rem;word-break:break-all;max-width:180px;">
-          <div style="font-weight:600;margin-bottom:8px;">Manual Code:</div>
-          ${enrollmentSession?.session_token?.substring(0, 20)}...
-        </div>
-      `;
+      console.error('Failed to load QR code library');
+      showManualEnrollmentCode(container, data);
     };
     document.head.appendChild(script);
   }
+}
+
+function showManualEnrollmentCode(container, data) {
+  // Parse the QR data to show useful info
+  let qrInfo;
+  try {
+    qrInfo = JSON.parse(data);
+  } catch (e) {
+    qrInfo = { session_token: enrollmentSession?.session_token };
+  }
+
+  container.innerHTML = `
+    <div style="color:#000;font-size:0.75rem;word-break:break-all;max-width:180px;text-align:left;">
+      <div style="font-weight:600;margin-bottom:8px;text-align:center;">Manual Entry</div>
+      <div style="margin-bottom:6px;"><strong>Token:</strong></div>
+      <div style="background:#f0f0f0;padding:8px;border-radius:4px;font-family:monospace;font-size:0.65rem;margin-bottom:8px;">${qrInfo.session_token || 'N/A'}</div>
+      <div style="font-size:0.65rem;color:#666;text-align:center;">Enter this in the VettID app</div>
+    </div>
+  `;
 }
 
 function startEnrollmentTimer(expiresAt) {
@@ -6653,8 +6715,25 @@ function updateEnrollmentStatus(state, message) {
   }
 }
 
-function closeEnrollmentModal() {
+async function closeEnrollmentModal() {
   stopEnrollmentPoll();
+
+  // Cancel the enrollment session on the backend
+  if (enrollmentSession) {
+    try {
+      const token = idToken();
+      await fetch(API_URL + '/vault/enroll/cancel', {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer ' + token,
+          'Content-Type': 'application/json'
+        }
+      });
+    } catch (e) {
+      console.error('Error cancelling enrollment session:', e);
+    }
+  }
+
   const modal = document.getElementById('enrollmentModal');
   if (modal) modal.remove();
   enrollmentSession = null;
@@ -6692,14 +6771,20 @@ if (checkAuth()) {
     // Load subscription status first so isPaidSubscriber() works correctly in loadMembershipStatus()
     await loadSubscriptionStatus();
 
+    // Load all data in parallel - including preloading for Getting Started steps
+    // This eliminates duplicate API calls and runs vault/voting fetches early
     await Promise.all([
       loadMembershipStatus(),
       loadSubscriptionTypes(),
       loadPinStatus(),
-      loadEmailPreferences()
+      loadEmailPreferences(),
+      preloadVaultStatus(),    // Preload for Getting Started (cached)
+      preloadVotingHistory()   // Preload for Getting Started (cached)
     ]);
 
     updateTabVisibility();
+
+    // populateGettingStartedSteps now uses cached data - no additional API calls needed
     await populateGettingStartedSteps();
 
     // Show Getting Started tab unless user has clicked "Got it" button

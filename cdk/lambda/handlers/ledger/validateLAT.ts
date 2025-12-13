@@ -33,7 +33,7 @@ import {
   hashLATToken,
   verifyLATToken,
   generateLAT,
-} from '../../common/crypto';
+} from '../../common/crypto-keys';
 import {
   query,
   transaction,

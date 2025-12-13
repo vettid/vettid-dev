@@ -58,6 +58,8 @@ export class InfrastructureStack extends cdk.Stack {
     backups: dynamodb.Table;
     credentialBackups: dynamodb.Table;
     backupSettings: dynamodb.Table;
+    // Supported Services Registry
+    supportedServices: dynamodb.Table;
   };
 
   // S3 Buckets
@@ -76,6 +78,9 @@ export class InfrastructureStack extends cdk.Stack {
   // Authorizers (to be used with VettIDStack's HTTP API)
   public readonly adminAuthorizer!: apigw.IHttpRouteAuthorizer;
   public readonly memberAuthorizer!: apigw.IHttpRouteAuthorizer;
+
+  // Enrollment authorizer Lambda (for VaultStack)
+  public readonly enrollmentAuthorizerFn!: lambdaNode.NodejsFunction;
 
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
@@ -339,6 +344,13 @@ export class InfrastructureStack extends cdk.Stack {
       projectionType: dynamodb.ProjectionType.ALL,
     });
 
+    // GSI for looking up sessions by token (used by mobile authenticate endpoint)
+    enrollmentSessions.addGlobalSecondaryIndex({
+      indexName: 'token-index',
+      partitionKey: { name: 'session_token', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
     // Notification Preferences table
     const notificationPreferences = new dynamodb.Table(this, 'NotificationPreferences', {
       partitionKey: { name: 'notification_type', type: dynamodb.AttributeType.STRING },
@@ -554,6 +566,32 @@ export class InfrastructureStack extends cdk.Stack {
       pointInTimeRecovery: true,
     });
 
+    // ===== SUPPORTED SERVICES REGISTRY =====
+
+    // Supported Services table - stores third-party service integrations
+    const supportedServices = new dynamodb.Table(this, 'SupportedServices', {
+      partitionKey: { name: 'service_id', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      pointInTimeRecovery: true,
+    });
+
+    // GSI for filtering by status
+    supportedServices.addGlobalSecondaryIndex({
+      indexName: 'status-index',
+      partitionKey: { name: 'status', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'sort_order', type: dynamodb.AttributeType.NUMBER },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // GSI for filtering by service type
+    supportedServices.addGlobalSecondaryIndex({
+      indexName: 'service-type-index',
+      partitionKey: { name: 'service_type', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'name', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
     // ===== S3 BUCKETS =====
 
     // S3 bucket for membership terms PDFs (shared by VettIDStack and AdminStack)
@@ -636,6 +674,8 @@ export class InfrastructureStack extends cdk.Stack {
       backups,
       credentialBackups,
       backupSettings,
+      // Supported Services Registry
+      supportedServices,
     };
 
     this.termsBucket = termsBucket;
@@ -906,6 +946,17 @@ export class InfrastructureStack extends cdk.Stack {
     });
     const memberAuthorizer = new authorizers.HttpUserPoolAuthorizer('MemberAuthorizer', memberUserPool, {
       userPoolClients: [memberAppClient]
+    });
+
+    // Custom enrollment authorizer Lambda (for mobile enrollment flow)
+    // This Lambda validates enrollment JWTs issued by the /vault/enroll/authenticate endpoint
+    this.enrollmentAuthorizerFn = new lambdaNode.NodejsFunction(this, 'EnrollmentAuthorizerFn', {
+      entry: 'lambda/handlers/auth/enrollmentAuthorizer.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ENROLLMENT_JWT_SECRET: 'vettid-enrollment-secret-change-in-production', // TODO: Use Secrets Manager
+      },
+      timeout: cdk.Duration.seconds(10),
     });
 
     // ===== CUSTOM RESOURCES =====
