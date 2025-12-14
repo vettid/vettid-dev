@@ -159,14 +159,16 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       // Vault instance permissions
       publishPerms = [
         `${ownerSpace}.forApp.>`,     // Vault sends to app
-        `${messageSpace}.forOwner.>`, // Vault receives from connections
+        `${messageSpace}.forOwner.>`, // Vault sends to connections
         `${messageSpace}.ownerProfile`, // Vault can publish profile
+        `${messageSpace}.call.>`,     // Vault can send call signals to peers
       ];
       subscribePerms = [
         `${ownerSpace}.forVault.>`,   // Vault receives from app
         `${ownerSpace}.control`,      // Vault receives system commands
         `${ownerSpace}.eventTypes`,   // Vault can read handler definitions
         `${messageSpace}.forOwner.>`, // Vault receives from connections
+        `${messageSpace}.call.>`,     // Vault receives call signals from peers
       ];
     }
 

@@ -1265,6 +1265,38 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       authorizer: this.memberAuthorizer,
     });
 
+    // ===== CALLING HANDLERS (E2EE WebRTC) =====
+    // Note: Call state and signaling is handled in user vaults via WASM handlers.
+    // This Lambda only provides TURN credentials for WebRTC NAT traversal.
+
+    const getTurnCredentials = new lambdaNode.NodejsFunction(this, 'GetTurnCredentialsFn', {
+      entry: 'lambda/handlers/calls/getTurnCredentials.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+        TURN_SECRET_NAME: 'vettid/cloudflare-turn',
+      },
+      timeout: cdk.Duration.seconds(10),
+      description: 'Generate Cloudflare TURN credentials for WebRTC calls',
+    });
+
+    // Grant access to read TURN secret from Secrets Manager
+    getTurnCredentials.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['secretsmanager:GetSecretValue'],
+      resources: [`arn:aws:secretsmanager:${this.region}:${this.account}:secret:vettid/cloudflare-turn*`],
+    }));
+
+    // Grant audit table write access
+    tables.audit.grantWriteData(getTurnCredentials);
+
+    // TURN credentials API route
+    this.httpApi.addRoutes({
+      path: '/calls/turn-credentials',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('GetTurnCredentialsInt', getTurnCredentials),
+      authorizer: this.memberAuthorizer,
+    });
+
     // API Gateway throttling (default stage)
     // Note: HTTP API v2 has account-level throttling by default (10,000 RPS burst, 5,000 RPS steady)
     // Additional per-route throttling can be configured via CfnStage

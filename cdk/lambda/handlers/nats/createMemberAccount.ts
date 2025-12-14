@@ -5,6 +5,15 @@
  * - OwnerSpace.{member_guid} - For vault communication (forVault, forApp, eventTypes, control)
  * - MessageSpace.{member_guid} - For external connections (forOwner, ownerProfile)
  *
+ * The response includes KV bucket configuration for the vault to provision:
+ * - {user_guid}_calls - Call history and state (30-day TTL)
+ * - {user_guid}_connections - Peer connection data
+ * - {user_guid}_messages - Chat message history (90-day TTL)
+ * - {user_guid}_profile - User profile data
+ *
+ * Note: KV buckets are provisioned by the vault on first connection using JetStream.
+ * This Lambda only creates the NATS account credentials.
+ *
  * POST /vault/nats/account
  *
  * Requires: Member JWT token
@@ -42,11 +51,19 @@ interface NatsAccountRecord {
   updated_at: string;
 }
 
+interface KVBucketConfig {
+  name: string;
+  ttl_seconds?: number;
+  max_bytes: number;
+  description: string;
+}
+
 interface CreateAccountResponse {
   owner_space_id: string;
   message_space_id: string;
   nats_endpoint: string;
   status: string;
+  kv_buckets: KVBucketConfig[];
 }
 
 export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
@@ -117,11 +134,38 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       message_space_id: messageSpaceId,
     }, requestId);
 
+    // Define KV bucket configuration for the vault to provision
+    const kvBuckets: KVBucketConfig[] = [
+      {
+        name: `${userGuid}_calls`,
+        ttl_seconds: 30 * 24 * 60 * 60, // 30 days
+        max_bytes: 10 * 1024 * 1024,    // 10MB
+        description: 'Call history and state',
+      },
+      {
+        name: `${userGuid}_connections`,
+        max_bytes: 1 * 1024 * 1024,     // 1MB
+        description: 'Peer connection data',
+      },
+      {
+        name: `${userGuid}_messages`,
+        ttl_seconds: 90 * 24 * 60 * 60, // 90 days
+        max_bytes: 100 * 1024 * 1024,   // 100MB
+        description: 'Chat message history',
+      },
+      {
+        name: `${userGuid}_profile`,
+        max_bytes: 100 * 1024,          // 100KB
+        description: 'User profile data',
+      },
+    ];
+
     const response: CreateAccountResponse = {
       owner_space_id: ownerSpaceId,
       message_space_id: messageSpaceId,
       nats_endpoint: `nats://${NATS_DOMAIN}:4222`,
       status: 'active',
+      kv_buckets: kvBuckets,
     };
 
     return ok(response, origin);
