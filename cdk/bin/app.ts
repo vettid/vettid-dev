@@ -60,11 +60,9 @@ const vault = new VaultStack(app, 'VettID-Vault', {
 });
 
 // 7. Deploy NATS infrastructure stack (VPC, EC2 cluster, NLB)
-// Note: This stack requires the Route 53 hosted zone ID for nats.vettid.dev
-// To deploy, provide the hosted zone ID via context or environment variable
+// Uses Route53 fromLookup to auto-discover hosted zone (cached in cdk.context.json)
 const nats = new NatsStack(app, 'VettID-NATS', {
   env,
   domainName: 'nats.vettid.dev',
-  hostedZoneId: app.node.tryGetContext('hostedZoneId') || process.env.HOSTED_ZONE_ID || 'PLACEHOLDER',
   zoneName: 'vettid.dev',
 });

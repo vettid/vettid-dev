@@ -18,11 +18,6 @@ export interface NatsStackProps extends cdk.StackProps {
   domainName: string;
 
   /**
-   * The Route 53 hosted zone for DNS records
-   */
-  hostedZoneId: string;
-
-  /**
    * The zone name (e.g., vettid.dev)
    */
   zoneName: string;
@@ -157,9 +152,9 @@ export class NatsStack extends cdk.Stack {
 
     // ===== ACM CERTIFICATE =====
 
-    const hostedZone = route53.HostedZone.fromHostedZoneAttributes(this, 'HostedZone', {
-      hostedZoneId: props.hostedZoneId,
-      zoneName: props.zoneName,
+    // Use fromLookup to automatically find and cache the hosted zone ID
+    const hostedZone = route53.HostedZone.fromLookup(this, 'HostedZone', {
+      domainName: props.zoneName,
     });
 
     const certificate = new acm.Certificate(this, 'NatsCertificate', {
