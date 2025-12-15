@@ -7,10 +7,57 @@
  */
 
 import { createHmac, randomBytes, timingSafeEqual } from 'crypto';
+import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 
-// JWT secret - in production this should come from AWS Secrets Manager
-// For now, we use an environment variable
-const JWT_SECRET = process.env.ENROLLMENT_JWT_SECRET || 'vettid-enrollment-secret-change-in-production';
+// Secrets Manager client and cache
+const secretsClient = new SecretsManagerClient({});
+let cachedJwtSecret: string | null = null;
+let secretCacheTime = 0;
+const SECRET_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+const JWT_SECRET_ARN = process.env.ENROLLMENT_JWT_SECRET_ARN;
+
+// For backwards compatibility, also check ENROLLMENT_JWT_SECRET env var
+const STATIC_JWT_SECRET = process.env.ENROLLMENT_JWT_SECRET;
+
+if (!JWT_SECRET_ARN && !STATIC_JWT_SECRET) {
+  throw new Error('CRITICAL: Either ENROLLMENT_JWT_SECRET_ARN or ENROLLMENT_JWT_SECRET environment variable is required');
+}
+
+/**
+ * Get JWT secret - either from Secrets Manager or environment variable
+ */
+async function getJwtSecret(): Promise<string> {
+  // Use static secret if available (for backwards compatibility)
+  if (STATIC_JWT_SECRET) {
+    return STATIC_JWT_SECRET;
+  }
+
+  // Check cache
+  const now = Date.now();
+  if (cachedJwtSecret && (now - secretCacheTime) < SECRET_CACHE_TTL_MS) {
+    return cachedJwtSecret;
+  }
+
+  // Fetch from Secrets Manager
+  const response = await secretsClient.send(new GetSecretValueCommand({
+    SecretId: JWT_SECRET_ARN,
+  }));
+
+  if (!response.SecretString) {
+    throw new Error('Enrollment JWT secret is empty');
+  }
+
+  const secret = JSON.parse(response.SecretString);
+  cachedJwtSecret = secret.secret;
+  secretCacheTime = now;
+
+  if (!cachedJwtSecret) {
+    throw new Error('Enrollment JWT secret missing "secret" field');
+  }
+
+  return cachedJwtSecret;
+}
 
 export interface EnrollmentTokenPayload {
   // Standard JWT claims
@@ -67,7 +114,7 @@ function sign(data: string, secret: string): string {
  * @param options Additional options
  * @returns Signed JWT string
  */
-export function generateEnrollmentToken(
+export async function generateEnrollmentToken(
   userGuid: string,
   sessionId: string,
   options: {
@@ -75,7 +122,8 @@ export function generateEnrollmentToken(
     deviceType?: 'android' | 'ios';
     expiresInSeconds?: number;
   } = {}
-): string {
+): Promise<string> {
+  const jwtSecret = await getJwtSecret();
   const now = Math.floor(Date.now() / 1000);
   const expiresIn = options.expiresInSeconds || 600; // Default 10 minutes
 
@@ -99,7 +147,7 @@ export function generateEnrollmentToken(
 
   const headerB64 = base64urlEncode(JSON.stringify(header));
   const payloadB64 = base64urlEncode(JSON.stringify(payload));
-  const signature = sign(`${headerB64}.${payloadB64}`, JWT_SECRET);
+  const signature = sign(`${headerB64}.${payloadB64}`, jwtSecret);
 
   return `${headerB64}.${payloadB64}.${signature}`;
 }
@@ -110,8 +158,9 @@ export function generateEnrollmentToken(
  * @param token JWT string
  * @returns Decoded payload if valid, null if invalid
  */
-export function verifyEnrollmentToken(token: string): EnrollmentTokenPayload | null {
+export async function verifyEnrollmentToken(token: string): Promise<EnrollmentTokenPayload | null> {
   try {
+    const jwtSecret = await getJwtSecret();
     const parts = token.split('.');
     if (parts.length !== 3) {
       return null;
@@ -120,7 +169,7 @@ export function verifyEnrollmentToken(token: string): EnrollmentTokenPayload | n
     const [headerB64, payloadB64, signatureB64] = parts;
 
     // Verify signature
-    const expectedSignature = sign(`${headerB64}.${payloadB64}`, JWT_SECRET);
+    const expectedSignature = sign(`${headerB64}.${payloadB64}`, jwtSecret);
 
     // Timing-safe comparison
     const sigBuffer = Buffer.from(signatureB64);

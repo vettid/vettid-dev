@@ -46,9 +46,22 @@ async function getCredentials(): Promise<{ username: string; password: string }>
   }
 
   const secret = JSON.parse(response.SecretString);
+
+  // Validate credentials before caching
+  if (!secret.username || typeof secret.username !== 'string' || secret.username.trim() === '') {
+    throw new Error('Invalid database username in secret');
+  }
+  if (!secret.password || typeof secret.password !== 'string' || secret.password.trim() === '') {
+    throw new Error('Invalid database password in secret');
+  }
+  // Validate username doesn't contain SQL injection characters
+  if (/[;'"\\]/.test(secret.username)) {
+    throw new Error('Database username contains invalid characters');
+  }
+
   cachedCredentials = {
-    username: secret.username,
-    password: secret.password,
+    username: secret.username.trim(),
+    password: secret.password, // Don't trim password - whitespace may be intentional
   };
   credentialsCacheTime = now;
 
@@ -76,10 +89,11 @@ async function getPool(): Promise<Pool> {
     user: credentials.username,
     password: credentials.password,
     // SSL configuration for AWS RDS
-    // In production, bundle the RDS CA certificate for full verification
-    // For VPC-internal connections, we can relax certificate validation
+    // Use RDS CA certificate validation for security
     ssl: {
-      rejectUnauthorized: false, // TODO: Use RDS CA bundle in production
+      rejectUnauthorized: true, // Enforce certificate validation
+      // AWS RDS certificates are trusted by Node.js default CA store
+      // For custom CA, set: ca: fs.readFileSync('/path/to/rds-ca-bundle.pem')
     },
     // Lambda-optimized pool settings
     max: 1, // Single connection per Lambda instance
@@ -409,11 +423,17 @@ export async function getPasswordHash(
  */
 export async function recordFailedAttempt(
   hashId: string,
-  lockDuration?: number // Duration in minutes to lock the account
+  lockDurationMinutes?: number // Duration in minutes to lock the account
 ): Promise<{ failed_attempts: number; locked_until: Date | null }> {
-  const lockUntil = lockDuration
-    ? `NOW() + INTERVAL '${lockDuration} minutes'`
-    : 'NULL';
+  // Validate and sanitize lockDurationMinutes to prevent SQL injection
+  // Must be a safe integer between 1 and 1440 (24 hours max)
+  let safeLockMinutes: number | null = null;
+  if (lockDurationMinutes !== undefined) {
+    const parsed = Math.floor(Math.abs(lockDurationMinutes));
+    if (parsed >= 1 && parsed <= 1440 && Number.isFinite(parsed)) {
+      safeLockMinutes = parsed;
+    }
+  }
 
   const result = await query<{
     failed_attempts: number;
@@ -423,12 +443,13 @@ export async function recordFailedAttempt(
      SET failed_attempts = failed_attempts + 1,
          last_failed_at = NOW(),
          locked_until = CASE
-           WHEN failed_attempts + 1 >= 5 THEN ${lockUntil}::TIMESTAMP WITH TIME ZONE
+           WHEN failed_attempts + 1 >= 5 AND $2::INTEGER IS NOT NULL
+             THEN NOW() + ($2::INTEGER * INTERVAL '1 minute')
            ELSE locked_until
          END
      WHERE hash_id = $1
      RETURNING failed_attempts, locked_until`,
-    [hashId]
+    [hashId, safeLockMinutes]
   );
 
   return result.rows[0];

@@ -193,10 +193,16 @@ export class VaultStack extends cdk.Stack {
       environment: {
         ...defaultEnv,
         TABLE_AUDIT: tables.audit.tableName,
-        ENROLLMENT_JWT_SECRET: 'vettid-enrollment-secret-change-in-production', // TODO: Use Secrets Manager
+        ENROLLMENT_JWT_SECRET_ARN: props.infrastructure.enrollmentJwtSecretArn,
       },
       timeout: cdk.Duration.seconds(30),
     });
+
+    // Grant read access to the enrollment JWT secret
+    this.authenticateEnrollment.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['secretsmanager:GetSecretValue'],
+      resources: [props.infrastructure.enrollmentJwtSecretArn],
+    }));
 
     // Note: Enrollment authorizer Lambda is defined in InfrastructureStack
     // to avoid cyclic dependencies between VettIDStack and VaultStack
@@ -523,36 +529,106 @@ export class VaultStack extends cdk.Stack {
     tables.natsAccounts.grantReadData(this.provisionVault);
 
     // Grant EC2 permissions for vault lifecycle management
-    const ec2Policy = new iam.PolicyStatement({
+    // Scoped down with conditions to limit operations to vettid-tagged instances
+
+    // Describe actions don't support resource-level permissions (AWS limitation)
+    const ec2DescribePolicy = new iam.PolicyStatement({
       actions: [
-        'ec2:RunInstances',
-        'ec2:CreateTags',
         'ec2:DescribeInstances',
         'ec2:DescribeInstanceStatus',
         'ec2:DescribeSubnets',
+        'ec2:DescribeSecurityGroups',
+        'ec2:DescribeImages',
+      ],
+      resources: ['*'], // Describe actions require '*'
+    });
+
+    // RunInstances with conditions to limit instance types and require tags
+    const ec2RunPolicy = new iam.PolicyStatement({
+      actions: ['ec2:RunInstances'],
+      resources: [
+        `arn:aws:ec2:${this.region}:${this.account}:instance/*`,
+        `arn:aws:ec2:${this.region}:${this.account}:volume/*`,
+        `arn:aws:ec2:${this.region}:${this.account}:network-interface/*`,
+        `arn:aws:ec2:${this.region}::image/*`,
+        `arn:aws:ec2:${this.region}:${this.account}:subnet/*`,
+        `arn:aws:ec2:${this.region}:${this.account}:security-group/*`,
+      ],
+      conditions: {
+        StringEquals: {
+          'aws:RequestTag/Application': 'vettid-vault',
+        },
+      },
+    });
+
+    // CreateTags limited to vettid resources
+    const ec2TagPolicy = new iam.PolicyStatement({
+      actions: ['ec2:CreateTags'],
+      resources: [`arn:aws:ec2:${this.region}:${this.account}:*/*`],
+      conditions: {
+        StringEquals: {
+          'ec2:CreateAction': 'RunInstances',
+          'aws:RequestTag/Application': 'vettid-vault',
+        },
+      },
+    });
+
+    // Mutating actions (Stop/Start/Terminate) limited to vettid-tagged instances
+    const ec2MutatePolicy = new iam.PolicyStatement({
+      actions: [
         'ec2:StopInstances',
         'ec2:StartInstances',
         'ec2:TerminateInstances',
       ],
-      resources: ['*'], // EC2 RunInstances requires broad permissions
+      resources: [`arn:aws:ec2:${this.region}:${this.account}:instance/*`],
+      conditions: {
+        StringEquals: {
+          'ec2:ResourceTag/Application': 'vettid-vault',
+        },
+      },
     });
 
-    this.provisionVault.addToRolePolicy(ec2Policy);
+    this.provisionVault.addToRolePolicy(ec2DescribePolicy);
+    this.provisionVault.addToRolePolicy(ec2RunPolicy);
+    this.provisionVault.addToRolePolicy(ec2TagPolicy);
+    this.provisionVault.addToRolePolicy(ec2MutatePolicy);
+
     this.initializeVault.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['ec2:DescribeInstances'],
+      resources: ['*'], // Describe requires '*'
+    }));
+
+    this.stopVault.addToRolePolicy(new iam.PolicyStatement({
       actions: ['ec2:DescribeInstances'],
       resources: ['*'],
     }));
     this.stopVault.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['ec2:StopInstances', 'ec2:DescribeInstances'],
+      actions: ['ec2:StopInstances'],
+      resources: [`arn:aws:ec2:${this.region}:${this.account}:instance/*`],
+      conditions: {
+        StringEquals: {
+          'ec2:ResourceTag/Application': 'vettid-vault',
+        },
+      },
+    }));
+
+    this.terminateVault.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['ec2:DescribeInstances'],
       resources: ['*'],
     }));
     this.terminateVault.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['ec2:TerminateInstances', 'ec2:DescribeInstances'],
-      resources: ['*'],
+      actions: ['ec2:TerminateInstances'],
+      resources: [`arn:aws:ec2:${this.region}:${this.account}:instance/*`],
+      conditions: {
+        StringEquals: {
+          'ec2:ResourceTag/Application': 'vettid-vault',
+        },
+      },
     }));
+
     this.getVaultHealth.addToRolePolicy(new iam.PolicyStatement({
       actions: ['ec2:DescribeInstances', 'ec2:DescribeInstanceStatus'],
-      resources: ['*'],
+      resources: ['*'], // Describe requires '*'
     }));
 
     // Grant IAM pass role permission if using instance profile

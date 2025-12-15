@@ -19,16 +19,35 @@ import argon2 from 'argon2';
 // ============================================
 
 /**
- * Argon2id parameters matching specification
+ * Argon2id parameters matching OWASP 2024 recommendations
  * These values provide strong security while remaining usable on Lambda
  */
 const ARGON2_PARAMS = {
   type: argon2.argon2id,
-  timeCost: 3,          // 3 iterations
-  memoryCost: 65536,    // 64 MB
+  timeCost: 3,          // 3 iterations (OWASP minimum: 3)
+  memoryCost: 65536,    // 64 MB (OWASP minimum: 64 MB)
   parallelism: 4,       // 4 threads
-  hashLength: 32,       // 32-byte output
+  hashLength: 32,       // 32-byte output (256 bits)
 };
+
+// Validate Argon2 parameters meet minimum security requirements
+function validateArgon2Params(): void {
+  if (ARGON2_PARAMS.memoryCost < 65536) {
+    throw new Error('CRITICAL: Argon2 memory cost too low (min: 64 MB / 65536 KB)');
+  }
+  if (ARGON2_PARAMS.timeCost < 3) {
+    throw new Error('CRITICAL: Argon2 time cost too low (min: 3 iterations)');
+  }
+  if (ARGON2_PARAMS.parallelism < 1) {
+    throw new Error('CRITICAL: Argon2 parallelism must be at least 1');
+  }
+  if (ARGON2_PARAMS.hashLength < 32) {
+    throw new Error('CRITICAL: Argon2 hash length too short (min: 32 bytes)');
+  }
+}
+
+// Validate on module load to fail fast
+validateArgon2Params();
 
 /**
  * Hash password using Argon2id

@@ -126,7 +126,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
 
     // Generate enrollment JWT
     // Token expires in 10 minutes (enough time for the enrollment process)
-    const enrollmentToken = generateEnrollmentToken(
+    const enrollmentToken = await generateEnrollmentToken(
       session.user_guid,
       session.session_id,
       {

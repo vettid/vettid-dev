@@ -9,6 +9,7 @@ import {
   aws_apigatewayv2_authorizers as authorizers,
   aws_iam as iam,
   aws_s3 as s3,
+  aws_secretsmanager as secretsmanager,
 } from 'aws-cdk-lib';
 
 /**
@@ -81,6 +82,9 @@ export class InfrastructureStack extends cdk.Stack {
 
   // Enrollment authorizer Lambda (for VaultStack)
   public readonly enrollmentAuthorizerFn!: lambdaNode.NodejsFunction;
+
+  // Enrollment JWT secret ARN (for VaultStack to use)
+  public readonly enrollmentJwtSecretArn!: string;
 
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
@@ -948,16 +952,35 @@ export class InfrastructureStack extends cdk.Stack {
       userPoolClients: [memberAppClient]
     });
 
+    // ===== ENROLLMENT JWT SECRET =====
+    // Create a secret for enrollment JWT signing (used by mobile enrollment flow)
+    const enrollmentJwtSecret = new secretsmanager.Secret(this, 'EnrollmentJwtSecret', {
+      secretName: 'vettid/enrollment/jwt-secret',
+      description: 'JWT secret for mobile device enrollment authentication',
+      generateSecretString: {
+        secretStringTemplate: JSON.stringify({}),
+        generateStringKey: 'secret',
+        passwordLength: 64,
+        excludePunctuation: true, // Simpler secret for JWT signing
+      },
+    });
+
+    // Export the secret ARN for other stacks
+    this.enrollmentJwtSecretArn = enrollmentJwtSecret.secretArn;
+
     // Custom enrollment authorizer Lambda (for mobile enrollment flow)
     // This Lambda validates enrollment JWTs issued by the /vault/enroll/authenticate endpoint
     this.enrollmentAuthorizerFn = new lambdaNode.NodejsFunction(this, 'EnrollmentAuthorizerFn', {
       entry: 'lambda/handlers/auth/enrollmentAuthorizer.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
       environment: {
-        ENROLLMENT_JWT_SECRET: 'vettid-enrollment-secret-change-in-production', // TODO: Use Secrets Manager
+        ENROLLMENT_JWT_SECRET_ARN: enrollmentJwtSecret.secretArn,
       },
       timeout: cdk.Duration.seconds(10),
     });
+
+    // Grant the authorizer Lambda read access to the secret
+    enrollmentJwtSecret.grantRead(this.enrollmentAuthorizerFn);
 
     // ===== CUSTOM RESOURCES =====
 

@@ -20,8 +20,19 @@ const secretsClient = new SecretsManagerClient({});
 
 // Cache operator keys for Lambda reuse
 let cachedOperatorKeys: OperatorKeys | null = null;
+let cachedSecretVersionId: string | null = null;
 let cacheTime = 0;
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+/**
+ * Force invalidate the operator keys cache
+ * Call this when keys are rotated in Secrets Manager
+ */
+export function invalidateOperatorKeysCache(): void {
+  cachedOperatorKeys = null;
+  cachedSecretVersionId = null;
+  cacheTime = 0;
+}
 
 interface OperatorKeys {
   operatorSeed: string;
@@ -82,7 +93,8 @@ interface GeneratedCredentials {
 }
 
 /**
- * Get operator keys from Secrets Manager (cached)
+ * Get operator keys from Secrets Manager (cached with version validation)
+ * Cache is invalidated when secret version changes for immediate key rotation support
  */
 async function getOperatorKeys(): Promise<OperatorKeys> {
   const now = Date.now();
@@ -99,10 +111,21 @@ async function getOperatorKeys(): Promise<OperatorKeys> {
     throw new Error('NATS operator secret is empty');
   }
 
+  // Check if secret version changed (indicates key rotation)
+  const newVersionId = response.VersionId;
+  if (cachedSecretVersionId && newVersionId !== cachedSecretVersionId) {
+    console.info('[NATS-JWT] Operator keys rotated, updating cache');
+  }
+
   const secret = JSON.parse(response.SecretString);
 
   if (!secret.operator_seed) {
     throw new Error('NATS operator keys not initialized. Run: npx ts-node scripts/init-nats-operator.ts');
+  }
+
+  // Validate secret structure before caching
+  if (!secret.operator_public_key || !secret.system_account_seed || !secret.system_account_public_key) {
+    throw new Error('NATS operator secret missing required fields');
   }
 
   cachedOperatorKeys = {
@@ -111,6 +134,7 @@ async function getOperatorKeys(): Promise<OperatorKeys> {
     systemAccountSeed: secret.system_account_seed,
     systemAccountPublicKey: secret.system_account_public_key,
   };
+  cachedSecretVersionId = newVersionId || null;
   cacheTime = now;
 
   return cachedOperatorKeys;

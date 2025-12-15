@@ -57,7 +57,7 @@ export const handler = async (
     }
 
     // Verify and decode the token
-    const payload = verifyEnrollmentToken(token);
+    const payload = await verifyEnrollmentToken(token);
 
     if (!payload) {
       console.log('Token verification failed');
