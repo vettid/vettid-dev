@@ -640,6 +640,16 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       environment: defaultEnv,
       timeout: cdk.Duration.seconds(60), // Allow time for scanning and updating multiple proposals
     });
+    const checkSubscriptionExpiry = new lambdaNode.NodejsFunction(this, 'CheckSubscriptionExpiryFn', {
+      entry: 'lambda/handlers/admin/checkSubscriptionExpiry.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+        SES_FROM: 'no-reply@vettid.dev',
+      },
+      timeout: cdk.Duration.minutes(2), // Allow time to scan subscriptions and send emails
+      description: 'Check for subscriptions expiring in 48 hours and send warning emails',
+    });
 
     // Grants
     tables.invites.grantReadWriteData(submitRegistration);
@@ -700,13 +710,17 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
     tables.proposals.grantReadWriteData(closeExpiredProposals); // Scheduled job to close expired proposals
     tables.subscriptionTypes.grantReadData(listEnabledSubscriptionTypes);
     tables.audit.grantReadData(listEnabledSubscriptionTypes);
+    // Scheduled job to check for expiring subscriptions and send warning emails
+    tables.subscriptions.grantReadWriteData(checkSubscriptionExpiry);
+    tables.registrations.grantReadData(checkSubscriptionExpiry);
+    tables.audit.grantReadWriteData(checkSubscriptionExpiry);
 
     // SES permissions scoped to specific identity and region
     const sesIdentityArn = `arn:aws:ses:${this.region}:${this.account}:identity/*`;
     const sesConfigSetArn = `arn:aws:ses:${this.region}:${this.account}:configuration-set/*`;
     const sesTemplateArn = `arn:aws:ses:${this.region}:${this.account}:template/*`;
 
-    [submitRegistration, registrationStreamFn].forEach((fn) => {
+    [submitRegistration, registrationStreamFn, checkSubscriptionExpiry].forEach((fn) => {
       fn.addToRolePolicy(new iam.PolicyStatement({
         actions: ['ses:SendTemplatedEmail', 'ses:SendEmail'],
         resources: [sesIdentityArn, sesTemplateArn, sesConfigSetArn]
@@ -1327,6 +1341,13 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       schedule: events.Schedule.rate(cdk.Duration.minutes(15)),
     });
     closeProposalsRule.addTarget(new targets_events.LambdaFunction(closeExpiredProposals));
+
+    // EventBridge scheduled rule to check for expiring subscriptions every 6 hours
+    const subscriptionExpiryRule = new events.Rule(this, 'SubscriptionExpiryCheckRule', {
+      description: 'Check for subscriptions expiring in 48 hours and send warning emails',
+      schedule: events.Schedule.rate(cdk.Duration.hours(6)),
+    });
+    subscriptionExpiryRule.addTarget(new targets_events.LambdaFunction(checkSubscriptionExpiry));
 
     // SNS Topic for security alerts
     const securityAlertTopic = new sns.Topic(this, 'SecurityAlertTopic', {
