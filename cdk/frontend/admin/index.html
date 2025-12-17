@@ -4647,7 +4647,7 @@ async function renderActiveTile(p){
   const createdBy=p.created_by||'Admin';
   const proposalNumber=p.proposal_number||'';
   const category=p.category||'other';
-  const categoryColors={governance:'#8b5cf6',policy:'#3b82f6',budget:'#10b981',operational:'#f59e0b',other:'#6b7280'};
+  const categoryColors={governance:'#8b5cf6',policy:'#3b82f6',budget:'#10b981',funding:'#ec4899',operational:'#f59e0b',other:'#6b7280'};
   const categoryColor=categoryColors[category]||'#6b7280';
   const quorumText=p.quorum_type==='percentage'?`${p.quorum_value}% quorum`:p.quorum_type==='count'?`${p.quorum_value} votes required`:'';
 
@@ -4684,7 +4684,7 @@ function renderUpcomingTile(p){
   const createdBy=p.created_by||'Admin';
   const proposalNumber=p.proposal_number||'';
   const category=p.category||'other';
-  const categoryColors={governance:'#8b5cf6',policy:'#3b82f6',budget:'#10b981',operational:'#f59e0b',other:'#6b7280'};
+  const categoryColors={governance:'#8b5cf6',policy:'#3b82f6',budget:'#10b981',funding:'#ec4899',operational:'#f59e0b',other:'#6b7280'};
   const categoryColor=categoryColors[category]||'#6b7280';
   const quorumText=p.quorum_type==='percentage'?`${p.quorum_value}% quorum`:p.quorum_type==='count'?`${p.quorum_value} votes required`:'';
 
@@ -4720,7 +4720,7 @@ async function renderClosedTile(p){
   const createdBy=p.created_by||'Admin';
   const proposalNumber=p.proposal_number||'';
   const category=p.category||'other';
-  const categoryColors={governance:'#8b5cf6',policy:'#3b82f6',budget:'#10b981',operational:'#f59e0b',other:'#6b7280'};
+  const categoryColors={governance:'#8b5cf6',policy:'#3b82f6',budget:'#10b981',funding:'#ec4899',operational:'#f59e0b',other:'#6b7280'};
   const categoryColor=categoryColors[category]||'#6b7280';
 
   // Use stored final results if available, otherwise fetch
@@ -7335,17 +7335,14 @@ function openUploadHandlerModal() {
   document.getElementById('handlerCategoryInput').value = '';
   document.getElementById('handlerPublisherInput').value = '';
   document.getElementById('handlerDescriptionInput').value = '';
-  document.getElementById('handlerIconInput').value = '';
-  document.getElementById('selectedPresetIcon').value = '';
   document.getElementById('handlerChangelogInput').value = '';
   document.getElementById('uploadHandlerResult').style.display = 'none';
   document.getElementById('uploadHandlerMsg').textContent = '';
   document.getElementById('createHandlerBtn').disabled = false;
   pendingUploadUrl = null;
 
-  // Reset icon selection UI
-  setIconMode('preset');
-  document.querySelectorAll('.icon-option').forEach(btn => btn.style.borderColor = 'transparent');
+  // Reset icon picker
+  clearIconSelection();
 
   document.getElementById('uploadHandlerModal').classList.add('active');
 }
@@ -7357,56 +7354,62 @@ function closeUploadHandlerModal() {
   loadHandlers();
 }
 
-// Icon selection functions
-let currentIconMode = 'preset';
-
-function setIconMode(mode) {
-  currentIconMode = mode;
-  const presetBtn = document.getElementById('iconModePreset');
-  const customBtn = document.getElementById('iconModeCustom');
-  const presetGrid = document.getElementById('presetIconsGrid');
-  const customInput = document.getElementById('customIconInput');
-
-  if (mode === 'preset') {
-    presetBtn.style.background = 'var(--accent)';
-    presetBtn.style.color = '#000';
-    customBtn.style.background = 'var(--bg-button-secondary)';
-    customBtn.style.color = '';
-    presetGrid.style.display = 'grid';
-    customInput.style.display = 'none';
-    document.getElementById('handlerIconInput').value = '';
-  } else {
-    customBtn.style.background = 'var(--accent)';
-    customBtn.style.color = '#000';
-    presetBtn.style.background = 'var(--bg-button-secondary)';
-    presetBtn.style.color = '';
-    presetGrid.style.display = 'none';
-    customInput.style.display = 'block';
-    document.getElementById('selectedPresetIcon').value = '';
-    document.querySelectorAll('.icon-option').forEach(btn => btn.style.borderColor = 'transparent');
-  }
+// Icon picker functions
+function toggleIconPicker() {
+  const dropdown = document.getElementById('iconPickerDropdown');
+  dropdown.style.display = dropdown.style.display === 'none' ? 'block' : 'none';
 }
 
-function selectPresetIcon(btn, iconId) {
-  document.querySelectorAll('.icon-option').forEach(b => b.style.borderColor = 'transparent');
-  btn.style.borderColor = 'var(--accent)';
+function selectPresetIcon(iconId, emoji) {
   document.getElementById('selectedPresetIcon').value = iconId;
+  document.getElementById('selectedIconEmoji').value = emoji;
+  document.getElementById('handlerIconInput').value = '';
+  document.getElementById('iconPickerPreview').textContent = emoji;
+  document.getElementById('iconPickerText').textContent = iconId.charAt(0).toUpperCase() + iconId.slice(1);
+  document.getElementById('iconPickerText').style.color = 'var(--text)';
+  document.getElementById('iconPickerDropdown').style.display = 'none';
+}
+
+function applyCustomIconUrl() {
+  const url = document.getElementById('handlerIconInput').value.trim();
+  if (!url) {
+    showToast('Please enter a URL', 'error');
+    return;
+  }
+  document.getElementById('selectedPresetIcon').value = '';
+  document.getElementById('selectedIconEmoji').value = '';
+  document.getElementById('iconPickerPreview').innerHTML = `<img src="${escapeHtml(url)}" alt="" style="width:28px;height:28px;border-radius:4px;object-fit:cover;">`;
+  document.getElementById('iconPickerText').textContent = 'Custom URL';
+  document.getElementById('iconPickerText').style.color = 'var(--text)';
+  document.getElementById('iconPickerDropdown').style.display = 'none';
+}
+
+function clearIconSelection() {
+  document.getElementById('selectedPresetIcon').value = '';
+  document.getElementById('selectedIconEmoji').value = '';
+  document.getElementById('handlerIconInput').value = '';
+  document.getElementById('iconPickerPreview').textContent = '📦';
+  document.getElementById('iconPickerText').textContent = 'Select an icon...';
+  document.getElementById('iconPickerText').style.color = 'var(--gray)';
+  document.getElementById('iconPickerDropdown').style.display = 'none';
 }
 
 function getSelectedIcon() {
-  if (currentIconMode === 'custom') {
-    return document.getElementById('handlerIconInput').value.trim();
-  }
-  const presetIcon = document.getElementById('selectedPresetIcon').value;
-  if (!presetIcon) return '';
-  // Map preset icons to emoji data URIs for storage
-  const presetIcons = {
-    gear: '⚙️', code: '💻', lock: '🔒', key: '🔑', shield: '🛡️', bolt: '⚡',
-    cloud: '☁️', database: '🗄️', link: '🔗', bell: '🔔', mail: '📧', chart: '📊',
-    folder: '📁', globe: '🌐', robot: '🤖', puzzle: '🧩'
-  };
-  return `emoji:${presetIcons[presetIcon] || ''}`;
+  const customUrl = document.getElementById('handlerIconInput').value.trim();
+  if (customUrl) return customUrl;
+  const emoji = document.getElementById('selectedIconEmoji').value;
+  if (emoji) return `emoji:${emoji}`;
+  return '';
 }
+
+// Close icon picker when clicking outside
+document.addEventListener('click', function(e) {
+  const picker = document.getElementById('iconPickerDropdown');
+  const btn = document.getElementById('iconPickerBtn');
+  if (picker && btn && !picker.contains(e.target) && !btn.contains(e.target)) {
+    picker.style.display = 'none';
+  }
+});
 
 // Create handler (step 1)
 async function createHandler() {
@@ -8481,7 +8484,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
 <!-- Create Proposal Modal -->
 <div id="createProposalModal" class="modal-overlay">
-  <div class="modal" style="max-width:600px;">
+  <div class="modal" style="max-width:600px;max-height:90vh;overflow-y:auto;">
     <div class="modal-header">
       <h3 class="modal-title">Create New Proposal</h3>
       <button class="modal-close" onclick="closeCreateProposalModal()">&times;</button>
@@ -8501,6 +8504,7 @@ document.addEventListener('DOMContentLoaded', function() {
           <option value="governance">Governance</option>
           <option value="policy">Policy</option>
           <option value="budget">Budget</option>
+          <option value="funding">Funding</option>
           <option value="operational">Operational</option>
           <option value="other" selected>Other</option>
         </select>
@@ -8621,7 +8625,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
 <!-- Upload Handler Modal -->
 <div id="uploadHandlerModal" class="modal-overlay">
-  <div class="modal" style="max-width:600px;">
+  <div class="modal" style="max-width:600px;max-height:90vh;overflow-y:auto;">
     <div class="modal-header">
       <h3 class="modal-title">Upload Handler</h3>
       <button class="modal-close" onclick="closeUploadHandlerModal()">&times;</button>
@@ -8697,35 +8701,50 @@ document.addEventListener('DOMContentLoaded', function() {
         <label style="display:block;margin-bottom:6px;font-size:0.9rem;font-weight:600;">
           Icon <span style="color:var(--gray);font-weight:400;">(optional)</span>
         </label>
-        <div style="display:flex;gap:8px;margin-bottom:12px;">
-          <button type="button" id="iconModePreset" onclick="setIconMode('preset')" class="btn" style="flex:1;padding:8px;font-size:0.8rem;background:var(--accent);color:#000;">Preset Icons</button>
-          <button type="button" id="iconModeCustom" onclick="setIconMode('custom')" class="btn" style="flex:1;padding:8px;font-size:0.8rem;background:var(--bg-button-secondary);">Custom URL</button>
-        </div>
-        <!-- Preset Icons Grid -->
-        <div id="presetIconsGrid" style="display:grid;grid-template-columns:repeat(8,1fr);gap:8px;margin-bottom:12px;">
-          <button type="button" class="icon-option" data-icon="gear" onclick="selectPresetIcon(this,'gear')" style="padding:12px;border-radius:6px;border:2px solid transparent;background:var(--bg-input);cursor:pointer;font-size:1.5rem;" title="Settings">⚙️</button>
-          <button type="button" class="icon-option" data-icon="code" onclick="selectPresetIcon(this,'code')" style="padding:12px;border-radius:6px;border:2px solid transparent;background:var(--bg-input);cursor:pointer;font-size:1.5rem;" title="Code">💻</button>
-          <button type="button" class="icon-option" data-icon="lock" onclick="selectPresetIcon(this,'lock')" style="padding:12px;border-radius:6px;border:2px solid transparent;background:var(--bg-input);cursor:pointer;font-size:1.5rem;" title="Security">🔒</button>
-          <button type="button" class="icon-option" data-icon="key" onclick="selectPresetIcon(this,'key')" style="padding:12px;border-radius:6px;border:2px solid transparent;background:var(--bg-input);cursor:pointer;font-size:1.5rem;" title="Key">🔑</button>
-          <button type="button" class="icon-option" data-icon="shield" onclick="selectPresetIcon(this,'shield')" style="padding:12px;border-radius:6px;border:2px solid transparent;background:var(--bg-input);cursor:pointer;font-size:1.5rem;" title="Shield">🛡️</button>
-          <button type="button" class="icon-option" data-icon="bolt" onclick="selectPresetIcon(this,'bolt')" style="padding:12px;border-radius:6px;border:2px solid transparent;background:var(--bg-input);cursor:pointer;font-size:1.5rem;" title="Lightning">⚡</button>
-          <button type="button" class="icon-option" data-icon="cloud" onclick="selectPresetIcon(this,'cloud')" style="padding:12px;border-radius:6px;border:2px solid transparent;background:var(--bg-input);cursor:pointer;font-size:1.5rem;" title="Cloud">☁️</button>
-          <button type="button" class="icon-option" data-icon="database" onclick="selectPresetIcon(this,'database')" style="padding:12px;border-radius:6px;border:2px solid transparent;background:var(--bg-input);cursor:pointer;font-size:1.5rem;" title="Database">🗄️</button>
-          <button type="button" class="icon-option" data-icon="link" onclick="selectPresetIcon(this,'link')" style="padding:12px;border-radius:6px;border:2px solid transparent;background:var(--bg-input);cursor:pointer;font-size:1.5rem;" title="Link">🔗</button>
-          <button type="button" class="icon-option" data-icon="bell" onclick="selectPresetIcon(this,'bell')" style="padding:12px;border-radius:6px;border:2px solid transparent;background:var(--bg-input);cursor:pointer;font-size:1.5rem;" title="Notification">🔔</button>
-          <button type="button" class="icon-option" data-icon="mail" onclick="selectPresetIcon(this,'mail')" style="padding:12px;border-radius:6px;border:2px solid transparent;background:var(--bg-input);cursor:pointer;font-size:1.5rem;" title="Mail">📧</button>
-          <button type="button" class="icon-option" data-icon="chart" onclick="selectPresetIcon(this,'chart')" style="padding:12px;border-radius:6px;border:2px solid transparent;background:var(--bg-input);cursor:pointer;font-size:1.5rem;" title="Analytics">📊</button>
-          <button type="button" class="icon-option" data-icon="folder" onclick="selectPresetIcon(this,'folder')" style="padding:12px;border-radius:6px;border:2px solid transparent;background:var(--bg-input);cursor:pointer;font-size:1.5rem;" title="Folder">📁</button>
-          <button type="button" class="icon-option" data-icon="globe" onclick="selectPresetIcon(this,'globe')" style="padding:12px;border-radius:6px;border:2px solid transparent;background:var(--bg-input);cursor:pointer;font-size:1.5rem;" title="Web">🌐</button>
-          <button type="button" class="icon-option" data-icon="robot" onclick="selectPresetIcon(this,'robot')" style="padding:12px;border-radius:6px;border:2px solid transparent;background:var(--bg-input);cursor:pointer;font-size:1.5rem;" title="Automation">🤖</button>
-          <button type="button" class="icon-option" data-icon="puzzle" onclick="selectPresetIcon(this,'puzzle')" style="padding:12px;border-radius:6px;border:2px solid transparent;background:var(--bg-input);cursor:pointer;font-size:1.5rem;" title="Plugin">🧩</button>
-        </div>
-        <!-- Custom URL Input -->
-        <div id="customIconInput" style="display:none;">
-          <input type="url" id="handlerIconInput" placeholder="https://example.com/icon.png" style="width:100%;" />
-          <p style="margin:4px 0 0;font-size:0.75rem;color:var(--gray);">Enter a direct URL to an image (PNG, JPG, SVG)</p>
+        <div style="position:relative;">
+          <button type="button" id="iconPickerBtn" onclick="toggleIconPicker()" style="display:flex;align-items:center;gap:10px;width:100%;padding:10px 12px;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;cursor:pointer;color:var(--text);text-align:left;">
+            <span id="iconPickerPreview" style="font-size:1.5rem;width:32px;text-align:center;">📦</span>
+            <span id="iconPickerText" style="flex:1;color:var(--gray);">Select an icon...</span>
+            <span style="color:var(--gray);">▼</span>
+          </button>
+          <!-- Icon Picker Dropdown -->
+          <div id="iconPickerDropdown" style="display:none;position:absolute;top:100%;left:0;right:0;margin-top:4px;background:var(--bg-card);border:1px solid var(--accent);border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,0.4);z-index:100;max-height:300px;overflow-y:auto;">
+            <div style="padding:12px;border-bottom:1px solid var(--border);">
+              <div style="font-size:0.85rem;font-weight:600;margin-bottom:8px;color:var(--accent);">Preset Icons</div>
+              <div style="display:grid;grid-template-columns:repeat(8,1fr);gap:6px;">
+                <button type="button" onclick="selectPresetIcon('gear','⚙️')" style="padding:8px;border-radius:4px;border:none;background:var(--bg-input);cursor:pointer;font-size:1.2rem;" title="Settings">⚙️</button>
+                <button type="button" onclick="selectPresetIcon('code','💻')" style="padding:8px;border-radius:4px;border:none;background:var(--bg-input);cursor:pointer;font-size:1.2rem;" title="Code">💻</button>
+                <button type="button" onclick="selectPresetIcon('lock','🔒')" style="padding:8px;border-radius:4px;border:none;background:var(--bg-input);cursor:pointer;font-size:1.2rem;" title="Security">🔒</button>
+                <button type="button" onclick="selectPresetIcon('key','🔑')" style="padding:8px;border-radius:4px;border:none;background:var(--bg-input);cursor:pointer;font-size:1.2rem;" title="Key">🔑</button>
+                <button type="button" onclick="selectPresetIcon('shield','🛡️')" style="padding:8px;border-radius:4px;border:none;background:var(--bg-input);cursor:pointer;font-size:1.2rem;" title="Shield">🛡️</button>
+                <button type="button" onclick="selectPresetIcon('bolt','⚡')" style="padding:8px;border-radius:4px;border:none;background:var(--bg-input);cursor:pointer;font-size:1.2rem;" title="Lightning">⚡</button>
+                <button type="button" onclick="selectPresetIcon('cloud','☁️')" style="padding:8px;border-radius:4px;border:none;background:var(--bg-input);cursor:pointer;font-size:1.2rem;" title="Cloud">☁️</button>
+                <button type="button" onclick="selectPresetIcon('database','🗄️')" style="padding:8px;border-radius:4px;border:none;background:var(--bg-input);cursor:pointer;font-size:1.2rem;" title="Database">🗄️</button>
+                <button type="button" onclick="selectPresetIcon('link','🔗')" style="padding:8px;border-radius:4px;border:none;background:var(--bg-input);cursor:pointer;font-size:1.2rem;" title="Link">🔗</button>
+                <button type="button" onclick="selectPresetIcon('bell','🔔')" style="padding:8px;border-radius:4px;border:none;background:var(--bg-input);cursor:pointer;font-size:1.2rem;" title="Notification">🔔</button>
+                <button type="button" onclick="selectPresetIcon('mail','📧')" style="padding:8px;border-radius:4px;border:none;background:var(--bg-input);cursor:pointer;font-size:1.2rem;" title="Mail">📧</button>
+                <button type="button" onclick="selectPresetIcon('chart','📊')" style="padding:8px;border-radius:4px;border:none;background:var(--bg-input);cursor:pointer;font-size:1.2rem;" title="Analytics">📊</button>
+                <button type="button" onclick="selectPresetIcon('folder','📁')" style="padding:8px;border-radius:4px;border:none;background:var(--bg-input);cursor:pointer;font-size:1.2rem;" title="Folder">📁</button>
+                <button type="button" onclick="selectPresetIcon('globe','🌐')" style="padding:8px;border-radius:4px;border:none;background:var(--bg-input);cursor:pointer;font-size:1.2rem;" title="Web">🌐</button>
+                <button type="button" onclick="selectPresetIcon('robot','🤖')" style="padding:8px;border-radius:4px;border:none;background:var(--bg-input);cursor:pointer;font-size:1.2rem;" title="Automation">🤖</button>
+                <button type="button" onclick="selectPresetIcon('puzzle','🧩')" style="padding:8px;border-radius:4px;border:none;background:var(--bg-input);cursor:pointer;font-size:1.2rem;" title="Plugin">🧩</button>
+              </div>
+            </div>
+            <div style="padding:12px;">
+              <div style="font-size:0.85rem;font-weight:600;margin-bottom:8px;color:var(--accent);">Custom URL</div>
+              <div style="display:flex;gap:8px;">
+                <input type="url" id="handlerIconInput" placeholder="https://example.com/icon.png" style="flex:1;" />
+                <button type="button" onclick="applyCustomIconUrl()" class="btn" style="padding:8px 16px;font-size:0.85rem;">Apply</button>
+              </div>
+              <p style="margin:4px 0 0;font-size:0.75rem;color:var(--gray);">Enter a direct URL to an image</p>
+            </div>
+            <div style="padding:8px 12px;border-top:1px solid var(--border);">
+              <button type="button" onclick="clearIconSelection()" style="width:100%;padding:8px;background:none;border:none;color:var(--gray);cursor:pointer;font-size:0.85rem;">Clear selection</button>
+            </div>
+          </div>
         </div>
         <input type="hidden" id="selectedPresetIcon" value="" />
+        <input type="hidden" id="selectedIconEmoji" value="" />
       </div>
 
       <!-- Changelog (optional) -->
