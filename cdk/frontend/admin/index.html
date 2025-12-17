@@ -4277,6 +4277,17 @@ async function createProposal(){
     return;
   }
 
+  const category=document.getElementById('proposalCategory').value;
+  const quorumType=document.getElementById('proposalQuorumType').value;
+  const quorumValueEl=document.getElementById('proposalQuorumValue');
+  const quorumValue=quorumType!=='none'?parseInt(quorumValueEl.value,10):0;
+
+  if(quorumType!=='none'&&(!quorumValue||quorumValue<=0)){
+    msgEl.textContent='Please enter a valid quorum value';
+    msgEl.style.color='#ef4444';
+    return;
+  }
+
   try{
     const data=await api('/admin/proposals',{
       method:'POST',
@@ -4284,7 +4295,10 @@ async function createProposal(){
         proposal_title:title,
         proposal_text:text,
         opens_at:openDateTime.toISOString(),
-        closes_at:closeDateTime.toISOString()
+        closes_at:closeDateTime.toISOString(),
+        category:category,
+        quorum_type:quorumType,
+        quorum_value:quorumValue
       })
     });
     showToast('Proposal created successfully!','success');
@@ -4292,11 +4306,29 @@ async function createProposal(){
     document.getElementById('proposalText').value='';
     document.getElementById('proposalOpenDate').value='';
     document.getElementById('proposalCloseDate').value='';
+    document.getElementById('proposalCategory').value='other';
+    document.getElementById('proposalQuorumType').value='none';
+    document.getElementById('proposalQuorumValue').value='';
+    toggleQuorumValue();
     closeCreateProposalModal();
     await loadAllProposalsAdmin();
   }catch(e){
     msgEl.textContent='Error: '+(e.message||e);
     msgEl.style.color='#ef4444';
+  }
+}
+
+function toggleQuorumValue(){
+  const quorumType=document.getElementById('proposalQuorumType').value;
+  const valueInput=document.getElementById('proposalQuorumValue');
+  const valueLabel=document.getElementById('quorumValueLabel');
+  if(quorumType==='none'){
+    valueInput.style.display='none';
+    valueLabel.style.display='none';
+  }else{
+    valueInput.style.display='block';
+    valueLabel.style.display='flex';
+    valueLabel.textContent=quorumType==='percentage'?'% of members':'votes required';
   }
 }
 
@@ -4613,12 +4645,20 @@ async function renderActiveTile(p){
   const closesDate=formatDateTime(p.closes_at);
   const timeRemaining=calculateTimeRemaining(p.closes_at);
   const createdBy=p.created_by||'Admin';
+  const proposalNumber=p.proposal_number||'';
+  const category=p.category||'other';
+  const categoryColors={governance:'#8b5cf6',policy:'#3b82f6',budget:'#10b981',operational:'#f59e0b',other:'#6b7280'};
+  const categoryColor=categoryColors[category]||'#6b7280';
+  const quorumText=p.quorum_type==='percentage'?`${p.quorum_value}% quorum`:p.quorum_type==='count'?`${p.quorum_value} votes required`:'';
 
   return`
     <div style="background:var(--bg-card);border:1px solid #333;border-radius:8px;padding:12px;">
+      ${proposalNumber?`<div style="margin-bottom:4px;"><span style="font-family:monospace;font-size:0.7rem;color:#6b7280;background:#1f2937;padding:2px 6px;border-radius:4px;">${escapeHtml(proposalNumber)}</span></div>`:''}
       <h4 style="margin:0 0 6px 0;font-weight:700;font-size:0.95rem;">${escapeHtml(p.proposal_title||'Untitled Proposal')}</h4>
-      <div style="margin-bottom:8px;">
+      <div style="margin-bottom:8px;display:flex;flex-wrap:wrap;gap:6px;">
         <span style="display:inline-block;background:linear-gradient(135deg,#10b981 0%,#059669 100%);color:#fff;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;">Active</span>
+        <span style="display:inline-block;background:${categoryColor};color:#fff;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;text-transform:capitalize;">${escapeHtml(category)}</span>
+        ${quorumText?`<span style="display:inline-block;background:#374151;color:#9ca3af;padding:4px 10px;border-radius:12px;font-size:0.7rem;">${escapeHtml(quorumText)}</span>`:''}
       </div>
       <div style="margin-bottom:8px;font-size:0.8rem;color:var(--gray);">
         <div style="margin-bottom:4px;">Opens: ${escapeHtml(opensDate)}</div>
@@ -4642,12 +4682,20 @@ function renderUpcomingTile(p){
   const closesDate=formatDateTime(p.closes_at);
   const timeUntilOpens=calculateTimeRemaining(p.opens_at);
   const createdBy=p.created_by||'Admin';
+  const proposalNumber=p.proposal_number||'';
+  const category=p.category||'other';
+  const categoryColors={governance:'#8b5cf6',policy:'#3b82f6',budget:'#10b981',operational:'#f59e0b',other:'#6b7280'};
+  const categoryColor=categoryColors[category]||'#6b7280';
+  const quorumText=p.quorum_type==='percentage'?`${p.quorum_value}% quorum`:p.quorum_type==='count'?`${p.quorum_value} votes required`:'';
 
   return`
     <div style="background:var(--bg-card);border:1px solid #333;border-radius:8px;padding:12px;">
+      ${proposalNumber?`<div style="margin-bottom:4px;"><span style="font-family:monospace;font-size:0.7rem;color:#6b7280;background:#1f2937;padding:2px 6px;border-radius:4px;">${escapeHtml(proposalNumber)}</span></div>`:''}
       <h4 style="margin:0 0 6px 0;font-weight:700;font-size:0.95rem;color:#9ca3af;">${escapeHtml(p.proposal_title||'Untitled Proposal')}</h4>
-      <div style="margin-bottom:8px;">
+      <div style="margin-bottom:8px;display:flex;flex-wrap:wrap;gap:6px;">
         <span style="display:inline-block;background:linear-gradient(135deg,#f59e0b 0%,#d97706 100%);color:#000;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;">Upcoming</span>
+        <span style="display:inline-block;background:${categoryColor};color:#fff;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;text-transform:capitalize;">${escapeHtml(category)}</span>
+        ${quorumText?`<span style="display:inline-block;background:#374151;color:#9ca3af;padding:4px 10px;border-radius:12px;font-size:0.7rem;">${escapeHtml(quorumText)}</span>`:''}
       </div>
       <div style="margin-bottom:8px;font-size:0.8rem;color:var(--gray);">
         <div style="margin-bottom:4px;">Opens: ${escapeHtml(opensDate)}</div>
@@ -4670,27 +4718,47 @@ async function renderClosedTile(p){
   const opensDate=formatDateTime(p.opens_at);
   const closesDate=formatDateTime(p.closes_at);
   const createdBy=p.created_by||'Admin';
+  const proposalNumber=p.proposal_number||'';
+  const category=p.category||'other';
+  const categoryColors={governance:'#8b5cf6',policy:'#3b82f6',budget:'#10b981',operational:'#f59e0b',other:'#6b7280'};
+  const categoryColor=categoryColors[category]||'#6b7280';
 
-  // Fetch vote counts to determine pass/fail
+  // Use stored final results if available, otherwise fetch
   let passfailBadge='';
-  try{
-    const data=await api(`/admin/proposals/${p.proposal_id}/vote-counts`);
-    const yes=data.results?.yes||0;
-    const no=data.results?.no||0;
-    const passed=yes>no;
-
-    passfailBadge=passed?
-      '<span style="display:inline-block;background:linear-gradient(135deg,#10b981 0%,#059669 100%);color:#fff;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;margin-left:6px;">PASSED</span>':
-      '<span style="display:inline-block;background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);color:#fff;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;margin-left:6px;">FAILED</span>';
-  }catch(e){
-    console.error('Error fetching vote counts for closed proposal:',e);
+  let quorumBadge='';
+  if(p.passed!==undefined){
+    // Use stored results from closeExpiredProposals
+    passfailBadge=p.passed?
+      '<span style="display:inline-block;background:linear-gradient(135deg,#10b981 0%,#059669 100%);color:#fff;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;">PASSED</span>':
+      '<span style="display:inline-block;background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);color:#fff;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;">FAILED</span>';
+    if(p.quorum_type&&p.quorum_type!=='none'){
+      quorumBadge=p.quorum_met?
+        '<span style="display:inline-block;background:#065f46;color:#10b981;padding:4px 10px;border-radius:12px;font-size:0.7rem;">Quorum Met</span>':
+        '<span style="display:inline-block;background:#7f1d1d;color:#fca5a5;padding:4px 10px;border-radius:12px;font-size:0.7rem;">No Quorum</span>';
+    }
+  }else{
+    try{
+      const data=await api(`/admin/proposals/${p.proposal_id}/vote-counts`);
+      const yes=data.results?.yes||0;
+      const no=data.results?.no||0;
+      const passed=yes>no;
+      passfailBadge=passed?
+        '<span style="display:inline-block;background:linear-gradient(135deg,#10b981 0%,#059669 100%);color:#fff;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;">PASSED</span>':
+        '<span style="display:inline-block;background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);color:#fff;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;">FAILED</span>';
+    }catch(e){
+      console.error('Error fetching vote counts for closed proposal:',e);
+    }
   }
 
   return`
     <div style="background:var(--bg-card);border:1px solid #333;border-radius:8px;padding:12px;display:flex;flex-direction:column;min-height:100%;">
+      ${proposalNumber?`<div style="margin-bottom:4px;"><span style="font-family:monospace;font-size:0.7rem;color:#6b7280;background:#1f2937;padding:2px 6px;border-radius:4px;">${escapeHtml(proposalNumber)}</span></div>`:''}
       <h4 style="margin:0 0 6px 0;font-weight:700;font-size:0.95rem;">${escapeHtml(p.proposal_title||'Untitled Proposal')}</h4>
-      <div style="margin-bottom:8px;">
-        <span style="display:inline-block;background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);color:#fff;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;">Closed</span>${passfailBadge}
+      <div style="margin-bottom:8px;display:flex;flex-wrap:wrap;gap:6px;">
+        <span style="display:inline-block;background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);color:#fff;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;">Closed</span>
+        ${passfailBadge}
+        ${quorumBadge}
+        <span style="display:inline-block;background:${categoryColor};color:#fff;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;text-transform:capitalize;">${escapeHtml(category)}</span>
       </div>
       <div style="margin-bottom:8px;font-size:0.8rem;color:var(--gray);">
         <div style="margin-bottom:4px;">Opened: ${escapeHtml(opensDate)}</div>
@@ -8359,6 +8427,28 @@ document.addEventListener('DOMContentLoaded', function() {
       <div style="margin-bottom:16px;">
         <label for="proposalText" style="display:block;margin-bottom:8px;font-weight:600;">Proposal Text</label>
         <textarea id="proposalText" rows="6" style="width:100%;padding:12px;border-radius:4px;border:1px solid var(--border);background:var(--bg-input);color:var(--text);resize:vertical;" placeholder="Enter the proposal text here..."></textarea>
+      </div>
+      <div style="margin-bottom:16px;">
+        <label for="proposalCategory" style="display:block;margin-bottom:8px;font-weight:600;">Category</label>
+        <select id="proposalCategory" style="width:100%;max-width:280px;padding:10px;border-radius:4px;border:1px solid var(--border);background:var(--bg-input);color:var(--text);">
+          <option value="governance">Governance</option>
+          <option value="policy">Policy</option>
+          <option value="budget">Budget</option>
+          <option value="operational">Operational</option>
+          <option value="other" selected>Other</option>
+        </select>
+      </div>
+      <div style="margin-bottom:16px;">
+        <label style="display:block;margin-bottom:8px;font-weight:600;">Quorum Requirement</label>
+        <div style="display:flex;gap:12px;flex-wrap:wrap;">
+          <select id="proposalQuorumType" onchange="toggleQuorumValue()" style="padding:10px;border-radius:4px;border:1px solid var(--border);background:var(--bg-input);color:var(--text);">
+            <option value="none" selected>No quorum required</option>
+            <option value="percentage">Percentage of members</option>
+            <option value="count">Minimum vote count</option>
+          </select>
+          <input type="number" id="proposalQuorumValue" placeholder="Value" min="1" style="display:none;width:100px;padding:10px;border-radius:4px;border:1px solid var(--border);background:var(--bg-input);color:var(--text);" />
+          <span id="quorumValueLabel" style="display:none;align-self:center;color:var(--gray);font-size:0.85rem;"></span>
+        </div>
       </div>
       <div style="margin-bottom:16px;">
         <div style="margin-bottom:16px;">

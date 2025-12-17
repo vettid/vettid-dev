@@ -1,8 +1,74 @@
-import { DynamoDBClient, ScanCommand, UpdateItemCommand } from '@aws-sdk/client-dynamodb';
+import { DynamoDBClient, ScanCommand, UpdateItemCommand, QueryCommand } from '@aws-sdk/client-dynamodb';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 
 const ddb = new DynamoDBClient({});
 const TABLE_PROPOSALS = process.env.TABLE_PROPOSALS!;
+const TABLE_VOTES = process.env.TABLE_VOTES!;
+const TABLE_SUBSCRIPTIONS = process.env.TABLE_SUBSCRIPTIONS!;
+
+/**
+ * Count eligible voters (members with active subscriptions)
+ */
+async function countEligibleVoters(): Promise<number> {
+  const result = await ddb.send(new ScanCommand({
+    TableName: TABLE_SUBSCRIPTIONS,
+    FilterExpression: '#status = :status',
+    ExpressionAttributeNames: { '#status': 'status' },
+    ExpressionAttributeValues: marshall({ ':status': 'active' }),
+    Select: 'COUNT'
+  }));
+  return result.Count || 0;
+}
+
+/**
+ * Get vote counts for a proposal
+ */
+async function getVoteCounts(proposalId: string): Promise<{ yes: number; no: number; abstain: number; total: number }> {
+  const result = await ddb.send(new QueryCommand({
+    TableName: TABLE_VOTES,
+    IndexName: 'proposal-index',
+    KeyConditionExpression: 'proposal_id = :pid',
+    ExpressionAttributeValues: marshall({ ':pid': proposalId })
+  }));
+
+  const votes = (result.Items || []).map(item => unmarshall(item));
+  const counts = { yes: 0, no: 0, abstain: 0, total: votes.length };
+
+  for (const vote of votes) {
+    const voteChoice = (vote.vote || '').toLowerCase();
+    if (voteChoice === 'yes') counts.yes++;
+    else if (voteChoice === 'no') counts.no++;
+    else if (voteChoice === 'abstain') counts.abstain++;
+  }
+
+  return counts;
+}
+
+/**
+ * Check if quorum is met based on proposal settings
+ */
+function checkQuorumMet(
+  quorumType: string,
+  quorumValue: number,
+  totalVotes: number,
+  eligibleVoters: number
+): boolean {
+  if (quorumType === 'none' || !quorumType) {
+    return true; // No quorum requirement
+  }
+
+  if (quorumType === 'percentage') {
+    if (eligibleVoters === 0) return false;
+    const participationRate = (totalVotes / eligibleVoters) * 100;
+    return participationRate >= quorumValue;
+  }
+
+  if (quorumType === 'count') {
+    return totalVotes >= quorumValue;
+  }
+
+  return true;
+}
 
 /**
  * Scheduled Lambda to close proposals that have passed their closes_at time
@@ -36,6 +102,10 @@ export const handler = async (): Promise<void> => {
 
     let closedCount = 0;
 
+    // Get eligible voter count once (shared across all proposals closing now)
+    const eligibleVoters = await countEligibleVoters();
+    console.log(`Eligible voters: ${eligibleVoters}`);
+
     // Update proposals that have expired
     for (const proposal of proposals) {
       const closesAt = new Date(proposal.closes_at);
@@ -43,18 +113,39 @@ export const handler = async (): Promise<void> => {
       if (now > closesAt) {
         console.log(`Closing expired proposal: ${proposal.proposal_id} (${proposal.proposal_title})`);
 
+        // Get vote counts and calculate quorum
+        const voteCounts = await getVoteCounts(proposal.proposal_id);
+        const quorumMet = checkQuorumMet(
+          proposal.quorum_type || 'none',
+          proposal.quorum_value || 0,
+          voteCounts.total,
+          eligibleVoters
+        );
+
+        // Determine if proposal passed (yes > no, and quorum met)
+        const passed = quorumMet && voteCounts.yes > voteCounts.no;
+
+        console.log(`Proposal ${proposal.proposal_id}: votes=${voteCounts.total}, quorum_met=${quorumMet}, passed=${passed}`);
+
         await ddb.send(new UpdateItemCommand({
           TableName: TABLE_PROPOSALS,
           Key: marshall({
             proposal_id: proposal.proposal_id,
           }),
-          UpdateExpression: 'SET #status = :closed, closed_at = :closed_at',
+          UpdateExpression: 'SET #status = :closed, closed_at = :closed_at, quorum_met = :quorum_met, eligible_voters = :eligible, final_yes = :yes, final_no = :no, final_abstain = :abstain, final_total = :total, passed = :passed',
           ExpressionAttributeNames: {
             '#status': 'status',
           },
           ExpressionAttributeValues: marshall({
             ':closed': 'closed',
             ':closed_at': now.toISOString(),
+            ':quorum_met': quorumMet,
+            ':eligible': eligibleVoters,
+            ':yes': voteCounts.yes,
+            ':no': voteCounts.no,
+            ':abstain': voteCounts.abstain,
+            ':total': voteCounts.total,
+            ':passed': passed,
           }),
         }));
 

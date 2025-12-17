@@ -1,6 +1,6 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
-import { DynamoDBClient, PutItemCommand } from '@aws-sdk/client-dynamodb';
-import { marshall } from '@aws-sdk/util-dynamodb';
+import { DynamoDBClient, PutItemCommand, UpdateItemCommand } from '@aws-sdk/client-dynamodb';
+import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import {
   ok,
   badRequest,
@@ -14,6 +14,26 @@ import { randomUUID } from 'crypto';
 
 const ddb = new DynamoDBClient({});
 const TABLE_PROPOSALS = process.env.TABLE_PROPOSALS!;
+const TABLE_AUDIT = process.env.TABLE_AUDIT!;
+
+/**
+ * Get the next proposal number atomically
+ * Uses DynamoDB atomic counter pattern to ensure unique sequential numbers
+ */
+async function getNextProposalNumber(): Promise<string> {
+  const result = await ddb.send(new UpdateItemCommand({
+    TableName: TABLE_AUDIT,
+    Key: marshall({ id: 'COUNTER#proposals' }),
+    UpdateExpression: 'ADD #count :inc',
+    ExpressionAttributeNames: { '#count': 'count' },
+    ExpressionAttributeValues: marshall({ ':inc': 1 }),
+    ReturnValues: 'UPDATED_NEW'
+  }));
+
+  const updated = result.Attributes ? unmarshall(result.Attributes) : { count: 1 };
+  const nextNumber = updated.count || 1;
+  return `P${String(nextNumber).padStart(7, '0')}`;
+}
 
 /**
  * Create a new voting proposal
@@ -38,10 +58,34 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
 
     // Parse request body
     const body = parseJsonBody(event);
-    const { proposal_title, proposal_text, opens_at, closes_at } = body;
+    const { proposal_title, proposal_text, opens_at, closes_at, quorum_type, quorum_value, category } = body;
 
     if (!proposal_text || !opens_at || !closes_at) {
       return badRequest('Missing required fields: proposal_text, opens_at, closes_at');
+    }
+
+    // Validate quorum settings
+    const validQuorumTypes = ['none', 'percentage', 'count'];
+    const effectiveQuorumType = quorum_type || 'none';
+    if (!validQuorumTypes.includes(effectiveQuorumType)) {
+      return badRequest('Invalid quorum_type. Must be: none, percentage, or count');
+    }
+    let effectiveQuorumValue = 0;
+    if (effectiveQuorumType !== 'none') {
+      if (typeof quorum_value !== 'number' || quorum_value <= 0) {
+        return badRequest('quorum_value must be a positive number when quorum_type is set');
+      }
+      if (effectiveQuorumType === 'percentage' && (quorum_value < 1 || quorum_value > 100)) {
+        return badRequest('quorum_value for percentage must be between 1 and 100');
+      }
+      effectiveQuorumValue = quorum_value;
+    }
+
+    // Validate category
+    const validCategories = ['governance', 'policy', 'budget', 'operational', 'other'];
+    const effectiveCategory = category || 'other';
+    if (!validCategories.includes(effectiveCategory)) {
+      return badRequest('Invalid category. Must be: governance, policy, budget, operational, or other');
     }
 
     // SECURITY: Validate proposal text length
@@ -83,16 +127,23 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       status = 'closed';
     }
 
+    // Get next proposal number atomically
+    const proposalNumber = await getNextProposalNumber();
+
     // Create proposal record
     const proposalId = randomUUID();
     const proposal: any = {
       proposal_id: proposalId,
+      proposal_number: proposalNumber,
       proposal_text: proposal_text,
       opens_at: opensDate.toISOString(),
       closes_at: closesDate.toISOString(),
       status: status,
       created_by: email,
       created_at: now.toISOString(),
+      quorum_type: effectiveQuorumType,
+      quorum_value: effectiveQuorumValue,
+      category: effectiveCategory,
     };
 
     // Add optional title if provided
@@ -110,9 +161,13 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       type: 'proposal_created',
       email: email,
       proposal_id: proposalId,
+      proposal_number: proposalNumber,
       proposal_text: proposal_text,
       opens_at: opensDate.toISOString(),
       closes_at: closesDate.toISOString(),
+      quorum_type: effectiveQuorumType,
+      quorum_value: effectiveQuorumValue,
+      category: effectiveCategory,
     };
     if (proposal_title) {
       auditEntry.proposal_title = proposal_title;
@@ -123,6 +178,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       message: 'Proposal created successfully',
       proposal: {
         proposal_id: proposalId,
+        proposal_number: proposalNumber,
         status: status,
       },
     });

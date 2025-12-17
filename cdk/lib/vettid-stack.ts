@@ -637,7 +637,10 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
     const closeExpiredProposals = new lambdaNode.NodejsFunction(this, 'CloseExpiredProposalsFn', {
       entry: 'lambda/handlers/scheduled/closeExpiredProposals.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
-      environment: defaultEnv,
+      environment: {
+        ...defaultEnv,
+        TABLE_VOTES: tables.votes.tableName,
+      },
       timeout: cdk.Duration.seconds(60), // Allow time for scanning and updating multiple proposals
     });
     const checkSubscriptionExpiry = new lambdaNode.NodejsFunction(this, 'CheckSubscriptionExpiryFn', {
@@ -649,6 +652,17 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       },
       timeout: cdk.Duration.minutes(2), // Allow time to scan subscriptions and send emails
       description: 'Check for subscriptions expiring in 48 hours and send warning emails',
+    });
+    const sendProposalReminders = new lambdaNode.NodejsFunction(this, 'SendProposalRemindersFn', {
+      entry: 'lambda/handlers/scheduled/sendProposalReminders.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+        TABLE_VOTES: tables.votes.tableName,
+        SES_FROM: 'no-reply@vettid.dev',
+      },
+      timeout: cdk.Duration.minutes(5), // Allow time to send many reminder emails
+      description: 'Send reminder emails for proposals closing soon',
     });
 
     // Grants
@@ -708,6 +722,14 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
     tables.votes.grantReadData(getMemberProposalVoteCounts);
     tables.proposals.grantReadData(getMemberProposalVoteCounts);
     tables.proposals.grantReadWriteData(closeExpiredProposals); // Scheduled job to close expired proposals
+    tables.votes.grantReadData(closeExpiredProposals); // Read votes for quorum calculation
+    tables.subscriptions.grantReadData(closeExpiredProposals); // Count eligible voters for quorum
+    // Proposal reminder scheduled job
+    tables.proposals.grantReadData(sendProposalReminders);
+    tables.votes.grantReadData(sendProposalReminders);
+    tables.subscriptions.grantReadData(sendProposalReminders);
+    tables.registrations.grantReadData(sendProposalReminders);
+    tables.audit.grantReadData(sendProposalReminders); // Check email preferences
     tables.subscriptionTypes.grantReadData(listEnabledSubscriptionTypes);
     tables.audit.grantReadData(listEnabledSubscriptionTypes);
     // Scheduled job to check for expiring subscriptions and send warning emails
@@ -720,7 +742,7 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
     const sesConfigSetArn = `arn:aws:ses:${this.region}:${this.account}:configuration-set/*`;
     const sesTemplateArn = `arn:aws:ses:${this.region}:${this.account}:template/*`;
 
-    [submitRegistration, registrationStreamFn, checkSubscriptionExpiry].forEach((fn) => {
+    [submitRegistration, registrationStreamFn, checkSubscriptionExpiry, sendProposalReminders].forEach((fn) => {
       fn.addToRolePolicy(new iam.PolicyStatement({
         actions: ['ses:SendTemplatedEmail', 'ses:SendEmail'],
         resources: [sesIdentityArn, sesTemplateArn, sesConfigSetArn]
@@ -1348,6 +1370,13 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       schedule: events.Schedule.rate(cdk.Duration.hours(6)),
     });
     subscriptionExpiryRule.addTarget(new targets_events.LambdaFunction(checkSubscriptionExpiry));
+
+    // EventBridge scheduled rule to send proposal vote reminders every 6 hours
+    const proposalReminderRule = new events.Rule(this, 'ProposalVoteReminderRule', {
+      description: 'Send reminder emails for proposals closing soon',
+      schedule: events.Schedule.rate(cdk.Duration.hours(6)),
+    });
+    proposalReminderRule.addTarget(new targets_events.LambdaFunction(sendProposalReminders));
 
     // SNS Topic for security alerts
     const securityAlertTopic = new sns.Topic(this, 'SecurityAlertTopic', {
