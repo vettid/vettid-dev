@@ -136,11 +136,17 @@ export function deriveSharedSecret(privateKey: Buffer, publicKey: Buffer): Buffe
 // ============================================
 
 /**
+ * Default HKDF salt for VettID key derivation
+ * Must match exactly across iOS, Android, and backend
+ */
+const HKDF_DEFAULT_SALT = Buffer.from('VettID-HKDF-Salt-v1', 'utf8');
+
+/**
  * HKDF-SHA256 key derivation
  * @param ikm Input key material (shared secret)
  * @param length Output key length in bytes
  * @param info Context/application-specific info string
- * @param salt Optional salt (if not provided, uses zeros)
+ * @param salt Optional salt (if not provided, uses VettID default salt)
  * @returns Derived key of specified length
  */
 export function hkdf(
@@ -149,8 +155,8 @@ export function hkdf(
   info: string,
   salt?: Buffer
 ): Buffer {
-  // HKDF-Extract
-  const actualSalt = salt || Buffer.alloc(32, 0);
+  // HKDF-Extract - use VettID default salt if not provided
+  const actualSalt = salt || HKDF_DEFAULT_SALT;
   const prk = createHmac('sha256', actualSalt).update(ikm).digest();
 
   // HKDF-Expand

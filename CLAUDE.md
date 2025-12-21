@@ -71,14 +71,17 @@ aws ses create-template --cli-input-json file://template-rejected.json
 ### Infrastructure (CDK Stacks)
 
 **Current Deployment Status:**
-- **VettID-Infrastructure** - ✅ Deployed (18 resources)
-- **VettIDStack** (Core) - ✅ Deployed (213 resources)
-- **VettID-Admin** - ❌ Code complete but not deployed (cyclic dependency during synthesis)
-- **VettID-Vault** - ❌ Code complete but not deployed (cyclic dependency during synthesis)
+- **VettID-Infrastructure** - ✅ Deployed (DynamoDB tables, Cognito, auth Lambdas)
+- **VettIDStack** (Core) - ✅ Deployed (S3, CloudFront, API Gateway, member Lambdas)
+- **VettID-Admin** - ✅ Deployed (40+ admin Lambda functions and routes)
+- **VettID-Vault** - ✅ Deployed (vault enrollment, auth, NATS integration)
+- **VettID-Ledger** - ✅ Deployed (credential ledger service)
+- **VettID-VaultInfra** - ✅ Deployed (EC2/ASG for vault instances)
+- **VettID-NATS** - ✅ Deployed (central NATS cluster)
 
-**Note:** The application was refactored into a **4-stack architecture** to overcome CloudFormation's 500 resource per stack limit (the original monolithic stack had 507 resources). The Infrastructure and Core stacks have been successfully deployed. The Admin and Vault stacks are fully implemented but encounter a cyclic dependency error during CDK synthesis when all 4 stacks are present in bin/app.ts. This needs further investigation to resolve. For now, Admin and Vault functionality remains in the VettIDStack.
+**Note:** The application uses a **7-stack architecture** to stay under CloudFormation's 500 resource per stack limit. The cyclic dependency issue documented previously was resolved by using direct `HttpRoute` creation in AdminStack and VaultStack instead of `httpApi.addRoutes()`. All stacks now synthesize and deploy successfully.
 
-The application is designed using a **4-stack architecture** to overcome CloudFormation's 500 resource per stack limit:
+The application is designed using a **7-stack architecture** to overcome CloudFormation's 500 resource per stack limit:
 
 #### 1. VettID-Infrastructure Stack (`lib/infrastructure-stack.ts`)
 **Purpose:** Database layer - DynamoDB tables only

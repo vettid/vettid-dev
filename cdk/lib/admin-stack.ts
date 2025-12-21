@@ -759,7 +759,8 @@ export class AdminStack extends cdk.Stack {
     tables.audit.grantReadWriteData(resendAdminVerification);
 
     // SES permissions scoped to specific identity and region
-    const sesIdentityArn = `arn:aws:ses:${this.region}:${this.account}:identity/*`;
+    // Hardened: restrict to vettid.dev domain only (covers no-reply@vettid.dev)
+    const sesIdentityArn = `arn:aws:ses:${this.region}:${this.account}:identity/vettid.dev`;
     const sesConfigSetArn = `arn:aws:ses:${this.region}:${this.account}:configuration-set/*`;
     const sesTemplateArn = `arn:aws:ses:${this.region}:${this.account}:template/*`;
 
