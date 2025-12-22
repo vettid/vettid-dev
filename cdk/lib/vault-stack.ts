@@ -171,7 +171,7 @@ export class VaultStack extends cdk.Stack {
     // Get vault EC2 configuration from VaultInfrastructureStack if provided
     // (needed for enrollFinalize auto-provisioning and provisionVault)
     const vaultConfigEnv = {
-      VAULT_AMI_ID: process.env.VAULT_AMI_ID || 'ami-083a1d18cec04eca1',
+      VAULT_AMI_ID: process.env.VAULT_AMI_ID || 'ami-0c5a49678d50b9305',
       VAULT_INSTANCE_TYPE: 't4g.nano',
       VAULT_SECURITY_GROUP: props.vaultInfra?.vaultConfig?.securityGroupId || '',
       VAULT_SUBNET_IDS: props.vaultInfra?.vaultConfig?.subnetIds || '',
@@ -345,7 +345,7 @@ export class VaultStack extends cdk.Stack {
       TABLE_VAULT_INSTANCES: tables.vaultInstances.tableName,
       TABLE_CREDENTIALS: tables.credentials.tableName,
       TABLE_NATS_ACCOUNTS: tables.natsAccounts.tableName,
-      VAULT_AMI_ID: process.env.VAULT_AMI_ID || 'ami-083a1d18cec04eca1',
+      VAULT_AMI_ID: process.env.VAULT_AMI_ID || 'ami-0c5a49678d50b9305',
       VAULT_INSTANCE_TYPE: 't4g.nano',
       VAULT_SECURITY_GROUP: vaultConfig?.securityGroupId || '',
       VAULT_SUBNET_IDS: vaultConfig?.subnetIds || '',

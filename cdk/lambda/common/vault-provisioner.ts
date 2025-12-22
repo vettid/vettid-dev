@@ -16,7 +16,7 @@ const ec2 = new EC2Client({});
 
 // Environment configuration
 const TABLE_VAULT_INSTANCES = process.env.TABLE_VAULT_INSTANCES!;
-const VAULT_AMI_ID = process.env.VAULT_AMI_ID || 'ami-083a1d18cec04eca1';
+const VAULT_AMI_ID = process.env.VAULT_AMI_ID || 'ami-0c5a49678d50b9305';
 const VAULT_INSTANCE_TYPE = process.env.VAULT_INSTANCE_TYPE || 't4g.nano';
 const VAULT_SECURITY_GROUP = process.env.VAULT_SECURITY_GROUP || '';
 const VAULT_SUBNET_IDS = process.env.VAULT_SUBNET_IDS || '';
