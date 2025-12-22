@@ -743,11 +743,10 @@ export class InfrastructureStack extends cdk.Stack {
     }));
 
     // Grant SES permissions to createAuthChallenge
-    // Note: Using wildcard for identities to support SES sandbox mode (requires verified recipients)
-    // In production mode, only FROM address needs to be verified
+    // Restricted to auth.vettid.dev domain identity (sends from no-reply@auth.vettid.dev)
     createAuthChallenge.addToRolePolicy(new iam.PolicyStatement({
       actions: ['ses:SendEmail', 'ses:SendRawEmail'],
-      resources: [`arn:aws:ses:${this.region}:${this.account}:identity/*`],
+      resources: [`arn:aws:ses:${this.region}:${this.account}:identity/auth.vettid.dev`],
     }));
 
 

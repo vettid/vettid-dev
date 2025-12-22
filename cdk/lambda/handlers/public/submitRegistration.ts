@@ -66,6 +66,15 @@ function corsHeaders(origin?: string): Record<string, string> {
     'Access-Control-Allow-Origin': allowedOrigin,
     'Access-Control-Allow-Headers': 'Content-Type,Authorization',
     'Access-Control-Allow-Methods': 'OPTIONS,POST',
+    // SECURITY: Additional headers to prevent MIME type sniffing and other attacks
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'X-Permitted-Cross-Domain-Policies': 'none',
+    'Referrer-Policy': 'strict-origin-when-cross-origin',
+    'Content-Language': 'en',
+    // SECURITY: Additional security headers for compliance
+    'Strict-Transport-Security': 'max-age=31536000; includeSubDomains',
+    'Cache-Control': 'no-store, no-cache, must-revalidate',
   };
 }
 
