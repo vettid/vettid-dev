@@ -1052,6 +1052,7 @@ export class VaultStack extends cdk.Stack {
     tables.transactionKeys.grantReadData(this.testHealth);
 
     tables.invites.grantReadWriteData(this.testCreateInvitation);
+    tables.enrollmentSessions.grantReadWriteData(this.testCreateInvitation);
     tables.audit.grantReadWriteData(this.testCreateInvitation);
 
     tables.invites.grantReadWriteData(this.testCleanup);

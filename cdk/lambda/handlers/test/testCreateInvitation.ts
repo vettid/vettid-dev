@@ -4,6 +4,16 @@
  * Creates a test enrollment invitation programmatically.
  * Returns full QR data payload for direct use by Android tests.
  *
+ * This endpoint creates BOTH:
+ * 1. An invitation code (for backwards compatibility)
+ * 2. A proper enrollment session with session_token (for Android app compatibility)
+ *
+ * The Android app can use the standard flow:
+ * 1. Parse QR data with session_token
+ * 2. Call /vault/enroll/authenticate
+ * 3. Get enrollment JWT
+ * 4. Continue with normal enrollment flow
+ *
  * SECURITY: This endpoint requires a valid test API key.
  * Only deployed in non-production environments.
  */
@@ -19,6 +29,7 @@ import {
   parseJsonBody,
   getRequestId,
   putAudit,
+  generateSecureId,
 } from '../../common/util';
 
 const ddb = new DynamoDBClient({});
@@ -26,6 +37,7 @@ const ddb = new DynamoDBClient({});
 // Environment configuration
 const TEST_API_KEY = process.env.TEST_API_KEY;
 const TABLE_INVITES = process.env.TABLE_INVITES!;
+const TABLE_ENROLLMENT_SESSIONS = process.env.TABLE_ENROLLMENT_SESSIONS!;
 const API_URL = process.env.API_URL || 'https://tiqpij5mue.execute-api.us-east-1.amazonaws.com';
 
 // Test user prefix to identify test data
@@ -97,6 +109,13 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     // Generate invitation code
     const invitationCode = generateInvitationCode();
 
+    // Generate test user GUID and enrollment session (for Android app compatibility)
+    const userGuid = generateSecureId('user', 32);
+    const sessionId = generateSecureId('enroll', 32);
+    const sessionToken = generateSecureId('est', 48); // Enrollment Session Token
+    const nowMs = now.getTime();
+    const expiresAtMs = expiresAt.getTime();
+
     // Store invitation in DynamoDB
     await ddb.send(new PutItemCommand({
       TableName: TABLE_INVITES,
@@ -104,42 +123,80 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
         code: invitationCode,
         status: 'active',
         test_user_id: testUserId,
+        user_guid: userGuid,  // Link invitation to generated user
         is_test_invitation: true,
         created_at: now.toISOString(),
         expires_at: expiresAt.toISOString(),
-        expires_at_ttl: Math.floor(expiresAt.getTime() / 1000),
+        expires_at_ttl: Math.floor(expiresAtMs / 1000),
         max_uses: 1,
         used: 0,
       }),
     }));
 
-    // Build QR data payload (what would normally be in a QR code)
+    // Create enrollment session (mimics createEnrollmentSession.ts)
+    // This allows Android to use the standard session_token → authenticate → JWT flow
+    await ddb.send(new PutItemCommand({
+      TableName: TABLE_ENROLLMENT_SESSIONS,
+      Item: marshall({
+        session_id: sessionId,
+        session_token: sessionToken,
+        user_guid: userGuid,
+        user_email: `${testUserId}@test.vettid.dev`,
+        status: 'WEB_INITIATED',  // Same status as web-initiated enrollment
+        step: 'awaiting_mobile',
+        is_test_session: true,
+        test_user_id: testUserId,
+        invitation_code: invitationCode,
+        skip_attestation: true,  // Test sessions skip attestation
+        created_at: nowMs,  // Number for GSI compatibility
+        created_at_iso: now.toISOString(),
+        expires_at: expiresAtMs,  // Number for GSI compatibility
+        expires_at_iso: expiresAt.toISOString(),
+        ttl: Math.floor(expiresAtMs / 1000),
+      }),
+    }));
+
+    // Build QR data payload (matches what Android expects)
+    // Includes BOTH session_token (for standard flow) and invitation_code (for direct flow)
     const qrData = {
       type: 'vettid_enrollment',
       version: 1,
-      invitation_code: invitationCode,
       api_url: API_URL,
-      skip_attestation: true, // Test invitations always skip attestation
+      // Standard Android flow fields:
+      session_token: sessionToken,
+      user_guid: userGuid,
+      // Direct flow field (for backwards compatibility):
+      invitation_code: invitationCode,
+      // Test-specific flag:
+      skip_attestation: true,
     };
 
     // Audit log
     await putAudit({
       type: 'test_invitation_created',
       test_user_id: testUserId,
+      user_guid: userGuid,
+      session_id: sessionId,
       invitation_code: invitationCode.substring(0, 8) + '...',
       expires_in_seconds: expiresInSeconds,
     }, requestId);
 
     return ok({
+      // Primary fields for Android:
+      session_token: sessionToken,
+      user_guid: userGuid,
+      enrollment_session_id: sessionId,
+      // Also include invitation_code for direct flow:
       invitation_code: invitationCode,
       test_user_id: testUserId,
+      // QR data (what would be in a scanned QR code):
       qr_data: qrData,
       expires_at: expiresAt.toISOString(),
       api_url: API_URL,
       notes: {
-        skip_attestation: 'Set skip_attestation: true in enroll/start request',
-        device_type: 'Set device_type: "android" in enroll/start request',
-        device_id: 'Can use any unique identifier for device_id',
+        android_flow: 'Use session_token with /vault/enroll/authenticate to get JWT',
+        direct_flow: 'Use invitation_code with /vault/enroll/start-direct (no auth needed)',
+        skip_attestation: 'Test sessions automatically skip attestation verification',
       },
     }, origin);
 
