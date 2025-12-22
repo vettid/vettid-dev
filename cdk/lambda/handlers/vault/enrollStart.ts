@@ -14,6 +14,7 @@ import {
 } from '../../common/util';
 import { generateX25519KeyPair } from '../../common/crypto-keys';
 import { generateAttestationChallenge } from '../../common/attestation';
+import { generateEnrollmentToken } from '../../common/enrollment-jwt';
 
 const ddb = new DynamoDBClient({});
 
@@ -355,6 +356,21 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       next_step: nextStep,
       attestation_required: !skipAttestation,
     };
+
+    // For invitation_code flow (direct enrollment), generate a JWT
+    // This allows subsequent steps (set-password, finalize) to work with the enrollmentAuthorizer
+    if (!authContext?.sessionId && invitationCode) {
+      const enrollmentToken = await generateEnrollmentToken(
+        userGuid,
+        sessionId,
+        {
+          deviceId,
+          deviceType,
+          expiresInSeconds: 600, // 10 minutes
+        }
+      );
+      response.enrollment_token = enrollmentToken;
+    }
 
     if (attestationChallenge) {
       response.attestation_challenge = attestationChallenge.challenge;

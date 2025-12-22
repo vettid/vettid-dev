@@ -149,9 +149,16 @@ export class VaultStack extends cdk.Stack {
       environment: {
         ...defaultEnv,
         SES_FROM: 'no-reply@auth.vettid.dev',
+        ENROLLMENT_JWT_SECRET_ARN: props.infrastructure.enrollmentJwtSecretArn,
       },
       timeout: cdk.Duration.seconds(30),
     });
+
+    // Grant enrollStart read access to the enrollment JWT secret (for generating tokens in invitation_code flow)
+    this.enrollStart.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['secretsmanager:GetSecretValue'],
+      resources: [props.infrastructure.enrollmentJwtSecretArn],
+    }));
 
     this.enrollSetPassword = new lambdaNode.NodejsFunction(this, 'EnrollSetPasswordFn', {
       entry: 'lambda/handlers/vault/enrollSetPassword.ts',
