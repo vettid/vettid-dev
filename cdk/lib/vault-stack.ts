@@ -167,14 +167,35 @@ export class VaultStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(30),
     });
 
+    // Get vault EC2 configuration from VaultInfrastructureStack if provided
+    // (needed for enrollFinalize auto-provisioning and provisionVault)
+    const vaultConfigEnv = {
+      VAULT_AMI_ID: process.env.VAULT_AMI_ID || 'ami-placeholder',
+      VAULT_INSTANCE_TYPE: 't4g.nano',
+      VAULT_SECURITY_GROUP: props.vaultInfra?.vaultConfig?.securityGroupId || '',
+      VAULT_SUBNET_IDS: props.vaultInfra?.vaultConfig?.subnetIds || '',
+      VAULT_IAM_PROFILE: props.vaultInfra?.vaultConfig?.iamProfileName || '',
+      NATS_ENDPOINT: 'nats.vettid.dev:4222',
+    };
+
+    // NATS operator secret for signing JWTs (used by enrollFinalize and NATS functions)
+    const natsOperatorSecretRef = cdk.aws_secretsmanager.Secret.fromSecretNameV2(
+      this, 'NatsOperatorSecretForEnroll', 'vettid/nats/operator-key'
+    );
+
     this.enrollFinalize = new lambdaNode.NodejsFunction(this, 'EnrollFinalizeFn', {
       entry: 'lambda/handlers/vault/enrollFinalize.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
       environment: {
         ...defaultEnv,
         USER_POOL_ID: memberUserPool.userPoolId,
+        // Auto-provisioning environment variables
+        TABLE_NATS_ACCOUNTS: tables.natsAccounts.tableName,
+        TABLE_VAULT_INSTANCES: tables.vaultInstances.tableName,
+        NATS_OPERATOR_SECRET_ARN: natsOperatorSecretRef.secretArn,
+        ...vaultConfigEnv,
       },
-      timeout: cdk.Duration.seconds(30),
+      timeout: cdk.Duration.seconds(60), // Increased for auto-provisioning
     });
 
     // Web-initiated enrollment session (for QR code flow)
@@ -490,6 +511,58 @@ export class VaultStack extends cdk.Stack {
         'cognito-idp:AdminUpdateUserAttributes',
       ],
       resources: [memberUserPool.userPoolArn],
+    }));
+
+    // ===== AUTO-PROVISIONING PERMISSIONS FOR enrollFinalize =====
+    // enrollFinalize now auto-provisions vault EC2 after enrollment completes
+
+    // Grant NATS accounts table access for enrollFinalize
+    tables.natsAccounts.grantReadWriteData(this.enrollFinalize);
+
+    // Grant vault instances table access for enrollFinalize
+    tables.vaultInstances.grantReadWriteData(this.enrollFinalize);
+
+    // Grant NATS operator secret access for generating vault credentials
+    natsOperatorSecretRef.grantRead(this.enrollFinalize);
+
+    // EC2 permissions for auto-provisioning (same as provisionVault)
+    this.enrollFinalize.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['ec2:DescribeSubnets'],
+      resources: ['*'],
+    }));
+
+    this.enrollFinalize.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['ec2:RunInstances'],
+      resources: [
+        `arn:aws:ec2:${this.region}:${this.account}:instance/*`,
+        `arn:aws:ec2:${this.region}:${this.account}:volume/*`,
+        `arn:aws:ec2:${this.region}:${this.account}:network-interface/*`,
+        `arn:aws:ec2:${this.region}::image/*`,
+        `arn:aws:ec2:${this.region}:${this.account}:subnet/*`,
+        `arn:aws:ec2:${this.region}:${this.account}:security-group/*`,
+      ],
+      conditions: {
+        StringEquals: {
+          'aws:RequestTag/Application': 'vettid-vault',
+        },
+      },
+    }));
+
+    this.enrollFinalize.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['ec2:CreateTags'],
+      resources: [`arn:aws:ec2:${this.region}:${this.account}:*/*`],
+      conditions: {
+        StringEquals: {
+          'ec2:CreateAction': 'RunInstances',
+          'aws:RequestTag/Application': 'vettid-vault',
+        },
+      },
+    }));
+
+    // Grant IAM pass role permission for instance profile
+    this.enrollFinalize.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['iam:PassRole'],
+      resources: [`arn:aws:iam::${this.account}:role/vettid-vault-*`],
     }));
 
     // Grant SES permissions for email sending

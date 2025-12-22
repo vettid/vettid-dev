@@ -11,7 +11,10 @@ import {
   getRequestId,
   putAudit,
   generateSecureId,
+  addMinutesIso,
 } from '../../common/util';
+import { generateAccountCredentials } from '../../common/nats-jwt';
+import { triggerVaultProvisioning } from '../../common/vault-provisioner';
 import {
   generateX25519KeyPair,
   encryptCredentialBlob,
@@ -30,6 +33,7 @@ const TABLE_CREDENTIALS = process.env.TABLE_CREDENTIALS!;
 const TABLE_CREDENTIAL_KEYS = process.env.TABLE_CREDENTIAL_KEYS!;
 const TABLE_LEDGER_AUTH_TOKENS = process.env.TABLE_LEDGER_AUTH_TOKENS!;
 const TABLE_TRANSACTION_KEYS = process.env.TABLE_TRANSACTION_KEYS!;
+const TABLE_NATS_ACCOUNTS = process.env.TABLE_NATS_ACCOUNTS!;
 
 interface FinalizeRequest {
   enrollment_session_id?: string;  // Optional if using authorizer context
@@ -295,6 +299,52 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       transaction_keys_remaining: remainingKeys.length,
     }, requestId);
 
+    // === AUTO-PROVISIONING ===
+    // After enrollment completes, automatically provision the vault EC2 instance.
+    // This is non-blocking for enrollment - if provisioning fails, user can manually
+    // trigger via POST /vault/provision later.
+    let vaultStatus = 'PENDING_PROVISION';
+    let vaultInstanceId: string | undefined;
+
+    try {
+      // 1. Create NATS account for this user
+      const accountCredentials = await generateAccountCredentials(userGuid);
+      const ownerSpaceId = `OwnerSpace.${userGuid.replace(/-/g, '')}`;
+      const messageSpaceId = `MessageSpace.${userGuid.replace(/-/g, '')}`;
+
+      await ddb.send(new PutItemCommand({
+        TableName: TABLE_NATS_ACCOUNTS,
+        Item: marshall({
+          user_guid: userGuid,
+          account_public_key: accountCredentials.publicKey,
+          account_seed: accountCredentials.seed,
+          owner_space_id: ownerSpaceId,
+          message_space_id: messageSpaceId,
+          created_at: now.toISOString(),
+        }),
+        ConditionExpression: 'attribute_not_exists(user_guid)',
+      }));
+
+      // 2. Trigger EC2 provisioning
+      const provisionResult = await triggerVaultProvisioning({
+        userGuid,
+        ownerSpaceId,
+        messageSpaceId,
+        accountSeed: accountCredentials.seed,
+      });
+
+      vaultStatus = 'PROVISIONING';
+      vaultInstanceId = provisionResult.instanceId;
+
+      console.log(`Auto-provisioned vault for user ${userGuid}: instance ${vaultInstanceId}`);
+
+    } catch (provisionError: any) {
+      // Non-fatal: enrollment succeeded, but vault provisioning failed
+      // User can manually provision later via POST /vault/provision
+      console.warn('Auto-provisioning failed (non-fatal):', provisionError.message);
+      vaultStatus = 'PENDING_PROVISION';
+    }
+
     return ok({
       status: 'enrolled',
       credential_package: {
@@ -310,7 +360,8 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
         },
         transaction_keys: remainingKeys,
       },
-      vault_status: 'PROVISIONING',
+      vault_status: vaultStatus,
+      vault_instance_id: vaultInstanceId,
     }, origin);
 
   } catch (error: any) {

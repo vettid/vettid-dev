@@ -1,8 +1,7 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
-import { DynamoDBClient, GetItemCommand, PutItemCommand, QueryCommand } from '@aws-sdk/client-dynamodb';
-import { EC2Client, RunInstancesCommand, CreateTagsCommand, DescribeSubnetsCommand } from '@aws-sdk/client-ec2';
+import { DynamoDBClient, GetItemCommand, PutItemCommand, QueryCommand, UpdateItemCommand } from '@aws-sdk/client-dynamodb';
+import { EC2Client, RunInstancesCommand, DescribeSubnetsCommand, TerminateInstancesCommand } from '@aws-sdk/client-ec2';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
-import { randomUUID } from 'crypto';
 import {
   ok,
   badRequest,
@@ -10,8 +9,13 @@ import {
   internalError,
   requireUserClaims,
   addMinutesIso,
+  parseJsonBody,
 } from '../../common/util';
 import { generateUserCredentials, formatCredsFile } from '../../common/nats-jwt';
+
+interface ProvisionRequest {
+  force?: boolean;
+}
 
 const ddb = new DynamoDBClient({});
 const ec2 = new EC2Client({});
@@ -40,13 +44,18 @@ interface ProvisionResponse {
  * Provision a new vault EC2 instance for the authenticated member.
  * This starts the vault provisioning process which may take 1-2 minutes.
  *
+ * Request body:
+ * - force: boolean (optional) - If true, terminates existing vault and re-provisions
+ *
  * Requires:
  * - Member JWT authentication
  * - Completed enrollment (active credential)
  * - NATS account created
- * - No existing active vault instance
+ * - No existing active vault instance (unless force=true)
  */
 export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
+  const origin = event.headers?.origin;
+
   try {
     // Validate member authentication
     const claimsResult = requireUserClaims(event);
@@ -56,6 +65,10 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     const { claims } = claimsResult;
     const userGuid = claims.user_guid;
 
+    // Parse request body for force option
+    const body = parseJsonBody<ProvisionRequest>(event) || {};
+    const forceReprovision = body.force === true;
+
     // Check for existing vault instance
     const existingInstance = await ddb.send(new GetItemCommand({
       TableName: TABLE_VAULT_INSTANCES,
@@ -64,10 +77,42 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
 
     if (existingInstance.Item) {
       const instance = unmarshall(existingInstance.Item);
-      if (['provisioning', 'running', 'initializing'].includes(instance.status)) {
-        return badRequest('Vault instance already exists. Use /vault/health to check status.');
+
+      if (forceReprovision) {
+        // Force mode: terminate existing instance if it's active
+        if (['provisioning', 'running', 'initializing'].includes(instance.status) && instance.instance_id) {
+          console.log(`Force re-provisioning: terminating existing instance ${instance.instance_id}`);
+
+          try {
+            await ec2.send(new TerminateInstancesCommand({
+              InstanceIds: [instance.instance_id],
+            }));
+          } catch (terminateErr: any) {
+            // Log but continue - the instance might already be terminated
+            console.warn(`Failed to terminate instance ${instance.instance_id}:`, terminateErr.message);
+          }
+
+          // Update status to terminated
+          await ddb.send(new UpdateItemCommand({
+            TableName: TABLE_VAULT_INSTANCES,
+            Key: marshall({ user_guid: userGuid }),
+            UpdateExpression: 'SET #status = :status, terminated_at = :now, terminated_by = :by',
+            ExpressionAttributeNames: { '#status': 'status' },
+            ExpressionAttributeValues: marshall({
+              ':status': 'terminated',
+              ':now': new Date().toISOString(),
+              ':by': 'force_reprovision',
+            }),
+          }));
+        }
+        // Continue to provision new instance
+      } else {
+        // Normal mode: block if active instance exists
+        if (['provisioning', 'running', 'initializing'].includes(instance.status)) {
+          return badRequest('Vault instance already exists. Use force=true to terminate and re-provision, or /vault/health to check status.', origin);
+        }
+        // If terminated or failed, allow re-provisioning
       }
-      // If terminated or failed, allow re-provisioning
     }
 
     // Verify user has active credential (completed enrollment)
@@ -79,12 +124,12 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     }));
 
     if (!credentialResult.Items || credentialResult.Items.length === 0) {
-      return forbidden('Vault enrollment required before provisioning.');
+      return forbidden('Vault enrollment required before provisioning.', origin);
     }
 
     const credential = unmarshall(credentialResult.Items[0]);
     if (credential.status !== 'ACTIVE') {
-      return forbidden('Active vault enrollment required.');
+      return forbidden('Active vault enrollment required.', origin);
     }
 
     // Verify NATS account exists
@@ -94,7 +139,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     }));
 
     if (!natsAccount.Item) {
-      return forbidden('NATS account required. Create via POST /vault/nats/account first.');
+      return forbidden('NATS account required. Create via POST /vault/nats/account first.', origin);
     }
 
     const natsInfo = unmarshall(natsAccount.Item);
@@ -106,7 +151,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     const accountSeed = natsInfo.account_seed;
 
     if (!accountSeed) {
-      return internalError('NATS account missing signing key.');
+      return internalError('NATS account missing signing key.', origin);
     }
 
     // Generate vault credentials valid for 30 days (will be refreshed via NATS)
@@ -208,7 +253,7 @@ systemctl start vault-manager
     const runResult = await ec2.send(new RunInstancesCommand(instanceParams));
 
     if (!runResult.Instances || runResult.Instances.length === 0) {
-      return internalError('Failed to launch vault instance.');
+      return internalError('Failed to launch vault instance.', origin);
     }
 
     const ec2Instance = runResult.Instances[0];
@@ -250,10 +295,10 @@ systemctl start vault-manager
       estimated_ready_at: estimatedReadyAt,
     };
 
-    return ok(response);
+    return ok(response, origin);
 
   } catch (error: any) {
     console.error('Provision vault error:', error);
-    return internalError('Failed to provision vault instance.');
+    return internalError('Failed to provision vault instance.', origin);
   }
 };
