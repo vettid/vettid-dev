@@ -383,6 +383,13 @@ export class InfrastructureStack extends cdk.Stack {
       pointInTimeRecovery: true,
     });
 
+    // GSI for NATS account JWT lookup by account public key (used by NATS URL resolver)
+    natsAccounts.addGlobalSecondaryIndex({
+      indexName: 'account-key-index',
+      partitionKey: { name: 'account_public_key', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
     // NATS Tokens table - stores issued NATS JWT tokens
     const natsTokens = new dynamodb.Table(this, 'NatsTokens', {
       partitionKey: { name: 'token_id', type: dynamodb.AttributeType.STRING },

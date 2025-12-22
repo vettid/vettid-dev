@@ -54,6 +54,7 @@ export class VaultStack extends cdk.Stack {
   public readonly natsGenerateToken!: lambdaNode.NodejsFunction;
   public readonly natsRevokeToken!: lambdaNode.NodejsFunction;
   public readonly natsGetStatus!: lambdaNode.NodejsFunction;
+  public readonly natsLookupAccountJwt!: lambdaNode.NodejsFunction;
 
   // Vault lifecycle management functions
   public readonly provisionVault!: lambdaNode.NodejsFunction;
@@ -170,7 +171,7 @@ export class VaultStack extends cdk.Stack {
     // Get vault EC2 configuration from VaultInfrastructureStack if provided
     // (needed for enrollFinalize auto-provisioning and provisionVault)
     const vaultConfigEnv = {
-      VAULT_AMI_ID: process.env.VAULT_AMI_ID || 'ami-placeholder',
+      VAULT_AMI_ID: process.env.VAULT_AMI_ID || 'ami-083a1d18cec04eca1',
       VAULT_INSTANCE_TYPE: 't4g.nano',
       VAULT_SECURITY_GROUP: props.vaultInfra?.vaultConfig?.securityGroupId || '',
       VAULT_SUBNET_IDS: props.vaultInfra?.vaultConfig?.subnetIds || '',
@@ -325,6 +326,16 @@ export class VaultStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(30),
     });
 
+    // NATS Account JWT lookup for URL resolver (called by NATS servers, no auth required)
+    this.natsLookupAccountJwt = new lambdaNode.NodejsFunction(this, 'NatsLookupAccountJwtFn', {
+      entry: 'lambda/handlers/nats/lookupAccountJwt.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        TABLE_NATS_ACCOUNTS: tables.natsAccounts.tableName,
+      },
+      timeout: cdk.Duration.seconds(10),
+    });
+
     // ===== VAULT LIFECYCLE MANAGEMENT =====
 
     // Get vault EC2 configuration from VaultInfrastructureStack if provided
@@ -334,7 +345,7 @@ export class VaultStack extends cdk.Stack {
       TABLE_VAULT_INSTANCES: tables.vaultInstances.tableName,
       TABLE_CREDENTIALS: tables.credentials.tableName,
       TABLE_NATS_ACCOUNTS: tables.natsAccounts.tableName,
-      VAULT_AMI_ID: process.env.VAULT_AMI_ID || 'ami-placeholder',
+      VAULT_AMI_ID: process.env.VAULT_AMI_ID || 'ami-083a1d18cec04eca1',
       VAULT_INSTANCE_TYPE: 't4g.nano',
       VAULT_SECURITY_GROUP: vaultConfig?.securityGroupId || '',
       VAULT_SUBNET_IDS: vaultConfig?.subnetIds || '',
@@ -531,21 +542,31 @@ export class VaultStack extends cdk.Stack {
       resources: ['*'],
     }));
 
+    // EC2 RunInstances - split into two statements:
+    // 1. Resources being created (instance, volume) - require Application tag
     this.enrollFinalize.addToRolePolicy(new iam.PolicyStatement({
       actions: ['ec2:RunInstances'],
       resources: [
         `arn:aws:ec2:${this.region}:${this.account}:instance/*`,
         `arn:aws:ec2:${this.region}:${this.account}:volume/*`,
-        `arn:aws:ec2:${this.region}:${this.account}:network-interface/*`,
-        `arn:aws:ec2:${this.region}::image/*`,
-        `arn:aws:ec2:${this.region}:${this.account}:subnet/*`,
-        `arn:aws:ec2:${this.region}:${this.account}:security-group/*`,
       ],
       conditions: {
         StringEquals: {
           'aws:RequestTag/Application': 'vettid-vault',
         },
       },
+    }));
+
+    // 2. Infrastructure references (ami, subnet, sg, network-interface) - no condition
+    // These are pre-existing or auto-created resources that don't get tags
+    this.enrollFinalize.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['ec2:RunInstances'],
+      resources: [
+        `arn:aws:ec2:${this.region}:${this.account}:network-interface/*`,
+        `arn:aws:ec2:${this.region}::image/*`,
+        `arn:aws:ec2:${this.region}:${this.account}:subnet/*`,
+        `arn:aws:ec2:${this.region}:${this.account}:security-group/*`,
+      ],
     }));
 
     this.enrollFinalize.addToRolePolicy(new iam.PolicyStatement({
@@ -580,6 +601,7 @@ export class VaultStack extends cdk.Stack {
     tables.natsAccounts.grantReadWriteData(this.natsCreateAccount);
     tables.natsAccounts.grantReadData(this.natsGenerateToken);
     tables.natsAccounts.grantReadData(this.natsGetStatus);
+    tables.natsAccounts.grantReadData(this.natsLookupAccountJwt);
 
     // Grant NATS tokens table access
     tables.natsTokens.grantReadWriteData(this.natsGenerateToken);
@@ -628,22 +650,30 @@ export class VaultStack extends cdk.Stack {
       resources: ['*'], // Describe actions require '*'
     });
 
-    // RunInstances with conditions to limit instance types and require tags
+    // RunInstances - split into two statements:
+    // 1. Resources being created (instance, volume) - require Application tag
     const ec2RunPolicy = new iam.PolicyStatement({
       actions: ['ec2:RunInstances'],
       resources: [
         `arn:aws:ec2:${this.region}:${this.account}:instance/*`,
         `arn:aws:ec2:${this.region}:${this.account}:volume/*`,
-        `arn:aws:ec2:${this.region}:${this.account}:network-interface/*`,
-        `arn:aws:ec2:${this.region}::image/*`,
-        `arn:aws:ec2:${this.region}:${this.account}:subnet/*`,
-        `arn:aws:ec2:${this.region}:${this.account}:security-group/*`,
       ],
       conditions: {
         StringEquals: {
           'aws:RequestTag/Application': 'vettid-vault',
         },
       },
+    });
+
+    // 2. Infrastructure references (ami, subnet, sg, network-interface) - no condition
+    const ec2RunInfraPolicy = new iam.PolicyStatement({
+      actions: ['ec2:RunInstances'],
+      resources: [
+        `arn:aws:ec2:${this.region}:${this.account}:network-interface/*`,
+        `arn:aws:ec2:${this.region}::image/*`,
+        `arn:aws:ec2:${this.region}:${this.account}:subnet/*`,
+        `arn:aws:ec2:${this.region}:${this.account}:security-group/*`,
+      ],
     });
 
     // CreateTags limited to vettid resources
@@ -675,6 +705,7 @@ export class VaultStack extends cdk.Stack {
 
     this.provisionVault.addToRolePolicy(ec2DescribePolicy);
     this.provisionVault.addToRolePolicy(ec2RunPolicy);
+    this.provisionVault.addToRolePolicy(ec2RunInfraPolicy);
     this.provisionVault.addToRolePolicy(ec2TagPolicy);
     this.provisionVault.addToRolePolicy(ec2MutatePolicy);
 
@@ -1320,6 +1351,13 @@ export class VaultStack extends cdk.Stack {
     this.route('NatsGenerateToken', httpApi, '/vault/nats/token', apigw.HttpMethod.POST, this.natsGenerateToken, memberAuthorizer);
     this.route('NatsRevokeToken', httpApi, '/vault/nats/token/revoke', apigw.HttpMethod.POST, this.natsRevokeToken, memberAuthorizer);
     this.route('NatsGetStatus', httpApi, '/vault/nats/status', apigw.HttpMethod.GET, this.natsGetStatus, memberAuthorizer);
+
+    // NATS URL Resolver endpoint (public - called by NATS servers for account JWT lookup)
+    new apigw.HttpRoute(this, 'NatsLookupAccountJwt', {
+      httpApi,
+      routeKey: apigw.HttpRouteKey.with('/nats/jwt/v1/accounts/{account_public_key}', apigw.HttpMethod.GET),
+      integration: new integrations.HttpLambdaIntegration('NatsLookupAccountJwtIntegration', this.natsLookupAccountJwt),
+    });
 
     // Vault Lifecycle Management
     this.route('ProvisionVault', httpApi, '/vault/provision', apigw.HttpMethod.POST, this.provisionVault, memberAuthorizer);

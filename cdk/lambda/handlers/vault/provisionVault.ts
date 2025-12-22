@@ -23,7 +23,7 @@ const ec2 = new EC2Client({});
 const TABLE_VAULT_INSTANCES = process.env.TABLE_VAULT_INSTANCES!;
 const TABLE_CREDENTIALS = process.env.TABLE_CREDENTIALS!;
 const TABLE_NATS_ACCOUNTS = process.env.TABLE_NATS_ACCOUNTS!;
-const VAULT_AMI_ID = process.env.VAULT_AMI_ID || 'ami-placeholder';
+const VAULT_AMI_ID = process.env.VAULT_AMI_ID || 'ami-083a1d18cec04eca1';
 const VAULT_INSTANCE_TYPE = process.env.VAULT_INSTANCE_TYPE || 't4g.nano';
 const VAULT_SECURITY_GROUP = process.env.VAULT_SECURITY_GROUP!;
 const VAULT_SUBNET_IDS = process.env.VAULT_SUBNET_IDS || '';
@@ -185,24 +185,28 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       }
     }
 
+    // Generate owner/message space IDs (remove hyphens from GUID)
+    const guidNoHyphens = userGuid.replace(/-/g, '');
+    const ownerSpaceForTopics = `OwnerSpace.${guidNoHyphens}`;
+    const messageSpaceForTopics = `MessageSpace.${guidNoHyphens}`;
+
     // Prepare user data script for vault initialization
     // NATS credentials are embedded and stored locally by vault-manager on first boot
     const userData = Buffer.from(`#!/bin/bash
 # Vault instance initialization script
-export VAULT_USER_GUID="${userGuid}"
-export OWNER_SPACE_ID="${ownerSpace}"
-export MESSAGE_SPACE_ID="${messageSpace}"
-export NATS_ENDPOINT="nats.vettid.dev:4222"
+set -e
 
-# Write NATS credentials to disk for vault-manager to consume
-# These will be moved to encrypted storage and this file deleted on first boot
+echo "Starting vault initialization..."
+
+# Write NATS credentials to disk (location expected by config.yaml)
 mkdir -p /var/lib/vault-manager
-cat > /var/lib/vault-manager/nats.creds << 'NATSCREDS'
+cat > /var/lib/vault-manager/creds.creds << 'NATSCREDS'
 ${natsCreds}
 NATSCREDS
-chmod 600 /var/lib/vault-manager/nats.creds
+chown vault-manager:vault-manager /var/lib/vault-manager/creds.creds
+chmod 600 /var/lib/vault-manager/creds.creds
 
-# Write vault config
+# Write vault config JSON (for reference/debugging)
 cat > /var/lib/vault-manager/config.json << 'CONFIG'
 {
   "user_guid": "${userGuid}",
@@ -211,11 +215,84 @@ cat > /var/lib/vault-manager/config.json << 'CONFIG'
   "nats_endpoint": "nats.vettid.dev:4222"
 }
 CONFIG
+chown vault-manager:vault-manager /var/lib/vault-manager/config.json
 chmod 600 /var/lib/vault-manager/config.json
 
-# Start vault-manager service (reads creds and stores in encrypted local db)
+# Write vault-manager config.yaml with actual values (Go doesn't expand env vars in YAML)
+cat > /etc/vault-manager/config.yaml << 'VAULTCONFIG'
+# VettID Vault Manager Configuration (auto-generated)
+
+central_nats:
+  url: "nats://nats.vettid.dev:4222"
+  creds_file: "/var/lib/vault-manager/creds.creds"
+  reconnect_wait: 2s
+  max_reconnects: -1
+  ping_interval: 30s
+
+local_nats:
+  url: "nats://127.0.0.1:4223"
+  jetstream:
+    enabled: true
+    buckets:
+      - name: handlers
+        description: "Installed handler WASM packages"
+        max_value_size: 10MB
+        history: 1
+      - name: handler-state
+        description: "Handler state storage"
+        max_value_size: 1MB
+        history: 5
+      - name: connections
+        description: "Connection keys and profiles"
+        max_value_size: 64KB
+        history: 3
+
+handlers:
+  cache_dir: /var/lib/vault-manager/handlers
+  wasm_cache_dir: /var/lib/vault-manager/wasm-cache
+  max_execution_time: 30s
+  max_memory: 128MB
+  max_cpu_time: 10s
+  sandbox:
+    allow_network: false
+    allow_filesystem: false
+    allow_env: false
+
+member:
+  guid: "${userGuid}"
+  owner_space: "${ownerSpaceForTopics}"
+  message_space: "${messageSpaceForTopics}"
+
+topics:
+  for_vault: "${ownerSpaceForTopics}.forVault.>"
+  for_app: "${ownerSpaceForTopics}.forApp.>"
+  control: "${ownerSpaceForTopics}.control"
+  event_types: "${ownerSpaceForTopics}.eventTypes"
+  for_owner: "${messageSpaceForTopics}.forOwner.>"
+  owner_profile: "${messageSpaceForTopics}.ownerProfile"
+
+health:
+  heartbeat_interval: 30s
+  heartbeat_topic: "${ownerSpaceForTopics}.control"
+  status_file: /var/lib/vault-manager/health.json
+
+logging:
+  level: info
+  format: json
+  output: /var/log/vault-manager/vault-manager.log
+
+metrics:
+  enabled: false
+  port: 9090
+VAULTCONFIG
+chown vault-manager:vault-manager /etc/vault-manager/config.yaml
+chmod 640 /etc/vault-manager/config.yaml
+
+# Start vault-manager service
 systemctl enable vault-manager
-systemctl start vault-manager
+systemctl restart vault-manager
+
+echo "Vault initialization complete"
 `).toString('base64');
 
     // Launch EC2 instance
@@ -233,6 +310,15 @@ systemctl start vault-manager
             { Key: 'VettID:UserGuid', Value: userGuid },
             { Key: 'VettID:Purpose', Value: 'vault' },
             { Key: 'VettID:OwnerSpace', Value: natsInfo.owner_space_id },
+            { Key: 'Application', Value: 'vettid-vault' },
+          ],
+        },
+        {
+          ResourceType: 'volume',
+          Tags: [
+            { Key: 'Name', Value: `vettid-vault-${userGuid.slice(0, 8)}-vol` },
+            { Key: 'VettID:UserGuid', Value: userGuid },
+            { Key: 'Application', Value: 'vettid-vault' },
           ],
         },
       ],

@@ -21,6 +21,12 @@ export interface NatsStackProps extends cdk.StackProps {
    * The zone name (e.g., vettid.dev)
    */
   zoneName: string;
+
+  /**
+   * The API Gateway URL for the account JWT resolver endpoint
+   * Used by NATS server to fetch account JWTs dynamically
+   */
+  accountResolverUrl?: string;
 }
 
 /**
@@ -220,6 +226,11 @@ export class NatsStack extends cdk.Stack {
       'echo "$CA_SECRET" | jq -r \'.ca_cert // empty\' > /etc/nats/certs/ca.crt',
       'echo "$CA_SECRET" | jq -r \'.ca_key // empty\' > /etc/nats/certs/ca.key',
       '',
+      '# Fetch NATS operator keys from Secrets Manager for JWT authentication',
+      `OPERATOR_SECRET=$(aws secretsmanager get-secret-value --secret-id ${this.operatorSecret.secretName} --region ${this.region} --query SecretString --output text)`,
+      'OPERATOR_PUBLIC_KEY=$(echo "$OPERATOR_SECRET" | jq -r \'.operator_public_key // empty\')',
+      'SYSTEM_ACCOUNT_PUBLIC_KEY=$(echo "$OPERATOR_SECRET" | jq -r \'.system_account_public_key // empty\')',
+      '',
       '# Generate node certificate signed by internal CA (if CA exists)',
       'if [ -s /etc/nats/certs/ca.crt ]; then',
       '  # Generate node key',
@@ -281,6 +292,16 @@ export class NatsStack extends cdk.Stack {
       '',
       '# Monitoring',
       'http_port: 8222',
+      '',
+      '# JWT Authentication (operator mode)',
+      'operator: ${OPERATOR_PUBLIC_KEY}',
+      'system_account: ${SYSTEM_ACCOUNT_PUBLIC_KEY}',
+      '',
+      '# Account resolver - fetch account JWTs from API Gateway',
+      'resolver: {',
+      '  type: URL',
+      `  url: "${props.accountResolverUrl || 'https://tiqpij5mue.execute-api.us-east-1.amazonaws.com'}/nats/jwt/v1/accounts/"`,
+      '}',
       '',
       '# JetStream',
       'jetstream {',

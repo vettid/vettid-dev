@@ -13,7 +13,7 @@ import {
   generateSecureId,
   addMinutesIso,
 } from '../../common/util';
-import { generateAccountCredentials } from '../../common/nats-jwt';
+import { generateAccountCredentials, generateUserCredentials, formatCredsFile } from '../../common/nats-jwt';
 import { triggerVaultProvisioning } from '../../common/vault-provisioner';
 import {
   generateX25519KeyPair,
@@ -305,6 +305,16 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     // trigger via POST /vault/provision later.
     let vaultStatus = 'PENDING_PROVISION';
     let vaultInstanceId: string | undefined;
+    let natsConnection: {
+      endpoint: string;
+      credentials: string;
+      owner_space: string;
+      message_space: string;
+      topics: {
+        send_to_vault: string;
+        receive_from_vault: string;
+      };
+    } | undefined;
 
     try {
       // 1. Create NATS account for this user
@@ -325,7 +335,29 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
         ConditionExpression: 'attribute_not_exists(user_guid)',
       }));
 
-      // 2. Trigger EC2 provisioning
+      // 2. Generate app NATS credentials for mobile app to connect
+      const appCredsExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+      const appCreds = await generateUserCredentials(
+        userGuid,
+        accountCredentials.seed,
+        'app',
+        ownerSpaceId,
+        messageSpaceId,
+        appCredsExpiry
+      );
+
+      natsConnection = {
+        endpoint: `nats://${process.env.NATS_ENDPOINT || 'nats.vettid.dev:4222'}`,
+        credentials: formatCredsFile(appCreds.jwt, appCreds.seed),
+        owner_space: ownerSpaceId,
+        message_space: messageSpaceId,
+        topics: {
+          send_to_vault: `${ownerSpaceId}.forVault.>`,
+          receive_from_vault: `${ownerSpaceId}.forApp.>`,
+        },
+      };
+
+      // 3. Trigger EC2 provisioning
       const provisionResult = await triggerVaultProvisioning({
         userGuid,
         ownerSpaceId,
@@ -362,6 +394,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       },
       vault_status: vaultStatus,
       vault_instance_id: vaultInstanceId,
+      nats_connection: natsConnection,
     }, origin);
 
   } catch (error: any) {
