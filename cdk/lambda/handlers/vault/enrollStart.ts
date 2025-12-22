@@ -281,7 +281,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
 
     if (invitationCode) {
       sessionItem.invitation_code = invitationCode;
-      sessionItem.created_at = now.toISOString();
+      sessionItem.created_at = now.getTime();  // GSI sort key expects number (Unix timestamp in ms)
     }
 
     if (attestationChallenge) {

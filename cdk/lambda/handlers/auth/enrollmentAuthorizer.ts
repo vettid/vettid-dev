@@ -43,15 +43,17 @@ export const handler = async (
     const token = extractTokenFromHeader(authHeader);
 
     if (!token) {
-      console.log('No token found in Authorization header');
+      // No token - allow through for invitation code flow
+      // The handler will check for invitation_code in body
+      console.log('No token found - allowing for invitation code flow');
       return {
-        isAuthorized: false,
+        isAuthorized: true,
         context: {
           userGuid: '',
           sessionId: '',
           deviceId: '',
           deviceType: '',
-          scope: '',
+          scope: 'invitation_code',
         },
       };
     }

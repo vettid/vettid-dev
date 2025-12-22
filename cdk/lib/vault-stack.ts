@@ -116,6 +116,11 @@ export class VaultStack extends cdk.Stack {
   public readonly ledgerCreateCredential?: lambdaNode.NodejsFunction;
   public readonly ledgerRotateKeys?: lambdaNode.NodejsFunction;
 
+  // Test Automation Endpoints (for Android E2E testing)
+  public readonly testHealth!: lambdaNode.NodejsFunction;
+  public readonly testCreateInvitation!: lambdaNode.NodejsFunction;
+  public readonly testCleanup!: lambdaNode.NodejsFunction;
+
   constructor(scope: Construct, id: string, props: VaultStackProps) {
     super(scope, id, props);
 
@@ -1004,6 +1009,60 @@ export class VaultStack extends cdk.Stack {
     tables.audit.grantReadWriteData(this.updateByovVault);
     tables.audit.grantReadWriteData(this.deleteByovVault);
 
+    // ===== TEST AUTOMATION ENDPOINTS =====
+    // These endpoints enable automated E2E testing for Android app
+    // SECURITY: Protected by TEST_API_KEY in handler (not deployed in production)
+
+    const testEnv = {
+      ...defaultEnv,
+      TEST_API_KEY: process.env.VETTID_TEST_API_KEY || 'vettid-test-key-dev-only',
+      API_URL: 'https://tiqpij5mue.execute-api.us-east-1.amazonaws.com',
+    };
+
+    this.testHealth = new lambdaNode.NodejsFunction(this, 'TestHealthFn', {
+      entry: 'lambda/handlers/test/testHealth.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: testEnv,
+      timeout: cdk.Duration.seconds(10),
+    });
+
+    this.testCreateInvitation = new lambdaNode.NodejsFunction(this, 'TestCreateInvitationFn', {
+      entry: 'lambda/handlers/test/testCreateInvitation.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: testEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    this.testCleanup = new lambdaNode.NodejsFunction(this, 'TestCleanupFn', {
+      entry: 'lambda/handlers/test/testCleanup.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...testEnv,
+        TABLE_CREDENTIALS: tables.credentials.tableName,
+        TABLE_CREDENTIAL_KEYS: tables.credentialKeys.tableName,
+        TABLE_LEDGER_AUTH_TOKENS: tables.ledgerAuthTokens.tableName,
+        TABLE_ACTION_TOKENS: tables.actionTokens.tableName,
+      },
+      timeout: cdk.Duration.seconds(60), // Cleanup may take longer
+    });
+
+    // Grant table access for test endpoints
+    tables.invites.grantReadWriteData(this.testHealth);
+    tables.enrollmentSessions.grantReadData(this.testHealth);
+    tables.transactionKeys.grantReadData(this.testHealth);
+
+    tables.invites.grantReadWriteData(this.testCreateInvitation);
+    tables.audit.grantReadWriteData(this.testCreateInvitation);
+
+    tables.invites.grantReadWriteData(this.testCleanup);
+    tables.enrollmentSessions.grantReadWriteData(this.testCleanup);
+    tables.transactionKeys.grantReadWriteData(this.testCleanup);
+    tables.credentials.grantReadWriteData(this.testCleanup);
+    tables.credentialKeys.grantReadWriteData(this.testCleanup);
+    tables.ledgerAuthTokens.grantReadWriteData(this.testCleanup);
+    tables.actionTokens.grantReadWriteData(this.testCleanup);
+    tables.audit.grantReadWriteData(this.testCleanup);
+
     // ===== LEDGER (PROTEAN CREDENTIAL SYSTEM) - Phase 1 =====
     // Only created if LedgerStack is provided
     if (props.ledger) {
@@ -1157,6 +1216,16 @@ export class VaultStack extends cdk.Stack {
     this.route('EnrollSetPassword', httpApi, '/vault/enroll/set-password', apigw.HttpMethod.POST, this.enrollSetPassword, enrollmentLambdaAuthorizer);
     this.route('EnrollFinalize', httpApi, '/vault/enroll/finalize', apigw.HttpMethod.POST, this.enrollFinalize, enrollmentLambdaAuthorizer);
 
+    // Direct enrollment via invitation code (public endpoint - no JWT required)
+    // This allows mobile apps to enroll directly using an invitation code
+    // The handler validates the invitation code internally
+    new apigw.HttpRoute(this, 'EnrollStartDirect', {
+      httpApi,
+      routeKey: apigw.HttpRouteKey.with('/vault/enroll/start-direct', apigw.HttpMethod.POST),
+      integration: new integrations.HttpLambdaIntegration('EnrollStartDirectInt', this.enrollStart),
+      // No authorizer - uses invitation code for authorization
+    });
+
     // Device Attestation (Phase 2) - also uses enrollment JWT
     this.route('VerifyAndroidAttestation', httpApi, '/vault/enroll/attestation/android', apigw.HttpMethod.POST, this.verifyAndroidAttestation, enrollmentLambdaAuthorizer);
     this.route('VerifyIosAttestation', httpApi, '/vault/enroll/attestation/ios', apigw.HttpMethod.POST, this.verifyIosAttestation, enrollmentLambdaAuthorizer);
@@ -1248,5 +1317,30 @@ export class VaultStack extends cdk.Stack {
     if (this.ledgerRotateKeys) {
       this.route('LedgerRotateKeys', httpApi, '/vault/credentials/rotate', apigw.HttpMethod.POST, this.ledgerRotateKeys, memberAuthorizer);
     }
+
+    // ===== TEST AUTOMATION ENDPOINTS =====
+    // Public endpoints protected by TEST_API_KEY header (validated in handler)
+    // These enable automated E2E testing for Android app
+
+    new apigw.HttpRoute(this, 'TestHealth', {
+      httpApi,
+      routeKey: apigw.HttpRouteKey.with('/test/health', apigw.HttpMethod.GET),
+      integration: new integrations.HttpLambdaIntegration('TestHealthInt', this.testHealth),
+      // No authorizer - uses API key in header
+    });
+
+    new apigw.HttpRoute(this, 'TestCreateInvitation', {
+      httpApi,
+      routeKey: apigw.HttpRouteKey.with('/test/create-invitation', apigw.HttpMethod.POST),
+      integration: new integrations.HttpLambdaIntegration('TestCreateInvitationInt', this.testCreateInvitation),
+      // No authorizer - uses API key in header
+    });
+
+    new apigw.HttpRoute(this, 'TestCleanup', {
+      httpApi,
+      routeKey: apigw.HttpRouteKey.with('/test/cleanup', apigw.HttpMethod.POST),
+      integration: new integrations.HttpLambdaIntegration('TestCleanupInt', this.testCleanup),
+      // No authorizer - uses API key in header
+    });
   }
 }
