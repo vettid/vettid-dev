@@ -223,7 +223,7 @@ cat > /etc/vault-manager/config.yaml << 'VAULTCONFIG'
 # VettID Vault Manager Configuration (auto-generated)
 
 central_nats:
-  url: "nats://nats.vettid.dev:4222"
+  url: "tls://nats.vettid.dev:4222"
   creds_file: "/var/lib/vault-manager/creds.creds"
   reconnect_wait: 2s
   max_reconnects: -1
