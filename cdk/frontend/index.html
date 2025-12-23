@@ -233,15 +233,25 @@
     font-size: 1.1rem;
   }
 
-  /* Floating Tower Graphics */
-  .tower-bg {
+  /* Floating geometric accents */
+  .geo-accent {
     position: absolute;
-    opacity: 0.03;
+    opacity: 0.04;
     z-index: 0;
+    pointer-events: none;
   }
 
-  .tower-bg.left { left: 5%; top: 20%; }
-  .tower-bg.right { right: 5%; bottom: 20%; }
+  .geo-accent.left {
+    left: -5%;
+    top: 15%;
+    transform: rotate(-15deg);
+  }
+
+  .geo-accent.right {
+    right: -5%;
+    bottom: 10%;
+    transform: rotate(15deg);
+  }
 
   /* Features Section */
   .features {
@@ -535,7 +545,7 @@
     .hero .tagline { font-size: 1rem; letter-spacing: 2px; }
     .header-logo span { display: none; }
     .features h2, .how-it-works h2, .cooperative h2 { font-size: 2rem; }
-    .tower-bg { display: none; }
+    .geo-accent { display: none; }
     header {
       padding: 10px 16px;
     }
@@ -587,19 +597,35 @@
 
 <!-- Hero Section -->
 <section class="hero">
-  <!-- Background Tower Graphics -->
-  <svg class="tower-bg left" width="300" height="400" viewBox="0 0 100 140">
-    <path d="M25 30 L25 20 L30 20 L30 10 L35 10 L35 20 L45 20 L45 10 L50 10 L50 20 L55 20 L55 10 L60 10 L60 20 L65 20 L65 10 L70 10 L70 20 L75 20 L75 30 L75 35 L25 35 Z" fill="#ffc125"/>
-    <path d="M28 35 L72 35 L75 130 L25 130 Z" fill="#ffc125"/>
-    <ellipse cx="50" cy="70" rx="10" ry="12" fill="#000"/>
-    <path d="M45 82 L45 95 L55 95 L55 82 Q50 78 45 82" fill="#000"/>
+  <!-- Abstract geometric accents -->
+  <svg class="geo-accent left" width="400" height="500" viewBox="0 0 100 125" fill="none">
+    <!-- Layered hexagonal shield pattern -->
+    <path d="M50 5 L85 25 L85 75 L50 95 L15 75 L15 25 Z" stroke="#ffc125" stroke-width="0.5" opacity="0.6"/>
+    <path d="M50 15 L75 30 L75 70 L50 85 L25 70 L25 30 Z" stroke="#ffc125" stroke-width="0.4" opacity="0.4"/>
+    <path d="M50 25 L65 35 L65 65 L50 75 L35 65 L35 35 Z" stroke="#ffc125" stroke-width="0.3" opacity="0.3"/>
+    <!-- Vertical accent lines -->
+    <line x1="50" y1="5" x2="50" y2="95" stroke="#ffc125" stroke-width="0.2" opacity="0.3"/>
+    <line x1="15" y1="50" x2="85" y2="50" stroke="#ffc125" stroke-width="0.2" opacity="0.3"/>
+    <!-- Corner accents -->
+    <circle cx="50" cy="5" r="2" fill="#ffc125" opacity="0.5"/>
+    <circle cx="85" cy="25" r="1.5" fill="#ffc125" opacity="0.4"/>
+    <circle cx="85" cy="75" r="1.5" fill="#ffc125" opacity="0.4"/>
+    <circle cx="50" cy="95" r="2" fill="#ffc125" opacity="0.5"/>
+    <circle cx="15" cy="75" r="1.5" fill="#ffc125" opacity="0.4"/>
+    <circle cx="15" cy="25" r="1.5" fill="#ffc125" opacity="0.4"/>
   </svg>
 
-  <svg class="tower-bg right" width="250" height="350" viewBox="0 0 100 140">
-    <path d="M25 30 L25 20 L30 20 L30 10 L35 10 L35 20 L45 20 L45 10 L50 10 L50 20 L55 20 L55 10 L60 10 L60 20 L65 20 L65 10 L70 10 L70 20 L75 20 L75 30 L75 35 L25 35 Z" fill="#ffc125"/>
-    <path d="M28 35 L72 35 L75 130 L25 130 Z" fill="#ffc125"/>
-    <ellipse cx="50" cy="70" rx="10" ry="12" fill="#000"/>
-    <path d="M45 82 L45 95 L55 95 L55 82 Q50 78 45 82" fill="#000"/>
+  <svg class="geo-accent right" width="350" height="450" viewBox="0 0 100 125" fill="none">
+    <!-- Concentric diamond pattern -->
+    <path d="M50 10 L90 50 L50 90 L10 50 Z" stroke="#ffc125" stroke-width="0.5" opacity="0.5"/>
+    <path d="M50 20 L80 50 L50 80 L20 50 Z" stroke="#ffc125" stroke-width="0.4" opacity="0.4"/>
+    <path d="M50 30 L70 50 L50 70 L30 50 Z" stroke="#ffc125" stroke-width="0.3" opacity="0.3"/>
+    <path d="M50 40 L60 50 L50 60 L40 50 Z" stroke="#ffc125" stroke-width="0.2" opacity="0.2"/>
+    <!-- Radiating lines -->
+    <line x1="50" y1="10" x2="50" y2="90" stroke="#ffc125" stroke-width="0.15" opacity="0.25"/>
+    <line x1="10" y1="50" x2="90" y2="50" stroke="#ffc125" stroke-width="0.15" opacity="0.25"/>
+    <line x1="25" y1="25" x2="75" y2="75" stroke="#ffc125" stroke-width="0.15" opacity="0.2"/>
+    <line x1="75" y1="25" x2="25" y2="75" stroke="#ffc125" stroke-width="0.15" opacity="0.2"/>
   </svg>
 
   <img src="/assets/logo.jpg" alt="VettID" class="hero-logo">
