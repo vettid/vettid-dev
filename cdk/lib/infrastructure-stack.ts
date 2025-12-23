@@ -750,10 +750,14 @@ export class InfrastructureStack extends cdk.Stack {
     }));
 
     // Grant SES permissions to createAuthChallenge
-    // Restricted to auth.vettid.dev domain identity (sends from no-reply@auth.vettid.dev)
+    // Sends from no-reply@auth.vettid.dev, but AWS SES in sandbox mode requires
+    // IAM permission for both sender AND recipient identities
     createAuthChallenge.addToRolePolicy(new iam.PolicyStatement({
       actions: ['ses:SendEmail', 'ses:SendRawEmail'],
-      resources: [`arn:aws:ses:${this.region}:${this.account}:identity/auth.vettid.dev`],
+      resources: [
+        `arn:aws:ses:${this.region}:${this.account}:identity/auth.vettid.dev`,
+        `arn:aws:ses:${this.region}:${this.account}:identity/*`, // Recipients in sandbox mode
+      ],
     }));
 
 
