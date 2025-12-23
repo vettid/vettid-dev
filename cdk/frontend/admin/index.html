@@ -7,6 +7,8 @@
   <meta http-equiv="Referrer-Policy" content="strict-origin-when-cross-origin" />
   <title>VettID • Admin</title>
   <link rel="icon" type="image/jpeg" href="https://vettid.dev/assets/favicon.ico" />
+  <!-- Self-hosted fonts -->
+  <link rel="stylesheet" href="https://vettid.dev/assets/fonts.css" />
   <link rel="stylesheet" href="https://vettid.dev/assets/styles.css" />
   <link rel="stylesheet" href="/vendor/flatpickr/flatpickr.min.css" />
   <link rel="stylesheet" href="/vendor/flatpickr/dark.css" />
@@ -14,44 +16,51 @@
 
     /* ===== CSS Custom Properties for Theme Support ===== */
     :root {
-      /* Background colors */
-      --bg-input: #050505;
-      --bg-card: #0a0a0a;
-      --bg-hover: #0f0f0f;
-      --bg-tertiary: #1a1a1a;
-      --bg-progress: #222;
-      --bg-error-bg: #1a0505;
+      /* Background colors - Warm dark palette */
+      --bg-input: #0d0c0a;
+      --bg-card: #12110f;
+      --bg-hover: #1f1d1a;
+      --bg-tertiary: #1a1816;
+      --bg-progress: #2a2622;
+      --bg-error-bg: #1c0a0a;
       --bg-button-secondary: #4c4663;
-      --bg-button-disabled: #444;
-      --bg-logs: #000;
-      --bg-divider: #222;
-      --bg-header: linear-gradient(135deg,#1a1a1a 0%,#0a0a0a 100%);
-      --bg-table-header: linear-gradient(135deg,#0a0a0a 0%,#050505 100%);
-      --bg-bulk-action: linear-gradient(135deg,#1a1a1a 0%,#0a0a0a 100%);
-      --bg-dropdown: linear-gradient(135deg,#1a1a1a 0%,#0a0a0a 100%);
-      --bg-sidebar: linear-gradient(180deg,#0f0f0f 0%,#050505 100%);
+      --bg-button-disabled: #3a3835;
+      --bg-logs: #0a0908;
+      --bg-divider: #2a2622;
+      --bg-header: linear-gradient(135deg,#1a1816 0%,#12110f 100%);
+      --bg-table-header: linear-gradient(135deg,#12110f 0%,#0d0c0a 100%);
+      --bg-bulk-action: linear-gradient(135deg,#1a1816 0%,#12110f 100%);
+      --bg-dropdown: linear-gradient(135deg,#1a1816 0%,#12110f 100%);
+      --bg-sidebar: linear-gradient(180deg,#14120f 0%,#0a0908 100%);
       /* Skeleton loader gradient */
-      --bg-skeleton: linear-gradient(90deg,#0a0a0a 25%,#1a1a1a 50%,#0a0a0a 75%);
+      --bg-skeleton: linear-gradient(90deg,#12110f 25%,#1a1816 50%,#12110f 75%);
+
+      /* Motion */
+      --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+      --duration-fast: 150ms;
+      --duration-normal: 200ms;
+      --duration-slow: 300ms;
     }
 
-    /* Light theme overrides */
+    /* Light theme overrides - Warm light palette */
     [data-theme="light"] {
       /* Background colors */
-      --bg-input: #f9fafb;
+      --bg-input: #fafaf9;
       --bg-card: #ffffff;
-      --bg-hover: #f3f4f6;
-      --bg-tertiary: #e5e7eb;
-      --bg-progress: #d1d5db;
-      --bg-error-bg: #fee2e2;
+      --bg-hover: #f5f5f4;
+      --bg-tertiary: #e7e5e4;
+      --bg-progress: #d6d3d1;
+      --bg-error-bg: #fef2f2;
       --bg-button-secondary: #7c3aed;
-      --bg-button-disabled: #d1d5db;
-      --bg-logs: #f3f4f6;
-      --bg-divider: #d1d5db;
-      --bg-table-header: linear-gradient(135deg,#ffffff 0%,#f9fafb 100%);
-      --bg-bulk-action: linear-gradient(135deg,#ffffff 0%,#f9fafb 100%);
-      --bg-dropdown: linear-gradient(135deg,#ffffff 0%,#f9fafb 100%);
+      --bg-button-disabled: #d6d3d1;
+      --bg-logs: #f5f5f4;
+      --bg-divider: #d6d3d1;
+      --bg-table-header: linear-gradient(135deg,#ffffff 0%,#fafaf9 100%);
+      --bg-bulk-action: linear-gradient(135deg,#ffffff 0%,#fafaf9 100%);
+      --bg-dropdown: linear-gradient(135deg,#ffffff 0%,#fafaf9 100%);
+      --bg-sidebar: linear-gradient(180deg,#fafaf9 0%,#f5f5f4 100%);
       /* Skeleton loader gradient for light theme */
-      --bg-skeleton: linear-gradient(90deg,#e5e7eb 25%,#f3f4f6 50%,#e5e7eb 75%);
+      --bg-skeleton: linear-gradient(90deg,#e7e5e4 25%,#f5f5f4 50%,#e7e5e4 75%);
     }
 
     *{box-sizing:border-box;}
