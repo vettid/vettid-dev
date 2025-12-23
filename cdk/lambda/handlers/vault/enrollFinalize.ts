@@ -328,8 +328,10 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
           user_guid: userGuid,
           account_public_key: accountCredentials.publicKey,
           account_seed: accountCredentials.seed,
+          account_jwt: accountCredentials.accountJwt,  // For NATS resolver
           owner_space_id: ownerSpaceId,
           message_space_id: messageSpaceId,
+          status: 'active',  // Required for lookupAccountJwt
           created_at: now.toISOString(),
         }),
         ConditionExpression: 'attribute_not_exists(user_guid)',

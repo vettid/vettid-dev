@@ -65,4 +65,6 @@ const nats = new NatsStack(app, 'VettID-NATS', {
   env,
   domainName: 'nats.vettid.dev',
   zoneName: 'vettid.dev',
+  // URL resolver for member account JWTs (fetched dynamically)
+  accountResolverUrl: 'https://tiqpij5mue.execute-api.us-east-1.amazonaws.com/nats/jwt/v1/accounts/',
 });
