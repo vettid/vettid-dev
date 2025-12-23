@@ -327,14 +327,18 @@ export class VaultStack extends cdk.Stack {
     });
 
     // NATS Account JWT lookup for URL resolver (called by NATS servers, no auth required)
+    // Also returns system account JWT from Secrets Manager for NATS cluster startup
     this.natsLookupAccountJwt = new lambdaNode.NodejsFunction(this, 'NatsLookupAccountJwtFn', {
       entry: 'lambda/handlers/nats/lookupAccountJwt.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
       environment: {
         TABLE_NATS_ACCOUNTS: tables.natsAccounts.tableName,
+        NATS_OPERATOR_SECRET_ARN: natsOperatorSecret.secretArn,
       },
       timeout: cdk.Duration.seconds(10),
     });
+    // Grant permission to read system account JWT from Secrets Manager
+    natsOperatorSecret.grantRead(this.natsLookupAccountJwt);
 
     // ===== VAULT LIFECYCLE MANAGEMENT =====
 
