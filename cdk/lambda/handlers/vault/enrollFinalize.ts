@@ -347,7 +347,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       );
 
       natsConnection = {
-        endpoint: `nats://${process.env.NATS_ENDPOINT || 'nats.vettid.dev:4222'}`,
+        endpoint: `tls://${process.env.NATS_ENDPOINT || 'nats.vettid.dev:4222'}`,
         credentials: formatCredsFile(appCreds.jwt, appCreds.seed),
         owner_space: ownerSpaceId,
         message_space: messageSpaceId,
