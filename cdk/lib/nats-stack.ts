@@ -100,6 +100,17 @@ export class NatsStack extends cdk.Stack {
    */
   public readonly clusterDnsName: string;
 
+  /**
+   * Internal NLB endpoint for vault-to-NATS communication (via VPC peering)
+   * Uses plain TCP - no TLS needed for internal traffic
+   */
+  public readonly internalNlbEndpoint: string;
+
+  /**
+   * Internal NATS domain name (e.g., nats.internal.vettid.dev)
+   */
+  public readonly internalNatsDomain: string;
+
   constructor(scope: Construct, id: string, props: NatsStackProps) {
     super(scope, id, props);
 
@@ -645,6 +656,54 @@ export class NatsStack extends cdk.Stack {
       'NATS client connections from NLB'
     );
 
+    // ===== INTERNAL NETWORK LOAD BALANCER (for vault-to-NATS via VPC peering) =====
+
+    // Internal NLB for vault instances to connect via VPC peering
+    // Uses plain TCP - no TLS needed for internal traffic within VPC peering
+    const internalNlb = new elbv2.NetworkLoadBalancer(this, 'NatsInternalNlb', {
+      vpc: this.vpc,
+      internetFacing: false, // Internal only
+      crossZoneEnabled: true,
+      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+    });
+
+    // Plain TCP listener for internal traffic (no TLS termination needed)
+    const internalListener = internalNlb.addListener('NatsInternalListener', {
+      port: 4222,
+      protocol: elbv2.Protocol.TCP,
+    });
+
+    // Internal target group (same NATS instances, plain TCP)
+    const internalTargetGroup = new elbv2.NetworkTargetGroup(this, 'NatsInternalTargetGroup', {
+      vpc: this.vpc,
+      port: 4222,
+      protocol: elbv2.Protocol.TCP,
+      targetType: elbv2.TargetType.INSTANCE,
+      healthCheck: {
+        enabled: true,
+        port: '8222',
+        protocol: elbv2.Protocol.HTTP,
+        path: '/healthz',
+        healthyThresholdCount: 2,
+        unhealthyThresholdCount: 2,
+        interval: cdk.Duration.seconds(10),
+      },
+    });
+
+    internalListener.addTargetGroups('NatsInternalTargets', internalTargetGroup);
+    asg.attachToNetworkTargetGroup(internalTargetGroup);
+
+    // Store internal NLB endpoint
+    this.internalNlbEndpoint = internalNlb.loadBalancerDnsName;
+    this.internalNatsDomain = `nats.internal.${props.zoneName}`;
+
+    // Add DNS record in private hosted zone for internal NATS access
+    new route53.ARecord(this, 'NatsInternalDnsRecord', {
+      zone: this.privateHostedZone,
+      recordName: 'nats', // nats.internal.vettid.dev
+      target: route53.RecordTarget.fromAlias(new targets.LoadBalancerTarget(internalNlb)),
+    });
+
     // ===== DNS RECORD =====
 
     new route53.ARecord(this, 'NatsDnsRecord', {
@@ -685,6 +744,17 @@ export class NatsStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'NatsPrivateZoneId', {
       value: this.privateHostedZone.hostedZoneId,
       description: 'Route 53 private hosted zone ID for internal discovery',
+    });
+
+    new cdk.CfnOutput(this, 'NatsInternalEndpoint', {
+      value: `nats://${this.internalNatsDomain}:4222`,
+      description: 'Internal NATS endpoint for vault-to-NATS communication (plain TCP via VPC peering)',
+      exportName: 'NatsInternalEndpoint',
+    });
+
+    new cdk.CfnOutput(this, 'NatsInternalNlbDns', {
+      value: this.internalNlbEndpoint,
+      description: 'Internal NLB DNS name for NATS',
     });
   }
 }

@@ -233,12 +233,12 @@ chmod 644 /var/lib/vault-manager/nats-ca.crt
 ` : '# No NATS CA certificate available'}
 
 # Write vault config JSON (for reference/debugging)
+# Note: nats_endpoint removed to let config.yaml be authoritative for the URL
 cat > /var/lib/vault-manager/config.json << 'CONFIG'
 {
   "user_guid": "${userGuid}",
   "owner_space_id": "${ownerSpace}",
-  "message_space_id": "${messageSpace}",
-  "nats_endpoint": "nats.vettid.dev:4222"
+  "message_space_id": "${messageSpace}"
 }
 CONFIG
 chown vault-manager:vault-manager /var/lib/vault-manager/config.json
@@ -249,9 +249,9 @@ cat > /etc/vault-manager/config.yaml << 'VAULTCONFIG'
 # VettID Vault Manager Configuration (auto-generated)
 
 central_nats:
-  url: "tls://nats.vettid.dev:4222"
+  url: "nats://nats.internal.vettid.dev:4222"
   creds_file: "/var/lib/vault-manager/creds.creds"
-${natsCaCert ? '  ca_file: "/var/lib/vault-manager/nats-ca.crt"' : ''}
+  # Plain TCP over VPC peering - no TLS needed for internal traffic
   reconnect_wait: 2s
   max_reconnects: -1
   ping_interval: 30s
@@ -300,7 +300,7 @@ topics:
 
 health:
   heartbeat_interval: 30s
-  heartbeat_topic: "${ownerSpaceForTopics}.control"
+  heartbeat_topic: "${ownerSpaceForTopics}.forServices.health"
   status_file: /var/lib/vault-manager/health.json
 
 logging:

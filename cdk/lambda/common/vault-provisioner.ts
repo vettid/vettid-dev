@@ -24,9 +24,10 @@ const VAULT_INSTANCE_TYPE = process.env.VAULT_INSTANCE_TYPE || 't4g.nano';
 const VAULT_SECURITY_GROUP = process.env.VAULT_SECURITY_GROUP || '';
 const VAULT_SUBNET_IDS = process.env.VAULT_SUBNET_IDS || '';
 const VAULT_IAM_PROFILE = process.env.VAULT_IAM_PROFILE || '';
-const NATS_ENDPOINT = process.env.NATS_ENDPOINT || 'nats.vettid.dev:4222';
+// Internal NATS endpoint for vault-to-NATS communication via VPC peering (plain TCP)
+const NATS_INTERNAL_ENDPOINT = process.env.NATS_INTERNAL_ENDPOINT || 'nats.internal.vettid.dev:4222';
 const BACKEND_API_URL = process.env.BACKEND_API_URL || '';
-// Note: NATS_CA_SECRET_NAME no longer needed - NLB terminates TLS with ACM certificate
+// Note: No TLS needed for internal endpoint - traffic stays within VPC peering
 
 export interface VaultProvisioningParams {
   userGuid: string;
@@ -99,12 +100,13 @@ chown vault-manager:vault-manager /var/lib/vault-manager
 
 # Write vault config JSON (includes account seed for self-credential generation)
 # vault-manager will generate its own NATS credentials from this seed on startup
+# Note: nats_endpoint removed to let config.yaml be authoritative for the URL
+# (old vault-manager code forces tls:// prefix which breaks internal NLB)
 cat > /var/lib/vault-manager/config.json << 'CONFIG'
 {
   "user_guid": "${userGuid}",
   "owner_space_id": "${ownerSpaceId}",
   "message_space_id": "${messageSpaceId}",
-  "nats_endpoint": "${NATS_ENDPOINT}",
   "account_seed": "${accountSeed}",
   "backend_api_url": "${BACKEND_API_URL}"
 }
@@ -112,17 +114,16 @@ CONFIG
 chown vault-manager:vault-manager /var/lib/vault-manager/config.json
 chmod 600 /var/lib/vault-manager/config.json
 
-# NATS CA certificate: NOT needed - NLB uses ACM certificate (publicly trusted)
-# The vault-manager will use the system trust store
+# No TLS/CA needed - internal NLB uses plain TCP over VPC peering
 
 # Write vault-manager config.yaml with actual values (Go doesn't expand env vars in YAML)
 cat > /etc/vault-manager/config.yaml << 'VAULTCONFIG'
 # VettID Vault Manager Configuration (auto-generated)
 
 central_nats:
-  url: "tls://${NATS_ENDPOINT}"
+  url: "nats://${NATS_INTERNAL_ENDPOINT}"
   creds_file: "/var/lib/vault-manager/creds.creds"
-  # ca_file: not needed - NLB terminates TLS with ACM (publicly trusted)
+  # Plain TCP over VPC peering - no TLS needed for internal traffic
   reconnect_wait: 2s
   max_reconnects: -1
   ping_interval: 30s
