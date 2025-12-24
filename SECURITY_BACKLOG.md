@@ -26,29 +26,34 @@ This file tracks security issues identified during the security audit that need 
    - Minimal validation on body_html - potential phishing risk
    - Fix: Add content restrictions or require pre-approved templates
 
-6. **Missing API Gateway logging** - `vettid-stack.ts:237-249`
+6. **DynamoDB Scan instead of Query** - `createAuthChallenge.ts:64-74`
+   - Uses Scan to find PIN status instead of Query with GSI
+   - Performance DoS vector - will scan entire table on high-user systems
+   - Fix: Use email-index GSI with QueryCommand instead of ScanCommand
+
+7. **Missing API Gateway logging** - `vettid-stack.ts:237-249`
    - No CloudWatch logging for API access patterns
    - Fix: Enable access logging for audit trail
 
-7. **CSP allows unsafe-inline** - `vettid-stack.ts:252-293`
+8. **CSP allows unsafe-inline** - `vettid-stack.ts:252-293`
    - `script-src 'unsafe-inline'` weakens XSS protection
    - Fix: Move inline scripts to external files, use nonces
 
 ### Frontend
 
-8. **Token storage in localStorage** - `auth.js:51-65`
+9. **Token storage in localStorage** - `auth.js:51-65`
    - Tokens vulnerable to XSS attacks
    - Fix: Consider httpOnly cookies (requires backend changes)
 
-9. **Missing CSP headers** - All frontend HTML files
-   - No Content-Security-Policy configured
-   - Fix: Add CSP at CloudFront level
+10. **Missing CSP headers** - All frontend HTML files
+    - No Content-Security-Policy configured
+    - Fix: Add CSP at CloudFront level
 
-10. **Weak PKCE entropy** - `auth.js:19-24`
+11. **Weak PKCE entropy** - `auth.js:19-24`
     - Modulo bias in `randomString()` reduces entropy
     - Fix: Use proper base64url encoding
 
-11. **No JWT signature verification** - `jwt.js:11-27`
+12. **No JWT signature verification** - `jwt.js:11-27`
     - Frontend parses JWT without signature validation
     - Fix: Only use JWT for UI state, never for authorization
 
@@ -56,73 +61,87 @@ This file tracks security issues identified during the security audit that need 
 
 ### Infrastructure
 
-12. **Log bucket encryption not explicit** - `vettid-stack.ts:53-70`
+13. **Log bucket encryption not explicit** - `vettid-stack.ts:53-70`
     - Should explicitly enable S3 encryption
 
-13. **Lambda functions without VPC** - All Lambda definitions
+14. **Lambda functions without VPC** - All Lambda definitions
     - Lower defense-in-depth posture
 
-14. **API Gateway throttling review** - `vettid-stack.ts:940-949`
+15. **API Gateway throttling review** - `vettid-stack.ts:940-949`
     - Current limits may allow single attacker to consume capacity
 
-15. **Cognito missing password history** - `infrastructure-stack.ts:428-467`
+16. **Cognito missing password history** - `infrastructure-stack.ts:428-467`
     - Users can reuse previous passwords
 
-16. **Member pool missing account lockout** - `infrastructure-stack.ts:425-450`
+17. **Member pool missing account lockout** - `infrastructure-stack.ts:425-450`
     - No brute-force protection at Cognito level
+
+18. **Broad SES permissions** - `infrastructure-stack.ts:755-761`
+    - SES permission includes `identity/*` - allows sending from ANY identity
+    - Fix: Scope to specific sender ARNs (`no-reply@auth.vettid.dev`)
 
 ### Lambda Handlers
 
-17. **Missing rate limiting on audit queries** - `getAuditLog.ts`
+19. **Missing rate limiting on audit queries** - `getAuditLog.ts`
     - Admin could hammer the endpoint
 
-18. **Weak timing-safe comparison (50ms)** - `util.ts:743`
+20. **Weak timing-safe comparison (50ms)** - `util.ts:743`
     - Increase to 200-500ms for better protection
 
-19. **Missing CSRF token validation** - Frontend API requests
+21. **Missing CSRF token validation** - Frontend API requests
     - Relies solely on JWT Bearer token
 
-20. **CORS fallback to hardcoded domain** - `util.ts:528`
+22. **CORS fallback to hardcoded domain** - `util.ts:528`
     - Should throw error instead of fallback
 
-21. **No rate limiting on admin endpoints** - Admin handlers
+23. **No rate limiting on admin endpoints** - Admin handlers
     - Compromised token could perform unlimited operations
 
-22. **Weak PIN validation (allows 1111)** - `verifyPin.ts`, `updatePin.ts`
+24. **Weak PIN validation (allows 1111)** - `verifyPin.ts`, `updatePin.ts`
     - Reject sequential/repeated PINs
+    - Patterns like "1357" also allowed - improve detection algorithm
 
-23. **Error message disclosure** - Multiple handlers
+25. **Error message disclosure** - Multiple handlers
     - Raw `error.message` returned to clients
     - Fix: Use `sanitizeErrorForClient()` utility
 
-24. **Race condition in approveRegistration** - `approveRegistration.ts:78-105`
+26. **Race condition in approveRegistration** - `approveRegistration.ts:78-105`
     - Cognito user created before conditional update
+    - Fix: Update DynamoDB BEFORE creating Cognito user
 
 ## Low Priority Issues
 
-25. **Weak default pagination (50)** - `listRegistrations.ts:10-12`
+27. **Weak default pagination (50)** - `listRegistrations.ts:10-12`
     - Should be 10-20 for performance
 
-26. **Missing SRI on external resources** - `admin/index.html:10-12`
+28. **Missing SRI on external resources** - `admin/index.html:10-12`
     - Add integrity attribute to external scripts/styles
 
-27. **Verbose console errors** - Multiple files
+29. **Verbose console errors** - Multiple files
     - Sanitize console output in production
 
-28. **No frontend rate limiting** - `register/index.html:134`
+30. **No frontend rate limiting** - `register/index.html:134`
     - Add client-side throttling
 
-29. **Silent audit trail failures** - `util.ts:181`
+31. **Silent audit trail failures** - `util.ts:181`
     - Consider failing operation if audit fails
 
-30. **Outdated AWS SDK versions** - `package.json`
+32. **Outdated AWS SDK versions** - `package.json`
     - Run `npm update` for latest patches
 
-31. **Missing request size limits in WAF** - `vettid-stack.ts`
+33. **Missing request size limits in WAF** - `vettid-stack.ts`
     - Add WAF rule to limit payload sizes
 
-32. **CSV injection risk in logs** - `sendBulkEmail.ts:227`
+34. **CSV injection risk in logs** - `sendBulkEmail.ts:227`
     - Hash email addresses in logs
+
+35. **Deploy custom domain api.vettid.dev** - Infrastructure
+    - Required for certificate pinning in mobile apps
+    - Current AWS API Gateway uses rotating certificates
+
+36. **Implement explicit KMS encryption** - DynamoDB and S3
+    - Currently using default AWS-managed encryption
+    - Consider customer-managed keys for sensitive data
 
 ---
 
@@ -137,5 +156,6 @@ This file tracks security issues identified during the security audit that need 
 
 ---
 
-*Generated: 2025-12-03*
+*Last Updated: 2025-12-23*
+*Initial Audit: 2025-12-03*
 *Audit performed by: Claude Code*

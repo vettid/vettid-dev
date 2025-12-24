@@ -3,25 +3,31 @@
  *
  * Provides a reusable function to trigger vault EC2 provisioning.
  * Called from enrollFinalize.ts for auto-provisioning and provisionVault.ts for on-demand.
+ *
+ * NOTE: This provisioner does NOT generate vault credentials. The vault-manager
+ * on the EC2 instance generates its own credentials from the account seed on startup.
+ * This is the intended architecture: vault is the authority for its own credentials.
  */
 
 import { DynamoDBClient, PutItemCommand } from '@aws-sdk/client-dynamodb';
 import { EC2Client, RunInstancesCommand, DescribeSubnetsCommand } from '@aws-sdk/client-ec2';
+import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import { marshall } from '@aws-sdk/util-dynamodb';
-import { generateUserCredentials, formatCredsFile } from './nats-jwt';
 import { addMinutesIso } from './util';
 
 const ddb = new DynamoDBClient({});
 const ec2 = new EC2Client({});
+const secretsManager = new SecretsManagerClient({});
 
 // Environment configuration
 const TABLE_VAULT_INSTANCES = process.env.TABLE_VAULT_INSTANCES!;
-const VAULT_AMI_ID = process.env.VAULT_AMI_ID || 'ami-0c5a49678d50b9305';
+const VAULT_AMI_ID = process.env.VAULT_AMI_ID || 'ami-0b7fe186af6ed8d96';
 const VAULT_INSTANCE_TYPE = process.env.VAULT_INSTANCE_TYPE || 't4g.nano';
 const VAULT_SECURITY_GROUP = process.env.VAULT_SECURITY_GROUP || '';
 const VAULT_SUBNET_IDS = process.env.VAULT_SUBNET_IDS || '';
 const VAULT_IAM_PROFILE = process.env.VAULT_IAM_PROFILE || '';
 const NATS_ENDPOINT = process.env.NATS_ENDPOINT || 'nats.vettid.dev:4222';
+const NATS_CA_SECRET_NAME = process.env.NATS_CA_SECRET_NAME || 'vettid/nats/internal-ca';
 
 export interface VaultProvisioningParams {
   userGuid: string;
@@ -43,28 +49,18 @@ export interface VaultProvisioningResult {
  * Trigger vault EC2 provisioning for a user.
  *
  * This function:
- * 1. Generates NATS credentials for the vault (30-day validity)
- * 2. Creates user data script with NATS creds + config
- * 3. Launches EC2 instance with vault-manager AMI
- * 4. Stores record in TABLE_VAULT_INSTANCES
+ * 1. Creates user data script with account seed (vault generates its own creds)
+ * 2. Launches EC2 instance with vault-manager AMI
+ * 3. Stores record in TABLE_VAULT_INSTANCES
+ *
+ * NOTE: The vault-manager generates its own NATS credentials from the account seed
+ * on first boot. This is the intended architecture where vault is the authority
+ * for credential generation.
  */
 export async function triggerVaultProvisioning(
   params: VaultProvisioningParams
 ): Promise<VaultProvisioningResult> {
   const { userGuid, ownerSpaceId, messageSpaceId, accountSeed } = params;
-
-  // Generate vault credentials valid for 30 days (will be refreshed via NATS)
-  const expiresAt = new Date(addMinutesIso(60 * 24 * 30)); // 30 days
-  const vaultCreds = await generateUserCredentials(
-    userGuid,
-    accountSeed,
-    'vault',
-    ownerSpaceId,
-    messageSpaceId,
-    expiresAt
-  );
-
-  const natsCreds = formatCredsFile(vaultCreds.jwt, vaultCreds.seed);
 
   // Select a random subnet from available subnets
   const subnetIds = VAULT_SUBNET_IDS.split(',').filter(s => s.trim());
@@ -89,23 +85,34 @@ export async function triggerVaultProvisioning(
   const ownerSpaceForTopics = `OwnerSpace.${guidNoHyphens}`;
   const messageSpaceForTopics = `MessageSpace.${guidNoHyphens}`;
 
+  // Fetch NATS CA certificate from Secrets Manager
+  let caCert = '';
+  try {
+    const secretResponse = await secretsManager.send(new GetSecretValueCommand({
+      SecretId: NATS_CA_SECRET_NAME,
+    }));
+    if (secretResponse.SecretString) {
+      const secretData = JSON.parse(secretResponse.SecretString);
+      caCert = secretData.ca_cert || '';
+    }
+  } catch (err) {
+    console.warn('Failed to fetch NATS CA certificate, TLS verification may fail:', err);
+  }
+
   // Prepare user data script for vault initialization
-  // NATS credentials are embedded and stored locally by vault-manager on first boot
+  // vault-manager generates its own NATS credentials from account seed on first boot
   const userData = Buffer.from(`#!/bin/bash
 # Vault instance initialization script
 set -e
 
 echo "Starting vault initialization..."
 
-# Write NATS credentials to disk (location expected by config.yaml)
+# Create vault-manager data directory
 mkdir -p /var/lib/vault-manager
-cat > /var/lib/vault-manager/creds.creds << 'NATSCREDS'
-${natsCreds}
-NATSCREDS
-chown vault-manager:vault-manager /var/lib/vault-manager/creds.creds
-chmod 600 /var/lib/vault-manager/creds.creds
+chown vault-manager:vault-manager /var/lib/vault-manager
 
-# Write vault config JSON (includes account seed for connection credential generation)
+# Write vault config JSON (includes account seed for self-credential generation)
+# vault-manager will generate its own NATS credentials from this seed on startup
 cat > /var/lib/vault-manager/config.json << 'CONFIG'
 {
   "user_guid": "${userGuid}",
@@ -118,6 +125,14 @@ CONFIG
 chown vault-manager:vault-manager /var/lib/vault-manager/config.json
 chmod 600 /var/lib/vault-manager/config.json
 
+# Write NATS CA certificate for TLS verification
+${caCert ? `cat > /var/lib/vault-manager/nats-ca.crt << 'CACERT'
+${caCert}
+CACERT
+chown vault-manager:vault-manager /var/lib/vault-manager/nats-ca.crt
+chmod 644 /var/lib/vault-manager/nats-ca.crt
+echo "NATS CA certificate installed"` : '# No NATS CA certificate available'}
+
 # Write vault-manager config.yaml with actual values (Go doesn't expand env vars in YAML)
 cat > /etc/vault-manager/config.yaml << 'VAULTCONFIG'
 # VettID Vault Manager Configuration (auto-generated)
@@ -125,6 +140,7 @@ cat > /etc/vault-manager/config.yaml << 'VAULTCONFIG'
 central_nats:
   url: "tls://${NATS_ENDPOINT}"
   creds_file: "/var/lib/vault-manager/creds.creds"
+  ca_file: "${caCert ? '/var/lib/vault-manager/nats-ca.crt' : ''}"
   reconnect_wait: 2s
   max_reconnects: -1
   ping_interval: 30s

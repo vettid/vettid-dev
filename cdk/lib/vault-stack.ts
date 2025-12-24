@@ -171,7 +171,7 @@ export class VaultStack extends cdk.Stack {
     // Get vault EC2 configuration from VaultInfrastructureStack if provided
     // (needed for enrollFinalize auto-provisioning and provisionVault)
     const vaultConfigEnv = {
-      VAULT_AMI_ID: process.env.VAULT_AMI_ID || 'ami-0c5a49678d50b9305',
+      VAULT_AMI_ID: process.env.VAULT_AMI_ID || 'ami-0b7fe186af6ed8d96',
       VAULT_INSTANCE_TYPE: 't4g.nano',
       VAULT_SECURITY_GROUP: props.vaultInfra?.vaultConfig?.securityGroupId || '',
       VAULT_SUBNET_IDS: props.vaultInfra?.vaultConfig?.subnetIds || '',
@@ -184,6 +184,11 @@ export class VaultStack extends cdk.Stack {
       this, 'NatsOperatorSecretForEnroll', 'vettid/nats/operator-key'
     );
 
+    // NATS internal CA secret for end-to-end TLS (vault needs this to verify NATS server certs)
+    const natsInternalCaSecretRef = cdk.aws_secretsmanager.Secret.fromSecretNameV2(
+      this, 'NatsInternalCaSecretForEnroll', 'vettid/nats/internal-ca'
+    );
+
     this.enrollFinalize = new lambdaNode.NodejsFunction(this, 'EnrollFinalizeFn', {
       entry: 'lambda/handlers/vault/enrollFinalize.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
@@ -194,6 +199,7 @@ export class VaultStack extends cdk.Stack {
         TABLE_NATS_ACCOUNTS: tables.natsAccounts.tableName,
         TABLE_VAULT_INSTANCES: tables.vaultInstances.tableName,
         NATS_OPERATOR_SECRET_ARN: natsOperatorSecretRef.secretArn,
+        NATS_CA_SECRET_NAME: 'vettid/nats/internal-ca',
         ...vaultConfigEnv,
       },
       timeout: cdk.Duration.seconds(60), // Increased for auto-provisioning
@@ -349,11 +355,12 @@ export class VaultStack extends cdk.Stack {
       TABLE_VAULT_INSTANCES: tables.vaultInstances.tableName,
       TABLE_CREDENTIALS: tables.credentials.tableName,
       TABLE_NATS_ACCOUNTS: tables.natsAccounts.tableName,
-      VAULT_AMI_ID: process.env.VAULT_AMI_ID || 'ami-0c5a49678d50b9305',
+      VAULT_AMI_ID: process.env.VAULT_AMI_ID || 'ami-0b7fe186af6ed8d96',
       VAULT_INSTANCE_TYPE: 't4g.nano',
       VAULT_SECURITY_GROUP: vaultConfig?.securityGroupId || '',
       VAULT_SUBNET_IDS: vaultConfig?.subnetIds || '',
       VAULT_IAM_PROFILE: vaultConfig?.iamProfileName || '',
+      NATS_CA_SECRET_NAME: 'vettid/nats/internal-ca',
     };
 
     this.provisionVault = new lambdaNode.NodejsFunction(this, 'ProvisionVaultFn', {
@@ -539,6 +546,9 @@ export class VaultStack extends cdk.Stack {
 
     // Grant NATS operator secret access for generating vault credentials
     natsOperatorSecretRef.grantRead(this.enrollFinalize);
+
+    // Grant NATS internal CA secret access for end-to-end TLS
+    natsInternalCaSecretRef.grantRead(this.enrollFinalize);
 
     // EC2 permissions for auto-provisioning (same as provisionVault)
     this.enrollFinalize.addToRolePolicy(new iam.PolicyStatement({
@@ -757,6 +767,9 @@ export class VaultStack extends cdk.Stack {
       actions: ['iam:PassRole'],
       resources: [`arn:aws:iam::${this.account}:role/vettid-vault-*`],
     }));
+
+    // Grant NATS internal CA secret access for end-to-end TLS
+    natsInternalCaSecretRef.grantRead(this.provisionVault);
 
     // ===== HANDLER REGISTRY PERMISSIONS =====
 

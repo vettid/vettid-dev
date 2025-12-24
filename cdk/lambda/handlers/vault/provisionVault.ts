@@ -1,6 +1,7 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { DynamoDBClient, GetItemCommand, PutItemCommand, QueryCommand, UpdateItemCommand } from '@aws-sdk/client-dynamodb';
 import { EC2Client, RunInstancesCommand, DescribeSubnetsCommand, TerminateInstancesCommand } from '@aws-sdk/client-ec2';
+import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import {
   ok,
@@ -19,15 +20,17 @@ interface ProvisionRequest {
 
 const ddb = new DynamoDBClient({});
 const ec2 = new EC2Client({});
+const secretsManager = new SecretsManagerClient({});
 
 const TABLE_VAULT_INSTANCES = process.env.TABLE_VAULT_INSTANCES!;
 const TABLE_CREDENTIALS = process.env.TABLE_CREDENTIALS!;
 const TABLE_NATS_ACCOUNTS = process.env.TABLE_NATS_ACCOUNTS!;
-const VAULT_AMI_ID = process.env.VAULT_AMI_ID || 'ami-0c5a49678d50b9305';
+const VAULT_AMI_ID = process.env.VAULT_AMI_ID || 'ami-006bc119b9d9ff0df';
 const VAULT_INSTANCE_TYPE = process.env.VAULT_INSTANCE_TYPE || 't4g.nano';
 const VAULT_SECURITY_GROUP = process.env.VAULT_SECURITY_GROUP!;
 const VAULT_SUBNET_IDS = process.env.VAULT_SUBNET_IDS || '';
 const VAULT_IAM_PROFILE = process.env.VAULT_IAM_PROFILE || '';
+const NATS_CA_SECRET_NAME = process.env.NATS_CA_SECRET_NAME || 'vettid/nats/internal-ca';
 
 interface ProvisionResponse {
   instance_id: string;
@@ -190,6 +193,21 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     const ownerSpaceForTopics = `OwnerSpace.${guidNoHyphens}`;
     const messageSpaceForTopics = `MessageSpace.${guidNoHyphens}`;
 
+    // Fetch NATS CA certificate for TLS verification
+    let natsCaCert = '';
+    try {
+      const caSecretResponse = await secretsManager.send(new GetSecretValueCommand({
+        SecretId: NATS_CA_SECRET_NAME,
+      }));
+      if (caSecretResponse.SecretString) {
+        const caSecret = JSON.parse(caSecretResponse.SecretString);
+        natsCaCert = caSecret.ca_cert || '';
+      }
+    } catch (caErr: any) {
+      console.warn('Failed to fetch NATS CA certificate:', caErr.message);
+      // Continue without CA - will use system CA or insecure connection
+    }
+
     // Prepare user data script for vault initialization
     // NATS credentials are embedded and stored locally by vault-manager on first boot
     const userData = Buffer.from(`#!/bin/bash
@@ -205,6 +223,14 @@ ${natsCreds}
 NATSCREDS
 chown vault-manager:vault-manager /var/lib/vault-manager/creds.creds
 chmod 600 /var/lib/vault-manager/creds.creds
+
+${natsCaCert ? `# Write NATS CA certificate for TLS verification
+cat > /var/lib/vault-manager/nats-ca.crt << 'NATSCA'
+${natsCaCert}
+NATSCA
+chown vault-manager:vault-manager /var/lib/vault-manager/nats-ca.crt
+chmod 644 /var/lib/vault-manager/nats-ca.crt
+` : '# No NATS CA certificate available'}
 
 # Write vault config JSON (for reference/debugging)
 cat > /var/lib/vault-manager/config.json << 'CONFIG'
@@ -225,6 +251,7 @@ cat > /etc/vault-manager/config.yaml << 'VAULTCONFIG'
 central_nats:
   url: "tls://nats.vettid.dev:4222"
   creds_file: "/var/lib/vault-manager/creds.creds"
+${natsCaCert ? '  ca_file: "/var/lib/vault-manager/nats-ca.crt"' : ''}
   reconnect_wait: 2s
   max_reconnects: -1
   ping_interval: 30s
