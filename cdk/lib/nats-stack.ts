@@ -9,7 +9,12 @@ import {
   aws_secretsmanager as secretsmanager,
   aws_iam as iam,
   aws_autoscaling as autoscaling,
+  aws_lambda as lambda,
+  aws_lambda_nodejs as nodejs,
+  aws_events as events,
+  aws_events_targets as eventTargets,
 } from 'aws-cdk-lib';
+import * as path from 'path';
 
 export interface NatsStackProps extends cdk.StackProps {
   /**
@@ -73,6 +78,16 @@ export class NatsStack extends cdk.Stack {
    */
   public readonly natsSecurityGroup: ec2.SecurityGroup;
 
+  /**
+   * Private hosted zone for internal cluster discovery
+   */
+  public readonly privateHostedZone: route53.PrivateHostedZone;
+
+  /**
+   * Internal DNS name for cluster routing (e.g., cluster.internal.vettid.dev)
+   */
+  public readonly clusterDnsName: string;
+
   constructor(scope: Construct, id: string, props: NatsStackProps) {
     super(scope, id, props);
 
@@ -100,6 +115,17 @@ export class NatsStack extends cdk.Stack {
       enableDnsHostnames: true,
       enableDnsSupport: true,
     });
+
+    // ===== PRIVATE HOSTED ZONE FOR CLUSTER DISCOVERY =====
+
+    // Create private hosted zone for internal cluster DNS
+    this.privateHostedZone = new route53.PrivateHostedZone(this, 'NatsPrivateZone', {
+      zoneName: `internal.${props.zoneName}`,
+      vpc: this.vpc,
+      comment: 'Private zone for NATS cluster internal discovery',
+    });
+
+    this.clusterDnsName = `cluster.internal.${props.zoneName}`;
 
     // ===== SECRETS =====
 
@@ -181,6 +207,7 @@ export class NatsStack extends cdk.Stack {
     // Grant access to secrets
     this.operatorSecret.grantRead(natsRole);
     this.internalCaSecret.grantRead(natsRole);
+    this.internalCaSecret.grantWrite(natsRole); // Allow first instance to generate and store CA
 
     // Grant permissions to discover cluster peers
     natsRole.addToPolicy(new iam.PolicyStatement({
@@ -221,10 +248,38 @@ export class NatsStack extends cdk.Stack {
       'PRIVATE_IP=$(curl -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/local-ipv4)',
       'AZ=$(curl -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/availability-zone)',
       '',
-      '# Fetch internal CA from Secrets Manager',
+      '# Fetch internal CA from Secrets Manager (or generate if not exists)',
       `CA_SECRET=$(aws secretsmanager get-secret-value --secret-id ${this.internalCaSecret.secretName} --region ${this.region} --query SecretString --output text)`,
-      'echo "$CA_SECRET" | jq -r \'.ca_cert // empty\' > /etc/nats/certs/ca.crt',
-      'echo "$CA_SECRET" | jq -r \'.ca_key // empty\' > /etc/nats/certs/ca.key',
+      'CA_CERT=$(echo "$CA_SECRET" | jq -r \'.ca_cert // empty\')',
+      '',
+      '# If CA doesn\'t exist, generate it and store in Secrets Manager',
+      'if [ -z "$CA_CERT" ] || [ "$CA_CERT" = "null" ]; then',
+      '  echo "Generating new internal CA..."',
+      '  ',
+      '  # Generate CA private key',
+      '  openssl genrsa -out /tmp/ca.key 4096',
+      '  ',
+      '  # Generate CA certificate (10 year validity)',
+      '  openssl req -new -x509 -days 3650 -key /tmp/ca.key -out /tmp/ca.crt \\',
+      '    -subj "/CN=VettID NATS Internal CA/O=VettID/C=US"',
+      '  ',
+      '  # Store in Secrets Manager',
+      '  # Create JSON with proper escaping for multi-line PEM content',
+      '  jq -n --rawfile cert /tmp/ca.crt --rawfile key /tmp/ca.key \\',
+      '    \'{ca_cert: $cert, ca_key: $key}\' > /tmp/ca_secret.json',
+      '  aws secretsmanager put-secret-value \\',
+      `    --secret-id ${this.internalCaSecret.secretName} \\`,
+      `    --region ${this.region} \\`,
+      '    --secret-string file:///tmp/ca_secret.json',
+      '  rm /tmp/ca_secret.json',
+      '  ',
+      '  echo "Internal CA generated and stored in Secrets Manager"',
+      '  mv /tmp/ca.crt /etc/nats/certs/ca.crt',
+      '  mv /tmp/ca.key /etc/nats/certs/ca.key',
+      'else',
+      '  echo "$CA_CERT" > /etc/nats/certs/ca.crt',
+      '  echo "$CA_SECRET" | jq -r \'.ca_key // empty\' > /etc/nats/certs/ca.key',
+      'fi',
       '',
       '# Fetch NATS operator keys from Secrets Manager for JWT authentication',
       `OPERATOR_SECRET=$(aws secretsmanager get-secret-value --secret-id ${this.operatorSecret.secretName} --region ${this.region} --query SecretString --output text)`,
@@ -249,14 +304,16 @@ export class NatsStack extends cdk.Stack {
       '  openssl req -new -key /etc/nats/certs/node.key -out /etc/nats/certs/node.csr \\',
       '    -subj "/CN=nats-${INSTANCE_ID}/O=VettID"',
       '  ',
-      '  # Sign with CA',
+      '  # Sign with CA (include nats.vettid.dev for client TLS)',
       '  openssl x509 -req -in /etc/nats/certs/node.csr \\',
       '    -CA /etc/nats/certs/ca.crt -CAkey /etc/nats/certs/ca.key \\',
       '    -CAcreateserial -out /etc/nats/certs/node.crt -days 365 \\',
-      '    -extfile <(printf "subjectAltName=IP:${PRIVATE_IP},DNS:nats-${INSTANCE_ID}")',
+      `    -extfile <(printf "subjectAltName=IP:\${PRIVATE_IP},DNS:nats-\${INSTANCE_ID},DNS:nats.vettid.dev,DNS:${this.clusterDnsName}")`,
       '  ',
       '  rm /etc/nats/certs/ca.key /etc/nats/certs/node.csr',
-      '  TLS_CONFIG="tls { cert_file: /etc/nats/certs/node.crt; key_file: /etc/nats/certs/node.key; ca_file: /etc/nats/certs/ca.crt; verify: true }"',
+      '  # Client TLS - server presents cert, no client cert required',
+      '  TLS_CONFIG="tls { cert_file: /etc/nats/certs/node.crt; key_file: /etc/nats/certs/node.key }"',
+      '  # Cluster TLS - mutual TLS between NATS nodes',
       '  CLUSTER_TLS_CONFIG="tls { cert_file: /etc/nats/certs/node.crt; key_file: /etc/nats/certs/node.key; ca_file: /etc/nats/certs/ca.crt; verify: true }"',
       'else',
       '  TLS_CONFIG=""',
@@ -269,26 +326,9 @@ export class NatsStack extends cdk.Stack {
       'chmod 644 /etc/nats/certs/*.crt 2>/dev/null || true',
       'chown -R nats:nats /etc/nats',
       '',
-      '# Discover cluster peers via ASG',
-      'REGION=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/region)',
-      '',
-      '# Find ASG name',
-      'ASG_NAME=$(aws autoscaling describe-auto-scaling-instances --instance-ids $INSTANCE_ID --region $REGION --query "AutoScalingInstances[0].AutoScalingGroupName" --output text)',
-      '',
-      '# Get all peer IPs (excluding self)',
-      'PEER_IPS=$(aws ec2 describe-instances \\',
-      '  --filters "Name=tag:aws:autoscaling:groupName,Values=$ASG_NAME" "Name=instance-state-name,Values=running" \\',
-      '  --region $REGION \\',
-      '  --query "Reservations[*].Instances[?PrivateIpAddress!=\\`$PRIVATE_IP\\`].PrivateIpAddress" \\',
-      '  --output text)',
-      '',
-      '# Build routes array',
-      'ROUTES=""',
-      'for IP in $PEER_IPS; do',
-      '  if [ -n "$IP" ]; then',
-      '    ROUTES="${ROUTES}    nats-route://${IP}:6222\\n"',
-      '  fi',
-      'done',
+      '# DNS-based cluster discovery - uses Route 53 private hosted zone',
+      '# The Lambda updates DNS records when instances launch/terminate',
+      `CLUSTER_DNS="${this.clusterDnsName}"`,
       '',
       '# Create NATS configuration',
       'cat > /etc/nats/nats.conf << EOF',
@@ -298,6 +338,7 @@ export class NatsStack extends cdk.Stack {
       '# Client connections',
       'port: 4222',
       'host: 0.0.0.0',
+      '${TLS_CONFIG}',
       '',
       '# Monitoring',
       'http_port: 8222',
@@ -327,8 +368,10 @@ export class NatsStack extends cdk.Stack {
       '  listen: 0.0.0.0:6222',
       '  ${CLUSTER_TLS_CONFIG}',
       '',
+      '  # DNS-based route discovery - resolves to all cluster node IPs',
       '  routes: [',
-      '$(echo -e "$ROUTES")  ]',
+      '    nats-route://${CLUSTER_DNS}:6222',
+      '  ]',
       '}',
       '',
       '# Logging',
@@ -419,6 +462,66 @@ export class NatsStack extends cdk.Stack {
     cdk.Tags.of(asg).add('vettid:component', 'nats-cluster');
     cdk.Tags.of(asg).add('Name', 'VettID-NATS');
 
+    // ===== DNS UPDATE LAMBDA =====
+
+    // Lambda to update cluster DNS when instances change
+    const dnsUpdateLambda = new nodejs.NodejsFunction(this, 'ClusterDnsUpdateFn', {
+      entry: 'lambda/handlers/nats/updateClusterDns.ts',
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      architecture: lambda.Architecture.ARM_64,
+      timeout: cdk.Duration.seconds(30),
+      environment: {
+        HOSTED_ZONE_ID: this.privateHostedZone.hostedZoneId,
+        CLUSTER_DNS_NAME: this.clusterDnsName,
+        ASG_NAME: asg.autoScalingGroupName,
+      },
+    });
+
+    // Grant Lambda permissions to update Route 53
+    dnsUpdateLambda.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['route53:ChangeResourceRecordSets'],
+      resources: [this.privateHostedZone.hostedZoneArn],
+    }));
+
+    // Grant Lambda permissions to describe ASG and EC2 instances
+    dnsUpdateLambda.addToRolePolicy(new iam.PolicyStatement({
+      actions: [
+        'autoscaling:DescribeAutoScalingGroups',
+        'ec2:DescribeInstances',
+      ],
+      resources: ['*'],
+    }));
+
+    // EventBridge rule to trigger on ASG lifecycle events
+    const asgEventRule = new events.Rule(this, 'NatsAsgEventRule', {
+      eventPattern: {
+        source: ['aws.autoscaling'],
+        detailType: [
+          'EC2 Instance Launch Successful',
+          'EC2 Instance Terminate Successful',
+        ],
+        detail: {
+          AutoScalingGroupName: [asg.autoScalingGroupName],
+        },
+      },
+    });
+
+    asgEventRule.addTarget(new eventTargets.LambdaFunction(dnsUpdateLambda));
+
+    // Also trigger on EC2 state changes (backup mechanism)
+    const ec2EventRule = new events.Rule(this, 'NatsEc2EventRule', {
+      eventPattern: {
+        source: ['aws.ec2'],
+        detailType: ['EC2 Instance State-change Notification'],
+        detail: {
+          state: ['running', 'terminated'],
+        },
+      },
+    });
+
+    ec2EventRule.addTarget(new eventTargets.LambdaFunction(dnsUpdateLambda));
+
     // ===== NETWORK LOAD BALANCER =====
 
     const nlb = new elbv2.NetworkLoadBalancer(this, 'NatsNlb', {
@@ -427,12 +530,11 @@ export class NatsStack extends cdk.Stack {
       crossZoneEnabled: true,
     });
 
-    // TLS listener with ACM certificate
+    // TCP passthrough listener - TLS is handled by NATS servers directly
+    // This enables end-to-end encryption with internal CA certificates
     const listener = nlb.addListener('NatsListener', {
       port: 4222,
-      protocol: elbv2.Protocol.TLS,
-      certificates: [certificate],
-      sslPolicy: elbv2.SslPolicy.TLS12,
+      protocol: elbv2.Protocol.TCP,
     });
 
     // Target group for NATS instances
@@ -475,8 +577,8 @@ export class NatsStack extends cdk.Stack {
     // ===== OUTPUTS =====
 
     new cdk.CfnOutput(this, 'NatsEndpoint', {
-      value: `nats://${props.domainName}:4222`,
-      description: 'NATS cluster endpoint (TLS)',
+      value: `tls://${props.domainName}:4222`,
+      description: 'NATS cluster endpoint (end-to-end TLS with internal CA)',
     });
 
     new cdk.CfnOutput(this, 'NatsVpcId', {
@@ -492,6 +594,16 @@ export class NatsStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'NatsInternalCaSecretArn', {
       value: this.internalCaSecret.secretArn,
       description: 'ARN of the internal CA secret for cluster TLS',
+    });
+
+    new cdk.CfnOutput(this, 'NatsClusterDnsName', {
+      value: this.clusterDnsName,
+      description: 'Internal DNS name for cluster routing (private zone)',
+    });
+
+    new cdk.CfnOutput(this, 'NatsPrivateZoneId', {
+      value: this.privateHostedZone.hostedZoneId,
+      description: 'Route 53 private hosted zone ID for internal discovery',
     });
   }
 }
