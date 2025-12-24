@@ -2,14 +2,24 @@
 
 ## Overview
 
-This plan describes the implementation of end-to-end encrypted WebRTC calls using a **vault-centric architecture**. Call state and signaling are handled entirely within user vaults using NATS JetStream for storage, with WASM handlers for logic.
+This plan describes the implementation of end-to-end encrypted WebRTC calls using a **vault-centric architecture**. Call state and signaling are handled entirely within user vaults using local NATS JetStream for storage, with WASM handlers for logic.
 
 **Key Principles:**
-- Call state is stored in each user's own JetStream KV bucket (decentralized)
+- Call state is stored in each user's **local vault JetStream KV** (not central NATS)
 - WASM handlers in vaults process call events
-- NATS handles both messaging AND data storage
+- Central NATS is for **real-time messaging only** (pub/sub, no storage)
+- MessageSpace is ephemeral signaling, not data storage
 - AWS only provides TURN credentials (single Lambda)
 - All E2EE is handled client-side
+
+**Storage Location:**
+| Data Type | Storage Location | Rationale |
+|-----------|------------------|-----------|
+| Call history | Vault local KV (`calls`) | Private to user, never leaves vault |
+| Connections | Vault local KV (`connections`) | Already implemented this way |
+| Messages | Vault local KV (`messages`) | User-controlled retention |
+| Profile | Vault local KV (`profile`) | User-owned identity data |
+| Call signaling | Central NATS pub/sub | Ephemeral, real-time only |
 
 ## Architecture
 
@@ -24,34 +34,41 @@ This plan describes the implementation of end-to-end encrypted WebRTC calls usin
 │   └─────┬──────┘                                          └─────┬──────┘   │
 │         │ OwnerSpace                                  OwnerSpace │         │
 │         │                                                        │         │
-│   ┌─────▼──────┐                                          ┌─────▼──────┐   │
-│   │  Alice's   │         MessageSpace.call.>              │   Bob's    │   │
-│   │   Vault    │◄────────────────────────────────────────►│   Vault    │   │
-│   │   (WASM)   │                                          │   (WASM)   │   │
-│   └─────┬──────┘                                          └─────┬──────┘   │
-│         │                                                        │         │
-│         │ JetStream KV                              JetStream KV │         │
-│         ▼                                                        ▼         │
-│   ┌───────────────────────────────────────────────────────────────────┐   │
-│   │                      NATS + JetStream                              │   │
-│   │                                                                    │   │
-│   │  ┌─────────────────────┐          ┌─────────────────────┐         │   │
-│   │  │  Alice's KV Buckets │          │  Bob's KV Buckets   │         │   │
-│   │  │                     │          │                     │         │   │
-│   │  │  • calls            │          │  • calls            │         │   │
-│   │  │  • connections      │          │  • connections      │         │   │
-│   │  │  • messages         │          │  • messages         │         │   │
-│   │  │  • profile          │          │  • profile          │         │   │
-│   │  └─────────────────────┘          └─────────────────────┘         │   │
-│   │                                                                    │   │
-│   │  ┌─────────────────────────────────────────────────────────────┐  │   │
-│   │  │                    Pub/Sub Topics                            │  │   │
-│   │  │                                                              │  │   │
-│   │  │  OwnerSpace.{guid}.forVault.>    (app → vault)              │  │   │
-│   │  │  OwnerSpace.{guid}.forApp.>      (vault → app)              │  │   │
-│   │  │  MessageSpace.{guid}.call.>      (vault ↔ vault signaling)  │  │   │
-│   │  └─────────────────────────────────────────────────────────────┘  │   │
-│   └───────────────────────────────────────────────────────────────────┘   │
+│   ┌─────▼──────────────────────┐                ┌──────────────────▼─────┐ │
+│   │      Alice's Vault EC2     │                │      Bob's Vault EC2   │ │
+│   │  ┌──────────────────────┐  │                │  ┌──────────────────┐  │ │
+│   │  │  vault-manager       │  │                │  │  vault-manager   │  │ │
+│   │  │  (WASM handlers)     │  │                │  │  (WASM handlers) │  │ │
+│   │  └──────────┬───────────┘  │                │  └────────┬─────────┘  │ │
+│   │             │              │                │           │            │ │
+│   │  ┌──────────▼───────────┐  │                │  ┌────────▼─────────┐  │ │
+│   │  │  Local NATS (4223)   │  │                │  │ Local NATS (4223)│  │ │
+│   │  │  JetStream KV:       │  │                │  │ JetStream KV:    │  │ │
+│   │  │  • calls             │  │                │  │ • calls          │  │ │
+│   │  │  • connections       │  │                │  │ • connections    │  │ │
+│   │  │  • messages          │  │                │  │ • messages       │  │ │
+│   │  │  • profile           │  │                │  │ • profile        │  │ │
+│   │  │  • sessions          │  │                │  │ • sessions       │  │ │
+│   │  └──────────────────────┘  │                │  └──────────────────┘  │ │
+│   └─────────────┬──────────────┘                └───────────┬────────────┘ │
+│                 │                                           │              │
+│                 │ Central NATS (pub/sub only)               │              │
+│                 │ MessageSpace.call.> (ephemeral)           │              │
+│                 └───────────────┬───────────────────────────┘              │
+│                                 │                                          │
+│   ┌─────────────────────────────▼────────────────────────────────────────┐ │
+│   │                  Central NATS Cluster (nats.vettid.dev)              │ │
+│   │                                                                      │ │
+│   │  ┌────────────────────────────────────────────────────────────────┐  │ │
+│   │  │              Real-Time Pub/Sub Topics (NO STORAGE)             │  │ │
+│   │  │                                                                │  │ │
+│   │  │  OwnerSpace.{guid}.forVault.>    (app → vault)                │  │ │
+│   │  │  OwnerSpace.{guid}.forApp.>      (vault → app)                │  │ │
+│   │  │  MessageSpace.{guid}.call.>      (vault ↔ vault signaling)    │  │ │
+│   │  │                                                                │  │ │
+│   │  │  ⚠️  NO KV BUCKETS ON CENTRAL NATS - All storage is local!    │  │ │
+│   │  └────────────────────────────────────────────────────────────────┘  │ │
+│   └──────────────────────────────────────────────────────────────────────┘ │
 │                                                                             │
 │   ┌───────────────────────────────────────────────────────────────────┐   │
 │   │                         AWS (Minimal)                              │   │
@@ -127,44 +144,61 @@ Bob's App                  Bob's Vault               NATS               Alice's 
     │                           │                      │                       │                       │
 ```
 
-## Phase 1: JetStream KV Buckets
+## Phase 1: Local Vault JetStream KV Buckets
 
 ### Bucket Provisioning
 
-When a NATS account is created (during enrollment), provision these KV buckets:
+KV buckets are provisioned on the **vault's local NATS server** (127.0.0.1:4223), NOT on the central NATS cluster. This ensures:
+- User data never leaves the vault EC2 instance
+- Central infrastructure cannot access call history or messages
+- User has full control over data retention
 
-```typescript
-// Bucket names follow pattern: {user_guid}_{bucket_type}
-// Created by vault services or during NATS account setup
+**Update vault-manager.yaml** to add new buckets:
 
-interface KVBucketConfig {
-  name: string;
-  ttl?: number;        // Optional TTL in seconds
-  maxBytes?: number;   // Storage limit
-  history?: number;    // Number of historical values to keep
-}
+```yaml
+# In vault-manager.yaml - local_nats.jetstream.buckets
+local_nats:
+  url: "nats://127.0.0.1:4223"
+  jetstream:
+    enabled: true
+    buckets:
+      # Existing buckets
+      - name: handlers
+        description: "Installed handler WASM packages"
+        max_value_size: 10MB
+        history: 1
+      - name: handler-state
+        description: "Handler state storage"
+        max_value_size: 1MB
+        history: 5
+      - name: connections
+        description: "Connection keys and profiles"
+        max_value_size: 64KB
+        history: 3
 
-const userBuckets: KVBucketConfig[] = [
-  {
-    name: '{user_guid}_calls',
-    ttl: 30 * 24 * 60 * 60,  // 30 days
-    history: 1,
-  },
-  {
-    name: '{user_guid}_connections',
-    history: 1,
-  },
-  {
-    name: '{user_guid}_messages',
-    ttl: 90 * 24 * 60 * 60,  // 90 days (configurable)
-    history: 1,
-  },
-  {
-    name: '{user_guid}_profile',
-    history: 1,
-  },
-];
+      # NEW: Calling and messaging buckets
+      - name: calls
+        description: "Call history and active call state"
+        max_value_size: 64KB
+        history: 1
+        ttl: 30d  # Auto-expire after 30 days
+      - name: messages
+        description: "Message history with connections"
+        max_value_size: 1MB
+        history: 1
+        ttl: 90d  # User-configurable retention
+      - name: profile
+        description: "User profile and preferences"
+        max_value_size: 64KB
+        history: 3
+      - name: sessions
+        description: "E2E encryption session keys"
+        max_value_size: 4KB
+        history: 1
+        ttl: 7d  # Session keys expire after 7 days
 ```
+
+**No changes needed to central NATS** - buckets are created locally by vault-manager on startup.
 
 ### Call Record Schema
 
@@ -444,47 +478,76 @@ if (body.client_type === 'vault') {
 }
 ```
 
-## Phase 5: KV Bucket Provisioning
+## Phase 5: Local KV Bucket Provisioning (Vault-Side)
 
-Update `createMemberAccount.ts` to provision KV buckets:
+**No changes needed to `createMemberAccount.ts`** - KV buckets are NOT created on the central NATS cluster.
 
-```typescript
-// After creating NATS account, create KV buckets
-async function provisionKVBuckets(js: JetStreamClient, userGuid: string) {
-  const buckets = [
-    {
-      bucket: `${userGuid}_calls`,
-      ttl: 30 * 24 * 60 * 60 * 1000, // 30 days in ms
-      history: 1,
-      maxBytes: 10 * 1024 * 1024,    // 10MB
-    },
-    {
-      bucket: `${userGuid}_connections`,
-      history: 1,
-      maxBytes: 1 * 1024 * 1024,     // 1MB
-    },
-    {
-      bucket: `${userGuid}_messages`,
-      ttl: 90 * 24 * 60 * 60 * 1000, // 90 days in ms
-      history: 1,
-      maxBytes: 100 * 1024 * 1024,   // 100MB
-    },
-    {
-      bucket: `${userGuid}_profile`,
-      history: 1,
-      maxBytes: 100 * 1024,          // 100KB
-    },
-  ];
+Instead, buckets are provisioned locally by vault-manager on startup:
 
-  for (const config of buckets) {
-    await js.views.kv(config.bucket, {
-      ttl: config.ttl,
-      history: config.history,
-      max_bytes: config.maxBytes,
-    });
-  }
+```go
+// vault-manager/internal/storage/stores.go
+
+// InitializeStores creates all KV buckets on the local NATS server
+func InitializeStores(js jetstream.JetStream) (*Stores, error) {
+    // Existing buckets
+    handlers, _ := js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
+        Bucket: "handlers",
+        // ...
+    })
+
+    connections, _ := js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
+        Bucket: "connections",
+        // ...
+    })
+
+    // NEW: Calling and messaging buckets
+    calls, _ := js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
+        Bucket:      "calls",
+        Description: "Call history and active call state",
+        TTL:         30 * 24 * time.Hour, // 30 days
+        MaxBytes:    64 * 1024,           // 64KB per entry
+        History:     1,
+    })
+
+    messages, _ := js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
+        Bucket:      "messages",
+        Description: "Message history with connections",
+        TTL:         90 * 24 * time.Hour, // 90 days
+        MaxBytes:    1024 * 1024,         // 1MB per entry
+        History:     1,
+    })
+
+    profile, _ := js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
+        Bucket:      "profile",
+        Description: "User profile and preferences",
+        MaxBytes:    64 * 1024,
+        History:     3,
+    })
+
+    sessions, _ := js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
+        Bucket:      "sessions",
+        Description: "E2E encryption session keys",
+        TTL:         7 * 24 * time.Hour, // 7 days
+        MaxBytes:    4 * 1024,
+        History:     1,
+    })
+
+    return &Stores{
+        Handlers:    handlers,
+        Connections: connections,
+        Calls:       calls,
+        Messages:    messages,
+        Profile:     profile,
+        Sessions:    sessions,
+    }, nil
 }
 ```
+
+**Why local storage matters:**
+1. **Privacy**: Central NATS never sees call metadata (who called whom, when, duration)
+2. **User control**: User can delete their vault to erase all data
+3. **No central point of failure**: Each vault is self-contained
+4. **Compliance**: Data residency is on user's dedicated EC2 instance
 
 ## Phase 6: AWS Lambda (TURN Credentials Only)
 
@@ -641,59 +704,68 @@ async function acceptCall(callId: string) {
 
 ## Implementation Order
 
-### Step 1: NATS Infrastructure
-1. [ ] Update `createMemberAccount.ts` to provision KV buckets
-2. [ ] Update `generateMemberJwt.ts` with call signaling permissions
-3. [ ] Test KV bucket creation and access
+### Step 1: Vault Local Storage
+1. [ ] Update `vault-manager.yaml` to add `calls`, `messages`, `profile`, `sessions` buckets
+2. [ ] Update `vault-manager/internal/storage/stores.go` to initialize new buckets
+3. [ ] Create `CallsStore` and `MessagesStore` similar to existing `ConnectionsStore`
+4. [ ] Build and deploy new vault AMI with storage changes
 
-### Step 2: WASM Handlers
-4. [ ] Create `call/initiate.wasm` handler
-5. [ ] Create `call/incoming.wasm` handler
-6. [ ] Create `call/accept.wasm` handler
-7. [ ] Create `call/reject.wasm` handler
-8. [ ] Create `call/end.wasm` handler
-9. [ ] Create `call/signal.wasm` handler
-10. [ ] Create `call/timeout.wasm` handler
+### Step 2: NATS Permissions (Central)
+5. [ ] Update `generateMemberJwt.ts` with call signaling permissions
+6. [ ] Test vault-to-vault messaging via MessageSpace
 
-### Step 3: AWS (Minimal)
-11. [ ] Create `getTurnCredentials.ts` Lambda
-12. [ ] Add Cloudflare TURN secret to Secrets Manager
-13. [ ] Add API route to stack
+### Step 3: WASM Handlers (Vault-Side)
+7. [ ] Create `call/initiate.wasm` handler
+8. [ ] Create `call/incoming.wasm` handler
+9. [ ] Create `call/accept.wasm` handler
+10. [ ] Create `call/reject.wasm` handler
+11. [ ] Create `call/end.wasm` handler
+12. [ ] Create `call/signal.wasm` handler
+13. [ ] Create `call/timeout.wasm` handler
 
-### Step 4: Mobile Integration
-14. [ ] Update Android app with call UI and NATS handlers
-15. [ ] Update iOS app with call UI and NATS handlers
-16. [ ] Implement E2EE key exchange on both platforms
-17. [ ] Implement WebRTC with Insertable Streams
+### Step 4: AWS (Minimal)
+14. [ ] Create `getTurnCredentials.ts` Lambda
+15. [ ] Add Cloudflare TURN secret to Secrets Manager
+16. [ ] Add API route to stack
+
+### Step 5: Mobile Integration
+17. [ ] Update Android app with call UI and NATS handlers
+18. [ ] Update iOS app with call UI and NATS handlers
+19. [ ] Implement E2EE key exchange on both platforms
+20. [ ] Implement WebRTC with Insertable Streams
 
 ## Security Considerations
 
 1. **Connection Validation**: Vaults only process calls from connected peers
-2. **No Central State**: Call records exist only in participant vaults
+2. **No Central State**: Call records exist only in participant vaults (local storage)
 3. **E2EE Keys Never Leave Device**: Backend only relays encrypted signals
 4. **TURN Credentials**: Short-lived (24h), tied to user_guid
-5. **KV Bucket Isolation**: Each user's buckets are only accessible by their vault
+5. **Local KV Isolation**: Each vault's buckets are only on that EC2 instance
 6. **TTL Cleanup**: Call records auto-expire after 30 days
+7. **Central NATS is Stateless**: No call metadata stored on central infrastructure
+8. **MessageSpace is Ephemeral**: Only real-time signaling, no persistence
 
 ## Comparison: Vault-Centric vs AWS-Centric
 
-| Aspect | Vault-Centric | AWS-Centric |
-|--------|--------------|-------------|
-| Call State Storage | User's JetStream KV | DynamoDB |
+| Aspect | Vault-Centric (This Plan) | AWS-Centric |
+|--------|---------------------------|-------------|
+| Call State Storage | **Vault local JetStream KV** | DynamoDB |
 | Call Logic | WASM handlers | Lambda functions |
-| Data Location | Decentralized (user vaults) | Centralized (AWS) |
-| Privacy | Higher (user controls data) | Lower (AWS sees metadata) |
+| Data Location | **User's EC2 instance only** | Centralized (AWS) |
+| Privacy | **Highest** (VettID can't see metadata) | Lower (AWS sees metadata) |
 | AWS Cost | Minimal (1 Lambda) | Higher (7+ Lambdas + DynamoDB) |
 | Complexity | Higher (WASM dev) | Lower (familiar Lambda) |
 | Latency | Lower (no Lambda cold start) | Variable |
+| Central Storage | **None** | DynamoDB tables |
 
 ## Estimated Effort
 
-- **NATS Updates**: 4 hours
+- **Vault Local Storage**: 6 hours (new KV buckets, stores, AMI build)
+- **NATS Permissions**: 2 hours (central NATS pub/sub only)
 - **WASM Handlers**: 16 hours (7 handlers)
-- **AWS Lambda**: 2 hours (1 handler)
+- **AWS Lambda**: 2 hours (1 handler for TURN)
 - **Mobile Integration**: 24 hours (both platforms)
 - **Testing**: 8 hours
 - **Documentation**: 4 hours
 
-**Total**: ~58 hours
+**Total**: ~62 hours
