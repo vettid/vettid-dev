@@ -190,10 +190,7 @@ export class VaultStack extends cdk.Stack {
       this, 'NatsOperatorSecretForEnroll', 'vettid/nats/operator-key'
     );
 
-    // NATS internal CA secret for end-to-end TLS (vault needs this to verify NATS server certs)
-    const natsInternalCaSecretRef = cdk.aws_secretsmanager.Secret.fromSecretNameV2(
-      this, 'NatsInternalCaSecretForEnroll', 'vettid/nats/internal-ca'
-    );
+    // Note: NATS internal CA secret no longer needed - NLB terminates TLS with ACM (publicly trusted)
 
     this.enrollFinalize = new lambdaNode.NodejsFunction(this, 'EnrollFinalizeFn', {
       entry: 'lambda/handlers/vault/enrollFinalize.ts',
@@ -205,8 +202,7 @@ export class VaultStack extends cdk.Stack {
         TABLE_NATS_ACCOUNTS: tables.natsAccounts.tableName,
         TABLE_VAULT_INSTANCES: tables.vaultInstances.tableName,
         NATS_OPERATOR_SECRET_ARN: natsOperatorSecretRef.secretArn,
-        // Dynamic CA certificate for mobile TLS trust (supports rotation)
-        NATS_CA_SECRET_ARN: natsInternalCaSecretRef.secretArn,
+        // Note: NATS_CA_SECRET_ARN no longer needed - NLB terminates TLS with ACM (publicly trusted)
         ...vaultConfigEnv,
       },
       timeout: cdk.Duration.seconds(60), // Increased for auto-provisioning
@@ -309,8 +305,7 @@ export class VaultStack extends cdk.Stack {
       TABLE_AUDIT: tables.audit.tableName,
       NATS_DOMAIN: 'nats.vettid.dev',
       NATS_OPERATOR_SECRET_ARN: natsOperatorSecret.secretArn,
-      // Dynamic CA certificate for mobile TLS trust (supports rotation)
-      NATS_CA_SECRET_ARN: natsInternalCaSecretRef.secretArn,
+      // Note: NATS_CA_SECRET_ARN no longer needed - NLB terminates TLS with ACM (publicly trusted)
     };
 
     this.natsCreateAccount = new lambdaNode.NodejsFunction(this, 'NatsCreateAccountFn', {
@@ -369,7 +364,7 @@ export class VaultStack extends cdk.Stack {
       VAULT_SECURITY_GROUP: vaultConfig?.securityGroupId || '',
       VAULT_SUBNET_IDS: vaultConfig?.subnetIds || '',
       VAULT_IAM_PROFILE: vaultConfig?.iamProfileName || '',
-      NATS_CA_SECRET_NAME: 'vettid/nats/internal-ca',
+      // Note: NATS_CA_SECRET_NAME no longer needed - NLB terminates TLS with ACM (publicly trusted)
     };
 
     this.provisionVault = new lambdaNode.NodejsFunction(this, 'ProvisionVaultFn', {
@@ -588,8 +583,7 @@ export class VaultStack extends cdk.Stack {
     // Grant NATS operator secret access for generating vault credentials
     natsOperatorSecretRef.grantRead(this.enrollFinalize);
 
-    // Grant NATS internal CA secret access for end-to-end TLS
-    natsInternalCaSecretRef.grantRead(this.enrollFinalize);
+    // Note: NATS internal CA secret grant no longer needed - NLB terminates TLS with ACM (publicly trusted)
 
     // EC2 permissions for auto-provisioning (same as provisionVault)
     this.enrollFinalize.addToRolePolicy(new iam.PolicyStatement({
@@ -672,8 +666,7 @@ export class VaultStack extends cdk.Stack {
     natsOperatorSecret.grantRead(this.natsCreateAccount);
     natsOperatorSecret.grantRead(this.natsGenerateToken);
 
-    // Grant NATS internal CA secret access for dynamic TLS trust
-    natsInternalCaSecretRef.grantRead(this.natsGenerateToken);
+    // Note: NATS internal CA secret grant no longer needed - NLB terminates TLS with ACM (publicly trusted)
 
     // ===== VAULT LIFECYCLE PERMISSIONS =====
 
@@ -827,8 +820,7 @@ export class VaultStack extends cdk.Stack {
       resources: [`arn:aws:iam::${this.account}:role/vettid-vault-*`],
     }));
 
-    // Grant NATS internal CA secret access for end-to-end TLS
-    natsInternalCaSecretRef.grantRead(this.provisionVault);
+    // Note: NATS internal CA secret grant no longer needed - NLB terminates TLS with ACM (publicly trusted)
 
     // ===== HANDLER REGISTRY PERMISSIONS =====
 

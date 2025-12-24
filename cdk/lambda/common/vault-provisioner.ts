@@ -11,13 +11,11 @@
 
 import { DynamoDBClient, PutItemCommand } from '@aws-sdk/client-dynamodb';
 import { EC2Client, RunInstancesCommand, DescribeSubnetsCommand } from '@aws-sdk/client-ec2';
-import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import { marshall } from '@aws-sdk/util-dynamodb';
 import { addMinutesIso } from './util';
 
 const ddb = new DynamoDBClient({});
 const ec2 = new EC2Client({});
-const secretsManager = new SecretsManagerClient({});
 
 // Environment configuration
 const TABLE_VAULT_INSTANCES = process.env.TABLE_VAULT_INSTANCES!;
@@ -27,7 +25,8 @@ const VAULT_SECURITY_GROUP = process.env.VAULT_SECURITY_GROUP || '';
 const VAULT_SUBNET_IDS = process.env.VAULT_SUBNET_IDS || '';
 const VAULT_IAM_PROFILE = process.env.VAULT_IAM_PROFILE || '';
 const NATS_ENDPOINT = process.env.NATS_ENDPOINT || 'nats.vettid.dev:4222';
-const NATS_CA_SECRET_NAME = process.env.NATS_CA_SECRET_NAME || 'vettid/nats/internal-ca';
+const BACKEND_API_URL = process.env.BACKEND_API_URL || '';
+// Note: NATS_CA_SECRET_NAME no longer needed - NLB terminates TLS with ACM certificate
 
 export interface VaultProvisioningParams {
   userGuid: string;
@@ -85,21 +84,8 @@ export async function triggerVaultProvisioning(
   const ownerSpaceForTopics = `OwnerSpace.${guidNoHyphens}`;
   const messageSpaceForTopics = `MessageSpace.${guidNoHyphens}`;
 
-  // Fetch NATS CA certificate from Secrets Manager
-  let caCert = '';
-  try {
-    const secretResponse = await secretsManager.send(new GetSecretValueCommand({
-      SecretId: NATS_CA_SECRET_NAME,
-    }));
-    if (secretResponse.SecretString) {
-      const secretData = JSON.parse(secretResponse.SecretString);
-      caCert = secretData.ca_cert || '';
-    }
-  } catch (err) {
-    console.warn('Failed to fetch NATS CA certificate, TLS verification may fail:', err);
-  }
-
   // Prepare user data script for vault initialization
+  // Note: NATS CA certificate no longer needed - NLB terminates TLS with ACM (publicly trusted)
   // vault-manager generates its own NATS credentials from account seed on first boot
   const userData = Buffer.from(`#!/bin/bash
 # Vault instance initialization script
@@ -119,19 +105,15 @@ cat > /var/lib/vault-manager/config.json << 'CONFIG'
   "owner_space_id": "${ownerSpaceId}",
   "message_space_id": "${messageSpaceId}",
   "nats_endpoint": "${NATS_ENDPOINT}",
-  "account_seed": "${accountSeed}"
+  "account_seed": "${accountSeed}",
+  "backend_api_url": "${BACKEND_API_URL}"
 }
 CONFIG
 chown vault-manager:vault-manager /var/lib/vault-manager/config.json
 chmod 600 /var/lib/vault-manager/config.json
 
-# Write NATS CA certificate for TLS verification
-${caCert ? `cat > /var/lib/vault-manager/nats-ca.crt << 'CACERT'
-${caCert}
-CACERT
-chown vault-manager:vault-manager /var/lib/vault-manager/nats-ca.crt
-chmod 644 /var/lib/vault-manager/nats-ca.crt
-echo "NATS CA certificate installed"` : '# No NATS CA certificate available'}
+# NATS CA certificate: NOT needed - NLB uses ACM certificate (publicly trusted)
+# The vault-manager will use the system trust store
 
 # Write vault-manager config.yaml with actual values (Go doesn't expand env vars in YAML)
 cat > /etc/vault-manager/config.yaml << 'VAULTCONFIG'
@@ -140,7 +122,7 @@ cat > /etc/vault-manager/config.yaml << 'VAULTCONFIG'
 central_nats:
   url: "tls://${NATS_ENDPOINT}"
   creds_file: "/var/lib/vault-manager/creds.creds"
-  ca_file: "${caCert ? '/var/lib/vault-manager/nats-ca.crt' : ''}"
+  # ca_file: not needed - NLB terminates TLS with ACM (publicly trusted)
   reconnect_wait: 2s
   max_reconnects: -1
   ping_interval: 30s
@@ -189,7 +171,7 @@ topics:
 
 health:
   heartbeat_interval: 30s
-  heartbeat_topic: "${ownerSpaceForTopics}.forApp.heartbeat"
+  heartbeat_topic: "${ownerSpaceForTopics}.forServices.health"
   status_file: /var/lib/vault-manager/health.json
 
 logging:

@@ -61,10 +61,14 @@ const vault = new VaultStack(app, 'VettID-Vault', {
 
 // 7. Deploy NATS infrastructure stack (VPC, EC2 cluster, NLB)
 // Uses Route53 fromLookup to auto-discover hosted zone (cached in cdk.context.json)
+// VPC peering with Vault VPC is configured to allow vault instances to connect to NATS
 const nats = new NatsStack(app, 'VettID-NATS', {
   env,
   domainName: 'nats.vettid.dev',
   zoneName: 'vettid.dev',
   // URL resolver for member account JWTs (fetched dynamically)
   accountResolverUrl: 'https://tiqpij5mue.execute-api.us-east-1.amazonaws.com/nats/jwt/v1/accounts/',
+  // VPC peering: allow vault instances to connect to NATS cluster
+  vaultVpc: vaultInfra.vpc,
+  vaultVpcCidr: VaultInfrastructureStack.VPC_CIDR,
 });

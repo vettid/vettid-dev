@@ -17,6 +17,9 @@ import {
  * This stack is deployed after Infrastructure but before Vault provisioning can work.
  */
 export class VaultInfrastructureStack extends cdk.Stack {
+  // VPC CIDR (explicit to avoid conflicts with NATS VPC 10.10.0.0/16)
+  public static readonly VPC_CIDR = '10.0.0.0/16';
+
   // VPC and networking
   public readonly vpc: ec2.Vpc;
   public readonly vaultSecurityGroup: ec2.SecurityGroup;
@@ -40,10 +43,12 @@ export class VaultInfrastructureStack extends cdk.Stack {
     // ===== VPC =====
     // Create a VPC for vault instances
     // Using 2 AZs to reduce cost while maintaining availability
+    // Explicit CIDR to avoid conflicts with NATS VPC (10.10.0.0/16)
     this.vpc = new ec2.Vpc(this, 'VaultVpc', {
       vpcName: 'vettid-vault-vpc',
       maxAzs: 2,
       natGateways: 1, // Single NAT Gateway to reduce cost
+      ipAddresses: ec2.IpAddresses.cidr(VaultInfrastructureStack.VPC_CIDR),
       subnetConfiguration: [
         {
           name: 'Public',
