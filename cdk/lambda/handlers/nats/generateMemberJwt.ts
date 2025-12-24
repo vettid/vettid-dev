@@ -19,6 +19,7 @@
 
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { DynamoDBClient, GetItemCommand, PutItemCommand } from '@aws-sdk/client-dynamodb';
+import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import { randomUUID } from 'crypto';
 import {
@@ -38,10 +39,37 @@ import {
 import { generateUserCredentials, formatCredsFile } from '../../common/nats-jwt';
 
 const ddb = new DynamoDBClient({});
+const secrets = new SecretsManagerClient({});
 
 const TABLE_NATS_ACCOUNTS = process.env.TABLE_NATS_ACCOUNTS!;
 const TABLE_NATS_TOKENS = process.env.TABLE_NATS_TOKENS!;
 const NATS_DOMAIN = process.env.NATS_DOMAIN || 'nats.vettid.dev';
+const NATS_CA_SECRET_ARN = process.env.NATS_CA_SECRET_ARN;
+
+/**
+ * Fetch the NATS internal CA certificate from Secrets Manager.
+ * This is included in responses so mobile apps can trust the NATS TLS connection.
+ * The CA cert is refreshed on each call to support rotation.
+ */
+async function getNatsCaCertificate(): Promise<string | undefined> {
+  if (!NATS_CA_SECRET_ARN) {
+    return undefined;
+  }
+  try {
+    const result = await secrets.send(new GetSecretValueCommand({
+      SecretId: NATS_CA_SECRET_ARN,
+    }));
+
+    if (result.SecretString) {
+      const secret = JSON.parse(result.SecretString);
+      return secret.ca_cert || undefined;
+    }
+    return undefined;
+  } catch (error) {
+    console.warn('Failed to fetch NATS CA certificate:', error);
+    return undefined;
+  }
+}
 
 // Token validity periods
 const APP_TOKEN_VALIDITY_MINUTES = 60 * 24; // 24 hours for mobile apps
@@ -74,6 +102,9 @@ interface GenerateTokenResponse {
     publish: string[];
     subscribe: string[];
   };
+  // Dynamic CA certificate for TLS trust - enables rotation without app updates.
+  // Mobile apps should store this and use it in a custom TrustManager.
+  ca_certificate?: string;
 }
 
 export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
@@ -212,17 +243,21 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       expires_at: expiresAt,
     }, requestId);
 
+    // Fetch CA certificate for dynamic TLS trust (supports rotation)
+    const caCertificate = await getNatsCaCertificate();
+
     const response: GenerateTokenResponse = {
       token_id: tokenId,
       nats_jwt: jwt,
       nats_seed: seed,
       nats_creds: formatCredsFile(jwt, seed),
-      nats_endpoint: `nats://${NATS_DOMAIN}:4222`,
+      nats_endpoint: `tls://${NATS_DOMAIN}:4222`,
       expires_at: expiresAt,
       permissions: {
         publish: publishPerms,
         subscribe: subscribePerms,
       },
+      ca_certificate: caCertificate,
     };
 
     return ok(response, origin);

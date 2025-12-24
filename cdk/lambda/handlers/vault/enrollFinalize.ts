@@ -1,5 +1,6 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { DynamoDBClient, GetItemCommand, PutItemCommand, UpdateItemCommand, QueryCommand } from '@aws-sdk/client-dynamodb';
+import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 // crypto module imported via common/crypto
 import {
@@ -26,6 +27,7 @@ import {
 } from '../../common/crypto-keys';
 
 const ddb = new DynamoDBClient({});
+const secrets = new SecretsManagerClient({});
 
 const TABLE_ENROLLMENT_SESSIONS = process.env.TABLE_ENROLLMENT_SESSIONS!;
 const TABLE_INVITES = process.env.TABLE_INVITES!;
@@ -34,6 +36,29 @@ const TABLE_CREDENTIAL_KEYS = process.env.TABLE_CREDENTIAL_KEYS!;
 const TABLE_LEDGER_AUTH_TOKENS = process.env.TABLE_LEDGER_AUTH_TOKENS!;
 const TABLE_TRANSACTION_KEYS = process.env.TABLE_TRANSACTION_KEYS!;
 const TABLE_NATS_ACCOUNTS = process.env.TABLE_NATS_ACCOUNTS!;
+const NATS_CA_SECRET_ARN = process.env.NATS_CA_SECRET_ARN!;
+
+/**
+ * Fetch the NATS internal CA certificate from Secrets Manager.
+ * This is included in responses so mobile apps can trust the NATS TLS connection.
+ * The CA cert is refreshed on each call to support rotation.
+ */
+async function getNatsCaCertificate(): Promise<string | undefined> {
+  try {
+    const result = await secrets.send(new GetSecretValueCommand({
+      SecretId: NATS_CA_SECRET_ARN,
+    }));
+
+    if (result.SecretString) {
+      const secret = JSON.parse(result.SecretString);
+      return secret.ca_cert || undefined;
+    }
+    return undefined;
+  } catch (error) {
+    console.warn('Failed to fetch NATS CA certificate:', error);
+    return undefined;
+  }
+}
 
 interface FinalizeRequest {
   enrollment_session_id?: string;  // Optional if using authorizer context
@@ -313,6 +338,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     let ownerSpaceId = '';
     let messageSpaceId = '';
     let bootstrapCredentials = '';
+    let natsCaCertificate: string | undefined;
 
     try {
       // 1. Create NATS account for this user
@@ -360,6 +386,11 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       // Store bootstrap credentials for response
       bootstrapCredentials = formatCredsFile(bootstrapCreds.jwt, bootstrapCreds.seed);
 
+      // 4. Fetch NATS CA certificate for dynamic trust
+      // This enables mobile apps to trust NATS TLS without bundling certs in APK.
+      // Fetched fresh each time to support CA rotation.
+      natsCaCertificate = await getNatsCaCertificate();
+
     } catch (provisionError: any) {
       // Non-fatal: enrollment succeeded, but vault provisioning failed
       // User can manually provision later via POST /vault/provision
@@ -396,6 +427,10 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
         response_topic: `${ownerSpaceId}.forApp.bootstrap.>`,
         credentials_ttl_seconds: 3600,  // 1 hour
         estimated_ready_at: new Date(Date.now() + 2 * 60 * 1000).toISOString(),
+        // Dynamic CA certificate for TLS trust - enables rotation without app updates.
+        // Mobile apps should store this and use it in a custom TrustManager.
+        // Refresh by calling /vault/nats/credentials to get updated CA if needed.
+        ca_certificate: natsCaCertificate,
       } : undefined,
     }, origin);
 

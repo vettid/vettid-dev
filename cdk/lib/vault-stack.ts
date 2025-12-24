@@ -7,6 +7,8 @@ import {
   aws_apigatewayv2 as apigw,
   aws_apigatewayv2_authorizers as authorizers,
   aws_apigatewayv2_integrations as integrations,
+  aws_events as events,
+  aws_events_targets as targets,
   custom_resources as cr,
 } from 'aws-cdk-lib';
 import { InfrastructureStack } from './infrastructure-stack';
@@ -63,6 +65,9 @@ export class VaultStack extends cdk.Stack {
   public readonly terminateVault!: lambdaNode.NodejsFunction;
   public readonly getVaultStatus!: lambdaNode.NodejsFunction;
   public readonly getVaultHealth!: lambdaNode.NodejsFunction;
+  public readonly vaultReady!: lambdaNode.NodejsFunction;  // Internal endpoint for vault-manager
+  public readonly processVaultHealth!: lambdaNode.NodejsFunction;  // Scheduled health check processor
+  public readonly onVaultStateChange!: lambdaNode.NodejsFunction;  // EC2 state change handler
 
   // Handler registry functions (public endpoints)
   public readonly listHandlers!: lambdaNode.NodejsFunction;
@@ -177,6 +182,7 @@ export class VaultStack extends cdk.Stack {
       VAULT_SUBNET_IDS: props.vaultInfra?.vaultConfig?.subnetIds || '',
       VAULT_IAM_PROFILE: props.vaultInfra?.vaultConfig?.iamProfileName || '',
       NATS_ENDPOINT: 'nats.vettid.dev:4222',
+      BACKEND_API_URL: 'https://tiqpij5mue.execute-api.us-east-1.amazonaws.com',
     };
 
     // NATS operator secret for signing JWTs (used by enrollFinalize and NATS functions)
@@ -199,7 +205,8 @@ export class VaultStack extends cdk.Stack {
         TABLE_NATS_ACCOUNTS: tables.natsAccounts.tableName,
         TABLE_VAULT_INSTANCES: tables.vaultInstances.tableName,
         NATS_OPERATOR_SECRET_ARN: natsOperatorSecretRef.secretArn,
-        NATS_CA_SECRET_NAME: 'vettid/nats/internal-ca',
+        // Dynamic CA certificate for mobile TLS trust (supports rotation)
+        NATS_CA_SECRET_ARN: natsInternalCaSecretRef.secretArn,
         ...vaultConfigEnv,
       },
       timeout: cdk.Duration.seconds(60), // Increased for auto-provisioning
@@ -302,6 +309,8 @@ export class VaultStack extends cdk.Stack {
       TABLE_AUDIT: tables.audit.tableName,
       NATS_DOMAIN: 'nats.vettid.dev',
       NATS_OPERATOR_SECRET_ARN: natsOperatorSecret.secretArn,
+      // Dynamic CA certificate for mobile TLS trust (supports rotation)
+      NATS_CA_SECRET_ARN: natsInternalCaSecretRef.secretArn,
     };
 
     this.natsCreateAccount = new lambdaNode.NodejsFunction(this, 'NatsCreateAccountFn', {
@@ -413,6 +422,38 @@ export class VaultStack extends cdk.Stack {
         TABLE_ENROLLMENT_SESSIONS: tables.enrollmentSessions.tableName,
         TABLE_CREDENTIALS: tables.credentials.tableName,
         TABLE_TRANSACTION_KEYS: tables.transactionKeys.tableName,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    // Internal endpoint called by vault-manager when it's ready
+    this.vaultReady = new lambdaNode.NodejsFunction(this, 'VaultReadyFn', {
+      entry: 'lambda/handlers/vault/vaultReady.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        TABLE_VAULT_INSTANCES: tables.vaultInstances.tableName,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    // ===== VAULT HEALTH MONITORING =====
+
+    // Scheduled Lambda to process vault health updates from NATS/EventBridge
+    this.processVaultHealth = new lambdaNode.NodejsFunction(this, 'ProcessVaultHealthFn', {
+      entry: 'lambda/handlers/vault/processVaultHealth.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        TABLE_VAULT_INSTANCES: tables.vaultInstances.tableName,
+      },
+      timeout: cdk.Duration.seconds(60),
+    });
+
+    // EC2 state change handler for vault instances
+    this.onVaultStateChange = new lambdaNode.NodejsFunction(this, 'OnVaultStateChangeFn', {
+      entry: 'lambda/handlers/vault/onVaultStateChange.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        TABLE_VAULT_INSTANCES: tables.vaultInstances.tableName,
       },
       timeout: cdk.Duration.seconds(30),
     });
@@ -631,6 +672,9 @@ export class VaultStack extends cdk.Stack {
     natsOperatorSecret.grantRead(this.natsCreateAccount);
     natsOperatorSecret.grantRead(this.natsGenerateToken);
 
+    // Grant NATS internal CA secret access for dynamic TLS trust
+    natsInternalCaSecretRef.grantRead(this.natsGenerateToken);
+
     // ===== VAULT LIFECYCLE PERMISSIONS =====
 
     // Grant vault instances table access
@@ -639,6 +683,9 @@ export class VaultStack extends cdk.Stack {
     tables.vaultInstances.grantReadWriteData(this.stopVault);
     tables.vaultInstances.grantReadWriteData(this.terminateVault);
     tables.vaultInstances.grantReadWriteData(this.getVaultHealth);
+    tables.vaultInstances.grantReadWriteData(this.vaultReady);
+    tables.vaultInstances.grantReadWriteData(this.processVaultHealth);
+    tables.vaultInstances.grantReadWriteData(this.onVaultStateChange);
 
     // Grant getVaultStatus access to enrollment sessions, credentials, and transaction keys
     tables.enrollmentSessions.grantReadData(this.getVaultStatus);
@@ -758,6 +805,18 @@ export class VaultStack extends cdk.Stack {
 
     this.getVaultHealth.addToRolePolicy(new iam.PolicyStatement({
       actions: ['ec2:DescribeInstances', 'ec2:DescribeInstanceStatus'],
+      resources: ['*'], // Describe requires '*'
+    }));
+
+    // vaultReady needs EC2 describe to verify instance exists and has correct tags
+    this.vaultReady.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['ec2:DescribeInstances'],
+      resources: ['*'], // Describe requires '*'
+    }));
+
+    // onVaultStateChange needs EC2 describe to get instance tags
+    this.onVaultStateChange.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['ec2:DescribeInstances'],
       resources: ['*'], // Describe requires '*'
     }));
 
@@ -1384,6 +1443,13 @@ export class VaultStack extends cdk.Stack {
     this.route('GetVaultHealth', httpApi, '/vault/health', apigw.HttpMethod.GET, this.getVaultHealth, memberAuthorizer);
     this.route('GetVaultStatus', httpApi, '/vault/status', apigw.HttpMethod.GET, this.getVaultStatus, memberAuthorizer);
 
+    // Internal endpoint called by vault-manager when it's ready (no auth - validated by instance ID and EC2 tags)
+    new apigw.HttpRoute(this, 'VaultReady', {
+      httpApi,
+      routeKey: apigw.HttpRouteKey.with('/vault/internal/ready', apigw.HttpMethod.POST),
+      integration: new integrations.HttpLambdaIntegration('VaultReadyIntegration', this.vaultReady),
+    });
+
     // Handler Registry Routes
     this.route('ListHandlers', httpApi, '/registry/handlers', apigw.HttpMethod.GET, this.listHandlers, memberAuthorizer);
     this.route('GetHandler', httpApi, '/registry/handlers/{id}', apigw.HttpMethod.GET, this.getHandler, memberAuthorizer);
@@ -1477,6 +1543,28 @@ export class VaultStack extends cdk.Stack {
       routeKey: apigw.HttpRouteKey.with('/test/cleanup', apigw.HttpMethod.POST),
       integration: new integrations.HttpLambdaIntegration('TestCleanupInt', this.testCleanup),
       // No authorizer - uses API key in header
+    });
+
+    // ===== EVENTBRIDGE RULES =====
+
+    // Scheduled rule to process vault health updates (every 60 seconds)
+    new events.Rule(this, 'ProcessVaultHealthSchedule', {
+      schedule: events.Schedule.rate(cdk.Duration.minutes(1)),
+      targets: [new targets.LambdaFunction(this.processVaultHealth)],
+      description: 'Process vault health messages from NATS/EventBridge every minute',
+    });
+
+    // EC2 state change rule for vault instances
+    // Triggers when vault EC2 instances change state (running, stopping, terminated, etc.)
+    new events.Rule(this, 'VaultEC2StateChangeRule', {
+      eventPattern: {
+        source: ['aws.ec2'],
+        detailType: ['EC2 Instance State-change Notification'],
+        // Note: We filter by tag in the Lambda since EventBridge pattern
+        // doesn't support filtering by instance tags directly
+      },
+      targets: [new targets.LambdaFunction(this.onVaultStateChange)],
+      description: 'Handle EC2 state changes for vault instances',
     });
   }
 }
