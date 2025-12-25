@@ -11,15 +11,63 @@
 
 import { DynamoDBClient, PutItemCommand } from '@aws-sdk/client-dynamodb';
 import { EC2Client, RunInstancesCommand, DescribeSubnetsCommand } from '@aws-sdk/client-ec2';
+import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import { marshall } from '@aws-sdk/util-dynamodb';
 import { addMinutesIso } from './util';
 
 const ddb = new DynamoDBClient({});
 const ec2 = new EC2Client({});
+const ssm = new SSMClient({});
 
 // Environment configuration
 const TABLE_VAULT_INSTANCES = process.env.TABLE_VAULT_INSTANCES!;
-const VAULT_AMI_ID = process.env.VAULT_AMI_ID || 'ami-0b7fe186af6ed8d96';
+
+// Default AMI ID (fallback if SSM parameter doesn't exist)
+const DEFAULT_VAULT_AMI_ID = 'ami-0b7fe186af6ed8d96';
+
+// SSM Parameter name for vault AMI ID
+const VAULT_AMI_PARAMETER_NAME = '/vettid/vault/ami-id';
+
+// Cache for AMI ID to avoid repeated SSM calls
+let cachedAmiId: string | null = null;
+let cacheTimestamp = 0;
+const CACHE_TTL_MS = 60000; // 1 minute cache
+
+/**
+ * Get the vault AMI ID from SSM Parameter Store.
+ * Uses caching to avoid repeated SSM calls during Lambda warm starts.
+ * Falls back to default if parameter doesn't exist.
+ */
+async function getVaultAmiId(): Promise<string> {
+  const now = Date.now();
+
+  // Return cached value if still valid
+  if (cachedAmiId && (now - cacheTimestamp) < CACHE_TTL_MS) {
+    return cachedAmiId;
+  }
+
+  try {
+    const response = await ssm.send(new GetParameterCommand({
+      Name: VAULT_AMI_PARAMETER_NAME,
+    }));
+
+    if (response.Parameter?.Value) {
+      const amiId = response.Parameter.Value;
+      cachedAmiId = amiId;
+      cacheTimestamp = now;
+      console.log(`Using vault AMI from SSM: ${amiId}`);
+      return amiId;
+    }
+  } catch (error: any) {
+    if (error.name === 'ParameterNotFound') {
+      console.log(`SSM parameter ${VAULT_AMI_PARAMETER_NAME} not found, using default: ${DEFAULT_VAULT_AMI_ID}`);
+    } else {
+      console.error(`Error fetching SSM parameter: ${error.message}, using default: ${DEFAULT_VAULT_AMI_ID}`);
+    }
+  }
+
+  return DEFAULT_VAULT_AMI_ID;
+}
 const VAULT_INSTANCE_TYPE = process.env.VAULT_INSTANCE_TYPE || 't4g.nano';
 const VAULT_SECURITY_GROUP = process.env.VAULT_SECURITY_GROUP || '';
 const VAULT_SUBNET_IDS = process.env.VAULT_SUBNET_IDS || '';
@@ -194,9 +242,12 @@ systemctl restart vault-manager
 echo "Vault initialization complete"
 `).toString('base64');
 
+  // Get the vault AMI ID from SSM Parameter Store
+  const vaultAmiId = await getVaultAmiId();
+
   // Build EC2 instance parameters
   const instanceParams: any = {
-    ImageId: VAULT_AMI_ID,
+    ImageId: vaultAmiId,
     InstanceType: VAULT_INSTANCE_TYPE,
     MinCount: 1,
     MaxCount: 1,

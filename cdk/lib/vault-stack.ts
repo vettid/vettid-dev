@@ -9,6 +9,7 @@ import {
   aws_apigatewayv2_integrations as integrations,
   aws_events as events,
   aws_events_targets as targets,
+  aws_ssm as ssm,
   custom_resources as cr,
 } from 'aws-cdk-lib';
 import { InfrastructureStack } from './infrastructure-stack';
@@ -173,15 +174,25 @@ export class VaultStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(30),
     });
 
+    // SSM Parameter for vault AMI ID
+    // Update this parameter to change the AMI without redeploying Lambda:
+    //   aws ssm put-parameter --name "/vettid/vault/ami-id" --value "ami-NEW" --overwrite
+    const vaultAmiParameter = new ssm.StringParameter(this, 'VaultAmiParameter', {
+      parameterName: '/vettid/vault/ami-id',
+      stringValue: process.env.VAULT_AMI_ID || 'ami-0b7fe186af6ed8d96',
+      description: 'AMI ID for vault EC2 instances. Update via SSM to change without redeploying.',
+    });
+
     // Get vault EC2 configuration from VaultInfrastructureStack if provided
     // (needed for enrollFinalize auto-provisioning and provisionVault)
+    // Note: VAULT_AMI_ID is no longer passed via env var - Lambda reads from SSM
     const vaultConfigEnv = {
-      VAULT_AMI_ID: process.env.VAULT_AMI_ID || 'ami-0b7fe186af6ed8d96',
       VAULT_INSTANCE_TYPE: 't4g.nano',
       VAULT_SECURITY_GROUP: props.vaultInfra?.vaultConfig?.securityGroupId || '',
       VAULT_SUBNET_IDS: props.vaultInfra?.vaultConfig?.subnetIds || '',
       VAULT_IAM_PROFILE: props.vaultInfra?.vaultConfig?.iamProfileName || '',
-      NATS_ENDPOINT: 'nats.vettid.dev:4222',
+      // Internal NATS endpoint for vault-to-NATS communication via VPC peering (plain TCP)
+      NATS_INTERNAL_ENDPOINT: 'nats.internal.vettid.dev:4222',
       BACKEND_API_URL: 'https://tiqpij5mue.execute-api.us-east-1.amazonaws.com',
     };
 
@@ -207,6 +218,8 @@ export class VaultStack extends cdk.Stack {
       },
       timeout: cdk.Duration.seconds(60), // Increased for auto-provisioning
     });
+    // Grant SSM read permission for vault AMI parameter
+    vaultAmiParameter.grantRead(this.enrollFinalize);
 
     // Web-initiated enrollment session (for QR code flow)
     this.createEnrollmentSession = new lambdaNode.NodejsFunction(this, 'CreateEnrollmentSessionFn', {
@@ -355,11 +368,11 @@ export class VaultStack extends cdk.Stack {
     // Get vault EC2 configuration from VaultInfrastructureStack if provided
     const vaultConfig = props.vaultInfra?.vaultConfig;
 
+    // Note: VAULT_AMI_ID is no longer passed via env var - Lambda reads from SSM
     const vaultLifecycleEnv = {
       TABLE_VAULT_INSTANCES: tables.vaultInstances.tableName,
       TABLE_CREDENTIALS: tables.credentials.tableName,
       TABLE_NATS_ACCOUNTS: tables.natsAccounts.tableName,
-      VAULT_AMI_ID: process.env.VAULT_AMI_ID || 'ami-0b7fe186af6ed8d96',
       VAULT_INSTANCE_TYPE: 't4g.nano',
       VAULT_SECURITY_GROUP: vaultConfig?.securityGroupId || '',
       VAULT_SUBNET_IDS: vaultConfig?.subnetIds || '',
@@ -373,6 +386,8 @@ export class VaultStack extends cdk.Stack {
       environment: vaultLifecycleEnv,
       timeout: cdk.Duration.seconds(60),
     });
+    // Grant SSM read permission for vault AMI parameter
+    vaultAmiParameter.grantRead(this.provisionVault);
 
     this.initializeVault = new lambdaNode.NodejsFunction(this, 'InitializeVaultFn', {
       entry: 'lambda/handlers/vault/initializeVault.ts',
