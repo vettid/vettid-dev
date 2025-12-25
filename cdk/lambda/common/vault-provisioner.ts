@@ -221,6 +221,7 @@ topics:
 health:
   heartbeat_interval: 30s
   heartbeat_topic: "${ownerSpaceForTopics}.forServices.health"
+  app_heartbeat_topic: "${ownerSpaceForTopics}.forApp.heartbeat"
   status_file: /var/lib/vault-manager/health.json
 
 logging:
