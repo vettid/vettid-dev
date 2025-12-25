@@ -304,17 +304,20 @@ export async function generateUserCredentials(
     pubAllow = [`${ownerSpace}.forVault.>`];
     subAllow = [`${ownerSpace}.forApp.>`, `${ownerSpace}.eventTypes`];
   } else if (clientType === 'vault') {
-    // Vault instance: publish to app and connections, subscribe from app and control
+    // Vault instance: publish to app, services, connections, and call signaling; subscribe from app, control, and calls
     pubAllow = [
       `${ownerSpace}.forApp.>`,
+      `${ownerSpace}.forServices.>`,   // For health/status messages to backend
       `${messageSpace}.forOwner.>`,
       `${messageSpace}.ownerProfile`,
+      `${messageSpace}.call.>`,        // Vault-to-vault call signaling (outbound)
     ];
     subAllow = [
       `${ownerSpace}.forVault.>`,
       `${ownerSpace}.control`,
       `${ownerSpace}.eventTypes`,
       `${messageSpace}.forOwner.>`,
+      `${messageSpace}.call.>`,        // Vault-to-vault call signaling (inbound)
     ];
   } else {
     // Control: publish to control topic only
