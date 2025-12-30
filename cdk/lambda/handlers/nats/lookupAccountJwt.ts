@@ -23,16 +23,25 @@ const secretsClient = new SecretsManagerClient({});
 const TABLE_NATS_ACCOUNTS = process.env.TABLE_NATS_ACCOUNTS!;
 const NATS_OPERATOR_SECRET_ARN = process.env.NATS_OPERATOR_SECRET_ARN || 'vettid/nats/operator-key';
 
-// Cache for system account info (to avoid repeated Secrets Manager calls)
-let cachedSystemAccountKey: string | null = null;
-let cachedSystemAccountJwt: string | null = null;
-let cacheTime = 0;
+// Cache for special accounts (system and backend) from Secrets Manager
+interface SpecialAccount {
+  publicKey: string;
+  jwt: string;
+}
+
+interface SpecialAccountsCache {
+  system: SpecialAccount | null;
+  backend: SpecialAccount | null;
+  timestamp: number;
+}
+
+let accountsCache: SpecialAccountsCache = { system: null, backend: null, timestamp: 0 };
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
-async function getSystemAccountInfo(): Promise<{ publicKey: string; jwt: string } | null> {
+async function getSpecialAccounts(): Promise<SpecialAccountsCache> {
   const now = Date.now();
-  if (cachedSystemAccountKey && cachedSystemAccountJwt && (now - cacheTime) < CACHE_TTL_MS) {
-    return { publicKey: cachedSystemAccountKey, jwt: cachedSystemAccountJwt };
+  if (accountsCache.system && (now - accountsCache.timestamp) < CACHE_TTL_MS) {
+    return accountsCache;
   }
 
   try {
@@ -41,20 +50,33 @@ async function getSystemAccountInfo(): Promise<{ publicKey: string; jwt: string 
     }));
 
     if (!response.SecretString) {
-      return null;
+      return accountsCache;
     }
 
     const secret = JSON.parse(response.SecretString);
+
+    // Cache system account
     if (secret.system_account_public_key && secret.system_account_jwt) {
-      cachedSystemAccountKey = secret.system_account_public_key;
-      cachedSystemAccountJwt = secret.system_account_jwt;
-      cacheTime = now;
-      return { publicKey: secret.system_account_public_key, jwt: secret.system_account_jwt };
+      accountsCache.system = {
+        publicKey: secret.system_account_public_key,
+        jwt: secret.system_account_jwt,
+      };
     }
+
+    // Cache backend account (for Lambda JetStream operations)
+    if (secret.backend_account_public_key && secret.backend_account_jwt) {
+      accountsCache.backend = {
+        publicKey: secret.backend_account_public_key,
+        jwt: secret.backend_account_jwt,
+      };
+    }
+
+    accountsCache.timestamp = now;
   } catch (error) {
-    console.error('Error fetching system account from Secrets Manager:', error);
+    console.error('Error fetching special accounts from Secrets Manager:', error);
   }
-  return null;
+
+  return accountsCache;
 }
 
 export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
@@ -73,9 +95,11 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       };
     }
 
-    // Check if this is a request for the system account (stored in Secrets Manager)
-    const systemAccount = await getSystemAccountInfo();
-    if (systemAccount && accountPublicKey === systemAccount.publicKey) {
+    // Check if this is a request for special accounts (stored in Secrets Manager)
+    const specialAccounts = await getSpecialAccounts();
+
+    // Check system account
+    if (specialAccounts.system && accountPublicKey === specialAccounts.system.publicKey) {
       console.log('Returning system account JWT');
       return {
         statusCode: 200,
@@ -83,7 +107,20 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
           'Content-Type': 'text/plain',
           'Cache-Control': 'public, max-age=3600', // Cache for 1 hour
         },
-        body: systemAccount.jwt,
+        body: specialAccounts.system.jwt,
+      };
+    }
+
+    // Check backend account (for Lambda JetStream operations)
+    if (specialAccounts.backend && accountPublicKey === specialAccounts.backend.publicKey) {
+      console.log('Returning backend account JWT');
+      return {
+        statusCode: 200,
+        headers: {
+          'Content-Type': 'text/plain',
+          'Cache-Control': 'public, max-age=3600', // Cache for 1 hour
+        },
+        body: specialAccounts.backend.jwt,
       };
     }
 
