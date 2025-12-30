@@ -505,6 +505,22 @@ export class NatsStack extends cdk.Stack {
       'systemctl enable nats',
       'systemctl start nats',
       '',
+      '# Wait for NATS to be ready',
+      'echo "Waiting for NATS to start..."',
+      'for i in {1..30}; do',
+      '  if curl -sf http://127.0.0.1:8222/healthz > /dev/null 2>&1; then',
+      '    echo "NATS is ready"',
+      '    break',
+      '  fi',
+      '  sleep 1',
+      'done',
+      '',
+      '# Download NATS CLI for administration',
+      'curl -L -o /tmp/nats-cli.tar.gz "https://github.com/nats-io/natscli/releases/download/v0.1.5/nats-0.1.5-linux-arm64.tar.gz"',
+      'tar -xzf /tmp/nats-cli.tar.gz -C /tmp',
+      'mv /tmp/nats-0.1.5-linux-arm64/nats /usr/local/bin/',
+      'chmod +x /usr/local/bin/nats',
+      '',
       'echo "NATS server installation complete"'
     );
 

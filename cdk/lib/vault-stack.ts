@@ -16,7 +16,6 @@ import {
 import { InfrastructureStack } from './infrastructure-stack';
 import { LedgerStack } from './ledger-stack';
 import { VaultInfrastructureStack } from './vault-infrastructure-stack';
-import { NatsStack } from './nats-stack';
 
 export interface VaultStackProps extends cdk.StackProps {
   infrastructure: InfrastructureStack;
@@ -24,7 +23,6 @@ export interface VaultStackProps extends cdk.StackProps {
   memberAuthorizer: apigw.IHttpRouteAuthorizer;
   ledger?: LedgerStack;  // Optional until Ledger is deployed
   vaultInfra?: VaultInfrastructureStack;  // Optional until VaultInfra is deployed
-  nats?: NatsStack;  // Optional for processVaultHealth Lambda VPC access
 }
 
 /**
@@ -71,7 +69,6 @@ export class VaultStack extends cdk.Stack {
   public readonly getVaultHealth!: lambdaNode.NodejsFunction;
   public readonly vaultReady!: lambdaNode.NodejsFunction;  // Internal endpoint for vault-manager ready signal
   public readonly updateVaultHealth!: lambdaNode.NodejsFunction;  // Internal endpoint for vault-manager health updates
-  public readonly processVaultHealth!: lambdaNode.NodejsFunction;  // Scheduled health check processor (JetStream backup)
   public readonly onVaultStateChange!: lambdaNode.NodejsFunction;  // EC2 state change handler
 
   // Handler registry functions (public endpoints)
@@ -460,55 +457,6 @@ export class VaultStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(10),
     });
 
-    // ===== VAULT HEALTH MONITORING =====
-
-    // Configure VPC access for health processor if NATS stack is provided
-    // This allows the Lambda to connect to NATS internal endpoint
-    let healthProcessorVpcConfig: lambdaNode.NodejsFunctionProps['vpc'] = undefined;
-    let healthProcessorSecurityGroups: lambdaNode.NodejsFunctionProps['securityGroups'] = undefined;
-    let healthProcessorEnv: Record<string, string> = {
-      TABLE_VAULT_INSTANCES: tables.vaultInstances.tableName,
-    };
-
-    if (props.nats) {
-      // Create security group for the Lambda in NATS VPC
-      // Note: NATS security group already allows traffic from VPC CIDR,
-      // so the Lambda can connect without adding a cross-stack SG rule
-      // (which would create a cyclic dependency)
-      const healthLambdaSg = new ec2.SecurityGroup(this, 'HealthLambdaSg', {
-        vpc: props.nats.vpc,
-        description: 'Security group for processVaultHealth Lambda',
-        allowAllOutbound: true,
-      });
-
-      healthProcessorVpcConfig = props.nats.vpc;
-      healthProcessorSecurityGroups = [healthLambdaSg];
-      healthProcessorEnv = {
-        ...healthProcessorEnv,
-        NATS_URL: `nats://${props.nats.internalNatsDomain}:4222`,
-        NATS_OPERATOR_SECRET_ARN: props.nats.operatorSecret.secretArn,
-        JETSTREAM_STREAM: 'VAULT_HEALTH',
-        JETSTREAM_CONSUMER: 'backend-processor',
-      };
-    }
-
-    // Scheduled Lambda to process vault health updates from NATS JetStream
-    this.processVaultHealth = new lambdaNode.NodejsFunction(this, 'ProcessVaultHealthFn', {
-      entry: 'lambda/handlers/vault/processVaultHealth.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: healthProcessorEnv,
-      timeout: cdk.Duration.seconds(60),
-      memorySize: 256, // More memory for NATS connection handling
-      vpc: healthProcessorVpcConfig,
-      vpcSubnets: healthProcessorVpcConfig ? { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS } : undefined,
-      securityGroups: healthProcessorSecurityGroups,
-    });
-
-    // Grant access to operator secret for NATS credentials
-    if (props.nats) {
-      props.nats.operatorSecret.grantRead(this.processVaultHealth);
-    }
-
     // EC2 state change handler for vault instances
     this.onVaultStateChange = new lambdaNode.NodejsFunction(this, 'OnVaultStateChangeFn', {
       entry: 'lambda/handlers/vault/onVaultStateChange.ts',
@@ -744,7 +692,6 @@ export class VaultStack extends cdk.Stack {
     tables.vaultInstances.grantReadWriteData(this.getVaultHealth);
     tables.vaultInstances.grantReadWriteData(this.vaultReady);
     tables.vaultInstances.grantReadWriteData(this.updateVaultHealth);
-    tables.vaultInstances.grantReadWriteData(this.processVaultHealth);
     tables.vaultInstances.grantReadWriteData(this.onVaultStateChange);
 
     // Grant getVaultStatus access to enrollment sessions, credentials, and transaction keys
@@ -1612,13 +1559,6 @@ export class VaultStack extends cdk.Stack {
     });
 
     // ===== EVENTBRIDGE RULES =====
-
-    // Scheduled rule to process vault health updates (every 60 seconds)
-    new events.Rule(this, 'ProcessVaultHealthSchedule', {
-      schedule: events.Schedule.rate(cdk.Duration.minutes(1)),
-      targets: [new targets.LambdaFunction(this.processVaultHealth)],
-      description: 'Process vault health messages from NATS/EventBridge every minute',
-    });
 
     // EC2 state change rule for vault instances
     // Triggers when vault EC2 instances change state (running, stopping, terminated, etc.)

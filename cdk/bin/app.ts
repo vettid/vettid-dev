@@ -46,7 +46,22 @@ const ledger = new LedgerStack(app, 'VettID-Ledger', {
 // This provides the networking and IAM resources for vault provisioning
 const vaultInfra = new VaultInfrastructureStack(app, 'VettID-VaultInfra', { env });
 
-// 6. Deploy vault stack (vault Lambda functions + API routes)
+// 6. Deploy NATS infrastructure stack (VPC, EC2 cluster, NLB)
+// Uses Route53 fromLookup to auto-discover hosted zone (cached in cdk.context.json)
+// VPC peering with Vault VPC is configured to allow vault instances to connect to NATS
+// NOTE: Must be deployed before VaultStack so Lambda can use NATS VPC
+const nats = new NatsStack(app, 'VettID-NATS', {
+  env,
+  domainName: 'nats.vettid.dev',
+  zoneName: 'vettid.dev',
+  // URL resolver for member account JWTs (fetched dynamically)
+  accountResolverUrl: 'https://tiqpij5mue.execute-api.us-east-1.amazonaws.com/nats/jwt/v1/accounts/',
+  // VPC peering: allow vault instances to connect to NATS cluster
+  vaultVpc: vaultInfra.vpc,
+  vaultVpcCidr: VaultInfrastructureStack.VPC_CIDR,
+});
+
+// 7. Deploy vault stack (vault Lambda functions + API routes)
 // Routes are added in VaultStack to stay under CloudFormation's 500 resource limit
 // Pass ledger stack to enable Protean Credential System Lambda handlers
 // Pass vaultInfra to enable vault EC2 provisioning with proper VPC/IAM config
@@ -57,18 +72,4 @@ const vault = new VaultStack(app, 'VettID-Vault', {
   memberAuthorizer: core.memberAuthorizer,
   ledger,  // Re-enabled after RDS migration
   vaultInfra,  // Enable vault EC2 provisioning
-});
-
-// 7. Deploy NATS infrastructure stack (VPC, EC2 cluster, NLB)
-// Uses Route53 fromLookup to auto-discover hosted zone (cached in cdk.context.json)
-// VPC peering with Vault VPC is configured to allow vault instances to connect to NATS
-const nats = new NatsStack(app, 'VettID-NATS', {
-  env,
-  domainName: 'nats.vettid.dev',
-  zoneName: 'vettid.dev',
-  // URL resolver for member account JWTs (fetched dynamically)
-  accountResolverUrl: 'https://tiqpij5mue.execute-api.us-east-1.amazonaws.com/nats/jwt/v1/accounts/',
-  // VPC peering: allow vault instances to connect to NATS cluster
-  vaultVpc: vaultInfra.vpc,
-  vaultVpcCidr: VaultInfrastructureStack.VPC_CIDR,
 });
