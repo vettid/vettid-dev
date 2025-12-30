@@ -46,3 +46,7 @@ coverage/
 # Temporary files
 *.tmp
 .cache
+
+# Local test scripts
+test-*.ts
+nats
