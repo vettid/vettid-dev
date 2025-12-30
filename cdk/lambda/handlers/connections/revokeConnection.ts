@@ -93,8 +93,9 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       }),
     }));
 
-    // TODO: Send NATS notification to peer about revocation
-    // TODO: Delete shared encryption key from vault
+    // NOTE: Revocation notifications are sent vault-to-vault via NATS MessageSpace.
+    // The mobile app triggers connection.notify-revoke through its vault, which notifies the peer's vault.
+    // Shared encryption keys should be deleted from the vault's local storage.
 
     return ok({
       connection_id: connectionId,

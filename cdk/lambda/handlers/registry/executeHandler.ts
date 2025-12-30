@@ -122,15 +122,9 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       status: 'queued',
     };
 
-    // TODO: Implement NATS integration
-    // const natsClient = await getNatsClient();
-    // const topic = `vault.${userGuid}.handlers.execute`;
-    // await natsClient.publish(topic, {
-    //   request_id: requestId,
-    //   handler_id: handlerId,
-    //   input: body.input,
-    //   timeout_ms: timeoutMs,
-    // });
+    // NOTE: Handler execution is done via vault-to-vault NATS messaging.
+    // The mobile app sends handler execution requests through its vault via OwnerSpace.forVault.
+    // This Lambda endpoint is for legacy/fallback purposes only.
 
     return ok(response);
 

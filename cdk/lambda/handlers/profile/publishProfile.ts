@@ -81,8 +81,8 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       }
     }
 
-    // TODO: Send NATS notifications to connected users about profile update
-    // This would push the updated profile to their devices in real-time
+    // NOTE: Profile updates are broadcast vault-to-vault via NATS MessageSpace.
+    // The mobile app triggers profile.broadcast through its vault, which notifies all connected peer vaults.
 
     return ok({
       published: true,

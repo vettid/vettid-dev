@@ -147,7 +147,9 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       }),
     }));
 
-    // TODO: Send NATS notification to recipient for real-time delivery
+    // NOTE: Real-time delivery is handled vault-to-vault via NATS MessageSpace.
+    // This Lambda stores messages in DynamoDB for backup/history.
+    // The mobile app sends messages through its vault, which forwards to the recipient's vault.
 
     return ok({
       message_id: messageId,

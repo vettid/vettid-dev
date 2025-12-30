@@ -104,7 +104,8 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       });
     }
 
-    // TODO: Send read receipt to sender via NATS
+    // NOTE: Read receipts are sent vault-to-vault via NATS MessageSpace.
+    // The mobile app triggers message.read-receipt through its vault, which forwards to the sender's vault.
 
     return ok({
       message_id: messageId,
