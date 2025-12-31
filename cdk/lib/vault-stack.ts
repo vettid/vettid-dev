@@ -72,6 +72,11 @@ export class VaultStack extends cdk.Stack {
   public readonly updateVaultHealth!: lambdaNode.NodejsFunction;  // Internal endpoint for vault-manager health updates
   public readonly onVaultStateChange!: lambdaNode.NodejsFunction;  // EC2 state change handler
 
+  // Action-token authenticated vault lifecycle functions (for mobile apps)
+  public readonly vaultStartAction!: lambdaNode.NodejsFunction;
+  public readonly vaultStopAction!: lambdaNode.NodejsFunction;
+  public readonly vaultStatusAction!: lambdaNode.NodejsFunction;
+
   // Handler registry functions (public endpoints)
   public readonly listHandlers!: lambdaNode.NodejsFunction;
   public readonly getHandler!: lambdaNode.NodejsFunction;
@@ -462,6 +467,41 @@ export class VaultStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(30),
     });
 
+    // ===== ACTION-TOKEN AUTHENTICATED VAULT LIFECYCLE =====
+    // These endpoints use action tokens instead of Cognito JWT for mobile apps
+    // that have already proven identity via the action request flow
+
+    const vaultActionEnv = {
+      TABLE_VAULT_INSTANCES: tables.vaultInstances.tableName,
+      TABLE_ACTION_TOKENS: tables.actionTokens.tableName,
+      TABLE_AUDIT: tables.audit.tableName,
+      // Additional tables for vaultStatusAction
+      TABLE_ENROLLMENT_SESSIONS: tables.enrollmentSessions.tableName,
+      TABLE_CREDENTIALS: tables.credentials.tableName,
+      TABLE_TRANSACTION_KEYS: tables.transactionKeys.tableName,
+    };
+
+    this.vaultStartAction = new lambdaNode.NodejsFunction(this, 'VaultStartActionFn', {
+      entry: 'lambda/handlers/vault/vaultStartAction.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: vaultActionEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    this.vaultStopAction = new lambdaNode.NodejsFunction(this, 'VaultStopActionFn', {
+      entry: 'lambda/handlers/vault/vaultStopAction.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: vaultActionEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    this.vaultStatusAction = new lambdaNode.NodejsFunction(this, 'VaultStatusActionFn', {
+      entry: 'lambda/handlers/vault/vaultStatusAction.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: vaultActionEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
     // ===== HANDLER REGISTRY =====
 
     const handlerEnv = {
@@ -845,6 +885,55 @@ export class VaultStack extends cdk.Stack {
     }));
 
     // Note: NATS internal CA secret grant no longer needed - NLB terminates TLS with ACM (publicly trusted)
+
+    // ===== ACTION-TOKEN VAULT LIFECYCLE PERMISSIONS =====
+
+    // Grant table access for action-token authenticated vault functions
+    tables.vaultInstances.grantReadWriteData(this.vaultStartAction);
+    tables.vaultInstances.grantReadWriteData(this.vaultStopAction);
+    tables.vaultInstances.grantReadData(this.vaultStatusAction);
+
+    tables.actionTokens.grantReadWriteData(this.vaultStartAction);
+    tables.actionTokens.grantReadWriteData(this.vaultStopAction);
+    tables.actionTokens.grantReadWriteData(this.vaultStatusAction);
+
+    tables.audit.grantReadWriteData(this.vaultStartAction);
+    tables.audit.grantReadWriteData(this.vaultStopAction);
+    tables.audit.grantReadWriteData(this.vaultStatusAction);
+
+    // vaultStatusAction needs additional table access for enrollment/credential info
+    tables.enrollmentSessions.grantReadData(this.vaultStatusAction);
+    tables.credentials.grantReadData(this.vaultStatusAction);
+    tables.transactionKeys.grantReadData(this.vaultStatusAction);
+
+    // EC2 permissions for start/stop via action tokens
+    this.vaultStartAction.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['ec2:DescribeInstances'],
+      resources: ['*'],
+    }));
+    this.vaultStartAction.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['ec2:StartInstances'],
+      resources: [`arn:aws:ec2:${this.region}:${this.account}:instance/*`],
+      conditions: {
+        StringEquals: {
+          'ec2:ResourceTag/Application': 'vettid-vault',
+        },
+      },
+    }));
+
+    this.vaultStopAction.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['ec2:DescribeInstances'],
+      resources: ['*'],
+    }));
+    this.vaultStopAction.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['ec2:StopInstances'],
+      resources: [`arn:aws:ec2:${this.region}:${this.account}:instance/*`],
+      conditions: {
+        StringEquals: {
+          'ec2:ResourceTag/Application': 'vettid-vault',
+        },
+      },
+    }));
 
     // ===== HANDLER REGISTRY PERMISSIONS =====
 
@@ -1340,6 +1429,32 @@ export class VaultStack extends cdk.Stack {
       httpApi,
       routeKey: apigw.HttpRouteKey.with('/vault/internal/health', apigw.HttpMethod.POST),
       integration: new integrations.HttpLambdaIntegration('UpdateVaultHealthIntegration', this.updateVaultHealth),
+    });
+
+    // ===== ACTION-TOKEN VAULT LIFECYCLE ENDPOINTS =====
+    // These endpoints use action tokens instead of Cognito JWT for mobile apps.
+    // Mobile apps request an action token via /vault/action/request (Cognito auth),
+    // then use that token to call these endpoints without Cognito.
+
+    new apigw.HttpRoute(this, 'VaultStartAction', {
+      httpApi,
+      routeKey: apigw.HttpRouteKey.with('/api/v1/vault/start', apigw.HttpMethod.POST),
+      integration: new integrations.HttpLambdaIntegration('VaultStartActionInt', this.vaultStartAction),
+      // No authorizer - action token is validated in handler
+    });
+
+    new apigw.HttpRoute(this, 'VaultStopAction', {
+      httpApi,
+      routeKey: apigw.HttpRouteKey.with('/api/v1/vault/stop', apigw.HttpMethod.POST),
+      integration: new integrations.HttpLambdaIntegration('VaultStopActionInt', this.vaultStopAction),
+      // No authorizer - action token is validated in handler
+    });
+
+    new apigw.HttpRoute(this, 'VaultStatusAction', {
+      httpApi,
+      routeKey: apigw.HttpRouteKey.with('/api/v1/vault/status', apigw.HttpMethod.GET),
+      integration: new integrations.HttpLambdaIntegration('VaultStatusActionInt', this.vaultStatusAction),
+      // No authorizer - action token is validated in handler
     });
 
     // Handler Registry Routes

@@ -28,6 +28,10 @@ const ACTION_ENDPOINTS: Record<string, string> = {
   'retrieve_secret': '/api/v1/secrets/retrieve',
   'add_policy': '/api/v1/policies/update',
   'modify_credential': '/api/v1/credential/modify',
+  // Vault lifecycle actions (for mobile apps without Cognito auth)
+  'vault_start': '/api/v1/vault/start',
+  'vault_stop': '/api/v1/vault/stop',
+  'vault_status': '/api/v1/vault/status',
 };
 
 interface ActionRequestBody {
