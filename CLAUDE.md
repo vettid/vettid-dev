@@ -379,11 +379,11 @@ The config is frozen with `Object.freeze()` to prevent XSS modification at runti
 - ✅ OAC for S3 origins
 - ✅ GSI queries instead of table scans
 - ✅ Route 53 + ACM for custom domains
+- ✅ WAF on CloudFront with AWS managed rule sets (AWSManagedRulesCommonRuleSet, AWSManagedRulesKnownBadInputsRuleSet, AWSManagedRulesSQLiRuleSet, AWSManagedRulesAmazonIpReputationList)
+- ✅ SES pinned to specific template ARNs (RegistrationApproved, SubscriptionExpiryWarning, ProposalVoteReminder, NewProposalNotification)
 
 **Remaining hardening (optional):**
-- Add WAF to CloudFront distributions
-- Reduce IAM permissions to least privilege
-- Pin SES to template ARNs instead of `*`
+- Reduce IAM permissions to least privilege (ongoing)
 
 ### DynamoDB Stream Processing
 
