@@ -2,6 +2,8 @@
 *.js
 !jest.config.js
 !scripts/**/*.js
+!frontend/**/*.js
+frontend/shared/config.js
 *.d.ts
 node_modules
 cdk.out

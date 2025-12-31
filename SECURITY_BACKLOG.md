@@ -116,9 +116,9 @@ This file tracks security issues identified during the security audit that need 
 27. ~~**Weak default pagination (50)** - `listRegistrations.ts:10-12`~~ ✅ FIXED
     - ~~Reduced to 20 across all list endpoints~~
 
-28. ~~**Missing SRI on external resources** - Multiple HTML files~~ ✅ FIXED
-    - ~~Add integrity attribute to external scripts/styles~~
-    - ~~Fixed: amazon-cognito-identity-js and qrcodejs now have SRI~~
+28. ~~**External CDN dependencies** - Multiple HTML files~~ ✅ FIXED
+    - ~~Eliminate CDN dependency for supply chain security~~
+    - ~~Fixed: amazon-cognito-identity-js and qrcodejs now self-hosted in /shared/vendor/~~
 
 29. **Verbose console errors** - Multiple files
     - Sanitize console output in production
@@ -169,7 +169,7 @@ This file tracks security issues identified during the security audit that need 
 16. ✅ **Default pagination** - Reduced from 50 to 20 across all list endpoints
 17. ✅ **SES permissions** - Split actions, scoped SendEmail to specific identity ARNs
 18. ✅ **Error message disclosure** - 19 handlers now use sanitizeErrorForClient()
-19. ✅ **SRI on external resources** - Added integrity attribute to CDN scripts
+19. ✅ **External CDN dependencies** - Self-hosted scripts in /shared/vendor/ (no CDN dependency)
 20. ✅ **CSV injection risk** - Email addresses hashed in bulk email logs
 
 ---
