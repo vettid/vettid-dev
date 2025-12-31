@@ -171,7 +171,7 @@ export class VaultStack extends cdk.Stack {
     //   aws ssm put-parameter --name "/vettid/vault/ami-id" --value "ami-NEW" --overwrite
     const vaultAmiParameter = new ssm.StringParameter(this, 'VaultAmiParameter', {
       parameterName: '/vettid/vault/ami-id',
-      stringValue: process.env.VAULT_AMI_ID || 'ami-0b7fe186af6ed8d96',
+      stringValue: process.env.VAULT_AMI_ID || 'ami-05a0309aaefcadafb',
       description: 'AMI ID for vault EC2 instances. Update via SSM to change without redeploying.',
     });
 
