@@ -6,9 +6,9 @@ This file tracks security issues identified during the security audit that need 
 
 ### Infrastructure (CDK)
 
-1. **Audit table missing PITR** - `infrastructure-stack.ts:100-104`
-   - Enable point-in-time recovery for critical audit logs
-   - Fix: Add `pointInTimeRecovery: true` to Audit table
+1. ~~**Audit table missing PITR** - `infrastructure-stack.ts:100-104`~~ ✅ FIXED
+   - ~~Enable point-in-time recovery for critical audit logs~~
+   - ~~Fix: Add `pointInTimeRecovery: true` to Audit table~~
 
 2. **System monitoring Lambda wildcards** - `admin-stack.ts:771-787`
    - `getSystemHealth` and `getSystemLogs` can access ANY resource in account
@@ -26,14 +26,14 @@ This file tracks security issues identified during the security audit that need 
    - Minimal validation on body_html - potential phishing risk
    - Fix: Add content restrictions or require pre-approved templates
 
-6. **DynamoDB Scan instead of Query** - `createAuthChallenge.ts:64-74`
-   - Uses Scan to find PIN status instead of Query with GSI
-   - Performance DoS vector - will scan entire table on high-user systems
-   - Fix: Use email-index GSI with QueryCommand instead of ScanCommand
+6. ~~**DynamoDB Scan instead of Query** - `createAuthChallenge.ts:64-74`~~ ✅ FIXED
+   - ~~Uses Scan to find PIN status instead of Query with GSI~~
+   - ~~Performance DoS vector - will scan entire table on high-user systems~~
+   - ~~Fix: Use email-index GSI with QueryCommand instead of ScanCommand~~
 
-7. **Missing API Gateway logging** - `vettid-stack.ts:237-249`
-   - No CloudWatch logging for API access patterns
-   - Fix: Enable access logging for audit trail
+7. ~~**Missing API Gateway logging** - `vettid-stack.ts:237-249`~~ ✅ FIXED
+   - ~~No CloudWatch logging for API access patterns~~
+   - ~~Fix: Enable access logging for audit trail~~
 
 8. **CSP allows unsafe-inline** - `vettid-stack.ts:252-293`
    - `script-src 'unsafe-inline'` weakens XSS protection
@@ -153,9 +153,12 @@ This file tracks security issues identified during the security audit that need 
 4. ✅ **sanitizeInput() HTML entity bypass** - Removed entity decoding, added encoded pattern detection
 5. ✅ **DOM XSS in account portal** - Used `textContent`, added URL validation
 6. ✅ **Source maps in production** - Disabled in tsconfig.json
+7. ✅ **Audit table PITR** - Enabled `pointInTimeRecovery: true` for critical audit logs
+8. ✅ **DynamoDB Scan DoS** - Replaced Scan with Query using email-index GSI in createAuthChallenge
+9. ✅ **API Gateway access logging** - Added CloudWatch log group with 1-year retention
 
 ---
 
-*Last Updated: 2025-12-23*
+*Last Updated: 2025-12-30*
 *Initial Audit: 2025-12-03*
 *Audit performed by: Claude Code*

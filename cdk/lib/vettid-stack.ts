@@ -20,6 +20,7 @@ import {
   aws_sns as sns,
   aws_events as events,
   aws_events_targets as targets_events,
+  aws_logs as logs,
 } from 'aws-cdk-lib';
 import { InfrastructureStack } from './infrastructure-stack';
 
@@ -243,6 +244,34 @@ const webAcl = new wafv2.CfnWebACL(this, 'WebAcl', {
         allowHeaders: ['Authorization', 'Content-Type', 'X-Amz-Date', 'X-Api-Key', 'X-Amz-Security-Token'],
       },
     });
+
+    // SECURITY: Enable API Gateway access logging for audit trail
+    const apiAccessLogGroup = new logs.LogGroup(this, 'ApiAccessLogs', {
+      logGroupName: '/aws/apigateway/vettid-api-access',
+      retention: logs.RetentionDays.ONE_YEAR,
+      removalPolicy: cdk.RemovalPolicy.RETAIN, // Retain logs for audit purposes
+    });
+
+    // Configure access logging on the default stage using escape hatch
+    const apiDefaultStage = this.httpApi.defaultStage?.node.defaultChild as apigw.CfnStage;
+    if (apiDefaultStage) {
+      apiDefaultStage.accessLogSettings = {
+        destinationArn: apiAccessLogGroup.logGroupArn,
+        format: JSON.stringify({
+          requestId: '$context.requestId',
+          ip: '$context.identity.sourceIp',
+          requestTime: '$context.requestTime',
+          httpMethod: '$context.httpMethod',
+          routeKey: '$context.routeKey',
+          status: '$context.status',
+          protocol: '$context.protocol',
+          responseLength: '$context.responseLength',
+          integrationLatency: '$context.integrationLatency',
+          userAgent: '$context.identity.userAgent',
+          errorMessage: '$context.error.message',
+        }),
+      };
+    }
 
 // CloudFront Function: Add security headers to all responses with specific API URL
 const securityHeadersFn = new cloudfront.Function(this, 'SecurityHeadersFn', {

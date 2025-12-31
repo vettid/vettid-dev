@@ -1,6 +1,6 @@
 // lambda/handlers/auth/createAuthChallenge.ts
 import { CreateAuthChallengeTriggerHandler } from 'aws-lambda';
-import { DynamoDBClient, PutItemCommand, ScanCommand } from '@aws-sdk/client-dynamodb';
+import { DynamoDBClient, PutItemCommand, ScanCommand, QueryCommand } from '@aws-sdk/client-dynamodb';
 import { SESClient, SendEmailCommand } from '@aws-sdk/client-ses';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import { randomBytes, createHash } from 'crypto';
@@ -60,16 +60,19 @@ export const handler: CreateAuthChallengeTriggerHandler = async (event) => {
   // Check if user has PIN enabled FIRST (needed for all code paths)
   let pinRequired = false;
   try {
-    // NOTE: Do NOT use Limit with FilterExpression - Limit applies BEFORE filtering
-    const regQuery = await ddb.send(new ScanCommand({
+    // SECURITY FIX: Use QueryCommand with email-index GSI instead of Scan
+    // This prevents DoS via full table scans on high-user systems
+    const regQuery = await ddb.send(new QueryCommand({
       TableName: REGISTRATIONS_TABLE,
-      FilterExpression: "email = :email AND #s = :approved",
+      IndexName: 'email-index',
+      KeyConditionExpression: 'email = :email',
+      FilterExpression: '#s = :approved',
       ExpressionAttributeNames: {
-        "#s": "status"
+        '#s': 'status'
       },
       ExpressionAttributeValues: marshall({
-        ":email": email,
-        ":approved": "approved"
+        ':email': email,
+        ':approved': 'approved'
       })
     }));
 

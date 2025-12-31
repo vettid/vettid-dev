@@ -138,6 +138,7 @@ export class InfrastructureStack extends cdk.Stack {
       partitionKey: { name: 'id', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
+      pointInTimeRecovery: true, // SECURITY: Enable PITR for critical audit logs
     });
 
     audit.addGlobalSecondaryIndex({
