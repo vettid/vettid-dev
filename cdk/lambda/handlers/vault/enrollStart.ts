@@ -11,6 +11,10 @@ import {
   getRequestId,
   putAudit,
   generateSecureId,
+  checkRateLimit,
+  hashIdentifier,
+  tooManyRequests,
+  getClientIp,
 } from '../../common/util';
 import { generateX25519KeyPair } from '../../common/crypto-keys';
 import { generateAttestationChallenge } from '../../common/attestation';
@@ -29,6 +33,10 @@ const INITIAL_TRANSACTION_KEY_COUNT = 20;
 // Feature flag: require device attestation (Android Play Integrity / iOS App Attest)
 // Set to 'false' to skip attestation verification (faster enrollment, less security)
 const REQUIRE_ATTESTATION = process.env.REQUIRE_ATTESTATION !== 'false';
+
+// Rate limiting: 10 enrollment attempts per IP per 15 minutes
+const RATE_LIMIT_MAX_REQUESTS = 10;
+const RATE_LIMIT_WINDOW_MINUTES = 15;
 
 /**
  * Clean up old transaction keys for a user before starting new enrollment.
@@ -113,6 +121,14 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
   const origin = event.headers?.origin;
 
   try {
+    // Rate limiting by IP address
+    const clientIp = getClientIp(event);
+    const ipHash = hashIdentifier(clientIp);
+    const isAllowed = await checkRateLimit(ipHash, 'enroll_start', RATE_LIMIT_MAX_REQUESTS, RATE_LIMIT_WINDOW_MINUTES);
+    if (!isAllowed) {
+      return tooManyRequests('Too many enrollment attempts. Please try again later.', origin);
+    }
+
     // Check for authorizer context (QR code flow)
     // The authorizer property exists but isn't in the base type definition
     const authContext = (event.requestContext as any)?.authorizer?.lambda as {

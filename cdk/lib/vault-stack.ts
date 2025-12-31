@@ -588,9 +588,10 @@ export class VaultStack extends cdk.Stack {
     tables.invites.grantReadWriteData(this.enrollStart);
     tables.invites.grantReadWriteData(this.enrollFinalize);
 
-    // Ledger auth tokens - enrollFinalize creates them
+    // Ledger auth tokens - enrollFinalize creates them, actionRequest reads via GSI
     tables.ledgerAuthTokens.grantReadWriteData(this.enrollFinalize);
     tables.ledgerAuthTokens.grantReadWriteData(this.authExecute);
+    tables.ledgerAuthTokens.grantReadData(this.actionRequest);  // Queries user-index GSI
 
     tables.actionTokens.grantReadWriteData(this.actionRequest);
     tables.actionTokens.grantReadWriteData(this.authExecute);

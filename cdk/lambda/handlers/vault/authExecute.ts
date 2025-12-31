@@ -13,6 +13,9 @@ import {
   getRequestId,
   putAudit,
   generateSecureId,
+  checkRateLimit,
+  hashIdentifier,
+  tooManyRequests,
 } from '../../common/util';
 import {
   generateX25519KeyPair,
@@ -35,6 +38,10 @@ const TABLE_TRANSACTION_KEYS = process.env.TABLE_TRANSACTION_KEYS!;
 const TABLE_ACTION_TOKENS = process.env.TABLE_ACTION_TOKENS!;
 
 const EXPECTED_ENDPOINT = '/api/v1/auth/execute';
+
+// Rate limiting: 5 auth attempts per user per minute (prevents brute-force attacks)
+const RATE_LIMIT_MAX_REQUESTS = 5;
+const RATE_LIMIT_WINDOW_MINUTES = 1;
 
 interface AuthExecuteRequest {
   encrypted_blob: string;
@@ -104,6 +111,13 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     const tokenPayload = tokenResult.payload;
     const userGuid = tokenPayload.sub;
     const tokenId = tokenPayload.jti;
+
+    // Rate limiting by user_guid (prevents brute-force auth attacks)
+    const userHash = hashIdentifier(userGuid);
+    const isAllowed = await checkRateLimit(userHash, 'auth_execute', RATE_LIMIT_MAX_REQUESTS, RATE_LIMIT_WINDOW_MINUTES);
+    if (!isAllowed) {
+      return tooManyRequests('Too many authentication attempts. Please try again later.');
+    }
 
     // Verify token is still active in database (single-use check)
     const actionTokenResult = await ddb.send(new GetItemCommand({

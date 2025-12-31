@@ -13,6 +13,9 @@ import {
   putAudit,
   generateSecureId,
   addMinutesIso,
+  checkRateLimit,
+  hashIdentifier,
+  tooManyRequests,
 } from '../../common/util';
 import { generateAccountCredentials, generateBootstrapCredentials, formatCredsFile } from '../../common/nats-jwt';
 import { triggerVaultProvisioning } from '../../common/vault-provisioner';
@@ -36,6 +39,10 @@ const TABLE_LEDGER_AUTH_TOKENS = process.env.TABLE_LEDGER_AUTH_TOKENS!;
 const TABLE_TRANSACTION_KEYS = process.env.TABLE_TRANSACTION_KEYS!;
 const TABLE_NATS_ACCOUNTS = process.env.TABLE_NATS_ACCOUNTS!;
 // NATS_CA_SECRET_ARN no longer needed - NLB terminates TLS with ACM (publicly trusted)
+
+// Rate limiting: 3 finalize attempts per session per 15 minutes
+const RATE_LIMIT_MAX_REQUESTS = 3;
+const RATE_LIMIT_WINDOW_MINUTES = 15;
 
 interface FinalizeRequest {
   enrollment_session_id?: string;  // Optional if using authorizer context
@@ -83,6 +90,13 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
 
     if (!sessionId) {
       return badRequest('enrollment_session_id is required', origin);
+    }
+
+    // Rate limiting by session ID (prevents replay attacks)
+    const sessionHash = hashIdentifier(sessionId);
+    const isAllowed = await checkRateLimit(sessionHash, 'enroll_finalize', RATE_LIMIT_MAX_REQUESTS, RATE_LIMIT_WINDOW_MINUTES);
+    if (!isAllowed) {
+      return tooManyRequests('Too many finalize attempts. Please try again later.', origin);
     }
 
     // Get enrollment session

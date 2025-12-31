@@ -12,6 +12,9 @@ import {
   getRequestId,
   putAudit,
   generateSecureId,
+  checkRateLimit,
+  hashIdentifier,
+  tooManyRequests,
 } from '../../common/util';
 
 const ddb = new DynamoDBClient({});
@@ -20,6 +23,10 @@ const TABLE_CREDENTIALS = process.env.TABLE_CREDENTIALS!;
 const TABLE_LEDGER_AUTH_TOKENS = process.env.TABLE_LEDGER_AUTH_TOKENS!;
 const TABLE_TRANSACTION_KEYS = process.env.TABLE_TRANSACTION_KEYS!;
 const TABLE_ACTION_TOKENS = process.env.TABLE_ACTION_TOKENS!;
+
+// Rate limiting: 10 action requests per user per minute
+const RATE_LIMIT_MAX_REQUESTS = 10;
+const RATE_LIMIT_WINDOW_MINUTES = 1;
 
 // Action type to endpoint mapping
 const ACTION_ENDPOINTS: Record<string, string> = {
@@ -91,6 +98,13 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     }
     if (!body.action_type) {
       return badRequest('action_type is required');
+    }
+
+    // Rate limiting by user_guid (prevents action token abuse)
+    const userHash = hashIdentifier(body.user_guid);
+    const isAllowed = await checkRateLimit(userHash, 'action_request', RATE_LIMIT_MAX_REQUESTS, RATE_LIMIT_WINDOW_MINUTES);
+    if (!isAllowed) {
+      return tooManyRequests('Too many action requests. Please try again later.');
     }
 
     // Validate action type

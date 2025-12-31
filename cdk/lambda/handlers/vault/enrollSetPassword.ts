@@ -10,12 +10,20 @@ import {
   parseJsonBody,
   getRequestId,
   putAudit,
+  checkRateLimit,
+  hashIdentifier,
+  tooManyRequests,
+  getClientIp,
 } from '../../common/util';
 
 const ddb = new DynamoDBClient({});
 
 const TABLE_ENROLLMENT_SESSIONS = process.env.TABLE_ENROLLMENT_SESSIONS!;
 const TABLE_TRANSACTION_KEYS = process.env.TABLE_TRANSACTION_KEYS!;
+
+// Rate limiting: 5 password set attempts per session per 15 minutes
+const RATE_LIMIT_MAX_REQUESTS = 5;
+const RATE_LIMIT_WINDOW_MINUTES = 15;
 
 interface SetPasswordRequest {
   enrollment_session_id?: string;  // Optional if using authorizer context
@@ -60,6 +68,14 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     if (!sessionId) {
       return badRequest('enrollment_session_id is required', origin);
     }
+
+    // Rate limiting by session ID (prevents brute-force password attempts)
+    const sessionHash = hashIdentifier(sessionId);
+    const isAllowed = await checkRateLimit(sessionHash, 'enroll_set_password', RATE_LIMIT_MAX_REQUESTS, RATE_LIMIT_WINDOW_MINUTES);
+    if (!isAllowed) {
+      return tooManyRequests('Too many password attempts. Please try again later.', origin);
+    }
+
     if (!body.encrypted_password_hash) {
       return badRequest('encrypted_password_hash is required', origin);
     }
