@@ -8,11 +8,23 @@
  * 1. An invitation code (for backwards compatibility)
  * 2. A proper enrollment session with session_token (for Android app compatibility)
  *
+ * Request body:
+ * - test_user_id (required): Identifier for the test user
+ * - expires_in_seconds (optional): Invitation expiry, default 3600 (1 hour)
+ * - user_guid (optional): Reuse an existing user_guid that has a vault provisioned.
+ *   This enables full end-to-end testing without provisioning new EC2 instances.
+ *
  * The Android app can use the standard flow:
  * 1. Parse QR data with session_token
  * 2. Call /vault/enroll/authenticate
  * 3. Get enrollment JWT
  * 4. Continue with normal enrollment flow
+ *
+ * For full bootstrap flow testing, pass user_guid of an existing vault user:
+ * {
+ *   "test_user_id": "my_test",
+ *   "user_guid": "user-29680995BC4D4AE19F5B8F046D140005"
+ * }
  *
  * SECURITY: This endpoint requires a valid test API key.
  * Only deployed in non-production environments.
@@ -46,6 +58,9 @@ const TEST_USER_PREFIX = 'test_android_';
 interface CreateInvitationRequest {
   test_user_id: string;
   expires_in_seconds?: number;
+  // Optional: reuse an existing user_guid that has a vault provisioned
+  // This enables testing the full bootstrap flow without provisioning new vaults
+  user_guid?: string;
 }
 
 /**
@@ -109,8 +124,11 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     // Generate invitation code
     const invitationCode = generateInvitationCode();
 
-    // Generate test user GUID and enrollment session (for Android app compatibility)
-    const userGuid = generateSecureId('user', 32);
+    // Use provided user_guid or generate a new one
+    // When reusing an existing user_guid with a provisioned vault, this enables
+    // full end-to-end testing without needing to provision new EC2 instances
+    const userGuid = body.user_guid || generateSecureId('user', 32);
+    const isReusingVault = !!body.user_guid;
     const sessionId = generateSecureId('enroll', 32);
     const sessionToken = generateSecureId('est', 48); // Enrollment Session Token
     const nowMs = now.getTime();
@@ -179,6 +197,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       session_id: sessionId,
       invitation_code: invitationCode.substring(0, 8) + '...',
       expires_in_seconds: expiresInSeconds,
+      reusing_vault: isReusingVault,
     }, requestId);
 
     return ok({
@@ -193,10 +212,15 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       qr_data: qrData,
       expires_at: expiresAt.toISOString(),
       api_url: API_URL,
+      // Vault reuse info:
+      reusing_existing_vault: isReusingVault,
       notes: {
         android_flow: 'Use session_token with /vault/enroll/authenticate to get JWT',
         direct_flow: 'Use invitation_code with /vault/enroll/start-direct (no auth needed)',
         skip_attestation: 'Test sessions automatically skip attestation verification',
+        vault_reuse: isReusingVault
+          ? 'Using existing vault - full bootstrap flow will work'
+          : 'New user_guid - vault must be provisioned separately for bootstrap to work',
       },
     }, origin);
 
