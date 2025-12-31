@@ -63,6 +63,7 @@ export class VaultStack extends cdk.Stack {
   // Vault lifecycle management functions
   public readonly provisionVault!: lambdaNode.NodejsFunction;
   public readonly initializeVault!: lambdaNode.NodejsFunction;
+  public readonly startVault!: lambdaNode.NodejsFunction;
   public readonly stopVault!: lambdaNode.NodejsFunction;
   public readonly terminateVault!: lambdaNode.NodejsFunction;
   public readonly getVaultStatus!: lambdaNode.NodejsFunction;
@@ -399,6 +400,15 @@ export class VaultStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(30),
     });
 
+    this.startVault = new lambdaNode.NodejsFunction(this, 'StartVaultFn', {
+      entry: 'lambda/handlers/vault/startVault.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        TABLE_VAULT_INSTANCES: tables.vaultInstances.tableName,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
     this.stopVault = new lambdaNode.NodejsFunction(this, 'StopVaultFn', {
       entry: 'lambda/handlers/vault/stopVault.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
@@ -687,6 +697,7 @@ export class VaultStack extends cdk.Stack {
     // Grant vault instances table access
     tables.vaultInstances.grantReadWriteData(this.provisionVault);
     tables.vaultInstances.grantReadWriteData(this.initializeVault);
+    tables.vaultInstances.grantReadWriteData(this.startVault);
     tables.vaultInstances.grantReadWriteData(this.stopVault);
     tables.vaultInstances.grantReadWriteData(this.terminateVault);
     tables.vaultInstances.grantReadWriteData(this.getVaultHealth);
@@ -780,6 +791,20 @@ export class VaultStack extends cdk.Stack {
     this.initializeVault.addToRolePolicy(new iam.PolicyStatement({
       actions: ['ec2:DescribeInstances'],
       resources: ['*'], // Describe requires '*'
+    }));
+
+    this.startVault.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['ec2:DescribeInstances'],
+      resources: ['*'],
+    }));
+    this.startVault.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['ec2:StartInstances'],
+      resources: [`arn:aws:ec2:${this.region}:${this.account}:instance/*`],
+      conditions: {
+        StringEquals: {
+          'ec2:ResourceTag/Application': 'vettid-vault',
+        },
+      },
     }));
 
     this.stopVault.addToRolePolicy(new iam.PolicyStatement({
@@ -1444,6 +1469,7 @@ export class VaultStack extends cdk.Stack {
     // Vault Lifecycle Management
     this.route('ProvisionVault', httpApi, '/vault/provision', apigw.HttpMethod.POST, this.provisionVault, memberAuthorizer);
     this.route('InitializeVault', httpApi, '/vault/initialize', apigw.HttpMethod.POST, this.initializeVault, memberAuthorizer);
+    this.route('StartVault', httpApi, '/vault/start', apigw.HttpMethod.POST, this.startVault, memberAuthorizer);
     this.route('StopVault', httpApi, '/vault/stop', apigw.HttpMethod.POST, this.stopVault, memberAuthorizer);
     this.route('TerminateVault', httpApi, '/vault/terminate', apigw.HttpMethod.POST, this.terminateVault, memberAuthorizer);
     this.route('GetVaultHealth', httpApi, '/vault/health', apigw.HttpMethod.GET, this.getVaultHealth, memberAuthorizer);
