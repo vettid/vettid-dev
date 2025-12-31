@@ -1433,8 +1433,18 @@ export class VaultStack extends cdk.Stack {
 
     // ===== ACTION-TOKEN VAULT LIFECYCLE ENDPOINTS =====
     // These endpoints use action tokens instead of Cognito JWT for mobile apps.
-    // Mobile apps request an action token via /vault/action/request (Cognito auth),
-    // then use that token to call these endpoints without Cognito.
+    // Mobile apps request an action token via /api/v1/action/request (no Cognito),
+    // then use that token to call these endpoints.
+
+    // Action request endpoint for mobile apps (no Cognito auth)
+    // Mobile apps authenticate via their enrolled credentials, not Cognito JWT
+    // The handler validates the user by checking their credential in DynamoDB
+    new apigw.HttpRoute(this, 'ActionRequestPublic', {
+      httpApi,
+      routeKey: apigw.HttpRouteKey.with('/api/v1/action/request', apigw.HttpMethod.POST),
+      integration: new integrations.HttpLambdaIntegration('ActionRequestPublicInt', this.actionRequest),
+      // No authorizer - user validation done via credential lookup in handler
+    });
 
     new apigw.HttpRoute(this, 'VaultStartAction', {
       httpApi,
