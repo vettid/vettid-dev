@@ -331,10 +331,21 @@ const webAcl = new wafv2.CfnWebACL(this, 'WebAcl', {
 // CloudFront Function: Add security headers to all responses with specific API URL
 const securityHeadersFn = new cloudfront.Function(this, 'SecurityHeadersFn', {
   code: cloudfront.FunctionCode.fromInline(`
-// Version: 2025-11-29-20:40 - Force update to use current API endpoint
+// Version: 2025-12-31-13:30 - Add CORS headers for cross-subdomain asset loading
 function handler(event) {
+  var request = event.request;
   var response = event.response;
   var headers = response.headers;
+
+  // CORS: Allow cross-origin requests from vettid.dev subdomains
+  // This enables admin.vettid.dev, account.vettid.dev, etc. to load fonts/styles from vettid.dev
+  var origin = request.headers.origin ? request.headers.origin.value : '';
+  if (origin.endsWith('.vettid.dev') || origin === 'https://vettid.dev') {
+    headers['access-control-allow-origin'] = { value: origin };
+    headers['access-control-allow-methods'] = { value: 'GET, HEAD, OPTIONS' };
+    headers['access-control-allow-headers'] = { value: 'Origin, Content-Type, Accept' };
+    headers['access-control-max-age'] = { value: '86400' };
+  }
 
   // Content Security Policy - restricts resource loading
   // All scripts are now in external files - no 'unsafe-inline' needed
