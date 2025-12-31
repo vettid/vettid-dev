@@ -5,7 +5,7 @@ import { CloudWatchLogsClient, DescribeLogGroupsCommand, FilterLogEventsCommand,
 const logs = new CloudWatchLogsClient({});
 
 const MAX_LIMIT = 100;
-const DEFAULT_LIMIT = 50;
+const DEFAULT_LIMIT = 20; // SECURITY: Reduced from 50 for better performance
 
 // VettID-specific log group prefixes
 const VETTID_LOG_PREFIXES = [

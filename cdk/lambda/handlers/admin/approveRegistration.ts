@@ -74,35 +74,14 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     const now = new Date().toISOString();
 
     let userGuid: string;
+    let needsUserCreation = false;
 
-    // Create Cognito user if they don't exist
+    // SECURITY FIX: Check Cognito first, but update DynamoDB BEFORE creating Cognito user
+    // This prevents orphaned Cognito users if DynamoDB update fails
     const exists = await userExistsInCognito(reg.email);
     if (!exists) {
       userGuid = randomUUID();
-      await cognito.send(new AdminCreateUserCommand({
-        UserPoolId: USER_POOL_ID,
-        Username: reg.email,
-        MessageAction: "SUPPRESS", // Don't send temporary password - users login via magic link
-        UserAttributes: [
-          { Name: "email", Value: reg.email },
-          { Name: "email_verified", Value: "true" },
-          { Name: "given_name", Value: reg.first_name },
-          { Name: "family_name", Value: reg.last_name },
-          { Name: "custom:user_guid", Value: userGuid }
-        ]
-      }));
-
-      // Set permanent password to remove FORCE_CHANGE_PASSWORD status
-      // This is required for magic link auth to work properly
-      // SECURITY: Generate cryptographically secure random password (user won't use it - magic link auth)
-      const { AdminSetUserPasswordCommand } = await import('@aws-sdk/client-cognito-identity-provider');
-      const securePassword = randomBytes(32).toString('base64') + 'Aa1!'; // High entropy + required chars
-      await cognito.send(new AdminSetUserPasswordCommand({
-        UserPoolId: USER_POOL_ID,
-        Username: reg.email,
-        Password: securePassword,
-        Permanent: true
-      }));
+      needsUserCreation = true;
     } else {
       // User already exists - fetch their GUID from Cognito
       const userResponse = await cognito.send(new AdminGetUserCommand({
@@ -113,8 +92,6 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
       if (!guidAttr?.Value) {
         // CRITICAL: Existing user is missing custom:user_guid attribute
-        // This is a data integrity issue that must be resolved manually
-        // Do NOT generate a new GUID as it would cause mismatches with DynamoDB records
         console.error(`User ${reg.email} exists in Cognito but missing custom:user_guid attribute`);
         await putAudit({
           type: 'approval_error_missing_guid',
@@ -128,21 +105,13 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       userGuid = guidAttr.Value;
     }
 
-    // Add to registered group (not member - they need to request membership separately)
-    await cognito.send(new AdminAddUserToGroupCommand({
-      UserPoolId: USER_POOL_ID,
-      Username: reg.email,
-      GroupName: 'registered'
-    }));
-
-    // Update registration status, set membership_status and user_guid
-    // IDEMPOTENCY: Use conditional expression to ensure we only approve pending registrations
+    // STEP 1: Update DynamoDB FIRST (before Cognito mutation)
+    // This ensures we don't create orphaned Cognito users
     try {
       await ddb.send(new UpdateItemCommand({
         TableName: TABLES.registrations,
         Key: marshall({ registration_id: id }),
         UpdateExpression: "SET #s = :approved, approved_at = :now, approved_by = :by, membership_status = :membership_status, user_guid = :user_guid",
-        // Only update if status is still pending (prevents race conditions)
         ConditionExpression: "#s = :pending",
         ExpressionAttributeNames: { "#s": "status" },
         ExpressionAttributeValues: marshall({
@@ -156,11 +125,59 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       }));
     } catch (error: any) {
       if (error.name === 'ConditionalCheckFailedException') {
-        // Registration was already approved by another request
         return ok({ message: "already approved" });
       }
       throw error;
     }
+
+    // STEP 2: Create Cognito user if needed (DynamoDB already updated)
+    if (needsUserCreation) {
+      try {
+        await cognito.send(new AdminCreateUserCommand({
+          UserPoolId: USER_POOL_ID,
+          Username: reg.email,
+          MessageAction: "SUPPRESS",
+          UserAttributes: [
+            { Name: "email", Value: reg.email },
+            { Name: "email_verified", Value: "true" },
+            { Name: "given_name", Value: reg.first_name },
+            { Name: "family_name", Value: reg.last_name },
+            { Name: "custom:user_guid", Value: userGuid }
+          ]
+        }));
+
+        // Set permanent password for magic link auth
+        const { AdminSetUserPasswordCommand } = await import('@aws-sdk/client-cognito-identity-provider');
+        const securePassword = randomBytes(32).toString('base64') + 'Aa1!';
+        await cognito.send(new AdminSetUserPasswordCommand({
+          UserPoolId: USER_POOL_ID,
+          Username: reg.email,
+          Password: securePassword,
+          Permanent: true
+        }));
+      } catch (cognitoError) {
+        // Rollback DynamoDB on Cognito failure
+        console.error('Cognito user creation failed, rolling back DynamoDB:', cognitoError);
+        await ddb.send(new UpdateItemCommand({
+          TableName: TABLES.registrations,
+          Key: marshall({ registration_id: id }),
+          UpdateExpression: "SET #s = :pending, approved_at = :null, approved_by = :null",
+          ExpressionAttributeNames: { "#s": "status" },
+          ExpressionAttributeValues: marshall({
+            ":pending": "pending",
+            ":null": null
+          })
+        }));
+        throw cognitoError;
+      }
+    }
+
+    // STEP 3: Add to registered group
+    await cognito.send(new AdminAddUserToGroupCommand({
+      UserPoolId: USER_POOL_ID,
+      Username: reg.email,
+      GroupName: 'registered'
+    }));
 
     await putAudit({
       type: "registration_approved",

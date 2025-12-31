@@ -2061,7 +2061,8 @@ function createProgressBar(percentage,color='#10b981'){
 // PKCE helpers
 function b64url(buf){return btoa(String.fromCharCode.apply(null,new Uint8Array(buf))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');}
 async function sha256(str){const enc=new TextEncoder().encode(str);const buf=await crypto.subtle.digest('SHA-256',enc);return b64url(buf);}
-function rand(n=64){const a=new Uint8Array(n);crypto.getRandomValues(a);const c='abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~';return Array.from(a,b=>c[b%c.length]).join('');}
+// SECURITY FIX: Use proper base64url encoding to avoid modulo bias
+function rand(n=64){const a=new Uint8Array(n);crypto.getRandomValues(a);return b64url(a.buffer).substring(0,n);}
 function authUrl(codeChallenge,state){const u=new URL(COGNITO_DOMAIN+'/oauth2/authorize');u.searchParams.set('client_id',CLIENT_ID);u.searchParams.set('response_type','code');u.searchParams.set('scope','openid email');u.searchParams.set('redirect_uri',REDIRECT_URI);u.searchParams.set('code_challenge_method','S256');u.searchParams.set('code_challenge',codeChallenge);u.searchParams.set('state',state);return u.toString();}
 function tokenUrl(){return COGNITO_DOMAIN+'/oauth2/token';}
 function logoutUrl(){const u=new URL(COGNITO_DOMAIN+'/logout');u.searchParams.set('client_id',CLIENT_ID);u.searchParams.set('logout_uri',REDIRECT_URI);return u.toString();}

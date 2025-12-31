@@ -9,7 +9,7 @@ const USER_POOL_ID = process.env.USER_POOL_ID!;
 
 // SECURITY: Maximum items to return per request
 const MAX_LIMIT = 100;
-const DEFAULT_LIMIT = 50;
+const DEFAULT_LIMIT = 20; // SECURITY: Reduced from 50 for better performance
 
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   // Validate admin group membership

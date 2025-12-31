@@ -584,9 +584,17 @@ export function cors(requestOrigin?: string, methods: string = "OPTIONS,GET,POST
     // Single specific origin configured - use it
     allowOrigin = allowedOrigins[0];
   } else {
-    // Use the first non-wildcard origin as default
-    // This will cause CORS errors for unknown origins (which is the desired behavior)
-    allowOrigin = allowedOrigins.find(o => o !== '*') || 'https://vettid.dev';
+    // SECURITY: Log warning when origin not in allowed list
+    const fallbackOrigin = allowedOrigins.find(o => o !== '*');
+    if (!fallbackOrigin) {
+      // SECURITY: No valid origins configured - this is a configuration error
+      console.error('SECURITY: No valid CORS origins configured. Request origin:', requestOrigin);
+      throw new Error('CORS configuration error: No valid origins');
+    }
+    if (requestOrigin) {
+      console.warn(`SECURITY: Request from unknown origin rejected: ${requestOrigin}`);
+    }
+    allowOrigin = fallbackOrigin;
   }
 
   return {
@@ -801,7 +809,8 @@ export async function getInvite(code: string): Promise<any> {
  */
 export async function userExistsInCognito(email: string): Promise<boolean> {
   const startTime = Date.now();
-  const minDuration = 50; // Minimum execution time in ms to prevent timing attacks
+  // SECURITY: Increased from 50ms to 200ms for stronger timing attack protection
+  const minDuration = 200;
 
   try {
     await withRetry(async () => {

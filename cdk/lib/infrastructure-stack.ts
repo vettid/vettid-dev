@@ -706,7 +706,10 @@ export class InfrastructureStack extends cdk.Stack {
         requireLowercase: true,
         requireUppercase: true,
         requireSymbols: true,
+        tempPasswordValidity: cdk.Duration.days(1), // SECURITY: Short temp password validity
       },
+      // NOTE: advancedSecurityMode requires Cognito Plus tier (currently on Essentials)
+      // Account lockout would need to be implemented at application layer instead
       email: cognito.UserPoolEmail.withSES({
         fromEmail: 'no-reply@auth.vettid.dev',
         fromName: 'VettID',
@@ -739,7 +742,10 @@ export class InfrastructureStack extends cdk.Stack {
         requireLowercase: true,
         requireUppercase: true,
         requireSymbols: true,
+        tempPasswordValidity: cdk.Duration.days(1), // SECURITY: Short temp password validity
       },
+      // NOTE: advancedSecurityMode requires Cognito Plus tier (currently on Essentials)
+      // Account lockout would need to be implemented at application layer instead
       // Require MFA for all admin users - critical security control
       mfa: cognito.Mfa.REQUIRED,
       mfaSecondFactor: {

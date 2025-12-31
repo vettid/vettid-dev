@@ -8,7 +8,7 @@ const TABLE_AUDIT = process.env.TABLE_AUDIT!;
 
 // Maximum items to return per request
 const MAX_LIMIT = 100;
-const DEFAULT_LIMIT = 50;
+const DEFAULT_LIMIT = 20; // SECURITY: Reduced from 50 for better performance
 
 /**
  * Get audit log entries for a specific email

@@ -931,21 +931,36 @@ export class AdminStack extends cdk.Stack {
     }));
 
     // Grant system monitoring permissions
+    // SECURITY: Scope to VettID-specific resources only
     getSystemHealth.addToRolePolicy(new iam.PolicyStatement({
-      actions: [
-        'ses:GetSendQuota',
-        'dynamodb:DescribeTable',
-        'cloudwatch:GetMetricStatistics',
+      actions: ['ses:GetSendQuota'],
+      resources: ['*'], // SES quota doesn't support resource-level permissions
+    }));
+    getSystemHealth.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['dynamodb:DescribeTable'],
+      resources: [
+        `arn:aws:dynamodb:${this.region}:${this.account}:table/VettID-*`,
       ],
-      resources: ['*'],
+    }));
+    getSystemHealth.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['cloudwatch:GetMetricStatistics'],
+      resources: ['*'], // CloudWatch metrics don't support resource-level permissions
     }));
 
+    // SECURITY: Scope logs access to VettID log groups only
     getSystemLogs.addToRolePolicy(new iam.PolicyStatement({
-      actions: [
-        'logs:DescribeLogGroups',
-        'logs:FilterLogEvents',
+      actions: ['logs:DescribeLogGroups'],
+      resources: [
+        `arn:aws:logs:${this.region}:${this.account}:log-group:*`,
       ],
-      resources: ['*'],
+    }));
+    getSystemLogs.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['logs:FilterLogEvents'],
+      resources: [
+        `arn:aws:logs:${this.region}:${this.account}:log-group:/aws/lambda/VettID-*:*`,
+        `arn:aws:logs:${this.region}:${this.account}:log-group:/aws/lambda/VettIDStack-*:*`,
+        `arn:aws:logs:${this.region}:${this.account}:log-group:/aws/apigateway/vettid-*:*`,
+      ],
     }));
 
     // Export Lambda functions for VettIDStack to use in API routes

@@ -3,7 +3,7 @@ import { DynamoDBClient, ScanCommand, QueryCommand, PutItemCommand, BatchGetItem
 import { SESClient, SendEmailCommand } from '@aws-sdk/client-ses';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import { randomUUID } from 'crypto';
-import { ok, badRequest, internalError, requireAdminGroup, getAdminEmail, validateUUID } from '../../common/util';
+import { ok, badRequest, internalError, requireAdminGroup, getAdminEmail, validateUUID, putAudit } from '../../common/util';
 
 const ddb = new DynamoDBClient({});
 const ses = new SESClient({});
@@ -20,6 +20,91 @@ type SendBulkEmailRequest = {
   body_html: string;
   body_text: string;
 };
+
+// SECURITY: Allowed domains for links in bulk emails
+const ALLOWED_LINK_DOMAINS = [
+  'vettid.dev',
+  'www.vettid.dev',
+  'account.vettid.dev',
+  'admin.vettid.dev',
+  'register.vettid.dev',
+];
+
+/**
+ * SECURITY: Validate email content to prevent phishing attacks
+ * Returns null if valid, error message if invalid
+ */
+function validateEmailContent(html: string, text: string, subject: string): string | null {
+  const lowerHtml = html.toLowerCase();
+  const lowerText = text.toLowerCase();
+  const lowerSubject = subject.toLowerCase();
+
+  // Block JavaScript in HTML
+  if (/<script[\s>]/i.test(html) || /javascript:/i.test(html) || /on\w+\s*=/i.test(html)) {
+    return 'JavaScript is not allowed in email content';
+  }
+
+  // Block form elements (phishing vector)
+  if (/<form[\s>]/i.test(html) || /<input[\s>]/i.test(html) || /<button[\s>]/i.test(html)) {
+    return 'Form elements are not allowed in email content';
+  }
+
+  // Block iframes and objects
+  if (/<iframe[\s>]/i.test(html) || /<object[\s>]/i.test(html) || /<embed[\s>]/i.test(html)) {
+    return 'Embedded content (iframe, object, embed) is not allowed';
+  }
+
+  // Extract and validate all URLs
+  const urlPattern = /https?:\/\/[^\s"'<>]+/gi;
+  const urls = html.match(urlPattern) || [];
+
+  for (const url of urls) {
+    try {
+      const parsed = new URL(url);
+      const hostname = parsed.hostname.toLowerCase();
+
+      // Check if domain is allowed
+      const isAllowed = ALLOWED_LINK_DOMAINS.some(domain =>
+        hostname === domain || hostname.endsWith('.' + domain)
+      );
+
+      if (!isAllowed) {
+        return `External links are not allowed. Found: ${hostname}. Only vettid.dev domains are permitted.`;
+      }
+    } catch {
+      // Invalid URL - skip
+    }
+  }
+
+  // Block common phishing keywords in subject
+  const phishingKeywords = [
+    'verify your account',
+    'confirm your identity',
+    'update your payment',
+    'suspended',
+    'urgent action required',
+    'your account will be',
+    'click here immediately',
+    'act now',
+  ];
+
+  for (const keyword of phishingKeywords) {
+    if (lowerSubject.includes(keyword)) {
+      return `Subject contains suspicious phrase: "${keyword}"`;
+    }
+  }
+
+  // Limit content size to prevent abuse
+  if (html.length > 100000) {
+    return 'HTML content exceeds maximum size (100KB)';
+  }
+
+  if (text.length > 50000) {
+    return 'Text content exceeds maximum size (50KB)';
+  }
+
+  return null; // Valid
+}
 
 /**
  * Get recipient emails based on recipient type
@@ -198,6 +283,18 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
 
   if (!body_text || body_text.trim().length === 0) {
     return badRequest('body_text is required');
+  }
+
+  // SECURITY: Validate email content to prevent phishing
+  const contentError = validateEmailContent(body_html, body_text, subject);
+  if (contentError) {
+    await putAudit({
+      type: 'bulk_email_content_rejected',
+      admin: adminEmail,
+      reason: contentError,
+      recipient_type,
+    });
+    return badRequest(`Content validation failed: ${contentError}`);
   }
 
   try {
