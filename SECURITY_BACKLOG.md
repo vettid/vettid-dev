@@ -69,17 +69,17 @@ This file tracks security issues identified during the security audit that need 
 15. **API Gateway throttling review** - `vettid-stack.ts:940-949`
     - Current limits may allow single attacker to consume capacity
 
-16. **Cognito missing password history** - `infrastructure-stack.ts:428-467`
-    - Users can reuse previous passwords
-    - Note: Not natively supported in Cognito CDK L2
+16. ~~**Cognito missing password history** - `infrastructure-stack.ts:428-467`~~ ⏭️ IGNORED
+    - ~~Users can reuse previous passwords~~
+    - ~~Note: Not natively supported in Cognito CDK L2~~
 
-17. **Member pool missing account lockout** - `infrastructure-stack.ts:700-770`
-    - advancedSecurityMode requires Cognito Plus tier (currently on Essentials)
-    - Note: Would need application-layer lockout or upgrade to Plus tier
+17. ~~**Member pool missing account lockout** - `infrastructure-stack.ts:700-770`~~ ⏭️ IGNORED
+    - ~~advancedSecurityMode requires Cognito Plus tier (currently on Essentials)~~
+    - ~~Note: Accepted risk - would require tier upgrade or app-layer implementation~~
 
-18. **Broad SES permissions** - `infrastructure-stack.ts:755-761`
-    - SES permission includes `identity/*` - allows sending from ANY identity
-    - Fix: Scope to specific sender ARNs (`no-reply@auth.vettid.dev`)
+18. ~~**Broad SES permissions** - `admin-stack.ts`, `vettid-stack.ts`~~ ✅ FIXED
+    - ~~SES permission includes `identity/*` - allows sending from ANY identity~~
+    - ~~Fix: Split SES actions - SendEmail scoped to specific identity ARNs~~
 
 ### Lambda Handlers
 
@@ -103,9 +103,9 @@ This file tracks security issues identified during the security audit that need 
 24. ~~**Weak PIN validation (allows 1111)** - `verifyPin.ts`, `updatePin.ts`~~ ✅ ALREADY FIXED
     - ~~isWeakPin() already checks for 1111, 1234, 1357, 2468, etc.~~
 
-25. **Error message disclosure** - Multiple handlers
-    - Raw `error.message` returned to clients
-    - Fix: Use `sanitizeErrorForClient()` utility
+25. ~~**Error message disclosure** - Multiple handlers~~ ✅ FIXED
+    - ~~Raw `error.message` returned to clients~~
+    - ~~Fix: Updated 19 handlers to use `sanitizeErrorForClient()` utility~~
 
 26. ~~**Race condition in approveRegistration** - `approveRegistration.ts:78-105`~~ ✅ FIXED
     - ~~DynamoDB now updated BEFORE Cognito user creation~~
@@ -116,8 +116,9 @@ This file tracks security issues identified during the security audit that need 
 27. ~~**Weak default pagination (50)** - `listRegistrations.ts:10-12`~~ ✅ FIXED
     - ~~Reduced to 20 across all list endpoints~~
 
-28. **Missing SRI on external resources** - `admin/index.html:10-12`
-    - Add integrity attribute to external scripts/styles
+28. ~~**Missing SRI on external resources** - Multiple HTML files~~ ✅ FIXED
+    - ~~Add integrity attribute to external scripts/styles~~
+    - ~~Fixed: amazon-cognito-identity-js and qrcodejs now have SRI~~
 
 29. **Verbose console errors** - Multiple files
     - Sanitize console output in production
@@ -134,8 +135,9 @@ This file tracks security issues identified during the security audit that need 
 33. **Missing request size limits in WAF** - `vettid-stack.ts`
     - Add WAF rule to limit payload sizes
 
-34. **CSV injection risk in logs** - `sendBulkEmail.ts:227`
-    - Hash email addresses in logs
+34. ~~**CSV injection risk in logs** - `sendBulkEmail.ts`~~ ✅ FIXED
+    - ~~Hash email addresses in logs~~
+    - ~~Fix: Email addresses hashed with SHA-256 (first 12 chars) in console.error~~
 
 35. **Deploy custom domain api.vettid.dev** - Infrastructure
     - Required for certificate pinning in mobile apps
@@ -165,6 +167,10 @@ This file tracks security issues identified during the security audit that need 
 14. ✅ **CORS fallback** - Now throws error instead of silent fallback
 15. ✅ **Race condition in approveRegistration** - Reordered DynamoDB before Cognito with rollback
 16. ✅ **Default pagination** - Reduced from 50 to 20 across all list endpoints
+17. ✅ **SES permissions** - Split actions, scoped SendEmail to specific identity ARNs
+18. ✅ **Error message disclosure** - 19 handlers now use sanitizeErrorForClient()
+19. ✅ **SRI on external resources** - Added integrity attribute to CDN scripts
+20. ✅ **CSV injection risk** - Email addresses hashed in bulk email logs
 
 ---
 

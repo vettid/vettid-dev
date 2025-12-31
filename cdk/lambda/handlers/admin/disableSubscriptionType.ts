@@ -7,7 +7,8 @@ import {
   internalError,
   getRequestId,
   putAudit,
-  requireAdminGroup
+  requireAdminGroup,
+  sanitizeErrorForClient
 } from '../../common/util';
 
 const ddb = new DynamoDBClient({});
@@ -62,6 +63,6 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     return ok({ message: 'Subscription type disabled successfully' });
   } catch (error: any) {
     console.error('Error disabling subscription type:', error);
-    return internalError(error.message || 'Failed to disable subscription type');
+    return internalError(sanitizeErrorForClient(error, 'Failed to disable subscription type'));
   }
 };

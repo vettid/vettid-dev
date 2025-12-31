@@ -5,7 +5,8 @@ import {
   ok,
   badRequest,
   internalError,
-  requireAdminGroup
+  requireAdminGroup,
+  sanitizeErrorForClient
 } from '../../common/util';
 
 const ddb = new DynamoDBClient({});
@@ -91,6 +92,6 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     });
   } catch (error: any) {
     console.error('Error getting proposal vote counts:', error);
-    return internalError(error.message || 'Failed to get proposal vote counts');
+    return internalError(sanitizeErrorForClient(error, 'Failed to get proposal vote counts'));
   }
 };

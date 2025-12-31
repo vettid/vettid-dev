@@ -1,7 +1,7 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { DynamoDBClient, ScanCommand } from '@aws-sdk/client-dynamodb';
 import { unmarshall } from '@aws-sdk/util-dynamodb';
-import { ok, internalError, requireAdminGroup } from '../../common/util';
+import { ok, internalError, requireAdminGroup, sanitizeErrorForClient } from '../../common/util';
 
 const ddb = new DynamoDBClient({});
 const TABLE_PROPOSALS = process.env.TABLE_PROPOSALS!;
@@ -61,6 +61,6 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     return ok(proposals);
   } catch (error: any) {
     console.error('Error listing proposals:', error);
-    return internalError(error.message || 'Failed to list proposals');
+    return internalError(sanitizeErrorForClient(error, 'Failed to list proposals'));
   }
 };

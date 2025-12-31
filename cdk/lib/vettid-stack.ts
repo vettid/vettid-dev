@@ -792,11 +792,18 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
         resources: ['*'], // These SES actions don't support resource-level permissions
       }),
     );
-    // SES permission for waitlist email verification and admin notifications
+    // SES permission for waitlist email verification (doesn't support resource-level)
     submitWaitlist.addToRolePolicy(
       new iam.PolicyStatement({
-        actions: ['ses:VerifyEmailIdentity', 'ses:SendEmail'],
+        actions: ['ses:VerifyEmailIdentity'],
         resources: ['*'], // VerifyEmailIdentity doesn't support resource-level permissions
+      }),
+    );
+    // SECURITY: SES SendEmail scoped to specific identity
+    submitWaitlist.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['ses:SendEmail'],
+        resources: [sesIdentityArn, sesConfigSetArn],
       }),
     );
     requestMembership.addToRolePolicy(

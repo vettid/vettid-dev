@@ -2,7 +2,12 @@ import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { DynamoDBClient, ScanCommand, QueryCommand, PutItemCommand, BatchGetItemCommand } from '@aws-sdk/client-dynamodb';
 import { SESClient, SendEmailCommand } from '@aws-sdk/client-ses';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
-import { randomUUID } from 'crypto';
+import { randomUUID, createHash } from 'crypto';
+
+// SECURITY: Hash email for logs to prevent CSV injection and PII exposure
+function hashEmail(email: string): string {
+  return createHash('sha256').update(email.toLowerCase()).digest('hex').substring(0, 12);
+}
 import { ok, badRequest, internalError, requireAdminGroup, getAdminEmail, validateUUID, putAudit } from '../../common/util';
 
 const ddb = new DynamoDBClient({});
@@ -339,7 +344,8 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
         }));
         sentCount++;
       } catch (error) {
-        console.error(`Failed to send email to ${email}:`, error);
+        // SECURITY: Hash email in logs to prevent CSV injection and PII exposure
+        console.error(`Failed to send email to [hash:${hashEmail(email)}]:`, error);
         failedEmails.push(email);
       }
     }

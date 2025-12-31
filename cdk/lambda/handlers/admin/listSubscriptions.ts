@@ -1,7 +1,7 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { DynamoDBClient, ScanCommand, BatchGetItemCommand } from '@aws-sdk/client-dynamodb';
 import { unmarshall, marshall } from '@aws-sdk/util-dynamodb';
-import { ok, internalError, requireAdminGroup } from '../../common/util';
+import { ok, internalError, requireAdminGroup, sanitizeErrorForClient } from '../../common/util';
 
 const ddb = new DynamoDBClient({});
 const TABLE_SUBSCRIPTIONS = process.env.TABLE_SUBSCRIPTIONS!;
@@ -173,6 +173,6 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     return ok(response);
   } catch (error: any) {
     console.error('Error listing subscriptions:', error);
-    return internalError(error.message || 'Failed to list subscriptions');
+    return internalError(sanitizeErrorForClient(error, 'Failed to list subscriptions'));
   }
 };

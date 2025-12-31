@@ -3,7 +3,7 @@ import { DynamoDBClient, ScanCommand, PutItemCommand, UpdateItemCommand } from '
 import { SESClient, SendEmailCommand, GetIdentityVerificationAttributesCommand, VerifyEmailIdentityCommand } from '@aws-sdk/client-ses';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import { randomBytes } from 'crypto';
-import { ok, forbidden, badRequest, internalError, getRequestId, putAudit, validateOrigin, requireAdminGroup } from '../../common/util';
+import { ok, forbidden, badRequest, internalError, getRequestId, putAudit, validateOrigin, requireAdminGroup, sanitizeErrorForClient } from '../../common/util';
 
 const ddb = new DynamoDBClient({});
 const ses = new SESClient({});
@@ -305,6 +305,6 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
 
   } catch (error: any) {
     console.error('Error sending waitlist invites:', error);
-    return internalError(error.message || 'Failed to send invites');
+    return internalError(sanitizeErrorForClient(error, 'Failed to send invites'));
   }
 };

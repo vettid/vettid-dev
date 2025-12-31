@@ -1,7 +1,7 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { DynamoDBClient, ScanCommand } from '@aws-sdk/client-dynamodb';
 import { unmarshall } from '@aws-sdk/util-dynamodb';
-import { ok, internalError, requireAdminGroup } from '../../common/util';
+import { ok, internalError, requireAdminGroup, sanitizeErrorForClient } from '../../common/util';
 
 const ddb = new DynamoDBClient({});
 const TABLE_SUBSCRIPTION_TYPES = process.env.TABLE_SUBSCRIPTION_TYPES!;
@@ -37,6 +37,6 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     return ok({ subscription_types: subscriptionTypes });
   } catch (error: any) {
     console.error('Error listing subscription types:', error);
-    return internalError(error.message || 'Failed to list subscription types');
+    return internalError(sanitizeErrorForClient(error, 'Failed to list subscription types'));
   }
 };

@@ -791,9 +791,10 @@ export class AdminStack extends cdk.Stack {
       resources: ['*'],
     }));
 
+    // SECURITY: Split SES actions - GetIdentityVerificationAttributes doesn't support resource-level
     activateAdmin.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['ses:GetIdentityVerificationAttributes', 'ses:SendEmail'],
-      resources: ['*'],
+      actions: ['ses:GetIdentityVerificationAttributes'],
+      resources: ['*'], // This action doesn't support resource-level permissions
     }));
     activateAdmin.addToRolePolicy(new iam.PolicyStatement({
       actions: ['ses:SendEmail'],

@@ -8,6 +8,7 @@ import {
   getRequestId,
   putAudit,
   validateOrigin,
+  sanitizeErrorForClient,
   requireUserClaims
 } from '../../common/util';
 
@@ -83,6 +84,6 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     });
   } catch (error: any) {
     console.error('Error cancelling subscription:', error);
-    return internalError(error.message || 'Failed to cancel subscription');
+    return internalError(sanitizeErrorForClient(error, 'Failed to cancel subscription'));
   }
 };

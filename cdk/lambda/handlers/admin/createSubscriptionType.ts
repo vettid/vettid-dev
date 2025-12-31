@@ -8,6 +8,7 @@ import {
   parseJsonBody,
   getRequestId,
   putAudit,
+  sanitizeErrorForClient,
   requireAdminGroup
 } from '../../common/util';
 import { randomUUID } from 'crypto';
@@ -102,6 +103,6 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     });
   } catch (error: any) {
     console.error('Error creating subscription type:', error);
-    return internalError(error.message || 'Failed to create subscription type');
+    return internalError(sanitizeErrorForClient(error, 'Failed to create subscription type'));
   }
 };

@@ -3,7 +3,8 @@ import { DynamoDBClient, QueryCommand } from '@aws-sdk/client-dynamodb';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import {
   ok,
-  internalError
+  internalError,
+  sanitizeErrorForClient
 } from '../../common/util';
 
 const ddb = new DynamoDBClient({});
@@ -76,6 +77,6 @@ export const handler = async (_event: APIGatewayProxyEventV2): Promise<APIGatewa
     });
   } catch (error: any) {
     console.error('Error getting all proposals:', error);
-    return internalError(error.message || 'Failed to get proposals');
+    return internalError(sanitizeErrorForClient(error, 'Failed to get proposals'));
   }
 };

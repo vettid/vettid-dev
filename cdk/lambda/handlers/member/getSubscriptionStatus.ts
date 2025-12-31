@@ -4,7 +4,8 @@ import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import {
   ok,
   internalError,
-  requireUserClaims
+  requireUserClaims,
+  sanitizeErrorForClient
 } from '../../common/util';
 
 const ddb = new DynamoDBClient({});
@@ -74,6 +75,6 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     });
   } catch (error: any) {
     console.error('Error getting subscription status:', error);
-    return internalError(error.message || 'Failed to get subscription status');
+    return internalError(sanitizeErrorForClient(error, 'Failed to get subscription status'));
   }
 };

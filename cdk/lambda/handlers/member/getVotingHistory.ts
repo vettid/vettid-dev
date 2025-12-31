@@ -4,7 +4,8 @@ import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import {
   ok,
   badRequest,
-  internalError
+  internalError,
+  sanitizeErrorForClient
 } from '../../common/util';
 
 const ddb = new DynamoDBClient({});
@@ -100,6 +101,6 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     return ok({ votes });
   } catch (error: any) {
     console.error('Error getting voting history:', error);
-    return internalError(error.message || 'Failed to get voting history');
+    return internalError(sanitizeErrorForClient(error, 'Failed to get voting history'));
   }
 };
