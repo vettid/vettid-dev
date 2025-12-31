@@ -80,24 +80,9 @@ export class VaultStack extends cdk.Stack {
   public readonly listInstalledHandlers!: lambdaNode.NodejsFunction;
   public readonly executeHandler!: lambdaNode.NodejsFunction;
 
-  // Phase 7: Connections & Messaging
-  public readonly createConnectionInvite!: lambdaNode.NodejsFunction;
-  public readonly acceptConnectionInvite!: lambdaNode.NodejsFunction;
-  public readonly revokeConnection!: lambdaNode.NodejsFunction;
-  public readonly listConnections!: lambdaNode.NodejsFunction;
-  public readonly getConnection!: lambdaNode.NodejsFunction;
-  public readonly getConnectionProfile!: lambdaNode.NodejsFunction;
-
-  // Profile management
+  // Phase 7: Profile management (connections and messaging are vault-to-vault via NATS)
   public readonly getProfile!: lambdaNode.NodejsFunction;
   public readonly updateProfile!: lambdaNode.NodejsFunction;
-  public readonly publishProfile!: lambdaNode.NodejsFunction;
-
-  // Messaging
-  public readonly sendMessage!: lambdaNode.NodejsFunction;
-  public readonly getMessageHistory!: lambdaNode.NodejsFunction;
-  public readonly getUnreadCount!: lambdaNode.NodejsFunction;
-  public readonly markMessageRead!: lambdaNode.NodejsFunction;
 
   // Phase 8: Backup System
   public readonly triggerBackup!: lambdaNode.NodejsFunction;
@@ -885,59 +870,10 @@ export class VaultStack extends cdk.Stack {
     // Grant S3 access for handler downloads
     props.infrastructure.handlersBucket.grantRead(this.getHandler);
 
-    // ===== PHASE 7: CONNECTIONS & MESSAGING =====
+    // ===== PHASE 7: PROFILE MANAGEMENT =====
+    // NOTE: Connections and messaging are handled vault-to-vault via NATS, not Lambda.
+    // See vault-manager handlers: connection.*, message.*
 
-    const connectionsEnv = {
-      TABLE_CONNECTIONS: tables.connections.tableName,
-      TABLE_INVITATIONS: tables.connectionInvitations.tableName,
-      TABLE_PROFILES: tables.profiles.tableName,
-      TABLE_MESSAGES: tables.messages.tableName,
-    };
-
-    // Connection management functions
-    this.createConnectionInvite = new lambdaNode.NodejsFunction(this, 'CreateConnectionInviteFn', {
-      entry: 'lambda/handlers/connections/createInvite.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: connectionsEnv,
-      timeout: cdk.Duration.seconds(30),
-    });
-
-    this.acceptConnectionInvite = new lambdaNode.NodejsFunction(this, 'AcceptConnectionInviteFn', {
-      entry: 'lambda/handlers/connections/acceptInvite.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: connectionsEnv,
-      timeout: cdk.Duration.seconds(30),
-    });
-
-    this.revokeConnection = new lambdaNode.NodejsFunction(this, 'RevokeConnectionFn', {
-      entry: 'lambda/handlers/connections/revokeConnection.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: connectionsEnv,
-      timeout: cdk.Duration.seconds(30),
-    });
-
-    this.listConnections = new lambdaNode.NodejsFunction(this, 'ListConnectionsFn', {
-      entry: 'lambda/handlers/connections/listConnections.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: connectionsEnv,
-      timeout: cdk.Duration.seconds(30),
-    });
-
-    this.getConnection = new lambdaNode.NodejsFunction(this, 'GetConnectionFn', {
-      entry: 'lambda/handlers/connections/getConnection.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: connectionsEnv,
-      timeout: cdk.Duration.seconds(30),
-    });
-
-    this.getConnectionProfile = new lambdaNode.NodejsFunction(this, 'GetConnectionProfileFn', {
-      entry: 'lambda/handlers/connections/getConnectionProfile.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: connectionsEnv,
-      timeout: cdk.Duration.seconds(30),
-    });
-
-    // Profile management functions
     this.getProfile = new lambdaNode.NodejsFunction(this, 'GetProfileFn', {
       entry: 'lambda/handlers/profile/getProfile.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
@@ -956,86 +892,9 @@ export class VaultStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(30),
     });
 
-    this.publishProfile = new lambdaNode.NodejsFunction(this, 'PublishProfileFn', {
-      entry: 'lambda/handlers/profile/publishProfile.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: {
-        TABLE_PROFILES: tables.profiles.tableName,
-        TABLE_CONNECTIONS: tables.connections.tableName,
-      },
-      timeout: cdk.Duration.seconds(30),
-    });
-
-    // Messaging functions
-    this.sendMessage = new lambdaNode.NodejsFunction(this, 'SendMessageFn', {
-      entry: 'lambda/handlers/messaging/sendMessage.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: {
-        TABLE_CONNECTIONS: tables.connections.tableName,
-        TABLE_MESSAGES: tables.messages.tableName,
-      },
-      timeout: cdk.Duration.seconds(30),
-    });
-
-    this.getMessageHistory = new lambdaNode.NodejsFunction(this, 'GetMessageHistoryFn', {
-      entry: 'lambda/handlers/messaging/getMessageHistory.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: {
-        TABLE_CONNECTIONS: tables.connections.tableName,
-        TABLE_MESSAGES: tables.messages.tableName,
-      },
-      timeout: cdk.Duration.seconds(30),
-    });
-
-    this.getUnreadCount = new lambdaNode.NodejsFunction(this, 'GetUnreadCountFn', {
-      entry: 'lambda/handlers/messaging/getUnreadCount.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: {
-        TABLE_CONNECTIONS: tables.connections.tableName,
-      },
-      timeout: cdk.Duration.seconds(30),
-    });
-
-    this.markMessageRead = new lambdaNode.NodejsFunction(this, 'MarkMessageReadFn', {
-      entry: 'lambda/handlers/messaging/markAsRead.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: {
-        TABLE_CONNECTIONS: tables.connections.tableName,
-        TABLE_MESSAGES: tables.messages.tableName,
-      },
-      timeout: cdk.Duration.seconds(30),
-    });
-
-    // ===== PHASE 7 PERMISSIONS =====
-
-    // Connection invitations - createConnectionInvite needs read/write
-    tables.connectionInvitations.grantReadWriteData(this.createConnectionInvite);
-    tables.connectionInvitations.grantReadWriteData(this.acceptConnectionInvite);
-
-    // Connections table permissions
-    tables.connections.grantReadWriteData(this.acceptConnectionInvite);
-    tables.connections.grantReadWriteData(this.revokeConnection);
-    tables.connections.grantReadData(this.listConnections);
-    tables.connections.grantReadData(this.getConnection);
-    tables.connections.grantReadData(this.getConnectionProfile);
-    tables.connections.grantReadWriteData(this.publishProfile);
-    tables.connections.grantReadData(this.sendMessage);
-    tables.connections.grantReadWriteData(this.sendMessage); // Needs write for unread_count
-    tables.connections.grantReadData(this.getMessageHistory);
-    tables.connections.grantReadData(this.getUnreadCount);
-    tables.connections.grantReadWriteData(this.markMessageRead);
-
     // Profiles table permissions
     tables.profiles.grantReadWriteData(this.getProfile); // Creates default if missing
     tables.profiles.grantReadWriteData(this.updateProfile);
-    tables.profiles.grantReadData(this.publishProfile);
-    tables.profiles.grantReadData(this.getConnectionProfile);
-    tables.profiles.grantReadData(this.acceptConnectionInvite);
-
-    // Messages table permissions
-    tables.messages.grantReadWriteData(this.sendMessage);
-    tables.messages.grantReadData(this.getMessageHistory);
-    tables.messages.grantReadWriteData(this.markMessageRead);
 
     // ===== PHASE 8: BACKUP SYSTEM =====
 
@@ -1043,9 +902,7 @@ export class VaultStack extends cdk.Stack {
       TABLE_BACKUPS: tables.backups.tableName,
       TABLE_CREDENTIAL_BACKUPS: tables.credentialBackups.tableName,
       TABLE_BACKUP_SETTINGS: tables.backupSettings.tableName,
-      TABLE_CONNECTIONS: tables.connections.tableName,
       TABLE_PROFILES: tables.profiles.tableName,
-      TABLE_MESSAGES: tables.messages.tableName,
       BACKUP_BUCKET: props.infrastructure.backupBucket.bucketName,
     };
 
@@ -1202,15 +1059,11 @@ export class VaultStack extends cdk.Stack {
     props.infrastructure.backupBucket.grantReadWrite(this.createCredentialBackup);
     props.infrastructure.backupBucket.grantRead(this.downloadCredentialBackup);
 
-    // triggerBackup needs read access to connections, profiles, messages
-    tables.connections.grantReadData(this.triggerBackup);
+    // triggerBackup needs read access to profiles (connections/messages are vault-managed)
     tables.profiles.grantReadData(this.triggerBackup);
-    tables.messages.grantReadData(this.triggerBackup);
 
-    // restoreBackup needs write access to connections, profiles, messages
-    tables.connections.grantReadWriteData(this.restoreBackup);
+    // restoreBackup needs write access to profiles (connections/messages are vault-managed)
     tables.profiles.grantReadWriteData(this.restoreBackup);
-    tables.messages.grantReadWriteData(this.restoreBackup);
 
     // ===== BYOV PERMISSIONS =====
 
@@ -1497,24 +1350,9 @@ export class VaultStack extends cdk.Stack {
     this.route('ListInstalledHandlers', httpApi, '/vault/handlers', apigw.HttpMethod.GET, this.listInstalledHandlers, memberAuthorizer);
     this.route('ExecuteHandler', httpApi, '/vault/handlers/{id}/execute', apigw.HttpMethod.POST, this.executeHandler, memberAuthorizer);
 
-    // Connections & Messaging Routes
-    this.route('CreateConnectionInvite', httpApi, '/connections/invite', apigw.HttpMethod.POST, this.createConnectionInvite, memberAuthorizer);
-    this.route('AcceptConnectionInvite', httpApi, '/connections/accept', apigw.HttpMethod.POST, this.acceptConnectionInvite, memberAuthorizer);
-    this.route('RevokeConnection', httpApi, '/connections/{connectionId}/revoke', apigw.HttpMethod.POST, this.revokeConnection, memberAuthorizer);
-    this.route('ListConnections', httpApi, '/connections', apigw.HttpMethod.GET, this.listConnections, memberAuthorizer);
-    this.route('GetConnection', httpApi, '/connections/{connectionId}', apigw.HttpMethod.GET, this.getConnection, memberAuthorizer);
-    this.route('GetConnectionProfile', httpApi, '/connections/{connectionId}/profile', apigw.HttpMethod.GET, this.getConnectionProfile, memberAuthorizer);
-
-    // Profile management
+    // Profile management (connections/messaging are vault-to-vault via NATS)
     this.route('GetProfile', httpApi, '/profile', apigw.HttpMethod.GET, this.getProfile, memberAuthorizer);
     this.route('UpdateProfile', httpApi, '/profile', apigw.HttpMethod.PATCH, this.updateProfile, memberAuthorizer);
-    this.route('PublishProfile', httpApi, '/profile/publish', apigw.HttpMethod.POST, this.publishProfile, memberAuthorizer);
-
-    // Messaging
-    this.route('SendMessage', httpApi, '/messages', apigw.HttpMethod.POST, this.sendMessage, memberAuthorizer);
-    this.route('GetMessageHistory', httpApi, '/connections/{connectionId}/messages', apigw.HttpMethod.GET, this.getMessageHistory, memberAuthorizer);
-    this.route('GetUnreadCount', httpApi, '/messages/unread', apigw.HttpMethod.GET, this.getUnreadCount, memberAuthorizer);
-    this.route('MarkMessageRead', httpApi, '/messages/{messageId}/read', apigw.HttpMethod.POST, this.markMessageRead, memberAuthorizer);
 
     // Backup System Routes
     this.route('TriggerBackup', httpApi, '/vault/backup', apigw.HttpMethod.POST, this.triggerBackup, memberAuthorizer);

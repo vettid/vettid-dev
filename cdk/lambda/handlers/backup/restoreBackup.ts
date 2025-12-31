@@ -1,5 +1,5 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda";
-import { DynamoDBClient, GetItemCommand, PutItemCommand, QueryCommand, DeleteItemCommand, UpdateItemCommand } from "@aws-sdk/client-dynamodb";
+import { DynamoDBClient, GetItemCommand, PutItemCommand, UpdateItemCommand } from "@aws-sdk/client-dynamodb";
 import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
 import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
 import {
@@ -16,16 +16,16 @@ import {
 const ddb = new DynamoDBClient({});
 const s3 = new S3Client({});
 const TABLE_BACKUPS = process.env.TABLE_BACKUPS!;
-const TABLE_CONNECTIONS = process.env.TABLE_CONNECTIONS!;
 const TABLE_PROFILES = process.env.TABLE_PROFILES!;
-const TABLE_MESSAGES = process.env.TABLE_MESSAGES!;
 const BACKUP_BUCKET = process.env.BACKUP_BUCKET!;
+
+// NOTE: Connections and messages are vault-managed (stored in JetStream KV).
+// This Lambda only restores profile data from DynamoDB backups.
+// Vault data restoration is handled by the vault itself via NATS commands.
 
 interface RestoreRequest {
   backup_id: string;
   mode?: "overwrite" | "merge";
-  restore_connections?: boolean;
-  restore_messages?: boolean;
   restore_profile?: boolean;
 }
 
@@ -57,8 +57,6 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     }
 
     const mode = request.mode || "overwrite";
-    const restoreConnections = request.restore_connections !== false;
-    const restoreMessages = request.restore_messages !== false;
     const restoreProfile = request.restore_profile !== false;
 
     // Get backup metadata
@@ -106,57 +104,12 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     }
 
     const restored = {
+      profile: false,
+      // Legacy fields for compatibility
       connections: 0,
       messages: 0,
-      profile: false,
     };
     const conflicts: string[] = [];
-
-    // Restore connections
-    if (restoreConnections && backupData.connections) {
-      if (mode === "overwrite") {
-        // Delete existing connections first
-        const existingConnections = await ddb.send(new QueryCommand({
-          TableName: TABLE_CONNECTIONS,
-          KeyConditionExpression: "owner_guid = :owner",
-          ExpressionAttributeValues: marshall({
-            ":owner": claims.user_guid,
-          }),
-        }));
-
-        for (const item of existingConnections.Items || []) {
-          const conn = unmarshall(item);
-          await ddb.send(new DeleteItemCommand({
-            TableName: TABLE_CONNECTIONS,
-            Key: marshall({
-              owner_guid: conn.owner_guid,
-              peer_guid: conn.peer_guid,
-            }),
-          }));
-        }
-      }
-
-      // Restore connections from backup
-      for (const conn of backupData.connections) {
-        try {
-          await ddb.send(new PutItemCommand({
-            TableName: TABLE_CONNECTIONS,
-            Item: marshall({
-              ...conn,
-              restored_at: nowIso(),
-            }),
-            ConditionExpression: mode === "merge" ? "attribute_not_exists(owner_guid)" : undefined,
-          }));
-          restored.connections++;
-        } catch (error: any) {
-          if (error.name === "ConditionalCheckFailedException") {
-            conflicts.push(`Connection with ${conn.peer_guid} already exists`);
-          } else {
-            throw error;
-          }
-        }
-      }
-    }
 
     // Restore profile
     if (restoreProfile && backupData.profile) {
@@ -191,27 +144,8 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       }
     }
 
-    // Restore messages
-    if (restoreMessages && backupData.messages) {
-      for (const msg of backupData.messages) {
-        try {
-          await ddb.send(new PutItemCommand({
-            TableName: TABLE_MESSAGES,
-            Item: marshall({
-              ...msg,
-              restored_at: nowIso(),
-            }),
-            ConditionExpression: mode === "merge" ? "attribute_not_exists(message_id)" : undefined,
-          }));
-          restored.messages++;
-        } catch (error: any) {
-          if (error.name !== "ConditionalCheckFailedException") {
-            throw error;
-          }
-          // Silently skip duplicate messages in merge mode
-        }
-      }
-    }
+    // NOTE: Connections and messages from old backups (version 1) are ignored.
+    // Those are now vault-managed and restored via vault-to-vault NATS commands.
 
     // Update backup record with restore timestamp
     await ddb.send(new UpdateItemCommand({
@@ -227,11 +161,11 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       success: true,
       backup_id: request.backup_id,
       mode,
-      restored_items: restored.connections + restored.messages + (restored.profile ? 1 : 0),
+      restored_items: restored.profile ? 1 : 0,
       restored: {
+        profile: restored.profile,
         connections: restored.connections,
         messages: restored.messages,
-        profile: restored.profile,
       },
       conflicts,
       requires_reauth: false,

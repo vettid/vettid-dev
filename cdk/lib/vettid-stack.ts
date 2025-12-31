@@ -970,170 +970,7 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       authorizer: this.memberAuthorizer,
     });
 
-    // ===== CONNECTION HANDLERS (Phase 7) =====
-
-    const connectionEnv = {
-      ...defaultEnv,
-      TABLE_CONNECTIONS: tables.connections.tableName,
-      TABLE_CONNECTION_INVITATIONS: tables.connectionInvitations.tableName,
-      TABLE_PROFILES: tables.profiles.tableName,
-    };
-
-    const createConnectionInvitation = new lambdaNode.NodejsFunction(this, 'CreateConnectionInvitationFn', {
-      entry: 'lambda/handlers/connections/createInvitation.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: connectionEnv,
-      timeout: cdk.Duration.seconds(10),
-      description: 'Create connection invitation with X25519 key exchange',
-    });
-
-    const acceptConnectionInvitation = new lambdaNode.NodejsFunction(this, 'AcceptConnectionInvitationFn', {
-      entry: 'lambda/handlers/connections/acceptInvitation.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: connectionEnv,
-      timeout: cdk.Duration.seconds(10),
-      description: 'Accept connection invitation and establish key exchange',
-    });
-
-    const listConnections = new lambdaNode.NodejsFunction(this, 'ListConnectionsFn', {
-      entry: 'lambda/handlers/connections/listConnections.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: connectionEnv,
-      timeout: cdk.Duration.seconds(10),
-      description: 'List user connections',
-    });
-
-    const revokeConnection = new lambdaNode.NodejsFunction(this, 'RevokeConnectionFn', {
-      entry: 'lambda/handlers/connections/revokeConnection.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: connectionEnv,
-      timeout: cdk.Duration.seconds(10),
-      description: 'Revoke a connection',
-    });
-
-    const getConnection = new lambdaNode.NodejsFunction(this, 'GetConnectionFn', {
-      entry: 'lambda/handlers/connections/getConnection.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: connectionEnv,
-      timeout: cdk.Duration.seconds(10),
-      description: 'Get connection details',
-    });
-
-    const getConnectionProfile = new lambdaNode.NodejsFunction(this, 'GetConnectionProfileFn', {
-      entry: 'lambda/handlers/connections/getConnectionProfile.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: connectionEnv,
-      timeout: cdk.Duration.seconds(10),
-      description: 'Get connection profile',
-    });
-
-    // Connection handler grants
-    tables.connectionInvitations.grantReadWriteData(createConnectionInvitation);
-    tables.profiles.grantReadData(createConnectionInvitation);
-    tables.connectionInvitations.grantReadWriteData(acceptConnectionInvitation);
-    tables.connections.grantReadWriteData(acceptConnectionInvitation);
-    tables.profiles.grantReadData(acceptConnectionInvitation);
-    tables.connections.grantReadData(listConnections);
-    tables.connections.grantReadWriteData(revokeConnection);
-    tables.connections.grantReadData(getConnection);
-    tables.connections.grantReadData(getConnectionProfile);
-    tables.profiles.grantReadData(getConnectionProfile);
-
-    // Connection API routes
-    this.httpApi.addRoutes({
-      path: '/member/connections/invitations',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('CreateConnectionInvitationInt', createConnectionInvitation),
-      authorizer: this.memberAuthorizer,
-    });
-    this.httpApi.addRoutes({
-      path: '/member/connections/accept',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('AcceptConnectionInvitationInt', acceptConnectionInvitation),
-      authorizer: this.memberAuthorizer,
-    });
-    this.httpApi.addRoutes({
-      path: '/member/connections',
-      methods: [apigw.HttpMethod.GET],
-      integration: new integrations.HttpLambdaIntegration('ListConnectionsInt', listConnections),
-      authorizer: this.memberAuthorizer,
-    });
-    this.httpApi.addRoutes({
-      path: '/member/connections/{connectionId}',
-      methods: [apigw.HttpMethod.GET],
-      integration: new integrations.HttpLambdaIntegration('GetConnectionInt', getConnection),
-      authorizer: this.memberAuthorizer,
-    });
-    this.httpApi.addRoutes({
-      path: '/member/connections/{connectionId}/revoke',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('RevokeConnectionInt', revokeConnection),
-      authorizer: this.memberAuthorizer,
-    });
-    this.httpApi.addRoutes({
-      path: '/member/connections/{connectionId}/profile',
-      methods: [apigw.HttpMethod.GET],
-      integration: new integrations.HttpLambdaIntegration('GetConnectionProfileInt', getConnectionProfile),
-      authorizer: this.memberAuthorizer,
-    });
-
-    // ===== PROFILE HANDLERS (Phase 7) =====
-
-    const profileEnv = {
-      ...defaultEnv,
-      TABLE_PROFILES: tables.profiles.tableName,
-      TABLE_CONNECTIONS: tables.connections.tableName,
-    };
-
-    const getProfile = new lambdaNode.NodejsFunction(this, 'GetProfileFn', {
-      entry: 'lambda/handlers/profile/getProfile.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: profileEnv,
-      timeout: cdk.Duration.seconds(10),
-      description: 'Get own profile',
-    });
-
-    const updateProfile = new lambdaNode.NodejsFunction(this, 'UpdateProfileFn', {
-      entry: 'lambda/handlers/profile/updateProfile.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: profileEnv,
-      timeout: cdk.Duration.seconds(10),
-      description: 'Update own profile',
-    });
-
-    const publishProfile = new lambdaNode.NodejsFunction(this, 'PublishProfileFn', {
-      entry: 'lambda/handlers/profile/publishProfile.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: profileEnv,
-      timeout: cdk.Duration.seconds(10),
-      description: 'Publish profile updates to connections',
-    });
-
-    // Profile handler grants
-    tables.profiles.grantReadData(getProfile);
-    tables.profiles.grantReadWriteData(updateProfile);
-    tables.profiles.grantReadData(publishProfile);
-    tables.connections.grantReadData(publishProfile);
-
-    // Profile API routes
-    this.httpApi.addRoutes({
-      path: '/member/profile',
-      methods: [apigw.HttpMethod.GET],
-      integration: new integrations.HttpLambdaIntegration('GetProfileInt', getProfile),
-      authorizer: this.memberAuthorizer,
-    });
-    this.httpApi.addRoutes({
-      path: '/member/profile',
-      methods: [apigw.HttpMethod.PUT],
-      integration: new integrations.HttpLambdaIntegration('UpdateProfileInt', updateProfile),
-      authorizer: this.memberAuthorizer,
-    });
-    this.httpApi.addRoutes({
-      path: '/member/profile/publish',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('PublishProfileInt', publishProfile),
-      authorizer: this.memberAuthorizer,
-    });
+    // NOTE: Profile handlers moved to VaultStack. Connection/messaging are vault-to-vault via NATS.
 
     // ===== BACKUP HANDLERS (Phase 8) =====
 
@@ -1143,7 +980,6 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       TABLE_CREDENTIAL_BACKUPS: tables.credentialBackups.tableName,
       TABLE_BACKUP_SETTINGS: tables.backupSettings.tableName,
       TABLE_PROFILES: tables.profiles.tableName,
-      TABLE_CONNECTIONS: tables.connections.tableName,
       BACKUP_BUCKET: props.infrastructure.backupBucket.bucketName,
     };
 
@@ -1219,17 +1055,15 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       description: 'Get credential backup status',
     });
 
-    // Backup handler grants
+    // Backup handler grants (connections/messages are vault-managed, not backed up via Lambda)
     tables.backups.grantReadWriteData(triggerBackup);
     tables.profiles.grantReadData(triggerBackup);
-    tables.connections.grantReadData(triggerBackup);
     props.infrastructure.backupBucket.grantReadWrite(triggerBackup);
 
     tables.backups.grantReadData(listBackups);
 
     tables.backups.grantReadWriteData(restoreBackup);
     tables.profiles.grantReadWriteData(restoreBackup);
-    tables.connections.grantReadWriteData(restoreBackup);
     props.infrastructure.backupBucket.grantRead(restoreBackup);
 
     tables.backups.grantReadWriteData(deleteBackup);

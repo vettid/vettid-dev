@@ -1,5 +1,5 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda";
-import { DynamoDBClient, PutItemCommand, QueryCommand } from "@aws-sdk/client-dynamodb";
+import { DynamoDBClient, PutItemCommand, QueryCommand, GetItemCommand } from "@aws-sdk/client-dynamodb";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
 import { randomUUID } from "crypto";
@@ -15,21 +15,23 @@ import {
 const ddb = new DynamoDBClient({});
 const s3 = new S3Client({});
 const TABLE_BACKUPS = process.env.TABLE_BACKUPS!;
-const TABLE_CONNECTIONS = process.env.TABLE_CONNECTIONS!;
 const TABLE_PROFILES = process.env.TABLE_PROFILES!;
-const TABLE_MESSAGES = process.env.TABLE_MESSAGES!;
 const BACKUP_BUCKET = process.env.BACKUP_BUCKET!;
+
+// NOTE: Connections and messages are vault-managed (stored in JetStream KV).
+// This Lambda only backs up profile data from DynamoDB.
+// Vault data backups are handled by the vault itself via NATS commands.
 
 interface BackupRequest {
   type?: "manual" | "auto";
-  include_messages?: boolean;
 }
 
 interface BackupContents {
+  profile_included: boolean;
+  // Legacy fields kept for compatibility
   connections_count: number;
   messages_count: number;
   handlers_count: number;
-  profile_included: boolean;
 }
 
 export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
@@ -54,7 +56,6 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     }
 
     const backupType = request.type || "manual";
-    const includeMessages = request.include_messages !== false;
 
     // Check for recent backup (within last hour for auto backups)
     if (backupType === "auto") {
@@ -88,58 +89,20 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     const backupId = randomUUID();
     const now = nowIso();
 
-    // Gather backup data
+    // Gather backup data (profile only - connections/messages are vault-managed)
     const backupData: any = {
-      version: 1,
+      version: 2, // v2: profile only, connections/messages in vault
       created_at: now,
       member_guid: claims.user_guid,
     };
 
-    // Get connections
-    const connectionsResult = await ddb.send(new QueryCommand({
-      TableName: TABLE_CONNECTIONS,
-      KeyConditionExpression: "owner_guid = :owner",
-      ExpressionAttributeValues: marshall({
-        ":owner": claims.user_guid,
-      }),
-    }));
-    const connections = connectionsResult.Items?.map(item => unmarshall(item)) || [];
-    backupData.connections = connections;
-
     // Get profile
-    const profileResult = await ddb.send(new QueryCommand({
+    const profileResult = await ddb.send(new GetItemCommand({
       TableName: TABLE_PROFILES,
-      KeyConditionExpression: "user_guid = :user",
-      ExpressionAttributeValues: marshall({
-        ":user": claims.user_guid,
-      }),
-      Limit: 1,
+      Key: marshall({ user_guid: claims.user_guid }),
     }));
-    if (profileResult.Items && profileResult.Items.length > 0) {
-      backupData.profile = unmarshall(profileResult.Items[0]);
-    }
-
-    // Get messages if requested
-    let messagesCount = 0;
-    if (includeMessages) {
-      const connectionIds = connections.map(c => c.connection_id);
-      const allMessages: any[] = [];
-
-      for (const connId of connectionIds) {
-        const messagesResult = await ddb.send(new QueryCommand({
-          TableName: TABLE_MESSAGES,
-          IndexName: "connection-sent-index",
-          KeyConditionExpression: "connection_id = :connId",
-          ExpressionAttributeValues: marshall({
-            ":connId": connId,
-          }),
-        }));
-        if (messagesResult.Items) {
-          allMessages.push(...messagesResult.Items.map(item => unmarshall(item)));
-        }
-      }
-      backupData.messages = allMessages;
-      messagesCount = allMessages.length;
+    if (profileResult.Item) {
+      backupData.profile = unmarshall(profileResult.Item);
     }
 
     // Serialize and calculate size
@@ -163,11 +126,12 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     }));
 
     // Create backup metadata record
+    // NOTE: connections_count and messages_count are 0 since those are vault-managed
     const contents: BackupContents = {
-      connections_count: connections.length,
-      messages_count: messagesCount,
-      handlers_count: 0, // TODO: Add handler config backup
       profile_included: !!backupData.profile,
+      connections_count: 0, // Vault-managed
+      messages_count: 0, // Vault-managed
+      handlers_count: 0, // TODO: Add handler config backup
     };
 
     const backupRecord = {
