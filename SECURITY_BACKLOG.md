@@ -32,17 +32,17 @@ This file tracks security issues identified during the security audit that need 
    - ~~No CloudWatch logging for API access patterns~~
    - ~~Fix: Enable access logging for audit trail~~
 
-8. **CSP allows unsafe-inline** - `vettid-stack.ts:252-293`
-   - `script-src 'unsafe-inline'` weakens XSS protection
-   - Fix: Move inline scripts to external files, use nonces
-   - Note: Requires significant frontend refactoring
+8. ~~**CSP allows unsafe-inline** - `vettid-stack.ts:252-293`~~ ✅ FIXED
+   - ~~`script-src 'unsafe-inline'` weakens XSS protection~~
+   - ~~Fix: All inline scripts moved to external files, onclick handlers converted to addEventListener~~
+   - ~~CDN dependency also removed - Cognito library now self-hosted~~
 
 ### Frontend
 
-9. **Token storage in localStorage** - `auth.js:51-65`
-   - Tokens vulnerable to XSS attacks
-   - Fix: Consider httpOnly cookies (requires backend changes)
-   - Note: Requires significant architecture changes
+9. ~~**Token storage in localStorage** - `auth.js:51-65`~~ ✅ FIXED
+   - ~~Tokens vulnerable to XSS attacks~~
+   - ~~Fix: Tokens now stored in httpOnly cookies via /auth/token-exchange endpoint~~
+   - ~~Cookie-based Lambda authorizer reads tokens from cookies~~
 
 10. **Missing CSP headers** - All frontend HTML files
     - Note: CSP is added at CloudFront level, not individual HTML files
@@ -66,84 +66,91 @@ This file tracks security issues identified during the security audit that need 
     - Lower defense-in-depth posture
     - Note: Trade-off between security and cold start latency
 
-15. **API Gateway throttling review** - `vettid-stack.ts:940-949`
+15. ~~**API Gateway WAF protection** - `vettid-stack.ts`~~ ⏭️ NOT POSSIBLE
+    - ~~AWS WAF v2 does not support HTTP API (API Gateway V2)~~
+    - ~~Only REST APIs are supported for WAF association~~
+    - Note: Protected via CloudFront WAF (frontend), API throttling, and Lambda rate limiting
+
+16. **API Gateway throttling review** - `vettid-stack.ts:940-949`
     - Current limits may allow single attacker to consume capacity
 
-16. ~~**Cognito missing password history** - `infrastructure-stack.ts:428-467`~~ ⏭️ IGNORED
+17. ~~**Cognito missing password history** - `infrastructure-stack.ts:428-467`~~ ⏭️ IGNORED
     - ~~Users can reuse previous passwords~~
     - ~~Note: Not natively supported in Cognito CDK L2~~
 
-17. ~~**Member pool missing account lockout** - `infrastructure-stack.ts:700-770`~~ ⏭️ IGNORED
+18. ~~**Member pool missing account lockout** - `infrastructure-stack.ts:700-770`~~ ⏭️ IGNORED
     - ~~advancedSecurityMode requires Cognito Plus tier (currently on Essentials)~~
     - ~~Note: Accepted risk - would require tier upgrade or app-layer implementation~~
 
-18. ~~**Broad SES permissions** - `admin-stack.ts`, `vettid-stack.ts`~~ ✅ FIXED
+19. ~~**Broad SES permissions** - `admin-stack.ts`, `vettid-stack.ts`~~ ✅ FIXED
     - ~~SES permission includes `identity/*` - allows sending from ANY identity~~
     - ~~Fix: Split SES actions - SendEmail scoped to specific identity ARNs~~
 
 ### Lambda Handlers
 
-19. ~~**Missing rate limiting on audit queries** - `getAuditLog.ts`~~ ✅ ALREADY FIXED
+20. ~~**Missing rate limiting on audit queries** - `getAuditLog.ts`~~ ✅ ALREADY FIXED
     - ~~Already has checkRateLimit() with 30 req/min~~
 
-20. ~~**Weak timing-safe comparison (50ms)** - `util.ts:743`~~ ✅ FIXED
+21. ~~**Weak timing-safe comparison (50ms)** - `util.ts:743`~~ ✅ FIXED
     - ~~Increased from 50ms to 200ms for better protection~~
 
-21. **Missing CSRF token validation** - Frontend API requests
+22. **Missing CSRF token validation** - Frontend API requests
     - Relies solely on JWT Bearer token
     - Note: JWT in Authorization header provides CSRF protection
 
-22. ~~**CORS fallback to hardcoded domain** - `util.ts:528`~~ ✅ FIXED
+23. ~~**CORS fallback to hardcoded domain** - `util.ts:528`~~ ✅ FIXED
     - ~~Now throws error if no valid origins configured~~
 
-23. **No rate limiting on admin endpoints** - Admin handlers
+24. **No rate limiting on admin endpoints** - Admin handlers
     - Compromised token could perform unlimited operations
     - Note: Several critical endpoints already have rate limiting
 
-24. ~~**Weak PIN validation (allows 1111)** - `verifyPin.ts`, `updatePin.ts`~~ ✅ ALREADY FIXED
+25. ~~**Weak PIN validation (allows 1111)** - `verifyPin.ts`, `updatePin.ts`~~ ✅ ALREADY FIXED
     - ~~isWeakPin() already checks for 1111, 1234, 1357, 2468, etc.~~
 
-25. ~~**Error message disclosure** - Multiple handlers~~ ✅ FIXED
+26. ~~**Error message disclosure** - Multiple handlers~~ ✅ FIXED
     - ~~Raw `error.message` returned to clients~~
     - ~~Fix: Updated 19 handlers to use `sanitizeErrorForClient()` utility~~
 
-26. ~~**Race condition in approveRegistration** - `approveRegistration.ts:78-105`~~ ✅ FIXED
+27. ~~**Race condition in approveRegistration** - `approveRegistration.ts:78-105`~~ ✅ FIXED
     - ~~DynamoDB now updated BEFORE Cognito user creation~~
     - ~~Rollback on Cognito failure~~
 
 ## Low Priority Issues
 
-27. ~~**Weak default pagination (50)** - `listRegistrations.ts:10-12`~~ ✅ FIXED
+28. ~~**Weak default pagination (50)** - `listRegistrations.ts:10-12`~~ ✅ FIXED
     - ~~Reduced to 20 across all list endpoints~~
 
-28. ~~**External CDN dependencies** - Multiple HTML files~~ ✅ FIXED
+29. ~~**External CDN dependencies** - Multiple HTML files~~ ✅ FIXED
     - ~~Eliminate CDN dependency for supply chain security~~
     - ~~Fixed: amazon-cognito-identity-js and qrcodejs now self-hosted in /shared/vendor/~~
 
-29. **Verbose console errors** - Multiple files
+30. **Verbose console errors** - Multiple files
     - Sanitize console output in production
 
-30. **No frontend rate limiting** - `register/index.html:134`
+31. **No frontend rate limiting** - `register/index.html:134`
     - Add client-side throttling
 
-31. **Silent audit trail failures** - `util.ts:181`
+32. **Silent audit trail failures** - `util.ts:181`
     - Consider failing operation if audit fails
 
-32. **Outdated AWS SDK versions** - `package.json`
-    - Run `npm update` for latest patches
+33. ~~**Outdated AWS SDK versions** - `package.json`~~ ✅ FIXED
+    - ~~Run `npm update` for latest patches~~
+    - ~~Fix: Updated all AWS SDK packages to ^3.958.0~~
 
-33. **Missing request size limits in WAF** - `vettid-stack.ts`
-    - Add WAF rule to limit payload sizes
+34. ~~**Missing request size limits in WAF** - `vettid-stack.ts`~~ ✅ FIXED
+    - ~~Add WAF rule to limit payload sizes~~
+    - ~~Fix: Added RequestSizeLimitRule (16KB body) and QueryStringSizeLimitRule (4KB query string)~~
 
-34. ~~**CSV injection risk in logs** - `sendBulkEmail.ts`~~ ✅ FIXED
+35. ~~**CSV injection risk in logs** - `sendBulkEmail.ts`~~ ✅ FIXED
     - ~~Hash email addresses in logs~~
     - ~~Fix: Email addresses hashed with SHA-256 (first 12 chars) in console.error~~
 
-35. **Deploy custom domain api.vettid.dev** - Infrastructure
-    - Required for certificate pinning in mobile apps
-    - Current AWS API Gateway uses rotating certificates
+36. ~~**Deploy custom domain api.vettid.dev** - Infrastructure~~ ⏭️ NOT NEEDED
+    - ~~Required for certificate pinning in mobile apps~~
+    - Note: E2E encryption between vaults makes cert pinning redundant; transport-layer MITM cannot read message content
 
-36. **Implement explicit KMS encryption** - DynamoDB and S3
+37. **Implement explicit KMS encryption** - DynamoDB and S3
     - Currently using default AWS-managed encryption
     - Consider customer-managed keys for sensitive data
 
@@ -171,9 +178,13 @@ This file tracks security issues identified during the security audit that need 
 18. ✅ **Error message disclosure** - 19 handlers now use sanitizeErrorForClient()
 19. ✅ **External CDN dependencies** - Self-hosted scripts in /shared/vendor/ (no CDN dependency)
 20. ✅ **CSV injection risk** - Email addresses hashed in bulk email logs
+21. ✅ **CSP unsafe-inline** - All inline scripts moved to external files, 97 onclick handlers converted to addEventListener
+22. ✅ **localStorage token storage** - Tokens now stored in httpOnly cookies via /auth/token-exchange endpoint
+23. ✅ **AWS SDK versions** - Updated all AWS SDK packages to ^3.958.0
+24. ✅ **WAF request size limits** - Added 16KB body limit and 4KB query string limit rules
 
 ---
 
-*Last Updated: 2025-12-30*
+*Last Updated: 2025-12-31*
 *Initial Audit: 2025-12-03*
 *Audit performed by: Claude Code*

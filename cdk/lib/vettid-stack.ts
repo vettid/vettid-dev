@@ -225,6 +225,52 @@ const webAcl = new wafv2.CfnWebACL(this, 'WebAcl', {
         sampledRequestsEnabled: true,
       },
     },
+    // Request size limit: Block requests with body > 16KB
+    // Protects against slow POST attacks and resource exhaustion
+    {
+      name: 'RequestSizeLimitRule',
+      priority: 5,
+      statement: {
+        sizeConstraintStatement: {
+          fieldToMatch: {
+            body: {
+              oversizeHandling: 'MATCH', // Treat oversized bodies as matching (block them)
+            },
+          },
+          comparisonOperator: 'GT',
+          size: 16384, // 16KB limit
+          textTransformations: [{ priority: 0, type: 'NONE' }],
+        },
+      },
+      action: { block: {} },
+      visibilityConfig: {
+        cloudWatchMetricsEnabled: true,
+        metricName: 'RequestSizeLimitRule',
+        sampledRequestsEnabled: true,
+      },
+    },
+    // URI query string size limit: Block requests with query string > 4KB
+    // Prevents oversized query string attacks
+    {
+      name: 'QueryStringSizeLimitRule',
+      priority: 6,
+      statement: {
+        sizeConstraintStatement: {
+          fieldToMatch: {
+            queryString: {},
+          },
+          comparisonOperator: 'GT',
+          size: 4096, // 4KB limit for query strings
+          textTransformations: [{ priority: 0, type: 'NONE' }],
+        },
+      },
+      action: { block: {} },
+      visibilityConfig: {
+        cloudWatchMetricsEnabled: true,
+        metricName: 'QueryStringSizeLimitRule',
+        sampledRequestsEnabled: true,
+      },
+    },
   ],
 });
 
@@ -273,6 +319,15 @@ const webAcl = new wafv2.CfnWebACL(this, 'WebAcl', {
       };
     }
 
+    // NOTE: WAF v2 does NOT support HTTP API (API Gateway V2) directly.
+    // It only supports REST APIs. To protect HTTP APIs with WAF, you would need to:
+    // 1. Route API through CloudFront (which has WAF attached), OR
+    // 2. Use an Application Load Balancer in front of the API
+    // The API currently has protection via:
+    // - API Gateway built-in throttling (configured below)
+    // - Lambda-level rate limiting in handlers
+    // - Input validation in Lambda handlers
+
 // CloudFront Function: Add security headers to all responses with specific API URL
 const securityHeadersFn = new cloudfront.Function(this, 'SecurityHeadersFn', {
   code: cloudfront.FunctionCode.fromInline(`
@@ -282,15 +337,12 @@ function handler(event) {
   var headers = response.headers;
 
   // Content Security Policy - restricts resource loading
-  // Note: 'unsafe-inline' for scripts is needed for inline JS in HTML files
-  // TODO: Migrate inline scripts to external files for better security
-  // TODO: Bundle amazon-cognito-identity-js locally to remove cdn.jsdelivr.net dependency
-  // SECURITY NOTE: cdn.jsdelivr.net is temporarily allowed for Cognito library
-  // This should be replaced with local bundling in production
+  // All scripts are now in external files - no 'unsafe-inline' needed
+  // Cognito library is self-hosted in /shared/vendor/ - no CDN dependency
   // Allow resources from vettid.dev and all subdomains for cross-subdomain asset loading
   // Specific API endpoint injected at synthesis time (no wildcard - security best practice)
   headers['content-security-policy'] = {
-    value: "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://vettid.dev https://*.vettid.dev; style-src 'self' 'unsafe-inline' https://vettid.dev https://*.vettid.dev; img-src 'self' data: https://vettid.dev https://*.vettid.dev; font-src 'self' https://vettid.dev https://*.vettid.dev; connect-src 'self' ${this.httpApi.apiEndpoint} https://*.amazoncognito.com https://cognito-idp.us-east-1.amazonaws.com; frame-ancestors 'none'; form-action 'self' https://*.amazoncognito.com; base-uri 'self'; object-src 'none'; upgrade-insecure-requests;"
+    value: "default-src 'self'; script-src 'self' https://vettid.dev https://*.vettid.dev; style-src 'self' 'unsafe-inline' https://vettid.dev https://*.vettid.dev; img-src 'self' data: https://vettid.dev https://*.vettid.dev; font-src 'self' https://vettid.dev https://*.vettid.dev; connect-src 'self' ${this.httpApi.apiEndpoint} https://*.amazoncognito.com https://cognito-idp.us-east-1.amazonaws.com; frame-ancestors 'none'; form-action 'self' https://*.amazoncognito.com; base-uri 'self'; object-src 'none'; upgrade-insecure-requests;"
   };
 
   // Prevent clickjacking
@@ -694,6 +746,39 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       description: 'Send reminder emails for proposals closing soon',
     });
 
+    // Token Exchange - stores JWT tokens in httpOnly cookies for XSS protection
+    const tokenExchange = new lambdaNode.NodejsFunction(this, 'TokenExchangeFn', {
+      entry: 'lambda/handlers/member/tokenExchange.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {},
+      memorySize: 128,
+      timeout: cdk.Duration.seconds(10),
+      description: 'Exchange JWT tokens for httpOnly cookies',
+    });
+
+    // Token Clear - clears httpOnly cookies for logout
+    const tokenClear = new lambdaNode.NodejsFunction(this, 'TokenClearFn', {
+      entry: 'lambda/handlers/member/tokenClear.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {},
+      memorySize: 128,
+      timeout: cdk.Duration.seconds(10),
+      description: 'Clear JWT tokens from httpOnly cookies',
+    });
+
+    // Cookie-based Lambda Authorizer for member routes
+    const cookieAuthorizer = new lambdaNode.NodejsFunction(this, 'CookieAuthorizerFn', {
+      entry: 'lambda/handlers/auth/cookieAuthorizer.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        USER_POOL_ID: memberUserPool.userPoolId,
+        CLIENT_ID: memberAppClient.userPoolClientId,
+      },
+      memorySize: 128,
+      timeout: cdk.Duration.seconds(10),
+      description: 'Authorizer that reads JWT from httpOnly cookies',
+    });
+
     // Grants
     tables.invites.grantReadWriteData(submitRegistration);
     tables.registrations.grantReadWriteData(submitRegistration);
@@ -865,6 +950,20 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       path: '/waitlist',
       methods: [apigw.HttpMethod.POST],
       integration: new integrations.HttpLambdaIntegration('SubmitWaitlistInt', submitWaitlist),
+    });
+
+    // Token exchange - stores JWT tokens in httpOnly cookies (public, no auth)
+    this.httpApi.addRoutes({
+      path: '/auth/token-exchange',
+      methods: [apigw.HttpMethod.POST, apigw.HttpMethod.OPTIONS],
+      integration: new integrations.HttpLambdaIntegration('TokenExchangeInt', tokenExchange),
+    });
+
+    // Token clear - clears httpOnly cookies for logout (public, no auth)
+    this.httpApi.addRoutes({
+      path: '/auth/token-clear',
+      methods: [apigw.HttpMethod.POST, apigw.HttpMethod.OPTIONS],
+      integration: new integrations.HttpLambdaIntegration('TokenClearInt', tokenClear),
     });
 
     this.httpApi.addRoutes({
