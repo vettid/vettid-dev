@@ -309,6 +309,13 @@ export class InfrastructureStack extends cdk.Stack {
       timeToLiveAttribute: 'ttl',
     });
 
+    // GSI to look up LAT by user_guid (for action token issuance)
+    ledgerAuthTokens.addGlobalSecondaryIndex({
+      indexName: 'user-index',
+      partitionKey: { name: 'user_guid', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
     // Action tokens table
     const actionTokens = new dynamodb.Table(this, 'ActionTokens', {
       partitionKey: { name: 'user_guid', type: dynamodb.AttributeType.STRING },

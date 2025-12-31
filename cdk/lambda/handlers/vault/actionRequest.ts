@@ -1,5 +1,5 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
-import { DynamoDBClient, GetItemCommand, PutItemCommand, QueryCommand } from '@aws-sdk/client-dynamodb';
+import { DynamoDBClient, PutItemCommand, QueryCommand } from '@aws-sdk/client-dynamodb';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import { createHash, randomBytes } from 'crypto';
 import {
@@ -100,29 +100,9 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     }
 
     // Get credential to verify user exists and is active
-    const credentialResult = await ddb.send(new GetItemCommand({
+    // Credentials table has composite key (user_guid + credential_id), so we Query by user_guid
+    const credentialResult = await ddb.send(new QueryCommand({
       TableName: TABLE_CREDENTIALS,
-      Key: marshall({ user_guid: body.user_guid }),
-    }));
-
-    if (!credentialResult.Item) {
-      return notFound('User credential not found');
-    }
-
-    const credential = unmarshall(credentialResult.Item);
-
-    if (credential.status !== 'ACTIVE') {
-      return conflict(`Account is ${credential.status.toLowerCase()}`);
-    }
-
-    // Check for account lockout
-    if (credential.failed_auth_count >= 3) {
-      return conflict('Account is locked due to too many failed attempts');
-    }
-
-    // Get current LAT for verification
-    const latResult = await ddb.send(new QueryCommand({
-      TableName: TABLE_LEDGER_AUTH_TOKENS,
       KeyConditionExpression: 'user_guid = :user_guid',
       FilterExpression: '#status = :status',
       ExpressionAttributeNames: {
@@ -132,7 +112,33 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
         ':user_guid': body.user_guid,
         ':status': 'ACTIVE',
       }),
-      ScanIndexForward: false,  // Get newest first
+      Limit: 1,
+    }));
+
+    if (!credentialResult.Items || credentialResult.Items.length === 0) {
+      return notFound('User credential not found');
+    }
+
+    const credential = unmarshall(credentialResult.Items[0]);
+
+    // Check for account lockout
+    if (credential.failed_auth_count >= 3) {
+      return conflict('Account is locked due to too many failed attempts');
+    }
+
+    // Get current LAT for verification using user-index GSI
+    const latResult = await ddb.send(new QueryCommand({
+      TableName: TABLE_LEDGER_AUTH_TOKENS,
+      IndexName: 'user-index',
+      KeyConditionExpression: 'user_guid = :user_guid',
+      FilterExpression: '#status = :status',
+      ExpressionAttributeNames: {
+        '#status': 'status',
+      },
+      ExpressionAttributeValues: marshall({
+        ':user_guid': body.user_guid,
+        ':status': 'ACTIVE',
+      }),
       Limit: 1,
     }));
 
@@ -142,11 +148,12 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
 
     const lat = unmarshall(latResult.Items[0]);
 
-    // Find an unused transaction key
+    // Find an unused transaction key using user-index GSI
     const unusedKeyResult = await ddb.send(new QueryCommand({
       TableName: TABLE_TRANSACTION_KEYS,
-      IndexName: 'status-index',
-      KeyConditionExpression: 'user_guid = :user_guid AND #status = :status',
+      IndexName: 'user-index',
+      KeyConditionExpression: 'user_guid = :user_guid',
+      FilterExpression: '#status = :status',
       ExpressionAttributeNames: {
         '#status': 'status',
       },
@@ -154,7 +161,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
         ':user_guid': body.user_guid,
         ':status': 'UNUSED',
       }),
-      Limit: 1,
+      Limit: 10,  // Fetch a few since filter is applied after key conditions
     }));
 
     if (!unusedKeyResult.Items || unusedKeyResult.Items.length === 0) {
