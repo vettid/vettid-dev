@@ -866,12 +866,18 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
     // Hardened: restrict to vettid.dev domain only (covers no-reply@vettid.dev)
     const sesIdentityArn = `arn:aws:ses:${this.region}:${this.account}:identity/vettid.dev`;
     const sesConfigSetArn = `arn:aws:ses:${this.region}:${this.account}:configuration-set/*`;
-    const sesTemplateArn = `arn:aws:ses:${this.region}:${this.account}:template/*`;
+    // SECURITY: Pin to specific SES templates (no wildcards) to limit blast radius
+    const sesTemplateArns = [
+      `arn:aws:ses:${this.region}:${this.account}:template/RegistrationApproved`,
+      `arn:aws:ses:${this.region}:${this.account}:template/SubscriptionExpiryWarning`,
+      `arn:aws:ses:${this.region}:${this.account}:template/ProposalVoteReminder`,
+      `arn:aws:ses:${this.region}:${this.account}:template/NewProposalNotification`,
+    ];
 
     [submitRegistration, registrationStreamFn, checkSubscriptionExpiry, sendProposalReminders].forEach((fn) => {
       fn.addToRolePolicy(new iam.PolicyStatement({
         actions: ['ses:SendTemplatedEmail', 'ses:SendEmail'],
-        resources: [sesIdentityArn, sesTemplateArn, sesConfigSetArn]
+        resources: [sesIdentityArn, sesConfigSetArn, ...sesTemplateArns]
       }));
     });
     // Cognito permissions scoped to specific User Pools

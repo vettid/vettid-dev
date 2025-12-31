@@ -763,8 +763,8 @@ export class AdminStack extends cdk.Stack {
     // In sandbox mode, also need permission for recipient identities
     const sesIdentityArn = `arn:aws:ses:${this.region}:${this.account}:identity/vettid.dev`;
     const sesConfigSetArn = `arn:aws:ses:${this.region}:${this.account}:configuration-set/*`;
-    const sesTemplateArn = `arn:aws:ses:${this.region}:${this.account}:template/*`;
     const sesAllIdentitiesArn = `arn:aws:ses:${this.region}:${this.account}:identity/*`;
+    // Note: No template ARN needed - admin handlers use SendEmail, not SendTemplatedEmail
 
     // Grant SES permissions for resetAdminPassword
     resetAdminPassword.addToRolePolicy(new iam.PolicyStatement({
@@ -919,9 +919,10 @@ export class AdminStack extends cdk.Stack {
 
     // Grant SES permissions for sending and verifying emails
     // In sandbox mode, need permission for both sender (vettid.dev) AND recipient identities
+    // SECURITY: Only ses:SendEmail needed (no templates used) - least privilege
     sendWaitlistInvites.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['ses:SendEmail', 'ses:SendTemplatedEmail'],
-      resources: [sesIdentityArn, sesTemplateArn, sesConfigSetArn, sesAllIdentitiesArn],
+      actions: ['ses:SendEmail'],
+      resources: [sesIdentityArn, sesConfigSetArn, sesAllIdentitiesArn],
     }));
     sendWaitlistInvites.addToRolePolicy(new iam.PolicyStatement({
       actions: ['ses:GetIdentityVerificationAttributes', 'ses:VerifyEmailIdentity'],
