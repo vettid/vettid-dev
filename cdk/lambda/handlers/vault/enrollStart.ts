@@ -201,8 +201,9 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
         return badRequest('This invitation code has expired', origin);
       }
 
-      // Generate new IDs for invitation code flow
-      userGuid = generateSecureId('user', 32);
+      // Use user_guid from invitation if present (for vault reuse), otherwise generate new
+      // This enables test scenarios where user_guid is reused for existing vaults
+      userGuid = invite.user_guid || generateSecureId('user', 32);
       sessionId = generateSecureId('enroll', 32);
 
     } else {
