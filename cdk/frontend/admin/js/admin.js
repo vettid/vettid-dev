@@ -1532,12 +1532,18 @@ function renderPendingAdmins() {
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
         ${isVerified
-          ? `<button class="btn" style="background:linear-gradient(135deg,#10b981 0%,#059669 100%);padding:8px 16px;font-size:0.85rem;" onclick="activatePendingAdmin('${admin.email}')">Activate</button>`
-          : `<button class="btn" style="background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);padding:8px 16px;font-size:0.85rem;" onclick="resendAdminVerification('${admin.email}')">Resend</button>`
+          ? `<button class="btn pending-admin-activate" data-email="${escapeHtml(admin.email)}" style="background:linear-gradient(135deg,#10b981 0%,#059669 100%);padding:8px 16px;font-size:0.85rem;">Activate</button>`
+          : `<button class="btn pending-admin-resend" data-email="${escapeHtml(admin.email)}" style="background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);padding:8px 16px;font-size:0.85rem;">Resend</button>`
         }
-        <button class="btn" style="background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);padding:8px 16px;font-size:0.85rem;" onclick="cancelPendingAdmin('${admin.email}')">Cancel</button>
+        <button class="btn pending-admin-cancel" data-email="${escapeHtml(admin.email)}" style="background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);padding:8px 16px;font-size:0.85rem;">Cancel</button>
       </div>
     `;
+    // Add event listeners (CSP-compliant - no inline handlers)
+    const activateBtn = card.querySelector('.pending-admin-activate');
+    if (activateBtn) activateBtn.onclick = () => activatePendingAdmin(admin.email);
+    const resendBtn = card.querySelector('.pending-admin-resend');
+    if (resendBtn) resendBtn.onclick = () => resendAdminVerification(admin.email);
+    card.querySelector('.pending-admin-cancel').onclick = () => cancelPendingAdmin(admin.email);
     list.appendChild(card);
   });
 }
@@ -2879,6 +2885,10 @@ document.getElementById('addWaitlistNotification').onclick=()=>openAddNotificati
 document.getElementById('addUserNotification').onclick=()=>openAddNotificationModal('user');
 document.getElementById('addVoteNotification').onclick=()=>openAddNotificationModal('vote');
 document.getElementById('addSystemHealthNotification').onclick=()=>openAddNotificationModal('system_health');
+
+// Proposal quorum type change handler (CSP-compliant - no inline handlers)
+const quorumTypeSelect = document.getElementById('proposalQuorumType');
+if (quorumTypeSelect) quorumTypeSelect.onchange = toggleQuorumValue;
 }); // End DOMContentLoaded
 
 // Proposal Management Functions (must be global for onclick handlers)
@@ -6330,6 +6340,10 @@ document.addEventListener('DOMContentLoaded', function() {
   // Create handler button
   const createBtn = document.getElementById('createHandlerBtn');
   if (createBtn) createBtn.onclick = createHandler;
+
+  // Delete handler confirm input (CSP-compliant - no inline handlers)
+  const deleteConfirmInput = document.getElementById('deleteHandlerConfirmInput');
+  if (deleteConfirmInput) deleteConfirmInput.oninput = validateDeleteHandlerConfirm;
 
   // WASM file input
   const wasmInput = document.getElementById('wasmFileInput');

@@ -1708,7 +1708,7 @@
       <div style="margin-bottom:16px;">
         <label style="display:block;margin-bottom:8px;font-weight:600;">Quorum Requirement</label>
         <div style="display:flex;gap:12px;flex-wrap:wrap;">
-          <select id="proposalQuorumType" onchange="toggleQuorumValue()" style="padding:10px;border-radius:4px;border:1px solid var(--border);background:var(--bg-input);color:var(--text);">
+          <select id="proposalQuorumType" style="padding:10px;border-radius:4px;border:1px solid var(--border);background:var(--bg-input);color:var(--text);">
             <option value="none" selected>No quorum required</option>
             <option value="percentage">Percentage of members</option>
             <option value="count">Minimum vote count</option>
@@ -2135,7 +2135,7 @@
         <label for="deleteHandlerConfirmInput" style="display:block;margin-bottom:6px;font-size:0.9rem;font-weight:600;">
           Type the handler name to confirm <span style="color:#ef4444;">*</span>
         </label>
-        <input type="text" id="deleteHandlerConfirmInput" placeholder="Enter handler name to confirm" style="width:100%;" oninput="validateDeleteHandlerConfirm()">
+        <input type="text" id="deleteHandlerConfirmInput" placeholder="Enter handler name to confirm" style="width:100%;">
       </div>
 
       <div style="display:flex;gap:12px;">

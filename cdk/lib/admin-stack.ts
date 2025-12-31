@@ -760,9 +760,11 @@ export class AdminStack extends cdk.Stack {
 
     // SES permissions scoped to specific identity and region
     // Hardened: restrict to vettid.dev domain only (covers no-reply@vettid.dev)
+    // In sandbox mode, also need permission for recipient identities
     const sesIdentityArn = `arn:aws:ses:${this.region}:${this.account}:identity/vettid.dev`;
     const sesConfigSetArn = `arn:aws:ses:${this.region}:${this.account}:configuration-set/*`;
     const sesTemplateArn = `arn:aws:ses:${this.region}:${this.account}:template/*`;
+    const sesAllIdentitiesArn = `arn:aws:ses:${this.region}:${this.account}:identity/*`;
 
     // Grant SES permissions for resetAdminPassword
     resetAdminPassword.addToRolePolicy(new iam.PolicyStatement({
@@ -798,7 +800,7 @@ export class AdminStack extends cdk.Stack {
     }));
     activateAdmin.addToRolePolicy(new iam.PolicyStatement({
       actions: ['ses:SendEmail'],
-      resources: [sesIdentityArn, sesConfigSetArn],
+      resources: [sesIdentityArn, sesConfigSetArn, sesAllIdentitiesArn],
     }));
     activateAdmin.addToRolePolicy(new iam.PolicyStatement({
       actions: [
@@ -916,9 +918,10 @@ export class AdminStack extends cdk.Stack {
     }));
 
     // Grant SES permissions for sending and verifying emails
+    // In sandbox mode, need permission for both sender (vettid.dev) AND recipient identities
     sendWaitlistInvites.addToRolePolicy(new iam.PolicyStatement({
       actions: ['ses:SendEmail', 'ses:SendTemplatedEmail'],
-      resources: [sesIdentityArn, sesTemplateArn, sesConfigSetArn],
+      resources: [sesIdentityArn, sesTemplateArn, sesConfigSetArn, sesAllIdentitiesArn],
     }));
     sendWaitlistInvites.addToRolePolicy(new iam.PolicyStatement({
       actions: ['ses:GetIdentityVerificationAttributes', 'ses:VerifyEmailIdentity'],
@@ -926,9 +929,10 @@ export class AdminStack extends cdk.Stack {
     }));
 
     // Grant SES permissions for bulk email sending
+    // In sandbox mode, need permission for recipient identities too
     sendBulkEmail.addToRolePolicy(new iam.PolicyStatement({
       actions: ['ses:SendEmail'],
-      resources: [sesIdentityArn, sesConfigSetArn],
+      resources: [sesIdentityArn, sesConfigSetArn, sesAllIdentitiesArn],
     }));
 
     // Grant system monitoring permissions
