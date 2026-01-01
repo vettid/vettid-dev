@@ -362,22 +362,22 @@
     [data-theme="light"] button[style*="background:#333"]:hover,
     [data-theme="light"] .btn[style*="background:#333"]:hover { background: #d1d5db !important; }
     /* Card-like containers */
-    [data-theme="light"] div[style*="background:#0a0a0a"],
-    [data-theme="light"] div[style*="background:#0f0f0f"],
+    [data-theme="light"] div[style*="background:var(--bg-card)"],
+    [data-theme="light"] div[style*="background:var(--bg-card)"],
     [data-theme="light"] div[style*="background:#050505"] { background: var(--bg-card) !important; }
     /* Modal backgrounds */
-    [data-theme="light"] div[style*="background:#1a1a1a"] { background: var(--bg-card) !important; }
+    [data-theme="light"] div[style*="background:var(--bg-card)"] { background: var(--bg-card) !important; }
     /* Input fields */
-    [data-theme="light"] input[style*="background:#0a0a0a"],
-    [data-theme="light"] textarea[style*="background:#0a0a0a"] { background: var(--bg-input) !important; color: var(--text-primary) !important; }
+    [data-theme="light"] input[style*="background:var(--bg-card)"],
+    [data-theme="light"] textarea[style*="background:var(--bg-card)"] { background: var(--bg-input) !important; color: var(--text-primary) !important; }
     /* Borders */
-    [data-theme="light"] *[style*="border:1px solid #222"],
+    [data-theme="light"] *[style*="border:1px solid var(--border)"],
     [data-theme="light"] *[style*="border:2px solid #222"],
-    [data-theme="light"] *[style*="border:1px solid #333"] { border-color: var(--border-color) !important; }
-    [data-theme="light"] *[style*="border-top:1px solid #222"],
+    [data-theme="light"] *[style*="border:1px solid var(--border)"] { border-color: var(--border-color) !important; }
+    [data-theme="light"] *[style*="border-top:1px solid var(--border)"],
     [data-theme="light"] *[style*="border-top:2px solid #222"],
     [data-theme="light"] *[style*="border-top:1px solid #333"] { border-top-color: var(--border-color) !important; }
-    [data-theme="light"] *[style*="border-bottom:1px solid #222"],
+    [data-theme="light"] *[style*="border-bottom:1px solid var(--border)"],
     [data-theme="light"] *[style*="border-bottom:2px solid #222"],
     [data-theme="light"] *[style*="border-bottom:1px solid #333"] { border-bottom-color: var(--border-color) !important; }
     /* Progress bar backgrounds */
@@ -457,19 +457,19 @@
   <p style="margin-bottom:16px;">Follow these steps to set up your VettID account and start using our secure services.</p>
 
   <!-- Overall Progress Bar -->
-  <div id="overallProgress" style="margin-bottom:24px;padding:16px;background:#0a0a0a;border-radius:8px;border:2px solid var(--border);">
+  <div id="overallProgress" style="margin-bottom:24px;padding:16px;background:var(--bg-card);border-radius:8px;border:2px solid var(--border);">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
       <span style="font-weight:600;font-size:0.9rem;">Overall Progress</span>
       <span id="progressText" style="font-weight:600;font-size:0.9rem;color:var(--accent);">Loading...</span>
     </div>
-    <div style="background:#1a1a1a;border-radius:8px;height:12px;overflow:hidden;box-shadow:inset 0 2px 4px rgba(0,0,0,0.3);">
+    <div style="background:var(--bg-card);border-radius:8px;height:12px;overflow:hidden;box-shadow:inset 0 2px 4px rgba(0,0,0,0.3);">
       <div id="progressBar" style="background:linear-gradient(90deg,var(--accent) 0%,#ffc125 100%);height:100%;width:0%;transition:width 0.5s ease;box-shadow:0 0 10px rgba(255,193,37,0.5);"></div>
     </div>
   </div>
 
   <div id="gettingStartedSteps" style="display:flex;flex-direction:column;gap:16px;margin-bottom:24px;">
     <!-- Loading indicator shown initially -->
-    <div style="padding:40px;background:#0a0a0a;border-radius:8px;border:2px solid var(--border);text-align:center;">
+    <div style="padding:40px;background:var(--bg-card);border-radius:8px;border:2px solid var(--border);text-align:center;">
       <div style="display:inline-block;width:40px;height:40px;border:3px solid rgba(255,193,37,0.1);border-top:3px solid var(--accent);border-radius:50%;animation:spin 1s linear infinite;"></div>
       <p style="margin-top:16px;color:var(--gray);font-size:1rem;">Loading your getting started steps...</p>
     </div>
@@ -490,16 +490,16 @@
         <p><strong>User GUID</strong><br/><code id="userGuid">—</code></p>
       </div>
 
-      <hr style="margin:20px 0;border:none;border-top:1px solid #222" />
+      <hr style="margin:20px 0;border:none;border-top:1px solid var(--border)" />
 
       <h4 style="margin:0 0 12px;">Membership Status</h4>
-      <div id="membershipStatusBox" style="padding:12px;background:#0a0a0a;border-radius:4px;margin-bottom:16px;">
+      <div id="membershipStatusBox" style="padding:12px;background:var(--bg-card);border-radius:4px;margin-bottom:16px;">
         <p style="margin:0;"><strong>Status:</strong> <span id="membershipStatus">Loading...</span></p>
         <p id="membershipDetails" style="margin:8px 0 0;"></p>
       </div>
 
       <h4 style="margin:0 0 12px;">Subscription Status</h4>
-      <div id="profileSubscriptionStatus" style="padding:12px;background:#0a0a0a;border-radius:4px;">
+      <div id="profileSubscriptionStatus" style="padding:12px;background:var(--bg-card);border-radius:4px;">
         <p style="margin:0;">Loading...</p>
       </div>
     </div>
@@ -513,7 +513,7 @@
 
       <!-- Membership Terms Section (shown for non-members) -->
       <div id="membershipTermsSection" style="display:none;">
-        <hr style="margin:20px 0;border:none;border-top:1px solid #222" />
+        <hr style="margin:20px 0;border:none;border-top:1px solid var(--border)" />
         <h4 style="margin:0 0 12px;">Membership Terms of Service</h4>
         <p class="muted" style="font-size:0.9rem;margin-bottom:16px;">
           Please review and accept the membership terms to become a full member. You'll be granted immediate access after accepting.
@@ -527,7 +527,7 @@
           <a id="termsDownloadLink" href="#" target="_blank" class="btn" style="display:inline-block;">Download Membership Terms</a>
         </div>
 
-        <div style="margin-bottom:16px;padding:12px;background:#0f0f0f;border-radius:4px;border:1px solid var(--border);">
+        <div style="margin-bottom:16px;padding:12px;background:var(--bg-card);border-radius:4px;border:1px solid var(--border);">
           <label style="display:flex;align-items:start;cursor:pointer;">
             <input type="checkbox" id="acceptTermsCheckbox" style="margin-right:12px;margin-top:4px;">
             <span>I have read and agree to the VettID Membership Terms of Service</span>
@@ -542,9 +542,9 @@
 
       <!-- Member Details Section (shown for approved members) -->
       <div id="memberInfoSection" style="display:none;">
-        <hr style="margin:20px 0;border:none;border-top:1px solid #222" />
+        <hr style="margin:20px 0;border:none;border-top:1px solid var(--border)" />
         <h4 style="margin:0 0 12px;">Membership Details</h4>
-        <div style="padding:16px;background:#0a0a0a;border-radius:4px;border:1px solid var(--border);margin-bottom:16px;">
+        <div style="padding:16px;background:var(--bg-card);border-radius:4px;border:1px solid var(--border);margin-bottom:16px;">
           <p id="memberDetailsText"></p>
         </div>
         <div>
@@ -562,7 +562,7 @@
         Add an extra layer of security to your account by requiring a 4-6 digit PIN code when logging in with magic links.
       </p>
 
-      <div id="pinStatusBox" style="padding:16px;background:#0a0a0a;border-radius:4px;margin-bottom:16px;">
+      <div id="pinStatusBox" style="padding:16px;background:var(--bg-card);border-radius:4px;margin-bottom:16px;">
         <p><strong>Status:</strong> <span id="pinStatus">Loading...</span></p>
         <p id="pinUpdatedAt" style="margin-top:8px;"></p>
       </div>
@@ -583,7 +583,7 @@
         Control whether you receive system emails such as account notifications, security alerts, and service updates.
       </p>
 
-      <div id="emailPrefsBox" style="padding:16px;background:#0a0a0a;border-radius:4px;">
+      <div id="emailPrefsBox" style="padding:16px;background:var(--bg-card);border-radius:4px;">
         <div style="display:flex;justify-content:space-between;align-items:center;">
           <div>
             <strong style="display:block;margin-bottom:4px;">System Emails</strong>
@@ -610,17 +610,17 @@
 
 <!-- PIN Modals -->
 <div id="enablePinModal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.8);z-index:1000;align-items:center;justify-content:center;">
-  <div style="background:#1a1a1a;padding:32px;border-radius:8px;max-width:400px;width:90%;border:2px solid var(--accent);">
+  <div style="background:var(--bg-card);padding:32px;border-radius:8px;max-width:400px;width:90%;border:2px solid var(--accent);">
     <h3 style="margin-top:0;">Enable PIN Code</h3>
     <p class="muted" style="margin-bottom:20px;">Create a 4-6 digit PIN code for additional security.</p>
     <div>
       <label for="newPinInput" style="display:block;margin-bottom:8px;font-weight:600;">Enter PIN (4-6 digits)</label>
       <input type="password" id="newPinInput" maxlength="6" pattern="[0-9]*" inputmode="numeric"
-             style="width:100%;padding:12px;background:#0a0a0a;border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:1.1rem;letter-spacing:0.2em;text-align:center;"
+             style="width:100%;padding:12px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:1.1rem;letter-spacing:0.2em;text-align:center;"
              placeholder="••••••" />
       <label for="confirmPinInput" style="display:block;margin:16px 0 8px;font-weight:600;">Confirm PIN</label>
       <input type="password" id="confirmPinInput" maxlength="6" pattern="[0-9]*" inputmode="numeric"
-             style="width:100%;padding:12px;background:#0a0a0a;border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:1.1rem;letter-spacing:0.2em;text-align:center;"
+             style="width:100%;padding:12px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:1.1rem;letter-spacing:0.2em;text-align:center;"
              placeholder="••••••" />
       <div id="pinMatchIndicator" style="display:none;margin-top:8px;padding:8px 12px;border-radius:4px;font-size:0.9rem;display:flex;align-items:center;gap:8px;"></div>
     </div>
@@ -632,21 +632,21 @@
 </div>
 
 <div id="updatePinModal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.8);z-index:1000;align-items:center;justify-content:center;">
-  <div style="background:#1a1a1a;padding:32px;border-radius:8px;max-width:400px;width:90%;border:2px solid var(--accent);">
+  <div style="background:var(--bg-card);padding:32px;border-radius:8px;max-width:400px;width:90%;border:2px solid var(--accent);">
     <h3 style="margin-top:0;">Change PIN Code</h3>
     <p class="muted" style="margin-bottom:20px;">Enter your current PIN and new 4-6 digit PIN code.</p>
     <div>
       <label for="currentPinInput" style="display:block;margin-bottom:8px;font-weight:600;">Current PIN</label>
       <input type="password" id="currentPinInput" maxlength="6" pattern="[0-9]*" inputmode="numeric"
-             style="width:100%;padding:12px;background:#0a0a0a;border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:1.1rem;letter-spacing:0.2em;text-align:center;"
+             style="width:100%;padding:12px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:1.1rem;letter-spacing:0.2em;text-align:center;"
              placeholder="••••••" />
       <label for="updatePinInput" style="display:block;margin:16px 0 8px;font-weight:600;">New PIN (4-6 digits)</label>
       <input type="password" id="updatePinInput" maxlength="6" pattern="[0-9]*" inputmode="numeric"
-             style="width:100%;padding:12px;background:#0a0a0a;border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:1.1rem;letter-spacing:0.2em;text-align:center;"
+             style="width:100%;padding:12px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:1.1rem;letter-spacing:0.2em;text-align:center;"
              placeholder="••••••" />
       <label for="confirmUpdatePinInput" style="display:block;margin:16px 0 8px;font-weight:600;">Confirm New PIN</label>
       <input type="password" id="confirmUpdatePinInput" maxlength="6" pattern="[0-9]*" inputmode="numeric"
-             style="width:100%;padding:12px;background:#0a0a0a;border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:1.1rem;letter-spacing:0.2em;text-align:center;"
+             style="width:100%;padding:12px;background:var(--bg-card);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:1.1rem;letter-spacing:0.2em;text-align:center;"
              placeholder="••••••" />
     </div>
     <div style="display:flex;gap:12px;margin-top:24px;">
@@ -693,7 +693,7 @@
 
       <!-- Vault Status Content - Dynamic -->
       <div id="vaultStatusContent">
-        <div style="padding:24px;background:#050505;border-radius:4px;border:1px solid #333;text-align:center;">
+        <div style="padding:24px;background:#050505;border-radius:4px;border:1px solid var(--border);text-align:center;">
           <div class="skeleton" style="height:24px;width:120px;margin:0 auto 12px auto;border-radius:4px;"></div>
           <div class="skeleton" style="height:16px;width:200px;margin:0 auto;border-radius:4px;"></div>
         </div>
@@ -732,7 +732,7 @@
           <div style="width:24px;height:24px;border:3px solid var(--accent);border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite;"></div>
           <span id="provisioningStatus" style="color:var(--text);">Launching instance...</span>
         </div>
-        <div style="background:#050505;border-radius:4px;padding:16px;border:1px solid #333;">
+        <div style="background:#050505;border-radius:4px;padding:16px;border:1px solid var(--border);">
           <div style="display:flex;justify-content:space-between;margin-bottom:8px;">
             <span class="muted">Progress</span>
             <span id="provisioningProgress" style="color:var(--accent);">0%</span>
@@ -760,7 +760,7 @@
 
       <div id="byovStatusContent">
         <!-- Status will be loaded here -->
-        <div style="padding:24px;background:#050505;border-radius:4px;border:1px solid #333;text-align:center;">
+        <div style="padding:24px;background:#050505;border-radius:4px;border:1px solid var(--border);text-align:center;">
           <div class="skeleton" style="height:24px;width:200px;margin:0 auto;border-radius:4px;"></div>
         </div>
       </div>
@@ -777,21 +777,21 @@
         <div>
           <label style="display:block;margin-bottom:8px;color:var(--text);font-weight:600;">Vault Name</label>
           <input type="text" id="byovVaultName" placeholder="My Home Vault"
-            style="width:100%;padding:12px;background:#0a0a0a;border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;" />
+            style="width:100%;padding:12px;background:var(--bg-card);border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;" />
           <p style="margin:8px 0 0 0;color:var(--gray);font-size:0.8rem;">A friendly name to identify this vault.</p>
         </div>
 
         <div>
           <label style="display:block;margin-bottom:8px;color:var(--text);font-weight:600;">Vault URL</label>
           <input type="url" id="byovVaultUrl" placeholder="https://vault.example.com"
-            style="width:100%;padding:12px;background:#0a0a0a;border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;" />
+            style="width:100%;padding:12px;background:var(--bg-card);border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;" />
           <p style="margin:8px 0 0 0;color:var(--gray);font-size:0.8rem;">HTTPS URL to your vault instance (e.g., Vaultwarden, Bitwarden).</p>
         </div>
 
         <div>
           <label style="display:block;margin-bottom:8px;color:var(--text);font-weight:600;">API Key (Optional)</label>
           <input type="password" id="byovApiKey" placeholder="Enter API key if required"
-            style="width:100%;padding:12px;background:#0a0a0a;border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;" />
+            style="width:100%;padding:12px;background:var(--bg-card);border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;" />
           <p style="margin:8px 0 0 0;color:var(--gray);font-size:0.8rem;">If your vault requires an API key for access.</p>
         </div>
 
@@ -824,19 +824,19 @@
 
       <!-- Vault Info Grid -->
       <div id="byovInfoGrid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:20px;">
-        <div style="padding:12px;background:#0a0a0a;border-radius:6px;border:1px solid #222;">
+        <div style="padding:12px;background:var(--bg-card);border-radius:6px;border:1px solid var(--border);">
           <p style="margin:0;color:var(--gray);font-size:0.75rem;text-transform:uppercase;">Status</p>
           <p style="margin:4px 0 0 0;color:var(--text);font-weight:600;" id="byovInfoStatus">-</p>
         </div>
-        <div style="padding:12px;background:#0a0a0a;border-radius:6px;border:1px solid #222;">
+        <div style="padding:12px;background:var(--bg-card);border-radius:6px;border:1px solid var(--border);">
           <p style="margin:0;color:var(--gray);font-size:0.75rem;text-transform:uppercase;">Last Check</p>
           <p style="margin:4px 0 0 0;color:var(--text);font-weight:600;" id="byovInfoLastCheck">-</p>
         </div>
-        <div style="padding:12px;background:#0a0a0a;border-radius:6px;border:1px solid #222;">
+        <div style="padding:12px;background:var(--bg-card);border-radius:6px;border:1px solid var(--border);">
           <p style="margin:0;color:var(--gray);font-size:0.75rem;text-transform:uppercase;">Registered</p>
           <p style="margin:4px 0 0 0;color:var(--text);font-weight:600;" id="byovInfoCreated">-</p>
         </div>
-        <div style="padding:12px;background:#0a0a0a;border-radius:6px;border:1px solid #222;">
+        <div style="padding:12px;background:var(--bg-card);border-radius:6px;border:1px solid var(--border);">
           <p style="margin:0;color:var(--gray);font-size:0.75rem;text-transform:uppercase;">API Key</p>
           <p style="margin:4px 0 0 0;color:var(--text);font-weight:600;" id="byovInfoApiKey">-</p>
         </div>
@@ -915,7 +915,7 @@
 
       <div id="backupSettingsContent" style="display:grid;gap:16px;">
         <!-- Settings will be loaded here -->
-        <div style="padding:24px;background:#050505;border-radius:4px;border:1px solid #333;text-align:center;">
+        <div style="padding:24px;background:#050505;border-radius:4px;border:1px solid var(--border);text-align:center;">
           <div class="skeleton" style="height:24px;width:200px;margin:0 auto;border-radius:4px;"></div>
         </div>
       </div>
@@ -932,7 +932,7 @@
 
       <div id="backupListContent">
         <!-- Backup list will be loaded here -->
-        <div style="padding:24px;background:#050505;border-radius:4px;border:1px solid #333;text-align:center;">
+        <div style="padding:24px;background:#050505;border-radius:4px;border:1px solid var(--border);text-align:center;">
           <div class="skeleton" style="height:20px;width:150px;margin:0 auto 12px auto;border-radius:4px;"></div>
           <div class="skeleton" style="height:16px;width:250px;margin:0 auto;border-radius:4px;"></div>
         </div>
@@ -954,7 +954,7 @@
 
       <div id="credentialBackupStatusContent">
         <!-- Status will be loaded here -->
-        <div style="padding:24px;background:#050505;border-radius:4px;border:1px solid #333;text-align:center;">
+        <div style="padding:24px;background:#050505;border-radius:4px;border:1px solid var(--border);text-align:center;">
           <div class="skeleton" style="height:24px;width:200px;margin:0 auto;border-radius:4px;"></div>
         </div>
       </div>
@@ -971,14 +971,14 @@
         <div>
           <label style="display:block;margin-bottom:8px;color:var(--text);font-weight:600;">Backup Password</label>
           <input type="password" id="credBackupPassword" placeholder="Enter a strong password"
-            style="width:100%;padding:12px;background:#0a0a0a;border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;" />
+            style="width:100%;padding:12px;background:var(--bg-card);border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;" />
           <p style="margin:8px 0 0 0;color:var(--gray);font-size:0.8rem;">Minimum 12 characters. Use a mix of letters, numbers, and symbols.</p>
         </div>
 
         <div>
           <label style="display:block;margin-bottom:8px;color:var(--text);font-weight:600;">Confirm Password</label>
           <input type="password" id="credBackupPasswordConfirm" placeholder="Confirm your password"
-            style="width:100%;padding:12px;background:#0a0a0a;border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;" />
+            style="width:100%;padding:12px;background:var(--bg-card);border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;" />
         </div>
 
         <div id="credBackupError" style="display:none;padding:12px;background:rgba(244,67,54,0.1);border:1px solid #f44336;border-radius:6px;color:#f44336;font-size:0.9rem;">
@@ -1007,7 +1007,7 @@
 
       <div style="padding:20px;background:linear-gradient(135deg,rgba(255,193,37,0.1) 0%,rgba(255,152,0,0.05) 100%);border:2px solid var(--accent);border-radius:8px;margin-bottom:20px;">
         <p style="margin:0 0 12px 0;color:var(--accent);font-weight:600;font-size:0.9rem;">YOUR RECOVERY PHRASE:</p>
-        <div id="recoveryPhraseDisplay" style="font-family:monospace;font-size:1.1rem;color:var(--text);word-spacing:8px;line-height:1.8;background:#0a0a0a;padding:16px;border-radius:6px;text-align:center;">
+        <div id="recoveryPhraseDisplay" style="font-family:monospace;font-size:1.1rem;color:var(--text);word-spacing:8px;line-height:1.8;background:var(--bg-card);padding:16px;border-radius:6px;text-align:center;">
           <!-- Recovery phrase will be displayed here -->
         </div>
         <div style="display:flex;gap:12px;margin-top:16px;justify-content:center;flex-wrap:wrap;">
@@ -1054,13 +1054,13 @@
         <div>
           <label style="display:block;margin-bottom:8px;color:var(--text);font-weight:600;">Recovery Phrase</label>
           <textarea id="credRecoveryPhrase" placeholder="Enter your 24-word recovery phrase" rows="3"
-            style="width:100%;padding:12px;background:#0a0a0a;border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;resize:vertical;font-family:monospace;"></textarea>
+            style="width:100%;padding:12px;background:var(--bg-card);border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;resize:vertical;font-family:monospace;"></textarea>
         </div>
 
         <div>
           <label style="display:block;margin-bottom:8px;color:var(--text);font-weight:600;">Backup Password</label>
           <input type="password" id="credRecoveryPassword" placeholder="Enter your backup password"
-            style="width:100%;padding:12px;background:#0a0a0a;border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;" />
+            style="width:100%;padding:12px;background:var(--bg-card);border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;" />
         </div>
 
         <div id="credRecoveryError" style="display:none;padding:12px;background:rgba(244,67,54,0.1);border:1px solid #f44336;border-radius:6px;color:#f44336;font-size:0.9rem;">
@@ -1128,7 +1128,7 @@
     <div style="padding:24px;">
       <p style="margin:0 0 20px 0;color:var(--gray);line-height:1.6;">Enter your current PIN to confirm disabling PIN authentication. You will only need your magic link to sign in after this.</p>
       <label style="display:block;margin-bottom:8px;color:var(--text);font-weight:600;">Current PIN</label>
-      <input type="password" id="pinDisableInput" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="Enter 4-6 digit PIN" style="width:100%;padding:12px;background:#0a0a0a;border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;" />
+      <input type="password" id="pinDisableInput" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="Enter 4-6 digit PIN" style="width:100%;padding:12px;background:var(--bg-card);border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;" />
       <p id="pinDisableError" style="margin:12px 0 0 0;color:#f44336;font-size:0.9rem;display:none;"></p>
     </div>
     <div style="padding:16px 24px;border-top:2px solid #222;display:flex;gap:12px;justify-content:flex-end;">
@@ -1153,7 +1153,7 @@
     <div style="padding:24px;">
       <p style="margin:0 0 20px 0;color:var(--gray);line-height:1.6;text-align:center;">Enter your PIN to access your account.</p>
       <label style="display:block;margin-bottom:8px;color:var(--text);font-weight:600;">PIN Code</label>
-      <input type="password" id="verifyPinLoginInput" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="Enter 4-6 digit PIN" style="width:100%;padding:14px;background:#0a0a0a;border:2px solid #222;border-radius:6px;color:var(--text);font-size:1.1rem;text-align:center;letter-spacing:0.3em;" />
+      <input type="password" id="verifyPinLoginInput" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="Enter 4-6 digit PIN" style="width:100%;padding:14px;background:var(--bg-card);border:2px solid #222;border-radius:6px;color:var(--text);font-size:1.1rem;text-align:center;letter-spacing:0.3em;" />
       <p id="verifyPinLoginError" style="margin:12px 0 0 0;color:#f44336;font-size:0.9rem;display:none;text-align:center;"></p>
     </div>
     <div style="padding:16px 24px;border-top:2px solid #222;display:flex;gap:12px;justify-content:center;">
@@ -1233,13 +1233,13 @@
         <div>
           <label style="display:block;margin-bottom:8px;color:var(--text);font-weight:600;">Vault Name</label>
           <input type="text" id="byovSettingsName" placeholder="My Home Vault"
-            style="width:100%;padding:12px;background:#0a0a0a;border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;box-sizing:border-box;" />
+            style="width:100%;padding:12px;background:var(--bg-card);border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;box-sizing:border-box;" />
         </div>
 
         <div>
           <label style="display:block;margin-bottom:8px;color:var(--text);font-weight:600;">Vault URL</label>
           <input type="url" id="byovSettingsUrl" placeholder="https://vault.example.com"
-            style="width:100%;padding:12px;background:#0a0a0a;border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;box-sizing:border-box;" />
+            style="width:100%;padding:12px;background:var(--bg-card);border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;box-sizing:border-box;" />
           <p style="margin:8px 0 0 0;color:#f59e0b;font-size:0.8rem;">⚠️ Changing the URL will require re-verification.</p>
         </div>
 
@@ -1247,7 +1247,7 @@
           <label style="display:block;margin-bottom:8px;color:var(--text);font-weight:600;">API Key</label>
           <div style="display:flex;gap:8px;">
             <input type="password" id="byovSettingsApiKey" placeholder="Enter new API key (leave blank to keep current)"
-              style="flex:1;padding:12px;background:#0a0a0a;border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;" />
+              style="flex:1;padding:12px;background:var(--bg-card);border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;" />
             <button data-action="clearByovApiKey" class="btn" style="padding:12px;background:#333;white-space:nowrap;" title="Clear API Key">
               Clear
             </button>

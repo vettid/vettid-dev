@@ -80,4 +80,12 @@ const vault = new VaultStack(app, 'VettID-Vault', {
 const monitoring = new MonitoringStack(app, 'VettID-Monitoring', {
   env,
   // alarmEmail: 'alerts@vettid.dev',  // Uncomment to enable email alerts
+
+  // Stack integration - pass resources from other stacks for enhanced monitoring
+  vaultInstancesTable: infrastructure.tables.vaultInstances,
+  httpApi: core.httpApi,
+
+  // Optional: Override default ASG names if different
+  // natsAsgName: 'VettID-NATS-NatsAsg',
+  // vaultAsgName: 'VettID-VaultInfra-VaultASG',
 });
