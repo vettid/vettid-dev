@@ -3,10 +3,16 @@ import { ok, internalError, requireAdminGroup, putAudit } from "../../common/uti
 import { SESClient, GetSendQuotaCommand } from "@aws-sdk/client-ses";
 import { DynamoDBClient, DescribeTableCommand } from "@aws-sdk/client-dynamodb";
 import { CloudWatchClient, GetMetricStatisticsCommand } from "@aws-sdk/client-cloudwatch";
+import {
+  ElasticLoadBalancingV2Client,
+  DescribeTargetGroupsCommand,
+  DescribeTargetHealthCommand,
+} from "@aws-sdk/client-elastic-load-balancing-v2";
 
 const ses = new SESClient({});
 const ddb = new DynamoDBClient({});
 const cloudwatch = new CloudWatchClient({});
+const elbv2 = new ElasticLoadBalancingV2Client({});
 
 // Table names from environment variables (set by CDK)
 const TABLE_NAMES: Record<string, string | undefined> = {
@@ -85,6 +91,51 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       console.error('Error fetching Lambda metrics:', error);
     }
 
+    // Fetch NATS cluster health
+    let natsHealth = {
+      status: 'unknown' as 'healthy' | 'degraded' | 'unhealthy' | 'unknown',
+      healthyNodes: 0,
+      totalNodes: 0,
+      nodes: [] as Array<{ id: string; status: string; ip?: string }>,
+    };
+
+    try {
+      // Find the NATS target group by name pattern (CDK uses VettID-Nats prefix)
+      const targetGroupsResult = await elbv2.send(new DescribeTargetGroupsCommand({}));
+      const natsTargetGroup = targetGroupsResult.TargetGroups?.find(tg =>
+        tg.TargetGroupName?.toLowerCase().includes('nats')
+      );
+
+      if (natsTargetGroup?.TargetGroupArn) {
+        // Get health of all targets in the group
+        const healthResult = await elbv2.send(new DescribeTargetHealthCommand({
+          TargetGroupArn: natsTargetGroup.TargetGroupArn,
+        }));
+
+        const targets = healthResult.TargetHealthDescriptions || [];
+        natsHealth.totalNodes = targets.length;
+        natsHealth.healthyNodes = targets.filter(t => t.TargetHealth?.State === 'healthy').length;
+
+        natsHealth.nodes = targets.map(t => ({
+          id: t.Target?.Id || 'unknown',
+          status: t.TargetHealth?.State || 'unknown',
+          ip: t.Target?.Id, // For EC2 targets, Id is the instance ID
+        }));
+
+        // Determine overall status
+        if (natsHealth.healthyNodes === natsHealth.totalNodes && natsHealth.totalNodes > 0) {
+          natsHealth.status = 'healthy';
+        } else if (natsHealth.healthyNodes > 0) {
+          natsHealth.status = 'degraded';
+        } else if (natsHealth.totalNodes > 0) {
+          natsHealth.status = 'unhealthy';
+        }
+      }
+    } catch (natsError) {
+      console.error('Error fetching NATS health:', natsError);
+      // Keep default 'unknown' status
+    }
+
     // Build response
     const response = {
       ses: {
@@ -108,7 +159,8 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       api: {
         status: 'healthy',
         timestamp: new Date().toISOString()
-      }
+      },
+      nats: natsHealth
     };
 
     // Log system health check
@@ -117,7 +169,10 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       details: {
         ses_quota_percent: response.ses.percentUsed,
         total_db_size: totalSize,
-        lambda_errors: lambdaErrors
+        lambda_errors: lambdaErrors,
+        nats_status: natsHealth.status,
+        nats_healthy_nodes: natsHealth.healthyNodes,
+        nats_total_nodes: natsHealth.totalNodes,
       }
     });
 

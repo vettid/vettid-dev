@@ -952,6 +952,14 @@ export class AdminStack extends cdk.Stack {
       actions: ['cloudwatch:GetMetricStatistics'],
       resources: ['*'], // CloudWatch metrics don't support resource-level permissions
     }));
+    // NATS cluster health monitoring via NLB target group
+    getSystemHealth.addToRolePolicy(new iam.PolicyStatement({
+      actions: [
+        'elasticloadbalancing:DescribeTargetGroups',
+        'elasticloadbalancing:DescribeTargetHealth',
+      ],
+      resources: ['*'], // Target group discovery requires listing all target groups
+    }));
 
     // SECURITY: Scope logs access to VettID log groups only
     getSystemLogs.addToRolePolicy(new iam.PolicyStatement({

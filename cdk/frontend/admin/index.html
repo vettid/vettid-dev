@@ -311,6 +311,39 @@
     html[data-theme="light"] .numInputWrapper span:hover { background: #f3f4f6 !important; }
     html[data-theme="light"] .numInputWrapper span svg path { fill: #6b7280 !important; }
     html[data-theme="light"] .numInputWrapper span:hover svg path { fill: #1f2937 !important; }
+
+    /* Light theme comprehensive inline style overrides */
+    /* Secondary buttons (background:#333) */
+    [data-theme="light"] button[style*="background:#333"],
+    [data-theme="light"] .btn[style*="background:#333"] { background: #e5e7eb !important; color: #1f2937 !important; }
+    [data-theme="light"] button[style*="background:#333"]:hover,
+    [data-theme="light"] .btn[style*="background:#333"]:hover { background: #d1d5db !important; }
+    /* Card-like containers */
+    [data-theme="light"] div[style*="background:#0a0a0a"],
+    [data-theme="light"] div[style*="background:#0f0f0f"],
+    [data-theme="light"] div[style*="background:#050505"] { background: var(--bg-card) !important; }
+    /* Modal backgrounds */
+    [data-theme="light"] div[style*="background:#1a1a1a"] { background: var(--bg-card) !important; }
+    /* Input fields */
+    [data-theme="light"] input[style*="background:#0a0a0a"],
+    [data-theme="light"] textarea[style*="background:#0a0a0a"] { background: var(--bg-input) !important; color: #1f2937 !important; }
+    /* Borders */
+    [data-theme="light"] *[style*="border:1px solid #222"],
+    [data-theme="light"] *[style*="border:2px solid #222"],
+    [data-theme="light"] *[style*="border:1px solid #333"] { border-color: #d1d5db !important; }
+    [data-theme="light"] *[style*="border-top:1px solid #222"],
+    [data-theme="light"] *[style*="border-top:2px solid #222"],
+    [data-theme="light"] *[style*="border-top:1px solid #333"] { border-top-color: #d1d5db !important; }
+    [data-theme="light"] *[style*="border-bottom:1px solid #222"],
+    [data-theme="light"] *[style*="border-bottom:2px solid #222"],
+    [data-theme="light"] *[style*="border-bottom:1px solid #333"] { border-bottom-color: #d1d5db !important; }
+    /* Progress bar backgrounds */
+    [data-theme="light"] div[style*="background:#222"] { background: #e5e7eb !important; }
+    /* Toast light theme */
+    [data-theme="light"] .toast.success { background: linear-gradient(135deg, #d1fae5 0%, #a7f3d0 100%); color: #065f46; border-left-color: #10b981; }
+    [data-theme="light"] .toast.error { background: linear-gradient(135deg, #fee2e2 0%, #fecaca 100%); color: #991b1b; border-left-color: #ef4444; }
+    [data-theme="light"] .toast.info { background: linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%); color: #1e40af; border-left-color: #3b82f6; }
+    [data-theme="light"] .toast.warning { background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%); color: #92400e; border-left-color: #f59e0b; }
   </style>
 </head>
 <body>
@@ -586,6 +619,9 @@
           </button>
           <button id="quickFilterDisabled" class="btn" style="background:linear-gradient(135deg,#ec4899 0%,#be185d 100%);padding:10px 20px;font-weight:600;">
             Disabled <span id="disabledCount" style="background:#9f1239;color:#fff;border-radius:12px;padding:2px 8px;margin-left:8px;font-size:0.75rem;">0</span>
+          </button>
+          <button id="quickFilterInvited" class="btn" style="background:linear-gradient(135deg,#6366f1 0%,#4f46e5 100%);padding:10px 20px;font-weight:600;">
+            Invited <span id="invitedCount" style="background:#312e81;color:#fff;border-radius:12px;padding:2px 8px;margin-left:8px;font-size:0.75rem;">0</span>
           </button>
         </div>
 
@@ -929,6 +965,19 @@
               <div id="apiHealthStatus" style="font-size:1.4rem;font-weight:700;color:#10b981;margin-bottom:4px;">Operational</div>
               <div id="apiResponseTime" style="font-size:0.8rem;color:var(--gray);">Avg: —ms</div>
             </div>
+
+            <!-- NATS Cluster Health Card -->
+            <div style="padding:20px;background:var(--bg-input);border-radius:8px;border:1px solid var(--border);">
+              <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+                <div style="width:40px;height:40px;background:linear-gradient(135deg,#06b6d4 0%,#0891b2 100%);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:1.2rem;">🔗</div>
+                <div>
+                  <h4 style="margin:0;font-size:0.9rem;color:var(--accent);">NATS Cluster</h4>
+                  <div style="font-size:0.7rem;color:var(--gray);margin-top:2px;">Real-time messaging</div>
+                </div>
+              </div>
+              <div id="natsClusterStatus" style="font-size:1.4rem;font-weight:700;color:#10b981;margin-bottom:4px;">—</div>
+              <div id="natsNodeCount" style="font-size:0.8rem;color:var(--gray);">— of — nodes healthy</div>
+            </div>
           </div>
 
           <!-- Recent Logs Viewer -->
@@ -1079,8 +1128,7 @@
                   <th>Actions</th>
                 </tr>
               </thead>
-              <tbody>
-                <tr><td colspan="7" style="text-align:center;color:var(--gray);padding:40px;">Loading services...</td></tr>
+              <tbody id="servicesTableBody">
               </tbody>
             </table>
           </div>

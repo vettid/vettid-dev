@@ -21,6 +21,7 @@ import {
   internalError,
   getRequestId,
   requireUserClaims,
+  requireValidGuid,
 } from '../../common/util';
 import { query } from '../../common/ledger-db';
 
@@ -50,6 +51,13 @@ export const handler = async (
     }
     const { claims } = claimsResult;
     const userGuid = claims.user_guid;
+
+    // SECURITY: Validate GUID format before using in SQL query
+    try {
+      requireValidGuid(userGuid, 'user_guid');
+    } catch (e) {
+      return badRequest('Invalid user_guid format', origin);
+    }
 
     // Get pagination parameters
     const limit = Math.min(

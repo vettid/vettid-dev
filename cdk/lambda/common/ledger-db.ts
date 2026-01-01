@@ -314,27 +314,36 @@ export async function storeTransactionKeys(
 }
 
 /**
- * Verify and rotate a LAT token
- * Returns the new token version if successful, null if verification failed
+ * Verify and rotate a LAT token atomically
+ * SECURITY: Both invalidation of old token AND creation of new token happen in a single transaction
+ * This prevents race conditions where the old token is invalidated but new token isn't created
+ *
+ * @param userGuid User's GUID
+ * @param tokenHash Hash of the provided token
+ * @param newTokenHash Hash of the new token to store
+ * @param expiresAt Expiration time for the new token
+ * @returns New token version if successful, null if verification failed
  */
 export async function verifyAndRotateLAT(
   userGuid: string,
-  tokenHash: Buffer
-): Promise<{ version: number; oldTokenId: string } | null> {
+  tokenHash: Buffer,
+  newTokenHash?: Buffer,
+  expiresAt?: Date
+): Promise<{ version: number; oldTokenId: string; newTokenId?: string } | null> {
   return transaction(async (client) => {
-    // Find and mark the current token as used
+    // SECURITY: Use SELECT FOR UPDATE to lock the row and prevent concurrent rotation
+    // This prevents a TOCTOU race where two requests could both verify the same token
     const currentToken = await client.query<{
       token_id: string;
       version: number;
     }>(
-      `UPDATE ledger_auth_tokens
-       SET status = 'used',
-           last_used_at = NOW()
+      `SELECT token_id, version
+       FROM ledger_auth_tokens
        WHERE user_guid = $1
          AND token_hash = $2
          AND status = 'active'
          AND expires_at > NOW()
-       RETURNING token_id, version`,
+       FOR UPDATE`,
       [userGuid, tokenHash]
     );
 
@@ -343,11 +352,35 @@ export async function verifyAndRotateLAT(
     }
 
     const oldToken = currentToken.rows[0];
+
+    // Mark the old token as used
+    await client.query(
+      `UPDATE ledger_auth_tokens
+       SET status = 'used',
+           last_used_at = NOW()
+       WHERE token_id = $1`,
+      [oldToken.token_id]
+    );
+
     const newVersion = oldToken.version + 1;
+
+    // SECURITY: If new token hash is provided, store it in the same transaction
+    // This ensures atomicity - old token is only invalidated if new token is created
+    let newTokenId: string | undefined;
+    if (newTokenHash && expiresAt) {
+      const insertResult = await client.query<{ token_id: string }>(
+        `INSERT INTO ledger_auth_tokens (user_guid, token_hash, version, expires_at)
+         VALUES ($1, $2, $3, $4)
+         RETURNING token_id`,
+        [userGuid, newTokenHash, newVersion, expiresAt]
+      );
+      newTokenId = insertResult.rows[0].token_id;
+    }
 
     return {
       version: newVersion,
       oldTokenId: oldToken.token_id,
+      newTokenId,
     };
   });
 }

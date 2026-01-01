@@ -966,6 +966,56 @@ export function validateName(name: string, fieldName: string = "Name"): string {
 }
 
 /**
+ * Validate UUID format (with or without hyphens)
+ * SECURITY: Prevents SQL injection and malformed data in database queries
+ * @param uuid The UUID string to validate
+ * @returns true if valid UUID format, false otherwise
+ */
+export function isValidUUID(uuid: string): boolean {
+  if (!uuid || typeof uuid !== 'string') return false;
+  // Match UUIDs with or without hyphens (case-insensitive)
+  return /^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$/i.test(uuid);
+}
+
+/**
+ * Validate VettID GUID format (user-XXXX, conn-XXXX, etc.)
+ * SECURITY: Prevents malformed GUIDs from reaching database queries
+ * @param guid The GUID to validate (e.g., "user-ABC123DEF456...")
+ * @returns true if valid GUID format, false otherwise
+ */
+export function isValidGuid(guid: string): boolean {
+  if (!guid || typeof guid !== 'string') return false;
+  // Match VettID GUID format: prefix-hexchars (e.g., user-ABC123DEF456789012345678901234)
+  return /^[a-z]+-[0-9a-f]{16,32}$/i.test(guid);
+}
+
+/**
+ * Require valid UUID format, throw ValidationError if invalid
+ * SECURITY: Use this before any database query that uses a UUID/GUID as key
+ * @param uuid The UUID string to validate
+ * @param fieldName Field name for error messages (default "ID")
+ * @throws ValidationError if UUID is invalid
+ */
+export function requireValidUUID(uuid: string, fieldName: string = "ID"): void {
+  if (!isValidUUID(uuid)) {
+    throw new ValidationError(`Invalid ${fieldName} format`);
+  }
+}
+
+/**
+ * Require valid VettID GUID format, throw ValidationError if invalid
+ * SECURITY: Use this before any database query that uses a user_guid or similar
+ * @param guid The GUID to validate
+ * @param fieldName Field name for error messages (default "GUID")
+ * @throws ValidationError if GUID is invalid
+ */
+export function requireValidGuid(guid: string, fieldName: string = "GUID"): void {
+  if (!isValidGuid(guid)) {
+    throw new ValidationError(`Invalid ${fieldName} format`);
+  }
+}
+
+/**
  * Validate string input with configurable constraints
  * SECURITY: Prevents oversized inputs that could cause DoS or buffer issues
  * @param value The value to validate

@@ -21,12 +21,22 @@ import argon2 from 'argon2';
 /**
  * Argon2id parameters matching OWASP 2024 recommendations
  * These values provide strong security while remaining usable on Lambda
+ *
+ * SECURITY NOTE: 64MB memory cost is the OWASP 2024 minimum recommendation.
+ * Higher values (e.g., 256MB) would increase GPU-cracking resistance but:
+ * - Require Lambda memory increases (512MB+ headroom needed)
+ * - Could fail on low-memory mobile devices
+ * - Must stay consistent across Lambda/Android/iOS platforms
+ *
+ * Cross-platform consistency is critical - mobile apps use the same parameters.
+ * @see Android: CryptoManager.kt ARGON2_MEMORY_KB = 65536
+ * @see iOS: PasswordHasher.swift MemLimitModerate (~64MB)
  */
 const ARGON2_PARAMS = {
   type: argon2.argon2id,
   timeCost: 3,          // 3 iterations (OWASP minimum: 3)
   memoryCost: 65536,    // 64 MB (OWASP minimum: 64 MB)
-  parallelism: 4,       // 4 threads
+  parallelism: 4,       // 4 threads (note: iOS libsodium uses 1 internally)
   hashLength: 32,       // 32-byte output (256 bits)
 };
 

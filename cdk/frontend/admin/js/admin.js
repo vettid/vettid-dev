@@ -202,7 +202,7 @@ function renderWaitlistCards(entries) {
 }
 
 // Render users data as cards
-function renderUsersCards(users) {
+function renderUsersCards(users, isInvited = false) {
   const cardContainer = document.getElementById('usersCardContainer');
   if (!cardContainer) return;
 
@@ -210,58 +210,91 @@ function renderUsersCards(users) {
 
   users.forEach(u => {
     const name = `${u.first_name || ''} ${u.last_name || ''}`.trim() || '—';
-    const statusColors = {
-      pending: '#f59e0b',
-      approved: '#10b981',
-      rejected: '#ef4444',
-      disabled: '#ec4899',
-      deleted: '#7f1d1d'
-    };
-    const regColor = statusColors[u.status] || '#6b7280';
-
-    const memberColors = {
-      none: '#6b7280',
-      pending: '#f59e0b',
-      approved: '#10b981',
-      denied: '#ef4444'
-    };
-    const memberStatus = u.membership_status || 'none';
-    const memberColor = memberColors[memberStatus] || '#6b7280';
-
     const card = document.createElement('div');
     card.className = 'data-card';
-    card.innerHTML = `
-      <div class="data-card-header">
-        <div style="display:flex;align-items:center;gap:12px;flex:1;">
-          <input type="checkbox" name="user-select" class="user-checkbox" data-id="${escapeHtml(u.registration_id)}" data-status="${escapeHtml(u.status)}" data-member="${escapeHtml(memberStatus)}" onclick="event.stopPropagation();updateUsersSelectedCount();" style="width:18px;height:18px;cursor:pointer;"/>
-          <div class="data-card-title">${escapeHtml(name)}</div>
+
+    if (isInvited) {
+      // Render invited waitlist user card
+      card.innerHTML = `
+        <div class="data-card-header">
+          <div style="display:flex;align-items:center;gap:12px;flex:1;">
+            <div class="data-card-title">${escapeHtml(name)}</div>
+          </div>
         </div>
-      </div>
-      <div class="data-card-body">
-        <div class="data-card-row">
-          <span class="data-card-label">Email:</span>
-          <span class="data-card-value">${escapeHtml(u.email)}</span>
+        <div class="data-card-body">
+          <div class="data-card-row">
+            <span class="data-card-label">Email:</span>
+            <span class="data-card-value">${escapeHtml(u.email)}</span>
+          </div>
+          <div class="data-card-row">
+            <span class="data-card-label">Status:</span>
+            <span class="data-card-badge" style="background:#6366f1;font-size:0.65rem;">Invited</span>
+          </div>
+          ${u.invite_code ? `
+          <div class="data-card-row">
+            <span class="data-card-label">Invite Code:</span>
+            <span class="data-card-value" style="font-family:monospace;">${escapeHtml(u.invite_code)}</span>
+          </div>` : ''}
+          ${u.invited_at ? `
+          <div class="data-card-row">
+            <span class="data-card-label">Invited:</span>
+            <span class="data-card-value">${new Date(u.invited_at).toLocaleDateString()}</span>
+          </div>` : ''}
         </div>
-        <div class="data-card-row">
-          <span class="data-card-label">Registration:</span>
-          <span class="data-card-badge" style="background:${regColor};font-size:0.65rem;">${escapeHtml(u.status)}</span>
+      `;
+    } else {
+      // Render regular registered user card
+      const statusColors = {
+        pending: '#f59e0b',
+        approved: '#10b981',
+        rejected: '#ef4444',
+        disabled: '#ec4899',
+        deleted: '#7f1d1d'
+      };
+      const regColor = statusColors[u.status] || '#6b7280';
+
+      const memberColors = {
+        none: '#6b7280',
+        pending: '#f59e0b',
+        approved: '#10b981',
+        denied: '#ef4444'
+      };
+      const memberStatus = u.membership_status || 'none';
+      const memberColor = memberColors[memberStatus] || '#6b7280';
+
+      card.innerHTML = `
+        <div class="data-card-header">
+          <div style="display:flex;align-items:center;gap:12px;flex:1;">
+            <input type="checkbox" name="user-select" class="user-checkbox" data-id="${escapeHtml(u.registration_id)}" data-status="${escapeHtml(u.status)}" data-member="${escapeHtml(memberStatus)}" onclick="event.stopPropagation();updateUsersSelectedCount();" style="width:18px;height:18px;cursor:pointer;"/>
+            <div class="data-card-title">${escapeHtml(name)}</div>
+          </div>
         </div>
-        ${memberStatus !== 'none' ? `
-        <div class="data-card-row">
-          <span class="data-card-label">Membership:</span>
-          <span class="data-card-badge" style="background:${memberColor};font-size:0.65rem;">${memberStatus === 'approved' ? 'member' : escapeHtml(memberStatus)}</span>
-        </div>` : ''}
-        ${u.subscription_status && u.subscription_status !== 'none' ? `
-        <div class="data-card-row">
-          <span class="data-card-label">Subscription:</span>
-          <span class="data-card-badge" style="background:#8b5cf6;font-size:0.65rem;">${escapeHtml(u.subscription_plan || u.subscription_status)}</span>
-        </div>` : ''}
-        <div class="data-card-row">
-          <span class="data-card-label">Created:</span>
-          <span class="data-card-value">${u.created_at ? new Date(u.created_at).toLocaleDateString() : '—'}</span>
+        <div class="data-card-body">
+          <div class="data-card-row">
+            <span class="data-card-label">Email:</span>
+            <span class="data-card-value">${escapeHtml(u.email)}</span>
+          </div>
+          <div class="data-card-row">
+            <span class="data-card-label">Registration:</span>
+            <span class="data-card-badge" style="background:${regColor};font-size:0.65rem;">${escapeHtml(u.status)}</span>
+          </div>
+          ${memberStatus !== 'none' ? `
+          <div class="data-card-row">
+            <span class="data-card-label">Membership:</span>
+            <span class="data-card-badge" style="background:${memberColor};font-size:0.65rem;">${memberStatus === 'approved' ? 'member' : escapeHtml(memberStatus)}</span>
+          </div>` : ''}
+          ${u.subscription_status && u.subscription_status !== 'none' ? `
+          <div class="data-card-row">
+            <span class="data-card-label">Subscription:</span>
+            <span class="data-card-badge" style="background:#8b5cf6;font-size:0.65rem;">${escapeHtml(u.subscription_plan || u.subscription_status)}</span>
+          </div>` : ''}
+          <div class="data-card-row">
+            <span class="data-card-label">Created:</span>
+            <span class="data-card-value">${u.created_at ? new Date(u.created_at).toLocaleDateString() : '—'}</span>
+          </div>
         </div>
-      </div>
-    `;
+      `;
+    }
     cardContainer.appendChild(card);
   });
 }
@@ -825,6 +858,8 @@ const subFilters={status:'',plan:'',quickFilter:'all'};
 
 // Unified user data storage
 let allUsersData=[];
+// Invited users from waitlist (haven't registered yet)
+let invitedWaitlistUsers=[];
 // Unified subscriptions data storage
 let allSubscriptionsData=[];
 
@@ -878,10 +913,11 @@ async function loadUsers(resetPage=true){
   try{
     // Fetch all user data if needed
     if(resetPage||allUsersData.length===0){
-      const [regData,memberData,subData]=await Promise.all([
+      const [regData,memberData,subData,waitlistData]=await Promise.all([
         api('/admin/registrations'),
         api('/admin/membership-requests'),
-        api('/admin/subscriptions?status=active')
+        api('/admin/subscriptions?status=active'),
+        api('/admin/waitlist')
       ]);
 
       // Create a map of memberships by registration_id
@@ -910,86 +946,107 @@ async function loadUsers(resetPage=true){
           subscription_expires:sub.expires_at
         };
       });
+
+      // Get invited users from waitlist who haven't registered yet
+      const waitlist=waitlistData.waitlist||[];
+      const registeredEmails=new Set(registrations.map(r=>r.email?.toLowerCase()));
+      invitedWaitlistUsers=waitlist.filter(w=>w.status==='invited'&&!registeredEmails.has(w.email?.toLowerCase()));
     }
 
-    // Apply filters
-    let filtered=allUsersData.filter(u=>{
-      // Search filter
-      if(paginationState.users.search){
-        const query=paginationState.users.search.toLowerCase();
-        const searchMatch=[u.first_name,u.last_name,u.email,u.invite_code,u.user_guid].some(f=>(f||'').toLowerCase().includes(query));
-        if(!searchMatch)return false;
-      }
+    // Special handling for invited users (from waitlist, not registrations)
+    const showingInvited=userFilters.quickFilter==='invited';
+    let filtered;
 
-      // Registration status filter
-      if(userFilters.registration&&u.status!==userFilters.registration)return false;
-
-      // Membership status filter
-      if(userFilters.membership){
-        const memberStatus=u.membership_status||'none';
-        if(memberStatus!==userFilters.membership)return false;
-      }
-
-      // Subscription status filter
-      if(userFilters.subscription){
-        const subStatus=u.subscription_status||'none';
-        if(subStatus!==userFilters.subscription)return false;
-      }
-
-      // Date range filter - registration date
-      if(userFilters.dateFrom){
-        const fromDate=new Date(userFilters.dateFrom);
-        fromDate.setHours(0,0,0,0);
-        const regDate=new Date(u.created_at);
-        if(regDate<fromDate)return false;
-      }
-      if(userFilters.dateTo){
-        const toDate=new Date(userFilters.dateTo);
-        toDate.setHours(23,59,59,999);
-        const regDate=new Date(u.created_at);
-        if(regDate>toDate)return false;
-      }
-
-      // Last active filter - based on last_login_at field
-      if(userFilters.lastActive){
-        const now=new Date();
-        const lastLogin=u.last_login_at?new Date(u.last_login_at):null;
-
-        if(userFilters.lastActive==='1'){
-          // Last 24 hours
-          if(!lastLogin||now-lastLogin>24*60*60*1000)return false;
-        }else if(userFilters.lastActive==='7'){
-          // Last 7 days
-          if(!lastLogin||now-lastLogin>7*24*60*60*1000)return false;
-        }else if(userFilters.lastActive==='30'){
-          // Last 30 days
-          if(!lastLogin||now-lastLogin>30*24*60*60*1000)return false;
-        }else if(userFilters.lastActive==='90'){
-          // Last 90 days
-          if(!lastLogin||now-lastLogin>90*24*60*60*1000)return false;
-        }else if(userFilters.lastActive==='inactive-30'){
-          // Inactive 30+ days
-          if(!lastLogin||now-lastLogin<=30*24*60*60*1000)return false;
-        }else if(userFilters.lastActive==='inactive-90'){
-          // Inactive 90+ days
-          if(!lastLogin||now-lastLogin<=90*24*60*60*1000)return false;
+    if(showingInvited){
+      // Filter invited waitlist users
+      filtered=invitedWaitlistUsers.filter(u=>{
+        if(paginationState.users.search){
+          const query=paginationState.users.search.toLowerCase();
+          const searchMatch=[u.first_name,u.last_name,u.email,u.invite_code].some(f=>(f||'').toLowerCase().includes(query));
+          if(!searchMatch)return false;
         }
-      }
+        return true;
+      });
+    }else{
+      // Apply filters to registered users
+      filtered=allUsersData.filter(u=>{
+        // Search filter
+        if(paginationState.users.search){
+          const query=paginationState.users.search.toLowerCase();
+          const searchMatch=[u.first_name,u.last_name,u.email,u.invite_code,u.user_guid].some(f=>(f||'').toLowerCase().includes(query));
+          if(!searchMatch)return false;
+        }
 
-      // Quick filter
-      if(userFilters.quickFilter==='action'){
-        const needsAction=u.status==='pending'||u.membership_status==='pending';
-        if(!needsAction)return false;
-      }else if(userFilters.quickFilter==='registered'){
-        const isRegistered=(u.status==='approved')||(u.subscription_status==='active');
-        if(!isRegistered)return false;
-      }else if(userFilters.quickFilter==='disabled'){
-        const isDisabled=u.status==='disabled';
-        if(!isDisabled)return false;
-      }
+        // Registration status filter
+        if(userFilters.registration&&u.status!==userFilters.registration)return false;
 
-      return true;
-    });
+        // Membership status filter
+        if(userFilters.membership){
+          const memberStatus=u.membership_status||'none';
+          if(memberStatus!==userFilters.membership)return false;
+        }
+
+        // Subscription status filter
+        if(userFilters.subscription){
+          const subStatus=u.subscription_status||'none';
+          if(subStatus!==userFilters.subscription)return false;
+        }
+
+        // Date range filter - registration date
+        if(userFilters.dateFrom){
+          const fromDate=new Date(userFilters.dateFrom);
+          fromDate.setHours(0,0,0,0);
+          const regDate=new Date(u.created_at);
+          if(regDate<fromDate)return false;
+        }
+        if(userFilters.dateTo){
+          const toDate=new Date(userFilters.dateTo);
+          toDate.setHours(23,59,59,999);
+          const regDate=new Date(u.created_at);
+          if(regDate>toDate)return false;
+        }
+
+        // Last active filter - based on last_login_at field
+        if(userFilters.lastActive){
+          const now=new Date();
+          const lastLogin=u.last_login_at?new Date(u.last_login_at):null;
+
+          if(userFilters.lastActive==='1'){
+            // Last 24 hours
+            if(!lastLogin||now-lastLogin>24*60*60*1000)return false;
+          }else if(userFilters.lastActive==='7'){
+            // Last 7 days
+            if(!lastLogin||now-lastLogin>7*24*60*60*1000)return false;
+          }else if(userFilters.lastActive==='30'){
+            // Last 30 days
+            if(!lastLogin||now-lastLogin>30*24*60*60*1000)return false;
+          }else if(userFilters.lastActive==='90'){
+            // Last 90 days
+            if(!lastLogin||now-lastLogin>90*24*60*60*1000)return false;
+          }else if(userFilters.lastActive==='inactive-30'){
+            // Inactive 30+ days
+            if(!lastLogin||now-lastLogin<=30*24*60*60*1000)return false;
+          }else if(userFilters.lastActive==='inactive-90'){
+            // Inactive 90+ days
+            if(!lastLogin||now-lastLogin<=90*24*60*60*1000)return false;
+          }
+        }
+
+        // Quick filter
+        if(userFilters.quickFilter==='action'){
+          const needsAction=u.status==='pending'||u.membership_status==='pending';
+          if(!needsAction)return false;
+        }else if(userFilters.quickFilter==='registered'){
+          const isRegistered=(u.status==='approved')||(u.subscription_status==='active');
+          if(!isRegistered)return false;
+        }else if(userFilters.quickFilter==='disabled'){
+          const isDisabled=u.status==='disabled';
+          if(!isDisabled)return false;
+        }
+
+        return true;
+      });
+    }
 
     // Apply sorting
     if(sortState.users.column){
@@ -1000,9 +1057,12 @@ async function loadUsers(resetPage=true){
     const actionCount=allUsersData.filter(u=>u.status==='pending'||u.membership_status==='pending').length;
     const registeredCount=allUsersData.filter(u=>(u.status==='approved')||(u.subscription_status==='active')).length;
     const disabledCount=allUsersData.filter(u=>u.status==='disabled').length;
+    const invitedCount=invitedWaitlistUsers.length;
     document.getElementById('actionCount').textContent=actionCount;
     document.getElementById('registeredCount').textContent=registeredCount;
     document.getElementById('disabledCount').textContent=disabledCount;
+    const invitedCountEl=document.getElementById('invitedCount');
+    if(invitedCountEl)invitedCountEl.textContent=invitedCount;
 
     // Pagination
     const page=updatePagination('users',filtered);
@@ -1014,7 +1074,29 @@ async function loadUsers(resetPage=true){
     const searchTerm=paginationState.users.search;
 
     if(page.length===0){
-      tbody.innerHTML='<tr><td colspan="4" class="muted" style="text-align:center;padding:40px;">No users found matching the current filters.</td></tr>';
+      const emptyMsg=showingInvited?'No invited users pending registration.':'No users found matching the current filters.';
+      tbody.innerHTML=`<tr><td colspan="4" class="muted" style="text-align:center;padding:40px;">${emptyMsg}</td></tr>`;
+    }else if(showingInvited){
+      // Render invited waitlist users
+      page.forEach(u=>{
+        const tr=document.createElement('tr');
+        const name=`${u.first_name||''} ${u.last_name||''}`.trim();
+        const highlightedName=highlightText(name,searchTerm);
+        const highlightedEmail=highlightText(u.email,searchTerm);
+
+        // Invited badge and invite code
+        const invitedBadge='<span style="display:inline-block;background:#6366f1;color:#fff;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;margin-right:4px;">Invited</span>';
+        const inviteCode=u.invite_code?`<span style="font-family:monospace;font-size:0.75rem;color:var(--gray);margin-left:4px;">${escapeHtml(u.invite_code)}</span>`:'';
+        const invitedAt=u.invited_at?`<span style="font-size:0.7rem;color:var(--gray);margin-left:8px;">${new Date(u.invited_at).toLocaleDateString()}</span>`:'';
+
+        tr.innerHTML=`
+          <td><input type='checkbox' disabled style="opacity:0.3;" /></td>
+          <td>${highlightedName||'—'}</td>
+          <td>${highlightedEmail}</td>
+          <td>${invitedBadge}${inviteCode}${invitedAt}</td>
+        `;
+        tbody.appendChild(tr);
+      });
     }else{
       page.forEach(u=>{
         const tr=document.createElement('tr');
@@ -1038,7 +1120,7 @@ async function loadUsers(resetPage=true){
     updateUsersSelectedCount();
 
     // Render cards for mobile view
-    renderUsersCards(page);
+    renderUsersCards(page,showingInvited);
   }catch(e){
     tbody.innerHTML=`<tr><td colspan="4" class="muted">Error: ${escapeHtml(e.message||String(e))}</td></tr>`;
   }
@@ -1094,6 +1176,18 @@ document.getElementById('quickFilterDisabled').onclick=()=>{
   document.getElementById('quickFilterDisabled').classList.add('filter-active');
   loadUsers(false);
 };
+// Invited filter (shows users invited from waitlist who haven't registered yet)
+const usersInvitedBtn=document.getElementById('quickFilterInvited');
+if(usersInvitedBtn){
+  usersInvitedBtn.onclick=()=>{
+    userFilters.quickFilter='invited';
+    document.querySelectorAll('#users .btn').forEach(btn => {
+      if(btn.id && btn.id.startsWith('quickFilter')) btn.classList.remove('filter-active');
+    });
+    usersInvitedBtn.classList.add('filter-active');
+    loadUsers(false);
+  };
+}
 
 // Advanced filters
 document.getElementById('filterRegistration').onchange=e=>{userFilters.registration=e.target.value;paginationState.users.page=0;loadUsers(false);};
@@ -3311,7 +3405,7 @@ async function renderActiveTile(p){
 
   return`
     <div style="background:var(--bg-card);border:1px solid #333;border-radius:8px;padding:12px;">
-      ${proposalNumber?`<div style="margin-bottom:4px;"><span style="font-family:monospace;font-size:0.7rem;color:#6b7280;background:#1f2937;padding:2px 6px;border-radius:4px;">${escapeHtml(proposalNumber)}</span></div>`:''}
+      ${proposalNumber?`<div style="margin-bottom:4px;"><span style="font-family:monospace;font-size:0.7rem;color:var(--gray);background:var(--bg-tertiary);padding:2px 6px;border-radius:4px;">${escapeHtml(proposalNumber)}</span></div>`:''}
       <h4 style="margin:0 0 6px 0;font-weight:700;font-size:0.95rem;">${escapeHtml(p.proposal_title||'Untitled Proposal')}</h4>
       <div style="margin-bottom:8px;display:flex;flex-wrap:wrap;gap:6px;">
         <span style="display:inline-block;background:linear-gradient(135deg,#10b981 0%,#059669 100%);color:#fff;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;">Active</span>
@@ -3348,7 +3442,7 @@ function renderUpcomingTile(p){
 
   return`
     <div style="background:var(--bg-card);border:1px solid #333;border-radius:8px;padding:12px;">
-      ${proposalNumber?`<div style="margin-bottom:4px;"><span style="font-family:monospace;font-size:0.7rem;color:#6b7280;background:#1f2937;padding:2px 6px;border-radius:4px;">${escapeHtml(proposalNumber)}</span></div>`:''}
+      ${proposalNumber?`<div style="margin-bottom:4px;"><span style="font-family:monospace;font-size:0.7rem;color:var(--gray);background:var(--bg-tertiary);padding:2px 6px;border-radius:4px;">${escapeHtml(proposalNumber)}</span></div>`:''}
       <h4 style="margin:0 0 6px 0;font-weight:700;font-size:0.95rem;color:#9ca3af;">${escapeHtml(p.proposal_title||'Untitled Proposal')}</h4>
       <div style="margin-bottom:8px;display:flex;flex-wrap:wrap;gap:6px;">
         <span style="display:inline-block;background:linear-gradient(135deg,#f59e0b 0%,#d97706 100%);color:#000;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;">Upcoming</span>
@@ -3410,7 +3504,7 @@ async function renderClosedTile(p){
 
   return`
     <div style="background:var(--bg-card);border:1px solid #333;border-radius:8px;padding:12px;display:flex;flex-direction:column;min-height:100%;">
-      ${proposalNumber?`<div style="margin-bottom:4px;"><span style="font-family:monospace;font-size:0.7rem;color:#6b7280;background:#1f2937;padding:2px 6px;border-radius:4px;">${escapeHtml(proposalNumber)}</span></div>`:''}
+      ${proposalNumber?`<div style="margin-bottom:4px;"><span style="font-family:monospace;font-size:0.7rem;color:var(--gray);background:var(--bg-tertiary);padding:2px 6px;border-radius:4px;">${escapeHtml(proposalNumber)}</span></div>`:''}
       <h4 style="margin:0 0 6px 0;font-weight:700;font-size:0.95rem;">${escapeHtml(p.proposal_title||'Untitled Proposal')}</h4>
       <div style="margin-bottom:8px;display:flex;flex-wrap:wrap;gap:6px;">
         <span style="display:inline-block;background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);color:#fff;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;">Closed</span>
@@ -4909,6 +5003,32 @@ async function loadSystemHealth() {
     } else {
       statusEl.style.color = '#ef4444';
     }
+
+    // Update NATS Cluster Health
+    const natsStatus = data.nats?.status || 'unknown';
+    const natsHealthyNodes = data.nats?.healthyNodes || 0;
+    const natsTotalNodes = data.nats?.totalNodes || 0;
+
+    const natsStatusEl = document.getElementById('natsClusterStatus');
+    const natsNodeCountEl = document.getElementById('natsNodeCount');
+
+    // Display status text
+    if (natsStatus === 'healthy') {
+      natsStatusEl.textContent = 'Healthy';
+      natsStatusEl.style.color = '#10b981';
+    } else if (natsStatus === 'degraded') {
+      natsStatusEl.textContent = 'Degraded';
+      natsStatusEl.style.color = '#f59e0b';
+    } else if (natsStatus === 'unhealthy') {
+      natsStatusEl.textContent = 'Unhealthy';
+      natsStatusEl.style.color = '#ef4444';
+    } else {
+      natsStatusEl.textContent = 'Unknown';
+      natsStatusEl.style.color = '#9ca3af';
+    }
+
+    // Display node count
+    natsNodeCountEl.textContent = `${natsHealthyNodes} of ${natsTotalNodes} nodes healthy`;
 
   } catch (e) {
     console.error('Error loading system health:', e);
@@ -6411,12 +6531,17 @@ let isEditingService = false;
 
 async function loadServices() {
   try {
+    showLoadingSkeleton('servicesTable');
     const res = await api('/admin/services');
     servicesData = res.services || [];
     renderServices();
   } catch (err) {
     console.error('Error loading services:', err);
     showToast('Failed to load services', 'error');
+    const tbody = document.getElementById('servicesTableBody');
+    if (tbody) {
+      tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;color:#f44;padding:2rem;">Failed to load services. Please try again.</td></tr>`;
+    }
   }
 }
 
@@ -6447,7 +6572,7 @@ function renderServices() {
   }
 
   if (filtered.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;color:var(--gray);padding:2rem;">No services found</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;color:var(--gray);padding:2rem;">No results</td></tr>`;
     return;
   }
 

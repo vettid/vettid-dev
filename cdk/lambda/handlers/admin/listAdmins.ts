@@ -27,6 +27,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       const givenName = user.Attributes?.find(a => a.Name === 'given_name')?.Value || '';
       const familyName = user.Attributes?.find(a => a.Name === 'family_name')?.Value || '';
       const adminType = user.Attributes?.find(a => a.Name === 'custom:admin_type')?.Value || 'admin';
+      const lastLoginAt = user.Attributes?.find(a => a.Name === 'custom:last_login_at')?.Value;
 
       return {
         email,
@@ -35,6 +36,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         admin_type: adminType,
         enabled: user.Enabled,
         created_at: user.UserCreateDate?.toISOString(),
+        last_login_at: lastLoginAt,  // Will be undefined until user logs in after this update
         status: user.UserStatus
       };
     });

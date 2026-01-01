@@ -1,6 +1,8 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { DynamoDBClient, GetItemCommand, PutItemCommand, UpdateItemCommand } from '@aws-sdk/client-dynamodb';
+import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
+import { createHmac, timingSafeEqual } from 'crypto';
 import {
   ok,
   badRequest,
@@ -30,12 +32,51 @@ import {
 import { verifyPassword } from '../../common/crypto-password';
 
 const ddb = new DynamoDBClient({});
+const secretsClient = new SecretsManagerClient({});
 
 const TABLE_CREDENTIALS = process.env.TABLE_CREDENTIALS!;
 const TABLE_CREDENTIAL_KEYS = process.env.TABLE_CREDENTIAL_KEYS!;
 const TABLE_LEDGER_AUTH_TOKENS = process.env.TABLE_LEDGER_AUTH_TOKENS!;
 const TABLE_TRANSACTION_KEYS = process.env.TABLE_TRANSACTION_KEYS!;
 const TABLE_ACTION_TOKENS = process.env.TABLE_ACTION_TOKENS!;
+const ACTION_TOKEN_SECRET_ARN = process.env.ACTION_TOKEN_SECRET_ARN;
+
+// Secret caching to avoid repeated Secrets Manager calls
+let cachedSigningKey: string | null = null;
+let secretCacheTime = 0;
+const SECRET_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+/**
+ * Get signing key from Secrets Manager (with caching)
+ */
+async function getSigningKey(): Promise<string> {
+  const now = Date.now();
+  if (cachedSigningKey && (now - secretCacheTime) < SECRET_CACHE_TTL_MS) {
+    return cachedSigningKey;
+  }
+
+  if (!ACTION_TOKEN_SECRET_ARN) {
+    throw new Error('CRITICAL: ACTION_TOKEN_SECRET_ARN environment variable is required');
+  }
+
+  const response = await secretsClient.send(new GetSecretValueCommand({
+    SecretId: ACTION_TOKEN_SECRET_ARN,
+  }));
+
+  if (!response.SecretString) {
+    throw new Error('Action token signing secret is empty');
+  }
+
+  const secret = JSON.parse(response.SecretString);
+  cachedSigningKey = secret.signing_key;
+  secretCacheTime = now;
+
+  if (!cachedSigningKey) {
+    throw new Error('Action token secret missing "signing_key" field');
+  }
+
+  return cachedSigningKey;
+}
 
 const EXPECTED_ENDPOINT = '/api/v1/auth/execute';
 
@@ -54,8 +95,9 @@ interface AuthExecuteRequest {
 
 /**
  * Validate the action token from Authorization header
+ * Verifies HMAC-SHA256 signature using signing key from Secrets Manager
  */
-function validateActionToken(authHeader: string | undefined): { valid: boolean; payload?: any; error?: string } {
+async function validateActionToken(authHeader: string | undefined): Promise<{ valid: boolean; payload?: any; error?: string }> {
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return { valid: false, error: 'Missing or invalid Authorization header' };
   }
@@ -67,8 +109,10 @@ function validateActionToken(authHeader: string | undefined): { valid: boolean; 
     return { valid: false, error: 'Invalid token format' };
   }
 
+  const [headerB64, payloadB64, signatureB64] = parts;
+
   try {
-    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString());
+    const payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString());
 
     // Check expiration
     if (payload.exp && payload.exp < Math.floor(Date.now() / 1000)) {
@@ -80,11 +124,23 @@ function validateActionToken(authHeader: string | undefined): { valid: boolean; 
       return { valid: false, error: 'Token not valid for this endpoint' };
     }
 
-    // In production, verify signature with Ed25519 public key
-    // For now, we just validate the structure and check the database
+    // Verify HMAC-SHA256 signature
+    const signingKey = await getSigningKey();
+    const expectedSignature = createHmac('sha256', signingKey)
+      .update(`${headerB64}.${payloadB64}`)
+      .digest();
+
+    const providedSignature = Buffer.from(signatureB64, 'base64url');
+
+    // Use timing-safe comparison to prevent timing attacks
+    if (expectedSignature.length !== providedSignature.length ||
+        !timingSafeEqual(expectedSignature, providedSignature)) {
+      return { valid: false, error: 'Invalid token signature' };
+    }
 
     return { valid: true, payload };
-  } catch {
+  } catch (err) {
+    console.error('Token validation error:', err);
     return { valid: false, error: 'Invalid token payload' };
   }
 }
@@ -102,8 +158,8 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
   const requestId = getRequestId(event);
 
   try {
-    // Validate action token
-    const tokenResult = validateActionToken(event.headers.authorization || event.headers.Authorization);
+    // Validate action token (async - verifies HMAC signature)
+    const tokenResult = await validateActionToken(event.headers.authorization || event.headers.Authorization);
     if (!tokenResult.valid) {
       return unauthorized(tokenResult.error || 'Invalid token');
     }
@@ -120,9 +176,10 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     }
 
     // Verify token is still active in database (single-use check)
+    // ActionTokens table has composite key: user_guid (HASH) + token_id (RANGE)
     const actionTokenResult = await ddb.send(new GetItemCommand({
       TableName: TABLE_ACTION_TOKENS,
-      Key: marshall({ token_id: tokenId }),
+      Key: marshall({ user_guid: userGuid, token_id: tokenId }),
     }));
 
     if (!actionTokenResult.Item) {
@@ -138,7 +195,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     // Mark token as used immediately (single-use)
     await ddb.send(new UpdateItemCommand({
       TableName: TABLE_ACTION_TOKENS,
-      Key: marshall({ token_id: tokenId }),
+      Key: marshall({ user_guid: userGuid, token_id: tokenId }),
       UpdateExpression: 'SET #status = :status, used_at = :used_at',
       ExpressionAttributeNames: { '#status': 'status' },
       ExpressionAttributeValues: marshall({

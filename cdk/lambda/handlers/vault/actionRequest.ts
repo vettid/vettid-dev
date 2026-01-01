@@ -1,7 +1,8 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { DynamoDBClient, PutItemCommand, QueryCommand } from '@aws-sdk/client-dynamodb';
+import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
-import { createHash, randomBytes } from 'crypto';
+import { createHmac, randomBytes } from 'crypto';
 import {
   ok,
   badRequest,
@@ -18,11 +19,54 @@ import {
 } from '../../common/util';
 
 const ddb = new DynamoDBClient({});
+const secretsClient = new SecretsManagerClient({});
 
 const TABLE_CREDENTIALS = process.env.TABLE_CREDENTIALS!;
 const TABLE_LEDGER_AUTH_TOKENS = process.env.TABLE_LEDGER_AUTH_TOKENS!;
 const TABLE_TRANSACTION_KEYS = process.env.TABLE_TRANSACTION_KEYS!;
 const TABLE_ACTION_TOKENS = process.env.TABLE_ACTION_TOKENS!;
+
+// Action token signing secret from Secrets Manager
+const ACTION_TOKEN_SECRET_ARN = process.env.ACTION_TOKEN_SECRET_ARN;
+
+// Secret caching to avoid repeated Secrets Manager calls
+let cachedSigningKey: string | null = null;
+let secretCacheTime = 0;
+const SECRET_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+/**
+ * Get signing key from Secrets Manager (with caching)
+ */
+async function getSigningKey(): Promise<string> {
+  // Check cache
+  const now = Date.now();
+  if (cachedSigningKey && (now - secretCacheTime) < SECRET_CACHE_TTL_MS) {
+    return cachedSigningKey;
+  }
+
+  if (!ACTION_TOKEN_SECRET_ARN) {
+    throw new Error('CRITICAL: ACTION_TOKEN_SECRET_ARN environment variable is required');
+  }
+
+  // Fetch from Secrets Manager
+  const response = await secretsClient.send(new GetSecretValueCommand({
+    SecretId: ACTION_TOKEN_SECRET_ARN,
+  }));
+
+  if (!response.SecretString) {
+    throw new Error('Action token signing secret is empty');
+  }
+
+  const secret = JSON.parse(response.SecretString);
+  cachedSigningKey = secret.signing_key;
+  secretCacheTime = now;
+
+  if (!cachedSigningKey) {
+    throw new Error('Action token secret missing "signing_key" field');
+  }
+
+  return cachedSigningKey;
+}
 
 // Rate limiting: 10 action requests per user per minute
 const RATE_LIMIT_MAX_REQUESTS = 10;
@@ -48,26 +92,27 @@ interface ActionRequestBody {
 }
 
 /**
- * Create a simple JWT-like action token
- * In production, use proper JWT library with Ed25519 signing
+ * Create a JWT-like action token signed with HMAC-SHA256
+ * Uses signing key from AWS Secrets Manager
  */
-function createActionToken(payload: {
+async function createActionToken(payload: {
   sub: string;
   action: string;
   endpoint: string;
   jti: string;
   iat: number;
   exp: number;
-}): string {
+}): Promise<string> {
   const header = { typ: 'action', alg: 'HS256' };
   const headerB64 = Buffer.from(JSON.stringify(header)).toString('base64url');
   const payloadB64 = Buffer.from(JSON.stringify(payload)).toString('base64url');
 
-  // In production, use Ed25519 signing key stored in AWS Secrets Manager
-  // For now, using HMAC with a derived key
-  const signingKey = process.env.JWT_SIGNING_KEY || 'dev-signing-key-replace-in-production';
-  const signature = createHash('sha256')
-    .update(`${headerB64}.${payloadB64}.${signingKey}`)
+  // Get signing key from Secrets Manager (cached)
+  const signingKey = await getSigningKey();
+
+  // HMAC-SHA256 signature
+  const signature = createHmac('sha256', signingKey)
+    .update(`${headerB64}.${payloadB64}`)
     .digest('base64url');
 
   return `${headerB64}.${payloadB64}.${signature}`;
@@ -189,7 +234,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     const expiresAt = now + 5 * 60 * 1000;  // 5 minutes
     const tokenId = generateSecureId('action', 32);
 
-    const actionToken = createActionToken({
+    const actionToken = await createActionToken({
       sub: body.user_guid,
       action: body.action_type,
       endpoint: actionEndpoint,
@@ -211,7 +256,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
         expires_at: new Date(expiresAt).toISOString(),
         expires_at_ttl: Math.floor(expiresAt / 1000) + 3600,  // TTL 1 hour after expiry
         device_fingerprint: body.device_fingerprint,
-      }),
+      }, { removeUndefinedValues: true }),  // device_fingerprint is optional
     }));
 
     // Generate LAT token from hash (we stored the hash, so we need to generate a new one for the response)

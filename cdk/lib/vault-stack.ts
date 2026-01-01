@@ -285,17 +285,33 @@ export class VaultStack extends cdk.Stack {
       environment: {
         ...defaultEnv,
         SES_FROM: 'no-reply@auth.vettid.dev',
+        ACTION_TOKEN_SECRET_ARN: props.infrastructure.actionTokenSecretArn,
       },
       timeout: cdk.Duration.seconds(30),
     });
+
+    // Grant actionRequest read access to the action token signing secret
+    this.actionRequest.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['secretsmanager:GetSecretValue'],
+      resources: [props.infrastructure.actionTokenSecretArn],
+    }));
 
     // Note: Uses Node.js 20 because argon2 doesn't have pre-built binaries for Node.js 22
     this.authExecute = new lambdaNode.NodejsFunction(this, 'AuthExecuteFn', {
       entry: 'lambda/handlers/vault/authExecute.ts',
       runtime: lambda.Runtime.NODEJS_20_X,
-      environment: defaultEnv,
+      environment: {
+        ...defaultEnv,
+        ACTION_TOKEN_SECRET_ARN: props.infrastructure.actionTokenSecretArn,
+      },
       timeout: cdk.Duration.seconds(30),
     });
+
+    // Grant authExecute read access to the action token signing secret (for signature verification)
+    this.authExecute.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['secretsmanager:GetSecretValue'],
+      resources: [props.infrastructure.actionTokenSecretArn],
+    }));
 
     // ===== NATS ACCOUNT MANAGEMENT =====
 

@@ -11,7 +11,8 @@ import {
   getRequestId,
   parseJsonBody,
   ValidationError,
-  isWeakPin
+  isWeakPin,
+  secureCompare
 } from "../../common/util";
 import { UpdateItemCommand, QueryCommand } from "@aws-sdk/client-dynamodb";
 import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
@@ -100,9 +101,10 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       return badRequest("PIN is not enabled. Please enable PIN first.");
     }
 
-    // Verify current PIN matches stored hash
+    // SECURITY: Verify current PIN matches stored hash using timing-safe comparison
+    // This prevents timing attacks that could leak information about the correct PIN
     const currentPinHash = hashPin(currentPin);
-    if (currentPinHash !== reg.pin_hash) {
+    if (!secureCompare(currentPinHash, reg.pin_hash)) {
       // SECURITY: Log failed PIN verification attempts for security monitoring
       await putAudit({
         type: "pin_verification_failed",

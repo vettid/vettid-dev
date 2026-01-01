@@ -433,7 +433,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
         message_space: messageSpaceId,
         nats_endpoint: `tls://${process.env.NATS_ENDPOINT || 'nats.vettid.dev:4222'}`,
         bootstrap_topic: `${ownerSpaceId}.forVault.app.bootstrap`,
-        response_topic: `${ownerSpaceId}.forApp.bootstrap.>`,
+        response_topic: `${ownerSpaceId}.forApp.app.bootstrap.>`,
         credentials_ttl_seconds: 3600,  // 1 hour
         // For EXISTING vaults, they're already ready. For PROVISIONING, estimate 2 mins.
         estimated_ready_at: vaultStatus === 'EXISTING'

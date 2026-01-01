@@ -35,9 +35,6 @@ import {
   generateLAT,
 } from '../../common/crypto-keys';
 import {
-  query,
-  transaction,
-  storeLAT,
   verifyAndRotateLAT,
   logSecurityEvent,
 } from '../../common/ledger-db';
@@ -90,8 +87,24 @@ export const handler = async (
     // Hash the provided token for comparison
     const tokenHash = Buffer.from(hashLATToken(request.lat_token), 'hex');
 
-    // Verify and rotate the LAT atomically
-    const rotationResult = await verifyAndRotateLAT(userGuid, tokenHash);
+    // Generate new LAT upfront (version will be incremented in the transaction)
+    // We need to prepare this before the transaction so it can be stored atomically
+    const newLat = generateLAT(1); // Version will be set by the transaction
+    const newTokenHash = Buffer.from(hashLATToken(newLat.token), 'hex');
+
+    // Calculate expiry (30 days from now)
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + 30);
+
+    // SECURITY: Verify and rotate the LAT in a single atomic transaction
+    // This prevents race conditions where old token is invalidated but new token isn't created
+    // Also uses SELECT FOR UPDATE to prevent concurrent rotation attacks
+    const rotationResult = await verifyAndRotateLAT(
+      userGuid,
+      tokenHash,
+      newTokenHash,
+      expiresAt
+    );
 
     if (!rotationResult) {
       // Log failed validation attempt
@@ -110,15 +123,8 @@ export const handler = async (
       }, origin);
     }
 
-    // Generate new LAT
-    const newLat = generateLAT(rotationResult.version);
-    const newTokenHash = Buffer.from(hashLATToken(newLat.token), 'hex');
-
-    // Store the new LAT (expires in 30 days)
-    const expiresAt = new Date();
-    expiresAt.setDate(expiresAt.getDate() + 30);
-
-    await storeLAT(userGuid, newTokenHash, rotationResult.version, expiresAt);
+    // Update the LAT with the correct version from the transaction
+    newLat.version = rotationResult.version;
 
     // Log successful validation
     await logSecurityEvent(

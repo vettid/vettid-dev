@@ -51,7 +51,7 @@ export interface NatsStackProps extends cdk.StackProps {
  *
  * Deploys a 3-node NATS cluster with JetStream for the Vault Services messaging infrastructure:
  * - Dedicated VPC with public/private subnets
- * - 3x t4g.small EC2 instances (ARM64) running NATS
+ * - 3x t4g.micro EC2 instances (ARM64) running NATS
  * - Network Load Balancer with ACM certificate for external TLS
  * - Self-signed certificates for internal cluster communication
  * - Secrets Manager for operator keys and internal CA
@@ -525,7 +525,7 @@ export class NatsStack extends cdk.Stack {
     );
 
     const launchTemplate = new ec2.LaunchTemplate(this, 'NatsLaunchTemplate', {
-      instanceType: ec2.InstanceType.of(ec2.InstanceClass.T4G, ec2.InstanceSize.SMALL),
+      instanceType: ec2.InstanceType.of(ec2.InstanceClass.T4G, ec2.InstanceSize.MICRO),
       machineImage: ec2.MachineImage.latestAmazonLinux2023({
         cpuType: ec2.AmazonLinuxCpuType.ARM_64,
       }),

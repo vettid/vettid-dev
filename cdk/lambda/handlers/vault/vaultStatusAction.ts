@@ -101,9 +101,10 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     const tokenId = tokenPayload.jti;
 
     // Verify token is still active in database (single-use check)
+    // ActionTokens table has composite key: user_guid (HASH) + token_id (RANGE)
     const actionTokenResult = await ddb.send(new GetItemCommand({
       TableName: TABLE_ACTION_TOKENS,
-      Key: marshall({ token_id: tokenId }),
+      Key: marshall({ user_guid: userGuid, token_id: tokenId }),
     }));
 
     if (!actionTokenResult.Item) {
@@ -119,7 +120,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     // Mark token as used immediately (single-use)
     await ddb.send(new UpdateItemCommand({
       TableName: TABLE_ACTION_TOKENS,
-      Key: marshall({ token_id: tokenId }),
+      Key: marshall({ user_guid: userGuid, token_id: tokenId }),
       UpdateExpression: 'SET #status = :status, used_at = :used_at',
       ExpressionAttributeNames: { '#status': 'status' },
       ExpressionAttributeValues: marshall({

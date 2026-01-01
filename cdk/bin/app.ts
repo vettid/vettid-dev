@@ -8,6 +8,7 @@ import { VaultStack } from '../lib/vault-stack';
 import { VaultInfrastructureStack } from '../lib/vault-infrastructure-stack';
 import { NatsStack } from '../lib/nats-stack';
 import { LedgerStack } from '../lib/ledger-stack';
+import { MonitoringStack } from '../lib/monitoring-stack';
 
 const app = new cdk.App();
 
@@ -72,4 +73,11 @@ const vault = new VaultStack(app, 'VettID-Vault', {
   memberAuthorizer: core.memberAuthorizer,
   ledger,  // Re-enabled after RDS migration
   vaultInfra,  // Enable vault EC2 provisioning
+});
+
+// 8. Deploy monitoring stack (CloudWatch dashboard and alarms)
+// Optional: pass alarmEmail to receive alert notifications
+const monitoring = new MonitoringStack(app, 'VettID-Monitoring', {
+  env,
+  // alarmEmail: 'alerts@vettid.dev',  // Uncomment to enable email alerts
 });
