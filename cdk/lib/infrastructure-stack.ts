@@ -83,6 +83,12 @@ export class InfrastructureStack extends cdk.Stack {
   // Enrollment JWT secret ARN (for VaultStack to use)
   public readonly enrollmentJwtSecretArn!: string;
 
+  // Action token signing secret ARN (for VaultStack actionRequest)
+  public readonly actionTokenSecretArn!: string;
+
+  // Shared utilities Lambda layer
+  public readonly sharedUtilsLayer!: lambda.LayerVersion;
+
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
@@ -669,6 +675,21 @@ export class InfrastructureStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(10),
     });
 
+    // PostAuthentication trigger - updates last_login_at on each login
+    const postAuthentication = new lambdaNode.NodejsFunction(this, 'PostAuthenticationFn', {
+      entry: 'lambda/triggers/postAuthentication.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      timeout: cdk.Duration.seconds(10),
+      initialPolicy: [
+        // Permission to update user attributes (for last_login_at tracking)
+        // Uses ARN pattern to avoid circular dependency with the user pool
+        new iam.PolicyStatement({
+          actions: ['cognito-idp:AdminUpdateUserAttributes'],
+          resources: [`arn:aws:cognito-idp:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:userpool/*`],
+        }),
+      ],
+    });
+
     // Grant permissions to auth Lambda functions
     magicLinkTokens.grantReadWriteData(createAuthChallenge);
     magicLinkTokens.grantReadWriteData(verifyAuthChallenge);
@@ -767,9 +788,11 @@ export class InfrastructureStack extends cdk.Stack {
       }),
       customAttributes: {
         'admin_type': new cognito.StringAttribute({ minLen: 1, maxLen: 50, mutable: true }),
+        'last_login_at': new cognito.StringAttribute({ minLen: 1, maxLen: 30, mutable: true }),
       },
       lambdaTriggers: {
         preTokenGeneration: preTokenGeneration,
+        postAuthentication: postAuthentication,
       },
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
@@ -921,6 +944,22 @@ export class InfrastructureStack extends cdk.Stack {
     // Export the secret ARN for other stacks
     this.enrollmentJwtSecretArn = enrollmentJwtSecret.secretArn;
 
+    // ===== ACTION TOKEN SIGNING SECRET =====
+    // Create a secret for action token signing (used by /api/v1/action/request)
+    const actionTokenSecret = new secretsmanager.Secret(this, 'ActionTokenSecret', {
+      secretName: 'vettid/action-token/signing-key',
+      description: 'HMAC signing key for action tokens',
+      generateSecretString: {
+        secretStringTemplate: JSON.stringify({}),
+        generateStringKey: 'signing_key',
+        passwordLength: 64,
+        excludePunctuation: true,
+      },
+    });
+
+    // Export the secret ARN for VaultStack
+    this.actionTokenSecretArn = actionTokenSecret.secretArn;
+
     // Custom enrollment authorizer Lambda (for mobile enrollment flow)
     // This Lambda validates enrollment JWTs issued by the /vault/enroll/authenticate endpoint
     this.enrollmentAuthorizerFn = new lambdaNode.NodejsFunction(this, 'EnrollmentAuthorizerFn', {
@@ -1020,6 +1059,19 @@ export class InfrastructureStack extends cdk.Stack {
     new cdk.CustomResource(this, 'ApplyCognitoUIResource', {
       serviceToken: applyCognitoUIProvider.serviceToken,
     });
+
+    // ===== LAMBDA LAYERS =====
+
+    // Shared utilities layer - provides common functionality across Lambda handlers
+    // Contains: AWS SDK clients, HTTP responses, auth helpers, validation, security utils
+    // Build with: cd lambda/layers/shared-utils && ./build-layer.sh
+    const sharedUtilsLayer = new lambda.LayerVersion(this, 'SharedUtilsLayer', {
+      code: lambda.Code.fromAsset('lambda/layers/shared-utils/layer'),
+      compatibleRuntimes: [lambda.Runtime.NODEJS_20_X, lambda.Runtime.NODEJS_22_X],
+      description: 'VettID shared utilities - AWS clients, responses, auth, validation',
+      layerVersionName: 'vettid-shared-utils',
+    });
+    this.sharedUtilsLayer = sharedUtilsLayer;
 
     // Export Cognito resources
     this.memberUserPool = memberUserPool;
