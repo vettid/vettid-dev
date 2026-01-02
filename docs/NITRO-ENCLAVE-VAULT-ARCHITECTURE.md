@@ -4,7 +4,7 @@
 
 | Field | Value |
 |-------|-------|
-| Version | 1.4 Draft |
+| Version | 1.5 Draft |
 | Date | 2026-01-02 |
 | Status | Proposal - Pending Review |
 | Author | Architecture Team |
@@ -20,7 +20,8 @@
 5. [Protean Credential & Trust Model](#5-protean-credential--trust-model)
    - 5.12 Post-Enrollment Vault Access
    - 5.13 Credential Backup & Recovery
-   - 5.14 Account Portal Changes
+   - 5.14 Flexible Vault Authentication
+   - 5.15 Account Portal Changes
 6. [Component Design](#6-component-design)
 7. [Data Storage & Encryption](#7-data-storage--encryption)
 8. [Process Lifecycle Management](#8-process-lifecycle-management)
@@ -515,12 +516,12 @@ The Protean Credential contains all user secrets, encrypted so only an attested 
 │  │  ]                                                              │   │
 │  │                                                                  │   │
 │  │  challenge_config: {              // Authorization requirements │   │
-│  │    pin_hash: [32 bytes],          // Argon2id hash of PIN       │   │
-│  │    pin_salt: [16 bytes],                                        │   │
-│  │    biometric_binding: [32 bytes], // Optional device binding    │   │
-│  │    required_factors: 1,           // 1 = PIN only, 2 = PIN+bio  │   │
-│  │    max_attempts: 5,                                             │   │
-│  │    lockout_duration: 300          // Seconds                    │   │
+│  │    auth_type: "password",         // "pin", "password", "pattern" │  │
+│  │    auth_hash: [32 bytes],         // Argon2id hash of auth input │  │
+│  │    auth_salt: [16 bytes],                                        │   │
+│  │    max_attempts: 5,               // Before lockout              │   │
+│  │    lockout_duration: 300,         // Seconds                     │   │
+│  │    biometric_enabled: false       // Local convenience only      │   │
 │  │  }                                                              │   │
 │  │                                                                  │   │
 │  │  metadata: {                                                    │   │
@@ -1029,55 +1030,79 @@ The encrypted credential blob is the user's "key to the vault." If lost, they lo
 1. A genuine Nitro Enclave with matching PCRs
 2. The user's PIN
 
-#### Device Loss Recovery Flow
+#### Device Loss Recovery Flow (24-Hour Delay)
+
+Recovery includes a **24-hour waiting period** to protect against account takeover. If an attacker compromises your Cognito account, you have 24 hours to notice and cancel the recovery request.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                    Device Loss Recovery                                  │
+│                    Device Loss Recovery (with 24h delay)                 │
 │                                                                         │
 │  User loses phone. Gets new device. Wants to recover vault.             │
 │                                                                         │
 │  ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────────┐ │
-│  │  New Device     │    │  VettID Backend │    │   Nitro Enclave     │ │
+│  │  New Device     │    │  VettID Backend │    │   Email             │ │
 │  └────────┬────────┘    └────────┬────────┘    └──────────┬──────────┘ │
 │           │                      │                        │            │
 │           │ 1. Install app       │                        │            │
 │           │    Sign in (Cognito) │                        │            │
 │           │─────────────────────►│                        │            │
 │           │                      │                        │            │
-│           │ 2. Get JWT token     │                        │            │
-│           │◄─────────────────────│                        │            │
-│           │                      │                        │            │
-│           │ 3. Request credential│                        │            │
+│           │ 2. Request credential│                        │            │
 │           │    recovery          │                        │            │
 │           │─────────────────────►│                        │            │
 │           │                      │                        │            │
-│           │                      │ 4. Lookup backup by    │            │
-│           │                      │    user-GUID from JWT  │            │
+│           │                      │ 3. Create recovery     │            │
+│           │                      │    request with        │            │
+│           │                      │    24h expiry          │            │
 │           │                      │                        │            │
-│           │ 5. Return encrypted  │                        │            │
+│           │                      │ 4. Send alert email ───┼───────────►│
+│           │                      │    "Recovery requested.│            │
+│           │                      │     If not you, click  │            │
+│           │                      │     to cancel."        │            │
+│           │                      │                        │            │
+│           │ 5. "Recovery pending.│                        │            │
+│           │    Available in 24h" │                        │            │
+│           │◄─────────────────────│                        │            │
+│           │                      │                        │            │
+│           │         ... 24 hours pass ...                 │            │
+│           │                      │                        │            │
+│           │ 6. Return to app,    │                        │            │
+│           │    check status      │                        │            │
+│           │─────────────────────►│                        │            │
+│           │                      │                        │            │
+│           │                      │ 7. 24h elapsed,        │            │
+│           │                      │    not cancelled       │            │
+│           │                      │                        │            │
+│           │ 8. Return encrypted  │                        │            │
 │           │    credential backup │                        │            │
 │           │◄─────────────────────│                        │            │
 │           │                      │                        │            │
-│           │ 6. Store locally     │                        │            │
-│           │                      │                        │            │
-│           │ 7. Use vault normally│                        │            │
-│           │    (credential +     │                        │            │
-│           │     operation + PIN) │                        │            │
-│           │──────────────────────┼───────────────────────►│            │
-│           │                      │                        │            │
-│           │ 8. Vault access      │                        │            │
-│           │    restored!         │                        │            │
-│           │◄─────────────────────┼────────────────────────│            │
+│           │ 9. Store locally,    │                        │            │
+│           │    use vault         │                        │            │
 │           │                      │                        │            │
 └─────────────────────────────────────────────────────────────────────────┘
 
+Recovery Timeline:
+  T+0:00   User requests recovery
+  T+0:00   Email sent: "Recovery requested for your VettID vault"
+  T+0:01   User can cancel via email link (if unauthorized)
+  T+24:00  If not cancelled, credential backup available
+  T+48:00  Recovery request expires if not completed
+
 Recovery requires:
   ✓ Cognito authentication (email + password)
-  ✓ PIN knowledge
+  ✓ 24-hour waiting period (cannot be bypassed)
+  ✓ Vault auth (PIN/password/pattern) to use vault
   ✗ Does NOT require old device
   ✗ Does NOT require seed phrase
 ```
+
+**Why 24 hours?**
+- Gives legitimate user time to notice unauthorized recovery attempt
+- Email notification sent immediately
+- User can cancel via link in email
+- Attacker who compromises Cognito still has to wait (and hope user doesn't notice)
 
 #### Inactive User Scenario
 
@@ -1122,10 +1147,144 @@ Scenario: User returns after long absence
 
 **To fully recover from total loss:**
 1. Remember Cognito password (or use password reset via email)
-2. Remember PIN
+2. Remember vault authentication (PIN/password/pattern)
 3. Everything else is backed up server-side
 
-### 5.14 Account Portal Changes
+### 5.14 Flexible Vault Authentication
+
+Users can choose their preferred authentication method for vault operations. All methods are hashed and stored in the Protean Credential.
+
+#### Supported Authentication Types
+
+| Type | Format | Entropy | Rate Limiting | Best For |
+|------|--------|---------|---------------|----------|
+| **PIN** | 4-8 digits | ~13-26 bits | Aggressive (3 attempts) | Quick access, mobile |
+| **Password** | Alphanumeric | 40-80+ bits | Standard (5 attempts) | High security |
+| **Pattern** | 3x3 or 4x4 grid | ~15-40 bits | Aggressive (3 attempts) | Visual preference |
+
+#### How It Works
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    Flexible Authentication                               │
+│                                                                         │
+│  During Enrollment:                                                     │
+│  ──────────────────                                                     │
+│                                                                         │
+│  1. User chooses auth type: PIN / Password / Pattern                   │
+│                                                                         │
+│  2. User enters their chosen authentication                            │
+│     PIN:      "847291"                                                  │
+│     Password: "correct-horse-battery"                                   │
+│     Pattern:  [serialized as "0,1,2,5,8,7,6,3,4"]                      │
+│                                                                         │
+│  3. Enclave hashes with Argon2id:                                      │
+│     auth_hash = Argon2id(input, salt, {                                │
+│       memory: 256MB,     // Resist GPU attacks                         │
+│       iterations: 3,                                                    │
+│       parallelism: 4                                                    │
+│     })                                                                  │
+│                                                                         │
+│  4. Stored in credential:                                              │
+│     challenge_config: {                                                 │
+│       auth_type: "password",                                           │
+│       auth_hash: <32 bytes>,                                           │
+│       auth_salt: <16 bytes>,                                           │
+│       max_attempts: 5,                                                  │
+│       lockout_duration: 300                                             │
+│     }                                                                   │
+│                                                                         │
+│  During Vault Operations:                                               │
+│  ────────────────────────                                               │
+│                                                                         │
+│  1. Enclave challenges user based on auth_type                         │
+│  2. User provides their PIN/password/pattern                           │
+│  3. Enclave hashes and compares to auth_hash                           │
+│  4. Rate-limited based on entropy (fewer attempts for low-entropy)     │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Pattern Serialization (Cross-Platform)
+
+For patterns to work across iOS and Android, they must serialize consistently:
+
+```
+Grid positions (3x3):       Serialization:
+┌───┬───┬───┐              Pattern: L-shape
+│ 0 │ 1 │ 2 │              Sequence: 0 → 3 → 6 → 7 → 8
+├───┼───┼───┤              Serialized: "0,3,6,7,8"
+│ 3 │ 4 │ 5 │
+├───┼───┼───┤              This string is what gets hashed.
+│ 6 │ 7 │ 8 │
+└───┴───┴───┘
+
+Grid positions (4x4):       Larger grid = more entropy
+┌───┬───┬───┬───┐          Max positions: 16
+│ 0 │ 1 │ 2 │ 3 │          Min length: 4 points
+├───┼───┼───┼───┤
+│ 4 │ 5 │ 6 │ 7 │
+├───┼───┼───┼───┤
+│ 8 │ 9 │10 │11 │
+├───┼───┼───┼───┤
+│12 │13 │14 │15 │
+└───┴───┴───┴───┘
+```
+
+#### Biometrics: Local Convenience Only
+
+Biometrics (fingerprint, Face ID) **cannot** be the vault authentication because:
+- Biometric data is fuzzy (slightly different each time)
+- Can't hash biometrics reproducibly
+- Biometrics are handled by OS, not app
+
+However, biometrics can provide **local convenience**:
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    Biometric as Convenience Layer                        │
+│                                                                         │
+│  Setup:                                                                 │
+│  ──────                                                                 │
+│  1. User sets password as vault auth (stored in credential)            │
+│  2. User enables biometric on device                                    │
+│  3. Password encrypted and stored locally (device keychain)            │
+│  4. Biometric unlocks the local encrypted password                     │
+│                                                                         │
+│  Usage:                                                                 │
+│  ──────                                                                 │
+│  1. User initiates vault operation                                      │
+│  2. App prompts for biometric                                           │
+│  3. Biometric unlocks locally-stored encrypted password                │
+│  4. Password sent to enclave for verification                          │
+│  5. Enclave verifies against credential's auth_hash                    │
+│                                                                         │
+│  Security:                                                              │
+│  ─────────                                                              │
+│  • Biometric is device-local only (not in credential)                  │
+│  • Password is the actual vault auth                                    │
+│  • If device is lost, biometric doesn't help attacker                  │
+│  • Recovery still requires knowing the password                         │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Changing Authentication Type
+
+User can change their auth type at any time:
+
+```
+1. User requests auth change
+2. Enclave challenges with CURRENT auth
+3. User enters current PIN/password/pattern
+4. Enclave verifies
+5. User enters NEW auth (can be different type)
+6. Enclave hashes new auth, updates credential
+7. New encrypted credential returned to device
+8. Backup automatically synced to VettID
+```
+
+### 5.15 Account Portal Changes
 
 The Account Portal needs **minimal changes**. Key management and sensitive operations belong in **mobile apps**, not the web portal (larger attack surface: XSS, malicious extensions, etc.).
 
@@ -2363,3 +2522,4 @@ Tasks:
 | 1.2 | 2026-01-02 | Architecture Team | Critical fix: Credential creation now happens INSIDE the enclave (Section 5.7-5.9). Device only provides PIN, enclave generates all secrets. Simplified scaling to single-region ASG min=1 for dev/testing (Section 9). Updated cost analysis for phased deployment (Section 11). Break-even now at 18 users. |
 | 1.3 | 2026-01-02 | Architecture Team | Added Section 5.12: Post-Enrollment Vault Access (clarifies connection flow, no chicken-and-egg). Removed Migration Strategy section (no existing vaults to migrate). Renumbered sections 10-15. Updated Phase 5 to Launch (not migration). |
 | 1.4 | 2026-01-02 | Architecture Team | Added Section 5.13: Credential Backup & Recovery (VettID-hosted backup, device loss recovery, inactive user handling). Added Section 5.14: Account Portal Changes (vault management UI, new API endpoints). Clarified what needs backup (only credential + PIN knowledge). |
+| 1.5 | 2026-01-02 | Architecture Team | Added 24-hour time-delay recovery for credential restore (Section 5.13). Added Section 5.14: Flexible Vault Authentication (PIN/password/pattern options). Pattern serialization spec for cross-platform consistency. Biometrics as local convenience only (not hashable). Moved Account Portal to Section 5.15. Updated credential structure for flexible auth_type. |
