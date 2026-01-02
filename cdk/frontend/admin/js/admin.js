@@ -1158,6 +1158,7 @@ document.getElementById('quickFilterAction').onclick=()=>{
     if(btn.id && btn.id.startsWith('quickFilter')) btn.classList.remove('filter-active');
   });
   document.getElementById('quickFilterAction').classList.add('filter-active');
+  paginationState.users.page=0;
   loadUsers(false);
 };
 document.getElementById('quickFilterRegistered').onclick=()=>{
@@ -1166,6 +1167,7 @@ document.getElementById('quickFilterRegistered').onclick=()=>{
     if(btn.id && btn.id.startsWith('quickFilter')) btn.classList.remove('filter-active');
   });
   document.getElementById('quickFilterRegistered').classList.add('filter-active');
+  paginationState.users.page=0;
   loadUsers(false);
 };
 document.getElementById('quickFilterDisabled').onclick=()=>{
@@ -1174,6 +1176,7 @@ document.getElementById('quickFilterDisabled').onclick=()=>{
     if(btn.id && btn.id.startsWith('quickFilter')) btn.classList.remove('filter-active');
   });
   document.getElementById('quickFilterDisabled').classList.add('filter-active');
+  paginationState.users.page=0;
   loadUsers(false);
 };
 // Invited filter (shows users invited from waitlist who haven't registered yet)
@@ -1185,6 +1188,7 @@ if(usersInvitedBtn){
       if(btn.id && btn.id.startsWith('quickFilter')) btn.classList.remove('filter-active');
     });
     usersInvitedBtn.classList.add('filter-active');
+    paginationState.users.page=0;
     loadUsers(false);
   };
 }
