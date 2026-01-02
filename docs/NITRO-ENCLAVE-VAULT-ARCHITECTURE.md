@@ -4,7 +4,7 @@
 
 | Field | Value |
 |-------|-------|
-| Version | 1.1 Draft |
+| Version | 1.2 Draft |
 | Date | 2026-01-02 |
 | Status | Proposal - Pending Review |
 | Author | Architecture Team |
@@ -691,44 +691,144 @@ What attacker gets if device is fully compromised:
 • Cannot replay challenge → Nonce is single-use
 ```
 
-### 5.7 Credential Encryption Model
+### 5.7 Credential Creation & Encryption Model
 
-The Protean Credential is encrypted such that only the attested enclave can decrypt it:
+**Critical**: The Protean Credential is created INSIDE the enclave, not on the device. The device cannot be trusted to generate cryptographic secrets.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                     Credential Encryption                                │
+│                  Credential Creation (Enrollment Flow)                   │
 │                                                                         │
-│  During Enrollment:                                                     │
-│  ──────────────────                                                     │
+│  ┌─────────────────┐                        ┌─────────────────────────┐ │
+│  │  User's Device  │                        │   Nitro Enclave         │ │
+│  │  (Untrusted)    │                        │   (Trusted)             │ │
+│  └────────┬────────┘                        └────────────┬────────────┘ │
+│           │                                              │              │
+│           │  1. Request attestation                      │              │
+│           │─────────────────────────────────────────────►│              │
+│           │                                              │              │
+│           │  2. Attestation document                     │              │
+│           │◄─────────────────────────────────────────────│              │
+│           │     (signed by AWS Nitro, includes pubkey)   │              │
+│           │                                              │              │
+│           │  3. VERIFY attestation locally:              │              │
+│           │     • AWS signature valid?                   │              │
+│           │     • PCRs match published values?           │              │
+│           │     • Timestamp recent?                      │              │
+│           │                                              │              │
+│           │  4. Send PIN (encrypted to attested pubkey)  │              │
+│           │─────────────────────────────────────────────►│              │
+│           │     { encrypted_pin: "..." }                 │              │
+│           │                                              │              │
+│           │                            5. ENCLAVE GENERATES ALL SECRETS:│
+│           │                               • Identity keypair (Ed25519) │
+│           │                               • Vault master secret        │
+│           │                               • PIN hash = Argon2id(pin)   │
+│           │                               • Empty crypto_keys[]        │
+│           │                                              │              │
+│           │                            6. ENCLAVE CREATES credential   │
+│           │                                              │              │
+│           │                            7. ENCLAVE SEALS credential     │
+│           │                               (bound to PCRs)              │
+│           │                                              │              │
+│           │                            8. ENCLAVE INITIALIZES vault    │
+│           │                               (derives DEK, creates streams)│
+│           │                                              │              │
+│           │  9. Return encrypted credential blob         │              │
+│           │◄─────────────────────────────────────────────│              │
+│           │     (opaque - device CANNOT decrypt)         │              │
+│           │                                              │              │
+│           │  10. Store blob locally                      │              │
+│           │      (holding data you can't access)         │              │
+│           │                                              │              │
+│  ─────────────────────────────────────────────────────────────────────  │
 │                                                                         │
-│  1. User connects to enclave, receives attestation                     │
-│  2. User verifies attestation (PCRs match)                             │
-│  3. Enclave generates ephemeral keypair bound to attestation           │
-│     • enclave_public_key included in attestation document              │
-│     • enclave_private_key exists only in enclave memory                │
-│  4. User generates credential contents locally                         │
-│  5. User encrypts credential to enclave_public_key                     │
-│     • credential_encrypted = encrypt(enclave_pubkey, credential)       │
-│  6. User stores credential_encrypted on device                         │
+│  What device provides:     What enclave generates:                      │
+│  ─────────────────────     ───────────────────────                      │
+│  • PIN (user types it)     • Identity keypair                           │
+│  • Cognito JWT (identity)  • Vault master secret                        │
+│  • Operation requests      • All cryptographic keys                     │
+│                            • PIN hash + salt                            │
+│                            • Credential structure                       │
 │                                                                         │
-│  Key Property:                                                          │
-│  ─────────────                                                          │
-│  Only an enclave with matching PCRs can derive the decryption key.     │
-│  If code changes (different PCRs), old credentials cannot be opened    │
-│  without key migration process.                                         │
-│                                                                         │
-│  Alternative: Sealed Credential Key                                     │
-│  ─────────────────────────────────                                      │
-│  • Credential encrypted with symmetric credential_key                  │
-│  • credential_key sealed to enclave PCRs                               │
-│  • Sealed credential_key stored alongside encrypted credential         │
-│  • Only matching enclave can unseal and decrypt                        │
+│  The device is a DUMB TRANSPORT for encrypted blobs and user inputs.   │
 │                                                                         │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 5.8 Security Properties
+### 5.8 Adding Keys to Credential
+
+When the user wants to add a new key (e.g., BTC private key), two options:
+
+**Option A: Import existing key** (key briefly visible on device during import)
+```
+User sends: { credential, operation: "import_key", private_key: "..." }
+Enclave:    Decrypts credential → challenges PIN → adds key → re-encrypts
+Returns:    New encrypted credential blob (user replaces old blob)
+```
+
+**Option B: Generate key in enclave** (key NEVER leaves enclave - more secure)
+```
+User sends: { credential, operation: "generate_key", type: "secp256k1", label: "btc" }
+Enclave:    Decrypts credential → challenges PIN → generates key internally → re-encrypts
+Returns:    New encrypted credential blob + PUBLIC KEY/ADDRESS only
+```
+
+For maximum security, Option B is preferred - private keys are generated inside the enclave and never exist anywhere else.
+
+### 5.9 Credential Sealing
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                     Credential Sealing                                   │
+│                                                                         │
+│  Sealing (after credential creation):                                   │
+│  ────────────────────────────────────                                   │
+│                                                                         │
+│    credential (plaintext, in enclave memory)                           │
+│         │                                                               │
+│         ▼                                                               │
+│    ┌────────────────────────────────────────────────────────────────┐  │
+│    │ NitroKMS.Seal(credential, attestation_doc)                     │  │
+│    │                                                                 │  │
+│    │ Encryption bound to:                                           │  │
+│    │   • PCR0, PCR1, PCR2 (code identity)                           │  │
+│    │                                                                 │  │
+│    │ NOT bound to:                                                   │  │
+│    │   • Instance ID (any enclave with same code can unseal)        │  │
+│    │   • User identity (credential itself has identity keypair)     │  │
+│    └────────────────────────────────────────────────────────────────┘  │
+│         │                                                               │
+│         ▼                                                               │
+│    sealed_credential (ciphertext) → returned to device                 │
+│                                                                         │
+│                                                                         │
+│  Unsealing (on each vault operation):                                   │
+│  ────────────────────────────────────                                   │
+│                                                                         │
+│    sealed_credential (from device)                                     │
+│         │                                                               │
+│         ▼                                                               │
+│    ┌────────────────────────────────────────────────────────────────┐  │
+│    │ NitroKMS.Unseal(sealed_credential)                             │  │
+│    │                                                                 │  │
+│    │ Succeeds if and only if:                                       │  │
+│    │   • Running in genuine Nitro Enclave                           │  │
+│    │   • Current PCRs match sealed PCRs                             │  │
+│    │                                                                 │  │
+│    │ Fails if:                                                       │  │
+│    │   • Code has been modified                                      │  │
+│    │   • Running outside enclave                                     │  │
+│    │   • Credential was tampered with                                │  │
+│    └────────────────────────────────────────────────────────────────┘  │
+│         │                                                               │
+│         ▼                                                               │
+│    credential (plaintext) → available in enclave memory only           │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### 5.10 Security Properties
 
 | Property | How Achieved |
 |----------|--------------|
@@ -741,7 +841,7 @@ The Protean Credential is encrypted such that only the attested enclave can decr
 | **Portable across devices** | Same credential works on any device |
 | **Works with BYO vault** | Same model, user's own enclave |
 
-### 5.9 Simplified Credential vs Two-Credential Model
+### 5.11 Simplified Credential vs Two-Credential Model
 
 The Protean Credential consolidates what was previously separate:
 
@@ -1352,45 +1452,111 @@ func (m *MemoryManager) ShouldEvict() bool {
 
 ---
 
-## 9. Scaling & High Availability
+## 9. Scaling & Deployment
 
-### 9.1 Multi-AZ Deployment
+### 9.1 Initial Deployment (Single Region, Minimal Cost)
+
+For development and early testing, we use a simplified single-region deployment with minimal infrastructure:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                         AWS Region (us-east-1)                          │
 │                                                                         │
 │  ┌─────────────────────────────────────────────────────────────────┐   │
-│  │                    Network Load Balancer                         │   │
-│  │                    (routes NATS connections)                     │   │
-│  └──────────────────────────────┬──────────────────────────────────┘   │
-│                                 │                                       │
-│         ┌───────────────────────┼───────────────────────┐              │
-│         │                       │                       │              │
-│         ▼                       ▼                       ▼              │
-│  ┌─────────────────┐   ┌─────────────────┐   ┌─────────────────┐      │
-│  │  us-east-1a     │   │  us-east-1b     │   │  us-east-1c     │      │
-│  │                 │   │                 │   │                 │      │
-│  │ ┌─────────────┐ │   │ ┌─────────────┐ │   │ ┌─────────────┐ │      │
-│  │ │ Enclave ASG │ │   │ │ Enclave ASG │ │   │ │ Enclave ASG │ │      │
-│  │ │ min: 1      │ │   │ │ min: 1      │ │   │ │ min: 1      │ │      │
-│  │ │ max: 5      │ │   │ │ max: 5      │ │   │ │ max: 5      │ │      │
-│  │ │             │ │   │ │             │ │   │ │             │ │      │
-│  │ │ ┌─────────┐ │ │   │ │ ┌─────────┐ │ │   │ │ ┌─────────┐ │ │      │
-│  │ │ │Enclave 1│ │ │   │ │ │Enclave 1│ │ │   │ │ │Enclave 1│ │ │      │
-│  │ │ └─────────┘ │ │   │ │ └─────────┘ │ │   │ │ └─────────┘ │ │      │
-│  │ │ ┌─────────┐ │ │   │ │ ┌─────────┐ │ │   │ │             │ │      │
-│  │ │ │Enclave 2│ │ │   │ │ │Enclave 2│ │ │   │ │             │ │      │
-│  │ │ └─────────┘ │ │   │ │ └─────────┘ │ │   │ │             │ │      │
-│  │ └─────────────┘ │   │ └─────────────┘ │   │ └─────────────┘ │      │
-│  └─────────────────┘   └─────────────────┘   └─────────────────┘      │
+│  │                       Enclave ASG                                │   │
+│  │                       min: 1, max: 3                             │   │
+│  │                                                                  │   │
+│  │  ┌─────────────────────────────────────────────────────────┐    │   │
+│  │  │              Enclave Instance (c6a.xlarge)              │    │   │
+│  │  │                                                         │    │   │
+│  │  │  ┌───────────────────────────────────────────────────┐  │    │   │
+│  │  │  │              Nitro Enclave                        │  │    │   │
+│  │  │  │                                                   │  │    │   │
+│  │  │  │  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐  │  │    │   │
+│  │  │  │  │ Vault A     │ │ Vault B     │ │ Vault C     │  │  │    │   │
+│  │  │  │  │ (user-123)  │ │ (user-456)  │ │ (user-789)  │  │  │    │   │
+│  │  │  │  └─────────────┘ └─────────────┘ └─────────────┘  │  │    │   │
+│  │  │  │                       ...                         │  │    │   │
+│  │  │  └───────────────────────────────────────────────────┘  │    │   │
+│  │  │                                                         │    │   │
+│  │  │  Parent Process ◄──► vsock ◄──► Enclave                │    │   │
+│  │  └─────────────────────────────────────────────────────────┘    │   │
+│  │                                                                  │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                                                                         │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐        │
+│  │ S3 (vault data) │  │ Lambda (routing)│  │ Central NATS    │        │
+│  └─────────────────┘  └─────────────────┘  └─────────────────┘        │
 │                                                                         │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 9.2 Auto-Scaling Configuration
+### 9.2 Initial Auto-Scaling Configuration
 
 ```typescript
+const enclaveASG = new autoscaling.AutoScalingGroup(this, 'EnclaveASG', {
+  vpc,
+  instanceType: ec2.InstanceType.of(ec2.InstanceClass.C6A, ec2.InstanceSize.XLARGE),
+  machineImage: enclaveAMI,
+
+  minCapacity: 1,  // Single instance for dev/testing
+  maxCapacity: 3,  // Allow scaling for load testing
+
+  healthCheck: autoscaling.HealthCheck.ec2({
+    grace: Duration.minutes(5),
+  }),
+});
+
+// Simple CPU-based scaling for initial deployment
+enclaveASG.scaleOnCpuUtilization('CPUScaling', {
+  targetUtilizationPercent: 70,
+  cooldown: Duration.minutes(5),
+});
+```
+
+### 9.3 Scaling Path
+
+As user count grows, the infrastructure can be expanded:
+
+| Stage | Users | Configuration | Monthly Cost |
+|-------|-------|---------------|--------------|
+| **Dev/Test** | 1-50 | 1× c6a.xlarge, single AZ | ~$125 |
+| **Early Production** | 50-200 | 1-2× c6a.xlarge, single AZ | ~$125-250 |
+| **Growth** | 200-500 | 2-3× c6a.xlarge, multi-AZ | ~$250-375 |
+| **Scale** | 500+ | 3+× c6a.2xlarge, multi-AZ, NLB | ~$750+ |
+
+### 9.4 Failover Behavior (Single Instance)
+
+With min=1, there's a brief outage during instance failure:
+
+```
+Scenario: Enclave instance failure (single instance mode)
+
+Time 0:00 - Enclave fails
+          - Active vaults become unavailable
+          - In-flight requests: lost (client retries)
+
+Time 0:01 - Health check detects failure
+          - ASG launches replacement instance
+
+Time 2:00 - New instance boots + enclave starts
+          - ~2 minutes for EC2 + enclave initialization
+
+Time 2:05 - Service restored
+          - Clients reconnect
+          - Vaults cold-start on demand (~300-500ms each)
+
+Total outage: ~2-3 minutes
+```
+
+**Acceptable for dev/testing**. For production with uptime requirements, increase to min=2 across multiple AZs.
+
+### 9.5 Future: Multi-AZ High Availability
+
+When uptime requirements increase, expand to multi-AZ:
+
+```typescript
+// Production configuration (future)
 const enclaveASG = new autoscaling.AutoScalingGroup(this, 'EnclaveASG', {
   vpc,
   instanceType: ec2.InstanceType.of(ec2.InstanceClass.C6A, ec2.InstanceSize.XLARGE2),
@@ -1399,74 +1565,12 @@ const enclaveASG = new autoscaling.AutoScalingGroup(this, 'EnclaveASG', {
   minCapacity: 3,  // One per AZ
   maxCapacity: 15,
 
-  // Scaling based on active vault count
-  healthCheck: autoscaling.HealthCheck.elb({
-    grace: Duration.minutes(5),
-  }),
-});
-
-// Scale based on vault count per enclave
-enclaveASG.scaleOnMetric('VaultCountScaling', {
-  metric: new cloudwatch.Metric({
-    namespace: 'VettID/Enclave',
-    metricName: 'ActiveVaultCount',
-    statistic: 'Average',
-  }),
-  scalingSteps: [
-    { upper: 50, change: -1 },   // Scale in if < 50 vaults
-    { lower: 120, change: +1 },  // Scale out if > 120 vaults
-    { lower: 140, change: +2 },  // Scale out faster if > 140 vaults
-  ],
-  adjustmentType: autoscaling.AdjustmentType.CHANGE_IN_CAPACITY,
+  // Distribute across AZs
+  vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
 });
 ```
 
-### 9.3 Load Balancing Strategy
-
-Since vaults can run on any enclave, use simple load balancing:
-
-```go
-type VaultRouter struct {
-    enclaves []EnclaveEndpoint
-    current  atomic.Int32
-}
-
-func (r *VaultRouter) RouteMessage(ownerSpace string, msg []byte) error {
-    // Round-robin across healthy enclaves
-    idx := r.current.Add(1) % int32(len(r.enclaves))
-    enclave := r.enclaves[idx]
-
-    // Forward to selected enclave
-    return enclave.Send(ownerSpace, msg)
-}
-```
-
-**No sticky sessions needed** - any enclave can load any vault.
-
-### 9.4 Failover Behavior
-
-```
-Scenario: Enclave instance failure
-
-Time 0:00 - Enclave A fails
-          - Active vaults on A: 100
-          - In-flight requests: lost (client retries)
-
-Time 0:01 - Health check detects failure
-          - NLB stops routing to A
-          - ASG launches replacement
-
-Time 0:02 - Client retries arrive at Enclave B
-          - For each vault:
-            - Cold start: ~300-500ms
-            - Vault loaded from S3
-            - Request processed
-
-Time 0:05 - All traffic re-routed
-          - Replacement enclave launching in background
-
-Total user impact: ~500ms latency increase during failover
-```
+**No code changes required** - same enclave image, just more instances. Vaults can load on any enclave since sealed credentials are bound to PCRs (code identity), not instance identity.
 
 ---
 
@@ -1803,44 +1907,57 @@ from master secret + salt. The salt is stored unencrypted in S3.
 | **Total (100 users)** | | | **$735/mo** |
 | **Per-vault cost** | | | **$7.35** |
 
-### 12.2 Projected Costs (Enclave Model)
+### 12.2 Enclave Model Costs (Phased)
+
+**Phase 1: Dev/Testing (Single Instance)**
 
 | Component | Unit Cost | Quantity | Monthly Cost |
 |-----------|-----------|----------|--------------|
-| c6a.2xlarge (enclave host) | $248/mo | 3 (multi-AZ) | $744 |
-| S3 storage (1GB/vault) | $0.023/GB | 100 | $2.30 |
-| S3 requests | ~$0.05/vault | 100 | $5 |
-| Data transfer | ~$0.20/vault | 100 | $20 |
-| **Total (100 users)** | | | **$771/mo** |
-| **Per-vault cost** | | | **$7.71** |
+| c6a.xlarge (enclave host) | $124/mo | 1 | $124 |
+| S3 storage (1GB/vault) | $0.023/GB | 50 | $1.15 |
+| S3 requests | ~$0.05/vault | 50 | $2.50 |
+| Data transfer | ~$0.20/vault | 50 | $10 |
+| **Total (50 users)** | | | **~$138/mo** |
+| **Per-vault cost** | | | **$2.76** |
 
-**At 100 users**: Roughly equivalent cost (enclave has base cost overhead)
+**Phase 2: Production (Multi-AZ)**
 
-### 12.3 Cost at Scale
+| Component | Unit Cost | Quantity | Monthly Cost |
+|-----------|-----------|----------|--------------|
+| c6a.xlarge (enclave host) | $124/mo | 3 (multi-AZ) | $372 |
+| S3 storage (1GB/vault) | $0.023/GB | 200 | $4.60 |
+| S3 requests | ~$0.05/vault | 200 | $10 |
+| Data transfer | ~$0.20/vault | 200 | $40 |
+| **Total (200 users)** | | | **~$427/mo** |
+| **Per-vault cost** | | | **$2.14** |
 
-| Users | EC2 Model | Enclave Model | Savings |
-|-------|-----------|---------------|---------|
-| 100 | $735/mo | $771/mo | -5% |
-| 200 | $1,470/mo | $790/mo | **46%** |
-| 500 | $3,675/mo | $850/mo | **77%** |
-| 1,000 | $7,350/mo | $1,500/mo | **80%** |
-| 5,000 | $36,750/mo | $4,500/mo | **88%** |
+### 12.3 Cost Comparison by Phase
+
+| Phase | Users | EC2 Model | Enclave Model | Savings |
+|-------|-------|-----------|---------------|---------|
+| Dev/Test | 10 | $73/mo | $125/mo | -71% (acceptable for features) |
+| Dev/Test | 50 | $368/mo | $138/mo | **62%** |
+| Early Prod | 100 | $735/mo | $152/mo | **79%** |
+| Growth | 200 | $1,470/mo | $427/mo | **71%** |
+| Scale | 500 | $3,675/mo | $500/mo | **86%** |
+| Scale | 1,000 | $7,350/mo | $750/mo | **90%** |
 
 ### 12.4 Break-Even Analysis
 
 ```
-Fixed costs (enclave): $744/mo (3 instances for HA)
-Variable costs (enclave): ~$1.50/user
+Initial deployment (1 instance):
+  Fixed costs (enclave): $124/mo
+  Variable costs (enclave): ~$0.30/user
 
-Fixed costs (EC2): $0
-Variable costs (EC2): ~$7.35/user
+  Fixed costs (EC2): $0
+  Variable costs (EC2): ~$7.35/user
 
 Break-even point:
-  744 + 1.50x = 7.35x
-  744 = 5.85x
-  x = 127 users
+  124 + 0.30x = 7.35x
+  124 = 7.05x
+  x = 18 users
 
-At 127+ users, enclave model is more cost-effective.
+At 18+ users, enclave model is more cost-effective.
 ```
 
 ### 12.5 TCO Considerations
@@ -1849,7 +1966,7 @@ Beyond raw compute costs:
 
 | Factor | EC2 Model | Enclave Model |
 |--------|-----------|---------------|
-| Operational complexity | High (manage 100s of instances) | Low (manage ~3-10 instances) |
+| Operational complexity | High (manage 100s of instances) | Low (manage 1-3 instances) |
 | Provisioning time | 30-60s | 300-500ms |
 | Security guarantees | Trust-based | Attestation-based |
 | Scaling events | Slow (launch EC2) | Fast (load vault) |
@@ -2088,3 +2205,4 @@ Tasks:
 |---------|------|--------|---------|
 | 1.0 | 2026-01-02 | Architecture Team | Initial draft |
 | 1.1 | 2026-01-02 | Architecture Team | Added Section 5: Protean Credential & Trust Model. Corrected security model to establish vault (Nitro Enclave) as the secure processing environment rather than user devices. All user secrets now stored in single encrypted Protean Credential that only attested enclaves can decrypt. |
+| 1.2 | 2026-01-02 | Architecture Team | Critical fix: Credential creation now happens INSIDE the enclave (Section 5.7-5.9). Device only provides PIN, enclave generates all secrets. Simplified scaling to single-region ASG min=1 for dev/testing (Section 9). Updated cost analysis for phased deployment (Section 12). Break-even now at 18 users. |
