@@ -23,7 +23,7 @@ const ssm = new SSMClient({});
 const TABLE_VAULT_INSTANCES = process.env.TABLE_VAULT_INSTANCES!;
 
 // Default AMI ID (fallback if SSM parameter doesn't exist)
-const DEFAULT_VAULT_AMI_ID = 'ami-0b7fe186af6ed8d96';
+const DEFAULT_VAULT_AMI_ID = 'ami-0a6800ad4abd288a5';
 
 // SSM Parameter name for vault AMI ID
 const VAULT_AMI_PARAMETER_NAME = '/vettid/vault/ami-id';
