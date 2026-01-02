@@ -1127,114 +1127,70 @@ Scenario: User returns after long absence
 
 ### 5.14 Account Portal Changes
 
-The Account Portal needs new UI for vault management under the Nitro Enclave model:
+The Account Portal needs **minimal changes**. Key management and sensitive operations belong in **mobile apps**, not the web portal (larger attack surface: XSS, malicious extensions, etc.).
 
-#### New Vault Management Section
+#### What Belongs Where
+
+| Function | Account Portal (Web) | Mobile App |
+|----------|---------------------|------------|
+| Vault status | ✓ | ✓ |
+| Credential backup status | ✓ | ✓ |
+| Backup download | ✓ | ✓ |
+| PIN management | Existing (no change) | ✓ |
+| Key generation | ✗ | ✓ |
+| Key import | ✗ | ✓ |
+| Transaction signing | ✗ | ✓ |
+
+#### Account Portal - Vault Section (Simplified)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                    Account Portal - Vault Management                     │
+│  Vault                                                                   │
+│  ─────                                                                   │
 │                                                                         │
-│  ┌─────────────────────────────────────────────────────────────────┐   │
-│  │  Vault Status                                              ●───  │   │
-│  │  ─────────────                                                   │   │
-│  │  Status: Active                                                  │   │
-│  │  Last accessed: 2 minutes ago                                    │   │
-│  │  Credential backup: ✓ Synced                                     │   │
-│  │  Enclave version: v1.2.0 (current)                              │   │
-│  └─────────────────────────────────────────────────────────────────┘   │
+│  Status: Active                                                         │
+│  Credential backup: ✓ Synced                                            │
 │                                                                         │
-│  ┌─────────────────────────────────────────────────────────────────┐   │
-│  │  Security Keys                                                   │   │
-│  │  ─────────────                                                   │   │
-│  │                                                                  │   │
-│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐          │   │
-│  │  │ btc_main     │  │ eth_primary  │  │ signing_key  │          │   │
-│  │  │ secp256k1    │  │ secp256k1    │  │ ed25519      │          │   │
-│  │  │ Created:     │  │ Created:     │  │ Created:     │          │   │
-│  │  │ 2026-01-01   │  │ 2026-01-02   │  │ 2026-01-02   │          │   │
-│  │  └──────────────┘  └──────────────┘  └──────────────┘          │   │
-│  │                                                                  │   │
-│  │  [+ Generate New Key]  [Import Key]                             │   │
-│  └─────────────────────────────────────────────────────────────────┘   │
+│  ┌────────────────────────────────────────────────────────────────────┐ │
+│  │  ⚠ Your vault PIN protects all your secrets.                      │ │
+│  │    If you forget your PIN, you will lose access permanently.       │ │
+│  └────────────────────────────────────────────────────────────────────┘ │
 │                                                                         │
-│  ┌─────────────────────────────────────────────────────────────────┐   │
-│  │  Security Settings                                               │   │
-│  │  ─────────────────                                               │   │
-│  │                                                                  │   │
-│  │  PIN: ••••••           [Change PIN]                             │   │
-│  │                                                                  │   │
-│  │  Session timeout: 15 minutes  [▼]                               │   │
-│  │                                                                  │   │
-│  │  Require PIN for:                                                │   │
-│  │    ☑ Signing transactions                                       │   │
-│  │    ☑ Exporting public keys                                      │   │
-│  │    ☐ Viewing key list                                           │   │
-│  └─────────────────────────────────────────────────────────────────┘   │
-│                                                                         │
-│  ┌─────────────────────────────────────────────────────────────────┐   │
-│  │  Recovery Options                                                │   │
-│  │  ────────────────                                                │   │
-│  │                                                                  │   │
-│  │  Credential backup: ✓ Enabled                                   │   │
-│  │  Last backup: 2026-01-02 14:30:00                               │   │
-│  │                                                                  │   │
-│  │  [Download Credential Backup]  (for manual safekeeping)         │   │
-│  │                                                                  │   │
-│  │  ⚠ Recovery requires your PIN. If you forget your PIN,         │   │
-│  │    you will lose access to your vault permanently.              │   │
-│  └─────────────────────────────────────────────────────────────────┘   │
+│  [Download Credential Backup]                                           │
+│  Save this file securely. You'll need it + your PIN to recover.        │
 │                                                                         │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-#### Portal Implementation Changes
+#### Portal API Endpoints
 
-| Component | Current | New (Nitro) |
-|-----------|---------|-------------|
-| **Vault Status** | Shows EC2 instance status | Shows credential status, enclave version |
-| **Enrollment** | Creates EC2 instance | Sends PIN to enclave, receives credential |
-| **Key Management** | N/A | List keys, generate, import (via enclave) |
-| **Security** | Password-based | PIN-based, session tokens |
-| **Backup** | N/A | Credential backup status, download option |
-| **Recovery** | N/A | Recover from backup flow |
-
-#### API Changes for Account Portal
-
-New endpoints needed:
+Only backup-related endpoints for the web portal:
 
 ```
-POST /vault/enroll/start
-  → Returns attestation document for verification
-
-POST /vault/enroll/finalize
-  ← { encrypted_pin }
-  → { encrypted_credential, backup_status }
-
 GET /vault/status
-  → { active, last_accessed, enclave_version, backup_synced }
-
-GET /vault/keys
-  → { keys: [{ label, type, created_at, public_key }] }
-
-POST /vault/keys/generate
-  ← { type, label }
-  → { public_key, credential_updated: true }
-
-POST /vault/keys/import
-  ← { type, label, private_key }
-  → { success, credential_updated: true }
-
-POST /vault/pin/change
-  ← { current_pin, new_pin }
-  → { success, credential_updated: true }
+  → { active, backup_synced }
 
 GET /vault/backup
-  → { encrypted_credential } (for manual download)
+  → { encrypted_credential }
+  (download for manual safekeeping)
 
 POST /vault/backup/restore
-  ← { } (uses Cognito JWT to find backup)
   → { encrypted_credential }
+  (recover on new device - uses Cognito JWT to find backup)
+```
+
+#### Mobile App API Endpoints
+
+All sensitive operations via mobile apps only:
+
+```
+POST /vault/enroll/start       - Get attestation
+POST /vault/enroll/finalize    - Create credential (sends PIN)
+GET  /vault/keys               - List keys (public info)
+POST /vault/keys/generate      - Generate key in enclave
+POST /vault/keys/import        - Import existing key
+POST /vault/pin/change         - Change PIN
+POST /vault/sign               - Sign transaction
 ```
 
 ---
