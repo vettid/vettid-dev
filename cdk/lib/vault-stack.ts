@@ -296,10 +296,9 @@ export class VaultStack extends cdk.Stack {
       resources: [props.infrastructure.actionTokenSecretArn],
     }));
 
-    // Note: Uses Node.js 20 because argon2 doesn't have pre-built binaries for Node.js 22
     this.authExecute = new lambdaNode.NodejsFunction(this, 'AuthExecuteFn', {
       entry: 'lambda/handlers/vault/authExecute.ts',
-      runtime: lambda.Runtime.NODEJS_20_X,
+      runtime: lambda.Runtime.NODEJS_22_X,
       environment: {
         ...defaultEnv,
         ACTION_TOKEN_SECRET_ARN: props.infrastructure.actionTokenSecretArn,
@@ -1247,11 +1246,10 @@ export class VaultStack extends cdk.Stack {
       const ledgerDbEnv = props.ledger.getDatabaseEnv();
       const ledgerVpcConfig = props.ledger.getLambdaVpcConfig();
 
-      // Password verification
-      // Note: Uses Node.js 20 because argon2 doesn't have pre-built binaries for Node.js 22
+      // Password verification (uses argon2id)
       this.ledgerVerifyPassword = new lambdaNode.NodejsFunction(this, 'LedgerVerifyPasswordFn', {
         entry: 'lambda/handlers/ledger/verifyPassword.ts',
-        runtime: lambda.Runtime.NODEJS_20_X,
+        runtime: lambda.Runtime.NODEJS_22_X,
         environment: ledgerDbEnv,
         ...ledgerVpcConfig,
         timeout: cdk.Duration.seconds(30),

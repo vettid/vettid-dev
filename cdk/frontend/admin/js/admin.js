@@ -2987,6 +2987,27 @@ document.getElementById('addSystemHealthNotification').onclick=()=>openAddNotifi
 // Proposal quorum type change handler (CSP-compliant - no inline handlers)
 const quorumTypeSelect = document.getElementById('proposalQuorumType');
 if (quorumTypeSelect) quorumTypeSelect.onchange = toggleQuorumValue;
+
+// Event delegation for proposal tile buttons (CSP-compliant - no inline onclick handlers)
+document.addEventListener('click', (e) => {
+  // Handle "View Proposal" toggle buttons
+  const toggleBtn = e.target.closest('[data-toggle-proposal]');
+  if (toggleBtn) {
+    const proposalId = toggleBtn.getAttribute('data-toggle-proposal');
+    toggleProposalText(proposalId);
+    return;
+  }
+
+  // Handle "View Analytics" buttons
+  const analyticsBtn = e.target.closest('[data-analytics-proposal]');
+  if (analyticsBtn) {
+    const proposalId = analyticsBtn.getAttribute('data-analytics-proposal');
+    const title = analyticsBtn.getAttribute('data-analytics-title') || 'Untitled Proposal';
+    const status = analyticsBtn.getAttribute('data-analytics-status') || 'active';
+    openProposalAnalytics(proposalId, title, status);
+    return;
+  }
+});
 }); // End DOMContentLoaded
 
 // Proposal Management Functions (must be global for onclick handlers)
@@ -3426,9 +3447,9 @@ async function renderActiveTile(p){
       <div style="margin-bottom:8px;padding:8px;background:var(--bg-tertiary);border-radius:6px;text-align:center;">
         <span style="font-size:0.85rem;color:var(--accent);font-weight:600;">Closes in ${escapeHtml(timeRemaining)}</span>
       </div>
-      <button onclick="toggleProposalText('${escapeHtml(p.proposal_id)}')" class="btn" style="width:100%;padding:8px 12px;font-size:0.8rem;background:linear-gradient(135deg,#ffd93d 0%,#ffc125 100%);color:#000;font-weight:600;margin-bottom:8px;">View Proposal</button>
+      <button data-toggle-proposal="${escapeHtml(p.proposal_id)}" class="btn" style="width:100%;padding:8px 12px;font-size:0.8rem;background:linear-gradient(135deg,#ffd93d 0%,#ffc125 100%);color:#000;font-weight:600;margin-bottom:8px;">View Proposal</button>
       <div id="text-${escapeHtml(p.proposal_id)}" style="display:none;padding:10px;background:var(--bg-input);border-left:3px solid var(--accent);border-radius:4px;margin-bottom:8px;line-height:1.6;font-size:0.85rem;">${escapeHtml(p.proposal_text)}</div>
-      <button onclick="openProposalAnalytics('${escapeHtml(p.proposal_id)}','${escapeHtml(p.proposal_title||'Untitled Proposal').replace(/'/g,"\\'")}','active')" class="btn" style="width:100%;padding:8px 12px;font-size:0.8rem;background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);font-weight:600;">View Analytics</button>
+      <button data-analytics-proposal="${escapeHtml(p.proposal_id)}" data-analytics-title="${escapeHtml(p.proposal_title||'Untitled Proposal')}" data-analytics-status="active" class="btn" style="width:100%;padding:8px 12px;font-size:0.8rem;background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);font-weight:600;">View Analytics</button>
     </div>
   `;
 }
@@ -3463,9 +3484,9 @@ function renderUpcomingTile(p){
       <div style="margin-bottom:8px;padding:8px;background:var(--bg-tertiary);border-radius:6px;text-align:center;">
         <span style="font-size:0.85rem;color:var(--accent);font-weight:600;">Opens in ${escapeHtml(timeUntilOpens)}</span>
       </div>
-      <button onclick="toggleProposalText('${escapeHtml(p.proposal_id)}')" class="btn" style="width:100%;padding:8px 12px;font-size:0.8rem;background:linear-gradient(135deg,#ffd93d 0%,#ffc125 100%);color:#000;font-weight:600;margin-bottom:8px;">View Proposal</button>
+      <button data-toggle-proposal="${escapeHtml(p.proposal_id)}" class="btn" style="width:100%;padding:8px 12px;font-size:0.8rem;background:linear-gradient(135deg,#ffd93d 0%,#ffc125 100%);color:#000;font-weight:600;margin-bottom:8px;">View Proposal</button>
       <div id="text-${escapeHtml(p.proposal_id)}" style="display:none;padding:10px;background:var(--bg-input);border-left:3px solid var(--accent);border-radius:4px;margin-bottom:8px;line-height:1.6;font-size:0.85rem;">${escapeHtml(p.proposal_text)}</div>
-      <button onclick="openProposalAnalytics('${escapeHtml(p.proposal_id)}','${escapeHtml(p.proposal_title||'Untitled Proposal').replace(/'/g,"\\'")}','upcoming')" class="btn" style="width:100%;padding:8px 12px;font-size:0.8rem;background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);font-weight:600;">View Analytics</button>
+      <button data-analytics-proposal="${escapeHtml(p.proposal_id)}" data-analytics-title="${escapeHtml(p.proposal_title||'Untitled Proposal')}" data-analytics-status="upcoming" class="btn" style="width:100%;padding:8px 12px;font-size:0.8rem;background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);font-weight:600;">View Analytics</button>
     </div>
   `;
 }
@@ -3524,9 +3545,9 @@ async function renderClosedTile(p){
         Created by: ${escapeHtml(createdBy)}
       </div>
       <div style="margin-top:auto;">
-        <button onclick="toggleProposalText('${escapeHtml(p.proposal_id)}')" class="btn" style="width:100%;padding:8px 12px;font-size:0.8rem;background:linear-gradient(135deg,#ffd93d 0%,#ffc125 100%);color:#000;font-weight:600;margin-bottom:8px;">View Proposal</button>
+        <button data-toggle-proposal="${escapeHtml(p.proposal_id)}" class="btn" style="width:100%;padding:8px 12px;font-size:0.8rem;background:linear-gradient(135deg,#ffd93d 0%,#ffc125 100%);color:#000;font-weight:600;margin-bottom:8px;">View Proposal</button>
         <div id="text-${escapeHtml(p.proposal_id)}" style="display:none;padding:10px;background:var(--bg-input);border-left:3px solid var(--accent);border-radius:4px;margin-bottom:8px;line-height:1.6;font-size:0.85rem;">${escapeHtml(p.proposal_text)}</div>
-        <button onclick="openProposalAnalytics('${escapeHtml(p.proposal_id)}','${escapeHtml(p.proposal_title||'Untitled Proposal').replace(/'/g,"\\'")}','closed')" class="btn" style="width:100%;padding:8px 12px;font-size:0.8rem;background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);font-weight:600;">View Analytics</button>
+        <button data-analytics-proposal="${escapeHtml(p.proposal_id)}" data-analytics-title="${escapeHtml(p.proposal_title||'Untitled Proposal')}" data-analytics-status="closed" class="btn" style="width:100%;padding:8px 12px;font-size:0.8rem;background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);font-weight:600;">View Analytics</button>
       </div>
     </div>
   `;

@@ -980,7 +980,7 @@ export class InfrastructureStack extends cdk.Stack {
     const seedTermsLambda = new lambdaNode.NodejsFunction(this, 'SeedInitialTermsFn', {
       entry: 'lambda/custom-resources/seedInitialTerms.ts',
       handler: 'handler',
-      runtime: lambda.Runtime.NODEJS_20_X,
+      runtime: lambda.Runtime.NODEJS_22_X,
       timeout: cdk.Duration.seconds(60),
       environment: {
         TABLE_MEMBERSHIP_TERMS: membershipTerms.tableName,
@@ -1019,7 +1019,7 @@ export class InfrastructureStack extends cdk.Stack {
     const applyCognitoUILambda = new lambdaNode.NodejsFunction(this, 'ApplyCognitoUIFn', {
       entry: 'lambda/custom-resources/applyCognitoUI.ts',
       handler: 'handler',
-      runtime: lambda.Runtime.NODEJS_20_X,
+      runtime: lambda.Runtime.NODEJS_22_X,
       timeout: cdk.Duration.seconds(60),
       environment: {
         ADMIN_USER_POOL_ID: adminUserPool.userPoolId,
