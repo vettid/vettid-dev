@@ -4,7 +4,7 @@
 
 | Field | Value |
 |-------|-------|
-| Version | 1.2 Draft |
+| Version | 1.3 Draft |
 | Date | 2026-01-02 |
 | Status | Proposal - Pending Review |
 | Author | Architecture Team |
@@ -21,14 +21,13 @@
 6. [Component Design](#6-component-design)
 7. [Data Storage & Encryption](#7-data-storage--encryption)
 8. [Process Lifecycle Management](#8-process-lifecycle-management)
-9. [Scaling & High Availability](#9-scaling--high-availability)
-10. [Migration Strategy](#10-migration-strategy)
-11. [Enclave Update & Key Migration](#11-enclave-update--key-migration)
-12. [Cost Analysis](#12-cost-analysis)
-13. [BYO Vault Considerations](#13-byo-vault-considerations)
-14. [Implementation Phases](#14-implementation-phases)
-15. [Risks & Mitigations](#15-risks--mitigations)
-16. [Decision Log](#16-decision-log)
+9. [Scaling & Deployment](#9-scaling--deployment)
+10. [Enclave Update & Credential Migration](#10-enclave-update--credential-migration)
+11. [Cost Analysis](#11-cost-analysis)
+12. [BYO Vault Considerations](#12-byo-vault-considerations)
+13. [Implementation Phases](#13-implementation-phases)
+14. [Risks & Mitigations](#14-risks--mitigations)
+15. [Decision Log](#15-decision-log)
 
 ---
 
@@ -873,6 +872,110 @@ The Protean Credential consolidates what was previously separate:
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
+### 5.12 Post-Enrollment Vault Access
+
+After enrollment, users access their vault without any chicken-and-egg problem. The encrypted credential blob IS the key to the vault:
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    Post-Enrollment Vault Access                          │
+│                                                                         │
+│  What user has after enrollment:                                        │
+│  ───────────────────────────────                                        │
+│  1. Cognito account → proves identity to VettID ("I am user-ABC123")   │
+│  2. Encrypted credential blob → proves vault ownership                  │
+│  3. PIN (in their head) → authorizes sensitive operations               │
+│                                                                         │
+│  ┌─────────────────┐                        ┌─────────────────────────┐ │
+│  │  User's Device  │                        │   Nitro Enclave         │ │
+│  └────────┬────────┘                        └────────────┬────────────┘ │
+│           │                                              │              │
+│           │ 1. Authenticate to Cognito                   │              │
+│           │    → Get JWT token                           │              │
+│           │                                              │              │
+│           │ 2. Request vault operation                   │              │
+│           │    {                                         │              │
+│           │      jwt: <cognito token>,                   │              │
+│           │      credential: <encrypted blob>,           │              │
+│           │      operation: "list_keys"                  │              │
+│           │    }                                         │              │
+│           │─────────────────────────────────────────────►│              │
+│           │                                              │              │
+│           │                            3. Unseal credential             │
+│           │                               (PCR-bound decryption)        │
+│           │                                              │              │
+│           │                            4. Verify JWT user-GUID matches  │
+│           │                               credential's owner_space_id   │
+│           │                                              │              │
+│           │                            5. Load vault-manager for user   │
+│           │                               (from memory or cold-start    │
+│           │                                from S3)                     │
+│           │                                              │              │
+│           │ 6. Result (no PIN needed for read ops)       │              │
+│           │◄─────────────────────────────────────────────│              │
+│           │    { keys: ["btc_main", "eth_primary"] }     │              │
+│           │                                              │              │
+│  ─────────────────────────────────────────────────────────────────────  │
+│                                                                         │
+│  For sensitive operations (signing, export):                            │
+│  ───────────────────────────────────────────                            │
+│                                                                         │
+│           │ 7. Request sign operation                    │              │
+│           │─────────────────────────────────────────────►│              │
+│           │                                              │              │
+│           │ 8. Challenge: enter PIN                      │              │
+│           │◄─────────────────────────────────────────────│              │
+│           │    { challenge_id: "xyz", type: "pin" }      │              │
+│           │                                              │              │
+│           │ 9. PIN response                              │              │
+│           │─────────────────────────────────────────────►│              │
+│           │                                              │              │
+│           │                            10. Verify PIN against           │
+│           │                                credential's pin_hash        │
+│           │                                              │              │
+│           │                            11. Perform signing operation    │
+│           │                                              │              │
+│           │ 12. Signature result                         │              │
+│           │◄─────────────────────────────────────────────│              │
+│           │    { signature: "3045022100..." }            │              │
+│           │                                              │              │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+**Why no chicken-and-egg?**
+
+| Component | Purpose | Where It Lives |
+|-----------|---------|----------------|
+| Cognito JWT | Proves identity to VettID | VettID auth system |
+| Encrypted Credential | Proves vault ownership | User's device (opaque blob) |
+| Credential contents | Vault master secret, identity key | Inside enclave only (after unseal) |
+| PIN | Authorizes operations | User's memory |
+
+The enclave doesn't need to read the credential's contents to establish a connection—it just needs to:
+1. Successfully unseal the blob (proves it's a valid credential for this enclave code)
+2. Match the JWT's user-GUID to the credential's `owner_space_id`
+3. The credential itself contains everything needed to operate the vault
+
+**Session Optimization:**
+
+For better UX, the enclave can issue a session token after PIN verification:
+
+```
+First request with PIN:
+  → credential + operation + PIN
+  ← result + session_token (valid 15 minutes)
+
+Subsequent requests:
+  → credential + session_token + operation
+  ← result (no PIN prompt)
+
+Session tokens are:
+  • Bound to the credential's identity
+  • Short-lived (15 min default, configurable)
+  • Revoked on credential update
+  • Still require PIN for high-risk operations (signing, export)
+```
+
 ---
 
 ## 6. Component Design
@@ -1574,172 +1677,9 @@ const enclaveASG = new autoscaling.AutoScalingGroup(this, 'EnclaveASG', {
 
 ---
 
-## 10. Migration Strategy
+## 10. Enclave Update & Credential Migration
 
-### 10.1 Migration Overview
-
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                        Migration Timeline                                │
-│                                                                         │
-│  Phase 1          Phase 2          Phase 3          Phase 4            │
-│  Preparation      Parallel Run     Gradual Migrate  Decommission       │
-│                                                                         │
-│  ┌─────────┐      ┌─────────┐      ┌─────────┐      ┌─────────┐       │
-│  │ Build & │      │ Run both│      │ Migrate │      │ Shutdown│       │
-│  │ Test    │      │ systems │      │ users   │      │ old EC2 │       │
-│  │ Enclave │      │         │      │ in waves│      │ vaults  │       │
-│  └─────────┘      └─────────┘      └─────────┘      └─────────┘       │
-│                                                                         │
-│  Duration:        Duration:        Duration:        Duration:          │
-│  2-3 weeks        1-2 weeks        2-4 weeks        1 week             │
-│                                                                         │
-└─────────────────────────────────────────────────────────────────────────┘
-```
-
-### 10.2 Phase 1: Preparation
-
-**Objective**: Build and validate enclave infrastructure
-
-Tasks:
-1. Develop enclave vault-manager
-2. Build enclave image and publish PCRs
-3. Update mobile apps with attestation verification
-4. Deploy enclave infrastructure to staging
-5. End-to-end testing with test accounts
-
-```bash
-# Build enclave image
-nitro-cli build-enclave \
-  --docker-uri vettid/vault-enclave:v1.0.0 \
-  --output-file vault-enclave.eif
-
-# Get PCRs
-nitro-cli describe-eif --eif-path vault-enclave.eif
-
-# Publish PCRs
-aws ssm put-parameter \
-  --name /vettid/enclave/pcrs/v1.0.0 \
-  --value '{"PCR0":"abc...","PCR1":"def...","PCR2":"ghi..."}' \
-  --type SecureString
-```
-
-### 10.3 Phase 2: Parallel Run
-
-**Objective**: Run both systems simultaneously, route new users to enclave
-
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                        Parallel Architecture                             │
-│                                                                         │
-│                    ┌───────────────────────────┐                        │
-│                    │     Central NATS          │                        │
-│                    │     (message router)      │                        │
-│                    └─────────────┬─────────────┘                        │
-│                                  │                                      │
-│              ┌───────────────────┴───────────────────┐                 │
-│              │                                       │                 │
-│              ▼                                       ▼                 │
-│  ┌───────────────────────┐           ┌───────────────────────┐        │
-│  │   Enclave Fleet       │           │   Legacy EC2 Vaults   │        │
-│  │   (new users)         │           │   (existing users)    │        │
-│  │                       │           │                       │        │
-│  │   Routes:             │           │   Routes:             │        │
-│  │   vault.enclave.>     │           │   vault.ec2.>         │        │
-│  └───────────────────────┘           └───────────────────────┘        │
-│                                                                         │
-└─────────────────────────────────────────────────────────────────────────┘
-```
-
-Routing logic:
-```go
-func routeVaultMessage(ownerSpace string, msg []byte) {
-    userConfig := getUserConfig(ownerSpace)
-
-    if userConfig.VaultType == "enclave" {
-        publishToEnclave(ownerSpace, msg)
-    } else {
-        publishToEC2(ownerSpace, msg)
-    }
-}
-```
-
-### 10.4 Phase 3: Gradual Migration
-
-**Objective**: Migrate existing users from EC2 to enclave
-
-Migration per user:
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                    Per-User Migration Flow                               │
-│                                                                         │
-│  1. Mark user for migration                                             │
-│     └─ Set flag in user config: migration_pending = true                │
-│                                                                         │
-│  2. Wait for user's next app session                                    │
-│     └─ App detects migration flag                                       │
-│                                                                         │
-│  3. App initiates migration bootstrap                                   │
-│     ├─ Connect to enclave                                               │
-│     ├─ Verify attestation                                               │
-│     ├─ Establish new session                                            │
-│     └─ Provide master secret for DEK derivation                         │
-│                                                                         │
-│  4. Enclave creates new vault                                           │
-│     ├─ Derive vault DEK                                                 │
-│     ├─ Seal DEK with attestation                                        │
-│     └─ Initialize empty JetStream                                       │
-│                                                                         │
-│  5. Data migration (user-initiated)                                     │
-│     ├─ App reads data from EC2 vault (decrypts locally)                │
-│     ├─ App writes data to enclave vault (encrypts locally)             │
-│     └─ Progress tracked in app                                          │
-│                                                                         │
-│  6. Switchover                                                          │
-│     ├─ Update routing to enclave                                        │
-│     ├─ Mark migration complete                                          │
-│     └─ Schedule EC2 vault for deletion                                  │
-│                                                                         │
-│  7. Cleanup                                                             │
-│     └─ Terminate EC2 vault after 7-day grace period                    │
-│                                                                         │
-└─────────────────────────────────────────────────────────────────────────┘
-```
-
-Wave strategy:
-```
-Wave 1: Internal team accounts (10 users)
-        Duration: 1 week
-
-Wave 2: Beta users who opt-in (100 users)
-        Duration: 1 week
-
-Wave 3: 10% of remaining users
-        Duration: 1 week
-
-Wave 4: 50% of remaining users
-        Duration: 1 week
-
-Wave 5: All remaining users
-        Duration: 1 week
-```
-
-### 10.5 Phase 4: Decommission
-
-**Objective**: Shut down legacy EC2 vault infrastructure
-
-Tasks:
-1. Verify all users migrated
-2. Final backup of any unmigrated data
-3. Terminate EC2 vault instances
-4. Delete EC2-related infrastructure
-5. Update documentation
-
----
-
-## 11. Enclave Update & Key Migration
-
-### 11.1 The Challenge
+### 10.1 The Challenge
 
 When enclave code is updated, PCRs change. Sealed DEKs bound to old PCRs cannot be unsealed by new code.
 
@@ -1751,7 +1691,7 @@ Old Enclave (PCR: abc123)     New Enclave (PCR: def456)
 Problem: How to transition without losing access to user data?
 ```
 
-### 11.2 Solution: Key Migration During Rolling Update
+### 10.2 Solution: Credential Migration During Rolling Update
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -1798,7 +1738,7 @@ Problem: How to transition without losing access to user data?
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 11.3 Key Migration Implementation
+### 10.3 Credential Migration Implementation
 
 ```go
 // Run in OLD enclave during migration
@@ -1848,7 +1788,7 @@ func migrateKeysToNewPCRs(newPCRs PCRValues) error {
 }
 ```
 
-### 11.4 Rollback Strategy
+### 10.4 Rollback Strategy
 
 If issues are discovered after switching to new enclave:
 
@@ -1871,7 +1811,7 @@ Rollback Steps:
 Key insight: Keep old enclave running until new enclave is verified stable
 ```
 
-### 11.5 Emergency Recovery
+### 10.5 Emergency Recovery
 
 If both old and new enclaves are unavailable:
 
@@ -1895,9 +1835,9 @@ from master secret + salt. The salt is stored unencrypted in S3.
 
 ---
 
-## 12. Cost Analysis
+## 11. Cost Analysis
 
-### 12.1 Current Costs (EC2 Model)
+### 11.1 Current Costs (EC2 Model)
 
 | Component | Unit Cost | Quantity | Monthly Cost |
 |-----------|-----------|----------|--------------|
@@ -1907,7 +1847,7 @@ from master secret + salt. The salt is stored unencrypted in S3.
 | **Total (100 users)** | | | **$735/mo** |
 | **Per-vault cost** | | | **$7.35** |
 
-### 12.2 Enclave Model Costs (Phased)
+### 11.2 Enclave Model Costs (Phased)
 
 **Phase 1: Dev/Testing (Single Instance)**
 
@@ -1931,7 +1871,7 @@ from master secret + salt. The salt is stored unencrypted in S3.
 | **Total (200 users)** | | | **~$427/mo** |
 | **Per-vault cost** | | | **$2.14** |
 
-### 12.3 Cost Comparison by Phase
+### 11.3 Cost Comparison by Phase
 
 | Phase | Users | EC2 Model | Enclave Model | Savings |
 |-------|-------|-----------|---------------|---------|
@@ -1942,7 +1882,7 @@ from master secret + salt. The salt is stored unencrypted in S3.
 | Scale | 500 | $3,675/mo | $500/mo | **86%** |
 | Scale | 1,000 | $7,350/mo | $750/mo | **90%** |
 
-### 12.4 Break-Even Analysis
+### 11.4 Break-Even Analysis
 
 ```
 Initial deployment (1 instance):
@@ -1960,7 +1900,7 @@ Break-even point:
 At 18+ users, enclave model is more cost-effective.
 ```
 
-### 12.5 TCO Considerations
+### 11.5 TCO Considerations
 
 Beyond raw compute costs:
 
@@ -1974,9 +1914,9 @@ Beyond raw compute costs:
 
 ---
 
-## 13. BYO Vault Considerations
+## 12. BYO Vault Considerations
 
-### 13.1 BYO Options
+### 12.1 BYO Options
 
 Users who want to run their own vault infrastructure have three options:
 
@@ -1986,7 +1926,7 @@ Users who want to run their own vault infrastructure have three options:
 | **Self-hosted Enclave** | Nitro enclave in user's AWS account | Medium | Attestation |
 | **On-premises** | User's own hardware/datacenter | High | Trust user's infra |
 
-### 13.2 Self-Hosted Enclave
+### 12.2 Self-Hosted Enclave
 
 Users can run their own enclave with the same code:
 
@@ -2013,7 +1953,7 @@ Benefits:
 - Same security guarantees (attestation)
 - Compatible with VettID ecosystem
 
-### 13.3 Configuration for BYO
+### 12.3 Configuration for BYO
 
 ```typescript
 // User's app configuration
@@ -2034,9 +1974,9 @@ interface VaultConfig {
 
 ---
 
-## 14. Implementation Phases
+## 13. Implementation Phases
 
-### 14.1 Phase Overview
+### 13.1 Phase Overview
 
 | Phase | Duration | Focus | Deliverables |
 |-------|----------|-------|--------------|
@@ -2044,9 +1984,9 @@ interface VaultConfig {
 | 2 | 2-3 weeks | Integration | Parent process, S3, NATS |
 | 3 | 2-3 weeks | Mobile apps | Attestation verification |
 | 4 | 2-3 weeks | Operations | Deployment, monitoring, scaling |
-| 5 | 3-4 weeks | Migration | User migration tooling |
+| 5 | 1-2 weeks | Launch | Production deployment |
 
-### 14.2 Phase 1: Core Enclave
+### 13.2 Phase 1: Core Enclave
 
 **Objective**: Port vault-manager to run inside Nitro Enclave
 
@@ -2060,7 +2000,7 @@ Tasks:
 - [ ] Unit tests for all enclave components
 - [ ] Generate and document PCRs
 
-### 14.3 Phase 2: Integration
+### 13.3 Phase 2: Integration
 
 **Objective**: Connect enclave to external systems
 
@@ -2073,7 +2013,7 @@ Tasks:
 - [ ] Integration tests with mock external services
 - [ ] End-to-end tests with real infrastructure
 
-### 14.4 Phase 3: Mobile Apps
+### 13.4 Phase 3: Mobile Apps
 
 **Objective**: Update iOS and Android apps to support attestation
 
@@ -2086,7 +2026,7 @@ Tasks:
 - [ ] Fallback handling for attestation failures
 - [ ] QA testing on both platforms
 
-### 14.5 Phase 4: Operations
+### 13.5 Phase 4: Operations
 
 **Objective**: Production-ready deployment and monitoring
 
@@ -2100,25 +2040,23 @@ Tasks:
 - [ ] Load testing and performance validation
 - [ ] Security review
 
-### 14.6 Phase 5: Migration
+### 13.6 Phase 5: Launch
 
-**Objective**: Migrate existing users from EC2 to enclave
+**Objective**: Deploy to production and begin user onboarding
 
 Tasks:
-- [ ] Migration flag infrastructure
-- [ ] Mobile app migration flow
-- [ ] Data migration tooling
-- [ ] Rollback procedures
-- [ ] Wave migration execution
-- [ ] Monitoring during migration
-- [ ] Post-migration validation
-- [ ] EC2 decommission automation
+- [ ] Production deployment with monitoring
+- [ ] Beta user onboarding (invite-only)
+- [ ] Support documentation and runbooks
+- [ ] On-call procedures and alerting
+- [ ] Performance monitoring and tuning
+- [ ] General availability rollout
 
 ---
 
-## 15. Risks & Mitigations
+## 14. Risks & Mitigations
 
-### 15.1 Technical Risks
+### 14.1 Technical Risks
 
 | Risk | Impact | Probability | Mitigation |
 |------|--------|-------------|------------|
@@ -2128,7 +2066,7 @@ Tasks:
 | Attestation verification complex on mobile | Medium | Medium | Use existing libraries; thorough testing |
 | vsock throughput bottleneck | Medium | Low | Load test; optimize batching |
 
-### 15.2 Operational Risks
+### 14.2 Operational Risks
 
 | Risk | Impact | Probability | Mitigation |
 |------|--------|-------------|------------|
@@ -2137,7 +2075,7 @@ Tasks:
 | S3 outage | High | Very Low | Local caching; graceful degradation |
 | Migration causes data loss | Critical | Low | User-driven migration; keep EC2 until verified |
 
-### 15.3 Security Risks
+### 14.3 Security Risks
 
 | Risk | Impact | Probability | Mitigation |
 |------|--------|-------------|------------|
@@ -2148,9 +2086,9 @@ Tasks:
 
 ---
 
-## 16. Decision Log
+## 15. Decision Log
 
-### 16.1 Key Decisions
+### 15.1 Key Decisions
 
 | # | Decision | Rationale | Date |
 |---|----------|-----------|------|
@@ -2161,7 +2099,7 @@ Tasks:
 | 5 | S3 for encrypted blob storage | Durability; cross-AZ replication; cost-effective | 2026-01-02 |
 | 6 | User-driven data migration | User controls their data; no VettID access to plaintext | 2026-01-02 |
 
-### 16.2 Open Questions
+### 15.2 Open Questions
 
 | # | Question | Status | Owner |
 |---|----------|--------|-------|
@@ -2205,4 +2143,5 @@ Tasks:
 |---------|------|--------|---------|
 | 1.0 | 2026-01-02 | Architecture Team | Initial draft |
 | 1.1 | 2026-01-02 | Architecture Team | Added Section 5: Protean Credential & Trust Model. Corrected security model to establish vault (Nitro Enclave) as the secure processing environment rather than user devices. All user secrets now stored in single encrypted Protean Credential that only attested enclaves can decrypt. |
-| 1.2 | 2026-01-02 | Architecture Team | Critical fix: Credential creation now happens INSIDE the enclave (Section 5.7-5.9). Device only provides PIN, enclave generates all secrets. Simplified scaling to single-region ASG min=1 for dev/testing (Section 9). Updated cost analysis for phased deployment (Section 12). Break-even now at 18 users. |
+| 1.2 | 2026-01-02 | Architecture Team | Critical fix: Credential creation now happens INSIDE the enclave (Section 5.7-5.9). Device only provides PIN, enclave generates all secrets. Simplified scaling to single-region ASG min=1 for dev/testing (Section 9). Updated cost analysis for phased deployment (Section 11). Break-even now at 18 users. |
+| 1.3 | 2026-01-02 | Architecture Team | Added Section 5.12: Post-Enrollment Vault Access (clarifies connection flow, no chicken-and-egg). Removed Migration Strategy section (no existing vaults to migrate). Renumbered sections 10-15. Updated Phase 5 to Launch (not migration). |
