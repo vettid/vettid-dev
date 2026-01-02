@@ -4,7 +4,7 @@
 
 | Field | Value |
 |-------|-------|
-| Version | 1.3 Draft |
+| Version | 1.4 Draft |
 | Date | 2026-01-02 |
 | Status | Proposal - Pending Review |
 | Author | Architecture Team |
@@ -18,6 +18,9 @@
 3. [Proposed Architecture](#3-proposed-architecture)
 4. [Security Model](#4-security-model)
 5. [Protean Credential & Trust Model](#5-protean-credential--trust-model)
+   - 5.12 Post-Enrollment Vault Access
+   - 5.13 Credential Backup & Recovery
+   - 5.14 Account Portal Changes
 6. [Component Design](#6-component-design)
 7. [Data Storage & Encryption](#7-data-storage--encryption)
 8. [Process Lifecycle Management](#8-process-lifecycle-management)
@@ -974,6 +977,264 @@ Session tokens are:
   • Short-lived (15 min default, configurable)
   • Revoked on credential update
   • Still require PIN for high-risk operations (signing, export)
+```
+
+### 5.13 Credential Backup & Recovery
+
+The encrypted credential blob is the user's "key to the vault." If lost, they lose access to all secrets. **Backup is critical.**
+
+#### Backup Strategy: VettID-Hosted Backup
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    Credential Backup Architecture                        │
+│                                                                         │
+│  During Enrollment:                                                     │
+│  ──────────────────                                                     │
+│                                                                         │
+│  ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────────┐ │
+│  │  User's Device  │    │  VettID Backend │    │   Nitro Enclave     │ │
+│  └────────┬────────┘    └────────┬────────┘    └──────────┬──────────┘ │
+│           │                      │                        │            │
+│           │                      │   1. Create credential │            │
+│           │                      │◄───────────────────────│            │
+│           │                      │                        │            │
+│           │  2. Return encrypted credential               │            │
+│           │◄─────────────────────┼────────────────────────│            │
+│           │                      │                        │            │
+│           │  3. Store backup     │                        │            │
+│           │─────────────────────►│                        │            │
+│           │     (same blob)      │                        │            │
+│           │                      │                        │            │
+│           │                      │  4. Store in DynamoDB  │            │
+│           │                      │  (Credentials table)   │            │
+│           │                      │  PK: user-GUID         │            │
+│           │                      │                        │            │
+│           │  5. Backup confirmed │                        │            │
+│           │◄─────────────────────│                        │            │
+│           │                      │                        │            │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Why VettID-Hosted Backup is Safe
+
+| Concern | Why It's Safe |
+|---------|---------------|
+| VettID stores my credential | Blob is PCR-encrypted; VettID cannot decrypt |
+| VettID admin accesses backup | Useless without attested enclave + PIN |
+| Attacker breaches VettID DB | Gets encrypted blobs they cannot use |
+| Government subpoena | VettID can only provide encrypted blobs |
+
+**The encrypted credential is useless without:**
+1. A genuine Nitro Enclave with matching PCRs
+2. The user's PIN
+
+#### Device Loss Recovery Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    Device Loss Recovery                                  │
+│                                                                         │
+│  User loses phone. Gets new device. Wants to recover vault.             │
+│                                                                         │
+│  ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────────┐ │
+│  │  New Device     │    │  VettID Backend │    │   Nitro Enclave     │ │
+│  └────────┬────────┘    └────────┬────────┘    └──────────┬──────────┘ │
+│           │                      │                        │            │
+│           │ 1. Install app       │                        │            │
+│           │    Sign in (Cognito) │                        │            │
+│           │─────────────────────►│                        │            │
+│           │                      │                        │            │
+│           │ 2. Get JWT token     │                        │            │
+│           │◄─────────────────────│                        │            │
+│           │                      │                        │            │
+│           │ 3. Request credential│                        │            │
+│           │    recovery          │                        │            │
+│           │─────────────────────►│                        │            │
+│           │                      │                        │            │
+│           │                      │ 4. Lookup backup by    │            │
+│           │                      │    user-GUID from JWT  │            │
+│           │                      │                        │            │
+│           │ 5. Return encrypted  │                        │            │
+│           │    credential backup │                        │            │
+│           │◄─────────────────────│                        │            │
+│           │                      │                        │            │
+│           │ 6. Store locally     │                        │            │
+│           │                      │                        │            │
+│           │ 7. Use vault normally│                        │            │
+│           │    (credential +     │                        │            │
+│           │     operation + PIN) │                        │            │
+│           │──────────────────────┼───────────────────────►│            │
+│           │                      │                        │            │
+│           │ 8. Vault access      │                        │            │
+│           │    restored!         │                        │            │
+│           │◄─────────────────────┼────────────────────────│            │
+│           │                      │                        │            │
+└─────────────────────────────────────────────────────────────────────────┘
+
+Recovery requires:
+  ✓ Cognito authentication (email + password)
+  ✓ PIN knowledge
+  ✗ Does NOT require old device
+  ✗ Does NOT require seed phrase
+```
+
+#### Inactive User Scenario
+
+User doesn't use app for 6 months, then returns:
+
+```
+Scenario: User returns after long absence
+──────────────────────────────────────────
+
+1. User opens app after 6 months
+   └─ Credential blob still on device (persisted in secure storage)
+
+2. User authenticates to Cognito
+   └─ May need to re-enter password if session expired
+
+3. User performs vault operation
+   └─ Sends credential + operation to enclave
+
+4. If enclave PCRs unchanged:
+   └─ Enclave unseals credential, loads vault from S3
+   └─ Everything works normally
+
+5. If enclave PCRs changed (code update):
+   └─ Enclave detects old PCR version in credential
+   └─ Returns "credential migration required"
+   └─ App prompts user to migrate (one-time)
+   └─ See Section 10 for migration process
+
+6. Vault data in S3:
+   └─ Still present (S3 is durable)
+   └─ No expiration on vault data
+```
+
+#### What Needs Backup (Summary)
+
+| Data | Backed Up Where | Who Can Access |
+|------|-----------------|----------------|
+| **Encrypted Credential** | Device + VettID (DynamoDB) | Only attested enclave |
+| **Vault Data** | S3 (encrypted) | Only attested enclave |
+| **PIN** | User's memory | Only user |
+| **Cognito Password** | User's memory + Cognito | User + password reset |
+
+**To fully recover from total loss:**
+1. Remember Cognito password (or use password reset via email)
+2. Remember PIN
+3. Everything else is backed up server-side
+
+### 5.14 Account Portal Changes
+
+The Account Portal needs new UI for vault management under the Nitro Enclave model:
+
+#### New Vault Management Section
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    Account Portal - Vault Management                     │
+│                                                                         │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │  Vault Status                                              ●───  │   │
+│  │  ─────────────                                                   │   │
+│  │  Status: Active                                                  │   │
+│  │  Last accessed: 2 minutes ago                                    │   │
+│  │  Credential backup: ✓ Synced                                     │   │
+│  │  Enclave version: v1.2.0 (current)                              │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                                                                         │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │  Security Keys                                                   │   │
+│  │  ─────────────                                                   │   │
+│  │                                                                  │   │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐          │   │
+│  │  │ btc_main     │  │ eth_primary  │  │ signing_key  │          │   │
+│  │  │ secp256k1    │  │ secp256k1    │  │ ed25519      │          │   │
+│  │  │ Created:     │  │ Created:     │  │ Created:     │          │   │
+│  │  │ 2026-01-01   │  │ 2026-01-02   │  │ 2026-01-02   │          │   │
+│  │  └──────────────┘  └──────────────┘  └──────────────┘          │   │
+│  │                                                                  │   │
+│  │  [+ Generate New Key]  [Import Key]                             │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                                                                         │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │  Security Settings                                               │   │
+│  │  ─────────────────                                               │   │
+│  │                                                                  │   │
+│  │  PIN: ••••••           [Change PIN]                             │   │
+│  │                                                                  │   │
+│  │  Session timeout: 15 minutes  [▼]                               │   │
+│  │                                                                  │   │
+│  │  Require PIN for:                                                │   │
+│  │    ☑ Signing transactions                                       │   │
+│  │    ☑ Exporting public keys                                      │   │
+│  │    ☐ Viewing key list                                           │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                                                                         │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │  Recovery Options                                                │   │
+│  │  ────────────────                                                │   │
+│  │                                                                  │   │
+│  │  Credential backup: ✓ Enabled                                   │   │
+│  │  Last backup: 2026-01-02 14:30:00                               │   │
+│  │                                                                  │   │
+│  │  [Download Credential Backup]  (for manual safekeeping)         │   │
+│  │                                                                  │   │
+│  │  ⚠ Recovery requires your PIN. If you forget your PIN,         │   │
+│  │    you will lose access to your vault permanently.              │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Portal Implementation Changes
+
+| Component | Current | New (Nitro) |
+|-----------|---------|-------------|
+| **Vault Status** | Shows EC2 instance status | Shows credential status, enclave version |
+| **Enrollment** | Creates EC2 instance | Sends PIN to enclave, receives credential |
+| **Key Management** | N/A | List keys, generate, import (via enclave) |
+| **Security** | Password-based | PIN-based, session tokens |
+| **Backup** | N/A | Credential backup status, download option |
+| **Recovery** | N/A | Recover from backup flow |
+
+#### API Changes for Account Portal
+
+New endpoints needed:
+
+```
+POST /vault/enroll/start
+  → Returns attestation document for verification
+
+POST /vault/enroll/finalize
+  ← { encrypted_pin }
+  → { encrypted_credential, backup_status }
+
+GET /vault/status
+  → { active, last_accessed, enclave_version, backup_synced }
+
+GET /vault/keys
+  → { keys: [{ label, type, created_at, public_key }] }
+
+POST /vault/keys/generate
+  ← { type, label }
+  → { public_key, credential_updated: true }
+
+POST /vault/keys/import
+  ← { type, label, private_key }
+  → { success, credential_updated: true }
+
+POST /vault/pin/change
+  ← { current_pin, new_pin }
+  → { success, credential_updated: true }
+
+GET /vault/backup
+  → { encrypted_credential } (for manual download)
+
+POST /vault/backup/restore
+  ← { } (uses Cognito JWT to find backup)
+  → { encrypted_credential }
 ```
 
 ---
@@ -2145,3 +2406,4 @@ Tasks:
 | 1.1 | 2026-01-02 | Architecture Team | Added Section 5: Protean Credential & Trust Model. Corrected security model to establish vault (Nitro Enclave) as the secure processing environment rather than user devices. All user secrets now stored in single encrypted Protean Credential that only attested enclaves can decrypt. |
 | 1.2 | 2026-01-02 | Architecture Team | Critical fix: Credential creation now happens INSIDE the enclave (Section 5.7-5.9). Device only provides PIN, enclave generates all secrets. Simplified scaling to single-region ASG min=1 for dev/testing (Section 9). Updated cost analysis for phased deployment (Section 11). Break-even now at 18 users. |
 | 1.3 | 2026-01-02 | Architecture Team | Added Section 5.12: Post-Enrollment Vault Access (clarifies connection flow, no chicken-and-egg). Removed Migration Strategy section (no existing vaults to migrate). Renumbered sections 10-15. Updated Phase 5 to Launch (not migration). |
+| 1.4 | 2026-01-02 | Architecture Team | Added Section 5.13: Credential Backup & Recovery (VettID-hosted backup, device loss recovery, inactive user handling). Added Section 5.14: Account Portal Changes (vault management UI, new API endpoints). Clarified what needs backup (only credential + PIN knowledge). |
