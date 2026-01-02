@@ -166,7 +166,7 @@ function renderWaitlistCards(entries) {
     card.innerHTML = `
       <div class="data-card-header">
         <div style="display:flex;align-items:center;gap:12px;flex:1;">
-          <input type="checkbox" name="waitlist-select" class="waitlist-checkbox" data-id="${escapeHtml(entry.waitlist_id)}" onclick="event.stopPropagation();updateWaitlistSelectedCount();" style="width:18px;height:18px;cursor:pointer;" ${isDisabled ? 'disabled title="Already processed"' : ''}/>
+          <input type="checkbox" name="waitlist-select" class="waitlist-checkbox" data-id="${escapeHtml(entry.waitlist_id)}" data-action="waitlist-select" style="width:18px;height:18px;cursor:pointer;" ${isDisabled ? 'disabled title="Already processed"' : ''}/>
           <div class="data-card-title">${escapeHtml(entry.first_name || '')} ${escapeHtml(entry.last_name || '')}</div>
         </div>
         <span class="data-card-badge" style="background:${statusColor}">${statusLabel}</span>
@@ -193,8 +193,8 @@ function renderWaitlistCards(entries) {
       </div>
       ${entry.status === 'pending' || !entry.status ? `
       <div class="data-card-actions">
-        <button class="btn" style="background:linear-gradient(135deg,#0e9e4d 0%,#0a7a3a 100%);" onclick="event.stopPropagation();">Invite</button>
-        <button class="btn" style="background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);" onclick="event.stopPropagation();">Reject</button>
+        <button class="btn" data-action="waitlist-invite" data-id="${escapeHtml(entry.waitlist_id)}" style="background:linear-gradient(135deg,#0e9e4d 0%,#0a7a3a 100%);">Invite</button>
+        <button class="btn" data-action="waitlist-reject" data-id="${escapeHtml(entry.waitlist_id)}" style="background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);">Reject</button>
       </div>` : ''}
     `;
     cardContainer.appendChild(card);
@@ -265,7 +265,7 @@ function renderUsersCards(users, isInvited = false) {
       card.innerHTML = `
         <div class="data-card-header">
           <div style="display:flex;align-items:center;gap:12px;flex:1;">
-            <input type="checkbox" name="user-select" class="user-checkbox" data-id="${escapeHtml(u.registration_id)}" data-status="${escapeHtml(u.status)}" data-member="${escapeHtml(memberStatus)}" onclick="event.stopPropagation();updateUsersSelectedCount();" style="width:18px;height:18px;cursor:pointer;"/>
+            <input type="checkbox" name="user-select" class="user-checkbox" data-id="${escapeHtml(u.registration_id)}" data-status="${escapeHtml(u.status)}" data-member="${escapeHtml(memberStatus)}" data-action="user-select" style="width:18px;height:18px;cursor:pointer;"/>
             <div class="data-card-title">${escapeHtml(name)}</div>
           </div>
         </div>
@@ -344,7 +344,7 @@ function renderInvitesCards(invites) {
     card.innerHTML = `
       <div class="data-card-header">
         <div style="display:flex;align-items:center;gap:12px;flex:1;">
-          <input type="checkbox" name="invite-select" class="invites-checkbox" data-code="${escapeHtml(i.code)}" data-status="${escapeHtml(actualStatus)}" onclick="event.stopPropagation();updateInvitesSelectedCount();" style="width:18px;height:18px;cursor:pointer;"/>
+          <input type="checkbox" name="invite-select" class="invites-checkbox" data-code="${escapeHtml(i.code)}" data-status="${escapeHtml(actualStatus)}" data-action="invite-select" style="width:18px;height:18px;cursor:pointer;"/>
           <div class="data-card-title" style="font-family:monospace;font-size:0.9rem;">${escapeHtml(i.code)}</div>
         </div>
         <span class="data-card-badge" style="background:${statusColor}">${statusText}</span>
@@ -421,7 +421,7 @@ function renderSubscribersCards(subscriptions) {
     card.innerHTML = `
       <div class="data-card-header">
         <div style="display:flex;align-items:center;gap:12px;flex:1;">
-          <input type="checkbox" name="subscription-select" class="subscription-checkbox" data-guid="${escapeHtml(s.user_guid)}" onclick="event.stopPropagation();updateSubscriptionsSelectedCount();" style="width:18px;height:18px;cursor:pointer;"/>
+          <input type="checkbox" name="subscription-select" class="subscription-checkbox" data-guid="${escapeHtml(s.user_guid)}" data-action="subscription-select" style="width:18px;height:18px;cursor:pointer;"/>
           <div class="data-card-title">${escapeHtml(name)}</div>
         </div>
         <span class="data-card-badge" style="background:${statusColor}">${statusText}</span>
@@ -515,7 +515,7 @@ function renderAdminsCards(admins) {
     card.className = 'data-card';
     card.innerHTML = `
       <div class="data-card-header">
-        <input type="checkbox" name="admin-select" class="admin-checkbox" data-email="${escapeHtml(a.email)}" data-enabled="${a.enabled}" onclick="event.stopPropagation();updateAdminsBulkButtons();" />
+        <input type="checkbox" name="admin-select" class="admin-checkbox" data-email="${escapeHtml(a.email)}" data-enabled="${a.enabled}" data-action="admin-select" />
         <span class="data-card-title">${escapeHtml(name) || '—'}</span>
         ${statusBadge}
       </div>
@@ -538,8 +538,8 @@ function renderAdminsCards(admins) {
         </div>
       </div>
       <div class="data-card-actions">
-        <button class="btn" style="background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);" onclick="event.stopPropagation();openManageAccessModal('${escapeHtml(a.email)}','${escapeHtml(name)}',${a.enabled},'${adminType}');">Manage</button>
-        <button class="btn" style="background:linear-gradient(135deg,#8b5cf6 0%,#7c3aed 100%);" onclick="event.stopPropagation();openActivityLogModal('${escapeHtml(a.email)}','${escapeHtml(name)}');">Activity</button>
+        <button class="btn" style="background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);" data-action="admin-manage" data-email="${escapeHtml(a.email)}" data-name="${escapeHtml(name)}" data-enabled="${a.enabled}" data-admin-type="${adminType}">Manage</button>
+        <button class="btn" style="background:linear-gradient(135deg,#8b5cf6 0%,#7c3aed 100%);" data-action="admin-activity" data-email="${escapeHtml(a.email)}" data-name="${escapeHtml(name)}">Activity</button>
       </div>
     `;
     cardContainer.appendChild(card);
@@ -2747,7 +2747,7 @@ async function loadCurrentTerms(append=false){
               </div>
             </div>
             <div style="margin-top:auto;">
-              <button onclick="viewTerms('${current.version_id}',this)" class='btn' style='display:block;width:100%;box-sizing:border-box;text-align:center;background:linear-gradient(135deg,#ffd93d 0%,#ffc125 100%);color:#000;padding:8px 12px;font-size:0.8rem;font-weight:600;border-radius:12px;border:none;cursor:pointer;'>View Terms</button>
+              <button class='btn' data-action="view-terms" data-version-id="${current.version_id}" style='display:block;width:100%;box-sizing:border-box;text-align:center;background:linear-gradient(135deg,#ffd93d 0%,#ffc125 100%);color:#000;padding:8px 12px;font-size:0.8rem;font-weight:600;border-radius:12px;border:none;cursor:pointer;'>View Terms</button>
             </div>
           </div>
         `;
@@ -2764,7 +2764,7 @@ async function loadCurrentTerms(append=false){
           <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:12px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;">
             <div style="flex:1;min-width:200px;">
               <div style="margin-bottom:4px;">
-                <button onclick="viewTerms('${term.version_id}',this)" style="background:none;border:none;color:var(--accent);cursor:pointer;font-weight:700;font-size:0.95rem;display:inline-flex;align-items:center;gap:6px;padding:0;">
+                <button data-action="view-terms" data-version-id="${term.version_id}" style="background:none;border:none;color:var(--accent);cursor:pointer;font-weight:700;font-size:0.95rem;display:inline-flex;align-items:center;gap:6px;padding:0;">
                   Version ${term.version_id}
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <path d="M14 3v4a1 1 0 0 0 1 1h4"></path>
@@ -2794,7 +2794,7 @@ async function loadCurrentTerms(append=false){
       if(termsHasMore){
         previousDisplay.insertAdjacentHTML('beforeend',`
           <div class="load-more-terms" style="grid-column:1/-1;text-align:center;padding:12px;">
-            <button onclick="loadCurrentTerms(true)" class="btn btn-secondary" style="padding:8px 24px;">Load More</button>
+            <button data-action="load-more-terms" class="btn btn-secondary" style="padding:8px 24px;">Load More</button>
           </div>
         `);
       }
@@ -3006,6 +3006,148 @@ document.addEventListener('click', (e) => {
     const status = analyticsBtn.getAttribute('data-analytics-status') || 'active';
     openProposalAnalytics(proposalId, title, status);
     return;
+  }
+
+  // Handle data-action attributes (CSP-compliant event delegation)
+  const actionEl = e.target.closest('[data-action]');
+  if (actionEl) {
+    const action = actionEl.getAttribute('data-action');
+
+    // Stop propagation for container elements
+    if (action === 'stop-propagation') {
+      e.stopPropagation();
+      return;
+    }
+
+    // Checkbox select actions (stop propagation for all)
+    if (action === 'waitlist-select' || action === 'user-select' || action === 'invite-select' ||
+        action === 'subscription-select' || action === 'admin-select') {
+      e.stopPropagation();
+      if (action === 'waitlist-select') updateWaitlistSelectedCount();
+      else if (action === 'user-select') updateUserSelectedCount();
+      else if (action === 'invite-select') updateInvitesSelectedCount();
+      else if (action === 'subscription-select') updateSubscriptionsSelectedCount();
+      else if (action === 'admin-select') updateAdminsBulkButtons();
+      return;
+    }
+
+    // Waitlist row actions
+    if (action === 'waitlist-invite') {
+      e.stopPropagation();
+      const email = actionEl.getAttribute('data-email');
+      sendInviteToWaitlistEntry(email);
+      return;
+    }
+    if (action === 'waitlist-reject') {
+      e.stopPropagation();
+      const email = actionEl.getAttribute('data-email');
+      rejectWaitlistEntry(email);
+      return;
+    }
+
+    // Admin card actions
+    if (action === 'admin-manage') {
+      e.stopPropagation();
+      const email = actionEl.getAttribute('data-email');
+      const name = actionEl.getAttribute('data-name');
+      const enabled = actionEl.getAttribute('data-enabled') === 'true';
+      const adminType = actionEl.getAttribute('data-admin-type');
+      openManageAccessModal(email, name, enabled, adminType);
+      return;
+    }
+    if (action === 'admin-activity') {
+      e.stopPropagation();
+      const email = actionEl.getAttribute('data-email');
+      const name = actionEl.getAttribute('data-name');
+      openActivityLogModal(email, name);
+      return;
+    }
+
+    // Membership terms actions
+    if (action === 'view-terms') {
+      const versionId = actionEl.getAttribute('data-version-id');
+      viewTerms(versionId, actionEl);
+      return;
+    }
+    if (action === 'load-more-terms') {
+      loadCurrentTerms(true);
+      return;
+    }
+
+    // Subscription type actions
+    if (action === 'toggle-subscription-type') {
+      const typeId = actionEl.getAttribute('data-type-id');
+      const isEnabled = actionEl.getAttribute('data-is-enabled') === 'true';
+      toggleSubscriptionType(typeId, isEnabled);
+      return;
+    }
+
+    // Notification actions
+    if (action === 'remove-notification') {
+      const type = actionEl.getAttribute('data-type');
+      const email = actionEl.getAttribute('data-email');
+      removeNotification(type, email);
+      return;
+    }
+
+    // Handler action dropdown
+    if (action === 'toggle-action-dropdown') {
+      toggleActionDropdown(actionEl);
+      return;
+    }
+    if (action === 'handler-details') {
+      const handlerId = actionEl.getAttribute('data-handler-id');
+      openHandlerDetails(handlerId);
+      return;
+    }
+    if (action === 'handler-sign') {
+      const handlerId = actionEl.getAttribute('data-handler-id');
+      signHandler(handlerId);
+      return;
+    }
+    if (action === 'handler-revoke') {
+      const handlerId = actionEl.getAttribute('data-handler-id');
+      const handlerName = actionEl.getAttribute('data-handler-name');
+      openRevokeModal(handlerId, handlerName);
+      return;
+    }
+    if (action === 'handler-delete') {
+      const handlerId = actionEl.getAttribute('data-handler-id');
+      const handlerName = actionEl.getAttribute('data-handler-name');
+      openDeleteHandlerModal(handlerId, handlerName);
+      return;
+    }
+
+    // Service table actions
+    if (action === 'service-details') {
+      const serviceId = actionEl.getAttribute('data-service-id');
+      openServiceDetails(serviceId);
+      return;
+    }
+    if (action === 'toggle-service-dropdown') {
+      e.stopPropagation();
+      toggleServiceDropdown(actionEl, e);
+      return;
+    }
+    if (action === 'service-edit') {
+      e.preventDefault();
+      const serviceId = actionEl.getAttribute('data-service-id');
+      openEditServiceModal(serviceId);
+      return;
+    }
+    if (action === 'service-toggle-status') {
+      e.preventDefault();
+      const serviceId = actionEl.getAttribute('data-service-id');
+      const newStatus = actionEl.getAttribute('data-new-status');
+      toggleServiceStatus(serviceId, newStatus);
+      return;
+    }
+    if (action === 'service-delete') {
+      e.preventDefault();
+      const serviceId = actionEl.getAttribute('data-service-id');
+      openDeleteServiceModal(serviceId);
+      return;
+    }
   }
 });
 }); // End DOMContentLoaded
@@ -3631,7 +3773,7 @@ function renderSubscriptionTypes(){
           ${st.is_one_time_offer?'<div style="margin-top:6px;padding:6px;background:#422006;border-radius:4px;border:1px solid #fbbf24;"><p style="margin:0;color:#fbbf24;font-size:0.75rem;font-weight:600;text-align:center;">One-Time Offer</p></div>':''}
         </div>
         <div style="margin-top:auto;">
-          <button class="btn" onclick="toggleSubscriptionType('${escapeHtml(st.subscription_type_id)}',${st.is_enabled})" style="width:100%;${btnStyle}color:#fff;padding:8px 12px;font-size:0.8rem;font-weight:600;">${escapeHtml(btnText)}</button>
+          <button class="btn" data-action="toggle-subscription-type" data-type-id="${escapeHtml(st.subscription_type_id)}" data-is-enabled="${st.is_enabled}" style="width:100%;${btnStyle}color:#fff;padding:8px 12px;font-size:0.8rem;font-weight:600;">${escapeHtml(btnText)}</button>
         </div>
       </div>
     `;
@@ -4492,7 +4634,7 @@ function renderNotifications(type, admins) {
   container.innerHTML = admins.map(email => `
     <div style="display:flex;align-items:center;justify-content:space-between;background:var(--bg-card);border:1px solid var(--border);border-radius:6px;padding:10px 14px;margin-bottom:8px;">
       <span style="color:var(--text);font-size:0.9rem;">${escapeHtml(email)}</span>
-      <button class="btn" style="background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);padding:6px 12px;font-size:0.85rem;" onclick="removeNotification('${type}', '${escapeHtml(email)}')">Remove</button>
+      <button class="btn" data-action="remove-notification" data-type="${type}" data-email="${escapeHtml(email)}" style="background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);padding:6px 12px;font-size:0.85rem;">Remove</button>
     </div>
   `).join('');
 }
@@ -6004,13 +6146,13 @@ function renderHandlers() {
       <td>${h.install_count || 0}</td>
       <td>${publishedDate}</td>
       <td>
-        <div class="action-dropdown" onclick="event.stopPropagation();">
-          <button class="action-dropdown-btn" onclick="toggleActionDropdown(this)">⋮</button>
+        <div class="action-dropdown" data-action="stop-propagation">
+          <button class="action-dropdown-btn" data-action="toggle-action-dropdown">⋮</button>
           <div class="action-dropdown-menu">
-            <button class="action-dropdown-item" onclick="openHandlerDetails('${escapeHtml(h.handler_id)}')">View Details</button>
-            ${h.status === 'pending' ? `<button class="action-dropdown-item" onclick="signHandler('${escapeHtml(h.handler_id)}')">Sign & Activate</button>` : ''}
-            ${h.status === 'active' ? `<button class="action-dropdown-item" onclick="openRevokeModal('${escapeHtml(h.handler_id)}', '${escapeHtml(h.name)}')">Revoke</button>` : ''}
-            <button class="action-dropdown-item" style="color:#ef4444;" onclick="openDeleteHandlerModal('${escapeHtml(h.handler_id)}', '${escapeHtml(h.name)}')">Delete</button>
+            <button class="action-dropdown-item" data-action="handler-details" data-handler-id="${escapeHtml(h.handler_id)}">View Details</button>
+            ${h.status === 'pending' ? `<button class="action-dropdown-item" data-action="handler-sign" data-handler-id="${escapeHtml(h.handler_id)}">Sign & Activate</button>` : ''}
+            ${h.status === 'active' ? `<button class="action-dropdown-item" data-action="handler-revoke" data-handler-id="${escapeHtml(h.handler_id)}" data-handler-name="${escapeHtml(h.name)}">Revoke</button>` : ''}
+            <button class="action-dropdown-item" style="color:#ef4444;" data-action="handler-delete" data-handler-id="${escapeHtml(h.handler_id)}" data-handler-name="${escapeHtml(h.name)}">Delete</button>
           </div>
         </div>
       </td>
@@ -6609,7 +6751,7 @@ function renderServices() {
     const typeLabel = (service.service_type || 'other').charAt(0).toUpperCase() + (service.service_type || 'other').slice(1);
 
     return `
-      <tr onclick="openServiceDetails('${service.service_id}')" style="cursor:pointer;">
+      <tr data-action="service-details" data-service-id="${service.service_id}" style="cursor:pointer;">
         <td>
           <div style="display:flex;align-items:center;gap:0.75rem;">
             ${service.icon_url ? `<img src="${service.icon_url}" alt="" style="width:32px;height:32px;border-radius:6px;object-fit:cover;">` :
@@ -6624,13 +6766,13 @@ function renderServices() {
         <td><span class="status-badge ${statusClass}">${statusText}</span></td>
         <td>${service.connect_count || 0}</td>
         <td>${service.updated_at ? new Date(service.updated_at).toLocaleDateString() : '-'}</td>
-        <td onclick="event.stopPropagation();">
+        <td data-action="stop-propagation">
           <div class="dropdown" style="position:relative;">
-            <button class="btn btn-secondary btn-sm dropdown-toggle" onclick="toggleServiceDropdown(this, event)">Actions</button>
+            <button class="btn btn-secondary btn-sm dropdown-toggle" data-action="toggle-service-dropdown">Actions</button>
             <div class="dropdown-menu" style="display:none;position:absolute;right:0;top:100%;background:white;border:1px solid var(--border);border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,0.15);min-width:140px;z-index:100;">
-              <a href="#" onclick="openEditServiceModal('${service.service_id}');return false;" style="display:block;padding:0.5rem 1rem;color:var(--dark);text-decoration:none;">Edit</a>
-              <a href="#" onclick="toggleServiceStatus('${service.service_id}', '${service.status === 'active' ? 'deprecated' : 'active'}');return false;" style="display:block;padding:0.5rem 1rem;color:var(--dark);text-decoration:none;">${service.status === 'active' ? 'Deprecate' : 'Activate'}</a>
-              <a href="#" onclick="openDeleteServiceModal('${service.service_id}');return false;" style="display:block;padding:0.5rem 1rem;color:#ef4444;text-decoration:none;">Delete</a>
+              <a href="#" data-action="service-edit" data-service-id="${service.service_id}" style="display:block;padding:0.5rem 1rem;color:var(--dark);text-decoration:none;">Edit</a>
+              <a href="#" data-action="service-toggle-status" data-service-id="${service.service_id}" data-new-status="${service.status === 'active' ? 'deprecated' : 'active'}" style="display:block;padding:0.5rem 1rem;color:var(--dark);text-decoration:none;">${service.status === 'active' ? 'Deprecate' : 'Activate'}</a>
+              <a href="#" data-action="service-delete" data-service-id="${service.service_id}" style="display:block;padding:0.5rem 1rem;color:#ef4444;text-decoration:none;">Delete</a>
             </div>
           </div>
         </td>
