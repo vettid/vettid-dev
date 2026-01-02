@@ -5409,10 +5409,10 @@ document.getElementById('quickFilterPending').onclick = () => {
   renderWaitlist();
 };
 
-document.getElementById('quickFilterInvited').onclick = () => {
+document.getElementById('waitlistFilterInvited').onclick = () => {
   waitlistQuickFilter = 'invited';
   document.querySelectorAll('.waitlist-filter').forEach(btn => btn.classList.remove('active'));
-  document.getElementById('quickFilterInvited').classList.add('active');
+  document.getElementById('waitlistFilterInvited').classList.add('active');
   waitlistPaginationState.currentPage = 1;
   renderWaitlist();
 };
