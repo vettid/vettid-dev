@@ -4,7 +4,7 @@
 
 | Field | Value |
 |-------|-------|
-| Version | 1.0 Draft |
+| Version | 1.1 Draft |
 | Date | 2026-01-02 |
 | Status | Proposal - Pending Review |
 | Author | Architecture Team |
@@ -17,17 +17,18 @@
 2. [Current Architecture](#2-current-architecture)
 3. [Proposed Architecture](#3-proposed-architecture)
 4. [Security Model](#4-security-model)
-5. [Component Design](#5-component-design)
-6. [Data Storage & Encryption](#6-data-storage--encryption)
-7. [Process Lifecycle Management](#7-process-lifecycle-management)
-8. [Scaling & High Availability](#8-scaling--high-availability)
-9. [Migration Strategy](#9-migration-strategy)
-10. [Enclave Update & Key Migration](#10-enclave-update--key-migration)
-11. [Cost Analysis](#11-cost-analysis)
-12. [BYO Vault Considerations](#12-byo-vault-considerations)
-13. [Implementation Phases](#13-implementation-phases)
-14. [Risks & Mitigations](#14-risks--mitigations)
-15. [Decision Log](#15-decision-log)
+5. [Protean Credential & Trust Model](#5-protean-credential--trust-model)
+6. [Component Design](#6-component-design)
+7. [Data Storage & Encryption](#7-data-storage--encryption)
+8. [Process Lifecycle Management](#8-process-lifecycle-management)
+9. [Scaling & High Availability](#9-scaling--high-availability)
+10. [Migration Strategy](#10-migration-strategy)
+11. [Enclave Update & Key Migration](#11-enclave-update--key-migration)
+12. [Cost Analysis](#12-cost-analysis)
+13. [BYO Vault Considerations](#13-byo-vault-considerations)
+14. [Implementation Phases](#14-implementation-phases)
+15. [Risks & Mitigations](#15-risks--mitigations)
+16. [Decision Log](#16-decision-log)
 
 ---
 
@@ -433,9 +434,350 @@ Unsealing (vault load):
 
 ---
 
-## 5. Component Design
+## 5. Protean Credential & Trust Model
 
-### 5.1 Enclave Supervisor
+### 5.1 The Vault as Secure Processing Environment
+
+A critical insight drives the credential model: **the user's device is untrusted; the attested enclave is the secure environment.**
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                     Reality Check: What's More Secure?                   │
+│                                                                         │
+│  Average User's Device                   Nitro Enclave                  │
+│  ─────────────────────                   ─────────────                  │
+│  • Outdated Android/iOS                  • Hardware-isolated memory     │
+│  • Unpatched vulnerabilities             • Attested code (auditable)    │
+│  • Potential malware/spyware             • No network access            │
+│  • Apps with excessive permissions       • No persistent storage        │
+│  • Screen readers, clipboard hijack      • Even AWS can't access        │
+│  • Physical theft risk                   • Published, verifiable PCRs   │
+│  • Social engineering attacks            • Code can be audited          │
+│                                                                         │
+│  LESS SECURE ◄─────────────────────────────────────────► MORE SECURE   │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+The Protean Credential model leverages this by:
+1. User holds an **encrypted credential blob** they cannot directly access
+2. Credential is sent to the **attested vault** for processing
+3. Vault decrypts, **challenges the user** to prove authorization
+4. Vault performs **sensitive operations** (signing, key usage) in isolated memory
+5. Only **results** are returned—never the raw secrets
+
+### 5.2 Protean Credential Structure
+
+The Protean Credential contains all user secrets, encrypted so only an attested enclave can access them:
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                     Protean Credential                                   │
+│                     (Encrypted blob user holds but can't access)         │
+│                                                                         │
+│  Encrypted with: Enclave's attestation-bound public key                 │
+│                                                                         │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │  Contents (only readable inside attested enclave):              │   │
+│  │                                                                  │   │
+│  │  identity_keypair: {                                            │   │
+│  │    private_key: [32 bytes],   // Ed25519 - vault authentication │   │
+│  │    public_key: [32 bytes]     // Also serves as user identifier │   │
+│  │  }                                                              │   │
+│  │                                                                  │   │
+│  │  vault_master_secret: [32 bytes]  // For vault DEK derivation   │   │
+│  │                                                                  │   │
+│  │  crypto_keys: [                   // User's critical secrets    │   │
+│  │    {                                                            │   │
+│  │      label: "btc_main",                                         │   │
+│  │      type: "secp256k1",                                         │   │
+│  │      private_key: [32 bytes]                                    │   │
+│  │    },                                                           │   │
+│  │    {                                                            │   │
+│  │      label: "eth_primary",                                      │   │
+│  │      type: "secp256k1",                                         │   │
+│  │      private_key: [32 bytes]                                    │   │
+│  │    },                                                           │   │
+│  │    {                                                            │   │
+│  │      label: "signing_key",                                      │   │
+│  │      type: "ed25519",                                           │   │
+│  │      private_key: [32 bytes]                                    │   │
+│  │    }                                                            │   │
+│  │  ]                                                              │   │
+│  │                                                                  │   │
+│  │  seed_phrases: [                                                │   │
+│  │    {                                                            │   │
+│  │      label: "wallet_backup",                                    │   │
+│  │      words: "word1 word2 word3 ... word24"                      │   │
+│  │    }                                                            │   │
+│  │  ]                                                              │   │
+│  │                                                                  │   │
+│  │  challenge_config: {              // Authorization requirements │   │
+│  │    pin_hash: [32 bytes],          // Argon2id hash of PIN       │   │
+│  │    pin_salt: [16 bytes],                                        │   │
+│  │    biometric_binding: [32 bytes], // Optional device binding    │   │
+│  │    required_factors: 1,           // 1 = PIN only, 2 = PIN+bio  │   │
+│  │    max_attempts: 5,                                             │   │
+│  │    lockout_duration: 300          // Seconds                    │   │
+│  │  }                                                              │   │
+│  │                                                                  │   │
+│  │  metadata: {                                                    │   │
+│  │    version: 1,                                                  │   │
+│  │    created_at: "2026-01-02T12:00:00Z",                          │   │
+│  │    owner_space_id: "user-ABC123..."                             │   │
+│  │  }                                                              │   │
+│  │                                                                  │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                                                                         │
+│  User's device sees: Opaque encrypted blob (cannot decrypt)            │
+│  Attested enclave sees: All secrets (after user passes challenge)      │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### 5.3 Why Device-Side Storage is Unsafe
+
+Most users do not run hardened operating systems. Their devices are vulnerable:
+
+| Threat | Device Risk | Vault (Enclave) Risk |
+|--------|-------------|----------------------|
+| Malware/spyware | Key stolen from memory/storage | Gets encrypted blob (useless) |
+| Screen capture | Key visible during use | Only encrypted blob shown |
+| Memory dump | Key extractable from RAM | Key never on device |
+| Physical theft | Key accessible if device unlocked | Need to pass challenge |
+| Fake/malicious app | Key stolen by impersonator | Attestation verification fails |
+| Clipboard hijack | Key copied by malware | Key never in clipboard |
+| Root exploit | Full key access | Blob encrypted, no key access |
+
+**The vault is the "known good environment."** Secrets should only exist in plaintext inside the attested enclave.
+
+### 5.4 Single Credential Model
+
+The Protean Credential replaces multiple separate credentials:
+
+| Old Model | New Model |
+|-----------|-----------|
+| NATS credentials (vault access) | Identity keypair in credential |
+| Vault credential (master secret) | Vault master secret in credential |
+| Separate BTC wallet | BTC keys in credential |
+| Separate seed phrase backup | Seed phrases in credential |
+
+**One credential holds everything**, encrypted so only the vault can access it.
+
+### 5.5 Challenge Flow (User Authorization)
+
+Before the vault uses any secrets, it challenges the user to prove authorization:
+
+```
+┌─────────────────┐                              ┌─────────────────────────┐
+│  User's Device  │                              │   Nitro Enclave         │
+│  (Untrusted)    │                              │   (Attested Vault)      │
+└────────┬────────┘                              └────────────┬────────────┘
+         │                                                    │
+         │  1. Connect + request attestation                  │
+         │───────────────────────────────────────────────────►│
+         │                                                    │
+         │  2. Attestation document                           │
+         │◄───────────────────────────────────────────────────│
+         │     (signed by AWS Nitro)                          │
+         │                                                    │
+         │  3. Verify attestation                             │
+         │     • AWS signature valid?                         │
+         │     • PCRs match published values?                 │
+         │     • Timestamp recent?                            │
+         │                                                    │
+         │  4. Send encrypted credential + operation request  │
+         │───────────────────────────────────────────────────►│
+         │     {                                              │
+         │       credential: <encrypted blob>,                │
+         │       operation: "sign_btc_transaction",           │
+         │       params: { tx_data: "..." }                   │
+         │     }                                              │
+         │                                                    │
+         │                                      5. Decrypt credential
+         │                                         Extract challenge_config
+         │                                                    │
+         │  6. Challenge request                              │
+         │◄───────────────────────────────────────────────────│
+         │     {                                              │
+         │       type: "pin",                                 │
+         │       nonce: "random-challenge-id",                │
+         │       attempts_remaining: 5                        │
+         │     }                                              │
+         │                                                    │
+         │  7. User enters PIN                                │
+         │     (displayed on device, sent to enclave)         │
+         │                                                    │
+         │  8. Challenge response                             │
+         │───────────────────────────────────────────────────►│
+         │     {                                              │
+         │       pin: "******",                               │
+         │       nonce: "random-challenge-id"                 │
+         │     }                                              │
+         │                                                    │
+         │                                      9. Verify PIN:
+         │                                         hash = Argon2id(pin, salt)
+         │                                         Compare to pin_hash
+         │                                                    │
+         │                                      10. If valid:
+         │                                          • Load BTC key from cred
+         │                                          • Sign transaction
+         │                                          • Zero key from memory
+         │                                          • Return signature
+         │                                                    │
+         │  11. Operation result                              │
+         │◄───────────────────────────────────────────────────│
+         │     {                                              │
+         │       success: true,                               │
+         │       signature: "3045022100..."                   │
+         │     }                                              │
+         │     (NOT the key, just the signature)              │
+         │                                                    │
+```
+
+### 5.6 BTC Transaction Signing Example
+
+```
+Complete BTC Signing Flow:
+──────────────────────────
+
+1. User initiates transaction in app
+   └─ App constructs unsigned transaction
+
+2. App sends to vault:
+   {
+     credential: <encrypted protean credential>,
+     operation: "sign_btc",
+     params: {
+       key_label: "btc_main",
+       tx_hash: "abc123...",
+       input_index: 0,
+       sighash_type: "ALL"
+     }
+   }
+
+3. Enclave decrypts credential
+   └─ BTC private key now exists ONLY in enclave memory
+
+4. Enclave sends challenge
+   └─ { type: "pin", nonce: "xyz789" }
+
+5. User enters PIN on device
+   └─ PIN sent to enclave (not stored on device)
+
+6. Enclave verifies PIN against credential's pin_hash
+   └─ Argon2id(pin, salt) == pin_hash ?
+
+7. If PIN valid:
+   └─ Enclave signs transaction with BTC key
+   └─ signature = secp256k1_sign(btc_private_key, tx_hash)
+
+8. Enclave zeros BTC key from memory
+   └─ Key existed only for milliseconds
+
+9. Enclave returns signature
+   └─ { signature: "3045022100..." }
+
+10. App broadcasts signed transaction
+    └─ Private key NEVER existed on device
+
+
+What attacker gets if device is fully compromised:
+──────────────────────────────────────────────────
+• Encrypted credential blob → Useless without enclave
+• Transaction data → Public anyway
+• Cannot extract BTC key → Never on device
+• Cannot forge signatures → Need to pass PIN challenge
+• Cannot replay challenge → Nonce is single-use
+```
+
+### 5.7 Credential Encryption Model
+
+The Protean Credential is encrypted such that only the attested enclave can decrypt it:
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                     Credential Encryption                                │
+│                                                                         │
+│  During Enrollment:                                                     │
+│  ──────────────────                                                     │
+│                                                                         │
+│  1. User connects to enclave, receives attestation                     │
+│  2. User verifies attestation (PCRs match)                             │
+│  3. Enclave generates ephemeral keypair bound to attestation           │
+│     • enclave_public_key included in attestation document              │
+│     • enclave_private_key exists only in enclave memory                │
+│  4. User generates credential contents locally                         │
+│  5. User encrypts credential to enclave_public_key                     │
+│     • credential_encrypted = encrypt(enclave_pubkey, credential)       │
+│  6. User stores credential_encrypted on device                         │
+│                                                                         │
+│  Key Property:                                                          │
+│  ─────────────                                                          │
+│  Only an enclave with matching PCRs can derive the decryption key.     │
+│  If code changes (different PCRs), old credentials cannot be opened    │
+│  without key migration process.                                         │
+│                                                                         │
+│  Alternative: Sealed Credential Key                                     │
+│  ─────────────────────────────────                                      │
+│  • Credential encrypted with symmetric credential_key                  │
+│  • credential_key sealed to enclave PCRs                               │
+│  • Sealed credential_key stored alongside encrypted credential         │
+│  • Only matching enclave can unseal and decrypt                        │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### 5.8 Security Properties
+
+| Property | How Achieved |
+|----------|--------------|
+| **Secrets never on device** | Credential encrypted; only enclave decrypts |
+| **VettID cannot access** | No access to enclave memory; attestation proves code |
+| **User must authorize** | PIN/challenge required before secret use |
+| **Replay protection** | Nonce in each challenge; single-use |
+| **Brute force protection** | Argon2id + attempt limits + lockout |
+| **Key usage is auditable** | Vault logs all operations (encrypted) |
+| **Portable across devices** | Same credential works on any device |
+| **Works with BYO vault** | Same model, user's own enclave |
+
+### 5.9 Simplified Credential vs Two-Credential Model
+
+The Protean Credential consolidates what was previously separate:
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                                                                         │
+│  OLD MODEL (Two Credentials)          NEW MODEL (Single Protean Cred)  │
+│  ────────────────────────────          ───────────────────────────────  │
+│                                                                         │
+│  ┌─────────────────────────┐          ┌─────────────────────────────┐  │
+│  │ Vault Services Cred     │          │ Protean Credential          │  │
+│  │ • NATS JWT              │          │                             │  │
+│  │ • NATS NKey             │    ──►   │ Contains ALL:               │  │
+│  │                         │          │ • Identity keypair          │  │
+│  └─────────────────────────┘          │ • Vault master secret       │  │
+│                                       │ • BTC/ETH keys              │  │
+│  ┌─────────────────────────┐          │ • Seed phrases              │  │
+│  │ Vault Credential        │          │ • Signing keys              │  │
+│  │ • Master secret         │    ──►   │ • Challenge config          │  │
+│  │                         │          │                             │  │
+│  └─────────────────────────┘          │ Single encrypted blob       │  │
+│                                       │ User holds but can't access │  │
+│  + Separate wallet apps               └─────────────────────────────┘  │
+│  + Separate seed backups                                               │
+│                                                                         │
+│  COMPLEXITY: High                      COMPLEXITY: Low                 │
+│  SECURITY: Secrets on device           SECURITY: Secrets in vault only│
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 6. Component Design
+
+### 6.1 Enclave Supervisor
 
 The supervisor is the main process inside the enclave:
 
@@ -481,7 +823,7 @@ func (s *EnclaveSupervisor) routeToVault(ownerSpace string, payload []byte) {
 }
 ```
 
-### 5.2 Vault Manager Process
+### 6.2 Vault Manager Process
 
 Each user has a dedicated vault-manager:
 
@@ -544,7 +886,7 @@ func (vm *VaultManager) processEvent(event Event) []byte {
 }
 ```
 
-### 5.3 Encrypted Storage Adapter
+### 6.3 Encrypted Storage Adapter
 
 Bridges JetStream to external storage:
 
@@ -618,7 +960,7 @@ func (e *EncryptedStorageAdapter) Get(key string) ([]byte, error) {
 }
 ```
 
-### 5.4 Shared WASM Handler Cache
+### 6.4 Shared WASM Handler Cache
 
 ```go
 type WASMHandlerCache struct {
@@ -677,7 +1019,7 @@ func (h *CompiledHandler) NewInstance(config WASMConfig) *WASMInstance {
 }
 ```
 
-### 5.5 Parent Process
+### 6.5 Parent Process
 
 Runs on the EC2 host outside the enclave:
 
@@ -743,9 +1085,9 @@ func (p *ParentProcess) handleStorageRequests() {
 
 ---
 
-## 6. Data Storage & Encryption
+## 7. Data Storage & Encryption
 
-### 6.1 Storage Architecture
+### 7.1 Storage Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -783,7 +1125,7 @@ func (p *ParentProcess) handleStorageRequests() {
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 6.2 Encryption Specification
+### 7.2 Encryption Specification
 
 | Data Type | Algorithm | Key | Nonce |
 |-----------|-----------|-----|-------|
@@ -791,7 +1133,7 @@ func (p *ParentProcess) handleStorageRequests() {
 | Sealed DEK | AWS Nitro KMS | Nitro Attestation | Internal |
 | Session messages | ChaCha20-Poly1305 | Session Key | Random 12 bytes per message |
 
-### 6.3 Blob Format
+### 7.3 Blob Format
 
 ```
 Encrypted Blob Format:
@@ -802,7 +1144,7 @@ Encrypted Blob Format:
 Additional Authenticated Data (AAD): Object key (path in S3)
 ```
 
-### 6.4 S3 Configuration
+### 7.4 S3 Configuration
 
 ```typescript
 const vaultDataBucket = new s3.Bucket(this, 'VaultDataBucket', {
@@ -833,9 +1175,9 @@ const vaultDataBucket = new s3.Bucket(this, 'VaultDataBucket', {
 
 ---
 
-## 7. Process Lifecycle Management
+## 8. Process Lifecycle Management
 
-### 7.1 Vault Lifecycle States
+### 8.1 Vault Lifecycle States
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -883,7 +1225,7 @@ const vaultDataBucket = new s3.Bucket(this, 'VaultDataBucket', {
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 7.2 Active → Evicted Transition
+### 8.2 Active → Evicted Transition
 
 ```go
 func (s *EnclaveSupervisor) evictVault(ownerSpace string) error {
@@ -917,7 +1259,7 @@ func (s *EnclaveSupervisor) evictVault(ownerSpace string) error {
 }
 ```
 
-### 7.3 Evicted → Active Transition (Cold Start)
+### 8.3 Evicted → Active Transition (Cold Start)
 
 ```go
 func (s *EnclaveSupervisor) loadVault(ownerSpace string) (*VaultManager, error) {
@@ -978,7 +1320,7 @@ func (s *EnclaveSupervisor) loadVault(ownerSpace string) (*VaultManager, error) 
 }
 ```
 
-### 7.4 Memory Management
+### 8.4 Memory Management
 
 ```go
 const (
@@ -1010,9 +1352,9 @@ func (m *MemoryManager) ShouldEvict() bool {
 
 ---
 
-## 8. Scaling & High Availability
+## 9. Scaling & High Availability
 
-### 8.1 Multi-AZ Deployment
+### 9.1 Multi-AZ Deployment
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -1046,7 +1388,7 @@ func (m *MemoryManager) ShouldEvict() bool {
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 8.2 Auto-Scaling Configuration
+### 9.2 Auto-Scaling Configuration
 
 ```typescript
 const enclaveASG = new autoscaling.AutoScalingGroup(this, 'EnclaveASG', {
@@ -1079,7 +1421,7 @@ enclaveASG.scaleOnMetric('VaultCountScaling', {
 });
 ```
 
-### 8.3 Load Balancing Strategy
+### 9.3 Load Balancing Strategy
 
 Since vaults can run on any enclave, use simple load balancing:
 
@@ -1101,7 +1443,7 @@ func (r *VaultRouter) RouteMessage(ownerSpace string, msg []byte) error {
 
 **No sticky sessions needed** - any enclave can load any vault.
 
-### 8.4 Failover Behavior
+### 9.4 Failover Behavior
 
 ```
 Scenario: Enclave instance failure
@@ -1128,9 +1470,9 @@ Total user impact: ~500ms latency increase during failover
 
 ---
 
-## 9. Migration Strategy
+## 10. Migration Strategy
 
-### 9.1 Migration Overview
+### 10.1 Migration Overview
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -1151,7 +1493,7 @@ Total user impact: ~500ms latency increase during failover
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 9.2 Phase 1: Preparation
+### 10.2 Phase 1: Preparation
 
 **Objective**: Build and validate enclave infrastructure
 
@@ -1178,7 +1520,7 @@ aws ssm put-parameter \
   --type SecureString
 ```
 
-### 9.3 Phase 2: Parallel Run
+### 10.3 Phase 2: Parallel Run
 
 **Objective**: Run both systems simultaneously, route new users to enclave
 
@@ -1218,7 +1560,7 @@ func routeVaultMessage(ownerSpace string, msg []byte) {
 }
 ```
 
-### 9.4 Phase 3: Gradual Migration
+### 10.4 Phase 3: Gradual Migration
 
 **Objective**: Migrate existing users from EC2 to enclave
 
@@ -1278,7 +1620,7 @@ Wave 5: All remaining users
         Duration: 1 week
 ```
 
-### 9.5 Phase 4: Decommission
+### 10.5 Phase 4: Decommission
 
 **Objective**: Shut down legacy EC2 vault infrastructure
 
@@ -1291,9 +1633,9 @@ Tasks:
 
 ---
 
-## 10. Enclave Update & Key Migration
+## 11. Enclave Update & Key Migration
 
-### 10.1 The Challenge
+### 11.1 The Challenge
 
 When enclave code is updated, PCRs change. Sealed DEKs bound to old PCRs cannot be unsealed by new code.
 
@@ -1305,7 +1647,7 @@ Old Enclave (PCR: abc123)     New Enclave (PCR: def456)
 Problem: How to transition without losing access to user data?
 ```
 
-### 10.2 Solution: Key Migration During Rolling Update
+### 11.2 Solution: Key Migration During Rolling Update
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -1352,7 +1694,7 @@ Problem: How to transition without losing access to user data?
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 10.3 Key Migration Implementation
+### 11.3 Key Migration Implementation
 
 ```go
 // Run in OLD enclave during migration
@@ -1402,7 +1744,7 @@ func migrateKeysToNewPCRs(newPCRs PCRValues) error {
 }
 ```
 
-### 10.4 Rollback Strategy
+### 11.4 Rollback Strategy
 
 If issues are discovered after switching to new enclave:
 
@@ -1425,7 +1767,7 @@ Rollback Steps:
 Key insight: Keep old enclave running until new enclave is verified stable
 ```
 
-### 10.5 Emergency Recovery
+### 11.5 Emergency Recovery
 
 If both old and new enclaves are unavailable:
 
@@ -1449,9 +1791,9 @@ from master secret + salt. The salt is stored unencrypted in S3.
 
 ---
 
-## 11. Cost Analysis
+## 12. Cost Analysis
 
-### 11.1 Current Costs (EC2 Model)
+### 12.1 Current Costs (EC2 Model)
 
 | Component | Unit Cost | Quantity | Monthly Cost |
 |-----------|-----------|----------|--------------|
@@ -1461,7 +1803,7 @@ from master secret + salt. The salt is stored unencrypted in S3.
 | **Total (100 users)** | | | **$735/mo** |
 | **Per-vault cost** | | | **$7.35** |
 
-### 11.2 Projected Costs (Enclave Model)
+### 12.2 Projected Costs (Enclave Model)
 
 | Component | Unit Cost | Quantity | Monthly Cost |
 |-----------|-----------|----------|--------------|
@@ -1474,7 +1816,7 @@ from master secret + salt. The salt is stored unencrypted in S3.
 
 **At 100 users**: Roughly equivalent cost (enclave has base cost overhead)
 
-### 11.3 Cost at Scale
+### 12.3 Cost at Scale
 
 | Users | EC2 Model | Enclave Model | Savings |
 |-------|-----------|---------------|---------|
@@ -1484,7 +1826,7 @@ from master secret + salt. The salt is stored unencrypted in S3.
 | 1,000 | $7,350/mo | $1,500/mo | **80%** |
 | 5,000 | $36,750/mo | $4,500/mo | **88%** |
 
-### 11.4 Break-Even Analysis
+### 12.4 Break-Even Analysis
 
 ```
 Fixed costs (enclave): $744/mo (3 instances for HA)
@@ -1501,7 +1843,7 @@ Break-even point:
 At 127+ users, enclave model is more cost-effective.
 ```
 
-### 11.5 TCO Considerations
+### 12.5 TCO Considerations
 
 Beyond raw compute costs:
 
@@ -1515,9 +1857,9 @@ Beyond raw compute costs:
 
 ---
 
-## 12. BYO Vault Considerations
+## 13. BYO Vault Considerations
 
-### 12.1 BYO Options
+### 13.1 BYO Options
 
 Users who want to run their own vault infrastructure have three options:
 
@@ -1527,7 +1869,7 @@ Users who want to run their own vault infrastructure have three options:
 | **Self-hosted Enclave** | Nitro enclave in user's AWS account | Medium | Attestation |
 | **On-premises** | User's own hardware/datacenter | High | Trust user's infra |
 
-### 12.2 Self-Hosted Enclave
+### 13.2 Self-Hosted Enclave
 
 Users can run their own enclave with the same code:
 
@@ -1554,7 +1896,7 @@ Benefits:
 - Same security guarantees (attestation)
 - Compatible with VettID ecosystem
 
-### 12.3 Configuration for BYO
+### 13.3 Configuration for BYO
 
 ```typescript
 // User's app configuration
@@ -1575,9 +1917,9 @@ interface VaultConfig {
 
 ---
 
-## 13. Implementation Phases
+## 14. Implementation Phases
 
-### 13.1 Phase Overview
+### 14.1 Phase Overview
 
 | Phase | Duration | Focus | Deliverables |
 |-------|----------|-------|--------------|
@@ -1587,7 +1929,7 @@ interface VaultConfig {
 | 4 | 2-3 weeks | Operations | Deployment, monitoring, scaling |
 | 5 | 3-4 weeks | Migration | User migration tooling |
 
-### 13.2 Phase 1: Core Enclave
+### 14.2 Phase 1: Core Enclave
 
 **Objective**: Port vault-manager to run inside Nitro Enclave
 
@@ -1601,7 +1943,7 @@ Tasks:
 - [ ] Unit tests for all enclave components
 - [ ] Generate and document PCRs
 
-### 13.3 Phase 2: Integration
+### 14.3 Phase 2: Integration
 
 **Objective**: Connect enclave to external systems
 
@@ -1614,7 +1956,7 @@ Tasks:
 - [ ] Integration tests with mock external services
 - [ ] End-to-end tests with real infrastructure
 
-### 13.4 Phase 3: Mobile Apps
+### 14.4 Phase 3: Mobile Apps
 
 **Objective**: Update iOS and Android apps to support attestation
 
@@ -1627,7 +1969,7 @@ Tasks:
 - [ ] Fallback handling for attestation failures
 - [ ] QA testing on both platforms
 
-### 13.5 Phase 4: Operations
+### 14.5 Phase 4: Operations
 
 **Objective**: Production-ready deployment and monitoring
 
@@ -1641,7 +1983,7 @@ Tasks:
 - [ ] Load testing and performance validation
 - [ ] Security review
 
-### 13.6 Phase 5: Migration
+### 14.6 Phase 5: Migration
 
 **Objective**: Migrate existing users from EC2 to enclave
 
@@ -1657,9 +1999,9 @@ Tasks:
 
 ---
 
-## 14. Risks & Mitigations
+## 15. Risks & Mitigations
 
-### 14.1 Technical Risks
+### 15.1 Technical Risks
 
 | Risk | Impact | Probability | Mitigation |
 |------|--------|-------------|------------|
@@ -1669,7 +2011,7 @@ Tasks:
 | Attestation verification complex on mobile | Medium | Medium | Use existing libraries; thorough testing |
 | vsock throughput bottleneck | Medium | Low | Load test; optimize batching |
 
-### 14.2 Operational Risks
+### 15.2 Operational Risks
 
 | Risk | Impact | Probability | Mitigation |
 |------|--------|-------------|------------|
@@ -1678,7 +2020,7 @@ Tasks:
 | S3 outage | High | Very Low | Local caching; graceful degradation |
 | Migration causes data loss | Critical | Low | User-driven migration; keep EC2 until verified |
 
-### 14.3 Security Risks
+### 15.3 Security Risks
 
 | Risk | Impact | Probability | Mitigation |
 |------|--------|-------------|------------|
@@ -1689,9 +2031,9 @@ Tasks:
 
 ---
 
-## 15. Decision Log
+## 16. Decision Log
 
-### 15.1 Key Decisions
+### 16.1 Key Decisions
 
 | # | Decision | Rationale | Date |
 |---|----------|-----------|------|
@@ -1702,7 +2044,7 @@ Tasks:
 | 5 | S3 for encrypted blob storage | Durability; cross-AZ replication; cost-effective | 2026-01-02 |
 | 6 | User-driven data migration | User controls their data; no VettID access to plaintext | 2026-01-02 |
 
-### 15.2 Open Questions
+### 16.2 Open Questions
 
 | # | Question | Status | Owner |
 |---|----------|--------|-------|
@@ -1745,3 +2087,4 @@ Tasks:
 | Version | Date | Author | Changes |
 |---------|------|--------|---------|
 | 1.0 | 2026-01-02 | Architecture Team | Initial draft |
+| 1.1 | 2026-01-02 | Architecture Team | Added Section 5: Protean Credential & Trust Model. Corrected security model to establish vault (Nitro Enclave) as the secure processing environment rather than user devices. All user secrets now stored in single encrypted Protean Credential that only attested enclaves can decrypt. |
