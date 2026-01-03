@@ -1,0 +1,50 @@
+# VettID Nitro Enclave Image
+# This Dockerfile creates the enclave image containing the supervisor and vault-manager
+
+FROM amazonlinux:2023 AS builder
+
+# Install build dependencies
+RUN dnf install -y golang git make && dnf clean all
+
+# Set Go environment
+ENV GOPATH=/go
+ENV PATH=$PATH:/go/bin
+ENV CGO_ENABLED=0
+ENV GOOS=linux
+ENV GOARCH=amd64
+
+# Copy source code
+WORKDIR /build
+COPY supervisor/ ./supervisor/
+COPY vault-manager/ ./vault-manager/
+COPY go.mod go.sum ./
+
+# Build supervisor
+RUN cd supervisor && go build -ldflags="-s -w" -o /build/bin/supervisor .
+
+# Build vault-manager
+RUN cd vault-manager && go build -ldflags="-s -w" -o /build/bin/vault-manager .
+
+# Final enclave image - minimal footprint
+FROM amazonlinux:2023
+
+# Install minimal runtime dependencies and create non-root user
+RUN dnf install -y \
+    ca-certificates \
+    shadow-utils \
+    && useradd -r -s /sbin/nologin enclave \
+    && dnf clean all \
+    && rm -rf /var/cache/dnf
+
+# Copy binaries from builder
+COPY --from=builder /build/bin/supervisor /usr/local/bin/
+COPY --from=builder /build/bin/vault-manager /usr/local/bin/
+
+# Create directories for runtime
+RUN mkdir -p /var/lib/enclave /var/log/enclave \
+    && chown -R enclave:enclave /var/lib/enclave /var/log/enclave
+
+# The supervisor is the entry point - it manages vault-manager processes
+# Supervisor listens on vsock for messages from the parent process
+USER enclave
+ENTRYPOINT ["/usr/local/bin/supervisor"]

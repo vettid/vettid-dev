@@ -1,0 +1,6 @@
+{
+  "enclave_name": "vettid-vault-enclave",
+  "memory_mib": 6144,
+  "cpu_count": 2,
+  "debug_mode": false
+}

@@ -1,0 +1,28 @@
+# VettID Parent Process Configuration
+# Copy to /etc/vettid/parent.yaml and customize
+
+# Development mode (use TCP instead of vsock)
+dev_mode: false
+
+# NATS connection settings
+nats:
+  url: "nats://nats.internal.vettid.dev:4222"
+  credentials_file: "/etc/vettid/nats.creds"
+  reconnect_wait_ms: 2000
+  max_reconnects: -1  # Unlimited
+
+# S3 storage settings
+s3:
+  bucket: "vettid-vault-data"
+  region: "us-east-1"
+  key_prefix: "vaults/"
+
+# Enclave connection settings
+enclave:
+  cid: 16      # Enclave CID (assigned when enclave starts)
+  port: 5000   # vsock port
+
+# Health check settings
+health:
+  port: 8080
+  interval_seconds: 30
