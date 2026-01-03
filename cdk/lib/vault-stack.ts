@@ -92,6 +92,7 @@ export class VaultStack extends cdk.Stack {
 
   // Nitro Attestation
   public readonly verifyNitroAttestation!: lambdaNode.NodejsFunction;
+  public readonly getPcrConfig!: lambdaNode.NodejsFunction;
 
   // Credential Recovery (24-hour delay)
   public readonly requestCredentialRecovery!: lambdaNode.NodejsFunction;
@@ -856,6 +857,23 @@ export class VaultStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(30),
     });
 
+    // PCR configuration endpoint - returns signed PCR values for mobile app verification
+    const pcrSigningKeySecret = cdk.aws_secretsmanager.Secret.fromSecretNameV2(
+      this, 'PcrSigningKeySecret', 'vettid/pcr-signing-key'
+    );
+
+    this.getPcrConfig = new lambdaNode.NodejsFunction(this, 'GetPcrConfigFn', {
+      entry: 'lambda/handlers/vault/getPcrConfig.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        PCR_SIGNING_KEY_SECRET: pcrSigningKeySecret.secretName,
+      },
+      timeout: cdk.Duration.seconds(10),
+    });
+
+    // Grant read access to the PCR signing key secret
+    pcrSigningKeySecret.grantRead(this.getPcrConfig);
+
     // ===== CREDENTIAL RECOVERY (24-HOUR DELAY) =====
 
     const recoveryEnv = {
@@ -1310,6 +1328,14 @@ export class VaultStack extends cdk.Stack {
       routeKey: apigw.HttpRouteKey.with('/vault/attestation/nitro', apigw.HttpMethod.POST),
       integration: new integrations.HttpLambdaIntegration('VerifyNitroAttestationInt', this.verifyNitroAttestation),
       // No authorizer - public endpoint for apps to verify enclave before enrollment
+    });
+
+    // PCR Configuration (public - apps fetch signed PCR values for attestation verification)
+    new apigw.HttpRoute(this, 'GetPcrConfig', {
+      httpApi,
+      routeKey: apigw.HttpRouteKey.with('/vault/pcrs/current', apigw.HttpMethod.GET),
+      integration: new integrations.HttpLambdaIntegration('GetPcrConfigInt', this.getPcrConfig),
+      // No authorizer - public endpoint for apps to get expected PCR values
     });
 
     // Credential Recovery (24-hour delay for security)
