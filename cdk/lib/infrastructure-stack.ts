@@ -56,6 +56,7 @@ export class InfrastructureStack extends cdk.Stack {
     backups: dynamodb.Table;
     credentialBackups: dynamodb.Table;
     backupSettings: dynamodb.Table;
+    credentialRecoveryRequests: dynamodb.Table;
     // Supported Services Registry
     supportedServices: dynamodb.Table;
   };
@@ -523,6 +524,23 @@ export class InfrastructureStack extends cdk.Stack {
       pointInTimeRecovery: true,
     });
 
+    // Credential Recovery Requests table - tracks 24-hour delayed recovery requests
+    const credentialRecoveryRequests = new dynamodb.Table(this, 'CredentialRecoveryRequests', {
+      partitionKey: { name: 'recovery_id', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      pointInTimeRecovery: true,
+      timeToLiveAttribute: 'ttl',  // Auto-delete expired requests
+    });
+
+    // GSI for finding active recovery requests by member
+    credentialRecoveryRequests.addGlobalSecondaryIndex({
+      indexName: 'member-status-index',
+      partitionKey: { name: 'member_guid', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'status', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
     // ===== SUPPORTED SERVICES REGISTRY =====
 
     // Supported Services table - stores third-party service integrations
@@ -628,6 +646,7 @@ export class InfrastructureStack extends cdk.Stack {
       backups,
       credentialBackups,
       backupSettings,
+      credentialRecoveryRequests,
       // Supported Services Registry
       supportedServices,
     };

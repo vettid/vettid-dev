@@ -44,6 +44,18 @@ export interface NatsStackProps extends cdk.StackProps {
    * Required when vaultVpc is provided.
    */
   vaultVpcCidr?: string;
+
+  /**
+   * Optional VPC from Nitro Enclave stack to peer with.
+   * When provided, creates VPC peering to allow Nitro enclave parent processes to connect to NATS.
+   */
+  nitroVpc?: ec2.IVpc;
+
+  /**
+   * CIDR block of the Nitro VPC for security group rules.
+   * Required when nitroVpc is provided.
+   */
+  nitroVpcCidr?: string;
 }
 
 /**
@@ -270,6 +282,72 @@ export class NatsStack extends cdk.Stack {
       new cdk.CfnOutput(this, 'VpcPeeringConnectionId', {
         value: peeringConnection.ref,
         description: 'VPC peering connection ID between Vault and NATS VPCs',
+      });
+    }
+
+    // ===== VPC PEERING WITH NITRO ENCLAVE VPC =====
+    // This allows Nitro Enclave parent processes to connect to the NATS cluster
+
+    if (props.nitroVpc && props.nitroVpcCidr) {
+      // Create VPC peering connection
+      const nitroPeeringConnection = new ec2.CfnVPCPeeringConnection(this, 'NitroNatsPeering', {
+        vpcId: this.vpc.vpcId,
+        peerVpcId: props.nitroVpc.vpcId,
+        tags: [
+          { key: 'Name', value: 'VettID-Nitro-NATS-Peering' },
+          { key: 'Purpose', value: 'Allow Nitro enclave parent processes to connect to NATS cluster' },
+        ],
+      });
+
+      // Add routes in NATS VPC to reach Nitro VPC
+      this.vpc.privateSubnets.forEach((subnet, index) => {
+        new ec2.CfnRoute(this, `NatsToNitroRoutePrivate${index}`, {
+          routeTableId: subnet.routeTable.routeTableId,
+          destinationCidrBlock: props.nitroVpcCidr,
+          vpcPeeringConnectionId: nitroPeeringConnection.ref,
+        });
+      });
+
+      this.vpc.publicSubnets.forEach((subnet, index) => {
+        new ec2.CfnRoute(this, `NatsToNitroRoutePublic${index}`, {
+          routeTableId: subnet.routeTable.routeTableId,
+          destinationCidrBlock: props.nitroVpcCidr,
+          vpcPeeringConnectionId: nitroPeeringConnection.ref,
+        });
+      });
+
+      // Add routes in Nitro VPC to reach NATS VPC
+      props.nitroVpc.privateSubnets.forEach((subnet, index) => {
+        new ec2.CfnRoute(this, `NitroToNatsRoutePrivate${index}`, {
+          routeTableId: subnet.routeTable.routeTableId,
+          destinationCidrBlock: this.vpc.vpcCidrBlock,
+          vpcPeeringConnectionId: nitroPeeringConnection.ref,
+        });
+      });
+
+      props.nitroVpc.publicSubnets.forEach((subnet, index) => {
+        new ec2.CfnRoute(this, `NitroToNatsRoutePublic${index}`, {
+          routeTableId: subnet.routeTable.routeTableId,
+          destinationCidrBlock: this.vpc.vpcCidrBlock,
+          vpcPeeringConnectionId: nitroPeeringConnection.ref,
+        });
+      });
+
+      // Allow NATS connections from Nitro VPC CIDR
+      this.natsSecurityGroup.addIngressRule(
+        ec2.Peer.ipv4(props.nitroVpcCidr),
+        ec2.Port.tcp(4222),
+        'NATS client connections from Nitro Enclave VPC'
+      );
+
+      // Associate the private hosted zone with Nitro VPC
+      // This allows Nitro parent processes to resolve cluster.internal.vettid.dev
+      this.privateHostedZone.addVpc(props.nitroVpc);
+
+      // Output peering connection ID for reference
+      new cdk.CfnOutput(this, 'NitroVpcPeeringConnectionId', {
+        value: nitroPeeringConnection.ref,
+        description: 'VPC peering connection ID between Nitro and NATS VPCs',
       });
     }
 
@@ -637,8 +715,13 @@ export class NatsStack extends cdk.Stack {
     // TLS termination at NLB with ACM certificate (publicly trusted)
     // NLB → NATS uses plain TCP within VPC (protected by network isolation)
     // Application-layer encryption handles sensitive message content
+    //
+    // Port 443 is used instead of NATS default 4222 for:
+    // - Better firewall traversal (port 443 rarely blocked)
+    // - Traffic obfuscation (looks like HTTPS traffic)
+    // - Mobile network compatibility (some carriers restrict non-standard ports)
     const listener = nlb.addListener('NatsListener', {
-      port: 4222,
+      port: 443,
       protocol: elbv2.Protocol.TLS,
       certificates: [certificate],
       // Use TLS 1.2+ for security
@@ -733,8 +816,8 @@ export class NatsStack extends cdk.Stack {
     // ===== OUTPUTS =====
 
     new cdk.CfnOutput(this, 'NatsEndpoint', {
-      value: `tls://${props.domainName}:4222`,
-      description: 'NATS cluster endpoint (TLS terminated at NLB with ACM certificate)',
+      value: `tls://${props.domainName}:443`,
+      description: 'NATS cluster endpoint (TLS on port 443, terminated at NLB with ACM certificate)',
     });
 
     new cdk.CfnOutput(this, 'NatsVpcId', {
