@@ -7,22 +7,19 @@ import {
   aws_apigatewayv2 as apigw,
   aws_apigatewayv2_authorizers as authorizers,
   aws_apigatewayv2_integrations as integrations,
-  aws_events as events,
-  aws_events_targets as targets,
   aws_ssm as ssm,
-  aws_ec2 as ec2,
   custom_resources as cr,
 } from 'aws-cdk-lib';
 import { InfrastructureStack } from './infrastructure-stack';
 import { LedgerStack } from './ledger-stack';
-import { VaultInfrastructureStack } from './vault-infrastructure-stack';
+import { NitroStack } from './nitro-stack';
 
 export interface VaultStackProps extends cdk.StackProps {
   infrastructure: InfrastructureStack;
   httpApi: apigw.HttpApi;
   memberAuthorizer: apigw.IHttpRouteAuthorizer;
   ledger?: LedgerStack;  // Optional until Ledger is deployed
-  vaultInfra?: VaultInfrastructureStack;  // Optional until VaultInfra is deployed
+  nitro?: NitroStack;    // For enclave communication
 }
 
 /**
@@ -60,21 +57,14 @@ export class VaultStack extends cdk.Stack {
   public readonly natsGetStatus!: lambdaNode.NodejsFunction;
   public readonly natsLookupAccountJwt!: lambdaNode.NodejsFunction;
 
-  // Vault lifecycle management functions
-  public readonly provisionVault!: lambdaNode.NodejsFunction;
+  // Vault status functions (enclave-based)
   public readonly initializeVault!: lambdaNode.NodejsFunction;
-  public readonly startVault!: lambdaNode.NodejsFunction;
-  public readonly stopVault!: lambdaNode.NodejsFunction;
-  public readonly terminateVault!: lambdaNode.NodejsFunction;
   public readonly getVaultStatus!: lambdaNode.NodejsFunction;
   public readonly getVaultHealth!: lambdaNode.NodejsFunction;
   public readonly vaultReady!: lambdaNode.NodejsFunction;  // Internal endpoint for vault-manager ready signal
   public readonly updateVaultHealth!: lambdaNode.NodejsFunction;  // Internal endpoint for vault-manager health updates
-  public readonly onVaultStateChange!: lambdaNode.NodejsFunction;  // EC2 state change handler
 
-  // Action-token authenticated vault lifecycle functions (for mobile apps)
-  public readonly vaultStartAction!: lambdaNode.NodejsFunction;
-  public readonly vaultStopAction!: lambdaNode.NodejsFunction;
+  // Action-token authenticated vault status (for mobile apps)
   public readonly vaultStatusAction!: lambdaNode.NodejsFunction;
 
   // Handler registry functions (public endpoints)
@@ -197,14 +187,8 @@ export class VaultStack extends cdk.Stack {
       description: 'AMI ID for vault EC2 instances. Update via SSM to change without redeploying.',
     });
 
-    // Get vault EC2 configuration from VaultInfrastructureStack if provided
-    // (needed for enrollFinalize auto-provisioning and provisionVault)
-    // Note: VAULT_AMI_ID is no longer passed via env var - Lambda reads from SSM
-    const vaultConfigEnv = {
-      VAULT_INSTANCE_TYPE: 't4g.nano',
-      VAULT_SECURITY_GROUP: props.vaultInfra?.vaultConfig?.securityGroupId || '',
-      VAULT_SUBNET_IDS: props.vaultInfra?.vaultConfig?.subnetIds || '',
-      VAULT_IAM_PROFILE: props.vaultInfra?.vaultConfig?.iamProfileName || '',
+    // Enclave configuration (Nitro-based architecture)
+    const enclaveConfigEnv = {
       // Internal NATS endpoint for vault-to-NATS communication via VPC peering (plain TCP)
       NATS_INTERNAL_ENDPOINT: 'nats.internal.vettid.dev:4222',
       BACKEND_API_URL: 'https://tiqpij5mue.execute-api.us-east-1.amazonaws.com',
@@ -228,7 +212,7 @@ export class VaultStack extends cdk.Stack {
         TABLE_VAULT_INSTANCES: tables.vaultInstances.tableName,
         NATS_OPERATOR_SECRET_ARN: natsOperatorSecretRef.secretArn,
         // Note: NATS_CA_SECRET_ARN no longer needed - NLB terminates TLS with ACM (publicly trusted)
-        ...vaultConfigEnv,
+        ...enclaveConfigEnv,
         // Enclave integration
         ...enclaveEnv,
       },
@@ -400,61 +384,10 @@ export class VaultStack extends cdk.Stack {
     // Grant permission to read system account JWT from Secrets Manager
     natsOperatorSecret.grantRead(this.natsLookupAccountJwt);
 
-    // ===== VAULT LIFECYCLE MANAGEMENT =====
-
-    // Get vault EC2 configuration from VaultInfrastructureStack if provided
-    const vaultConfig = props.vaultInfra?.vaultConfig;
-
-    // Note: VAULT_AMI_ID is no longer passed via env var - Lambda reads from SSM
-    const vaultLifecycleEnv = {
-      TABLE_VAULT_INSTANCES: tables.vaultInstances.tableName,
-      TABLE_CREDENTIALS: tables.credentials.tableName,
-      TABLE_NATS_ACCOUNTS: tables.natsAccounts.tableName,
-      VAULT_INSTANCE_TYPE: 't4g.nano',
-      VAULT_SECURITY_GROUP: vaultConfig?.securityGroupId || '',
-      VAULT_SUBNET_IDS: vaultConfig?.subnetIds || '',
-      VAULT_IAM_PROFILE: vaultConfig?.iamProfileName || '',
-      // Note: NATS_CA_SECRET_NAME no longer needed - NLB terminates TLS with ACM (publicly trusted)
-    };
-
-    this.provisionVault = new lambdaNode.NodejsFunction(this, 'ProvisionVaultFn', {
-      entry: 'lambda/handlers/vault/provisionVault.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: vaultLifecycleEnv,
-      timeout: cdk.Duration.seconds(60),
-    });
-    // Grant SSM read permission for vault AMI parameter
-    vaultAmiParameter.grantRead(this.provisionVault);
+    // ===== VAULT STATUS (ENCLAVE-BASED) =====
 
     this.initializeVault = new lambdaNode.NodejsFunction(this, 'InitializeVaultFn', {
       entry: 'lambda/handlers/vault/initializeVault.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: {
-        TABLE_VAULT_INSTANCES: tables.vaultInstances.tableName,
-      },
-      timeout: cdk.Duration.seconds(30),
-    });
-
-    this.startVault = new lambdaNode.NodejsFunction(this, 'StartVaultFn', {
-      entry: 'lambda/handlers/vault/startVault.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: {
-        TABLE_VAULT_INSTANCES: tables.vaultInstances.tableName,
-      },
-      timeout: cdk.Duration.seconds(30),
-    });
-
-    this.stopVault = new lambdaNode.NodejsFunction(this, 'StopVaultFn', {
-      entry: 'lambda/handlers/vault/stopVault.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: {
-        TABLE_VAULT_INSTANCES: tables.vaultInstances.tableName,
-      },
-      timeout: cdk.Duration.seconds(30),
-    });
-
-    this.terminateVault = new lambdaNode.NodejsFunction(this, 'TerminateVaultFn', {
-      entry: 'lambda/handlers/vault/terminateVault.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
       environment: {
         TABLE_VAULT_INSTANCES: tables.vaultInstances.tableName,
@@ -502,17 +435,7 @@ export class VaultStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(10),
     });
 
-    // EC2 state change handler for vault instances
-    this.onVaultStateChange = new lambdaNode.NodejsFunction(this, 'OnVaultStateChangeFn', {
-      entry: 'lambda/handlers/vault/onVaultStateChange.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: {
-        TABLE_VAULT_INSTANCES: tables.vaultInstances.tableName,
-      },
-      timeout: cdk.Duration.seconds(30),
-    });
-
-    // ===== ACTION-TOKEN AUTHENTICATED VAULT LIFECYCLE =====
+    // ===== ACTION-TOKEN AUTHENTICATED VAULT STATUS =====
     // These endpoints use action tokens instead of Cognito JWT for mobile apps
     // that have already proven identity via the action request flow
 
@@ -525,20 +448,6 @@ export class VaultStack extends cdk.Stack {
       TABLE_CREDENTIALS: tables.credentials.tableName,
       TABLE_TRANSACTION_KEYS: tables.transactionKeys.tableName,
     };
-
-    this.vaultStartAction = new lambdaNode.NodejsFunction(this, 'VaultStartActionFn', {
-      entry: 'lambda/handlers/vault/vaultStartAction.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: vaultActionEnv,
-      timeout: cdk.Duration.seconds(30),
-    });
-
-    this.vaultStopAction = new lambdaNode.NodejsFunction(this, 'VaultStopActionFn', {
-      entry: 'lambda/handlers/vault/vaultStopAction.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: vaultActionEnv,
-      timeout: cdk.Duration.seconds(30),
-    });
 
     this.vaultStatusAction = new lambdaNode.NodejsFunction(this, 'VaultStatusActionFn', {
       entry: 'lambda/handlers/vault/vaultStatusAction.ts',
@@ -763,223 +672,31 @@ export class VaultStack extends cdk.Stack {
 
     // Note: NATS internal CA secret grant no longer needed - NLB terminates TLS with ACM (publicly trusted)
 
-    // ===== VAULT LIFECYCLE PERMISSIONS =====
+    // ===== VAULT LIFECYCLE PERMISSIONS (Nitro Enclave Model) =====
+    // Note: EC2-per-user provisioning removed - now using multi-tenant Nitro Enclave architecture
 
-    // Grant vault instances table access
-    tables.vaultInstances.grantReadWriteData(this.provisionVault);
+    // Grant vault instances table access for remaining handlers
     tables.vaultInstances.grantReadWriteData(this.initializeVault);
-    tables.vaultInstances.grantReadWriteData(this.startVault);
-    tables.vaultInstances.grantReadWriteData(this.stopVault);
-    tables.vaultInstances.grantReadWriteData(this.terminateVault);
     tables.vaultInstances.grantReadWriteData(this.getVaultHealth);
     tables.vaultInstances.grantReadWriteData(this.vaultReady);
     tables.vaultInstances.grantReadWriteData(this.updateVaultHealth);
-    tables.vaultInstances.grantReadWriteData(this.onVaultStateChange);
 
     // Grant getVaultStatus access to enrollment sessions, credentials, and transaction keys
     tables.enrollmentSessions.grantReadData(this.getVaultStatus);
     tables.credentials.grantReadData(this.getVaultStatus);
     tables.transactionKeys.grantReadData(this.getVaultStatus);
 
-    // provisionVault needs to check credentials and NATS accounts
-    tables.credentials.grantReadData(this.provisionVault);
-    tables.natsAccounts.grantReadData(this.provisionVault);
+    // ===== ACTION-TOKEN VAULT STATUS PERMISSIONS =====
 
-    // Grant EC2 permissions for vault lifecycle management
-    // Scoped down with conditions to limit operations to vettid-tagged instances
-
-    // Describe actions don't support resource-level permissions (AWS limitation)
-    const ec2DescribePolicy = new iam.PolicyStatement({
-      actions: [
-        'ec2:DescribeInstances',
-        'ec2:DescribeInstanceStatus',
-        'ec2:DescribeSubnets',
-        'ec2:DescribeSecurityGroups',
-        'ec2:DescribeImages',
-      ],
-      resources: ['*'], // Describe actions require '*'
-    });
-
-    // RunInstances - split into two statements:
-    // 1. Resources being created (instance, volume) - require Application tag
-    const ec2RunPolicy = new iam.PolicyStatement({
-      actions: ['ec2:RunInstances'],
-      resources: [
-        `arn:aws:ec2:${this.region}:${this.account}:instance/*`,
-        `arn:aws:ec2:${this.region}:${this.account}:volume/*`,
-      ],
-      conditions: {
-        StringEquals: {
-          'aws:RequestTag/Application': 'vettid-vault',
-        },
-      },
-    });
-
-    // 2. Infrastructure references (ami, subnet, sg, network-interface) - no condition
-    const ec2RunInfraPolicy = new iam.PolicyStatement({
-      actions: ['ec2:RunInstances'],
-      resources: [
-        `arn:aws:ec2:${this.region}:${this.account}:network-interface/*`,
-        `arn:aws:ec2:${this.region}::image/*`,
-        `arn:aws:ec2:${this.region}:${this.account}:subnet/*`,
-        `arn:aws:ec2:${this.region}:${this.account}:security-group/*`,
-      ],
-    });
-
-    // CreateTags limited to vettid resources
-    const ec2TagPolicy = new iam.PolicyStatement({
-      actions: ['ec2:CreateTags'],
-      resources: [`arn:aws:ec2:${this.region}:${this.account}:*/*`],
-      conditions: {
-        StringEquals: {
-          'ec2:CreateAction': 'RunInstances',
-          'aws:RequestTag/Application': 'vettid-vault',
-        },
-      },
-    });
-
-    // Mutating actions (Stop/Start/Terminate) limited to vettid-tagged instances
-    const ec2MutatePolicy = new iam.PolicyStatement({
-      actions: [
-        'ec2:StopInstances',
-        'ec2:StartInstances',
-        'ec2:TerminateInstances',
-      ],
-      resources: [`arn:aws:ec2:${this.region}:${this.account}:instance/*`],
-      conditions: {
-        StringEquals: {
-          'ec2:ResourceTag/Application': 'vettid-vault',
-        },
-      },
-    });
-
-    this.provisionVault.addToRolePolicy(ec2DescribePolicy);
-    this.provisionVault.addToRolePolicy(ec2RunPolicy);
-    this.provisionVault.addToRolePolicy(ec2RunInfraPolicy);
-    this.provisionVault.addToRolePolicy(ec2TagPolicy);
-    this.provisionVault.addToRolePolicy(ec2MutatePolicy);
-
-    this.initializeVault.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['ec2:DescribeInstances'],
-      resources: ['*'], // Describe requires '*'
-    }));
-
-    this.startVault.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['ec2:DescribeInstances'],
-      resources: ['*'],
-    }));
-    this.startVault.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['ec2:StartInstances'],
-      resources: [`arn:aws:ec2:${this.region}:${this.account}:instance/*`],
-      conditions: {
-        StringEquals: {
-          'ec2:ResourceTag/Application': 'vettid-vault',
-        },
-      },
-    }));
-
-    this.stopVault.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['ec2:DescribeInstances'],
-      resources: ['*'],
-    }));
-    this.stopVault.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['ec2:StopInstances'],
-      resources: [`arn:aws:ec2:${this.region}:${this.account}:instance/*`],
-      conditions: {
-        StringEquals: {
-          'ec2:ResourceTag/Application': 'vettid-vault',
-        },
-      },
-    }));
-
-    this.terminateVault.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['ec2:DescribeInstances'],
-      resources: ['*'],
-    }));
-    this.terminateVault.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['ec2:TerminateInstances'],
-      resources: [`arn:aws:ec2:${this.region}:${this.account}:instance/*`],
-      conditions: {
-        StringEquals: {
-          'ec2:ResourceTag/Application': 'vettid-vault',
-        },
-      },
-    }));
-
-    this.getVaultHealth.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['ec2:DescribeInstances', 'ec2:DescribeInstanceStatus'],
-      resources: ['*'], // Describe requires '*'
-    }));
-
-    // vaultReady needs EC2 describe to verify instance exists and has correct tags
-    this.vaultReady.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['ec2:DescribeInstances'],
-      resources: ['*'], // Describe requires '*'
-    }));
-
-    // onVaultStateChange needs EC2 describe to get instance tags
-    this.onVaultStateChange.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['ec2:DescribeInstances'],
-      resources: ['*'], // Describe requires '*'
-    }));
-
-    // Grant IAM pass role permission if using instance profile
-    // This will be needed when VAULT_IAM_PROFILE is set
-    this.provisionVault.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['iam:PassRole'],
-      resources: [`arn:aws:iam::${this.account}:role/vettid-vault-*`],
-    }));
-
-    // Note: NATS internal CA secret grant no longer needed - NLB terminates TLS with ACM (publicly trusted)
-
-    // ===== ACTION-TOKEN VAULT LIFECYCLE PERMISSIONS =====
-
-    // Grant table access for action-token authenticated vault functions
-    tables.vaultInstances.grantReadWriteData(this.vaultStartAction);
-    tables.vaultInstances.grantReadWriteData(this.vaultStopAction);
+    // Grant table access for action-token authenticated vault status
     tables.vaultInstances.grantReadData(this.vaultStatusAction);
-
-    tables.actionTokens.grantReadWriteData(this.vaultStartAction);
-    tables.actionTokens.grantReadWriteData(this.vaultStopAction);
     tables.actionTokens.grantReadWriteData(this.vaultStatusAction);
-
-    tables.audit.grantReadWriteData(this.vaultStartAction);
-    tables.audit.grantReadWriteData(this.vaultStopAction);
     tables.audit.grantReadWriteData(this.vaultStatusAction);
 
     // vaultStatusAction needs additional table access for enrollment/credential info
     tables.enrollmentSessions.grantReadData(this.vaultStatusAction);
     tables.credentials.grantReadData(this.vaultStatusAction);
     tables.transactionKeys.grantReadData(this.vaultStatusAction);
-
-    // EC2 permissions for start/stop via action tokens
-    this.vaultStartAction.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['ec2:DescribeInstances'],
-      resources: ['*'],
-    }));
-    this.vaultStartAction.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['ec2:StartInstances'],
-      resources: [`arn:aws:ec2:${this.region}:${this.account}:instance/*`],
-      conditions: {
-        StringEquals: {
-          'ec2:ResourceTag/Application': 'vettid-vault',
-        },
-      },
-    }));
-
-    this.vaultStopAction.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['ec2:DescribeInstances'],
-      resources: ['*'],
-    }));
-    this.vaultStopAction.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['ec2:StopInstances'],
-      resources: [`arn:aws:ec2:${this.region}:${this.account}:instance/*`],
-      conditions: {
-        StringEquals: {
-          'ec2:ResourceTag/Application': 'vettid-vault',
-        },
-      },
-    }));
 
     // ===== HANDLER REGISTRY PERMISSIONS =====
 
@@ -1519,12 +1236,8 @@ export class VaultStack extends cdk.Stack {
       integration: new integrations.HttpLambdaIntegration('NatsLookupAccountJwtIntegration', this.natsLookupAccountJwt),
     });
 
-    // Vault Lifecycle Management
-    this.route('ProvisionVault', httpApi, '/vault/provision', apigw.HttpMethod.POST, this.provisionVault, memberAuthorizer);
+    // Vault Lifecycle Management (Nitro enclave model - no EC2-per-user provisioning)
     this.route('InitializeVault', httpApi, '/vault/initialize', apigw.HttpMethod.POST, this.initializeVault, memberAuthorizer);
-    this.route('StartVault', httpApi, '/vault/start', apigw.HttpMethod.POST, this.startVault, memberAuthorizer);
-    this.route('StopVault', httpApi, '/vault/stop', apigw.HttpMethod.POST, this.stopVault, memberAuthorizer);
-    this.route('TerminateVault', httpApi, '/vault/terminate', apigw.HttpMethod.POST, this.terminateVault, memberAuthorizer);
     this.route('GetVaultHealth', httpApi, '/vault/health', apigw.HttpMethod.GET, this.getVaultHealth, memberAuthorizer);
     this.route('GetVaultStatus', httpApi, '/vault/status', apigw.HttpMethod.GET, this.getVaultStatus, memberAuthorizer);
 
@@ -1555,20 +1268,6 @@ export class VaultStack extends cdk.Stack {
       routeKey: apigw.HttpRouteKey.with('/api/v1/action/request', apigw.HttpMethod.POST),
       integration: new integrations.HttpLambdaIntegration('ActionRequestPublicInt', this.actionRequest),
       // No authorizer - user validation done via credential lookup in handler
-    });
-
-    new apigw.HttpRoute(this, 'VaultStartAction', {
-      httpApi,
-      routeKey: apigw.HttpRouteKey.with('/api/v1/vault/start', apigw.HttpMethod.POST),
-      integration: new integrations.HttpLambdaIntegration('VaultStartActionInt', this.vaultStartAction),
-      // No authorizer - action token is validated in handler
-    });
-
-    new apigw.HttpRoute(this, 'VaultStopAction', {
-      httpApi,
-      routeKey: apigw.HttpRouteKey.with('/api/v1/vault/stop', apigw.HttpMethod.POST),
-      integration: new integrations.HttpLambdaIntegration('VaultStopActionInt', this.vaultStopAction),
-      // No authorizer - action token is validated in handler
     });
 
     new apigw.HttpRoute(this, 'VaultStatusAction', {
@@ -1670,21 +1369,6 @@ export class VaultStack extends cdk.Stack {
       routeKey: apigw.HttpRouteKey.with('/test/cleanup', apigw.HttpMethod.POST),
       integration: new integrations.HttpLambdaIntegration('TestCleanupInt', this.testCleanup),
       // No authorizer - uses API key in header
-    });
-
-    // ===== EVENTBRIDGE RULES =====
-
-    // EC2 state change rule for vault instances
-    // Triggers when vault EC2 instances change state (running, stopping, terminated, etc.)
-    new events.Rule(this, 'VaultEC2StateChangeRule', {
-      eventPattern: {
-        source: ['aws.ec2'],
-        detailType: ['EC2 Instance State-change Notification'],
-        // Note: We filter by tag in the Lambda since EventBridge pattern
-        // doesn't support filtering by instance tags directly
-      },
-      targets: [new targets.LambdaFunction(this.onVaultStateChange)],
-      description: 'Handle EC2 state changes for vault instances',
     });
   }
 }

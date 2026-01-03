@@ -34,18 +34,6 @@ export interface NatsStackProps extends cdk.StackProps {
   accountResolverUrl?: string;
 
   /**
-   * Optional VPC from Vault infrastructure to peer with.
-   * When provided, creates VPC peering to allow vault instances to connect to NATS.
-   */
-  vaultVpc?: ec2.IVpc;
-
-  /**
-   * CIDR block of the Vault VPC for security group rules.
-   * Required when vaultVpc is provided.
-   */
-  vaultVpcCidr?: string;
-
-  /**
    * Optional VPC from Nitro Enclave stack to peer with.
    * When provided, creates VPC peering to allow Nitro enclave parent processes to connect to NATS.
    */
@@ -216,74 +204,6 @@ export class NatsStack extends cdk.Stack {
       ec2.Port.tcp(8222),
       'NATS monitoring endpoint'
     );
-
-    // ===== VPC PEERING WITH VAULT VPC =====
-    // This allows vault EC2 instances to connect to the NATS cluster
-
-    if (props.vaultVpc && props.vaultVpcCidr) {
-      // Create VPC peering connection
-      const peeringConnection = new ec2.CfnVPCPeeringConnection(this, 'VaultNatsPeering', {
-        vpcId: this.vpc.vpcId,
-        peerVpcId: props.vaultVpc.vpcId,
-        tags: [
-          { key: 'Name', value: 'VettID-Vault-NATS-Peering' },
-          { key: 'Purpose', value: 'Allow vault instances to connect to NATS cluster' },
-        ],
-      });
-
-      // Add routes in NATS VPC to reach Vault VPC
-      // Routes need to be added to all route tables (public and private subnets)
-      this.vpc.privateSubnets.forEach((subnet, index) => {
-        new ec2.CfnRoute(this, `NatsToVaultRoutePrivate${index}`, {
-          routeTableId: subnet.routeTable.routeTableId,
-          destinationCidrBlock: props.vaultVpcCidr,
-          vpcPeeringConnectionId: peeringConnection.ref,
-        });
-      });
-
-      this.vpc.publicSubnets.forEach((subnet, index) => {
-        new ec2.CfnRoute(this, `NatsToVaultRoutePublic${index}`, {
-          routeTableId: subnet.routeTable.routeTableId,
-          destinationCidrBlock: props.vaultVpcCidr,
-          vpcPeeringConnectionId: peeringConnection.ref,
-        });
-      });
-
-      // Add routes in Vault VPC to reach NATS VPC
-      // Need to add to all subnets in the Vault VPC
-      props.vaultVpc.privateSubnets.forEach((subnet, index) => {
-        new ec2.CfnRoute(this, `VaultToNatsRoutePrivate${index}`, {
-          routeTableId: subnet.routeTable.routeTableId,
-          destinationCidrBlock: this.vpc.vpcCidrBlock,
-          vpcPeeringConnectionId: peeringConnection.ref,
-        });
-      });
-
-      props.vaultVpc.publicSubnets.forEach((subnet, index) => {
-        new ec2.CfnRoute(this, `VaultToNatsRoutePublic${index}`, {
-          routeTableId: subnet.routeTable.routeTableId,
-          destinationCidrBlock: this.vpc.vpcCidrBlock,
-          vpcPeeringConnectionId: peeringConnection.ref,
-        });
-      });
-
-      // Allow NATS connections from Vault VPC CIDR
-      this.natsSecurityGroup.addIngressRule(
-        ec2.Peer.ipv4(props.vaultVpcCidr),
-        ec2.Port.tcp(4222),
-        'NATS client connections from Vault VPC'
-      );
-
-      // Associate the private hosted zone with Vault VPC
-      // This allows vault instances to resolve cluster.internal.vettid.dev
-      this.privateHostedZone.addVpc(props.vaultVpc);
-
-      // Output peering connection ID for reference
-      new cdk.CfnOutput(this, 'VpcPeeringConnectionId', {
-        value: peeringConnection.ref,
-        description: 'VPC peering connection ID between Vault and NATS VPCs',
-      });
-    }
 
     // ===== VPC PEERING WITH NITRO ENCLAVE VPC =====
     // This allows Nitro Enclave parent processes to connect to the NATS cluster
