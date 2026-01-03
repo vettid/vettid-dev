@@ -1,0 +1,14 @@
+{
+  "builds": [
+    {
+      "name": "nitro-enclave",
+      "builder_type": "amazon-ebs",
+      "build_time": 1767399123,
+      "files": null,
+      "artifact_id": "us-east-1:ami-030b618202b5577e7",
+      "packer_run_uuid": "76550ff3-a5df-7ca3-d166-af1e12236af2",
+      "custom_data": null
+    }
+  ],
+  "last_run_uuid": "76550ff3-a5df-7ca3-d166-af1e12236af2"
+}
