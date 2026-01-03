@@ -291,6 +291,56 @@ const webAcl = new wafv2.CfnWebACL(this, 'WebAcl', {
       },
     });
 
+    // ===== API GATEWAY CUSTOM DOMAIN (api.vettid.dev) =====
+
+    // Look up the hosted zone for vettid.dev
+    const vettidZone = route53.HostedZone.fromLookup(this, 'VettidZone', {
+      domainName: 'vettid.dev',
+    });
+
+    // Import the ACM certificate for api.vettid.dev
+    const apiCertificate = acm.Certificate.fromCertificateArn(
+      this,
+      'ApiCertificate',
+      'arn:aws:acm:us-east-1:449757308783:certificate/832dc2d9-e8f9-41a1-b620-6664077dd5cd'
+    );
+
+    // Create custom domain for API Gateway
+    const apiDomainName = new apigw.DomainName(this, 'ApiDomainName', {
+      domainName: 'api.vettid.dev',
+      certificate: apiCertificate,
+    });
+
+    // Map the custom domain to the HTTP API
+    new apigw.ApiMapping(this, 'ApiMapping', {
+      api: this.httpApi,
+      domainName: apiDomainName,
+    });
+
+    // Create Route53 A record pointing to the API Gateway custom domain
+    new route53.ARecord(this, 'ApiARecord', {
+      zone: vettidZone,
+      recordName: 'api',
+      target: route53.RecordTarget.fromAlias(
+        new targets.ApiGatewayv2DomainProperties(
+          apiDomainName.regionalDomainName,
+          apiDomainName.regionalHostedZoneId
+        )
+      ),
+    });
+
+    // Create Route53 AAAA record for IPv6
+    new route53.AaaaRecord(this, 'ApiAAAARecord', {
+      zone: vettidZone,
+      recordName: 'api',
+      target: route53.RecordTarget.fromAlias(
+        new targets.ApiGatewayv2DomainProperties(
+          apiDomainName.regionalDomainName,
+          apiDomainName.regionalHostedZoneId
+        )
+      ),
+    });
+
     // SECURITY: Enable API Gateway access logging for audit trail
     const apiAccessLogGroup = new logs.LogGroup(this, 'ApiAccessLogs', {
       logGroupName: '/aws/apigateway/vettid-api-access',
