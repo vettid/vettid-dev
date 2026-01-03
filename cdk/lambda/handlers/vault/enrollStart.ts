@@ -19,6 +19,8 @@ import {
 import { generateX25519KeyPair } from '../../common/crypto-keys';
 import { generateAttestationChallenge } from '../../common/attestation';
 import { generateEnrollmentToken } from '../../common/enrollment-jwt';
+import { requestEnclaveAttestation } from '../../common/enclave-client';
+import { generateAttestationNonce, getCurrentPCRs } from '../../common/nitro-attestation';
 
 const ddb = new DynamoDBClient({});
 
@@ -282,6 +284,34 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     const passwordKeyId = transactionKeys[0].key_id;
     const nextStep = skipAttestation ? 'set_password' : 'attestation_required';
 
+    // ============================================
+    // REQUEST NITRO ENCLAVE ATTESTATION
+    // ============================================
+    // The enclave provides a hardware-attested document proving it's running
+    // genuine VettID code. Mobile will verify PCRs before encrypting auth data.
+
+    // Generate nonce for attestation freshness
+    const nonce = generateAttestationNonce();
+
+    // Request attestation from enclave via NATS
+    const attestationResponse = await requestEnclaveAttestation(nonce);
+
+    // Get current expected PCR values for mobile to verify
+    const expectedPCRs = await getCurrentPCRs();
+
+    const enclaveAttestation = {
+      attestation_document: attestationResponse.attestation,
+      enclave_public_key: attestationResponse.public_key,
+      nonce: nonce.toString('base64'),
+      expected_pcrs: expectedPCRs.map(p => ({
+        pcr0: p.pcr0,
+        pcr1: p.pcr1,
+        pcr2: p.pcr2,
+      })),
+    };
+
+    console.log(`Obtained enclave attestation for enrollment ${sessionId}`);
+
     // Update or create enrollment session
     const sessionItem: Record<string, any> = {
       session_id: sessionId,
@@ -307,14 +337,23 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       sessionItem.attestation_challenge_expires = attestationChallenge.expiresAt;
     }
 
+    // Store enclave attestation data in session (always required)
+    sessionItem.enclave_nonce = enclaveAttestation.nonce;
+    sessionItem.enclave_public_key = enclaveAttestation.enclave_public_key;
+    sessionItem.use_enclave = true;
+
     // For QR code flow, update existing session; for invitation flow, create new
     if (authContext?.sessionId) {
       // Update existing session
+      let updateExpression = 'SET #status = :status, step = :step, password_key_id = :pwkey, started_at = :started, attestation_skipped = :skip, enclave_nonce = :enc_nonce, enclave_public_key = :enc_pubkey, use_enclave = :use_enc';
+      if (attestationChallenge) {
+        updateExpression += ', attestation_challenge = :challenge, attestation_challenge_expires = :challenge_exp';
+      }
+
       await ddb.send(new UpdateItemCommand({
         TableName: TABLE_ENROLLMENT_SESSIONS,
         Key: marshall({ session_id: sessionId }),
-        UpdateExpression: 'SET #status = :status, step = :step, password_key_id = :pwkey, started_at = :started, attestation_skipped = :skip' +
-          (attestationChallenge ? ', attestation_challenge = :challenge, attestation_challenge_expires = :challenge_exp' : ''),
+        UpdateExpression: updateExpression,
         ExpressionAttributeNames: {
           '#status': 'status',
         },
@@ -324,6 +363,9 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
           ':pwkey': passwordKeyId,
           ':started': now.toISOString(),
           ':skip': skipAttestation,
+          ':enc_nonce': enclaveAttestation.nonce,
+          ':enc_pubkey': enclaveAttestation.enclave_public_key,
+          ':use_enc': true,
           ...(attestationChallenge ? {
             ':challenge': attestationChallenge.challenge,
             ':challenge_exp': attestationChallenge.expiresAt,
@@ -395,6 +437,16 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
         ? '/vault/enroll/attestation/android'
         : '/vault/enroll/attestation/ios';
     }
+
+    // Include enclave attestation (always required)
+    // Mobile must verify the attestation document and PCR values before
+    // encrypting auth data to the enclave's public key
+    response.enclave_attestation = {
+      attestation_document: enclaveAttestation.attestation_document,
+      enclave_public_key: enclaveAttestation.enclave_public_key,
+      nonce: enclaveAttestation.nonce,
+      expected_pcrs: enclaveAttestation.expected_pcrs,
+    };
 
     return ok(response, origin);
 

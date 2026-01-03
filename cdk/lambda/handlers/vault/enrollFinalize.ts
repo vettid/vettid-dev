@@ -1,8 +1,6 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
-import { DynamoDBClient, GetItemCommand, PutItemCommand, UpdateItemCommand, QueryCommand, ConditionalCheckFailedException } from '@aws-sdk/client-dynamodb';
-// SecretsManagerClient no longer needed - NLB terminates TLS with ACM (publicly trusted)
+import { DynamoDBClient, GetItemCommand, PutItemCommand, UpdateItemCommand, QueryCommand } from '@aws-sdk/client-dynamodb';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
-// crypto module imported via common/crypto
 import {
   ok,
   badRequest,
@@ -12,22 +10,13 @@ import {
   getRequestId,
   putAudit,
   generateSecureId,
-  addMinutesIso,
   checkRateLimit,
   hashIdentifier,
   tooManyRequests,
 } from '../../common/util';
 import { generateAccountCredentials, generateBootstrapCredentials, formatCredsFile } from '../../common/nats-jwt';
-import { triggerVaultProvisioning } from '../../common/vault-provisioner';
-import {
-  generateX25519KeyPair,
-  encryptCredentialBlob,
-  decryptWithTransactionKey,
-  deserializeEncryptedBlob,
-  serializeEncryptedBlob,
-  generateLAT,
-  hashLATToken,
-} from '../../common/crypto-keys';
+import { generateLAT, hashLATToken } from '../../common/crypto-keys';
+import { requestCredentialCreate } from '../../common/enclave-client';
 
 const ddb = new DynamoDBClient({});
 
@@ -133,27 +122,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     const now = new Date();
     const userGuid = session.user_guid;
 
-    // Generate CEK (Credential Encryption Key)
-    const cekKeyPair = generateX25519KeyPair();
-    const cekVersion = 1;
-    const credentialKeyId = generateSecureId('cek', 16);
-
-    // Store CEK private key (encrypted at rest by DynamoDB)
-    await ddb.send(new PutItemCommand({
-      TableName: TABLE_CREDENTIAL_KEYS,
-      Item: marshall({
-        credential_id: credentialKeyId,  // Primary key
-        user_guid: userGuid,
-        version: cekVersion,
-        private_key: cekKeyPair.privateKey.toString('base64'),
-        public_key: cekKeyPair.publicKey.toString('base64'),
-        algorithm: 'X25519',
-        status: 'ACTIVE',
-        created_at: now.toISOString(),
-      }),
-    }));
-
-    // Generate LAT (Ledger Auth Token) using crypto utilities
+    // Generate LAT (Ledger Auth Token)
     const lat = generateLAT(1);
     const latTokenHash = hashLATToken(lat.token);
 
@@ -168,89 +137,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       }),
     }));
 
-    // Decrypt password hash from session using the transaction key
-    // The mobile app encrypted the password with a UTK during set-password step
-    let decryptedPasswordHash: string;
-    try {
-      // Get the LTK (Ledger Transaction Key - private key) that was used
-      // Note: table uses transaction_id as PK (same value as key_id)
-      const ltkResult = await ddb.send(new GetItemCommand({
-        TableName: TABLE_TRANSACTION_KEYS,
-        Key: marshall({
-          transaction_id: session.password_key_id,
-        }),
-      }));
-
-      if (!ltkResult.Item) {
-        return badRequest('Transaction key not found for password decryption', origin);
-      }
-
-      const ltk = unmarshall(ltkResult.Item);
-      const ltkPrivateKey = Buffer.from(ltk.private_key, 'base64');
-
-      // Deserialize and decrypt the password hash
-      const encryptedPassword = deserializeEncryptedBlob({
-        ciphertext: session.encrypted_password_hash,
-        nonce: session.password_nonce,
-        ephemeral_public_key: session.password_ephemeral_key || session.ephemeral_public_key,
-      });
-
-      const decryptedBuffer = decryptWithTransactionKey(encryptedPassword, ltkPrivateKey);
-      decryptedPasswordHash = decryptedBuffer.toString('utf-8');
-    } catch (decryptError) {
-      console.error('Failed to decrypt password hash:', decryptError);
-      // Fall back to storing as-is if decryption fails (legacy format)
-      decryptedPasswordHash = session.encrypted_password_hash;
-    }
-
-    // Create credential data structure
-    const credentialData = {
-      guid: userGuid,
-      version: 1,
-      created_at: now.toISOString(),
-      password_hash: decryptedPasswordHash,  // Decrypted hash from enrollment
-      hash_algorithm: 'pbkdf2-sha256',  // Or 'argon2id' in production
-      policies: {
-        cache_period: 3600,
-        require_biometric: false,
-        max_attempts: 3,
-      },
-      secrets: {},
-    };
-
-    // Encrypt credential blob with CEK using proper ECIES
-    const credentialJson = JSON.stringify(credentialData);
-    const encryptedBlobData = encryptCredentialBlob(
-      Buffer.from(credentialJson, 'utf-8'),
-      cekKeyPair.publicKey  // Use PUBLIC key for encryption
-    );
-
-    // Serialize the encrypted blob for transmission
-    const serializedBlob = serializeEncryptedBlob(encryptedBlobData);
-
-    // Store credential metadata
-    const credentialId = generateSecureId('cred', 16);
-    const credentialItem: Record<string, any> = {
-      user_guid: userGuid,
-      credential_id: credentialId,
-      status: 'ACTIVE',
-      cek_version: cekVersion,
-      lat_version: lat.version,
-      device_id: session.device_id,
-      created_at: now.toISOString(),
-      last_action_at: now.toISOString(),
-      failed_auth_count: 0,
-    };
-    // Only add invitation_code if it exists (QR code flow may not have one)
-    if (session.invitation_code) {
-      credentialItem.invitation_code = session.invitation_code;
-    }
-    await ddb.send(new PutItemCommand({
-      TableName: TABLE_CREDENTIALS,
-      Item: marshall(credentialItem),
-    }));
-
-    // Get remaining unused transaction keys using the user-index GSI
+    // Get remaining unused transaction keys
     const unusedKeysResult = await ddb.send(new QueryCommand({
       TableName: TABLE_TRANSACTION_KEYS,
       IndexName: 'user-index',
@@ -273,6 +160,66 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
         algorithm: key.algorithm,
       };
     });
+
+    // ============================================
+    // ENCLAVE CREDENTIAL CREATION
+    // ============================================
+    // The enclave creates a sealed credential that only it can unseal.
+    // Mobile encrypted auth data to the enclave's public key during set-password step.
+
+    const credentialId = generateSecureId('cred', 16);
+
+    // Get the encrypted auth data from the session
+    const encryptedAuth = Buffer.from(session.encrypted_password_hash, 'base64');
+
+    // Determine auth type from session
+    const authType = session.auth_type || 'password';
+
+    // Request credential creation from enclave
+    const enclaveResult = await requestCredentialCreate(
+      userGuid,
+      encryptedAuth,
+      authType as 'pin' | 'password' | 'pattern'
+    );
+
+    // Store credential metadata (enclave manages the actual keys)
+    const credentialItem: Record<string, any> = {
+      user_guid: userGuid,
+      credential_id: credentialId,
+      status: 'ACTIVE',
+      storage_type: 'enclave',
+      lat_version: lat.version,
+      device_id: session.device_id,
+      enclave_public_key: enclaveResult.public_key,  // User's identity public key from enclave
+      created_at: now.toISOString(),
+      last_action_at: now.toISOString(),
+      failed_auth_count: 0,
+    };
+
+    if (session.invitation_code) {
+      credentialItem.invitation_code = session.invitation_code;
+    }
+
+    await ddb.send(new PutItemCommand({
+      TableName: TABLE_CREDENTIALS,
+      Item: marshall(credentialItem),
+    }));
+
+    // Build credential package
+    const credentialPackage = {
+      user_guid: userGuid,
+      credential_id: credentialId,
+      sealed_credential: enclaveResult.sealed_credential,
+      enclave_public_key: enclaveResult.public_key,
+      backup_key: enclaveResult.backup_key,
+      ledger_auth_token: {
+        token: lat.token,
+        version: lat.version,
+      },
+      transaction_keys: remainingKeys,
+    };
+
+    console.log(`Created enclave credential for user ${userGuid}`);
 
     // Mark session as completed
     await ddb.send(new UpdateItemCommand({
@@ -310,50 +257,38 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       type: 'enrollment_completed',
       user_guid: userGuid,
       session_id: sessionId,
-      cek_version: cekVersion,
+      storage_type: 'enclave',
       lat_version: lat.version,
       transaction_keys_remaining: remainingKeys.length,
     }, requestId);
 
-    // === AUTO-PROVISIONING ===
-    // After enrollment completes, automatically provision the vault EC2 instance.
-    // This is non-blocking for enrollment - if provisioning fails, user can manually
-    // trigger via POST /vault/provision later.
-    //
-    // NOTE: The vault-manager generates its own NATS credentials from the account seed
-    // on first boot. It also generates mobile app credentials when the app calls
-    // the app.bootstrap handler. This is the intended architecture where vault is
-    // the authority for all credential generation.
-    let vaultStatus = 'PENDING_PROVISION';
-    let vaultInstanceId: string | undefined;
+    // === NATS ACCOUNT SETUP ===
+    // Create NATS account for mobile app communication with the enclave.
+    // The Nitro enclave is already running - no EC2 provisioning needed.
+    const vaultStatus = 'ENCLAVE_READY';
     let ownerSpaceId = '';
     let messageSpaceId = '';
     let bootstrapCredentials = '';
-    // natsCaCertificate no longer needed - NLB terminates TLS with ACM (publicly trusted)
 
     try {
       ownerSpaceId = `OwnerSpace.${userGuid.replace(/-/g, '')}`;
       messageSpaceId = `MessageSpace.${userGuid.replace(/-/g, '')}`;
 
-      // Check if this user already has a NATS account (e.g., re-enrollment with existing vault)
+      // Check if this user already has a NATS account (e.g., re-enrollment)
       const existingAccountResult = await ddb.send(new GetItemCommand({
         TableName: TABLE_NATS_ACCOUNTS,
         Key: marshall({ user_guid: userGuid }),
       }));
 
       let accountSeed: string;
-      let isReusingExistingVault = false;
 
       if (existingAccountResult.Item) {
-        // Reusing existing vault - use the existing account seed for bootstrap credentials
-        // This enables test scenarios where user_guid is reused
+        // Reusing existing account - use the existing seed for bootstrap credentials
         const existingAccount = unmarshall(existingAccountResult.Item);
         accountSeed = existingAccount.account_seed;
-        isReusingExistingVault = true;
-        vaultStatus = 'EXISTING';
-        console.log(`Re-enrollment with existing vault for user ${userGuid}`);
+        console.log(`Re-enrollment with existing NATS account for user ${userGuid}`);
       } else {
-        // New user - create NATS account and provision vault
+        // New user - create NATS account
         const accountCredentials = await generateAccountCredentials(userGuid);
         accountSeed = accountCredentials.seed;
 
@@ -363,83 +298,49 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
             user_guid: userGuid,
             account_public_key: accountCredentials.publicKey,
             account_seed: accountCredentials.seed,
-            account_jwt: accountCredentials.accountJwt,  // For NATS resolver
+            account_jwt: accountCredentials.accountJwt,
             owner_space_id: ownerSpaceId,
             message_space_id: messageSpaceId,
-            status: 'active',  // Required for lookupAccountJwt
+            status: 'active',
+            storage_type: 'enclave',
             created_at: now.toISOString(),
           }),
         }));
 
-        // Trigger EC2 provisioning (vault generates its own credentials on startup)
-        const provisionResult = await triggerVaultProvisioning({
-          userGuid,
-          ownerSpaceId,
-          messageSpaceId,
-          accountSeed: accountCredentials.seed,
-        });
-
-        vaultStatus = 'PROVISIONING';
-        vaultInstanceId = provisionResult.instanceId;
-        console.log(`Auto-provisioned vault for user ${userGuid}: instance ${vaultInstanceId}`);
+        console.log(`Created NATS account for user ${userGuid}`);
       }
 
       // Generate temporary bootstrap credentials for initial app connection
       // These have minimal permissions - just enough to call app.bootstrap
-      // and receive full credentials from the vault
-      // For re-enrollment, uses the EXISTING seed so credentials work with existing vault
       const bootstrapCreds = await generateBootstrapCredentials(
         userGuid,
         accountSeed,
         ownerSpaceId
       );
 
-      // Store bootstrap credentials for response
       bootstrapCredentials = formatCredsFile(bootstrapCreds.jwt, bootstrapCreds.seed);
 
-      // Note: NATS CA certificate no longer needed - NLB terminates TLS with ACM (publicly trusted)
-
     } catch (provisionError: any) {
-      // Non-fatal: enrollment succeeded, but vault provisioning failed
-      // User can manually provision later via POST /vault/provision
-      console.warn('Auto-provisioning failed (non-fatal):', provisionError.message);
-      vaultStatus = 'PENDING_PROVISION';
+      // Non-fatal: enrollment succeeded, but NATS account creation failed
+      console.warn('NATS account setup failed (non-fatal):', provisionError.message);
     }
 
     return ok({
       status: 'enrolled',
-      credential_package: {
-        user_guid: userGuid,
-        credential_id: credentialId,
-        encrypted_blob: serializedBlob.ciphertext,
-        ephemeral_public_key: serializedBlob.ephemeral_public_key,
-        nonce: serializedBlob.nonce,
-        cek_version: cekVersion,
-        ledger_auth_token: {
-          token: lat.token,  // Send raw token to mobile (will be stored for verification)
-          version: lat.version,
-        },
-        transaction_keys: remainingKeys,
-      },
+      credential_package: credentialPackage,
       vault_status: vaultStatus,
-      vault_instance_id: vaultInstanceId,
       // Vault bootstrap info - app uses these temporary credentials to call app.bootstrap
       // on the vault and receive full NATS credentials generated by the vault.
-      // Bootstrap credentials have minimal permissions (1 hour TTL, only app.bootstrap topic).
-      // EXISTING status means re-enrollment with an existing vault - bootstrap credentials work
-      vault_bootstrap: (vaultStatus === 'PROVISIONING' || vaultStatus === 'EXISTING') && bootstrapCredentials ? {
-        credentials: bootstrapCredentials,  // Temporary credentials for bootstrap only
+      // Enclave is immediately available - no EC2 startup delay.
+      vault_bootstrap: bootstrapCredentials ? {
+        credentials: bootstrapCredentials,
         owner_space: ownerSpaceId,
         message_space: messageSpaceId,
-        nats_endpoint: `tls://${process.env.NATS_ENDPOINT || 'nats.vettid.dev:4222'}`,
+        nats_endpoint: `tls://${process.env.NATS_ENDPOINT || 'nats.vettid.dev:443'}`,
         bootstrap_topic: `${ownerSpaceId}.forVault.app.bootstrap`,
         response_topic: `${ownerSpaceId}.forApp.app.bootstrap.>`,
-        credentials_ttl_seconds: 3600,  // 1 hour
-        // For EXISTING vaults, they're already ready. For PROVISIONING, estimate 2 mins.
-        estimated_ready_at: vaultStatus === 'EXISTING'
-          ? new Date().toISOString()
-          : new Date(Date.now() + 2 * 60 * 1000).toISOString(),
-        // Note: ca_certificate no longer needed - NLB terminates TLS with ACM (publicly trusted)
+        credentials_ttl_seconds: 3600,
+        estimated_ready_at: new Date().toISOString(),  // Enclave is immediately ready
       } : undefined,
     }, origin);
 

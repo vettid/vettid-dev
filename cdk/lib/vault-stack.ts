@@ -100,6 +100,15 @@ export class VaultStack extends cdk.Stack {
   public readonly getBackupSettings!: lambdaNode.NodejsFunction;
   public readonly updateBackupSettings!: lambdaNode.NodejsFunction;
 
+  // Nitro Attestation
+  public readonly verifyNitroAttestation!: lambdaNode.NodejsFunction;
+
+  // Credential Recovery (24-hour delay)
+  public readonly requestCredentialRecovery!: lambdaNode.NodejsFunction;
+  public readonly getRecoveryStatus!: lambdaNode.NodejsFunction;
+  public readonly cancelCredentialRecovery!: lambdaNode.NodejsFunction;
+  public readonly downloadRecoveredCredential!: lambdaNode.NodejsFunction;
+
   // BYOV (Bring Your Own Vault)
   public readonly registerByovVault!: lambdaNode.NodejsFunction;
   public readonly getByovStatus!: lambdaNode.NodejsFunction;
@@ -142,6 +151,12 @@ export class VaultStack extends cdk.Stack {
 
     // ===== VAULT ENROLLMENT =====
 
+    // Environment variables for Nitro Enclave integration
+    const enclaveEnv = {
+      NATS_URL: 'nats://nats.internal.vettid.dev:4222',
+      BACKEND_CREDS_PARAM: '/vettid/nitro/parent-nats-creds',
+    };
+
     this.enrollStart = new lambdaNode.NodejsFunction(this, 'EnrollStartFn', {
       entry: 'lambda/handlers/vault/enrollStart.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
@@ -149,6 +164,7 @@ export class VaultStack extends cdk.Stack {
         ...defaultEnv,
         SES_FROM: 'no-reply@auth.vettid.dev',
         ENROLLMENT_JWT_SECRET_ARN: props.infrastructure.enrollmentJwtSecretArn,
+        ...enclaveEnv,
       },
       timeout: cdk.Duration.seconds(30),
     });
@@ -157,6 +173,12 @@ export class VaultStack extends cdk.Stack {
     this.enrollStart.addToRolePolicy(new iam.PolicyStatement({
       actions: ['secretsmanager:GetSecretValue'],
       resources: [props.infrastructure.enrollmentJwtSecretArn],
+    }));
+
+    // Grant SSM read permission for NATS credentials (for enclave communication)
+    this.enrollStart.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['ssm:GetParameter'],
+      resources: [`arn:aws:ssm:${this.region}:${this.account}:parameter/vettid/nitro/parent-nats-creds`],
     }));
 
     this.enrollSetPassword = new lambdaNode.NodejsFunction(this, 'EnrollSetPasswordFn', {
@@ -207,11 +229,19 @@ export class VaultStack extends cdk.Stack {
         NATS_OPERATOR_SECRET_ARN: natsOperatorSecretRef.secretArn,
         // Note: NATS_CA_SECRET_ARN no longer needed - NLB terminates TLS with ACM (publicly trusted)
         ...vaultConfigEnv,
+        // Enclave integration
+        ...enclaveEnv,
       },
       timeout: cdk.Duration.seconds(60), // Increased for auto-provisioning
     });
     // Grant SSM read permission for vault AMI parameter
     vaultAmiParameter.grantRead(this.enrollFinalize);
+
+    // Grant SSM read permission for NATS credentials (for enclave communication)
+    this.enrollFinalize.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['ssm:GetParameter'],
+      resources: [`arn:aws:ssm:${this.region}:${this.account}:parameter/vettid/nitro/parent-nats-creds`],
+    }));
 
     // Web-initiated enrollment session (for QR code flow)
     this.createEnrollmentSession = new lambdaNode.NodejsFunction(this, 'CreateEnrollmentSessionFn', {
@@ -1096,6 +1126,72 @@ export class VaultStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(30),
     });
 
+    // ===== NITRO ATTESTATION =====
+
+    this.verifyNitroAttestation = new lambdaNode.NodejsFunction(this, 'VerifyNitroAttestationFn', {
+      entry: 'lambda/handlers/vault/verifyNitroAttestation.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        TABLE_AUDIT: tables.audit.tableName,
+        // PCR values will be fetched from SSM Parameter Store in production
+        // NITRO_EXPECTED_PCRS: JSON.stringify([...])
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    // ===== CREDENTIAL RECOVERY (24-HOUR DELAY) =====
+
+    const recoveryEnv = {
+      TABLE_CREDENTIAL_BACKUPS: tables.credentialBackups.tableName,
+      TABLE_RECOVERY_REQUESTS: tables.credentialRecoveryRequests.tableName,
+      TABLE_AUDIT: tables.audit.tableName,
+      BACKUP_BUCKET: props.infrastructure.backupBucket.bucketName,
+      FROM_EMAIL: 'noreply@vettid.dev',
+    };
+
+    this.requestCredentialRecovery = new lambdaNode.NodejsFunction(this, 'RequestCredentialRecoveryFn', {
+      entry: 'lambda/handlers/backup/requestCredentialRecovery.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: recoveryEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    this.getRecoveryStatus = new lambdaNode.NodejsFunction(this, 'GetRecoveryStatusFn', {
+      entry: 'lambda/handlers/backup/getRecoveryStatus.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        TABLE_RECOVERY_REQUESTS: tables.credentialRecoveryRequests.tableName,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    this.cancelCredentialRecovery = new lambdaNode.NodejsFunction(this, 'CancelCredentialRecoveryFn', {
+      entry: 'lambda/handlers/backup/cancelCredentialRecovery.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: recoveryEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    this.downloadRecoveredCredential = new lambdaNode.NodejsFunction(this, 'DownloadRecoveredCredentialFn', {
+      entry: 'lambda/handlers/backup/downloadRecoveredCredential.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: recoveryEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    // Grant permissions for recovery functions
+    tables.credentialRecoveryRequests.grantReadWriteData(this.requestCredentialRecovery);
+    tables.credentialRecoveryRequests.grantReadWriteData(this.getRecoveryStatus);
+    tables.credentialRecoveryRequests.grantReadWriteData(this.cancelCredentialRecovery);
+    tables.credentialRecoveryRequests.grantReadWriteData(this.downloadRecoveredCredential);
+    tables.credentialBackups.grantReadData(this.requestCredentialRecovery);
+    tables.credentialBackups.grantReadData(this.downloadRecoveredCredential);
+    props.infrastructure.backupBucket.grantRead(this.downloadRecoveredCredential);
+    tables.audit.grantWriteData(this.verifyNitroAttestation);
+    tables.audit.grantWriteData(this.requestCredentialRecovery);
+    tables.audit.grantWriteData(this.cancelCredentialRecovery);
+    tables.audit.grantWriteData(this.downloadRecoveredCredential);
+
     // ===== BYOV (Bring Your Own Vault) =====
 
     const byovEnv = {
@@ -1508,6 +1604,20 @@ export class VaultStack extends cdk.Stack {
     // Backup settings
     this.route('GetBackupSettings', httpApi, '/vault/backup/settings', apigw.HttpMethod.GET, this.getBackupSettings, memberAuthorizer);
     this.route('UpdateBackupSettings', httpApi, '/vault/backup/settings', apigw.HttpMethod.PUT, this.updateBackupSettings, memberAuthorizer);
+
+    // Nitro Enclave Attestation (public - apps verify enclave identity before enrollment)
+    new apigw.HttpRoute(this, 'VerifyNitroAttestation', {
+      httpApi,
+      routeKey: apigw.HttpRouteKey.with('/vault/attestation/nitro', apigw.HttpMethod.POST),
+      integration: new integrations.HttpLambdaIntegration('VerifyNitroAttestationInt', this.verifyNitroAttestation),
+      // No authorizer - public endpoint for apps to verify enclave before enrollment
+    });
+
+    // Credential Recovery (24-hour delay for security)
+    this.route('RequestCredentialRecovery', httpApi, '/vault/recovery/request', apigw.HttpMethod.POST, this.requestCredentialRecovery, memberAuthorizer);
+    this.route('GetRecoveryStatus', httpApi, '/vault/recovery/status', apigw.HttpMethod.GET, this.getRecoveryStatus, memberAuthorizer);
+    this.route('CancelCredentialRecovery', httpApi, '/vault/recovery/cancel', apigw.HttpMethod.POST, this.cancelCredentialRecovery, memberAuthorizer);
+    this.route('DownloadRecoveredCredential', httpApi, '/vault/recovery/download', apigw.HttpMethod.GET, this.downloadRecoveredCredential, memberAuthorizer);
 
     // BYOV (Bring Your Own Vault) Routes
     this.route('RegisterByovVault', httpApi, '/vault/byov/register', apigw.HttpMethod.POST, this.registerByovVault, memberAuthorizer);
