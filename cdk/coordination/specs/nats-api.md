@@ -79,7 +79,7 @@ Generates NATS user credentials for the mobile app to connect to OwnerSpace.
   "public_key": "UABC...",
   "nats_creds": "-----BEGIN NATS USER JWT-----\n...",
   "expires_at": "2024-01-16T10:30:00Z",
-  "nats_url": "nats://nats.vettid.dev:4222",
+  "nats_url": "tls://nats.vettid.dev:443",
   "owner_space": "OwnerSpace.abc123",
   "message_space": "MessageSpace.abc123"
 }
