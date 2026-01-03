@@ -1,15 +1,20 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { DynamoDBClient, ScanCommand, PutItemCommand, UpdateItemCommand } from '@aws-sdk/client-dynamodb';
 import { SESClient, SendEmailCommand, GetIdentityVerificationAttributesCommand, VerifyEmailIdentityCommand } from '@aws-sdk/client-ses';
+import { CognitoIdentityProviderClient, AdminCreateUserCommand, AdminAddUserToGroupCommand, AdminGetUserCommand } from '@aws-sdk/client-cognito-identity-provider';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
-import { randomBytes } from 'crypto';
+import { randomBytes, randomUUID } from 'crypto';
 import { ok, forbidden, badRequest, internalError, getRequestId, putAudit, validateOrigin, requireAdminGroup, sanitizeErrorForClient } from '../../common/util';
 
 const ddb = new DynamoDBClient({});
 const ses = new SESClient({});
+const cognito = new CognitoIdentityProviderClient({});
 
 const TABLE_WAITLIST = process.env.TABLE_WAITLIST!;
 const TABLE_INVITES = process.env.TABLE_INVITES!;
+const TABLE_REGISTRATIONS = process.env.TABLE_REGISTRATIONS!;
+const USER_POOL_ID = process.env.USER_POOL_ID!;
+const REGISTERED_GROUP = process.env.REGISTERED_GROUP || 'registered';
 const SES_FROM_EMAIL = process.env.SES_FROM_EMAIL || 'noreply@vettid.dev';
 
 /**
@@ -117,57 +122,131 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
         email = waitlistEntry.email || 'unknown';
         const first_name = waitlistEntry.first_name || '';
         const last_name = waitlistEntry.last_name || '';
+        const email_consent = waitlistEntry.email_consent || false;
 
         // Get custom message from request payload
         const customMessage = payload.custom_message?.trim() || '';
 
-        // Generate invite code (8 characters, alphanumeric)
-        const inviteCode = randomBytes(4).toString('hex').toUpperCase();
-
-        // Create invite in DynamoDB (expires in 7 days, max 1 use)
         const now = new Date();
-        const expiresAt = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000); // 7 days from now
+        const nowIso = now.toISOString();
 
-        await ddb.send(new PutItemCommand({
-          TableName: TABLE_INVITES,
-          Item: marshall({
-            code: inviteCode,
-            status: 'active',
-            expires_at: Math.floor(expiresAt.getTime() / 1000), // Unix timestamp in seconds
-            max_uses: 1,
-            used: 0,
-            created_by: adminEmail,
-            created_at: now.toISOString(),
-            waitlist_id: waitlistId,
-            sent_to: email, // Store email for display in admin portal
-            auto_approve: true, // Waitlist invitees are auto-approved
-          }),
-        }));
-
-        // Check SES verification status in sandbox mode
-        // If pending, trigger new verification and provide clear error
+        // Check SES verification status - MUST be verified to proceed
         const sesStatus = await checkSESVerificationStatus(email);
-        if (sesStatus === 'Pending') {
-          // Re-send verification email and fail with informative message
+        if (sesStatus !== 'Success') {
+          // Email not verified - send/resend verification and fail
           await triggerSESVerification(email);
+          const statusMessage = sesStatus === 'Pending'
+            ? 'Email verification pending. Verification email re-sent.'
+            : sesStatus === 'NotStarted'
+            ? 'Email not verified. Verification email sent.'
+            : `Email verification ${sesStatus}. New verification email sent.`;
           results.failed.push({
             waitlist_id: waitlistId,
             email,
-            error: 'Email verification pending. Verification email re-sent to recipient. They must click the verification link first.',
-          });
-          continue;
-        } else if (sesStatus !== 'Success' && sesStatus !== 'NotStarted') {
-          // Handle failed/temporary failure
-          await triggerSESVerification(email);
-          results.failed.push({
-            waitlist_id: waitlistId,
-            email,
-            error: `SES verification ${sesStatus}. New verification email sent.`,
+            error: `${statusMessage} User must click the verification link before they can be approved.`,
           });
           continue;
         }
 
-        // HTML escape custom message for security
+        // Check if user already exists in Cognito
+        let cognitoUserExists = false;
+        try {
+          await cognito.send(new AdminGetUserCommand({
+            UserPoolId: USER_POOL_ID,
+            Username: email
+          }));
+          cognitoUserExists = true;
+        } catch (error: any) {
+          if (error.name !== 'UserNotFoundException') {
+            throw error;
+          }
+        }
+
+        if (cognitoUserExists) {
+          results.failed.push({
+            waitlist_id: waitlistId,
+            email,
+            error: 'User already exists in Cognito. They may already be registered.',
+          });
+          continue;
+        }
+
+        // Check for existing registration
+        const existingRegs = await ddb.send(new ScanCommand({
+          TableName: TABLE_REGISTRATIONS,
+          FilterExpression: 'email = :email AND #s <> :deleted AND #s <> :rejected',
+          ExpressionAttributeNames: {
+            '#s': 'status',
+          },
+          ExpressionAttributeValues: marshall({
+            ':email': email,
+            ':deleted': 'deleted',
+            ':rejected': 'rejected',
+          }),
+          Limit: 1,
+        }));
+
+        if (existingRegs.Items && existingRegs.Items.length > 0) {
+          results.failed.push({
+            waitlist_id: waitlistId,
+            email,
+            error: 'User already has an active registration.',
+          });
+          continue;
+        }
+
+        // ============================================
+        // AUTO-REGISTRATION: Create registration and Cognito user directly
+        // ============================================
+
+        const registrationId = randomUUID();
+        const userGuid = randomUUID();
+
+        // Create registration record (already approved)
+        const registrationItem = {
+          registration_id: registrationId,
+          first_name,
+          last_name,
+          email,
+          invite_code: `WAITLIST-${waitlistId.substring(0, 8)}`, // Synthetic code for tracking
+          status: 'approved',
+          membership_status: 'none',
+          user_guid: userGuid,
+          email_consent,
+          created_at: nowIso,
+          updated_at: nowIso,
+          approved_at: nowIso,
+          approved_by: adminEmail || 'waitlist-auto',
+          waitlist_id: waitlistId, // Link back to waitlist entry
+        };
+
+        await ddb.send(new PutItemCommand({
+          TableName: TABLE_REGISTRATIONS,
+          Item: marshall(registrationItem),
+        }));
+
+        // Create Cognito user
+        await cognito.send(new AdminCreateUserCommand({
+          UserPoolId: USER_POOL_ID,
+          Username: email,
+          UserAttributes: [
+            { Name: 'email', Value: email },
+            { Name: 'email_verified', Value: 'true' },
+            { Name: 'given_name', Value: first_name },
+            { Name: 'family_name', Value: last_name },
+            { Name: 'custom:user_guid', Value: userGuid },
+          ],
+          MessageAction: 'SUPPRESS', // Don't send Cognito welcome email
+        }));
+
+        // Add user to 'registered' group
+        await cognito.send(new AdminAddUserToGroupCommand({
+          UserPoolId: USER_POOL_ID,
+          Username: email,
+          GroupName: REGISTERED_GROUP,
+        }));
+
+        // HTML escape for email
         const escapeHtml = (str: string) => {
           return str
             .replace(/&/g, '&amp;')
@@ -183,8 +262,8 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
              </div>`
           : '';
 
-        // Send email with invite code
-        const registerUrl = `https://vettid.dev/register`;
+        // Send "You're approved!" email (no invite code needed)
+        const accountUrl = `https://vettid.dev/account`;
 
         const emailParams = {
           Source: SES_FROM_EMAIL,
@@ -193,7 +272,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
           },
           Message: {
             Subject: {
-              Data: 'Your VettID Invitation',
+              Data: 'Welcome to VettID - Your Account is Ready!',
             },
             Body: {
               Html: {
@@ -208,8 +287,8 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     .header { background: linear-gradient(135deg, #ffd940 0%, #ffc125 100%); padding: 30px; text-align: center; }
     .header h1 { margin: 0; color: #000; font-size: 28px; }
     .content { padding: 30px; }
-    .code-box { background: #f8f9fa; border: 2px dashed #ffc125; border-radius: 8px; padding: 20px; margin: 20px 0; text-align: center; }
-    .code { font-size: 32px; font-weight: bold; color: #000; letter-spacing: 4px; font-family: 'Courier New', monospace; }
+    .success-box { background: #f0fdf4; border: 2px solid #22c55e; border-radius: 8px; padding: 20px; margin: 20px 0; text-align: center; }
+    .success-icon { font-size: 48px; margin-bottom: 10px; }
     .btn { display: inline-block; background: linear-gradient(135deg, #ffd940 0%, #ffc125 100%); color: #000; text-decoration: none; padding: 14px 28px; border-radius: 6px; font-weight: bold; margin: 20px 0; }
     .footer { background: #f8f9fa; padding: 20px; text-align: center; font-size: 12px; color: #666; }
   </style>
@@ -217,33 +296,32 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
 <body>
   <div class="container">
     <div class="header">
-      <h1>You're Invited to VettID!</h1>
+      <h1>Welcome to VettID!</h1>
     </div>
     <div class="content">
       <p>Hi ${escapeHtml(first_name)} ${escapeHtml(last_name)},</p>
-      <p>Great news! You've been selected from our waitlist to join VettID. We're excited to have you as part of our community.</p>
+      <p>Great news! Your VettID account has been approved and is ready to use.</p>
       ${customMessageHtml}
-      <p>Here's your personal invitation code:</p>
-      <div class="code-box">
-        <div class="code">${inviteCode}</div>
+      <div class="success-box">
+        <div class="success-icon">&#10003;</div>
+        <p style="margin:0;font-weight:bold;color:#166534;">Your account is active!</p>
       </div>
-      <p>This code is valid for 7 days and can be used once to create your VettID account.</p>
+      <p>You can now sign in to VettID using your email address. We use passwordless authentication, so you'll receive a magic link each time you sign in.</p>
       <p style="text-align: center;">
-        <a href="${registerUrl}" class="btn">Register Now</a>
+        <a href="${accountUrl}" class="btn">Sign In Now</a>
       </p>
-      <p><strong>How to register:</strong></p>
+      <p><strong>What's next?</strong></p>
       <ol>
-        <li>Click the "Register Now" button above (or visit ${registerUrl})</li>
-        <li>Enter your information</li>
-        <li>Use the invitation code shown above</li>
-        <li>Submit your registration</li>
+        <li>Click "Sign In Now" above (or visit ${accountUrl})</li>
+        <li>Enter your email address: <strong>${escapeHtml(email)}</strong></li>
+        <li>Check your inbox for a magic link</li>
+        <li>Click the link to sign in securely</li>
       </ol>
-      <p>If you have any questions, feel free to reply to this email.</p>
-      <p>Welcome to VettID!</p>
+      <p>If you have any questions, feel free to reach out to our support team.</p>
+      <p>Welcome aboard!</p>
     </div>
     <div class="footer">
       <p>&copy; ${new Date().getFullYear()} VettID. All rights reserved.</p>
-      <p>This is an automated message. Please do not reply to this email address.</p>
     </div>
   </div>
 </body>
@@ -251,7 +329,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
                 `,
               },
               Text: {
-                Data: `Hi ${first_name} ${last_name},\n\nYou've been selected from our waitlist to join VettID!\n${customMessage ? `\n${customMessage}\n` : ''}\nYour invitation code: ${inviteCode}\n\nThis code is valid for 7 days and can be used once.\n\nRegister at: ${registerUrl}\n\nWelcome to VettID!`,
+                Data: `Hi ${first_name} ${last_name},\n\nGreat news! Your VettID account has been approved and is ready to use.\n${customMessage ? `\n${customMessage}\n` : ''}\nYou can now sign in at: ${accountUrl}\n\nUse your email address (${email}) to sign in. We'll send you a magic link - no password needed!\n\nWelcome to VettID!`,
               },
             },
           },
@@ -259,30 +337,31 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
 
         await ses.send(new SendEmailCommand(emailParams));
 
-        // Mark waitlist entry as invited (using email as partition key)
+        // Mark waitlist entry as approved (using email as partition key)
         await ddb.send(new UpdateItemCommand({
           TableName: TABLE_WAITLIST,
           Key: marshall({ email }),
-          UpdateExpression: 'SET invited_at = :invited_at, invite_code = :code, #st = :status, invited_by = :invited_by',
+          UpdateExpression: 'SET approved_at = :approved_at, #st = :status, approved_by = :approved_by, registration_id = :reg_id',
           ExpressionAttributeNames: {
             '#st': 'status',
           },
           ExpressionAttributeValues: marshall({
-            ':invited_at': now.toISOString(),
-            ':code': inviteCode,
-            ':status': 'invited',
-            ':invited_by': adminEmail || 'unknown',
+            ':approved_at': nowIso,
+            ':status': 'approved',
+            ':approved_by': adminEmail || 'unknown',
+            ':reg_id': registrationId,
           }),
         }));
 
-        // Log to audit (email field is indexed in GSI for lookups)
+        // Log to audit
         await putAudit({
-          type: 'waitlist_invite_sent',
-          email: adminEmail, // For GSI lookup by admin email
+          type: 'waitlist_auto_approved',
+          email: adminEmail,
           admin_email: adminEmail,
           waitlist_id: waitlistId,
           recipient_email: email,
-          invite_code: inviteCode,
+          registration_id: registrationId,
+          user_guid: userGuid,
         }, requestId);
 
         results.sent.push(email);

@@ -601,7 +601,9 @@ export class AdminStack extends cdk.Stack {
       runtime: lambda.Runtime.NODEJS_22_X,
       environment: {
         ...defaultEnv,
-        SES_FROM: 'no-reply@auth.vettid.dev',
+        SES_FROM_EMAIL: 'no-reply@auth.vettid.dev',
+        USER_POOL_ID: memberUserPool.userPoolId,
+        REGISTERED_GROUP: 'registered',
       },
       timeout: cdk.Duration.seconds(60),
     });
@@ -716,7 +718,7 @@ export class AdminStack extends cdk.Stack {
 
     tables.waitlist.grantReadData(listWaitlist);
     tables.waitlist.grantReadWriteData(sendWaitlistInvites);
-    tables.invites.grantReadWriteData(sendWaitlistInvites); // Create invite codes
+    tables.registrations.grantReadWriteData(sendWaitlistInvites); // Auto-create registrations
     tables.audit.grantReadWriteData(sendWaitlistInvites); // Audit logging
     tables.waitlist.grantReadWriteData(deleteWaitlistEntries);
     tables.audit.grantReadWriteData(deleteWaitlistEntries); // Audit logging
@@ -927,6 +929,15 @@ export class AdminStack extends cdk.Stack {
     sendWaitlistInvites.addToRolePolicy(new iam.PolicyStatement({
       actions: ['ses:GetIdentityVerificationAttributes', 'ses:VerifyEmailIdentity'],
       resources: ['*'], // These SES actions don't support resource-level permissions per AWS docs
+    }));
+    // Grant Cognito permissions for auto-registration of waitlist users
+    sendWaitlistInvites.addToRolePolicy(new iam.PolicyStatement({
+      actions: [
+        'cognito-idp:AdminGetUser',
+        'cognito-idp:AdminCreateUser',
+        'cognito-idp:AdminAddUserToGroup',
+      ],
+      resources: [memberUserPool.userPoolArn],
     }));
 
     // Grant SES permissions for bulk email sending
