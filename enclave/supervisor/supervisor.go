@@ -97,6 +97,8 @@ func (s *Supervisor) handleConnection(ctx context.Context, conn Connection) {
 		s.parentConnMu.Lock()
 		s.parentConn = nil
 		s.parentConnMu.Unlock()
+		// Clear handler fetcher when connection is closed
+		s.handlerCache.SetFetcher(nil)
 	}()
 
 	// Store connection for outbound messages from vaults
@@ -104,7 +106,13 @@ func (s *Supervisor) handleConnection(ctx context.Context, conn Connection) {
 	s.parentConn = conn
 	s.parentConnMu.Unlock()
 
-	log.Debug().Msg("New connection from parent process")
+	// Set up handler fetcher that uses this connection
+	// This closure captures 'conn' so handlers can be fetched during message processing
+	s.handlerCache.SetFetcher(func(ctx context.Context, handlerID string) ([]byte, string, error) {
+		return s.fetchHandlerFromParent(conn, handlerID)
+	})
+
+	log.Debug().Msg("New connection from parent process, handler fetcher configured")
 
 	// Read messages in a loop
 	for {
@@ -153,6 +161,49 @@ func (s *Supervisor) SendToParent(msg *Message) error {
 	}
 
 	return conn.WriteMessage(msg)
+}
+
+// fetchHandlerFromParent requests a handler from the parent process
+// This is called during message processing when a handler is needed but not cached
+func (s *Supervisor) fetchHandlerFromParent(conn Connection, handlerID string) ([]byte, string, error) {
+	log.Debug().Str("handler_id", handlerID).Msg("Requesting handler from parent")
+
+	// Send handler_get request
+	request := &Message{
+		Type:      MessageTypeHandlerGet,
+		HandlerID: handlerID,
+	}
+
+	if err := conn.WriteMessage(request); err != nil {
+		return nil, "", fmt.Errorf("failed to send handler request: %w", err)
+	}
+
+	// Read response (we're inside processMessage, so we own the connection read)
+	response, err := conn.ReadMessage()
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to read handler response: %w", err)
+	}
+
+	// Validate response
+	if response.Type == MessageTypeError {
+		return nil, "", fmt.Errorf("parent returned error: %s", response.Error)
+	}
+
+	if response.Type != MessageTypeHandlerResponse {
+		return nil, "", fmt.Errorf("unexpected response type: %s", response.Type)
+	}
+
+	if len(response.Payload) == 0 {
+		return nil, "", fmt.Errorf("parent returned empty handler")
+	}
+
+	log.Info().
+		Str("handler_id", handlerID).
+		Str("version", response.HandlerVersion).
+		Int("size", len(response.Payload)).
+		Msg("Handler received from parent")
+
+	return response.Payload, response.HandlerVersion, nil
 }
 
 // processMessage routes a message to the appropriate handler

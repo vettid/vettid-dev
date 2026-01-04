@@ -39,6 +39,10 @@ const (
 	MessageTypeHealthCheck    MessageType = "health_check"
 	MessageTypeHealthResponse MessageType = "health_response"
 
+	// Handler loading (enclave requests handler from parent)
+	MessageTypeHandlerGet      MessageType = "handler_get"
+	MessageTypeHandlerResponse MessageType = "handler_response"
+
 	// Error
 	MessageTypeError MessageType = "error"
 	MessageTypeOK    MessageType = "ok"
@@ -71,6 +75,10 @@ type Message struct {
 
 	// Generic payload (JSON-encoded data)
 	Payload []byte `json:"payload,omitempty"`
+
+	// Handler loading
+	HandlerID      string `json:"handler_id,omitempty"`
+	HandlerVersion string `json:"handler_version,omitempty"`
 
 	// Error
 	Error string `json:"error,omitempty"`

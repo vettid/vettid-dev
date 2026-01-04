@@ -223,8 +223,8 @@ func (p *ParentProcess) forwardToEnclave(ctx context.Context, msg *NATSMessage) 
 		}
 	}
 
-	// Send to enclave
-	response, err := p.vsockClient.SendMessage(ctx, enclaveMsg)
+	// Send to enclave and handle nested handler requests
+	response, err := p.sendWithHandlerSupport(ctx, enclaveMsg)
 	if err != nil {
 		return err
 	}
@@ -238,6 +238,74 @@ func (p *ParentProcess) forwardToEnclave(ctx context.Context, msg *NATSMessage) 
 	}
 
 	return nil
+}
+
+// sendWithHandlerSupport sends a message to the enclave and handles any nested
+// handler_get requests that may come back before the final response.
+// This allows the enclave to dynamically request handlers during vault operations.
+func (p *ParentProcess) sendWithHandlerSupport(ctx context.Context, msg *EnclaveMessage) (*EnclaveMessage, error) {
+	// Lock for write
+	p.vsockClient.writeMu.Lock()
+	if err := p.vsockClient.writeMessage(msg); err != nil {
+		p.vsockClient.writeMu.Unlock()
+		return nil, fmt.Errorf("failed to send message: %w", err)
+	}
+	p.vsockClient.writeMu.Unlock()
+
+	// Lock for read and loop until we get the final response
+	p.vsockClient.readMu.Lock()
+	defer p.vsockClient.readMu.Unlock()
+
+	for {
+		response, err := p.vsockClient.readMessage()
+		if err != nil {
+			return nil, fmt.Errorf("failed to read response: %w", err)
+		}
+
+		// Check if this is a handler request
+		if response.Type == EnclaveMessageTypeHandlerGet {
+			log.Debug().
+				Str("handler_id", response.HandlerID).
+				Msg("Enclave requested handler during operation")
+
+			// Fetch and send handler
+			if err := p.handleHandlerRequest(ctx, response); err != nil {
+				log.Error().Err(err).Str("handler_id", response.HandlerID).Msg("Failed to handle handler request")
+				// Send error response to enclave
+				errMsg := &EnclaveMessage{
+					Type:  EnclaveMessageTypeError,
+					Error: err.Error(),
+				}
+				p.vsockClient.writeMu.Lock()
+				p.vsockClient.writeMessage(errMsg)
+				p.vsockClient.writeMu.Unlock()
+			}
+			continue // Wait for next response
+		}
+
+		// Got the final response
+		return response, nil
+	}
+}
+
+// handleHandlerRequest fetches a handler from S3 and sends it to the enclave
+func (p *ParentProcess) handleHandlerRequest(ctx context.Context, request *EnclaveMessage) error {
+	wasmBytes, version, err := p.handlerLoader.GetHandler(ctx, request.HandlerID)
+	if err != nil {
+		return err
+	}
+
+	response := &EnclaveMessage{
+		Type:           EnclaveMessageTypeHandlerResponse,
+		HandlerID:      request.HandlerID,
+		HandlerVersion: version,
+		Payload:        wasmBytes,
+	}
+
+	p.vsockClient.writeMu.Lock()
+	defer p.vsockClient.writeMu.Unlock()
+
+	return p.vsockClient.writeMessage(response)
 }
 
 // parseAttestationRequest parses the JSON attestation request to extract the nonce

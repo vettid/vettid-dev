@@ -9,10 +9,15 @@ import (
 	"github.com/tetratelabs/wazero/api"
 )
 
+// HandlerFetcher is a callback to fetch handler bytes from the parent process
+type HandlerFetcher func(ctx context.Context, handlerID string) ([]byte, string, error)
+
 // HandlerCache manages compiled WASM handlers shared across all vaults
 type HandlerCache struct {
 	runtime  wazero.Runtime
 	modules  map[string]wazero.CompiledModule
+	versions map[string]string // Track loaded versions for each handler
+	fetcher  HandlerFetcher    // Callback to fetch handlers from parent
 	mu       sync.RWMutex
 }
 
@@ -36,20 +41,42 @@ func NewHandlerCache() *HandlerCache {
 	runtime := wazero.NewRuntimeWithConfig(ctx, config)
 
 	return &HandlerCache{
-		runtime: runtime,
-		modules: make(map[string]wazero.CompiledModule),
+		runtime:  runtime,
+		modules:  make(map[string]wazero.CompiledModule),
+		versions: make(map[string]string),
 	}
 }
 
-// Load compiles and caches a WASM handler
-func (hc *HandlerCache) Load(ctx context.Context, id string, wasmBytes []byte) error {
+// SetFetcher sets the callback for fetching handlers from the parent process
+func (hc *HandlerCache) SetFetcher(fetcher HandlerFetcher) {
+	hc.mu.Lock()
+	defer hc.mu.Unlock()
+	hc.fetcher = fetcher
+}
+
+// Load compiles and caches a WASM handler with version tracking
+func (hc *HandlerCache) Load(ctx context.Context, id string, version string, wasmBytes []byte) error {
 	hc.mu.Lock()
 	defer hc.mu.Unlock()
 
-	// Check if already loaded
-	if _, exists := hc.modules[id]; exists {
-		log.Debug().Str("handler_id", id).Msg("Handler already loaded")
+	// Check if already loaded with same version
+	if existingVersion, exists := hc.versions[id]; exists && existingVersion == version {
+		log.Debug().
+			Str("handler_id", id).
+			Str("version", version).
+			Msg("Handler already loaded with same version")
 		return nil
+	}
+
+	// If different version exists, unload it first
+	if module, exists := hc.modules[id]; exists {
+		module.Close(ctx)
+		delete(hc.modules, id)
+		log.Info().
+			Str("handler_id", id).
+			Str("old_version", hc.versions[id]).
+			Str("new_version", version).
+			Msg("Unloading old handler version")
 	}
 
 	// Compile the module
@@ -59,13 +86,46 @@ func (hc *HandlerCache) Load(ctx context.Context, id string, wasmBytes []byte) e
 	}
 
 	hc.modules[id] = compiled
+	hc.versions[id] = version
 
 	log.Info().
 		Str("handler_id", id).
+		Str("version", version).
 		Int("modules_cached", len(hc.modules)).
 		Msg("Handler loaded and cached")
 
 	return nil
+}
+
+// LoadOrFetch loads a handler from cache or fetches it from the parent process
+func (hc *HandlerCache) LoadOrFetch(ctx context.Context, id string) error {
+	// Quick check if already loaded
+	hc.mu.RLock()
+	_, exists := hc.modules[id]
+	hc.mu.RUnlock()
+
+	if exists {
+		log.Debug().Str("handler_id", id).Msg("Handler already in cache")
+		return nil
+	}
+
+	// Need to fetch from parent
+	hc.mu.RLock()
+	fetcher := hc.fetcher
+	hc.mu.RUnlock()
+
+	if fetcher == nil {
+		return ErrHandlerNoFetcher
+	}
+
+	log.Debug().Str("handler_id", id).Msg("Fetching handler from parent")
+
+	wasmBytes, version, err := fetcher(ctx, id)
+	if err != nil {
+		return err
+	}
+
+	return hc.Load(ctx, id, version, wasmBytes)
 }
 
 // Get returns a compiled module for instantiation
@@ -179,6 +239,7 @@ func (hc *HandlerCache) Unload(id string) {
 	if module, exists := hc.modules[id]; exists {
 		module.Close(context.Background())
 		delete(hc.modules, id)
+		delete(hc.versions, id)
 		log.Info().Str("handler_id", id).Msg("Handler unloaded")
 	}
 }
@@ -191,7 +252,8 @@ func (hc *HandlerCache) List() []HandlerInfo {
 	infos := make([]HandlerInfo, 0, len(hc.modules))
 	for id := range hc.modules {
 		infos = append(infos, HandlerInfo{
-			ID: id,
+			ID:      id,
+			Version: hc.versions[id],
 		})
 	}
 	return infos
@@ -220,4 +282,5 @@ var (
 	ErrHandlerMemoryWrite  = &Error{Code: "HANDLER_MEM_WRITE", Message: "Failed to write to handler memory"}
 	ErrHandlerMemoryRead   = &Error{Code: "HANDLER_MEM_READ", Message: "Failed to read from handler memory"}
 	ErrHandlerBadReturn    = &Error{Code: "HANDLER_BAD_RETURN", Message: "Handler returned unexpected values"}
+	ErrHandlerNoFetcher    = &Error{Code: "HANDLER_NO_FETCHER", Message: "No handler fetcher configured"}
 )
