@@ -885,6 +885,15 @@ export class VaultStack extends cdk.Stack {
     // Grant read access to the PCR signing key secret
     pcrSigningKeySecret.grantRead(this.getPcrConfig);
 
+    // Grant read access to PCR values in SSM Parameter Store
+    this.getPcrConfig.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['ssm:GetParameter'],
+      resources: [
+        `arn:aws:ssm:${this.region}:${this.account}:parameter/vettid/enclave/pcr/*`,
+      ],
+    }));
+
     // ===== CREDENTIAL RECOVERY (24-HOUR DELAY) =====
 
     const recoveryEnv = {

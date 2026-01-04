@@ -7,6 +7,7 @@ import {
   aws_autoscaling as autoscaling,
   aws_cloudwatch as cloudwatch,
   aws_ssm as ssm,
+  custom_resources as cr,
 } from 'aws-cdk-lib';
 
 import { InfrastructureStack } from './infrastructure-stack';
@@ -136,6 +137,196 @@ export class NitroStack extends cdk.Stack {
 
     cdk.Tags.of(this.lambdaSecurityGroup).add('Name', 'vettid-lambda-sg');
     cdk.Tags.of(this.lambdaSecurityGroup).add('Purpose', 'VettID Lambda Functions');
+
+    // ===== VPC ENDPOINTS FOR SSM (SECURITY HARDENING) =====
+    // These endpoints keep SSM traffic within AWS network, avoiding internet exposure.
+    // Required for SSM to work in private subnets without NAT gateway for SSM traffic.
+
+    // Security group for VPC endpoints
+    const vpcEndpointSg = new ec2.SecurityGroup(this, 'VpcEndpointSecurityGroup', {
+      vpc: this.vpc,
+      securityGroupName: 'vettid-vpce-sg',
+      description: 'Security group for VPC endpoints',
+      allowAllOutbound: false,
+    });
+
+    // Allow HTTPS from enclave instances
+    vpcEndpointSg.addIngressRule(
+      this.enclaveSecurityGroup,
+      ec2.Port.tcp(443),
+      'Allow HTTPS from enclave instances'
+    );
+
+    // SSM endpoint - for Systems Manager API calls
+    this.vpc.addInterfaceEndpoint('SsmEndpoint', {
+      service: ec2.InterfaceVpcEndpointAwsService.SSM,
+      securityGroups: [vpcEndpointSg],
+      subnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+    });
+
+    // SSM Messages endpoint - for Session Manager connections
+    this.vpc.addInterfaceEndpoint('SsmMessagesEndpoint', {
+      service: ec2.InterfaceVpcEndpointAwsService.SSM_MESSAGES,
+      securityGroups: [vpcEndpointSg],
+      subnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+    });
+
+    // EC2 Messages endpoint - for EC2 Run Command
+    this.vpc.addInterfaceEndpoint('Ec2MessagesEndpoint', {
+      service: ec2.InterfaceVpcEndpointAwsService.EC2_MESSAGES,
+      securityGroups: [vpcEndpointSg],
+      subnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+    });
+
+    // S3 Gateway endpoint (for vault data access without internet)
+    this.vpc.addGatewayEndpoint('S3Endpoint', {
+      service: ec2.GatewayVpcEndpointAwsService.S3,
+      subnets: [{ subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS }],
+    });
+
+    // CloudWatch Logs endpoint (for Session Manager logging)
+    this.vpc.addInterfaceEndpoint('CloudWatchLogsEndpoint', {
+      service: ec2.InterfaceVpcEndpointAwsService.CLOUDWATCH_LOGS,
+      securityGroups: [vpcEndpointSg],
+      subnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+    });
+
+    // ===== SESSION MANAGER LOGGING =====
+    // Create CloudWatch Log Group for Session Manager audit logs
+    const ssmLogGroup = new cdk.aws_logs.LogGroup(this, 'SsmSessionLogGroup', {
+      logGroupName: '/vettid/ssm-sessions',
+      retention: cdk.aws_logs.RetentionDays.ONE_YEAR,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
+    // S3 bucket for Session Manager session logs (long-term retention)
+    const ssmSessionLogBucket = new s3.Bucket(this, 'SsmSessionLogBucket', {
+      bucketName: `vettid-ssm-session-logs-${this.account}`,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      enforceSSL: true,
+      lifecycleRules: [
+        { expiration: cdk.Duration.days(365) }, // Keep logs for 1 year
+      ],
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
+    // Configure Session Manager preferences via Custom Resource
+    // This sets up CloudWatch and S3 logging for all SSM sessions
+    const sessionPreferencesContent = JSON.stringify({
+      schemaVersion: '1.0',
+      description: 'VettID Session Manager Settings with logging enabled',
+      sessionType: 'Standard_Stream',
+      inputs: {
+        cloudWatchLogGroupName: ssmLogGroup.logGroupName,
+        cloudWatchEncryptionEnabled: false,
+        cloudWatchStreamingEnabled: true,
+        s3BucketName: ssmSessionLogBucket.bucketName,
+        s3KeyPrefix: 'sessions',
+        s3EncryptionEnabled: false,
+        runAsEnabled: false,
+        idleSessionTimeout: '20',
+      },
+    });
+
+    // Custom Resource to create/update the SSM-SessionManagerRunShell document
+    const configureSessionManager = new cr.AwsCustomResource(this, 'ConfigureSessionManager', {
+      onCreate: {
+        service: 'SSM',
+        action: 'createDocument',
+        parameters: {
+          Content: sessionPreferencesContent,
+          Name: 'SSM-SessionManagerRunShell',
+          DocumentType: 'Session',
+          DocumentFormat: 'JSON',
+        },
+        physicalResourceId: cr.PhysicalResourceId.of('SSM-SessionManagerRunShell'),
+        // Ignore if document already exists - we'll update it instead
+        ignoreErrorCodesMatching: 'DocumentAlreadyExists',
+      },
+      onUpdate: {
+        service: 'SSM',
+        action: 'updateDocument',
+        parameters: {
+          Content: sessionPreferencesContent,
+          Name: 'SSM-SessionManagerRunShell',
+          DocumentVersion: '$LATEST',
+        },
+        physicalResourceId: cr.PhysicalResourceId.of('SSM-SessionManagerRunShell'),
+      },
+      policy: cr.AwsCustomResourcePolicy.fromStatements([
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: [
+            'ssm:CreateDocument',
+            'ssm:UpdateDocument',
+            'ssm:DescribeDocument',
+          ],
+          resources: [
+            `arn:aws:ssm:${this.region}:${this.account}:document/SSM-SessionManagerRunShell`,
+          ],
+        }),
+      ]),
+    });
+
+    // Ensure log group and bucket exist before configuring Session Manager
+    configureSessionManager.node.addDependency(ssmLogGroup);
+    configureSessionManager.node.addDependency(ssmSessionLogBucket);
+
+    // Grant Session Manager permission to write to CloudWatch Logs
+    ssmLogGroup.grantWrite(new iam.ServicePrincipal('ssm.amazonaws.com'));
+
+    // Grant Session Manager permission to write to S3
+    ssmSessionLogBucket.addToResourcePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      principals: [new iam.ServicePrincipal('ssm.amazonaws.com')],
+      actions: ['s3:PutObject', 's3:PutObjectAcl'],
+      resources: [`${ssmSessionLogBucket.bucketArn}/sessions/*`],
+      conditions: {
+        StringEquals: {
+          'aws:SourceAccount': this.account,
+        },
+      },
+    }));
+
+    // SSM SECURITY RESTRICTIONS:
+    // - ssm:SendCommand should only be granted to admin IAM roles
+    // - Consider using AWS Organizations SCPs to restrict SSM access
+    // - Monitor CloudWatch Logs for unauthorized session attempts
+
+    // ===== PACKER BUILD ROLE =====
+    // IAM role for Packer EC2 build instances to write PCR values to SSM
+    const packerBuildRole = new iam.Role(this, 'PackerBuildRole', {
+      roleName: 'vettid-packer-build-role',
+      assumedBy: new iam.ServicePrincipal('ec2.amazonaws.com'),
+      description: 'IAM role for Packer build instances (AMI creation)',
+    });
+
+    // Allow packer to write PCR values to SSM
+    packerBuildRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['ssm:PutParameter'],
+      resources: [
+        `arn:aws:ssm:${this.region}:${this.account}:parameter/vettid/enclave/pcr/*`,
+      ],
+    }));
+
+    // Create instance profile for packer
+    const packerInstanceProfile = new iam.InstanceProfile(this, 'PackerInstanceProfile', {
+      instanceProfileName: 'vettid-packer-build-profile',
+      role: packerBuildRole,
+    });
+
+    // Output for packer configuration
+    new cdk.CfnOutput(this, 'PackerInstanceProfileName', {
+      value: packerInstanceProfile.instanceProfileName,
+      description: 'Instance profile name for Packer builds',
+    });
+
+    new cdk.CfnOutput(this, 'SsmSessionLogGroupName', {
+      value: ssmLogGroup.logGroupName,
+      description: 'CloudWatch Log Group for SSM Session Manager logs',
+    });
 
     // ===== IAM ROLE FOR ENCLAVE INSTANCES =====
     this.enclaveInstanceRole = new iam.Role(this, 'EnclaveInstanceRole', {

@@ -11,28 +11,35 @@
  * - PCR2: Application code
  *
  * Mobile apps use these values to verify Nitro attestation documents.
+ *
+ * PCR values are stored in SSM Parameter Store and updated automatically
+ * during AMI builds by Packer.
  */
 
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
+import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import * as crypto from 'crypto';
 
 const secretsManager = new SecretsManagerClient({});
+const ssm = new SSMClient({});
 
-// Current PCR values from the latest enclave build
-// These are updated when a new enclave image is deployed
-// AMI: ami-0ddfb9cb47cec87fb (2026-01-04 - health fix)
-const CURRENT_PCRS = {
-  PCR0: 'f785763a2687c56c700aa9d87d524d020f0ee451c8a257e77a11a8d43743eee41bfed984ff9427b32fa71ad5e8b2b68f',
-  PCR1: '4b4d5b3661b3efc12920900c80e126e4ce783c522de6c02a2a5bf7af3a2b9327b86776f188e4be1c1c404a129dbda493',
-  PCR2: 'a67bd4d10aa5d908cb0834c94cb39b0ead4823c2e0868830f0412fc634b84bb18c83dc5a14848cf880d7f04083665bbd',
-  // PCR3 is optional - hash of IAM role ARN if KMS attestation is used
-  PCR3: null as string | null,
-};
+// SSM parameter path for PCR values
+const PCR_PARAMETER_NAME = '/vettid/enclave/pcr/current';
 
-// Version identifier for this PCR configuration
-const PCR_VERSION = '2026-01-04-v3';
-const PUBLISHED_AT = '2026-01-04T03:00:00Z';
+// Cache for PCR values (refresh every 5 minutes)
+let cachedPcrs: PcrData | null = null;
+let cacheExpiry = 0;
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+interface PcrData {
+  PCR0: string;
+  PCR1: string;
+  PCR2: string;
+  PCR3?: string | null;
+  version: string;
+  published_at: string;
+}
 
 // CORS headers
 const corsHeaders = {
@@ -40,7 +47,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'Content-Type',
   'Access-Control-Allow-Methods': 'OPTIONS,GET',
   'Content-Type': 'application/json',
-  'Cache-Control': 'public, max-age=3600', // Cache for 1 hour
+  'Cache-Control': 'public, max-age=300', // Cache for 5 minutes (matches Lambda cache)
 };
 
 interface PcrResponse {
@@ -54,6 +61,42 @@ interface PcrResponse {
   published_at: string;
   signature: string;
   key_id: string;
+}
+
+/**
+ * Fetch PCR values from SSM Parameter Store with caching
+ */
+async function getPcrValues(): Promise<PcrData> {
+  const now = Date.now();
+
+  // Return cached value if still valid
+  if (cachedPcrs && now < cacheExpiry) {
+    console.log('Using cached PCR values');
+    return cachedPcrs;
+  }
+
+  console.log('Fetching PCR values from SSM Parameter Store');
+
+  const command = new GetParameterCommand({
+    Name: PCR_PARAMETER_NAME,
+    WithDecryption: false,
+  });
+
+  const response = await ssm.send(command);
+
+  if (!response.Parameter?.Value) {
+    throw new Error('PCR values not found in SSM Parameter Store');
+  }
+
+  const pcrData = JSON.parse(response.Parameter.Value) as PcrData;
+
+  // Update cache
+  cachedPcrs = pcrData;
+  cacheExpiry = now + CACHE_TTL_MS;
+
+  console.log(`Loaded PCR values version: ${pcrData.version}`);
+
+  return pcrData;
 }
 
 /**
@@ -105,12 +148,15 @@ export const handler = async (
   }
 
   try {
-    // Build the PCR payload
+    // Get PCR values from SSM
+    const pcrData = await getPcrValues();
+
+    // Build the PCR payload for signing
     const pcrPayload = {
-      PCR0: CURRENT_PCRS.PCR0,
-      PCR1: CURRENT_PCRS.PCR1,
-      PCR2: CURRENT_PCRS.PCR2,
-      ...(CURRENT_PCRS.PCR3 && { PCR3: CURRENT_PCRS.PCR3 }),
+      PCR0: pcrData.PCR0,
+      PCR1: pcrData.PCR1,
+      PCR2: pcrData.PCR2,
+      ...(pcrData.PCR3 && { PCR3: pcrData.PCR3 }),
     };
 
     // Sign the payload
@@ -118,13 +164,13 @@ export const handler = async (
 
     const response: PcrResponse = {
       pcrs: {
-        PCR0: CURRENT_PCRS.PCR0,
-        PCR1: CURRENT_PCRS.PCR1,
-        PCR2: CURRENT_PCRS.PCR2,
-        PCR3: CURRENT_PCRS.PCR3,
+        PCR0: pcrData.PCR0,
+        PCR1: pcrData.PCR1,
+        PCR2: pcrData.PCR2,
+        PCR3: pcrData.PCR3 || null,
       },
-      version: PCR_VERSION,
-      published_at: PUBLISHED_AT,
+      version: pcrData.version,
+      published_at: pcrData.published_at,
       signature: signature,
       key_id: 'vettid-pcr-signing-key-v1',
     };

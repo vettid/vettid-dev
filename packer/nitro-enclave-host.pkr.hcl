@@ -72,6 +72,9 @@ source "amazon-ebs" "nitro-enclave" {
   region          = var.aws_region
   source_ami      = data.amazon-ami.al2023.id
 
+  # IAM instance profile for SSM parameter writes during build
+  iam_instance_profile = "vettid-packer-build-profile"
+
   # Enable Nitro Enclave support during build
   ena_support   = true
 
@@ -174,6 +177,22 @@ build {
 
       "echo '=== Extracting PCR values ==='",
       "sudo nitro-cli describe-eif --eif-path /opt/vettid/enclave/vettid-vault-enclave.eif | sudo tee /opt/vettid/enclave/pcr-values.json",
+
+      "echo '=== Uploading PCR values to SSM Parameter Store ==='",
+      "PCR_JSON=$(cat /opt/vettid/enclave/pcr-values.json)",
+      "PCR0=$(echo $PCR_JSON | jq -r '.Measurements.PCR0')",
+      "PCR1=$(echo $PCR_JSON | jq -r '.Measurements.PCR1')",
+      "PCR2=$(echo $PCR_JSON | jq -r '.Measurements.PCR2')",
+      "VERSION=$(date -u +%Y-%m-%d-v1)",
+      "PUBLISHED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+
+      "# Create SSM parameters with versioning",
+      "aws ssm put-parameter --name '/vettid/enclave/pcr/current' --type 'String' --overwrite --value \"$(echo $PCR_JSON | jq -c '{PCR0: .Measurements.PCR0, PCR1: .Measurements.PCR1, PCR2: .Measurements.PCR2, version: \"'$VERSION'\", published_at: \"'$PUBLISHED_AT'\"}')\" --region ${var.aws_region}",
+
+      "echo '=== PCR values uploaded to SSM ==='",
+      "echo \"PCR0: $PCR0\"",
+      "echo \"PCR1: $PCR1\"",
+      "echo \"PCR2: $PCR2\"",
 
       "echo '=== Cleaning up ==='",
       "sudo docker rmi vettid-enclave:latest || true",
