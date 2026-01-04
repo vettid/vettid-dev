@@ -31,8 +31,15 @@ func NewParentProcess(cfg *Config) (*ParentProcess, error) {
 func (p *ParentProcess) Run(ctx context.Context) error {
 	log.Info().Msg("Parent process starting")
 
-	// Connect to NATS
-	natsClient, err := NewNATSClient(p.config.NATS)
+	// Start health server first so we can track connection states
+	p.healthSrv = NewHealthServer(p.config.Health.Port)
+	go p.healthSrv.Start()
+	defer p.healthSrv.Stop()
+
+	// Connect to NATS with health status callback
+	natsClient, err := NewNATSClient(p.config.NATS, func(connected bool) {
+		p.updateHealthStatus()
+	})
 	if err != nil {
 		return fmt.Errorf("failed to connect to NATS: %w", err)
 	}
@@ -63,10 +70,8 @@ func (p *ParentProcess) Run(ctx context.Context) error {
 		Uint32("port", p.config.Enclave.Port).
 		Msg("Connected to enclave")
 
-	// Start health server
-	p.healthSrv = NewHealthServer(p.config.Health.Port)
-	go p.healthSrv.Start()
-	defer p.healthSrv.Stop()
+	// Update health status now that all connections are established
+	p.updateHealthStatus()
 
 	// Start message routing
 	errChan := make(chan error, 2)
@@ -399,6 +404,18 @@ func (p *ParentProcess) handleHealthCheck(ctx context.Context, msg *EnclaveMessa
 func (p *ParentProcess) getHealthStatus() []byte {
 	// TODO: Implement proper health status
 	return []byte(`{"status":"healthy"}`)
+}
+
+// updateHealthStatus updates the health server with current connection states
+func (p *ParentProcess) updateHealthStatus() {
+	if p.healthSrv == nil {
+		return
+	}
+
+	natsConnected := p.natsClient != nil && p.natsClient.IsConnected()
+	enclaveConnected := p.vsockClient != nil && p.vsockClient.IsConnected()
+
+	p.healthSrv.UpdateStatus(natsConnected, enclaveConnected)
 }
 
 // extractOwnerSpace extracts the user GUID from a NATS subject

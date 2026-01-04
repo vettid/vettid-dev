@@ -16,15 +16,24 @@ type NATSMessage struct {
 	Data    []byte
 }
 
+// ConnectionStateCallback is called when NATS connection state changes
+type ConnectionStateCallback func(connected bool)
+
 // NATSClient wraps a NATS connection
 type NATSClient struct {
-	conn   *nats.Conn
-	config NATSConfig
-	subs   []*nats.Subscription
+	conn          *nats.Conn
+	config        NATSConfig
+	subs          []*nats.Subscription
+	stateCallback ConnectionStateCallback
 }
 
-// NewNATSClient creates a new NATS client
-func NewNATSClient(cfg NATSConfig) (*NATSClient, error) {
+// NewNATSClient creates a new NATS client with optional connection state callback
+func NewNATSClient(cfg NATSConfig, stateCallback ConnectionStateCallback) (*NATSClient, error) {
+	client := &NATSClient{
+		config:        cfg,
+		stateCallback: stateCallback,
+	}
+
 	// Build connection options
 	opts := []nats.Option{
 		nats.Name("vettid-enclave-parent"),
@@ -32,12 +41,21 @@ func NewNATSClient(cfg NATSConfig) (*NATSClient, error) {
 		nats.MaxReconnects(cfg.MaxReconnects),
 		nats.DisconnectErrHandler(func(nc *nats.Conn, err error) {
 			log.Warn().Err(err).Msg("NATS disconnected")
+			if client.stateCallback != nil {
+				client.stateCallback(false)
+			}
 		}),
 		nats.ReconnectHandler(func(nc *nats.Conn) {
 			log.Info().Str("url", nc.ConnectedUrl()).Msg("NATS reconnected")
+			if client.stateCallback != nil {
+				client.stateCallback(true)
+			}
 		}),
 		nats.ClosedHandler(func(nc *nats.Conn) {
 			log.Info().Msg("NATS connection closed")
+			if client.stateCallback != nil {
+				client.stateCallback(false)
+			}
 		}),
 	}
 
@@ -54,10 +72,8 @@ func NewNATSClient(cfg NATSConfig) (*NATSClient, error) {
 		return nil, fmt.Errorf("failed to connect to NATS: %w", err)
 	}
 
-	return &NATSClient{
-		conn:   conn,
-		config: cfg,
-	}, nil
+	client.conn = conn
+	return client, nil
 }
 
 // Subscribe subscribes to a subject and sends messages to the channel
