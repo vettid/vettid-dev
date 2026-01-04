@@ -1,0 +1,108 @@
+# Deploy WASM Handler
+#
+# This workflow signs and deploys a WASM handler to the VettID infrastructure.
+# It uses AWS OIDC federation to assume the HandlerDeployRole for secure access.
+#
+# Usage:
+#   - Trigger manually via workflow_dispatch
+#   - Provide handler-id, version, and wasm-path
+#
+# Prerequisites:
+#   - AWS OIDC provider configured in IAM
+#   - HandlerDeployRole with proper trust policy
+#   - Ed25519 signing key in Secrets Manager
+
+name: Deploy Handler
+
+on:
+  workflow_dispatch:
+    inputs:
+      handler-id:
+        description: 'Handler ID (e.g., vault-handler, auth-handler)'
+        required: true
+        type: string
+      version:
+        description: 'Version string (e.g., v1.0.0, commit SHA)'
+        required: true
+        type: string
+      wasm-path:
+        description: 'Path to WASM file (relative to repo root)'
+        required: true
+        type: string
+      rollout:
+        description: 'Rollout percentage (0-100)'
+        required: false
+        default: '100'
+        type: string
+
+permissions:
+  id-token: write  # Required for OIDC
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  HANDLER_BUCKET: vettid-infrastructure-handlerpackagesbucket
+  MANIFEST_TABLE: VettID-Infrastructure-HandlerManifest
+  SIGNING_KEY_SECRET: vettid/handler-signing-key
+
+jobs:
+  deploy:
+    name: Sign and Deploy Handler
+    runs-on: ubuntu-latest
+    env:
+      HANDLER_ID: ${{ inputs.handler-id }}
+      VERSION: ${{ inputs.version }}
+      WASM_PATH: ${{ inputs.wasm-path }}
+      ROLLOUT: ${{ inputs.rollout }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/vettid-handler-deploy-role
+          role-session-name: handler-deploy-${{ github.run_id }}
+          aws-region: us-east-1
+
+      - name: Validate WASM file
+        run: |
+          if [ ! -f "$WASM_PATH" ]; then
+            echo "Error: WASM file not found: $WASM_PATH"
+            exit 1
+          fi
+          echo "WASM file found: $WASM_PATH"
+          ls -la "$WASM_PATH"
+
+      - name: Build handler-deploy tool
+        working-directory: scripts/handler-deploy
+        run: go build -o handler-deploy .
+
+      - name: Deploy handler
+        working-directory: scripts/handler-deploy
+        run: |
+          ./handler-deploy \
+            -handler-id "$HANDLER_ID" \
+            -version "$VERSION" \
+            -wasm "../../$WASM_PATH" \
+            -rollout "$ROLLOUT"
+
+      - name: Verify deployment
+        run: |
+          echo "Handler deployed successfully!"
+          echo "Handler ID: $HANDLER_ID"
+          echo "Version: $VERSION"
+          echo "Rollout: $ROLLOUT%"
+
+          # Query DynamoDB to confirm
+          aws dynamodb get-item \
+            --table-name "$MANIFEST_TABLE" \
+            --key "{\"handler_id\": {\"S\": \"$HANDLER_ID\"}}" \
+            --query 'Item.{version: current_version.S, updated: updated_at.S, rollout: rollout_percent.N}' \
+            --output table
