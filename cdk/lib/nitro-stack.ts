@@ -9,11 +9,18 @@ import {
   aws_ssm as ssm,
 } from 'aws-cdk-lib';
 
+import { InfrastructureStack } from './infrastructure-stack';
+
 export interface NitroStackProps extends cdk.StackProps {
   /**
    * Optional alarm email for notifications
    */
   alarmEmail?: string;
+
+  /**
+   * Infrastructure stack for shared resources (DynamoDB tables, S3 buckets)
+   */
+  infrastructure?: InfrastructureStack;
 }
 
 /**
@@ -178,6 +185,23 @@ export class NitroStack extends cdk.Stack {
         `arn:aws:ssm:${this.region}:${this.account}:parameter/vettid/nitro/*`,
       ],
     }));
+
+    // ===== DYNAMIC HANDLER LOADING PERMISSIONS =====
+    // Grant read access to handler manifest table and handlers bucket
+    if (props?.infrastructure) {
+      // Read handler manifest from DynamoDB (for version lookups)
+      props.infrastructure.tables.handlerManifest.grantReadData(this.enclaveInstanceRole);
+
+      // Read handler WASM files from S3
+      props.infrastructure.handlersBucket.grantRead(this.enclaveInstanceRole);
+
+      // Read handler signing public key from Secrets Manager
+      this.enclaveInstanceRole.addToPolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['secretsmanager:GetSecretValue'],
+        resources: [props.infrastructure.handlerSigningKeySecretArn],
+      }));
+    }
 
     // ===== SSM PARAMETER FOR AMI ID =====
     // The enclave AMI ID is stored in SSM for easy updates

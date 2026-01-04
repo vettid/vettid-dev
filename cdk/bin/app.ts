@@ -45,7 +45,10 @@ const ledger = new LedgerStack(app, 'VettID-Ledger', {
 
 // 5. Deploy Nitro Enclave stack (multi-tenant vault architecture)
 // This creates the VPC, ALB, and S3 bucket for Nitro Enclave instances
-const nitro = new NitroStack(app, 'VettID-Nitro', { env });
+const nitro = new NitroStack(app, 'VettID-Nitro', {
+  env,
+  infrastructure, // For dynamic handler loading (DynamoDB manifest, S3 handlers)
+});
 
 // 6. Deploy NATS infrastructure stack (VPC, EC2 cluster, NLB)
 // Uses Route53 fromLookup to auto-discover hosted zone (cached in cdk.context.json)

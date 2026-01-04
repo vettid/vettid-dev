@@ -59,6 +59,8 @@ export class InfrastructureStack extends cdk.Stack {
     credentialRecoveryRequests: dynamodb.Table;
     // Supported Services Registry
     supportedServices: dynamodb.Table;
+    // Dynamic Handler Loading
+    handlerManifest: dynamodb.Table;
   };
 
   // S3 Buckets
@@ -86,6 +88,9 @@ export class InfrastructureStack extends cdk.Stack {
 
   // Action token signing secret ARN (for VaultStack actionRequest)
   public readonly actionTokenSecretArn!: string;
+
+  // Handler signing key secret ARN (for dynamic handler loading)
+  public readonly handlerSigningKeySecretArn!: string;
 
   // Shared utilities Lambda layer
   public readonly sharedUtilsLayer!: lambda.LayerVersion;
@@ -567,6 +572,25 @@ export class InfrastructureStack extends cdk.Stack {
       projectionType: dynamodb.ProjectionType.ALL,
     });
 
+    // ===== DYNAMIC HANDLER LOADING =====
+
+    // Handler Manifest table - stores current version info for dynamic WASM loading
+    // Schema:
+    //   handler_id (PK): e.g., "messaging.send", "crypto.sign"
+    //   current_version: "1.2.0"
+    //   s3_key: "handlers/messaging/v1.2.0.wasm"
+    //   sha256: hash of WASM file for integrity verification
+    //   signature: Ed25519 signature of WASM file
+    //   rollout_percent: 0-100 for gradual rollouts
+    //   fallback_version: version to use if rollout fails
+    //   updated_at: ISO timestamp
+    const handlerManifest = new dynamodb.Table(this, 'HandlerManifest', {
+      partitionKey: { name: 'handler_id', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      pointInTimeRecovery: true,
+    });
+
     // ===== S3 BUCKETS =====
 
     // S3 bucket for membership terms PDFs (shared by VettIDStack and AdminStack)
@@ -649,6 +673,8 @@ export class InfrastructureStack extends cdk.Stack {
       credentialRecoveryRequests,
       // Supported Services Registry
       supportedServices,
+      // Dynamic Handler Loading
+      handlerManifest,
     };
 
     this.termsBucket = termsBucket;
@@ -978,6 +1004,62 @@ export class InfrastructureStack extends cdk.Stack {
 
     // Export the secret ARN for VaultStack
     this.actionTokenSecretArn = actionTokenSecret.secretArn;
+
+    // ===== HANDLER SIGNING KEY =====
+    // Ed25519 keypair for signing WASM handler packages
+    // The private key is used by CI/CD to sign handlers
+    // The public key is embedded in the enclave AMI for verification
+    // NOTE: Generate the keypair manually and update this secret:
+    //   openssl genpkey -algorithm ed25519 -out private.pem
+    //   openssl pkey -in private.pem -pubout -out public.pem
+    //   aws secretsmanager put-secret-value --secret-id vettid/handler-signing-key \
+    //     --secret-string "$(jq -n --arg priv "$(cat private.pem)" --arg pub "$(cat public.pem)" \
+    //       '{private_key: $priv, public_key: $pub}')"
+    const handlerSigningKeySecret = new secretsmanager.Secret(this, 'HandlerSigningKeySecret', {
+      secretName: 'vettid/handler-signing-key',
+      description: 'Ed25519 keypair for signing WASM handler packages',
+      // Placeholder - actual keys generated separately for security
+      secretStringValue: cdk.SecretValue.unsafePlainText(JSON.stringify({
+        private_key: 'PLACEHOLDER_GENERATE_ED25519_KEYPAIR',
+        public_key: 'PLACEHOLDER_GENERATE_ED25519_KEYPAIR',
+      })),
+    });
+
+    // Export the secret ARN
+    this.handlerSigningKeySecretArn = handlerSigningKeySecret.secretArn;
+
+    // ===== CI/CD ROLE FOR HANDLER DEPLOYMENT =====
+    // This role is assumed by GitHub Actions to deploy WASM handlers
+    // Permissions: S3 write (handlers), DynamoDB write (manifest), Secrets read (signing key)
+    const handlerDeployRole = new iam.Role(this, 'HandlerDeployRole', {
+      roleName: 'vettid-handler-deploy-role',
+      description: 'IAM role for CI/CD to deploy WASM handlers',
+      assumedBy: new iam.FederatedPrincipal(
+        `arn:aws:iam::${this.account}:oidc-provider/token.actions.githubusercontent.com`,
+        {
+          StringEquals: {
+            'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com',
+          },
+          StringLike: {
+            // Allow from mesmerverse repos (adjust as needed)
+            'token.actions.githubusercontent.com:sub': 'repo:mesmerverse/*:*',
+          },
+        },
+        'sts:AssumeRoleWithWebIdentity'
+      ),
+    });
+
+    // Grant permissions to deploy handlers
+    handlersBucket.grantReadWrite(handlerDeployRole);
+    handlerManifest.grantReadWriteData(handlerDeployRole);
+    handlerSigningKeySecret.grantRead(handlerDeployRole);
+
+    // Output the role ARN for GitHub Actions configuration
+    new cdk.CfnOutput(this, 'HandlerDeployRoleArn', {
+      value: handlerDeployRole.roleArn,
+      description: 'IAM role ARN for GitHub Actions handler deployment',
+      exportName: 'VettID-HandlerDeployRoleArn',
+    });
 
     // Custom enrollment authorizer Lambda (for mobile enrollment flow)
     // This Lambda validates enrollment JWTs issued by the /vault/enroll/authenticate endpoint
