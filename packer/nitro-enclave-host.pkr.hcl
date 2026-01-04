@@ -26,7 +26,7 @@ variable "aws_region" {
 
 variable "instance_type" {
   type        = string
-  default     = "c6a.xlarge"
+  default     = "c6a.2xlarge"
   description = "Must be Nitro-enabled instance type for building EIF"
 }
 
@@ -43,6 +43,12 @@ variable "enclave_memory_mib" {
 variable "enclave_cpu_count" {
   type    = number
   default = 2
+}
+
+variable "allocator_memory_mib" {
+  type        = number
+  default     = 8192
+  description = "Memory to reserve for Nitro Enclaves (must be >= enclave_memory_mib)"
 }
 
 # Data source to find the latest Amazon Linux 2023 AMI
@@ -123,7 +129,7 @@ build {
       "echo '=== Configuring Nitro Enclave allocator ==='",
       "sudo mkdir -p /etc/nitro_enclaves",
       "echo '---' | sudo tee /etc/nitro_enclaves/allocator.yaml",
-      "echo 'memory_mib: ${var.enclave_memory_mib}' | sudo tee -a /etc/nitro_enclaves/allocator.yaml",
+      "echo 'memory_mib: ${var.allocator_memory_mib}' | sudo tee -a /etc/nitro_enclaves/allocator.yaml",
       "echo 'cpu_count: ${var.enclave_cpu_count}' | sudo tee -a /etc/nitro_enclaves/allocator.yaml",
 
       "echo '=== Enabling Nitro Enclave allocator service ==='",
