@@ -23,6 +23,9 @@ type Config struct {
 
 	// Health check configuration
 	Health HealthConfig `yaml:"health"`
+
+	// Handler loading configuration
+	Handlers HandlerConfig `yaml:"handlers"`
 }
 
 // NATSConfig holds NATS connection settings
@@ -50,6 +53,20 @@ type EnclaveConfig struct {
 type HealthConfig struct {
 	Port     int `yaml:"port"`
 	Interval int `yaml:"interval_seconds"`
+}
+
+// HandlerConfig holds handler loading settings
+type HandlerConfig struct {
+	// S3 bucket for handler WASM files
+	Bucket string `yaml:"bucket"`
+	// DynamoDB table for handler manifest
+	ManifestTable string `yaml:"manifest_table"`
+	// AWS region
+	Region string `yaml:"region"`
+	// Secrets Manager secret ID for signing key
+	SigningKeySecretID string `yaml:"signing_key_secret_id"`
+	// Manifest cache TTL in seconds
+	ManifestCacheTTL int `yaml:"manifest_cache_ttl_seconds"`
 }
 
 // LoadConfig loads configuration from a YAML file
@@ -99,6 +116,13 @@ func DefaultConfig() *Config {
 		Health: HealthConfig{
 			Port:     8080,
 			Interval: 30,
+		},
+		Handlers: HandlerConfig{
+			Bucket:             "vettid-infrastructure-handlerpackagesbucket",
+			ManifestTable:      "VettID-Infrastructure-HandlerManifest",
+			Region:             "us-east-1",
+			SigningKeySecretID: "vettid/handler-signing-key",
+			ManifestCacheTTL:   30, // 30 seconds
 		},
 	}
 }

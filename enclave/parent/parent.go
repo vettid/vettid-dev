@@ -12,12 +12,13 @@ import (
 
 // ParentProcess bridges the enclave to external services
 type ParentProcess struct {
-	config      *Config
-	natsClient  *NATSClient
-	s3Client    *S3Client
-	vsockClient *VsockClient
-	healthSrv   *HealthServer
-	mu          sync.RWMutex
+	config        *Config
+	natsClient    *NATSClient
+	s3Client      *S3Client
+	vsockClient   *VsockClient
+	healthSrv     *HealthServer
+	handlerLoader *HandlerLoader
+	mu            sync.RWMutex
 }
 
 // NewParentProcess creates a new parent process
@@ -56,6 +57,18 @@ func (p *ParentProcess) Run(ctx context.Context) error {
 	p.s3Client = s3Client
 
 	log.Info().Str("bucket", p.config.S3.Bucket).Msg("S3 client initialized")
+
+	// Create handler loader for dynamic WASM handler loading
+	handlerLoader, err := NewHandlerLoader(p.config.Handlers)
+	if err != nil {
+		return fmt.Errorf("failed to create handler loader: %w", err)
+	}
+	p.handlerLoader = handlerLoader
+
+	log.Info().
+		Str("bucket", p.config.Handlers.Bucket).
+		Str("manifest_table", p.config.Handlers.ManifestTable).
+		Msg("Handler loader initialized")
 
 	// Connect to enclave via vsock
 	vsockClient, err := NewVsockClient(p.config.Enclave, p.config.DevMode)
@@ -346,6 +359,8 @@ func (p *ParentProcess) handleEnclaveRequest(ctx context.Context, msg *EnclaveMe
 		return p.handleNATSPublish(ctx, msg)
 	case EnclaveMessageTypeHealthCheck:
 		return p.handleHealthCheck(ctx, msg)
+	case EnclaveMessageTypeHandlerGet:
+		return p.handleHandlerGet(ctx, msg)
 	default:
 		return nil, fmt.Errorf("unknown message type: %s", msg.Type)
 	}
@@ -397,6 +412,40 @@ func (p *ParentProcess) handleHealthCheck(ctx context.Context, msg *EnclaveMessa
 	return &EnclaveMessage{
 		Type:    EnclaveMessageTypeHealthResponse,
 		Payload: status,
+	}, nil
+}
+
+// handleHandlerGet retrieves a WASM handler from S3 with signature verification
+func (p *ParentProcess) handleHandlerGet(ctx context.Context, msg *EnclaveMessage) (*EnclaveMessage, error) {
+	if msg.HandlerID == "" {
+		return nil, fmt.Errorf("handler_id is required")
+	}
+
+	log.Debug().
+		Str("handler_id", msg.HandlerID).
+		Msg("Enclave requested handler")
+
+	// Fetch handler (uses manifest cache + signature verification)
+	wasmBytes, version, err := p.handlerLoader.GetHandler(ctx, msg.HandlerID)
+	if err != nil {
+		log.Error().
+			Err(err).
+			Str("handler_id", msg.HandlerID).
+			Msg("Failed to get handler")
+		return nil, fmt.Errorf("handler get failed: %w", err)
+	}
+
+	log.Info().
+		Str("handler_id", msg.HandlerID).
+		Str("version", version).
+		Int("size", len(wasmBytes)).
+		Msg("Handler retrieved and verified")
+
+	return &EnclaveMessage{
+		Type:           EnclaveMessageTypeHandlerResponse,
+		HandlerID:      msg.HandlerID,
+		HandlerVersion: version,
+		Payload:        wasmBytes,
 	}, nil
 }
 

@@ -38,6 +38,10 @@ const (
 	EnclaveMessageTypeHealthCheck     EnclaveMessageType = "health_check"
 	EnclaveMessageTypeHealthResponse  EnclaveMessageType = "health_response"
 
+	// Handler loading
+	EnclaveMessageTypeHandlerGet      EnclaveMessageType = "handler_get"
+	EnclaveMessageTypeHandlerResponse EnclaveMessageType = "handler_response"
+
 	// General
 	EnclaveMessageTypeOK              EnclaveMessageType = "ok"
 	EnclaveMessageTypeError           EnclaveMessageType = "error"
@@ -62,6 +66,10 @@ type EnclaveMessage struct {
 	// Attestation fields
 	Nonce       []byte       `json:"nonce,omitempty"`
 	Attestation *Attestation `json:"attestation,omitempty"`
+
+	// Handler loading fields
+	HandlerID      string `json:"handler_id,omitempty"`
+	HandlerVersion string `json:"handler_version,omitempty"`
 }
 
 // VsockClient handles communication with the enclave
