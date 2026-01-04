@@ -35,3 +35,8 @@ coverage/
 # Temporary files
 *.tmp
 *.temp
+
+# Enclave build artifacts
+enclave/parent/parent
+enclave/parent/vettid-parent
+enclave/supervisor/supervisor
