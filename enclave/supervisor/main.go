@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
@@ -18,6 +19,10 @@ import (
 var Version = "dev"
 
 func main() {
+	// Immediate startup message (before any config)
+	fmt.Println("=== VettID Supervisor Starting ===")
+	fmt.Printf("PID: %d, UID: %d, GID: %d\n", os.Getpid(), os.Getuid(), os.Getgid())
+
 	// Parse command line flags
 	devMode := flag.Bool("dev-mode", false, "Run in development mode (TCP instead of vsock)")
 	vsockPort := flag.Uint("vsock-port", 5000, "vsock port to listen on (CID is always 3 in enclave)")
@@ -26,11 +31,11 @@ func main() {
 	maxMemoryMB := flag.Int("max-memory", 5632, "Maximum memory usage in MB (6GB - 512MB overhead)")
 	flag.Parse()
 
-	// Configure logging
+	fmt.Printf("Args parsed: dev_mode=%v, vsock_port=%d\n", *devMode, *vsockPort)
+
+	// Configure logging - always use console writer for visibility
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
-	if *devMode {
-		log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
-	}
+	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr, NoColor: true})
 
 	log.Info().
 		Str("version", Version).

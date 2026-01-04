@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"sync"
 
@@ -78,12 +80,15 @@ func (p *ParentProcess) Run(ctx context.Context) error {
 	}()
 
 	// Route Enclave → NATS/S3
-	go func() {
-		err := p.routeEnclaveToExternal(ctx)
-		if err != nil && ctx.Err() == nil {
-			errChan <- fmt.Errorf("Enclave→External routing error: %w", err)
-		}
-	}()
+	// TODO: Re-enable when enclave-initiated messages are needed
+	// Currently disabled because it blocks on read holding the mutex,
+	// which prevents SendMessage from working. Need a proper async design.
+	// go func() {
+	// 	err := p.routeEnclaveToExternal(ctx)
+	// 	if err != nil && ctx.Err() == nil {
+	// 		errChan <- fmt.Errorf("Enclave→External routing error: %w", err)
+	// 	}
+	// }()
 
 	// Wait for shutdown or error
 	select {
@@ -135,7 +140,13 @@ func (p *ParentProcess) routeNATSToEnclave(ctx context.Context) error {
 	}
 	log.Debug().Str("subject", "MessageSpace.*.forOwner.>").Msg("Subscribed to NATS")
 
-	log.Info().Msg("Subscribed to OwnerSpace and MessageSpace topics")
+	// Subscribe to enclave control messages from Lambdas (attestation requests, etc.)
+	if err := p.natsClient.Subscribe("enclave.>", msgChan); err != nil {
+		return fmt.Errorf("failed to subscribe to enclave.>: %w", err)
+	}
+	log.Debug().Str("subject", "enclave.>").Msg("Subscribed to NATS")
+
+	log.Info().Msg("Subscribed to OwnerSpace, MessageSpace, and enclave topics")
 
 	for {
 		select {
@@ -153,19 +164,45 @@ func (p *ParentProcess) routeNATSToEnclave(ctx context.Context) error {
 
 // forwardToEnclave forwards a NATS message to the enclave
 func (p *ParentProcess) forwardToEnclave(ctx context.Context, msg *NATSMessage) error {
-	// Extract owner space from subject (vault.{user_guid}.{operation})
-	ownerSpace, err := extractOwnerSpace(msg.Subject)
-	if err != nil {
-		return err
-	}
+	var enclaveMsg *EnclaveMessage
 
-	// Create enclave message
-	enclaveMsg := &EnclaveMessage{
-		Type:       EnclaveMessageTypeVaultOp,
-		OwnerSpace: ownerSpace,
-		Subject:    msg.Subject,
-		Payload:    msg.Data,
-		ReplyTo:    msg.Reply,
+	// Check if this is an enclave control message (from Lambdas)
+	if isEnclaveSubject(msg.Subject) {
+		// Map enclave subject to appropriate message type
+		msgType := mapEnclaveSubjectToType(msg.Subject)
+		enclaveMsg = &EnclaveMessage{
+			Type:    msgType,
+			Subject: msg.Subject,
+			Payload: msg.Data,
+			ReplyTo: msg.Reply,
+		}
+
+		// For attestation requests, parse the JSON payload to extract nonce
+		if msgType == EnclaveMessageTypeAttestationRequest {
+			if err := p.parseAttestationRequest(msg.Data, enclaveMsg); err != nil {
+				log.Warn().Err(err).Msg("Failed to parse attestation request, using raw payload")
+			}
+		}
+
+		log.Debug().
+			Str("type", string(msgType)).
+			Int("nonce_len", len(enclaveMsg.Nonce)).
+			Msg("Forwarding enclave control message to vsock")
+	} else {
+		// Extract owner space from subject (OwnerSpace.{guid}.* or MessageSpace.{guid}.*)
+		ownerSpace, err := extractOwnerSpace(msg.Subject)
+		if err != nil {
+			return err
+		}
+
+		// Create enclave message for vault operations
+		enclaveMsg = &EnclaveMessage{
+			Type:       EnclaveMessageTypeVaultOp,
+			OwnerSpace: ownerSpace,
+			Subject:    msg.Subject,
+			Payload:    msg.Data,
+			ReplyTo:    msg.Reply,
+		}
 	}
 
 	// Send to enclave
@@ -176,12 +213,85 @@ func (p *ParentProcess) forwardToEnclave(ctx context.Context, msg *NATSMessage) 
 
 	// If there's a reply address, send response back via NATS
 	if msg.Reply != "" && response != nil {
-		if err := p.natsClient.Publish(msg.Reply, response.Payload); err != nil {
+		responseData := p.formatEnclaveResponse(response)
+		if err := p.natsClient.Publish(msg.Reply, responseData); err != nil {
 			log.Error().Err(err).Str("reply", msg.Reply).Msg("Failed to publish reply")
 		}
 	}
 
 	return nil
+}
+
+// parseAttestationRequest parses the JSON attestation request to extract the nonce
+func (p *ParentProcess) parseAttestationRequest(data []byte, msg *EnclaveMessage) error {
+	var req struct {
+		Nonce string `json:"nonce"` // Base64-encoded nonce
+	}
+
+	if err := json.Unmarshal(data, &req); err != nil {
+		return fmt.Errorf("failed to unmarshal attestation request: %w", err)
+	}
+
+	if req.Nonce == "" {
+		return fmt.Errorf("nonce is required in attestation request")
+	}
+
+	nonce, err := base64.StdEncoding.DecodeString(req.Nonce)
+	if err != nil {
+		return fmt.Errorf("failed to decode nonce: %w", err)
+	}
+
+	msg.Nonce = nonce
+	log.Debug().Int("nonce_len", len(nonce)).Msg("Parsed attestation request nonce")
+	return nil
+}
+
+// formatEnclaveResponse formats an enclave response for NATS reply
+func (p *ParentProcess) formatEnclaveResponse(response *EnclaveMessage) []byte {
+	// For attestation responses, format with proper fields
+	if response.Type == EnclaveMessageTypeAttestationResponse && response.Attestation != nil {
+		resp := struct {
+			Attestation string `json:"attestation"`
+			PublicKey   string `json:"public_key"`
+			Timestamp   int64  `json:"timestamp"`
+		}{
+			Attestation: base64.StdEncoding.EncodeToString(response.Attestation.Document),
+			PublicKey:   base64.StdEncoding.EncodeToString(response.Attestation.PublicKey),
+			Timestamp:   0, // Will be filled by enclave
+		}
+
+		data, err := json.Marshal(resp)
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to marshal attestation response")
+			return response.Payload
+		}
+		return data
+	}
+
+	// For other responses, use the payload directly
+	return response.Payload
+}
+
+// isEnclaveSubject checks if a subject is an enclave control subject
+func isEnclaveSubject(subject string) bool {
+	return len(subject) >= 8 && subject[:8] == "enclave."
+}
+
+// mapEnclaveSubjectToType maps enclave.* subjects to message types
+func mapEnclaveSubjectToType(subject string) EnclaveMessageType {
+	// Map known enclave subjects to message types
+	// enclave.attestation.request -> attestation_request
+	// enclave.health -> health_check
+	switch {
+	case subject == "enclave.attestation.request":
+		return EnclaveMessageTypeAttestationRequest
+	case subject == "enclave.health" || subject == "enclave.health.check":
+		return EnclaveMessageTypeHealthCheck
+	default:
+		// For unknown enclave subjects, use vault_op as fallback
+		log.Warn().Str("subject", subject).Msg("Unknown enclave subject, using vault_op")
+		return EnclaveMessageTypeVaultOp
+	}
 }
 
 // routeEnclaveToExternal handles requests from enclave (storage, etc.)

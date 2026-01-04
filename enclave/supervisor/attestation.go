@@ -10,6 +10,8 @@ import (
 	"os"
 	"time"
 
+	"github.com/hf/nsm"
+	"github.com/hf/nsm/request"
 	"github.com/rs/zerolog/log"
 )
 
@@ -36,17 +38,48 @@ func isNitroEnclave() bool {
 
 // generateNitroAttestation generates a real Nitro attestation document
 func generateNitroAttestation(nonce []byte) (*Attestation, error) {
-	// TODO: Implement actual Nitro attestation
-	// This requires:
-	// 1. Opening /dev/nsm
-	// 2. Sending IOCTL request with nonce and optional user_data/public_key
-	// 3. Receiving signed attestation document
-	//
-	// The attestation document is a CBOR-encoded, COSE-signed structure
-	// containing PCR values, nonce, and enclave identity
-	//
-	// For now, return an error indicating this needs implementation
-	return nil, fmt.Errorf("Nitro attestation not yet implemented")
+	// Open the NSM (Nitro Security Module) device
+	sess, err := nsm.OpenDefaultSession()
+	if err != nil {
+		return nil, fmt.Errorf("failed to open NSM session: %w", err)
+	}
+	defer sess.Close()
+
+	// Generate an ephemeral ECDSA key pair for the session
+	// This public key will be embedded in the attestation document
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate session key: %w", err)
+	}
+
+	// Marshal the public key
+	pubKeyBytes := elliptic.Marshal(elliptic.P256(), privateKey.PublicKey.X, privateKey.PublicKey.Y)
+
+	// Request attestation from NSM
+	// The nonce is included to ensure freshness
+	// The public key is included so clients can encrypt session data to it
+	res, err := sess.Send(&request.Attestation{
+		Nonce:     nonce,
+		PublicKey: pubKeyBytes,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get attestation from NSM: %w", err)
+	}
+
+	// Extract the attestation document
+	if res.Attestation == nil || res.Attestation.Document == nil {
+		return nil, fmt.Errorf("NSM returned empty attestation document")
+	}
+
+	log.Debug().
+		Int("doc_len", len(res.Attestation.Document)).
+		Int("pubkey_len", len(pubKeyBytes)).
+		Msg("Generated Nitro attestation document")
+
+	return &Attestation{
+		Document:  res.Attestation.Document,
+		PublicKey: pubKeyBytes,
+	}, nil
 }
 
 // generateMockAttestation generates a mock attestation for development

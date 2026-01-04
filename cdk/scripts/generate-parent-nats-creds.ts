@@ -138,6 +138,10 @@ async function generateParentCredentials(): Promise<{ creds: string; expiresAt: 
           'MessageSpace.*.ownerProfile',
           // Health/metrics to backend services
           'OwnerSpace.*.forServices.>',
+          // Request-reply inbox subjects (for NATS request pattern)
+          '_INBOX.>',
+          // Enclave communication (Lambda -> enclave parent)
+          'enclave.>',
         ],
       },
       sub: {
@@ -152,6 +156,10 @@ async function generateParentCredentials(): Promise<{ creds: string; expiresAt: 
           'MessageSpace.*.forOwner.>',
           // Subscribe to health check requests
           'OwnerSpace.*.forServices.>',
+          // Request-reply inbox subjects (for NATS request pattern)
+          '_INBOX.>',
+          // Enclave communication responses
+          'enclave.>',
         ],
       },
       subs: -1,      // Unlimited subscriptions

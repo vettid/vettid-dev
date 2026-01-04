@@ -22,16 +22,16 @@ const secretsManager = new SecretsManagerClient({});
 // Current PCR values from the latest enclave build
 // These are updated when a new enclave image is deployed
 const CURRENT_PCRS = {
-  PCR0: 'c4fbe85714ce8e31e8568edf0bd0022f3341a18b3060b2ebafcb4b706bc8c7870b9d2353b9eba1c0b4dd94b80238a208',
+  PCR0: 'bacdb032668b92b5f18413e77ca3f3637de7c60bbd373547e2c18257068e4df6273e24dbbfeebc63a44534ed47201a46',
   PCR1: '4b4d5b3661b3efc12920900c80e126e4ce783c522de6c02a2a5bf7af3a2b9327b86776f188e4be1c1c404a129dbda493',
-  PCR2: '3f37ae4b5a503d457cf198ac15010f595383796bfdd4c779eb255acb9cdec61fce3dc430368561807a32d483faeed5dc',
+  PCR2: 'cecbc6e5037719cf68e55436b52c65122b9345a822aec9ce28ba8f73a0dc2e1251e82c56dc16405b10fc0e6927dc2348',
   // PCR3 is optional - hash of IAM role ARN if KMS attestation is used
   PCR3: null as string | null,
 };
 
 // Version identifier for this PCR configuration
-const PCR_VERSION = '2026-01-03-v1';
-const PUBLISHED_AT = '2026-01-03T00:00:00Z';
+const PCR_VERSION = '2026-01-04-v1';
+const PUBLISHED_AT = '2026-01-04T00:00:00Z';
 
 // CORS headers
 const corsHeaders = {

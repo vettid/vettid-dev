@@ -22,7 +22,7 @@ export interface NitroStackProps extends cdk.StackProps {
  * Creates infrastructure for multi-tenant Nitro Enclave vault architecture:
  * - VPC with public/private subnets (for enclave EC2 instances)
  * - S3 bucket for encrypted vault data
- * - Auto Scaling Group with Nitro-enabled c6a.xlarge instances
+ * - Auto Scaling Group with Nitro-enabled c6a.2xlarge instances
  * - IAM role for enclave instances (S3, CloudWatch, SSM access)
  * - CloudWatch dashboard and alarms
  *
@@ -42,6 +42,7 @@ export class NitroStack extends cdk.Stack {
   // VPC and networking
   public readonly vpc: ec2.Vpc;
   public readonly enclaveSecurityGroup: ec2.SecurityGroup;
+  public readonly lambdaSecurityGroup: ec2.SecurityGroup;
   public readonly privateSubnetIds: string[];
 
   // S3 bucket for encrypted vault data
@@ -118,6 +119,17 @@ export class NitroStack extends cdk.Stack {
     cdk.Tags.of(this.enclaveSecurityGroup).add('Name', 'vettid-enclave-sg');
     cdk.Tags.of(this.enclaveSecurityGroup).add('Purpose', 'VettID Nitro Enclave Instances');
 
+    // Lambda security group for functions that need VPC access (NATS, internal services)
+    this.lambdaSecurityGroup = new ec2.SecurityGroup(this, 'LambdaSecurityGroup', {
+      vpc: this.vpc,
+      securityGroupName: 'vettid-lambda-sg',
+      description: 'Security group for VettID Lambda functions requiring VPC access',
+      allowAllOutbound: true, // Lambdas need outbound for NATS, DynamoDB, etc.
+    });
+
+    cdk.Tags.of(this.lambdaSecurityGroup).add('Name', 'vettid-lambda-sg');
+    cdk.Tags.of(this.lambdaSecurityGroup).add('Purpose', 'VettID Lambda Functions');
+
     // ===== IAM ROLE FOR ENCLAVE INSTANCES =====
     this.enclaveInstanceRole = new iam.Role(this, 'EnclaveInstanceRole', {
       roleName: 'vettid-enclave-instance-role',
@@ -186,7 +198,7 @@ export class NitroStack extends cdk.Stack {
       }),
       instanceType: ec2.InstanceType.of(
         ec2.InstanceClass.C6A,
-        ec2.InstanceSize.XLARGE
+        ec2.InstanceSize.XLARGE2 // Upgraded for EIF build memory headroom
       ),
       securityGroup: this.enclaveSecurityGroup,
       role: this.enclaveInstanceRole,

@@ -8,6 +8,7 @@ import {
   aws_apigatewayv2_authorizers as authorizers,
   aws_apigatewayv2_integrations as integrations,
   aws_ssm as ssm,
+  aws_ec2 as ec2,
   custom_resources as cr,
 } from 'aws-cdk-lib';
 import { InfrastructureStack } from './infrastructure-stack';
@@ -148,6 +149,13 @@ export class VaultStack extends cdk.Stack {
       BACKEND_CREDS_PARAM: '/vettid/nitro/parent-nats-creds',
     };
 
+    // VPC configuration for Lambdas that need access to NATS internal DNS
+    const vpcConfig = props.nitro ? {
+      vpc: props.nitro.vpc,
+      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+      securityGroups: [props.nitro.lambdaSecurityGroup],
+    } : {};
+
     this.enrollStart = new lambdaNode.NodejsFunction(this, 'EnrollStartFn', {
       entry: 'lambda/handlers/vault/enrollStart.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
@@ -156,8 +164,11 @@ export class VaultStack extends cdk.Stack {
         SES_FROM: 'no-reply@auth.vettid.dev',
         ENROLLMENT_JWT_SECRET_ARN: props.infrastructure.enrollmentJwtSecretArn,
         ...enclaveEnv,
+        // Force cold start to pick up new NATS credentials
+        DEPLOY_VERSION: '2026-01-03-v3',
       },
       timeout: cdk.Duration.seconds(30),
+      ...vpcConfig,
     });
 
     // Grant enrollStart read access to the enrollment JWT secret (for generating tokens in invitation_code flow)

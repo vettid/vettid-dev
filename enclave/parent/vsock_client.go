@@ -21,6 +21,10 @@ const (
 	EnclaveMessageTypeVaultOp         EnclaveMessageType = "vault_op"
 	EnclaveMessageTypeVaultResponse   EnclaveMessageType = "vault_response"
 
+	// Attestation (from Lambdas requesting attestation documents)
+	EnclaveMessageTypeAttestationRequest  EnclaveMessageType = "attestation_request"
+	EnclaveMessageTypeAttestationResponse EnclaveMessageType = "attestation_response"
+
 	// Storage operations
 	EnclaveMessageTypeStorageGet      EnclaveMessageType = "storage_get"
 	EnclaveMessageTypeStoragePut      EnclaveMessageType = "storage_put"
@@ -39,6 +43,12 @@ const (
 	EnclaveMessageTypeError           EnclaveMessageType = "error"
 )
 
+// Attestation holds a Nitro attestation document
+type Attestation struct {
+	Document  []byte `json:"document"`   // CBOR-encoded attestation document
+	PublicKey []byte `json:"public_key"` // Enclave's ephemeral public key
+}
+
 // EnclaveMessage is the wire format for parent-enclave communication
 type EnclaveMessage struct {
 	Type       EnclaveMessageType `json:"type"`
@@ -48,6 +58,10 @@ type EnclaveMessage struct {
 	StorageKey string             `json:"storage_key,omitempty"`
 	Payload    []byte             `json:"payload,omitempty"`
 	Error      string             `json:"error,omitempty"`
+
+	// Attestation fields
+	Nonce       []byte       `json:"nonce,omitempty"`
+	Attestation *Attestation `json:"attestation,omitempty"`
 }
 
 // VsockClient handles communication with the enclave
@@ -55,7 +69,8 @@ type VsockClient struct {
 	conn    net.Conn
 	config  EnclaveConfig
 	devMode bool
-	mu      sync.Mutex
+	readMu  sync.Mutex // Mutex for read operations
+	writeMu sync.Mutex // Mutex for write operations
 }
 
 // NewVsockClient creates a new vsock client to communicate with the enclave
@@ -88,14 +103,25 @@ func NewVsockClient(cfg EnclaveConfig, devMode bool) (*VsockClient, error) {
 }
 
 // SendMessage sends a message to the enclave and waits for a response
+// This uses both write and read mutexes to ensure exclusive access for the request-reply pattern
 func (c *VsockClient) SendMessage(ctx context.Context, msg *EnclaveMessage) (*EnclaveMessage, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	// Lock write first, then read - ensures we can send and receive our response atomically
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	c.readMu.Lock()
+	defer c.readMu.Unlock()
+
+	log.Debug().
+		Str("type", string(msg.Type)).
+		Bool("has_nonce", len(msg.Nonce) > 0).
+		Msg("Sending message to enclave")
 
 	// Send message
 	if err := c.writeMessage(msg); err != nil {
 		return nil, fmt.Errorf("failed to send message: %w", err)
 	}
+
+	log.Debug().Msg("Message sent, waiting for response...")
 
 	// Read response
 	response, err := c.readMessage()
@@ -103,21 +129,31 @@ func (c *VsockClient) SendMessage(ctx context.Context, msg *EnclaveMessage) (*En
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
+	log.Debug().
+		Str("type", string(response.Type)).
+		Bool("has_attestation", response.Attestation != nil).
+		Bool("has_error", response.Error != "").
+		Str("error_msg", response.Error).
+		Int("payload_len", len(response.Payload)).
+		Msg("Received response from enclave")
+
 	return response, nil
 }
 
 // ReceiveMessage waits for a message from the enclave
+// Only locks readMu so writes can happen concurrently
 func (c *VsockClient) ReceiveMessage(ctx context.Context) (*EnclaveMessage, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.readMu.Lock()
+	defer c.readMu.Unlock()
 
 	return c.readMessage()
 }
 
 // SendResponse sends a response back to the enclave
+// Only locks writeMu so reads can happen concurrently
 func (c *VsockClient) SendResponse(msg *EnclaveMessage) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
 
 	return c.writeMessage(msg)
 }
