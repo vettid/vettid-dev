@@ -118,8 +118,8 @@ func DefaultConfig() *Config {
 			Interval: 30,
 		},
 		Handlers: HandlerConfig{
-			Bucket:             "vettid-infrastructure-handlerpackagesbucket",
-			ManifestTable:      "VettID-Infrastructure-HandlerManifest",
+			Bucket:             "vettid-infrastructure-handlerpackagesbucket5a751b0-nsabvzt77rbc",
+			ManifestTable:      "VettID-Infrastructure-HandlerManifestF07B874C-N86QCO9SZTA4",
 			Region:             "us-east-1",
 			SigningKeySecretID: "vettid/handler-signing-key",
 			ManifestCacheTTL:   30, // 30 seconds

@@ -13,6 +13,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
@@ -53,8 +54,8 @@ func main() {
 
 	// Read environment variables
 	region := envOrDefault("AWS_REGION", "us-east-1")
-	bucket := envOrDefault("HANDLER_BUCKET", "vettid-infrastructure-handlerpackagesbucket")
-	manifestTable := envOrDefault("MANIFEST_TABLE", "VettID-Infrastructure-HandlerManifest")
+	bucket := envOrDefault("HANDLER_BUCKET", "vettid-infrastructure-handlerpackagesbucket5a751b0-nsabvzt77rbc")
+	manifestTable := envOrDefault("MANIFEST_TABLE", "VettID-Infrastructure-HandlerManifestF07B874C-N86QCO9SZTA4")
 	signingKeySecret := envOrDefault("SIGNING_KEY_SECRET", "vettid/handler-signing-key")
 
 	// Read WASM file
@@ -216,28 +217,10 @@ func uploadToS3(ctx context.Context, client *s3.Client, bucket, key string, data
 	_, err := client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket:      &bucket,
 		Key:         &key,
-		Body:        bytesReader(data),
+		Body:        bytes.NewReader(data),
 		ContentType: &contentType,
 	})
 	return err
-}
-
-func bytesReader(data []byte) *bytesReaderImpl {
-	return &bytesReaderImpl{data: data, pos: 0}
-}
-
-type bytesReaderImpl struct {
-	data []byte
-	pos  int
-}
-
-func (r *bytesReaderImpl) Read(p []byte) (n int, err error) {
-	if r.pos >= len(r.data) {
-		return 0, fmt.Errorf("EOF")
-	}
-	n = copy(p, r.data[r.pos:])
-	r.pos += n
-	return n, nil
 }
 
 func getCurrentVersion(ctx context.Context, client *dynamodb.Client, table, handlerID string) (string, error) {
