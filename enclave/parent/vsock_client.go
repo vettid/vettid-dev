@@ -42,6 +42,11 @@ const (
 	EnclaveMessageTypeHandlerGet      EnclaveMessageType = "handler_get"
 	EnclaveMessageTypeHandlerResponse EnclaveMessageType = "handler_response"
 
+	// KMS operations (for Nitro attestation-based sealing)
+	EnclaveMessageTypeKMSEncrypt  EnclaveMessageType = "kms_encrypt"
+	EnclaveMessageTypeKMSDecrypt  EnclaveMessageType = "kms_decrypt"
+	EnclaveMessageTypeKMSResponse EnclaveMessageType = "kms_response"
+
 	// General
 	EnclaveMessageTypeOK              EnclaveMessageType = "ok"
 	EnclaveMessageTypeError           EnclaveMessageType = "error"
@@ -70,6 +75,12 @@ type EnclaveMessage struct {
 	// Handler loading fields
 	HandlerID      string `json:"handler_id,omitempty"`
 	HandlerVersion string `json:"handler_version,omitempty"`
+
+	// KMS fields (for Nitro attestation-based sealing)
+	KMSKeyID     string `json:"kms_key_id,omitempty"`     // KMS key ARN
+	Plaintext    []byte `json:"plaintext,omitempty"`      // Data to encrypt (for encrypt)
+	Ciphertext   []byte `json:"ciphertext,omitempty"`     // Encrypted data (for decrypt)
+	CiphertextDEK []byte `json:"ciphertext_dek,omitempty"` // Encrypted DEK from KMS
 }
 
 // VsockClient handles communication with the enclave

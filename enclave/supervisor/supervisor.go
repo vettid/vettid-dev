@@ -17,6 +17,7 @@ type Supervisor struct {
 	vaults        *VaultManager
 	memoryManager *MemoryManager
 	handlerCache  *HandlerCache
+	sealer        *NitroSealer
 	vsock         Listener
 
 	// Active connection to parent (for sending vault-initiated messages)
@@ -38,14 +39,18 @@ func NewSupervisor(cfg *Config) (*Supervisor, error) {
 	// Create handler cache for shared WASM handlers
 	handlerCache := NewHandlerCache()
 
+	// Create sealer (connection will be set when parent connects)
+	sealer := NewNitroSealer(nil)
+
 	s := &Supervisor{
 		config:        cfg,
 		memoryManager: memMgr,
 		handlerCache:  handlerCache,
+		sealer:        sealer,
 	}
 
 	// Create vault manager with reference to supervisor for outbound messages
-	s.vaults = NewVaultManager(cfg, memMgr, handlerCache, s)
+	s.vaults = NewVaultManager(cfg, memMgr, handlerCache, s, sealer)
 
 	return s, nil
 }
@@ -99,12 +104,17 @@ func (s *Supervisor) handleConnection(ctx context.Context, conn Connection) {
 		s.parentConnMu.Unlock()
 		// Clear handler fetcher when connection is closed
 		s.handlerCache.SetFetcher(nil)
+		// Clear sealer connection
+		s.sealer.SetConnection(nil)
 	}()
 
 	// Store connection for outbound messages from vaults
 	s.parentConnMu.Lock()
 	s.parentConn = conn
 	s.parentConnMu.Unlock()
+
+	// Set connection for sealer (for KMS operations)
+	s.sealer.SetConnection(conn)
 
 	// Set up handler fetcher that uses this connection
 	// This closure captures 'conn' so handlers can be fetched during message processing

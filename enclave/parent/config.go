@@ -26,6 +26,17 @@ type Config struct {
 
 	// Handler loading configuration
 	Handlers HandlerConfig `yaml:"handlers"`
+
+	// KMS configuration for Nitro attestation-based sealing
+	KMS KMSConfig `yaml:"kms"`
+}
+
+// KMSConfig holds KMS settings for Nitro sealing
+type KMSConfig struct {
+	// KMS key ARN for sealing (must have attestation-based policy)
+	SealingKeyARN string `yaml:"sealing_key_arn"`
+	// AWS region
+	Region string `yaml:"region"`
 }
 
 // NATSConfig holds NATS connection settings
@@ -123,6 +134,10 @@ func DefaultConfig() *Config {
 			Region:             "us-east-1",
 			SigningKeySecretID: "vettid/handler-signing-key",
 			ManifestCacheTTL:   30, // 30 seconds
+		},
+		KMS: KMSConfig{
+			SealingKeyARN: "", // Must be configured in production
+			Region:        "us-east-1",
 		},
 	}
 }

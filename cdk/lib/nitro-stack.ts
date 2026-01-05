@@ -62,9 +62,6 @@ export class NitroStack extends cdk.Stack {
   // IAM for enclave instances
   public readonly enclaveInstanceRole: iam.Role;
 
-  // SSM Parameters
-  public readonly enclaveAmiParameter: ssm.StringParameter;
-
   constructor(scope: Construct, id: string, props?: NitroStackProps) {
     super(scope, id, props);
 
@@ -94,6 +91,38 @@ export class NitroStack extends cdk.Stack {
     });
 
     this.privateSubnetIds = this.vpc.privateSubnets.map(s => s.subnetId);
+
+    // ===== KMS KEY FOR NITRO SEALING =====
+    // This key is used for envelope encryption of vault credentials
+    // The key policy requires attestation for decryption, binding to PCR values
+    //
+    // SECURITY MODEL:
+    // - Encrypt/GenerateDataKey: Allowed without attestation (parent can encrypt)
+    // - Decrypt: REQUIRES PCR0 attestation (only correct enclave build can decrypt)
+    //
+    // This ensures that even if an attacker compromises the EC2 host, they cannot
+    // decrypt sealed credentials without running the exact enclave code that was
+    // measured into PCR0.
+    //
+    // PCR0 is updated in SSM during each AMI build. When deploying CDK, the current
+    // PCR0 value is read from SSM and embedded in the key policy.
+    const pcr0Value = ssm.StringParameter.valueForStringParameter(
+      this,
+      '/vettid/enclave/pcr/pcr0'
+    );
+
+    const sealingKey = new cdk.aws_kms.Key(this, 'EnclaveSealingKey', {
+      alias: 'vettid-enclave-sealing',
+      description: 'KMS key for VettID Nitro Enclave credential sealing',
+      enableKeyRotation: true,
+      // Custom key policy is defined below
+    });
+
+    // Output the sealing key ARN for configuration
+    new cdk.CfnOutput(this, 'EnclaveSealingKeyArn', {
+      value: sealingKey.keyArn,
+      description: 'KMS key ARN for enclave sealing (configure in parent.yaml)',
+    });
 
     // ===== S3 BUCKET FOR VAULT DATA =====
     // All vault data is encrypted by the enclave before storage
@@ -344,11 +373,46 @@ export class NitroStack extends cdk.Stack {
     // S3 access for vault data bucket
     this.vaultDataBucket.grantReadWrite(this.enclaveInstanceRole);
 
-    // KMS access for Nitro attestation (if using KMS for sealing)
-    // The enclave uses Nitro's built-in sealing for PCR-based encryption
-    // which doesn't require explicit KMS permissions
-    // However, if we add KMS-based sealing in the future:
-    // kmsKey.grantEncryptDecrypt(this.enclaveInstanceRole);
+    // KMS access for Nitro Enclave envelope encryption
+    // The parent process (EC2 host) calls KMS on behalf of the enclave:
+    // - Encrypt/GenerateDataKey: No attestation needed (parent encrypts DEKs)
+    // - Decrypt: REQUIRES PCR0 attestation - KMS validates the attestation document
+    //   and only returns CiphertextForRecipient if PCR0 matches
+    //
+    // Key policy statements (KMS resource-based policy):
+
+    // Statement 1: Allow Encrypt and GenerateDataKey without attestation
+    // This lets the parent process seal new credentials
+    sealingKey.addToResourcePolicy(new iam.PolicyStatement({
+      sid: 'AllowEnclaveEncrypt',
+      effect: iam.Effect.ALLOW,
+      principals: [new iam.ArnPrincipal(this.enclaveInstanceRole.roleArn)],
+      actions: ['kms:Encrypt', 'kms:GenerateDataKey'],
+      resources: ['*'],
+    }));
+
+    // Statement 2: Allow Decrypt ONLY with valid PCR0 attestation
+    // This ensures only the exact enclave build can unseal credentials
+    sealingKey.addToResourcePolicy(new iam.PolicyStatement({
+      sid: 'AllowEnclaveDecrypt',
+      effect: iam.Effect.ALLOW,
+      principals: [new iam.ArnPrincipal(this.enclaveInstanceRole.roleArn)],
+      actions: ['kms:Decrypt'],
+      resources: ['*'],
+      conditions: {
+        StringEqualsIgnoreCase: {
+          'kms:RecipientAttestation:PCR0': pcr0Value,
+        },
+      },
+    }));
+
+    // Store sealing key ARN in SSM for parent process configuration
+    const sealingKeyArnParam = new ssm.StringParameter(this, 'SealingKeyArnParameter', {
+      parameterName: '/vettid/nitro/sealing-key-arn',
+      description: 'ARN of the KMS key used for Nitro Enclave credential sealing',
+      stringValue: sealingKey.keyArn,
+      tier: ssm.ParameterTier.STANDARD,
+    });
 
     // EC2 describe for self-discovery
     this.enclaveInstanceRole.addToPolicy(new iam.PolicyStatement({
@@ -394,22 +458,22 @@ export class NitroStack extends cdk.Stack {
       }));
     }
 
-    // ===== SSM PARAMETER FOR AMI ID =====
-    // The enclave AMI ID is stored in SSM for easy updates
-    this.enclaveAmiParameter = new ssm.StringParameter(this, 'EnclaveAmiParameter', {
-      parameterName: '/vettid/enclave/ami-id',
-      description: 'AMI ID for VettID Nitro Enclave instances',
-      stringValue: 'ami-030b618202b5577e7', // Built 2025-01-02 via Packer
-      tier: ssm.ParameterTier.STANDARD,
-    });
+    // ===== AMI FROM SSM PARAMETER =====
+    // The AMI ID is managed externally (set by Packer during AMI builds)
+    // CDK reads this at deploy time - no need for hardcoded AMI IDs
+    // Workflow: Build AMI → Packer updates SSM → Deploy CDK → Instance Refresh
+    const enclaveAmiId = ssm.StringParameter.valueForStringParameter(
+      this,
+      '/vettid/enclave/ami-id'
+    );
 
     // ===== AUTO SCALING GROUP =====
     // Create launch template with Nitro enclave enabled
     const launchTemplate = new ec2.LaunchTemplate(this, 'EnclaveLaunchTemplate', {
       launchTemplateName: 'vettid-enclave-template',
-      // Use the pre-built Nitro Enclave AMI (built via Packer)
+      // AMI is read from SSM at deploy time - no hardcoding required
       machineImage: ec2.MachineImage.genericLinux({
-        'us-east-1': 'ami-030b618202b5577e7', // Built 2025-01-02
+        'us-east-1': enclaveAmiId,
       }),
       instanceType: ec2.InstanceType.of(
         ec2.InstanceClass.C6A,
@@ -619,7 +683,12 @@ export class NitroStack extends cdk.Stack {
       'chown root:root /etc/vettid/nats.creds',
       'echo "NATS credentials written to /etc/vettid/nats.creds"',
       '',
-      '# Update parent config to use NATS credentials',
+      '# Fetch KMS sealing key ARN from SSM',
+      'echo "Fetching KMS sealing key ARN from SSM..."',
+      'KMS_SEALING_KEY_ARN=$(aws ssm get-parameter --name /vettid/nitro/sealing-key-arn --region $REGION --query Parameter.Value --output text)',
+      'echo "KMS sealing key ARN: $KMS_SEALING_KEY_ARN"',
+      '',
+      '# Update parent config to use NATS credentials and KMS',
       'cat > /etc/vettid/parent.yaml << EOF',
       '# VettID Nitro Enclave Parent Configuration',
       '',
@@ -646,6 +715,10 @@ export class NitroStack extends cdk.Stack {
       'health:',
       '  port: 8080',
       '  check_interval: 30s',
+      '',
+      'kms:',
+      '  sealing_key_arn: $KMS_SEALING_KEY_ARN',
+      '  region: $REGION',
       '',
       'logging:',
       '  level: info',

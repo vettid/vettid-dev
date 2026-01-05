@@ -43,6 +43,11 @@ const (
 	MessageTypeHandlerGet      MessageType = "handler_get"
 	MessageTypeHandlerResponse MessageType = "handler_response"
 
+	// KMS operations (for Nitro attestation-based sealing)
+	MessageTypeKMSEncrypt  MessageType = "kms_encrypt"
+	MessageTypeKMSDecrypt  MessageType = "kms_decrypt"
+	MessageTypeKMSResponse MessageType = "kms_response"
+
 	// Error
 	MessageTypeError MessageType = "error"
 	MessageTypeOK    MessageType = "ok"
@@ -79,6 +84,12 @@ type Message struct {
 	// Handler loading
 	HandlerID      string `json:"handler_id,omitempty"`
 	HandlerVersion string `json:"handler_version,omitempty"`
+
+	// KMS operations (for Nitro attestation-based sealing)
+	KMSKeyID      string `json:"kms_key_id,omitempty"`
+	Plaintext     []byte `json:"plaintext,omitempty"`
+	Ciphertext    []byte `json:"ciphertext,omitempty"`
+	CiphertextDEK []byte `json:"ciphertext_dek,omitempty"`
 
 	// Error
 	Error string `json:"error,omitempty"`

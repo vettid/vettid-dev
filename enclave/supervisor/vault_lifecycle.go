@@ -2,11 +2,15 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
+	"fmt"
 	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
+	"golang.org/x/crypto/argon2"
 )
 
 // ParentSender is the interface for sending messages to parent
@@ -20,6 +24,7 @@ type VaultManager struct {
 	memoryManager *MemoryManager
 	handlerCache  *HandlerCache
 	parentSender  ParentSender
+	sealer        *NitroSealer
 
 	vaults    map[string]*VaultProcess
 	lruOrder  []string // Least recently used order for eviction
@@ -34,6 +39,7 @@ type VaultProcess struct {
 	LastAccess   time.Time
 	MemoryMB     int
 	parentSender ParentSender
+	sealer       *NitroSealer
 
 	// Communication channels
 	requestChan  chan *vaultRequest
@@ -111,12 +117,13 @@ type VaultStats struct {
 }
 
 // NewVaultManager creates a new vault manager
-func NewVaultManager(cfg *Config, memMgr *MemoryManager, cache *HandlerCache, parentSender ParentSender) *VaultManager {
+func NewVaultManager(cfg *Config, memMgr *MemoryManager, cache *HandlerCache, parentSender ParentSender, sealer *NitroSealer) *VaultManager {
 	return &VaultManager{
 		config:        cfg,
 		memoryManager: memMgr,
 		handlerCache:  cache,
 		parentSender:  parentSender,
+		sealer:        sealer,
 		vaults:        make(map[string]*VaultProcess),
 		lruOrder:      make([]string, 0),
 		startTime:     time.Now(),
@@ -147,6 +154,7 @@ func (vm *VaultManager) GetOrCreate(ctx context.Context, ownerSpace string) (*Va
 		LastAccess:   time.Now(),
 		MemoryMB:     40, // Estimated memory per vault
 		parentSender: vm.parentSender,
+		sealer:       vm.sealer,
 		requestChan:  make(chan *vaultRequest, 10),
 		responseChan: make(chan *vaultResponse, 10),
 		stopChan:     make(chan struct{}),
@@ -709,35 +717,212 @@ func (vp *VaultProcess) publishToVault(targetOwnerSpace string, eventType string
 }
 
 // CreateCredential creates a new Protean Credential
+// This implements the core credential creation flow:
+// 1. Decrypt PIN (currently accepts plaintext for dev, encrypted for production)
+// 2. Generate Ed25519 identity keypair
+// 3. Generate vault master secret
+// 4. Hash PIN with Argon2id
+// 5. Create credential structure
+// 6. Seal credential using KMS-backed envelope encryption
+// 7. Return sealed credential blob
 func (vp *VaultProcess) CreateCredential(ctx context.Context, req *CredentialRequest) ([]byte, error) {
-	// TODO: Implement credential creation
-	// 1. Decrypt PIN using enclave's private key
-	// 2. Generate identity keypair (Ed25519)
-	// 3. Generate vault master secret
-	// 4. Hash PIN with Argon2id
-	// 5. Create credential structure
-	// 6. Seal credential to PCRs
-	// 7. Return sealed credential blob
+	if req == nil {
+		return nil, fmt.Errorf("credential request is nil")
+	}
+	if len(req.EncryptedPIN) == 0 {
+		return nil, fmt.Errorf("PIN is required")
+	}
 
-	return nil, ErrNotImplemented
+	log.Info().
+		Str("owner_space", vp.OwnerSpace).
+		Str("auth_type", req.AuthType).
+		Msg("Creating credential")
+
+	// 1. Get PIN from request
+	// TODO: In production, decrypt PIN using ECIES with attestation-bound key
+	// For now, we accept the PIN directly (suitable for internal/dev use)
+	pin := req.EncryptedPIN
+
+	// Validate PIN length (minimum 4 digits/chars, maximum 64)
+	if len(pin) < 4 || len(pin) > 64 {
+		return nil, fmt.Errorf("PIN must be between 4 and 64 characters")
+	}
+
+	// 2. Generate Ed25519 identity keypair
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate identity keypair: %w", err)
+	}
+
+	// 3. Generate vault master secret (256 bits)
+	vaultMasterSecret := make([]byte, 32)
+	if _, err := rand.Read(vaultMasterSecret); err != nil {
+		return nil, fmt.Errorf("failed to generate vault master secret: %w", err)
+	}
+
+	// 4. Hash PIN with Argon2id
+	// Using OWASP recommended parameters for password hashing
+	// Memory: 64 MB, Iterations: 3, Parallelism: 4
+	authSalt := make([]byte, 16)
+	if _, err := rand.Read(authSalt); err != nil {
+		return nil, fmt.Errorf("failed to generate auth salt: %w", err)
+	}
+	authHash := argon2.IDKey(pin, authSalt, 3, 64*1024, 4, 32)
+
+	// 5. Create credential structure
+	credential := &UnsealedCredential{
+		IdentityPrivateKey: privateKey,
+		IdentityPublicKey:  publicKey,
+		VaultMasterSecret:  vaultMasterSecret,
+		AuthHash:           authHash,
+		AuthSalt:           authSalt,
+		AuthType:           req.AuthType,
+		CryptoKeys:         make([]CryptoKey, 0),
+		CreatedAt:          time.Now().Unix(),
+		Version:            1,
+	}
+
+	// Marshal credential to JSON for sealing
+	credentialJSON, err := json.Marshal(credential)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal credential: %w", err)
+	}
+
+	// 6. Seal credential using KMS-backed envelope encryption
+	if vp.sealer == nil {
+		return nil, fmt.Errorf("sealer not initialized")
+	}
+
+	sealedCredential, err := vp.sealer.Seal(credentialJSON)
+	if err != nil {
+		return nil, fmt.Errorf("failed to seal credential: %w", err)
+	}
+
+	log.Info().
+		Str("owner_space", vp.OwnerSpace).
+		Int("sealed_size", len(sealedCredential)).
+		Msg("Credential created and sealed")
+
+	// Zero sensitive data from memory
+	for i := range privateKey {
+		privateKey[i] = 0
+	}
+	for i := range vaultMasterSecret {
+		vaultMasterSecret[i] = 0
+	}
+	for i := range credentialJSON {
+		credentialJSON[i] = 0
+	}
+
+	return sealedCredential, nil
 }
 
 // UnsealCredential unseals and verifies a credential
+// This implements the credential unlock flow:
+// 1. Unseal credential using KMS-backed envelope encryption
+// 2. Verify challenge response (PIN/password/pattern) using Argon2id
+// 3. Store unsealed credential in enclave memory
+// 4. Generate session token
+// 5. Return session token with expiry
 func (vp *VaultProcess) UnsealCredential(ctx context.Context, sealed []byte, challenge *Challenge) (*UnsealResult, error) {
-	// TODO: Implement credential unsealing
-	// 1. Unseal credential using PCR-bound key
-	// 2. Verify challenge response (PIN/password/pattern)
-	// 3. Store unsealed credential in enclave memory
-	// 4. Generate session token
-	// 5. Return session token
+	if len(sealed) == 0 {
+		return nil, fmt.Errorf("sealed credential is empty")
+	}
+	if challenge == nil || len(challenge.Response) == 0 {
+		return nil, fmt.Errorf("challenge response is required")
+	}
 
-	return nil, ErrNotImplemented
+	log.Info().
+		Str("owner_space", vp.OwnerSpace).
+		Str("challenge_id", challenge.ChallengeID).
+		Msg("Unsealing credential")
+
+	// 1. Unseal credential using KMS-backed envelope encryption
+	if vp.sealer == nil {
+		return nil, fmt.Errorf("sealer not initialized")
+	}
+
+	unsealedJSON, err := vp.sealer.Unseal(sealed)
+	if err != nil {
+		log.Warn().
+			Str("owner_space", vp.OwnerSpace).
+			Err(err).
+			Msg("Failed to unseal credential")
+		return nil, fmt.Errorf("failed to unseal credential: %w", err)
+	}
+
+	// Parse credential
+	var credential UnsealedCredential
+	if err := json.Unmarshal(unsealedJSON, &credential); err != nil {
+		return nil, fmt.Errorf("failed to parse credential: %w", err)
+	}
+
+	// 2. Verify challenge response (PIN/password/pattern)
+	// The challenge.Response is the PIN/password provided by the user
+	// We hash it with the stored salt and compare to stored hash
+	providedHash := argon2.IDKey(challenge.Response, credential.AuthSalt, 3, 64*1024, 4, 32)
+
+	// Constant-time comparison to prevent timing attacks
+	if !constantTimeCompare(providedHash, credential.AuthHash) {
+		log.Warn().
+			Str("owner_space", vp.OwnerSpace).
+			Msg("Invalid PIN/password")
+		// Zero the unsealed data before returning
+		for i := range unsealedJSON {
+			unsealedJSON[i] = 0
+		}
+		return nil, ErrInvalidAuth
+	}
+
+	// 3. Store unsealed credential in enclave memory
+	vp.mu.Lock()
+	vp.credential = &credential
+	vp.mu.Unlock()
+
+	// 4. Generate session token (256 bits of entropy)
+	sessionToken := make([]byte, 32)
+	if _, err := rand.Read(sessionToken); err != nil {
+		return nil, fmt.Errorf("failed to generate session token: %w", err)
+	}
+
+	// Session expires in 24 hours
+	expiresAt := time.Now().Add(24 * time.Hour).Unix()
+
+	log.Info().
+		Str("owner_space", vp.OwnerSpace).
+		Int64("expires_at", expiresAt).
+		Msg("Credential unsealed successfully")
+
+	// Zero the JSON copy (credential is now stored in vp.credential)
+	for i := range unsealedJSON {
+		unsealedJSON[i] = 0
+	}
+
+	// 5. Return session token
+	return &UnsealResult{
+		SessionToken: sessionToken,
+		ExpiresAt:    expiresAt,
+	}, nil
+}
+
+// constantTimeCompare performs a constant-time comparison of two byte slices
+// to prevent timing attacks
+func constantTimeCompare(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	var result byte
+	for i := range a {
+		result |= a[i] ^ b[i]
+	}
+	return result == 0
 }
 
 // Errors
 var (
 	ErrOutOfMemory    = &Error{Code: "OUT_OF_MEMORY", Message: "Not enough memory to create vault"}
 	ErrNotImplemented = &Error{Code: "NOT_IMPLEMENTED", Message: "Feature not yet implemented"}
+	ErrInvalidAuth    = &Error{Code: "INVALID_AUTH", Message: "Invalid PIN, password, or pattern"}
 )
 
 // Error represents an error with a code

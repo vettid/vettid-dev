@@ -18,6 +18,7 @@ type ParentProcess struct {
 	vsockClient   *VsockClient
 	healthSrv     *HealthServer
 	handlerLoader *HandlerLoader
+	kmsClient     *KMSClient
 	mu            sync.RWMutex
 }
 
@@ -69,6 +70,19 @@ func (p *ParentProcess) Run(ctx context.Context) error {
 		Str("bucket", p.config.Handlers.Bucket).
 		Str("manifest_table", p.config.Handlers.ManifestTable).
 		Msg("Handler loader initialized")
+
+	// Create KMS client for Nitro attestation-based sealing
+	kmsClient, err := NewKMSClient(p.config.KMS)
+	if err != nil {
+		return fmt.Errorf("failed to create KMS client: %w", err)
+	}
+	p.kmsClient = kmsClient
+
+	if p.config.KMS.SealingKeyARN != "" {
+		log.Info().Str("key_arn", p.config.KMS.SealingKeyARN).Msg("KMS client initialized")
+	} else {
+		log.Warn().Msg("KMS sealing key not configured - enclave sealing will use dev mode")
+	}
 
 	// Connect to enclave via vsock
 	vsockClient, err := NewVsockClient(p.config.Enclave, p.config.DevMode)
@@ -429,6 +443,10 @@ func (p *ParentProcess) handleEnclaveRequest(ctx context.Context, msg *EnclaveMe
 		return p.handleHealthCheck(ctx, msg)
 	case EnclaveMessageTypeHandlerGet:
 		return p.handleHandlerGet(ctx, msg)
+	case EnclaveMessageTypeKMSEncrypt:
+		return p.handleKMSEncrypt(ctx, msg)
+	case EnclaveMessageTypeKMSDecrypt:
+		return p.handleKMSDecrypt(ctx, msg)
 	default:
 		return nil, fmt.Errorf("unknown message type: %s", msg.Type)
 	}
@@ -514,6 +532,58 @@ func (p *ParentProcess) handleHandlerGet(ctx context.Context, msg *EnclaveMessag
 		HandlerID:      msg.HandlerID,
 		HandlerVersion: version,
 		Payload:        wasmBytes,
+	}, nil
+}
+
+// handleKMSEncrypt encrypts data using KMS (for envelope encryption)
+// Used by the enclave to encrypt a DEK before storing sealed data
+func (p *ParentProcess) handleKMSEncrypt(ctx context.Context, msg *EnclaveMessage) (*EnclaveMessage, error) {
+	if len(msg.Plaintext) == 0 {
+		return nil, fmt.Errorf("plaintext is required for KMS encrypt")
+	}
+
+	log.Debug().
+		Int("plaintext_len", len(msg.Plaintext)).
+		Msg("Encrypting data with KMS")
+
+	ciphertext, err := p.kmsClient.Encrypt(ctx, msg.Plaintext)
+	if err != nil {
+		return nil, fmt.Errorf("KMS encrypt failed: %w", err)
+	}
+
+	return &EnclaveMessage{
+		Type:          EnclaveMessageTypeKMSResponse,
+		CiphertextDEK: ciphertext,
+	}, nil
+}
+
+// handleKMSDecrypt decrypts data using KMS with attestation
+// The attestation document must contain PCR values that match the key policy
+// This is the core of Nitro attestation-based sealing
+func (p *ParentProcess) handleKMSDecrypt(ctx context.Context, msg *EnclaveMessage) (*EnclaveMessage, error) {
+	if len(msg.CiphertextDEK) == 0 {
+		return nil, fmt.Errorf("ciphertext_dek is required for KMS decrypt")
+	}
+
+	if msg.Attestation == nil || len(msg.Attestation.Document) == 0 {
+		return nil, fmt.Errorf("attestation document is required for KMS decrypt")
+	}
+
+	log.Debug().
+		Int("ciphertext_len", len(msg.CiphertextDEK)).
+		Int("attestation_len", len(msg.Attestation.Document)).
+		Msg("Decrypting data with KMS using attestation")
+
+	// Call KMS with attestation - this returns CiphertextForRecipient
+	// which is the plaintext encrypted to the enclave's public key
+	result, err := p.kmsClient.DecryptWithAttestation(ctx, msg.CiphertextDEK, msg.Attestation.Document)
+	if err != nil {
+		return nil, fmt.Errorf("KMS decrypt with attestation failed: %w", err)
+	}
+
+	return &EnclaveMessage{
+		Type:    EnclaveMessageTypeKMSResponse,
+		Payload: result, // CiphertextForRecipient - enclave must decrypt with its private key
 	}, nil
 }
 
