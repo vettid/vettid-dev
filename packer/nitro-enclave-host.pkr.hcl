@@ -187,7 +187,13 @@ build {
       "PUBLISHED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)",
 
       "# Create SSM parameters with versioning",
+      "# Combined JSON parameter (for reference)",
       "aws ssm put-parameter --name '/vettid/enclave/pcr/current' --type 'String' --overwrite --value \"$(echo $PCR_JSON | jq -c '{PCR0: .Measurements.PCR0, PCR1: .Measurements.PCR1, PCR2: .Measurements.PCR2, version: \"'$VERSION'\", published_at: \"'$PUBLISHED_AT'\"}')\" --region ${var.aws_region}",
+
+      "# Individual PCR parameters (used by CDK for KMS key policy)",
+      "aws ssm put-parameter --name '/vettid/enclave/pcr/pcr0' --type 'String' --overwrite --value \"$PCR0\" --region ${var.aws_region}",
+      "aws ssm put-parameter --name '/vettid/enclave/pcr/pcr1' --type 'String' --overwrite --value \"$PCR1\" --region ${var.aws_region}",
+      "aws ssm put-parameter --name '/vettid/enclave/pcr/pcr2' --type 'String' --overwrite --value \"$PCR2\" --region ${var.aws_region}",
 
       "echo '=== PCR values uploaded to SSM ==='",
       "echo \"PCR0: $PCR0\"",
@@ -359,5 +365,17 @@ build {
   post-processor "manifest" {
     output     = "manifest.json"
     strip_path = true
+  }
+
+  # Update SSM with the new AMI ID after build completes
+  post-processor "shell-local" {
+    inline = [
+      "echo '=== Updating AMI ID in SSM Parameter Store ==='",
+      "AMI_ID=$(jq -r '.builds[-1].artifact_id | split(\":\")[1]' manifest.json)",
+      "echo \"New AMI ID: $AMI_ID\"",
+      "aws ssm put-parameter --name '/vettid/enclave/ami-id' --type 'String' --overwrite --value \"$AMI_ID\" --region ${var.aws_region}",
+      "echo '=== SSM parameters updated ==='",
+      "echo 'Ready for CDK deploy to pick up new AMI and PCR values'",
+    ]
   }
 }
