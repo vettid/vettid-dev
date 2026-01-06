@@ -1584,5 +1584,6 @@ export class AdminStack extends cdk.Stack {
     this.route('ListVaultDeletionRequests', httpApi, '/admin/vault-deletion-requests', apigw.HttpMethod.GET, this.listVaultDeletionRequests, adminAuthorizer);
     this.route('CancelRecoveryRequest', httpApi, '/admin/credential-recovery-requests/{recovery_id}/cancel', apigw.HttpMethod.POST, this.cancelRecoveryRequest, adminAuthorizer);
     this.route('CancelDeletionRequest', httpApi, '/admin/vault-deletion-requests/{request_id}/cancel', apigw.HttpMethod.POST, this.cancelDeletionRequest, adminAuthorizer);
+
   }
 }

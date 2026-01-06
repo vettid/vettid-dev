@@ -26,6 +26,14 @@ const core = new VettIdStack(app, 'VettIDStack', {
   infrastructure,
 });
 
+// 5. Deploy Nitro Enclave stack (multi-tenant vault architecture)
+// This creates the VPC, ALB, and S3 bucket for Nitro Enclave instances
+// Moved before AdminStack to allow PCR manifest management
+const nitro = new NitroStack(app, 'VettID-Nitro', {
+  env,
+  infrastructure, // For dynamic handler loading (DynamoDB manifest, S3 handlers)
+});
+
 // 3. Deploy admin stack (admin Lambda functions + API routes)
 // Routes are added in AdminStack to stay under CloudFormation's 500 resource limit
 const admin = new AdminStack(app, 'VettID-Admin', {
@@ -41,13 +49,6 @@ const admin = new AdminStack(app, 'VettID-Admin', {
 const ledger = new LedgerStack(app, 'VettID-Ledger', {
   env,
   environment: (process.env.ENVIRONMENT as 'development' | 'staging' | 'production') || 'development',
-});
-
-// 5. Deploy Nitro Enclave stack (multi-tenant vault architecture)
-// This creates the VPC, ALB, and S3 bucket for Nitro Enclave instances
-const nitro = new NitroStack(app, 'VettID-Nitro', {
-  env,
-  infrastructure, // For dynamic handler loading (DynamoDB manifest, S3 handlers)
 });
 
 // 6. Deploy NATS infrastructure stack (VPC, EC2 cluster, NLB)

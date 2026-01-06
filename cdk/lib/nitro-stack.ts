@@ -7,6 +7,9 @@ import {
   aws_autoscaling as autoscaling,
   aws_cloudwatch as cloudwatch,
   aws_ssm as ssm,
+  aws_route53 as route53,
+  aws_route53_targets as route53Targets,
+  aws_certificatemanager as acm,
   custom_resources as cr,
 } from 'aws-cdk-lib';
 
@@ -61,6 +64,10 @@ export class NitroStack extends cdk.Stack {
 
   // IAM for enclave instances
   public readonly enclaveInstanceRole: iam.Role;
+
+  // PCR manifest signing (for mobile attestation)
+  public readonly pcrSigningKey!: cdk.aws_kms.Key;
+  public readonly pcrManifestBucket!: s3.Bucket;
 
   constructor(scope: Construct, id: string, props?: NitroStackProps) {
     super(scope, id, props);
@@ -519,6 +526,35 @@ export class NitroStack extends cdk.Stack {
       }),
     });
 
+    // ===== AUTO-SCALING POLICIES =====
+
+    // Target Tracking: Scale based on CPU utilization
+    // Maintains ~70% CPU across instances
+    this.enclaveASG.scaleOnCpuUtilization('CpuScaling', {
+      targetUtilizationPercent: 70,
+      cooldown: cdk.Duration.minutes(5),
+      estimatedInstanceWarmup: cdk.Duration.minutes(3),
+    });
+
+    // Target Tracking: Scale based on network traffic (requests per instance)
+    // This helps scale for I/O-bound workloads like vault operations
+    this.enclaveASG.scaleOnIncomingBytes('NetworkInScaling', {
+      targetBytesPerSecond: 50 * 1024 * 1024, // 50 MB/s per instance
+      cooldown: cdk.Duration.minutes(5),
+      estimatedInstanceWarmup: cdk.Duration.minutes(3),
+    });
+
+    // Scheduled scaling: Ensure minimum capacity during business hours (optional)
+    // Uncomment for production:
+    // this.enclaveASG.scaleOnSchedule('ScaleUpMorning', {
+    //   schedule: autoscaling.Schedule.cron({ hour: '8', minute: '0', weekDay: 'MON-FRI' }),
+    //   minCapacity: 2,
+    // });
+    // this.enclaveASG.scaleOnSchedule('ScaleDownEvening', {
+    //   schedule: autoscaling.Schedule.cron({ hour: '20', minute: '0', weekDay: 'MON-FRI' }),
+    //   minCapacity: 1,
+    // });
+
     // Tags for the ASG instances
     cdk.Tags.of(this.enclaveASG).add('Application', 'vettid-enclave');
     cdk.Tags.of(this.enclaveASG).add('Purpose', 'Nitro Enclave Host');
@@ -530,9 +566,67 @@ export class NitroStack extends cdk.Stack {
 
     dashboard.addWidgets(
       new cloudwatch.TextWidget({
-        markdown: '# VettID Nitro Enclave Monitoring\nMulti-tenant vault infrastructure',
+        markdown: '# VettID Nitro Enclave Monitoring\nMulti-tenant vault infrastructure | Auto-scaling: CPU 70% target | Min: 1, Max: 3',
         width: 24,
         height: 1,
+      }),
+    );
+
+    // Scaling activity row
+    dashboard.addWidgets(
+      new cloudwatch.GraphWidget({
+        title: 'Scaling Activity',
+        left: [
+          new cloudwatch.Metric({
+            namespace: 'AWS/AutoScaling',
+            metricName: 'GroupDesiredCapacity',
+            dimensionsMap: { AutoScalingGroupName: this.enclaveASG.autoScalingGroupName },
+            statistic: 'Average',
+            period: cdk.Duration.minutes(1),
+            label: 'Desired',
+          }),
+          new cloudwatch.Metric({
+            namespace: 'AWS/AutoScaling',
+            metricName: 'GroupInServiceInstances',
+            dimensionsMap: { AutoScalingGroupName: this.enclaveASG.autoScalingGroupName },
+            statistic: 'Average',
+            period: cdk.Duration.minutes(1),
+            label: 'In Service',
+          }),
+          new cloudwatch.Metric({
+            namespace: 'AWS/AutoScaling',
+            metricName: 'GroupPendingInstances',
+            dimensionsMap: { AutoScalingGroupName: this.enclaveASG.autoScalingGroupName },
+            statistic: 'Sum',
+            period: cdk.Duration.minutes(1),
+            label: 'Pending',
+          }),
+        ],
+        width: 12,
+        height: 6,
+      }),
+      new cloudwatch.GraphWidget({
+        title: 'Network I/O (Scaling Trigger)',
+        left: [
+          new cloudwatch.Metric({
+            namespace: 'AWS/EC2',
+            metricName: 'NetworkIn',
+            dimensionsMap: { AutoScalingGroupName: this.enclaveASG.autoScalingGroupName },
+            statistic: 'Sum',
+            period: cdk.Duration.minutes(1),
+            label: 'Network In',
+          }),
+          new cloudwatch.Metric({
+            namespace: 'AWS/EC2',
+            metricName: 'NetworkOut',
+            dimensionsMap: { AutoScalingGroupName: this.enclaveASG.autoScalingGroupName },
+            statistic: 'Sum',
+            period: cdk.Duration.minutes(1),
+            label: 'Network Out',
+          }),
+        ],
+        width: 12,
+        height: 6,
       }),
     );
 
@@ -626,10 +720,129 @@ export class NitroStack extends cdk.Stack {
       comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
     });
 
+    // ===== PCR MANIFEST SIGNING (FOR MOBILE ATTESTATION) =====
+    // This KMS key signs PCR manifests that mobile apps fetch dynamically.
+    // Mobile apps embed the public key and verify signatures before trusting PCRs.
+    // This allows PCR updates without requiring app store releases.
+
+    this.pcrSigningKey = new cdk.aws_kms.Key(this, 'PcrSigningKey', {
+      alias: 'vettid-pcr-signing',
+      description: 'ECDSA key for signing PCR manifests (mobile attestation)',
+      keySpec: cdk.aws_kms.KeySpec.ECC_NIST_P256,
+      keyUsage: cdk.aws_kms.KeyUsage.SIGN_VERIFY,
+      enableKeyRotation: false, // Asymmetric keys don't support rotation
+    });
+
+    // S3 bucket for PCR manifest (publicly readable via CloudFront)
+    this.pcrManifestBucket = new s3.Bucket(this, 'PcrManifestBucket', {
+      bucketName: `vettid-pcr-manifest-${this.account}`,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      enforceSSL: true,
+      versioned: true, // Keep history of manifest changes
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
+    // CloudFront Origin Access Identity for S3
+    const pcrManifestOai = new cdk.aws_cloudfront.OriginAccessIdentity(this, 'PcrManifestOAI', {
+      comment: 'OAI for VettID PCR manifest bucket',
+    });
+
+    this.pcrManifestBucket.grantRead(pcrManifestOai);
+
+    // Custom domain for PCR manifest
+    const pcrManifestDomainName = 'pcr-manifest.vettid.dev';
+
+    // Look up the hosted zone for vettid.dev
+    const hostedZone = route53.HostedZone.fromLookup(this, 'VettIdZone', {
+      domainName: 'vettid.dev',
+    });
+
+    // Create ACM certificate for the custom domain (must be in us-east-1 for CloudFront)
+    const pcrManifestCert = new acm.Certificate(this, 'PcrManifestCert', {
+      domainName: pcrManifestDomainName,
+      validation: acm.CertificateValidation.fromDns(hostedZone),
+    });
+
+    // CloudFront distribution for PCR manifest (global, cached)
+    const pcrManifestDistribution = new cdk.aws_cloudfront.CloudFrontWebDistribution(this, 'PcrManifestDistribution', {
+      comment: 'VettID PCR Manifest Distribution',
+      originConfigs: [
+        {
+          s3OriginSource: {
+            s3BucketSource: this.pcrManifestBucket,
+            originAccessIdentity: pcrManifestOai,
+          },
+          behaviors: [
+            {
+              isDefaultBehavior: true,
+              allowedMethods: cdk.aws_cloudfront.CloudFrontAllowedMethods.GET_HEAD_OPTIONS,
+              cachedMethods: cdk.aws_cloudfront.CloudFrontAllowedCachedMethods.GET_HEAD_OPTIONS,
+              defaultTtl: cdk.Duration.minutes(5),
+              maxTtl: cdk.Duration.minutes(15),
+              minTtl: cdk.Duration.minutes(1),
+              compress: true,
+              viewerProtocolPolicy: cdk.aws_cloudfront.ViewerProtocolPolicy.HTTPS_ONLY,
+            },
+          ],
+        },
+      ],
+      priceClass: cdk.aws_cloudfront.PriceClass.PRICE_CLASS_100, // US, Canada, Europe
+      defaultRootObject: 'pcr-manifest.json',
+      // Custom domain configuration
+      viewerCertificate: cdk.aws_cloudfront.ViewerCertificate.fromAcmCertificate(pcrManifestCert, {
+        aliases: [pcrManifestDomainName],
+        securityPolicy: cdk.aws_cloudfront.SecurityPolicyProtocol.TLS_V1_2_2021,
+      }),
+    });
+
+    // Create Route 53 alias record for the custom domain
+    new route53.ARecord(this, 'PcrManifestAliasRecord', {
+      zone: hostedZone,
+      recordName: pcrManifestDomainName,
+      target: route53.RecordTarget.fromAlias(
+        new route53Targets.CloudFrontTarget(pcrManifestDistribution)
+      ),
+    });
+
+    // Store signing key ID in SSM for reference
+    new ssm.StringParameter(this, 'PcrSigningKeyIdParam', {
+      parameterName: '/vettid/attestation/pcr-signing-key-id',
+      stringValue: this.pcrSigningKey.keyId,
+      description: 'KMS Key ID for PCR manifest signing',
+    });
+
+    // Store CloudFront URL in SSM (using custom domain)
+    new ssm.StringParameter(this, 'PcrManifestUrlParam', {
+      parameterName: '/vettid/attestation/pcr-manifest-url',
+      stringValue: `https://${pcrManifestDomainName}/pcr-manifest.json`,
+      description: 'URL for PCR manifest (mobile apps)',
+    });
+
     // ===== OUTPUTS =====
     new cdk.CfnOutput(this, 'VpcId', {
       value: this.vpc.vpcId,
       description: 'VPC ID for Nitro Enclave instances',
+    });
+
+    new cdk.CfnOutput(this, 'PcrSigningKeyArn', {
+      value: this.pcrSigningKey.keyArn,
+      description: 'KMS key ARN for PCR manifest signing',
+    });
+
+    new cdk.CfnOutput(this, 'PcrSigningKeyId', {
+      value: this.pcrSigningKey.keyId,
+      description: 'KMS key ID for PCR manifest signing',
+    });
+
+    new cdk.CfnOutput(this, 'PcrManifestBucketName', {
+      value: this.pcrManifestBucket.bucketName,
+      description: 'S3 bucket for PCR manifest',
+    });
+
+    new cdk.CfnOutput(this, 'PcrManifestUrl', {
+      value: `https://${pcrManifestDomainName}/pcr-manifest.json`,
+      description: 'URL for PCR manifest (use in mobile apps)',
     });
 
     new cdk.CfnOutput(this, 'VaultDataBucketName', {
