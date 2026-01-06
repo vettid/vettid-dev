@@ -6634,8 +6634,7 @@ function renderDeployedHandlers() {
     const statusColor = h.status === 'signed' ? '#10b981' : h.status === 'revoked' ? '#ef4444' : h.status === 'pending' ? '#f59e0b' : '#6b7280';
     const statusLabel = h.status === 'signed' ? 'Deployed' : h.status;
     return `
-      <div style="padding:20px;background:#050505;border-radius:12px;border:1px solid var(--border);transition:border-color 0.2s;"
-           onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
+      <div class="handler-card" style="padding:20px;background:#050505;border-radius:12px;border:1px solid var(--border);transition:border-color 0.2s;">
         <div style="display:flex;align-items:start;gap:12px;margin-bottom:12px;">
           <div style="width:48px;height:48px;background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:1.5rem;">
             ${h.icon || '📦'}
