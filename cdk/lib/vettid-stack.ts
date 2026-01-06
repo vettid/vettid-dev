@@ -430,6 +430,21 @@ function handler(event) {
 `),
 });
 
+// Cache policy that varies on Origin header for proper CORS caching
+// Without this, CloudFront serves cached responses with wrong CORS headers
+const corsAwareCachePolicy = new cloudfront.CachePolicy(this, 'CorsAwareCachePolicy', {
+  cachePolicyName: 'VettID-CorsAwareCachePolicy',
+  comment: 'Cache policy that varies on Origin header for CORS support',
+  defaultTtl: cdk.Duration.days(1),
+  maxTtl: cdk.Duration.days(365),
+  minTtl: cdk.Duration.seconds(0),
+  headerBehavior: cloudfront.CacheHeaderBehavior.allowList('Origin'),
+  queryStringBehavior: cloudfront.CacheQueryStringBehavior.none(),
+  cookieBehavior: cloudfront.CacheCookieBehavior.none(),
+  enableAcceptEncodingGzip: true,
+  enableAcceptEncodingBrotli: true,
+});
+
 // CloudFront distribution for vettid.dev with path-based routing
 const rootDist = new cloudfront.Distribution(this, 'RootDist', {
   webAclId: webAcl.attrArn,
@@ -438,6 +453,7 @@ const rootDist = new cloudfront.Distribution(this, 'RootDist', {
   defaultRootObject: 'index.html',
   defaultBehavior: {
     origin: siteOrigin,
+    cachePolicy: corsAwareCachePolicy,
     functionAssociations: [
       { eventType: cloudfront.FunctionEventType.VIEWER_REQUEST, function: htmlRewriteFn },
       { eventType: cloudfront.FunctionEventType.VIEWER_RESPONSE, function: securityHeadersFn }
