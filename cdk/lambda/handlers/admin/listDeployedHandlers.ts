@@ -11,7 +11,7 @@ const TABLE_HANDLERS = process.env.TABLE_HANDLERS!;
 /**
  * List deployed handlers from the registry
  *
- * Returns handlers with status 'signed' (production-ready handlers)
+ * Returns handlers with status 'active' or 'signed' (production-ready handlers)
  */
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   // Validate admin group membership
@@ -26,12 +26,14 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   }
 
   try {
-    // Query the handlers registry for signed (deployed) handlers
+    // Query the handlers registry for active/signed (deployed) handlers
+    // Note: Legacy handlers use 'active', newer ones use 'signed'
     const result = await ddb.send(new ScanCommand({
       TableName: TABLE_HANDLERS,
-      FilterExpression: '#s = :signed',
+      FilterExpression: '#s = :active OR #s = :signed',
       ExpressionAttributeNames: { '#s': 'status' },
       ExpressionAttributeValues: {
+        ':active': { S: 'active' },
         ':signed': { S: 'signed' }
       }
     }));

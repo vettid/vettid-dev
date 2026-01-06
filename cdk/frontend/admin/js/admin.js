@@ -6149,6 +6149,19 @@ async function loadBroadcastHistory() {
                         b.type === 'admin_message' ? '#10b981' : '#6b7280';
       const priorityBadge = b.priority === 'critical' ? '<span style="background:#ef4444;color:#fff;padding:2px 8px;border-radius:4px;font-size:0.7rem;margin-left:8px;">CRITICAL</span>' :
                            b.priority === 'high' ? '<span style="background:#f59e0b;color:#000;padding:2px 8px;border-radius:4px;font-size:0.7rem;margin-left:8px;">HIGH</span>' : '';
+
+      // Delivery status badge for vault broadcasts
+      let deliveryBadge = '';
+      if (isVault && b.delivery_status) {
+        const statusColor = b.delivery_status === 'delivered' ? '#10b981' :
+                           b.delivery_status === 'failed' ? '#ef4444' :
+                           b.delivery_status === 'sending' ? '#f59e0b' : '#6b7280';
+        const statusText = b.delivery_status.charAt(0).toUpperCase() + b.delivery_status.slice(1);
+        deliveryBadge = `<span style="background:${statusColor}22;color:${statusColor};padding:2px 8px;border-radius:4px;font-size:0.7rem;margin-left:8px;">${statusText}</span>`;
+      } else if (!isVault) {
+        deliveryBadge = '<span style="background:#10b98122;color:#10b981;padding:2px 8px;border-radius:4px;font-size:0.7rem;margin-left:8px;">Sent</span>';
+      }
+
       const sourceIcon = isVault ?
         '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle;"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>' :
         '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle;"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path><polyline points="22,6 12,13 2,6"></polyline></svg>';
@@ -6156,18 +6169,20 @@ async function loadBroadcastHistory() {
       return `
         <div style="padding:16px;background:#050505;border-radius:8px;border-left:4px solid ${typeColor};">
           <div style="display:flex;justify-content:space-between;align-items:start;gap:12px;margin-bottom:8px;">
-            <div style="display:flex;align-items:center;gap:8px;">
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
               <span style="color:${typeColor};">${sourceIcon}</span>
               <span style="font-weight:600;color:var(--text);">${escapeHtml(b.title)}</span>
               ${priorityBadge}
+              ${deliveryBadge}
             </div>
             <span style="color:var(--gray);font-size:0.8rem;white-space:nowrap;">${new Date(b.sent_at).toLocaleString()}</span>
           </div>
           <p style="margin:0 0 8px 0;color:var(--gray);font-size:0.9rem;line-height:1.5;">${escapeHtml(b.message?.substring(0, 200) || '')}${b.message?.length > 200 ? '...' : ''}</p>
-          <div style="display:flex;gap:16px;color:var(--gray);font-size:0.8rem;">
+          <div style="display:flex;gap:16px;color:var(--gray);font-size:0.8rem;flex-wrap:wrap;">
             <span>Type: <span style="color:${typeColor};">${b.type?.replace('_', ' ') || 'email'}</span></span>
             <span>By: ${escapeHtml(b.sent_by || '—')}</span>
             ${b.recipient_count ? `<span>Recipients: ${b.recipient_count}</span>` : ''}
+            ${isVault && b.nats_subject ? `<span>Subject: ${escapeHtml(b.nats_subject)}</span>` : ''}
           </div>
         </div>
       `;

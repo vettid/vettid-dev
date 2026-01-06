@@ -1323,22 +1323,33 @@ export class AdminStack extends cdk.Stack {
     this.forceUpdateHandler = forceUpdateHandler;
 
     // ===== COMMUNICATIONS / VAULT BROADCASTS =====
+
+    // NATS operator secret for system account credentials
+    const natsOperatorSecretForBroadcasts = cdk.aws_secretsmanager.Secret.fromSecretNameV2(
+      this, 'NatsOperatorSecretForBroadcasts', 'vettid/nats/operator-key'
+    );
+
     const broadcastEnv = {
       ...defaultEnv,
       TABLE_VAULT_BROADCASTS: tables.vaultBroadcasts.tableName,
+      NATS_DOMAIN: 'nats.vettid.dev',
+      NATS_OPERATOR_SECRET_ARN: natsOperatorSecretForBroadcasts.secretArn,
     };
 
     const sendVaultBroadcast = new lambdaNode.NodejsFunction(this, 'SendVaultBroadcastFn', {
       entry: 'lambda/handlers/admin/sendVaultBroadcast.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
       environment: broadcastEnv,
-      timeout: cdk.Duration.seconds(30),
+      timeout: cdk.Duration.seconds(60), // Increased for NATS connection
     });
 
     const listVaultBroadcasts = new lambdaNode.NodejsFunction(this, 'ListVaultBroadcastsFn', {
       entry: 'lambda/handlers/admin/listVaultBroadcasts.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
-      environment: broadcastEnv,
+      environment: {
+        ...defaultEnv,
+        TABLE_VAULT_BROADCASTS: tables.vaultBroadcasts.tableName,
+      },
       timeout: cdk.Duration.seconds(30),
     });
 
@@ -1347,6 +1358,9 @@ export class AdminStack extends cdk.Stack {
     tables.vaultBroadcasts.grantReadData(listVaultBroadcasts);
     tables.audit.grantReadWriteData(sendVaultBroadcast);
     tables.audit.grantReadWriteData(listVaultBroadcasts);
+
+    // Grant access to NATS operator secret for system account credentials
+    natsOperatorSecretForBroadcasts.grantRead(sendVaultBroadcast);
 
     this.sendVaultBroadcast = sendVaultBroadcast;
     this.listVaultBroadcasts = listVaultBroadcasts;

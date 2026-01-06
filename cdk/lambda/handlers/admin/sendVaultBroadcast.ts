@@ -1,8 +1,9 @@
 import { APIGatewayProxyHandlerV2 } from "aws-lambda";
 import { ok, badRequest, internalError, requireAdminGroup, putAudit, getAdminEmail } from "../../common/util";
-import { DynamoDBClient, PutItemCommand } from "@aws-sdk/client-dynamodb";
+import { DynamoDBClient, PutItemCommand, UpdateItemCommand } from "@aws-sdk/client-dynamodb";
 import { marshall } from "@aws-sdk/util-dynamodb";
 import { randomUUID } from "crypto";
+import { publishVaultBroadcast } from "../../common/nats-publisher";
 
 const ddb = new DynamoDBClient({});
 
@@ -99,7 +100,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       sent_by: adminEmail,
     };
 
-    // Record the broadcast in DynamoDB
+    // Record the broadcast in DynamoDB (initially queued)
     await ddb.send(new PutItemCommand({
       TableName: TABLE_VAULT_BROADCASTS,
       Item: marshall({
@@ -111,16 +112,32 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         nats_subject: natsSubject,
         sent_at: now,
         sent_by: adminEmail,
-        delivery_status: 'queued', // Will be updated by NATS bridge
+        delivery_status: 'sending',
         delivery_count: 0,
       })
     }));
 
-    // Log the broadcast for NATS delivery
-    // In production, this would trigger actual NATS publishing via:
-    // 1. SQS queue -> Lambda in VPC -> NATS
-    // 2. SSM send-command to NATS bridge instance
-    // 3. EventBridge -> Step Functions -> NATS API
+    // Publish to NATS
+    const publishResult = await publishVaultBroadcast(type, natsPayload);
+
+    // Update delivery status based on publish result
+    const deliveryStatus = publishResult.success ? 'delivered' : 'failed';
+    const deliveredAt = publishResult.success ? new Date().toISOString() : undefined;
+
+    await ddb.send(new UpdateItemCommand({
+      TableName: TABLE_VAULT_BROADCASTS,
+      Key: marshall({ broadcast_id: broadcastId }),
+      UpdateExpression: deliveredAt
+        ? 'SET delivery_status = :status, delivered_at = :delivered_at'
+        : 'SET delivery_status = :status, delivery_error = :error',
+      ExpressionAttributeValues: marshall(
+        deliveredAt
+          ? { ':status': deliveryStatus, ':delivered_at': deliveredAt }
+          : { ':status': deliveryStatus, ':error': publishResult.error || 'Unknown error' }
+      ),
+    }));
+
+    // Audit log
     await putAudit({
       type: 'admin_vault_broadcast_sent',
       details: {
@@ -130,9 +147,28 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         title: title.trim(),
         nats_subject: natsSubject,
         sent_by: adminEmail,
-        payload: natsPayload,
+        delivery_status: deliveryStatus,
+        nats_publish_success: publishResult.success,
+        nats_error: publishResult.error,
       }
     });
+
+    if (!publishResult.success) {
+      // Return success but indicate delivery failed
+      // This lets the admin know the broadcast was recorded but NATS publishing failed
+      return ok({
+        broadcast_id: broadcastId,
+        type,
+        priority,
+        title: title.trim(),
+        nats_subject: natsSubject,
+        sent_at: now,
+        sent_by: adminEmail,
+        status: 'failed',
+        error: publishResult.error,
+        message: 'Broadcast recorded but NATS delivery failed. Will be retried.',
+      });
+    }
 
     return ok({
       broadcast_id: broadcastId,
@@ -142,8 +178,8 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       nats_subject: natsSubject,
       sent_at: now,
       sent_by: adminEmail,
-      status: 'queued',
-      message: 'Broadcast queued for delivery to active vaults'
+      status: 'delivered',
+      message: 'Broadcast delivered to active vaults'
     });
   } catch (error) {
     console.error('Error sending vault broadcast:', error);
