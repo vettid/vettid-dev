@@ -5,12 +5,13 @@ import { unmarshall } from "@aws-sdk/util-dynamodb";
 
 const ddb = new DynamoDBClient({});
 
-const TABLE_HANDLER_SUBMISSIONS = process.env.TABLE_HANDLER_SUBMISSIONS!;
+// Use the existing handlers registry table (not submissions)
+const TABLE_HANDLERS = process.env.TABLE_HANDLERS!;
 
 /**
  * List deployed handlers from the registry
  *
- * Returns handlers with status 'deployed'
+ * Returns handlers with status 'signed' (production-ready handlers)
  */
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   // Validate admin group membership
@@ -25,35 +26,37 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   }
 
   try {
-    // Query for deployed handlers
+    // Query the handlers registry for signed (deployed) handlers
     const result = await ddb.send(new ScanCommand({
-      TableName: TABLE_HANDLER_SUBMISSIONS,
-      FilterExpression: '#s = :deployed',
-      ExpressionAttributeNames: { '#s': 'status', '#n': 'name' },
+      TableName: TABLE_HANDLERS,
+      FilterExpression: '#s = :signed',
+      ExpressionAttributeNames: { '#s': 'status' },
       ExpressionAttributeValues: {
-        ':deployed': { S: 'deployed' }
-      },
-      ProjectionExpression: 'submission_id, handler_id, #n, version, description, wasm_hash, deployed_at, deployed_by'
+        ':signed': { S: 'signed' }
+      }
     }));
 
     const handlers = (result.Items || []).map(item => {
       const h = unmarshall(item);
       return {
-        submission_id: h.submission_id,
         handler_id: h.handler_id,
         name: h.name,
-        version: h.version,
+        version: h.current_version,
         description: h.description,
-        wasm_hash: h.wasm_hash,
-        deployed_at: h.deployed_at,
-        deployed_by: h.deployed_by
+        category: h.category,
+        publisher: h.publisher,
+        status: h.status,
+        install_count: h.install_count || 0,
+        signed_at: h.signed_at,
+        signed_by: h.signed_by,
+        created_at: h.created_at
       };
     });
 
-    // Sort by deployed_at descending
+    // Sort by signed_at descending (most recently deployed first)
     handlers.sort((a, b) => {
-      const aTime = new Date(a.deployed_at || 0).getTime();
-      const bTime = new Date(b.deployed_at || 0).getTime();
+      const aTime = new Date(a.signed_at || a.created_at || 0).getTime();
+      const bTime = new Date(b.signed_at || b.created_at || 0).getTime();
       return bTime - aTime;
     });
 

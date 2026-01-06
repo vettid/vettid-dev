@@ -76,24 +76,26 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     const enrollmentSessions = (enrollmentSessionsResult.Items || []).map(item => unmarshall(item));
     const totalApprovedUsers = approvedUsersResult.Count || 0;
 
-    // Calculate vault status distribution
+    // Calculate vault status distribution (Nitro model)
+    // In Nitro architecture, vaults are stateless enclaves - we track enrollment/account states
     const statusDistribution: Record<string, number> = {
-      active: 0,
-      idle: 0,
-      offline: 0,
-      suspended: 0,
-      deleted: 0,
+      active: 0,      // Successfully enrolled, operational
+      suspended: 0,   // Admin-suspended account
+      deleted: 0,     // Vault has been deleted
     };
 
     for (const vault of vaultInstances) {
-      const status = vault.status as string || 'unknown';
-      if (status in statusDistribution) {
-        statusDistribution[status]++;
-      } else if (status === 'connected') {
+      const status = (vault.status as string || '').toLowerCase();
+      // Map various status values to our simplified model
+      if (status === 'active' || status === 'connected' || status === 'enrolled' || status === 'running' || status === 'healthy') {
         statusDistribution.active++;
+      } else if (status === 'suspended' || status === 'disabled') {
+        statusDistribution.suspended++;
+      } else if (status === 'deleted' || status === 'removed') {
+        statusDistribution.deleted++;
       } else {
-        // Unknown status - count as offline
-        statusDistribution.offline++;
+        // Unknown/other status - count as active (default operational state)
+        statusDistribution.active++;
       }
     }
 
@@ -106,27 +108,31 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     };
 
     for (const session of enrollmentSessions) {
-      const status = session.status as string;
+      // Note: Status values are UPPERCASE in the enrollment system
+      const status = (session.status as string || '').toUpperCase();
       switch (status) {
-        case 'completed':
-        case 'finalized':
+        case 'COMPLETED':
+        case 'FINALIZED':
           enrollmentOutcomes.success++;
           break;
-        case 'failed':
-        case 'error':
+        case 'FAILED':
+        case 'ERROR':
           enrollmentOutcomes.failed++;
           break;
-        case 'expired':
-        case 'cancelled':
+        case 'EXPIRED':
+        case 'CANCELLED':
           enrollmentOutcomes.abandoned++;
           break;
-        case 'pending':
-        case 'in_progress':
-        case 'password_set':
+        case 'PENDING':
+        case 'WEB_INITIATED':
+        case 'AUTHENTICATED':
+        case 'STARTED':
+        case 'PASSWORD_SET':
           enrollmentOutcomes.pending++;
           break;
         default:
-          // Unknown status
+          // Unknown status - count as pending if session exists
+          if (status) enrollmentOutcomes.pending++;
           break;
       }
     }
@@ -136,24 +142,41 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       session_id?: string;
       user_guid?: string;
       status?: string;
-      created_at?: number;
-      completed_at?: number;
+      created_at?: number | string;
+      completed_at?: number | string;
       email?: string;
     }
+
+    // Helper to normalize date values to timestamp (handles both ISO strings and numbers)
+    const toTimestamp = (val: number | string | undefined): number => {
+      if (!val) return 0;
+      if (typeof val === 'number') return val;
+      return new Date(val).getTime() || 0;
+    };
+
+    // Filter for completed enrollments (uppercase status values)
     const recentEnrollments = (enrollmentSessions as EnrollmentSession[])
-      .filter((s: EnrollmentSession) => s.status === 'completed' || s.status === 'finalized')
+      .filter((s: EnrollmentSession) => {
+        const status = (s.status || '').toUpperCase();
+        return status === 'COMPLETED' || status === 'FINALIZED';
+      })
       .sort((a: EnrollmentSession, b: EnrollmentSession) => {
-        const aTime = (a.completed_at || a.created_at) || 0;
-        const bTime = (b.completed_at || b.created_at) || 0;
+        // Sort by completed_at descending (most recent first), fallback to created_at
+        const aTime = toTimestamp(a.completed_at) || toTimestamp(a.created_at);
+        const bTime = toTimestamp(b.completed_at) || toTimestamp(b.created_at);
         return bTime - aTime;
       })
       .slice(0, 10)
-      .map((s: EnrollmentSession) => ({
-        user_guid: s.user_guid || '',
-        email: s.email || '',
-        completed_at: s.completed_at ? new Date(s.completed_at).toISOString() : null,
-        created_at: s.created_at ? new Date(s.created_at).toISOString() : '',
-      }));
+      .map((s: EnrollmentSession) => {
+        const completedTs = toTimestamp(s.completed_at);
+        const createdTs = toTimestamp(s.created_at);
+        return {
+          user_guid: s.user_guid || '',
+          email: s.email || '',
+          completed_at: completedTs ? new Date(completedTs).toISOString() : null,
+          created_at: createdTs ? new Date(createdTs).toISOString() : '',
+        };
+      });
 
     // Calculate key metrics
     const totalEnrolled = vaultInstances.length;

@@ -2217,7 +2217,7 @@ document.querySelectorAll('.tab').forEach(tab => {
       if (subTab === 'admin-users') { loadAdmins(); loadPendingAdmins(); }
       if (subTab === 'subscription-types') loadSubscriptionTypes();
       if (subTab === 'membership-terms') loadCurrentTerms();
-      if (subTab === 'email') loadSentEmails();
+      // Communications page uses internal tabs - no initial load needed
       if (subTab === 'notifications') loadAllNotifications();
       if (subTab === 'event-handlers') loadHandlers();
       if (subTab === 'supported-services') loadServices();
@@ -5386,11 +5386,9 @@ async function loadVaultMetrics() {
       document.getElementById('outcomePendingBar').style.width = `${(outcomes.pending / totalOutcomes) * 100}%`;
     }
 
-    // Update vault status distribution
+    // Update vault status distribution (Nitro model - 3 states only)
     const status = data.vault_status_distribution || {};
     document.getElementById('statusActiveCount').textContent = status.active || 0;
-    document.getElementById('statusIdleCount').textContent = status.idle || 0;
-    document.getElementById('statusOfflineCount').textContent = status.offline || 0;
     document.getElementById('statusSuspendedCount').textContent = status.suspended || 0;
     document.getElementById('statusDeletedCount').textContent = status.deleted || 0;
 
@@ -6114,15 +6112,18 @@ async function loadBroadcastHistory() {
     }
 
     // Fetch email broadcasts (from sent emails)
+    // API returns array directly, not { emails: [...] }
     let emailBroadcasts = [];
     if (filter === 'all' || filter === 'email') {
-      const emailData = await api('/admin/sent-emails?limit=50');
-      emailBroadcasts = (emailData.emails || []).map(e => ({
+      const emailData = await api('/admin/sent-emails');
+      // Handle both array format (current API) and object format (future proofing)
+      const emailArray = Array.isArray(emailData) ? emailData : (emailData.emails || []);
+      emailBroadcasts = emailArray.slice(0, 50).map(e => ({
         broadcast_id: e.email_id,
         type: 'email',
         priority: 'normal',
         title: e.subject,
-        message: e.body_preview || '',
+        message: e.body_preview || (e.body_text || '').substring(0, 100),
         sent_at: e.sent_at,
         sent_by: e.sent_by,
         source: 'email',
@@ -6189,9 +6190,7 @@ async function loadSecurityEvents() {
   const severity = document.getElementById('securitySeverityFilter')?.value || 'all';
 
   try {
-    const response = await fetchWithAuth(`/admin/security-events?range=${range}&severity=${severity}&limit=100`);
-    if (!response.ok) throw new Error('Failed to fetch security events');
-    const data = await response.json();
+    const data = await api(`/admin/security-events?range=${range}&severity=${severity}&limit=100`);
 
     // Update metrics
     document.getElementById('secMetricTotal').textContent = data.metrics?.total_events ?? '--';
@@ -6247,9 +6246,7 @@ async function loadRecoveryRequests() {
   const container = document.getElementById('recoveryRequestsList');
 
   try {
-    const response = await fetchWithAuth('/admin/credential-recovery-requests?status=pending');
-    if (!response.ok) throw new Error('Failed to fetch recovery requests');
-    const data = await response.json();
+    const data = await api('/admin/credential-recovery-requests?status=pending');
 
     if (!data.requests || data.requests.length === 0) {
       container.innerHTML = `<div style="padding:16px;background:#050505;border-radius:8px;text-align:center;color:var(--gray);">No pending credential recovery requests.</div>`;
@@ -6283,9 +6280,7 @@ async function loadDeletionRequests() {
   const container = document.getElementById('deletionRequestsList');
 
   try {
-    const response = await fetchWithAuth('/admin/vault-deletion-requests?status=pending');
-    if (!response.ok) throw new Error('Failed to fetch deletion requests');
-    const data = await response.json();
+    const data = await api('/admin/vault-deletion-requests?status=pending');
 
     if (!data.requests || data.requests.length === 0) {
       container.innerHTML = `<div style="padding:16px;background:#050505;border-radius:8px;text-align:center;color:var(--gray);">No pending vault deletion requests.</div>`;
@@ -6319,16 +6314,10 @@ async function cancelRecoveryRequest(recoveryId) {
   if (!confirm('Are you sure you want to cancel this credential recovery request?')) return;
 
   try {
-    const response = await fetchWithAuth(`/admin/credential-recovery-requests/${recoveryId}/cancel`, {
+    await api(`/admin/credential-recovery-requests/${recoveryId}/cancel`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ reason: 'Cancelled by admin' })
+      body: { reason: 'Cancelled by admin' }
     });
-
-    if (!response.ok) {
-      const err = await response.json();
-      throw new Error(err.message || 'Failed to cancel request');
-    }
 
     showToast('Recovery request cancelled successfully', 'success');
     loadRecoveryRequests();
@@ -6343,16 +6332,10 @@ async function cancelDeletionRequest(requestId) {
   if (!confirm('Are you sure you want to cancel this vault deletion request?')) return;
 
   try {
-    const response = await fetchWithAuth(`/admin/vault-deletion-requests/${requestId}/cancel`, {
+    await api(`/admin/vault-deletion-requests/${requestId}/cancel`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ reason: 'Cancelled by admin' })
+      body: { reason: 'Cancelled by admin' }
     });
-
-    if (!response.ok) {
-      const err = await response.json();
-      throw new Error(err.message || 'Failed to cancel request');
-    }
 
     showToast('Deletion request cancelled successfully', 'success');
     loadDeletionRequests();
@@ -6545,18 +6528,16 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 
 // ============================================
-// SERVICE REGISTRY MANAGEMENT
+// HANDLER MARKETPLACE MANAGEMENT
 // ============================================
 
-let handlersData = [];
-let handlerStatusFilter = 'all';
-let handlerCategoryFilter = '';
-let handlerSearchTerm = '';
-let currentHandlerId = null;
-let pendingUploadUrl = null;
+let deployedHandlers = [];
+let handlerSubmissions = [];
+let currentSubmissionId = null;
+let pendingHandlerUpload = null;
 
 // Format bytes to human readable
-function formatBytes(bytes) {
+function formatHandlerBytes(bytes) {
   if (!bytes || bytes === 0) return '0 B';
   const k = 1024;
   const sizes = ['B', 'KB', 'MB', 'GB'];
@@ -6564,657 +6545,300 @@ function formatBytes(bytes) {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
 }
 
-// Load handlers from API
-async function loadHandlers() {
-  if (!isAdmin()) return;
+// Handler marketplace tab switching
+document.querySelectorAll('.handler-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    // Update active tab styling
+    document.querySelectorAll('.handler-tab').forEach(t => {
+      t.classList.remove('active');
+      t.style.background = '#333';
+    });
+    tab.classList.add('active');
+    tab.style.background = 'linear-gradient(135deg,#10b981 0%,#059669 100%)';
 
-  showLoadingSkeleton('handlersTable');
+    // Show correct panel
+    const targetPanel = tab.getAttribute('data-handler-tab');
+    document.querySelectorAll('.handler-panel').forEach(p => p.style.display = 'none');
+    document.getElementById(`${targetPanel}-handlers-panel`).style.display = 'block';
 
-  try {
-    const response = await api('/admin/registry/handlers');
-    handlersData = response.handlers || [];
-    renderHandlers();
-  } catch (err) {
-    console.error('Error loading handlers:', err);
-    tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:#ef4444;padding:40px;">Error loading handlers: ${escapeHtml(err.message)}</td></tr>`;
-    showToast('Failed to load handlers', 'error');
-  }
-}
-
-// Render handlers table
-function renderHandlers() {
-  const tbody = document.querySelector('#handlersTable tbody');
-
-  // Update counts
-  const allCount = handlersData.length;
-  const activeCount = handlersData.filter(h => h.status === 'active').length;
-  const pendingCount = handlersData.filter(h => h.status === 'pending').length;
-  const revokedCount = handlersData.filter(h => h.status === 'revoked').length;
-
-  document.getElementById('allHandlersCount').textContent = allCount;
-  document.getElementById('activeHandlersCount').textContent = activeCount;
-  document.getElementById('pendingHandlersCount').textContent = pendingCount;
-  document.getElementById('revokedHandlersCount').textContent = revokedCount;
-
-  // Apply filters
-  let filtered = handlersData.filter(h => {
-    // Status filter
-    if (handlerStatusFilter !== 'all' && h.status !== handlerStatusFilter) return false;
-    // Category filter
-    if (handlerCategoryFilter && h.category !== handlerCategoryFilter) return false;
-    // Search filter
-    if (handlerSearchTerm) {
-      const term = handlerSearchTerm.toLowerCase();
-      const searchable = [h.handler_id, h.name, h.description, h.publisher].join(' ').toLowerCase();
-      if (!searchable.includes(term)) return false;
+    // Load data for relevant panels
+    if (targetPanel === 'deployed') {
+      loadDeployedHandlers();
+    } else if (targetPanel === 'submissions') {
+      loadHandlerSubmissions();
     }
-    return true;
   });
-
-  if (filtered.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:var(--gray);padding:40px;">
-      <div style="font-size:2rem;margin-bottom:8px;">📦</div>
-      <div>No handlers found</div>
-      <div style="font-size:0.85rem;opacity:0.7;margin-top:4px;">Try adjusting your filters or upload a new handler</div>
-    </td></tr>`;
-    return;
-  }
-
-  tbody.innerHTML = '';
-  filtered.forEach(h => {
-    const tr = document.createElement('tr');
-    tr.style.cursor = 'pointer';
-    tr.onclick = () => openHandlerDetails(h.handler_id);
-
-    // Status badge
-    const statusColors = {
-      active: 'background:linear-gradient(135deg,#10b981 0%,#059669 100%);color:#fff;',
-      pending: 'background:linear-gradient(135deg,#f59e0b 0%,#d97706 100%);color:#fff;',
-      revoked: 'background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);color:#fff;'
-    };
-    const statusStyle = statusColors[h.status] || 'background:var(--bg-tertiary);';
-
-    // Category icons (fallback)
-    const categoryIcons = {
-      messaging: '💬',
-      connections: '🔗',
-      profile: '👤',
-      social: '👥',
-      productivity: '📊',
-      utilities: '🔧',
-      finance: '💰',
-      health: '❤️',
-      other: '📦'
-    };
-
-    // Determine icon display: custom icon > category icon
-    let iconHtml;
-    if (h.icon_url) {
-      if (h.icon_url.startsWith('emoji:')) {
-        iconHtml = `<span style="font-size:1.5rem;">${h.icon_url.replace('emoji:','')}</span>`;
-      } else {
-        iconHtml = `<img src="${escapeHtml(h.icon_url)}" alt="" style="width:32px;height:32px;border-radius:6px;object-fit:cover;">`;
-      }
-    } else {
-      iconHtml = `<span style="font-size:1.2rem;">${categoryIcons[h.category] || '📦'}</span>`;
-    }
-
-    const publishedDate = h.published_at ? new Date(h.published_at).toLocaleDateString() : '—';
-
-    tr.innerHTML = `
-      <td>
-        <div style="display:flex;align-items:center;gap:10px;">
-          ${iconHtml}
-          <div>
-            <div style="font-weight:600;">${escapeHtml(h.name)}</div>
-            <div style="font-size:0.8rem;color:var(--gray);font-family:monospace;">${escapeHtml(h.handler_id)}</div>
-          </div>
-        </div>
-      </td>
-      <td style="text-transform:capitalize;">${escapeHtml(h.category || '—')}</td>
-      <td><code style="background:var(--bg-tertiary);padding:2px 6px;border-radius:4px;">${escapeHtml(h.current_version || '—')}</code></td>
-      <td>${escapeHtml(h.publisher || '—')}</td>
-      <td><span style="padding:4px 10px;border-radius:4px;font-size:0.75rem;font-weight:700;text-transform:uppercase;${statusStyle}">${escapeHtml(h.status)}</span></td>
-      <td>${h.install_count || 0}</td>
-      <td>${publishedDate}</td>
-      <td>
-        <div class="action-dropdown" data-action="stop-propagation">
-          <button class="action-dropdown-btn" data-action="toggle-action-dropdown">⋮</button>
-          <div class="action-dropdown-menu">
-            <button class="action-dropdown-item" data-action="handler-details" data-handler-id="${escapeHtml(h.handler_id)}">View Details</button>
-            ${h.status === 'pending' ? `<button class="action-dropdown-item" data-action="handler-sign" data-handler-id="${escapeHtml(h.handler_id)}">Sign & Activate</button>` : ''}
-            ${h.status === 'active' ? `<button class="action-dropdown-item" data-action="handler-revoke" data-handler-id="${escapeHtml(h.handler_id)}" data-handler-name="${escapeHtml(h.name)}">Revoke</button>` : ''}
-            <button class="action-dropdown-item" style="color:#ef4444;" data-action="handler-delete" data-handler-id="${escapeHtml(h.handler_id)}" data-handler-name="${escapeHtml(h.name)}">Delete</button>
-          </div>
-        </div>
-      </td>
-    `;
-    tbody.appendChild(tr);
-  });
-}
-
-// Open handler details modal
-async function openHandlerDetails(handlerId) {
-  currentHandlerId = handlerId;
-  const handler = handlersData.find(h => h.handler_id === handlerId);
-  if (!handler) {
-    showToast('Handler not found', 'error');
-    return;
-  }
-
-  // Populate details
-  document.getElementById('handlerDetailName').textContent = handler.name;
-  document.getElementById('handlerDetailId').textContent = handler.handler_id;
-  document.getElementById('handlerDetailVersion').textContent = handler.current_version || '—';
-  document.getElementById('handlerDetailCategory').textContent = handler.category || '—';
-  document.getElementById('handlerDetailPublisher').textContent = handler.publisher || '—';
-  document.getElementById('handlerDetailInstalls').textContent = handler.install_count || 0;
-  document.getElementById('handlerDetailSize').textContent = formatBytes(handler.size_bytes);
-  document.getElementById('handlerDetailPublished').textContent = handler.published_at ? new Date(handler.published_at).toLocaleString() : '—';
-  document.getElementById('handlerDetailDescription').textContent = handler.description || 'No description provided.';
-
-  // Status badge
-  const statusEl = document.getElementById('handlerDetailStatus');
-  const statusColors = {
-    active: 'background:#10b981;color:#fff;',
-    pending: 'background:#f59e0b;color:#fff;',
-    revoked: 'background:#ef4444;color:#fff;'
-  };
-  statusEl.textContent = handler.status;
-  statusEl.style.cssText = statusColors[handler.status] || '';
-
-  // Changelog
-  const changelogSection = document.getElementById('handlerChangelogSection');
-  if (handler.changelog) {
-    changelogSection.style.display = 'block';
-    document.getElementById('handlerDetailChangelog').textContent = handler.changelog;
-  } else {
-    changelogSection.style.display = 'none';
-  }
-
-  // Versions
-  const versionsEl = document.getElementById('handlerDetailVersions');
-  const versions = handler.versions || [handler.current_version];
-  versionsEl.innerHTML = versions.map(v =>
-    `<span style="padding:4px 10px;background:var(--bg-tertiary);border-radius:4px;font-size:0.85rem;font-family:monospace;${v === handler.current_version ? 'border:1px solid var(--accent);' : ''}">${escapeHtml(v)}</span>`
-  ).join('');
-
-  // Permissions
-  const permSection = document.getElementById('handlerPermissionsSection');
-  const permEl = document.getElementById('handlerDetailPermissions');
-  if (handler.permissions && handler.permissions.length > 0) {
-    permSection.style.display = 'block';
-    permEl.innerHTML = handler.permissions.map(p => `
-      <div style="padding:10px;background:var(--bg-input);border-radius:4px;border-left:3px solid var(--accent);">
-        <div style="font-weight:600;margin-bottom:2px;">${escapeHtml(p.type)} <span style="color:var(--gray);font-weight:400;">(${escapeHtml(p.scope)})</span></div>
-        <div style="font-size:0.85rem;color:var(--gray);">${escapeHtml(p.description || '')}</div>
-      </div>
-    `).join('');
-  } else {
-    permSection.style.display = 'none';
-  }
-
-  // Audit trail
-  document.getElementById('handlerDetailCreatedAt').textContent = handler.created_at ? new Date(handler.created_at).toLocaleString() : '—';
-  document.getElementById('handlerDetailCreatedBy').textContent = handler.created_by || '—';
-  document.getElementById('handlerDetailUpdatedAt').textContent = handler.updated_at ? new Date(handler.updated_at).toLocaleString() : '—';
-
-  // Signed info
-  const signedInfo = document.getElementById('handlerSignedInfo');
-  if (handler.signed_at) {
-    signedInfo.style.display = 'block';
-    document.getElementById('handlerDetailSignedAt').textContent = new Date(handler.signed_at).toLocaleString();
-    document.getElementById('handlerDetailSignedBy').textContent = handler.signed_by || '—';
-  } else {
-    signedInfo.style.display = 'none';
-  }
-
-  // Revoked info
-  const revokedInfo = document.getElementById('handlerRevokedInfo');
-  const revocationReason = document.getElementById('handlerRevocationReason');
-  if (handler.revoked_at) {
-    revokedInfo.style.display = 'block';
-    document.getElementById('handlerDetailRevokedAt').textContent = new Date(handler.revoked_at).toLocaleString();
-    document.getElementById('handlerDetailRevokedBy').textContent = handler.revoked_by || '—';
-    if (handler.revocation_reason) {
-      revocationReason.style.display = 'block';
-      document.getElementById('handlerDetailRevocationReason').textContent = handler.revocation_reason;
-    } else {
-      revocationReason.style.display = 'none';
-    }
-  } else {
-    revokedInfo.style.display = 'none';
-    revocationReason.style.display = 'none';
-  }
-
-  // Action buttons
-  const signBtn = document.getElementById('signHandlerBtn');
-  const revokeBtn = document.getElementById('revokeHandlerBtn');
-  signBtn.style.display = handler.status === 'pending' ? 'inline-block' : 'none';
-  revokeBtn.style.display = handler.status === 'active' ? 'inline-block' : 'none';
-  signBtn.onclick = () => signHandler(handlerId);
-  revokeBtn.onclick = () => openRevokeModal(handlerId, handler.name);
-
-  document.getElementById('handlerDetailsModal').classList.add('active');
-}
-
-function closeHandlerDetailsModal() {
-  document.getElementById('handlerDetailsModal').classList.remove('active');
-  currentHandlerId = null;
-}
-
-// Upload handler modal
-function openUploadHandlerModal() {
-  // Reset form
-  document.getElementById('handlerIdInput').value = '';
-  document.getElementById('handlerNameInput').value = '';
-  document.getElementById('handlerVersionInput').value = '1.0.0';
-  document.getElementById('handlerCategoryInput').value = '';
-  document.getElementById('handlerPublisherInput').value = '';
-  document.getElementById('handlerDescriptionInput').value = '';
-  document.getElementById('handlerChangelogInput').value = '';
-  document.getElementById('uploadHandlerResult').style.display = 'none';
-  document.getElementById('uploadHandlerMsg').textContent = '';
-  document.getElementById('createHandlerBtn').disabled = false;
-  pendingUploadUrl = null;
-
-  // Reset icon picker
-  clearIconSelection();
-
-  document.getElementById('uploadHandlerModal').classList.add('active');
-}
-
-function closeUploadHandlerModal() {
-  document.getElementById('uploadHandlerModal').classList.remove('active');
-  pendingUploadUrl = null;
-  // Refresh handlers if we uploaded something
-  loadHandlers();
-}
-
-// Icon picker functions
-function toggleIconPicker() {
-  const dropdown = document.getElementById('iconPickerDropdown');
-  dropdown.style.display = dropdown.style.display === 'none' ? 'block' : 'none';
-}
-
-function selectPresetIcon(iconId, emoji) {
-  document.getElementById('selectedPresetIcon').value = iconId;
-  document.getElementById('selectedIconEmoji').value = emoji;
-  document.getElementById('handlerIconInput').value = '';
-  document.getElementById('iconPickerPreview').textContent = emoji;
-  document.getElementById('iconPickerText').textContent = iconId.charAt(0).toUpperCase() + iconId.slice(1);
-  document.getElementById('iconPickerText').style.color = 'var(--text)';
-  document.getElementById('iconPickerDropdown').style.display = 'none';
-}
-
-function applyCustomIconUrl() {
-  const url = document.getElementById('handlerIconInput').value.trim();
-  if (!url) {
-    showToast('Please enter a URL', 'error');
-    return;
-  }
-  document.getElementById('selectedPresetIcon').value = '';
-  document.getElementById('selectedIconEmoji').value = '';
-  document.getElementById('iconPickerPreview').innerHTML = `<img src="${escapeHtml(url)}" alt="" style="width:28px;height:28px;border-radius:4px;object-fit:cover;">`;
-  document.getElementById('iconPickerText').textContent = 'Custom URL';
-  document.getElementById('iconPickerText').style.color = 'var(--text)';
-  document.getElementById('iconPickerDropdown').style.display = 'none';
-}
-
-function clearIconSelection() {
-  document.getElementById('selectedPresetIcon').value = '';
-  document.getElementById('selectedIconEmoji').value = '';
-  document.getElementById('handlerIconInput').value = '';
-  document.getElementById('iconPickerPreview').textContent = '📦';
-  document.getElementById('iconPickerText').textContent = 'Select an icon...';
-  document.getElementById('iconPickerText').style.color = 'var(--gray)';
-  document.getElementById('iconPickerDropdown').style.display = 'none';
-}
-
-function getSelectedIcon() {
-  const customUrl = document.getElementById('handlerIconInput').value.trim();
-  if (customUrl) return customUrl;
-  const emoji = document.getElementById('selectedIconEmoji').value;
-  if (emoji) return `emoji:${emoji}`;
-  return '';
-}
-
-// Close icon picker when clicking outside
-document.addEventListener('click', function(e) {
-  const picker = document.getElementById('iconPickerDropdown');
-  const btn = document.getElementById('iconPickerBtn');
-  if (picker && btn && !picker.contains(e.target) && !btn.contains(e.target)) {
-    picker.style.display = 'none';
-  }
 });
 
-// Create handler (step 1)
-async function createHandler() {
-  const handlerId = document.getElementById('handlerIdInput').value.trim();
-  const name = document.getElementById('handlerNameInput').value.trim();
-  const version = document.getElementById('handlerVersionInput').value.trim();
-  const category = document.getElementById('handlerCategoryInput').value;
-  const publisher = document.getElementById('handlerPublisherInput').value.trim();
-  const description = document.getElementById('handlerDescriptionInput').value.trim();
-  const iconUrl = getSelectedIcon();
-  const changelog = document.getElementById('handlerChangelogInput').value.trim();
+// Load deployed handlers
+async function loadDeployedHandlers() {
+  if (!isAdmin()) return;
+
+  const grid = document.getElementById('deployedHandlersGrid');
+  grid.innerHTML = '<div style="grid-column:1/-1;padding:40px;text-align:center;color:var(--gray);">Loading deployed handlers...</div>';
+
+  try {
+    const response = await api('/admin/handlers/deployed');
+    deployedHandlers = response.handlers || [];
+    renderDeployedHandlers();
+  } catch (err) {
+    console.error('Error loading deployed handlers:', err);
+    grid.innerHTML = `<div style="grid-column:1/-1;padding:40px;text-align:center;color:#ef4444;">Error loading handlers: ${escapeHtml(err.message)}</div>`;
+    showToast('Failed to load deployed handlers', 'error');
+  }
+}
+
+// Render deployed handlers grid
+function renderDeployedHandlers() {
+  const grid = document.getElementById('deployedHandlersGrid');
+  const countEl = document.getElementById('deployedHandlersCount');
+
+  if (countEl) countEl.textContent = deployedHandlers.length;
+
+  if (deployedHandlers.length === 0) {
+    grid.innerHTML = `<div style="grid-column:1/-1;padding:40px;text-align:center;color:var(--gray);">
+      <div style="font-size:2rem;margin-bottom:8px;">📦</div>
+      <div>No handlers deployed yet</div>
+      <div style="font-size:0.85rem;opacity:0.7;margin-top:4px;">Submit a handler to get started</div>
+    </div>`;
+    return;
+  }
+
+  grid.innerHTML = deployedHandlers.map(h => {
+    // Signed handlers are production-ready (green), revoked = red, pending = yellow
+    const statusColor = h.status === 'signed' ? '#10b981' : h.status === 'revoked' ? '#ef4444' : h.status === 'pending' ? '#f59e0b' : '#6b7280';
+    const statusLabel = h.status === 'signed' ? 'Deployed' : h.status;
+    return `
+      <div style="padding:20px;background:#050505;border-radius:12px;border:1px solid var(--border);transition:border-color 0.2s;"
+           onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
+        <div style="display:flex;align-items:start;gap:12px;margin-bottom:12px;">
+          <div style="width:48px;height:48px;background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:1.5rem;">
+            ${h.icon || '📦'}
+          </div>
+          <div style="flex:1;min-width:0;">
+            <div style="font-weight:600;color:var(--text);margin-bottom:2px;">${escapeHtml(h.name || h.handler_id)}</div>
+            <div style="font-size:0.8rem;color:var(--gray);font-family:monospace;">${escapeHtml(h.handler_id)}</div>
+          </div>
+          <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${statusColor};" title="${statusLabel}"></span>
+        </div>
+        <p style="margin:0 0 12px 0;color:var(--gray);font-size:0.85rem;line-height:1.4;min-height:40px;">
+          ${escapeHtml((h.description || 'No description').substring(0, 100))}${h.description?.length > 100 ? '...' : ''}
+        </p>
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+          <div style="display:flex;gap:8px;align-items:center;">
+            <code style="background:var(--bg-card);padding:4px 8px;border-radius:4px;font-size:0.8rem;color:var(--accent);">v${escapeHtml(h.version || '1.0.0')}</code>
+            ${h.category ? `<span style="background:#222;padding:4px 8px;border-radius:4px;font-size:0.75rem;color:var(--gray);">${escapeHtml(h.category)}</span>` : ''}
+          </div>
+          <button class="btn" style="padding:6px 12px;font-size:0.8rem;background:#333;" onclick="forceUpdateHandler('${escapeHtml(h.handler_id)}')">
+            🔄 Force Update
+          </button>
+        </div>
+        ${h.install_count > 0 ? `<div style="margin-top:8px;font-size:0.75rem;color:var(--gray);">📥 ${h.install_count} installs</div>` : ''}
+      </div>
+    `;
+  }).join('');
+}
+
+// Load handler submissions
+async function loadHandlerSubmissions() {
+  if (!isAdmin()) return;
+
+  const tbody = document.getElementById('submissionsQueueBody');
+  tbody.innerHTML = '<tr><td colspan="6" style="padding:40px;text-align:center;color:var(--gray);">Loading submissions...</td></tr>';
+
+  try {
+    const response = await api('/admin/handlers/submissions');
+    handlerSubmissions = response.submissions || [];
+    renderHandlerSubmissions();
+  } catch (err) {
+    console.error('Error loading handler submissions:', err);
+    tbody.innerHTML = `<tr><td colspan="6" style="padding:40px;text-align:center;color:#ef4444;">Error: ${escapeHtml(err.message)}</td></tr>`;
+    showToast('Failed to load submissions', 'error');
+  }
+}
+
+// Render submissions queue
+function renderHandlerSubmissions() {
+  const tbody = document.getElementById('submissionsQueueBody');
+  const countEl = document.getElementById('pendingSubmissionsCount');
+
+  const pendingCount = handlerSubmissions.filter(s => s.status === 'pending').length;
+  if (countEl) countEl.textContent = pendingCount;
+
+  if (handlerSubmissions.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="6" style="padding:40px;text-align:center;color:var(--gray);">No submissions in queue</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = handlerSubmissions.map(s => {
+    const statusColors = {
+      pending: 'background:#f59e0b;color:#000;',
+      approved: 'background:#10b981;color:#fff;',
+      rejected: 'background:#ef4444;color:#fff;',
+      uploaded: 'background:#3b82f6;color:#fff;'
+    };
+    const statusStyle = statusColors[s.status] || 'background:#6b7280;color:#fff;';
+
+    return `
+      <tr style="border-bottom:1px solid var(--border);">
+        <td style="padding:12px 8px;">
+          <div style="font-weight:600;color:var(--text);">${escapeHtml(s.name || s.handler_id)}</div>
+          <div style="font-size:0.8rem;color:var(--gray);font-family:monospace;">${escapeHtml(s.handler_id)}</div>
+        </td>
+        <td style="padding:12px 8px;"><code style="background:var(--bg-card);padding:2px 6px;border-radius:4px;font-size:0.85rem;">${escapeHtml(s.version || '—')}</code></td>
+        <td style="padding:12px 8px;color:var(--text);">${escapeHtml(s.submitter_email || '—')}</td>
+        <td style="padding:12px 8px;color:var(--gray);">${s.submitted_at ? new Date(s.submitted_at).toLocaleString() : '—'}</td>
+        <td style="padding:12px 8px;"><span style="padding:4px 10px;border-radius:4px;font-size:0.75rem;font-weight:700;text-transform:uppercase;${statusStyle}">${escapeHtml(s.status)}</span></td>
+        <td style="padding:12px 8px;text-align:right;">
+          ${s.status === 'pending' || s.status === 'uploaded' ? `
+            <button class="btn" style="padding:6px 12px;font-size:0.8rem;background:linear-gradient(135deg,#10b981 0%,#059669 100%);margin-right:4px;" onclick="approveSubmission('${escapeHtml(s.submission_id)}')">Approve</button>
+            <button class="btn" style="padding:6px 12px;font-size:0.8rem;background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);" onclick="rejectSubmission('${escapeHtml(s.submission_id)}')">Reject</button>
+          ` : '—'}
+        </td>
+      </tr>
+    `;
+  }).join('');
+}
+
+// Load handlers (combined function for both panels)
+async function loadHandlers() {
+  if (!isAdmin()) return;
+  await Promise.all([loadDeployedHandlers(), loadHandlerSubmissions()]);
+}
+
+// Approve handler submission
+async function approveSubmission(submissionId) {
+  if (!confirm('Approve this handler? It will be signed and deployed to all enclaves.')) return;
+
+  try {
+    await api(`/admin/handlers/submissions/${submissionId}/approve`, {
+      method: 'POST'
+    });
+    showToast('Handler approved and deployed!', 'success');
+    loadHandlers();
+  } catch (err) {
+    console.error('Error approving submission:', err);
+    showToast('Failed to approve: ' + err.message, 'error');
+  }
+}
+
+// Reject handler submission
+async function rejectSubmission(submissionId) {
+  const reason = prompt('Rejection reason (optional):');
+  if (reason === null) return; // User cancelled
+
+  try {
+    await api(`/admin/handlers/submissions/${submissionId}/reject`, {
+      method: 'POST',
+      body: JSON.stringify({ reason: reason || 'Rejected by admin' })
+    });
+    showToast('Handler submission rejected', 'success');
+    loadHandlerSubmissions();
+  } catch (err) {
+    console.error('Error rejecting submission:', err);
+    showToast('Failed to reject: ' + err.message, 'error');
+  }
+}
+
+// Force update handler on all enclaves
+async function forceUpdateHandler(submissionId) {
+  if (!confirm('Force update this handler on all enclaves? This will trigger a reload.')) return;
+
+  try {
+    await api(`/admin/handlers/submissions/${submissionId}/force-update`, {
+      method: 'POST'
+    });
+    showToast('Handler update triggered!', 'success');
+  } catch (err) {
+    console.error('Error forcing update:', err);
+    showToast('Failed to force update: ' + err.message, 'error');
+  }
+}
+
+// Submit new handler
+async function submitNewHandler() {
+  const handlerId = document.getElementById('submitHandlerId')?.value.trim();
+  const name = document.getElementById('submitHandlerName')?.value.trim();
+  const version = document.getElementById('submitHandlerVersion')?.value.trim();
+  const description = document.getElementById('submitHandlerDescription')?.value.trim();
+  const fileInput = document.getElementById('submitHandlerFile');
+  const file = fileInput?.files[0];
 
   // Validation
-  if (!handlerId || !name || !version || !category || !publisher || !description) {
-    showToast('Please fill in all required fields', 'error');
+  if (!handlerId || !name || !version) {
+    showToast('Handler ID, name, and version are required', 'error');
     return;
   }
-
-  // Validate handler ID format
   if (!/^[a-z0-9-]+$/.test(handlerId)) {
-    showToast('Handler ID must contain only lowercase letters, numbers, and hyphens', 'error');
+    showToast('Handler ID must be lowercase letters, numbers, and hyphens only', 'error');
     return;
   }
-
-  // Validate version format
   if (!/^\d+\.\d+\.\d+$/.test(version)) {
     showToast('Version must be in semantic format (X.Y.Z)', 'error');
     return;
   }
-
-  const msgEl = document.getElementById('uploadHandlerMsg');
-  const createBtn = document.getElementById('createHandlerBtn');
-
-  try {
-    createBtn.disabled = true;
-    msgEl.textContent = 'Creating handler...';
-    msgEl.style.color = 'var(--gray)';
-
-    const payload = {
-      handler_id: handlerId,
-      name,
-      version,
-      category,
-      publisher,
-      description
-    };
-    if (iconUrl) payload.icon_url = iconUrl;
-    if (changelog) payload.changelog = changelog;
-
-    const response = await api('/admin/registry/handlers', {
-      method: 'POST',
-      body: JSON.stringify(payload)
-    });
-
-    pendingUploadUrl = response.upload_url;
-
-    // Show upload section
-    document.getElementById('uploadHandlerResult').style.display = 'block';
-    msgEl.textContent = 'Handler metadata saved. Now upload the WASM file.';
-    msgEl.style.color = '#10b981';
-    createBtn.style.display = 'none';
-
-    showToast('Handler created! Upload WASM to complete.', 'success');
-  } catch (err) {
-    console.error('Error creating handler:', err);
-    msgEl.textContent = 'Error: ' + err.message;
-    msgEl.style.color = '#ef4444';
-    createBtn.disabled = false;
-    showToast('Failed to create handler', 'error');
-  }
-}
-
-// Upload WASM file (step 2)
-async function uploadWasmFile() {
-  const fileInput = document.getElementById('wasmFileInput');
-  const file = fileInput.files[0];
-
   if (!file) {
     showToast('Please select a WASM file', 'error');
     return;
   }
 
-  if (!pendingUploadUrl) {
-    showToast('No upload URL available', 'error');
-    return;
-  }
-
-  const progressSection = document.getElementById('wasmUploadProgress');
-  const progressBar = document.getElementById('wasmUploadBar');
-  const progressPercent = document.getElementById('wasmUploadPercent');
-  const uploadBtn = document.getElementById('uploadWasmBtn');
+  const btn = document.getElementById('submitHandlerBtn');
+  const originalText = btn.innerHTML;
 
   try {
-    uploadBtn.disabled = true;
-    progressSection.style.display = 'block';
+    btn.disabled = true;
+    btn.innerHTML = '<span style="display:inline-block;animation:spin 1s linear infinite;">⟳</span> Submitting...';
 
-    // Use XMLHttpRequest for progress tracking
-    await new Promise((resolve, reject) => {
-      const xhr = new XMLHttpRequest();
-
-      xhr.upload.addEventListener('progress', (e) => {
-        if (e.lengthComputable) {
-          const percent = Math.round((e.loaded / e.total) * 100);
-          progressBar.style.width = percent + '%';
-          progressPercent.textContent = percent + '%';
-        }
-      });
-
-      xhr.addEventListener('load', () => {
-        if (xhr.status >= 200 && xhr.status < 300) {
-          resolve();
-        } else {
-          reject(new Error('Upload failed with status ' + xhr.status));
-        }
-      });
-
-      xhr.addEventListener('error', () => reject(new Error('Upload failed')));
-
-      xhr.open('PUT', pendingUploadUrl);
-      xhr.setRequestHeader('Content-Type', 'application/wasm');
-      xhr.send(file);
-    });
-
-    showToast('WASM uploaded successfully! Handler is now pending review.', 'success');
-    closeUploadHandlerModal();
-  } catch (err) {
-    console.error('Error uploading WASM:', err);
-    showToast('Failed to upload WASM: ' + err.message, 'error');
-    uploadBtn.disabled = false;
-  }
-}
-
-// Sign handler
-async function signHandler(handlerId) {
-  if (!confirm('Sign and activate this handler? It will become available for users to install.')) return;
-
-  try {
-    await api('/admin/registry/handlers/sign', {
+    // Step 1: Create submission and get presigned URL
+    const response = await api('/admin/handlers/submit', {
       method: 'POST',
-      body: JSON.stringify({ handler_id: handlerId })
+      body: JSON.stringify({ handler_id: handlerId, name, version, description })
     });
 
-    showToast('Handler signed and activated!', 'success');
-    closeHandlerDetailsModal();
-    loadHandlers();
-  } catch (err) {
-    console.error('Error signing handler:', err);
-    showToast('Failed to sign handler: ' + err.message, 'error');
-  }
-}
+    const uploadUrl = response.upload_url;
+    const submissionId = response.submission_id;
 
-// Revoke handler modal
-function openRevokeModal(handlerId, handlerName) {
-  currentHandlerId = handlerId;
-  document.getElementById('revokeHandlerName').textContent = handlerName;
-  document.getElementById('revocationReasonInput').value = '';
-  document.getElementById('revokeHandlerMsg').textContent = '';
-  document.getElementById('revokeHandlerModal').classList.add('active');
-}
+    if (!uploadUrl) throw new Error('No upload URL returned');
 
-function closeRevokeHandlerModal() {
-  document.getElementById('revokeHandlerModal').classList.remove('active');
-}
+    // Step 2: Upload WASM file
+    btn.innerHTML = '<span style="display:inline-block;animation:spin 1s linear infinite;">⟳</span> Uploading WASM...';
 
-async function revokeHandler() {
-  const reason = document.getElementById('revocationReasonInput').value.trim();
-  if (!reason) {
-    showToast('Please provide a revocation reason', 'error');
-    return;
-  }
-
-  const msgEl = document.getElementById('revokeHandlerMsg');
-  const confirmBtn = document.getElementById('confirmRevokeBtn');
-
-  try {
-    confirmBtn.disabled = true;
-    msgEl.textContent = 'Revoking handler...';
-    msgEl.style.color = 'var(--gray)';
-
-    await api('/admin/registry/handlers/revoke', {
-      method: 'POST',
-      body: JSON.stringify({
-        handler_id: currentHandlerId,
-        reason
-      })
+    await fetch(uploadUrl, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/wasm' },
+      body: file
     });
 
-    showToast('Handler revoked successfully', 'success');
-    closeRevokeHandlerModal();
-    closeHandlerDetailsModal();
-    loadHandlers();
+    showToast('Handler submitted for review!', 'success');
+
+    // Clear form
+    document.getElementById('submitHandlerId').value = '';
+    document.getElementById('submitHandlerName').value = '';
+    document.getElementById('submitHandlerVersion').value = '1.0.0';
+    document.getElementById('submitHandlerDescription').value = '';
+    fileInput.value = '';
+
+    // Switch to submissions tab
+    document.querySelector('[data-handler-tab="submissions"]')?.click();
+
   } catch (err) {
-    console.error('Error revoking handler:', err);
-    msgEl.textContent = 'Error: ' + err.message;
-    msgEl.style.color = '#ef4444';
-    confirmBtn.disabled = false;
-    showToast('Failed to revoke handler', 'error');
+    console.error('Error submitting handler:', err);
+    showToast('Failed to submit handler: ' + err.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = originalText;
   }
 }
 
-// Delete handler modal
-let deleteHandlerName = '';
-
-function openDeleteHandlerModal(handlerId, handlerName) {
-  currentHandlerId = handlerId;
-  deleteHandlerName = handlerName;
-  document.getElementById('deleteHandlerName').textContent = handlerName;
-  document.getElementById('deleteHandlerConfirmInput').value = '';
-  document.getElementById('deleteHandlerMsg').textContent = '';
-  document.getElementById('confirmDeleteHandlerBtn').disabled = true;
-  document.getElementById('deleteHandlerModal').classList.add('active');
-}
-
-function closeDeleteHandlerModal() {
-  document.getElementById('deleteHandlerModal').classList.remove('active');
-  deleteHandlerName = '';
-}
-
-function validateDeleteHandlerConfirm() {
-  const input = document.getElementById('deleteHandlerConfirmInput').value.trim();
-  const confirmBtn = document.getElementById('confirmDeleteHandlerBtn');
-  confirmBtn.disabled = input !== deleteHandlerName;
-}
-
-async function deleteHandler() {
-  const confirmInput = document.getElementById('deleteHandlerConfirmInput').value.trim();
-  if (confirmInput !== deleteHandlerName) {
-    showToast('Handler name does not match', 'error');
-    return;
-  }
-
-  const msgEl = document.getElementById('deleteHandlerMsg');
-  const confirmBtn = document.getElementById('confirmDeleteHandlerBtn');
-
-  try {
-    confirmBtn.disabled = true;
-    msgEl.textContent = 'Deleting handler...';
-    msgEl.style.color = 'var(--gray)';
-
-    await api('/admin/registry/handlers/delete', {
-      method: 'POST',
-      body: JSON.stringify({
-        handler_id: currentHandlerId
-      })
-    });
-
-    showToast('Handler deleted successfully', 'success');
-    closeDeleteHandlerModal();
-    closeHandlerDetailsModal();
-    loadHandlers();
-  } catch (err) {
-    console.error('Error deleting handler:', err);
-    msgEl.textContent = 'Error: ' + err.message;
-    msgEl.style.color = '#ef4444';
-    confirmBtn.disabled = false;
-    showToast('Failed to delete handler', 'error');
-  }
-}
-
-// Event listeners for service registry
+// Event listeners for handler marketplace
 document.addEventListener('DOMContentLoaded', function() {
-  // Upload handler button
-  const uploadBtn = document.getElementById('uploadHandlerBtn');
-  if (uploadBtn) uploadBtn.onclick = openUploadHandlerModal;
-
   // Refresh handlers button
   const refreshBtn = document.getElementById('refreshHandlersBtn');
   if (refreshBtn) refreshBtn.onclick = loadHandlers;
 
-  // Create handler button
-  const createBtn = document.getElementById('createHandlerBtn');
-  if (createBtn) createBtn.onclick = createHandler;
-
-  // Delete handler confirm input (CSP-compliant - no inline handlers)
-  const deleteConfirmInput = document.getElementById('deleteHandlerConfirmInput');
-  if (deleteConfirmInput) deleteConfirmInput.oninput = validateDeleteHandlerConfirm;
-
-  // WASM file input
-  const wasmInput = document.getElementById('wasmFileInput');
-  if (wasmInput) {
-    wasmInput.onchange = function() {
-      document.getElementById('uploadWasmBtn').disabled = !this.files.length;
-    };
-  }
-
-  // Upload WASM button
-  const uploadWasmBtn = document.getElementById('uploadWasmBtn');
-  if (uploadWasmBtn) uploadWasmBtn.onclick = uploadWasmFile;
-
-  // Confirm revoke button
-  const confirmRevokeBtn = document.getElementById('confirmRevokeBtn');
-  if (confirmRevokeBtn) confirmRevokeBtn.onclick = revokeHandler;
-
-  // Confirm delete button
-  const confirmDeleteHandlerBtn = document.getElementById('confirmDeleteHandlerBtn');
-  if (confirmDeleteHandlerBtn) confirmDeleteHandlerBtn.onclick = deleteHandler;
-
-  // Status filter buttons
-  document.querySelectorAll('.handler-filter').forEach(btn => {
-    btn.onclick = function() {
-      document.querySelectorAll('.handler-filter').forEach(b => b.classList.remove('active'));
-      this.classList.add('active');
-      handlerStatusFilter = this.dataset.filter;
-      renderHandlers();
-    };
-  });
-
-  // Category filter
-  const categoryFilter = document.getElementById('handlerCategoryFilter');
-  if (categoryFilter) {
-    categoryFilter.onchange = function() {
-      handlerCategoryFilter = this.value;
-      renderHandlers();
-    };
-  }
-
-  // Search input
-  const searchInput = document.getElementById('handlerSearchInput');
-  if (searchInput) {
-    let searchTimeout;
-    searchInput.oninput = function() {
-      clearTimeout(searchTimeout);
-      searchTimeout = setTimeout(() => {
-        handlerSearchTerm = this.value;
-        renderHandlers();
-      }, 300);
-    };
-  }
+  // Submit handler button
+  const submitBtn = document.getElementById('submitHandlerBtn');
+  if (submitBtn) submitBtn.onclick = submitNewHandler;
 });
 
 // ========================================

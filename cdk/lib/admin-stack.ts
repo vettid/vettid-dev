@@ -1238,10 +1238,14 @@ export class AdminStack extends cdk.Stack {
       HANDLER_BUCKET: handlersBucket.bucketName,
     };
 
+    // List deployed handlers uses the main handlers registry table
     const listDeployedHandlers = new lambdaNode.NodejsFunction(this, 'ListDeployedHandlersFn', {
       entry: 'lambda/handlers/admin/listDeployedHandlers.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
-      environment: marketplaceEnv,
+      environment: {
+        ...defaultEnv,
+        TABLE_HANDLERS: tables.handlers.tableName,
+      },
       timeout: cdk.Duration.seconds(30),
     });
 
@@ -1288,7 +1292,7 @@ export class AdminStack extends cdk.Stack {
     });
 
     // Handler marketplace permissions
-    tables.handlerSubmissions.grantReadData(listDeployedHandlers);
+    tables.handlers.grantReadData(listDeployedHandlers);
     tables.handlerSubmissions.grantReadData(listHandlerSubmissions);
     tables.handlerSubmissions.grantReadWriteData(submitHandler);
     tables.handlerSubmissions.grantReadWriteData(confirmHandlerSubmission);

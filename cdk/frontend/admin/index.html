@@ -1097,29 +1097,31 @@
               </div>
             </div>
 
-            <!-- Vault Status Distribution -->
+            <!-- Vault Status Distribution (Nitro Model) -->
             <div style="padding:20px;background:var(--bg-input);border-radius:8px;border:1px solid var(--border);">
               <h4 style="margin:0 0 16px 0;color:var(--text);">Vault Status Distribution</h4>
+              <p style="margin:0 0 12px 0;color:var(--gray);font-size:0.8rem;">Nitro enclave vault accounts</p>
               <div id="vaultStatusContainer" style="display:grid;gap:8px;">
-                <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:#050505;border-radius:6px;">
-                  <span style="display:flex;align-items:center;gap:8px;"><span style="width:10px;height:10px;border-radius:50%;background:#10b981;"></span>Active</span>
-                  <span id="statusActiveCount" style="font-weight:600;color:var(--text);">—</span>
+                <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;background:#050505;border-radius:6px;border-left:3px solid #10b981;">
+                  <span style="display:flex;align-items:center;gap:10px;">
+                    <span style="width:10px;height:10px;border-radius:50%;background:#10b981;"></span>
+                    <span style="color:var(--text);">Active</span>
+                  </span>
+                  <span id="statusActiveCount" style="font-weight:700;color:#10b981;font-size:1.1rem;">—</span>
                 </div>
-                <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:#050505;border-radius:6px;">
-                  <span style="display:flex;align-items:center;gap:8px;"><span style="width:10px;height:10px;border-radius:50%;background:#3b82f6;"></span>Idle</span>
-                  <span id="statusIdleCount" style="font-weight:600;color:var(--text);">—</span>
+                <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;background:#050505;border-radius:6px;border-left:3px solid #f59e0b;">
+                  <span style="display:flex;align-items:center;gap:10px;">
+                    <span style="width:10px;height:10px;border-radius:50%;background:#f59e0b;"></span>
+                    <span style="color:var(--text);">Suspended</span>
+                  </span>
+                  <span id="statusSuspendedCount" style="font-weight:700;color:#f59e0b;font-size:1.1rem;">—</span>
                 </div>
-                <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:#050505;border-radius:6px;">
-                  <span style="display:flex;align-items:center;gap:8px;"><span style="width:10px;height:10px;border-radius:50%;background:#6b7280;"></span>Offline</span>
-                  <span id="statusOfflineCount" style="font-weight:600;color:var(--text);">—</span>
-                </div>
-                <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:#050505;border-radius:6px;">
-                  <span style="display:flex;align-items:center;gap:8px;"><span style="width:10px;height:10px;border-radius:50%;background:#f59e0b;"></span>Suspended</span>
-                  <span id="statusSuspendedCount" style="font-weight:600;color:var(--text);">—</span>
-                </div>
-                <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:#050505;border-radius:6px;">
-                  <span style="display:flex;align-items:center;gap:8px;"><span style="width:10px;height:10px;border-radius:50%;background:#ef4444;"></span>Deleted</span>
-                  <span id="statusDeletedCount" style="font-weight:600;color:var(--text);">—</span>
+                <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;background:#050505;border-radius:6px;border-left:3px solid #ef4444;">
+                  <span style="display:flex;align-items:center;gap:10px;">
+                    <span style="width:10px;height:10px;border-radius:50%;background:#ef4444;"></span>
+                    <span style="color:var(--text);">Deleted</span>
+                  </span>
+                  <span id="statusDeletedCount" style="font-weight:700;color:#ef4444;font-size:1.1rem;">—</span>
                 </div>
               </div>
             </div>
@@ -1147,70 +1149,115 @@
           <p id="vaultMetricsGeneratedAt" class="muted" style="margin-top:16px;font-size:0.8rem;">Last updated: —</p>
         </div>
 
-        <!-- Event Handlers Sub-Tab -->
+        <!-- Event Handlers Sub-Tab (Handler Marketplace) -->
         <div id="event-handlers" class="sub-tab-content">
-          <h3 style="margin-top:0;">Event Handlers</h3>
-          <p class="muted">Manage vault event handlers (WASM services) that users can install and execute in their vaults.</p>
-
-          <!-- Action Buttons -->
-          <div style="display:flex;gap:12px;margin:16px 0;flex-wrap:wrap;">
-            <button id="uploadHandlerBtn" class="btn" style="background:linear-gradient(135deg,#4caf50 0%,#2e7d32 100%);">Upload Handler</button>
-            <button id="refreshHandlersBtn" class="btn">Refresh</button>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+            <div>
+              <h3 style="margin:0;">Handler Marketplace</h3>
+              <p class="muted" style="margin:4px 0 0 0;">Secure Nitro enclave handlers - signed and deployed by VettID.</p>
+            </div>
+            <button id="refreshHandlersBtn" class="btn" style="padding:8px 16px;">↻ Refresh</button>
           </div>
 
-          <!-- Status Filter Badges -->
-          <div style="display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap;">
-            <button class="btn handler-filter active" data-filter="all" style="background:linear-gradient(135deg,#6b7280 0%,#4b5563 100%);padding:10px 20px;font-weight:600;">
-              All <span id="allHandlersCount" style="background:var(--bg-button-secondary);color:#fff;border-radius:12px;padding:2px 8px;margin-left:8px;font-size:0.75rem;">0</span>
+          <!-- Handler Marketplace Tabs -->
+          <div style="display:flex;gap:8px;margin:20px 0;border-bottom:1px solid var(--border);padding-bottom:12px;">
+            <button class="btn handler-tab active" data-handler-tab="deployed" style="background:linear-gradient(135deg,#10b981 0%,#059669 100%);padding:10px 20px;">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle;margin-right:6px;">
+                <polyline points="20 6 9 17 4 12"></polyline>
+              </svg>
+              Deployed Handlers <span id="deployedHandlersCount" style="background:rgba(255,255,255,0.2);border-radius:10px;padding:2px 8px;margin-left:6px;font-size:0.75rem;">0</span>
             </button>
-            <button class="btn handler-filter" data-filter="active" style="background:linear-gradient(135deg,#10b981 0%,#059669 100%);padding:10px 20px;font-weight:600;">
-              Active <span id="activeHandlersCount" style="background:#065f46;color:#fff;border-radius:12px;padding:2px 8px;margin-left:8px;font-size:0.75rem;">0</span>
+            <button class="btn handler-tab" data-handler-tab="submissions" style="background:#333;padding:10px 20px;">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle;margin-right:6px;">
+                <circle cx="12" cy="12" r="10"></circle>
+                <polyline points="12 6 12 12 16 14"></polyline>
+              </svg>
+              Submissions Queue <span id="pendingSubmissionsCount" style="background:rgba(255,255,255,0.2);border-radius:10px;padding:2px 8px;margin-left:6px;font-size:0.75rem;">0</span>
             </button>
-            <button class="btn handler-filter" data-filter="pending" style="background:linear-gradient(135deg,#f59e0b 0%,#d97706 100%);padding:10px 20px;font-weight:600;">
-              Pending <span id="pendingHandlersCount" style="background:#92400e;color:#fff;border-radius:12px;padding:2px 8px;margin-left:8px;font-size:0.75rem;">0</span>
-            </button>
-            <button class="btn handler-filter" data-filter="revoked" style="background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);padding:10px 20px;font-weight:600;">
-              Revoked <span id="revokedHandlersCount" style="background:#991b1b;color:#fff;border-radius:12px;padding:2px 8px;margin-left:8px;font-size:0.75rem;">0</span>
+            <button class="btn handler-tab" data-handler-tab="submit" style="background:#333;padding:10px 20px;">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle;margin-right:6px;">
+                <line x1="12" y1="5" x2="12" y2="19"></line>
+                <line x1="5" y1="12" x2="19" y2="12"></line>
+              </svg>
+              Submit Handler
             </button>
           </div>
 
-          <!-- Category Filter -->
-          <div style="display:flex;gap:12px;margin-bottom:20px;align-items:center;flex-wrap:wrap;">
-            <label style="font-size:0.9rem;color:var(--gray);">Category:</label>
-            <select id="handlerCategoryFilter" style="padding:8px 12px;min-width:150px;">
-              <option value="">All Categories</option>
-              <option value="messaging">Messaging</option>
-              <option value="connections">Connections</option>
-              <option value="profile">Profile</option>
-              <option value="social">Social</option>
-              <option value="productivity">Productivity</option>
-              <option value="utilities">Utilities</option>
-              <option value="finance">Finance</option>
-              <option value="health">Health</option>
-              <option value="other">Other</option>
-            </select>
-            <input id="handlerSearchInput" type="text" placeholder="Search handlers..." style="padding:8px 12px;min-width:200px;" />
+          <!-- Deployed Handlers Panel -->
+          <div id="deployed-handlers-panel" class="handler-panel">
+            <p class="muted" style="margin-bottom:16px;">Pre-compiled, VettID-signed WASM handlers running in Nitro enclaves.</p>
+            <div id="deployedHandlersGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px;">
+              <div style="grid-column:1/-1;padding:40px;text-align:center;color:var(--gray);">Loading deployed handlers...</div>
+            </div>
           </div>
 
-          <!-- Handlers Table -->
-          <div style="overflow-x:auto;overflow-y:visible;">
-            <table id="handlersTable" style="overflow:visible;">
-              <thead>
-                <tr>
-                  <th>Handler</th>
-                  <th>Category</th>
-                  <th>Version</th>
-                  <th>Publisher</th>
-                  <th>Status</th>
-                  <th>Installs</th>
-                  <th>Published</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr><td colspan="8" style="text-align:center;color:var(--gray);padding:40px;">Loading handlers...</td></tr>
-              </tbody>
-            </table>
+          <!-- Submissions Queue Panel -->
+          <div id="submissions-handlers-panel" class="handler-panel" style="display:none;">
+            <p class="muted" style="margin-bottom:16px;">Handler submissions pending review and approval.</p>
+            <div id="submissionsQueueContainer">
+              <table style="width:100%;border-collapse:collapse;">
+                <thead>
+                  <tr style="border-bottom:1px solid var(--border);">
+                    <th style="text-align:left;padding:12px 8px;color:var(--gray);font-size:0.8rem;font-weight:600;">Handler</th>
+                    <th style="text-align:left;padding:12px 8px;color:var(--gray);font-size:0.8rem;font-weight:600;">Version</th>
+                    <th style="text-align:left;padding:12px 8px;color:var(--gray);font-size:0.8rem;font-weight:600;">Submitter</th>
+                    <th style="text-align:left;padding:12px 8px;color:var(--gray);font-size:0.8rem;font-weight:600;">Submitted</th>
+                    <th style="text-align:left;padding:12px 8px;color:var(--gray);font-size:0.8rem;font-weight:600;">Status</th>
+                    <th style="text-align:right;padding:12px 8px;color:var(--gray);font-size:0.8rem;font-weight:600;">Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="submissionsQueueBody">
+                  <tr><td colspan="6" style="padding:40px;text-align:center;color:var(--gray);">Loading submissions...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Submit Handler Panel -->
+          <div id="submit-handlers-panel" class="handler-panel" style="display:none;">
+            <p class="muted" style="margin-bottom:20px;">Submit a new handler for review. All handlers must be pre-compiled WASM and will be signed by VettID before deployment.</p>
+            <div style="padding:20px;background:#050505;border-radius:8px;border:1px solid var(--border);max-width:600px;">
+              <div style="display:grid;gap:16px;">
+                <div>
+                  <label style="display:block;margin-bottom:8px;color:var(--text);font-weight:600;">Handler ID</label>
+                  <input type="text" id="submitHandlerId" placeholder="e.g., signal-messenger" pattern="[a-z0-9-]+"
+                    style="width:100%;padding:12px;background:var(--bg-card);border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;">
+                  <p style="margin:4px 0 0 0;color:var(--gray);font-size:0.8rem;">Lowercase letters, numbers, and hyphens only</p>
+                </div>
+                <div>
+                  <label style="display:block;margin-bottom:8px;color:var(--text);font-weight:600;">Display Name</label>
+                  <input type="text" id="submitHandlerName" placeholder="e.g., Signal Messenger"
+                    style="width:100%;padding:12px;background:var(--bg-card);border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;">
+                </div>
+                <div>
+                  <label style="display:block;margin-bottom:8px;color:var(--text);font-weight:600;">Version</label>
+                  <input type="text" id="submitHandlerVersion" placeholder="e.g., 1.0.0" pattern="[0-9]+\.[0-9]+\.[0-9]+"
+                    style="width:100%;padding:12px;background:var(--bg-card);border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;">
+                  <p style="margin:4px 0 0 0;color:var(--gray);font-size:0.8rem;">Semantic versioning (major.minor.patch)</p>
+                </div>
+                <div>
+                  <label style="display:block;margin-bottom:8px;color:var(--text);font-weight:600;">Description</label>
+                  <textarea id="submitHandlerDescription" placeholder="Brief description of what this handler does..." rows="3"
+                    style="width:100%;padding:12px;background:var(--bg-card);border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;resize:vertical;"></textarea>
+                </div>
+                <div>
+                  <label style="display:block;margin-bottom:8px;color:var(--text);font-weight:600;">WASM File</label>
+                  <input type="file" id="submitHandlerFile" accept=".wasm"
+                    style="width:100%;padding:12px;background:var(--bg-card);border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;">
+                  <p style="margin:4px 0 0 0;color:var(--gray);font-size:0.8rem;">Pre-compiled WebAssembly binary (.wasm)</p>
+                </div>
+                <div style="margin-top:8px;">
+                  <button id="submitHandlerBtn" class="btn" style="padding:12px 24px;background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);font-weight:600;">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle;margin-right:6px;">
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                      <polyline points="17 8 12 3 7 8"></polyline>
+                      <line x1="12" y1="3" x2="12" y2="15"></line>
+                    </svg>
+                    Submit for Review
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -1479,7 +1526,6 @@
             </div>
           </div>
         </div>
-      </div>
 
         <!-- Security Events Sub-Tab -->
         <div id="security-events" class="sub-tab-content">
