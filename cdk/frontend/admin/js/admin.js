@@ -6280,11 +6280,16 @@ async function loadRecoveryRequests() {
             ⏱ ${req.time_remaining_readable || 'Ready'}
           </p>
         </div>
-        <button onclick="cancelRecoveryRequest('${req.recovery_id}')" class="btn" style="padding:8px 16px;background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);font-size:0.85rem;">
+        <button data-cancel-recovery="${escapeHtml(req.recovery_id)}" class="btn" style="padding:8px 16px;background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);font-size:0.85rem;">
           Cancel
         </button>
       </div>
     `).join('');
+
+    // Event delegation for cancel recovery buttons
+    container.querySelectorAll('[data-cancel-recovery]').forEach(btn => {
+      btn.addEventListener('click', () => cancelRecoveryRequest(btn.dataset.cancelRecovery));
+    });
   } catch (e) {
     console.error('Error loading recovery requests:', e);
     container.innerHTML = `<div style="padding:16px;background:#050505;border-radius:8px;text-align:center;color:#ef4444;">Error: ${escapeHtml(e.message || e)}</div>`;
@@ -6314,11 +6319,16 @@ async function loadDeletionRequests() {
             ⏱ ${req.time_remaining_readable || 'Ready for deletion'}
           </p>
         </div>
-        <button onclick="cancelDeletionRequest('${req.request_id}')" class="btn" style="padding:8px 16px;background:#333;font-size:0.85rem;">
+        <button data-cancel-deletion="${escapeHtml(req.request_id)}" class="btn" style="padding:8px 16px;background:#333;font-size:0.85rem;">
           Cancel Deletion
         </button>
       </div>
     `).join('');
+
+    // Event delegation for cancel deletion buttons
+    container.querySelectorAll('[data-cancel-deletion]').forEach(btn => {
+      btn.addEventListener('click', () => cancelDeletionRequest(btn.dataset.cancelDeletion));
+    });
   } catch (e) {
     console.error('Error loading deletion requests:', e);
     container.innerHTML = `<div style="padding:16px;background:#050505;border-radius:8px;text-align:center;color:#ef4444;">Error: ${escapeHtml(e.message || e)}</div>`;
@@ -6644,7 +6654,7 @@ function renderDeployedHandlers() {
             <code style="background:var(--bg-card);padding:4px 8px;border-radius:4px;font-size:0.8rem;color:var(--accent);">v${escapeHtml(h.version || '1.0.0')}</code>
             ${h.category ? `<span style="background:#222;padding:4px 8px;border-radius:4px;font-size:0.75rem;color:var(--gray);">${escapeHtml(h.category)}</span>` : ''}
           </div>
-          <button class="btn" style="padding:6px 12px;font-size:0.8rem;background:#333;" onclick="forceUpdateHandler('${escapeHtml(h.handler_id)}')">
+          <button class="btn" data-force-update="${escapeHtml(h.handler_id)}" style="padding:6px 12px;font-size:0.8rem;background:#333;">
             🔄 Force Update
           </button>
         </div>
@@ -6652,6 +6662,11 @@ function renderDeployedHandlers() {
       </div>
     `;
   }).join('');
+
+  // Event delegation for force update buttons
+  grid.querySelectorAll('[data-force-update]').forEach(btn => {
+    btn.addEventListener('click', () => forceUpdateHandler(btn.dataset.forceUpdate));
+  });
 }
 
 // Load handler submissions
@@ -6706,13 +6721,21 @@ function renderHandlerSubmissions() {
         <td style="padding:12px 8px;"><span style="padding:4px 10px;border-radius:4px;font-size:0.75rem;font-weight:700;text-transform:uppercase;${statusStyle}">${escapeHtml(s.status)}</span></td>
         <td style="padding:12px 8px;text-align:right;">
           ${s.status === 'pending' || s.status === 'uploaded' ? `
-            <button class="btn" style="padding:6px 12px;font-size:0.8rem;background:linear-gradient(135deg,#10b981 0%,#059669 100%);margin-right:4px;" onclick="approveSubmission('${escapeHtml(s.submission_id)}')">Approve</button>
-            <button class="btn" style="padding:6px 12px;font-size:0.8rem;background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);" onclick="rejectSubmission('${escapeHtml(s.submission_id)}')">Reject</button>
+            <button class="btn" data-approve-submission="${escapeHtml(s.submission_id)}" style="padding:6px 12px;font-size:0.8rem;background:linear-gradient(135deg,#10b981 0%,#059669 100%);margin-right:4px;">Approve</button>
+            <button class="btn" data-reject-submission="${escapeHtml(s.submission_id)}" style="padding:6px 12px;font-size:0.8rem;background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);">Reject</button>
           ` : '—'}
         </td>
       </tr>
     `;
   }).join('');
+
+  // Event delegation for approve/reject buttons
+  tbody.querySelectorAll('[data-approve-submission]').forEach(btn => {
+    btn.addEventListener('click', () => approveSubmission(btn.dataset.approveSubmission));
+  });
+  tbody.querySelectorAll('[data-reject-submission]').forEach(btn => {
+    btn.addEventListener('click', () => rejectSubmission(btn.dataset.rejectSubmission));
+  });
 }
 
 // Load handlers (combined function for both panels)
