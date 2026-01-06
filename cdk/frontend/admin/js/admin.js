@@ -2221,6 +2221,12 @@ document.querySelectorAll('.tab').forEach(tab => {
       if (subTab === 'notifications') loadAllNotifications();
       if (subTab === 'event-handlers') loadHandlers();
       if (subTab === 'supported-services') loadServices();
+      if (subTab === 'vault-metrics') loadVaultMetrics();
+      if (subTab === 'security-events') {
+        loadSecurityEvents();
+        loadRecoveryRequests();
+        loadDeletionRequests();
+      }
 
       // Close sidebar on mobile
       if (window.innerWidth <= 768) {
@@ -3852,10 +3858,10 @@ async function loadAllSubscriptions(resetPage=true){
     populatePlanFilter();
 
     // Render the filtered data
-    renderSubscriptions();
+    await renderSubscriptions();
   }catch(e){
     showToast('Failed to load subscriptions: '+(e.message||e),'error');
-    tbody.innerHTML=`<tr><td colspan="7" class="muted">${escapeHtml(e.message||String(e))}</td></tr>`;
+    tbody.innerHTML=`<tr><td colspan="10" class="muted">${escapeHtml(e.message||String(e))}</td></tr>`;
   }
 }
 
@@ -3989,7 +3995,7 @@ function populatePlanFilter(){
   select.value=currentValue;
 }
 
-function renderSubscriptions(){
+async function renderSubscriptions(){
   const tbody=document.querySelector('#subscriptionsTable tbody');
   tbody.innerHTML='';
 
@@ -4037,6 +4043,18 @@ function renderSubscriptions(){
   const now=new Date();
   const searchTerm=paginationState.subscriptions.search;
 
+  // Fetch vault statuses for users on this page
+  let vaultStatuses = {};
+  const userGuids = page.map(s => s.user_guid).filter(Boolean);
+  if (userGuids.length > 0) {
+    try {
+      const vaultData = await api(`/admin/vault-status?user_guids=${encodeURIComponent(userGuids.join(','))}`);
+      vaultStatuses = vaultData.vault_statuses || {};
+    } catch (e) {
+      console.error('Failed to fetch vault statuses:', e);
+    }
+  }
+
   page.forEach(s=>{
     const tr=document.createElement('tr');
     const expiresDate=new Date(s.expires_at);
@@ -4079,7 +4097,24 @@ function renderSubscriptions(){
       ?'<span style="display:inline-block;background:linear-gradient(135deg,#10b981 0%,#059669 100%);color:#fff;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;">On</span>'
       :'<span style="display:inline-block;background:linear-gradient(135deg,#6b7280 0%,#4b5563 100%);color:#fff;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;">Off</span>';
 
-    tr.innerHTML=`<td><input type='checkbox' name='subscription-select' class='subscription-checkbox' data-guid='${escapeHtml(s.user_guid)}' /></td><td>${highlightedName}</td><td>${highlightedEmail}</td><td>${escapeHtml(s.plan)||'—'}</td><td>${statusBadge}</td><td>${pinBadge}</td><td>${emailBadge}</td><td>${escapeHtml(expiresDate.toLocaleString())}</td><td>${daysLeftBadge}</td>`;
+    // Vault status badge
+    const vaultInfo = vaultStatuses[s.user_guid] || { status: 'not_enrolled' };
+    let vaultBadge = '';
+    switch (vaultInfo.status) {
+      case 'active':
+        vaultBadge = '<span style="display:inline-block;background:linear-gradient(135deg,#10b981 0%,#059669 100%);color:#fff;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;">Active</span>';
+        break;
+      case 'enrolled':
+        vaultBadge = '<span style="display:inline-block;background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);color:#fff;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;">Enrolled</span>';
+        break;
+      case 'enrolling':
+        vaultBadge = '<span style="display:inline-block;background:linear-gradient(135deg,#f59e0b 0%,#d97706 100%);color:#000;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;">Enrolling</span>';
+        break;
+      default:
+        vaultBadge = '<span style="display:inline-block;background:linear-gradient(135deg,#6b7280 0%,#4b5563 100%);color:#fff;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;">Not Enrolled</span>';
+    }
+
+    tr.innerHTML=`<td><input type='checkbox' name='subscription-select' class='subscription-checkbox' data-guid='${escapeHtml(s.user_guid)}' /></td><td>${highlightedName}</td><td>${highlightedEmail}</td><td>${escapeHtml(s.plan)||'—'}</td><td>${statusBadge}</td><td>${pinBadge}</td><td>${vaultBadge}</td><td>${emailBadge}</td><td>${escapeHtml(expiresDate.toLocaleString())}</td><td>${daysLeftBadge}</td>`;
     tbody.appendChild(tr);
   });
 
@@ -5197,6 +5232,66 @@ async function loadSystemHealth() {
     // Display node count
     natsNodeCountEl.textContent = `${natsHealthyNodes} of ${natsTotalNodes} nodes healthy`;
 
+    // Update Nitro Enclave ASG Health
+    const nitroStatus = data.nitro?.status || 'unknown';
+    const nitroHealthyInstances = data.nitro?.healthyInstances || 0;
+    const nitroDesiredCapacity = data.nitro?.desiredCapacity || 0;
+    const nitroAmiUpToDate = data.nitro?.amiUpToDate || false;
+    const nitroCurrentAmi = data.nitro?.currentAmi || '';
+    const nitroLatestAmi = data.nitro?.latestAmi || '';
+    const nitroRefresh = data.nitro?.instanceRefresh;
+
+    const nitroStatusEl = document.getElementById('nitroAsgStatus');
+    const nitroInstanceCountEl = document.getElementById('nitroInstanceCount');
+    const nitroAmiStatusEl = document.getElementById('nitroAmiStatus');
+    const nitroAmiIndicatorEl = document.getElementById('nitroAmiIndicator');
+    const nitroAmiTextEl = document.getElementById('nitroAmiText');
+    const nitroRefreshStatusEl = document.getElementById('nitroRefreshStatus');
+    const nitroRefreshProgressEl = document.getElementById('nitroRefreshProgress');
+
+    // Display status text
+    if (nitroStatus === 'healthy') {
+      nitroStatusEl.textContent = 'Healthy';
+      nitroStatusEl.style.color = '#10b981';
+    } else if (nitroStatus === 'degraded') {
+      nitroStatusEl.textContent = 'Degraded';
+      nitroStatusEl.style.color = '#f59e0b';
+    } else if (nitroStatus === 'unhealthy') {
+      nitroStatusEl.textContent = 'Unhealthy';
+      nitroStatusEl.style.color = '#ef4444';
+    } else {
+      nitroStatusEl.textContent = 'Unknown';
+      nitroStatusEl.style.color = '#9ca3af';
+    }
+
+    // Display instance count
+    nitroInstanceCountEl.textContent = `${nitroHealthyInstances} of ${nitroDesiredCapacity} instances healthy`;
+
+    // Display AMI status
+    if (nitroCurrentAmi || nitroLatestAmi) {
+      nitroAmiStatusEl.style.display = 'block';
+      if (nitroAmiUpToDate) {
+        nitroAmiIndicatorEl.style.backgroundColor = '#10b981';
+        nitroAmiTextEl.textContent = `AMI up to date`;
+      } else if (nitroLatestAmi && nitroCurrentAmi && nitroLatestAmi !== nitroCurrentAmi) {
+        nitroAmiIndicatorEl.style.backgroundColor = '#f59e0b';
+        nitroAmiTextEl.textContent = `Update available`;
+      } else {
+        nitroAmiIndicatorEl.style.backgroundColor = '#9ca3af';
+        nitroAmiTextEl.textContent = `AMI: ${nitroCurrentAmi.slice(-12) || '—'}`;
+      }
+    } else {
+      nitroAmiStatusEl.style.display = 'none';
+    }
+
+    // Display instance refresh status
+    if (nitroRefresh && (nitroRefresh.status === 'InProgress' || nitroRefresh.status === 'Pending')) {
+      nitroRefreshStatusEl.style.display = 'block';
+      nitroRefreshProgressEl.textContent = `${nitroRefresh.percentComplete || 0}% (${nitroRefresh.status})`;
+    } else {
+      nitroRefreshStatusEl.style.display = 'none';
+    }
+
   } catch (e) {
     console.error('Error loading system health:', e);
     showToast('Error loading system health: ' + (e.message || e), 'error');
@@ -5262,6 +5357,70 @@ async function loadSystemLogs() {
     container.innerHTML = `<div style="color:#ef4444;">Error loading logs: ${escapeHtml(e.message || e)}</div>`;
   }
 }
+
+// ===== VAULT METRICS DASHBOARD =====
+async function loadVaultMetrics() {
+  try {
+    const data = await api('/admin/vault-metrics');
+
+    // Update key metrics
+    document.getElementById('metricTotalEnrolled').textContent = data.key_metrics?.total_enrolled ?? '—';
+    document.getElementById('metricActiveVaults').textContent = data.key_metrics?.active_vaults ?? '—';
+    document.getElementById('metricPendingEnrollments').textContent = data.key_metrics?.pending_enrollments ?? '—';
+    document.getElementById('metricEnrollmentRate').textContent = `${data.key_metrics?.enrollment_rate_percent ?? '—'}%`;
+
+    // Update enrollment outcomes
+    const outcomes = data.enrollment_outcomes_30d || {};
+    const totalOutcomes = (outcomes.success || 0) + (outcomes.failed || 0) + (outcomes.abandoned || 0) + (outcomes.pending || 0);
+
+    document.getElementById('outcomeSuccessCount').textContent = outcomes.success || 0;
+    document.getElementById('outcomeFailedCount').textContent = outcomes.failed || 0;
+    document.getElementById('outcomeAbandonedCount').textContent = outcomes.abandoned || 0;
+    document.getElementById('outcomePendingCount').textContent = outcomes.pending || 0;
+
+    // Calculate percentages for progress bars
+    if (totalOutcomes > 0) {
+      document.getElementById('outcomeSuccessBar').style.width = `${(outcomes.success / totalOutcomes) * 100}%`;
+      document.getElementById('outcomeFailedBar').style.width = `${(outcomes.failed / totalOutcomes) * 100}%`;
+      document.getElementById('outcomeAbandonedBar').style.width = `${(outcomes.abandoned / totalOutcomes) * 100}%`;
+      document.getElementById('outcomePendingBar').style.width = `${(outcomes.pending / totalOutcomes) * 100}%`;
+    }
+
+    // Update vault status distribution
+    const status = data.vault_status_distribution || {};
+    document.getElementById('statusActiveCount').textContent = status.active || 0;
+    document.getElementById('statusIdleCount').textContent = status.idle || 0;
+    document.getElementById('statusOfflineCount').textContent = status.offline || 0;
+    document.getElementById('statusSuspendedCount').textContent = status.suspended || 0;
+    document.getElementById('statusDeletedCount').textContent = status.deleted || 0;
+
+    // Update recent enrollments table
+    const recentEnrollments = data.recent_enrollments || [];
+    const tbody = document.getElementById('recentEnrollmentsBody');
+
+    if (recentEnrollments.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="3" style="padding:20px;text-align:center;color:var(--gray);">No recent enrollments.</td></tr>';
+    } else {
+      tbody.innerHTML = recentEnrollments.map(e => `
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:12px 8px;color:var(--text);">${escapeHtml(e.email || '—')}</td>
+          <td style="padding:12px 8px;color:var(--gray);font-family:monospace;font-size:0.8rem;">${escapeHtml(e.user_guid?.substring(0, 20) || '—')}...</td>
+          <td style="padding:12px 8px;color:var(--gray);">${e.completed_at ? new Date(e.completed_at).toLocaleString() : new Date(e.created_at).toLocaleString()}</td>
+        </tr>
+      `).join('');
+    }
+
+    // Update generated timestamp
+    document.getElementById('vaultMetricsGeneratedAt').textContent = `Last updated: ${data.generated_at ? new Date(data.generated_at).toLocaleString() : '—'}`;
+
+  } catch (e) {
+    console.error('Error loading vault metrics:', e);
+    showToast('Error loading vault metrics: ' + (e.message || e), 'error');
+  }
+}
+
+// Vault metrics refresh button
+document.getElementById('refreshVaultMetricsBtn').onclick = loadVaultMetrics;
 
 function formatBytes(bytes) {
   if (bytes === 0) return '0 Bytes';
@@ -5841,6 +6000,379 @@ document.getElementById('sendBulkEmail')?.addEventListener('click', async () => 
 
 // Refresh sent emails button
 document.getElementById('refreshSentEmails')?.addEventListener('click', loadSentEmails);
+
+// ===== COMMUNICATIONS PAGE =====
+
+// Communications tab switching
+document.querySelectorAll('.comm-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    // Update active tab styling
+    document.querySelectorAll('.comm-tab').forEach(t => {
+      t.classList.remove('active');
+      t.style.background = '#333';
+    });
+    tab.classList.add('active');
+    tab.style.background = 'linear-gradient(135deg,#3b82f6 0%,#2563eb 100%)';
+
+    // Show correct panel
+    const targetPanel = tab.getAttribute('data-comm-tab');
+    document.querySelectorAll('.comm-panel').forEach(p => p.style.display = 'none');
+    document.getElementById(`${targetPanel}-panel`).style.display = 'block';
+
+    // Load data for history panel
+    if (targetPanel === 'broadcast-history') {
+      loadBroadcastHistory();
+    }
+  });
+});
+
+// Broadcast type description updates
+const broadcastTypeDescriptions = {
+  system_announcement: 'Maintenance notices, new features, terms updates',
+  security_alert: 'Urgent security notifications, breach alerts, action required',
+  admin_message: 'Custom messages from administrators'
+};
+
+document.getElementById('broadcastType')?.addEventListener('change', (e) => {
+  const desc = broadcastTypeDescriptions[e.target.value] || '';
+  document.getElementById('broadcastTypeDesc').textContent = desc;
+});
+
+// Send vault broadcast
+document.getElementById('sendVaultBroadcastBtn')?.addEventListener('click', async () => {
+  const btn = document.getElementById('sendVaultBroadcastBtn');
+  const originalText = btn.innerHTML;
+
+  const type = document.getElementById('broadcastType').value;
+  const priority = document.querySelector('input[name="broadcastPriority"]:checked')?.value || 'normal';
+  const title = document.getElementById('broadcastTitle').value.trim();
+  const message = document.getElementById('broadcastMessage').value.trim();
+
+  // Validation
+  if (!title || title.length < 3) {
+    showToast('Title must be at least 3 characters', 'warning');
+    return;
+  }
+  if (!message || message.length < 10) {
+    showToast('Message must be at least 10 characters', 'warning');
+    return;
+  }
+
+  // Confirm for high/critical priority
+  if (priority === 'critical') {
+    const confirmed = await showConfirm(
+      'Critical Broadcast',
+      'Critical broadcasts interrupt user flow. Are you sure you want to send this?',
+      'Send Anyway',
+      'Cancel',
+      true
+    );
+    if (!confirmed) return;
+  }
+
+  try {
+    btn.disabled = true;
+    btn.innerHTML = '<span style="display:inline-block;animation:spin 1s linear infinite;">⟳</span> Sending...';
+
+    const result = await api('/admin/broadcasts', {
+      method: 'POST',
+      body: JSON.stringify({ type, priority, title, message })
+    });
+
+    showToast(`Broadcast sent: ${result.title}`, 'success');
+
+    // Clear form
+    document.getElementById('broadcastTitle').value = '';
+    document.getElementById('broadcastMessage').value = '';
+    document.querySelector('input[name="broadcastPriority"][value="normal"]').checked = true;
+
+  } catch (e) {
+    showToast('Failed to send broadcast: ' + (e.message || e), 'error');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = originalText;
+  }
+});
+
+// Load broadcast history
+async function loadBroadcastHistory() {
+  const container = document.getElementById('broadcastHistoryList');
+  const filter = document.getElementById('historyTypeFilter')?.value || 'all';
+
+  container.innerHTML = '<div style="padding:20px;background:#050505;border-radius:8px;text-align:center;color:var(--gray);">Loading...</div>';
+
+  try {
+    // Fetch vault broadcasts
+    let vaultBroadcasts = [];
+    if (filter === 'all' || filter === 'vault') {
+      const vaultData = await api('/admin/broadcasts');
+      vaultBroadcasts = (vaultData.broadcasts || []).map(b => ({
+        ...b,
+        source: 'vault',
+        sent_at: b.sent_at
+      }));
+    }
+
+    // Fetch email broadcasts (from sent emails)
+    let emailBroadcasts = [];
+    if (filter === 'all' || filter === 'email') {
+      const emailData = await api('/admin/sent-emails?limit=50');
+      emailBroadcasts = (emailData.emails || []).map(e => ({
+        broadcast_id: e.email_id,
+        type: 'email',
+        priority: 'normal',
+        title: e.subject,
+        message: e.body_preview || '',
+        sent_at: e.sent_at,
+        sent_by: e.sent_by,
+        source: 'email',
+        recipient_count: e.recipient_count
+      }));
+    }
+
+    // Combine and sort by sent_at
+    const allBroadcasts = [...vaultBroadcasts, ...emailBroadcasts].sort((a, b) => {
+      return new Date(b.sent_at).getTime() - new Date(a.sent_at).getTime();
+    });
+
+    if (allBroadcasts.length === 0) {
+      container.innerHTML = '<div style="padding:20px;background:#050505;border-radius:8px;text-align:center;color:var(--gray);">No broadcasts found.</div>';
+      return;
+    }
+
+    // Render broadcasts
+    container.innerHTML = allBroadcasts.slice(0, 50).map(b => {
+      const isVault = b.source === 'vault';
+      const typeColor = b.type === 'security_alert' ? '#ef4444' :
+                        b.type === 'system_announcement' ? '#3b82f6' :
+                        b.type === 'admin_message' ? '#10b981' : '#6b7280';
+      const priorityBadge = b.priority === 'critical' ? '<span style="background:#ef4444;color:#fff;padding:2px 8px;border-radius:4px;font-size:0.7rem;margin-left:8px;">CRITICAL</span>' :
+                           b.priority === 'high' ? '<span style="background:#f59e0b;color:#000;padding:2px 8px;border-radius:4px;font-size:0.7rem;margin-left:8px;">HIGH</span>' : '';
+      const sourceIcon = isVault ?
+        '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle;"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>' :
+        '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle;"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path><polyline points="22,6 12,13 2,6"></polyline></svg>';
+
+      return `
+        <div style="padding:16px;background:#050505;border-radius:8px;border-left:4px solid ${typeColor};">
+          <div style="display:flex;justify-content:space-between;align-items:start;gap:12px;margin-bottom:8px;">
+            <div style="display:flex;align-items:center;gap:8px;">
+              <span style="color:${typeColor};">${sourceIcon}</span>
+              <span style="font-weight:600;color:var(--text);">${escapeHtml(b.title)}</span>
+              ${priorityBadge}
+            </div>
+            <span style="color:var(--gray);font-size:0.8rem;white-space:nowrap;">${new Date(b.sent_at).toLocaleString()}</span>
+          </div>
+          <p style="margin:0 0 8px 0;color:var(--gray);font-size:0.9rem;line-height:1.5;">${escapeHtml(b.message?.substring(0, 200) || '')}${b.message?.length > 200 ? '...' : ''}</p>
+          <div style="display:flex;gap:16px;color:var(--gray);font-size:0.8rem;">
+            <span>Type: <span style="color:${typeColor};">${b.type?.replace('_', ' ') || 'email'}</span></span>
+            <span>By: ${escapeHtml(b.sent_by || '—')}</span>
+            ${b.recipient_count ? `<span>Recipients: ${b.recipient_count}</span>` : ''}
+          </div>
+        </div>
+      `;
+    }).join('');
+
+  } catch (e) {
+    console.error('Error loading broadcast history:', e);
+    container.innerHTML = `<div style="padding:20px;background:#050505;border-radius:8px;text-align:center;color:#ef4444;">Error loading history: ${escapeHtml(e.message || e)}</div>`;
+  }
+}
+
+// Refresh broadcast history
+document.getElementById('refreshBroadcastHistory')?.addEventListener('click', loadBroadcastHistory);
+document.getElementById('historyTypeFilter')?.addEventListener('change', loadBroadcastHistory);
+
+// ===== SECURITY EVENTS =====
+
+async function loadSecurityEvents() {
+  const range = document.getElementById('securityTimeRange')?.value || '24h';
+  const severity = document.getElementById('securitySeverityFilter')?.value || 'all';
+
+  try {
+    const response = await fetchWithAuth(`/admin/security-events?range=${range}&severity=${severity}&limit=100`);
+    if (!response.ok) throw new Error('Failed to fetch security events');
+    const data = await response.json();
+
+    // Update metrics
+    document.getElementById('secMetricTotal').textContent = data.metrics?.total_events ?? '--';
+    document.getElementById('secMetricCritical').textContent = data.metrics?.critical ?? '0';
+    document.getElementById('secMetricHigh').textContent = data.metrics?.high ?? '0';
+    document.getElementById('secMetricAuth').textContent = data.metrics?.auth_failures ?? '0';
+    document.getElementById('secMetricRecovery').textContent = data.metrics?.pending_recovery_requests ?? '0';
+    document.getElementById('secMetricDeletion').textContent = data.metrics?.pending_deletion_requests ?? '0';
+
+    // Render events list
+    const container = document.getElementById('securityEventsList');
+    if (!data.events || data.events.length === 0) {
+      container.innerHTML = `<div style="padding:20px;background:#050505;border-radius:8px;text-align:center;color:var(--gray);">No security events found for the selected time range.</div>`;
+      return;
+    }
+
+    const severityColors = {
+      critical: { bg: 'rgba(239,68,68,0.2)', border: '#ef4444', text: '#ef4444' },
+      high: { bg: 'rgba(245,158,11,0.15)', border: '#f59e0b', text: '#f59e0b' },
+      medium: { bg: 'rgba(99,102,241,0.1)', border: '#6366f1', text: '#6366f1' },
+      low: { bg: 'rgba(156,163,175,0.1)', border: '#6b7280', text: '#9ca3af' }
+    };
+
+    container.innerHTML = data.events.map(event => {
+      const colors = severityColors[event.severity] || severityColors.low;
+      const time = event.timestamp ? new Date(event.timestamp).toLocaleString() : 'Unknown';
+      const typeLabel = event.type.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+
+      return `
+        <div style="padding:12px 16px;background:${colors.bg};border-radius:8px;border-left:4px solid ${colors.border};display:flex;justify-content:space-between;align-items:center;">
+          <div style="flex:1;">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+              <span style="padding:2px 8px;background:${colors.border};color:#000;border-radius:4px;font-size:0.7rem;font-weight:700;text-transform:uppercase;">${event.severity}</span>
+              <span style="color:${colors.text};font-weight:600;font-size:0.9rem;">${escapeHtml(typeLabel)}</span>
+            </div>
+            <p style="margin:0;color:var(--gray);font-size:0.85rem;">
+              ${event.email ? `User: ${escapeHtml(event.email)} | ` : ''}
+              ${event.path ? `Path: ${escapeHtml(event.path)} | ` : ''}
+              ${event.reason ? `Reason: ${escapeHtml(event.reason)}` : ''}
+            </p>
+          </div>
+          <span style="color:var(--gray);font-size:0.8rem;white-space:nowrap;">${time}</span>
+        </div>
+      `;
+    }).join('');
+  } catch (e) {
+    console.error('Error loading security events:', e);
+    document.getElementById('securityEventsList').innerHTML = `<div style="padding:16px;background:#050505;border-radius:8px;text-align:center;color:#ef4444;">Error: ${escapeHtml(e.message || e)}</div>`;
+  }
+}
+
+async function loadRecoveryRequests() {
+  const container = document.getElementById('recoveryRequestsList');
+
+  try {
+    const response = await fetchWithAuth('/admin/credential-recovery-requests?status=pending');
+    if (!response.ok) throw new Error('Failed to fetch recovery requests');
+    const data = await response.json();
+
+    if (!data.requests || data.requests.length === 0) {
+      container.innerHTML = `<div style="padding:16px;background:#050505;border-radius:8px;text-align:center;color:var(--gray);">No pending credential recovery requests.</div>`;
+      return;
+    }
+
+    container.innerHTML = data.requests.map(req => `
+      <div style="padding:16px;background:linear-gradient(135deg,rgba(99,102,241,0.1) 0%,rgba(79,70,229,0.05) 100%);border-radius:8px;border:1px solid #6366f1;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;">
+        <div>
+          <p style="margin:0 0 4px 0;color:var(--text);font-weight:600;">${escapeHtml(req.member_email || 'Unknown User')}</p>
+          <p style="margin:0;color:var(--gray);font-size:0.85rem;">
+            Type: ${escapeHtml(req.recovery_type || 'lost_device')} |
+            Requested: ${req.requested_at ? new Date(req.requested_at).toLocaleString() : 'Unknown'}
+          </p>
+          <p style="margin:4px 0 0 0;color:#6366f1;font-size:0.9rem;font-weight:600;">
+            ⏱ ${req.time_remaining_readable || 'Ready'}
+          </p>
+        </div>
+        <button onclick="cancelRecoveryRequest('${req.recovery_id}')" class="btn" style="padding:8px 16px;background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);font-size:0.85rem;">
+          Cancel
+        </button>
+      </div>
+    `).join('');
+  } catch (e) {
+    console.error('Error loading recovery requests:', e);
+    container.innerHTML = `<div style="padding:16px;background:#050505;border-radius:8px;text-align:center;color:#ef4444;">Error: ${escapeHtml(e.message || e)}</div>`;
+  }
+}
+
+async function loadDeletionRequests() {
+  const container = document.getElementById('deletionRequestsList');
+
+  try {
+    const response = await fetchWithAuth('/admin/vault-deletion-requests?status=pending');
+    if (!response.ok) throw new Error('Failed to fetch deletion requests');
+    const data = await response.json();
+
+    if (!data.requests || data.requests.length === 0) {
+      container.innerHTML = `<div style="padding:16px;background:#050505;border-radius:8px;text-align:center;color:var(--gray);">No pending vault deletion requests.</div>`;
+      return;
+    }
+
+    container.innerHTML = data.requests.map(req => `
+      <div style="padding:16px;background:linear-gradient(135deg,rgba(239,68,68,0.15) 0%,rgba(185,28,28,0.05) 100%);border-radius:8px;border:1px solid #dc2626;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;">
+        <div>
+          <p style="margin:0 0 4px 0;color:var(--text);font-weight:600;">${escapeHtml(req.member_email || 'Unknown User')}</p>
+          <p style="margin:0;color:var(--gray);font-size:0.85rem;">
+            ${req.reason ? `Reason: ${escapeHtml(req.reason)} | ` : ''}
+            Requested: ${req.requested_at ? new Date(req.requested_at).toLocaleString() : 'Unknown'}
+          </p>
+          <p style="margin:4px 0 0 0;color:#ef4444;font-size:0.9rem;font-weight:600;">
+            ⏱ ${req.time_remaining_readable || 'Ready for deletion'}
+          </p>
+        </div>
+        <button onclick="cancelDeletionRequest('${req.request_id}')" class="btn" style="padding:8px 16px;background:#333;font-size:0.85rem;">
+          Cancel Deletion
+        </button>
+      </div>
+    `).join('');
+  } catch (e) {
+    console.error('Error loading deletion requests:', e);
+    container.innerHTML = `<div style="padding:16px;background:#050505;border-radius:8px;text-align:center;color:#ef4444;">Error: ${escapeHtml(e.message || e)}</div>`;
+  }
+}
+
+async function cancelRecoveryRequest(recoveryId) {
+  if (!confirm('Are you sure you want to cancel this credential recovery request?')) return;
+
+  try {
+    const response = await fetchWithAuth(`/admin/credential-recovery-requests/${recoveryId}/cancel`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: 'Cancelled by admin' })
+    });
+
+    if (!response.ok) {
+      const err = await response.json();
+      throw new Error(err.message || 'Failed to cancel request');
+    }
+
+    showToast('Recovery request cancelled successfully', 'success');
+    loadRecoveryRequests();
+    loadSecurityEvents();
+  } catch (e) {
+    console.error('Error cancelling recovery request:', e);
+    showToast(`Error: ${e.message}`, 'error');
+  }
+}
+
+async function cancelDeletionRequest(requestId) {
+  if (!confirm('Are you sure you want to cancel this vault deletion request?')) return;
+
+  try {
+    const response = await fetchWithAuth(`/admin/vault-deletion-requests/${requestId}/cancel`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: 'Cancelled by admin' })
+    });
+
+    if (!response.ok) {
+      const err = await response.json();
+      throw new Error(err.message || 'Failed to cancel request');
+    }
+
+    showToast('Deletion request cancelled successfully', 'success');
+    loadDeletionRequests();
+    loadSecurityEvents();
+  } catch (e) {
+    console.error('Error cancelling deletion request:', e);
+    showToast(`Error: ${e.message}`, 'error');
+  }
+}
+
+// Security Events tab event listeners
+document.getElementById('refreshSecurityEvents')?.addEventListener('click', () => {
+  loadSecurityEvents();
+  loadRecoveryRequests();
+  loadDeletionRequests();
+});
+document.getElementById('securityTimeRange')?.addEventListener('change', loadSecurityEvents);
+document.getElementById('securitySeverityFilter')?.addEventListener('change', loadSecurityEvents);
+document.getElementById('refreshRecoveryRequests')?.addEventListener('click', loadRecoveryRequests);
+document.getElementById('refreshDeletionRequests')?.addEventListener('click', loadDeletionRequests);
 
 // ===== FLATPICKR DATE PICKER INITIALIZATION =====
 // Initialize Flatpickr on date inputs for better UX

@@ -511,11 +511,13 @@
           </button>
           <div class="tab-children" id="siteManagementChildren">
             <button class="tab tab-child" data-tab="site-management" data-sub-tab="system-health">System Health</button>
+            <button class="tab tab-child" data-tab="site-management" data-sub-tab="vault-metrics">Vault Metrics</button>
             <button class="tab tab-child" data-tab="site-management" data-sub-tab="event-handlers">Event Handlers</button>
             <button class="tab tab-child" data-tab="site-management" data-sub-tab="supported-services">Supported Services</button>
             <button class="tab tab-child" data-tab="site-management" data-sub-tab="subscription-types">Subscription Types</button>
             <button class="tab tab-child" data-tab="site-management" data-sub-tab="membership-terms">Membership Terms</button>
-            <button class="tab tab-child" data-tab="site-management" data-sub-tab="email">Email</button>
+            <button class="tab tab-child" data-tab="site-management" data-sub-tab="email">Communications</button>
+            <button class="tab tab-child" data-tab="site-management" data-sub-tab="security-events">Security Events</button>
           </div>
           <button class="tab tab-parent" id="adminParent" data-tab="admin">
             <span class="tab-text">Admin</span>
@@ -978,6 +980,27 @@
               <div id="natsClusterStatus" style="font-size:1.4rem;font-weight:700;color:#10b981;margin-bottom:4px;">—</div>
               <div id="natsNodeCount" style="font-size:0.8rem;color:var(--gray);">— of — nodes healthy</div>
             </div>
+
+            <!-- Nitro Enclave ASG Health Card -->
+            <div style="padding:20px;background:var(--bg-input);border-radius:8px;border:1px solid var(--border);">
+              <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+                <div style="width:40px;height:40px;background:linear-gradient(135deg,#ec4899 0%,#be185d 100%);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:1.2rem;">🔒</div>
+                <div>
+                  <h4 style="margin:0;font-size:0.9rem;color:var(--accent);">Nitro Enclaves</h4>
+                  <div style="font-size:0.7rem;color:var(--gray);margin-top:2px;">Secure vault infrastructure</div>
+                </div>
+              </div>
+              <div id="nitroAsgStatus" style="font-size:1.4rem;font-weight:700;color:#10b981;margin-bottom:4px;">—</div>
+              <div id="nitroInstanceCount" style="font-size:0.8rem;color:var(--gray);">— of — instances healthy</div>
+              <div id="nitroAmiStatus" style="font-size:0.75rem;color:var(--gray);margin-top:8px;display:none;">
+                <span id="nitroAmiIndicator" style="display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;"></span>
+                <span id="nitroAmiText">AMI: —</span>
+              </div>
+              <div id="nitroRefreshStatus" style="font-size:0.75rem;color:var(--accent);margin-top:4px;display:none;">
+                <span>🔄 Instance refresh: </span>
+                <span id="nitroRefreshProgress">0%</span>
+              </div>
+            </div>
           </div>
 
           <!-- Recent Logs Viewer -->
@@ -998,6 +1021,130 @@
               <div style="color:var(--gray);">Loading logs...</div>
             </div>
           </div>
+        </div>
+
+        <!-- Vault Metrics Sub-Tab -->
+        <div id="vault-metrics" class="sub-tab-content">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+            <div>
+              <h3 style="margin:0;">Vault Metrics</h3>
+              <p class="muted" style="margin:8px 0 0 0;">Vault enrollment and activity analytics.</p>
+            </div>
+            <button id="refreshVaultMetricsBtn" class="btn" style="padding:8px 16px;">↻ Refresh</button>
+          </div>
+
+          <!-- Key Metrics Cards -->
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px;margin-bottom:24px;">
+            <div style="padding:20px;background:var(--bg-input);border-radius:8px;border:1px solid var(--border);text-align:center;">
+              <p style="margin:0 0 8px 0;color:var(--gray);font-size:0.85rem;">Total Enrolled</p>
+              <p id="metricTotalEnrolled" style="margin:0;font-size:2rem;font-weight:700;color:var(--accent);">—</p>
+            </div>
+            <div style="padding:20px;background:var(--bg-input);border-radius:8px;border:1px solid var(--border);text-align:center;">
+              <p style="margin:0 0 8px 0;color:var(--gray);font-size:0.85rem;">Active Vaults</p>
+              <p id="metricActiveVaults" style="margin:0;font-size:2rem;font-weight:700;color:#10b981;">—</p>
+            </div>
+            <div style="padding:20px;background:var(--bg-input);border-radius:8px;border:1px solid var(--border);text-align:center;">
+              <p style="margin:0 0 8px 0;color:var(--gray);font-size:0.85rem;">Pending Enrollments</p>
+              <p id="metricPendingEnrollments" style="margin:0;font-size:2rem;font-weight:700;color:#f59e0b;">—</p>
+            </div>
+            <div style="padding:20px;background:var(--bg-input);border-radius:8px;border:1px solid var(--border);text-align:center;">
+              <p style="margin:0 0 8px 0;color:var(--gray);font-size:0.85rem;">Enrollment Rate</p>
+              <p id="metricEnrollmentRate" style="margin:0;font-size:2rem;font-weight:700;color:#3b82f6;">—%</p>
+            </div>
+          </div>
+
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:20px;">
+            <!-- Enrollment Outcomes (30 Days) -->
+            <div style="padding:20px;background:var(--bg-input);border-radius:8px;border:1px solid var(--border);">
+              <h4 style="margin:0 0 16px 0;color:var(--text);">Enrollment Outcomes (30 Days)</h4>
+              <div id="enrollmentOutcomesContainer" style="display:grid;gap:12px;">
+                <div>
+                  <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+                    <span style="color:var(--gray);font-size:0.85rem;">Success</span>
+                    <span id="outcomeSuccessCount" style="color:#10b981;font-weight:600;">—</span>
+                  </div>
+                  <div style="height:8px;background:#222;border-radius:4px;overflow:hidden;">
+                    <div id="outcomeSuccessBar" style="height:100%;background:linear-gradient(90deg,#10b981,#059669);width:0%;transition:width 0.5s;"></div>
+                  </div>
+                </div>
+                <div>
+                  <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+                    <span style="color:var(--gray);font-size:0.85rem;">Failed</span>
+                    <span id="outcomeFailedCount" style="color:#ef4444;font-weight:600;">—</span>
+                  </div>
+                  <div style="height:8px;background:#222;border-radius:4px;overflow:hidden;">
+                    <div id="outcomeFailedBar" style="height:100%;background:linear-gradient(90deg,#ef4444,#dc2626);width:0%;transition:width 0.5s;"></div>
+                  </div>
+                </div>
+                <div>
+                  <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+                    <span style="color:var(--gray);font-size:0.85rem;">Abandoned</span>
+                    <span id="outcomeAbandonedCount" style="color:#6b7280;font-weight:600;">—</span>
+                  </div>
+                  <div style="height:8px;background:#222;border-radius:4px;overflow:hidden;">
+                    <div id="outcomeAbandonedBar" style="height:100%;background:linear-gradient(90deg,#6b7280,#4b5563);width:0%;transition:width 0.5s;"></div>
+                  </div>
+                </div>
+                <div>
+                  <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+                    <span style="color:var(--gray);font-size:0.85rem;">Pending</span>
+                    <span id="outcomePendingCount" style="color:#f59e0b;font-weight:600;">—</span>
+                  </div>
+                  <div style="height:8px;background:#222;border-radius:4px;overflow:hidden;">
+                    <div id="outcomePendingBar" style="height:100%;background:linear-gradient(90deg,#f59e0b,#d97706);width:0%;transition:width 0.5s;"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Vault Status Distribution -->
+            <div style="padding:20px;background:var(--bg-input);border-radius:8px;border:1px solid var(--border);">
+              <h4 style="margin:0 0 16px 0;color:var(--text);">Vault Status Distribution</h4>
+              <div id="vaultStatusContainer" style="display:grid;gap:8px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:#050505;border-radius:6px;">
+                  <span style="display:flex;align-items:center;gap:8px;"><span style="width:10px;height:10px;border-radius:50%;background:#10b981;"></span>Active</span>
+                  <span id="statusActiveCount" style="font-weight:600;color:var(--text);">—</span>
+                </div>
+                <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:#050505;border-radius:6px;">
+                  <span style="display:flex;align-items:center;gap:8px;"><span style="width:10px;height:10px;border-radius:50%;background:#3b82f6;"></span>Idle</span>
+                  <span id="statusIdleCount" style="font-weight:600;color:var(--text);">—</span>
+                </div>
+                <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:#050505;border-radius:6px;">
+                  <span style="display:flex;align-items:center;gap:8px;"><span style="width:10px;height:10px;border-radius:50%;background:#6b7280;"></span>Offline</span>
+                  <span id="statusOfflineCount" style="font-weight:600;color:var(--text);">—</span>
+                </div>
+                <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:#050505;border-radius:6px;">
+                  <span style="display:flex;align-items:center;gap:8px;"><span style="width:10px;height:10px;border-radius:50%;background:#f59e0b;"></span>Suspended</span>
+                  <span id="statusSuspendedCount" style="font-weight:600;color:var(--text);">—</span>
+                </div>
+                <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:#050505;border-radius:6px;">
+                  <span style="display:flex;align-items:center;gap:8px;"><span style="width:10px;height:10px;border-radius:50%;background:#ef4444;"></span>Deleted</span>
+                  <span id="statusDeletedCount" style="font-weight:600;color:var(--text);">—</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Recent Enrollments -->
+          <div style="margin-top:24px;padding:20px;background:var(--bg-input);border-radius:8px;border:1px solid var(--border);">
+            <h4 style="margin:0 0 16px 0;color:var(--text);">Recent Enrollments</h4>
+            <div id="recentEnrollmentsContainer">
+              <table style="width:100%;border-collapse:collapse;">
+                <thead>
+                  <tr style="border-bottom:1px solid var(--border);">
+                    <th style="text-align:left;padding:12px 8px;color:var(--gray);font-size:0.8rem;font-weight:600;">Email</th>
+                    <th style="text-align:left;padding:12px 8px;color:var(--gray);font-size:0.8rem;font-weight:600;">User GUID</th>
+                    <th style="text-align:left;padding:12px 8px;color:var(--gray);font-size:0.8rem;font-weight:600;">Completed At</th>
+                  </tr>
+                </thead>
+                <tbody id="recentEnrollmentsBody">
+                  <tr><td colspan="3" style="padding:20px;text-align:center;color:var(--gray);">Loading...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <p id="vaultMetricsGeneratedAt" class="muted" style="margin-top:16px;font-size:0.8rem;">Last updated: —</p>
         </div>
 
         <!-- Event Handlers Sub-Tab -->
@@ -1186,30 +1333,230 @@
 
         <!-- Email Sub-Tab -->
         <div id="email" class="sub-tab-content">
-          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:16px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:20px;">
             <div>
-              <h3 style="margin:0;">Email Management</h3>
-              <p class="muted" style="margin:4px 0 0 0;">Send bulk emails to waitlist users, registered users, members, or subscribers.</p>
+              <h3 style="margin:0;">Communications</h3>
+              <p class="muted" style="margin:4px 0 0 0;">Send emails and vault broadcasts to users.</p>
             </div>
-            <button id="openComposeEmailBtn" class="btn" style="background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;margin-right:6px;">
-                <line x1="22" y1="2" x2="11" y2="13"></line>
-                <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+          </div>
+
+          <!-- Communications Tabs -->
+          <div style="display:flex;gap:8px;margin-bottom:20px;border-bottom:1px solid var(--border);padding-bottom:12px;">
+            <button class="btn comm-tab active" data-comm-tab="email-broadcast" style="background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);padding:10px 20px;">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle;margin-right:6px;">
+                <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path>
+                <polyline points="22,6 12,13 2,6"></polyline>
               </svg>
-              Compose Email
+              Email Broadcast
+            </button>
+            <button class="btn comm-tab" data-comm-tab="vault-broadcast" style="background:#333;padding:10px 20px;">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle;margin-right:6px;">
+                <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
+                <polyline points="2 17 12 22 22 17"></polyline>
+                <polyline points="2 12 12 17 22 12"></polyline>
+              </svg>
+              Vault Broadcast
+            </button>
+            <button class="btn comm-tab" data-comm-tab="broadcast-history" style="background:#333;padding:10px 20px;">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle;margin-right:6px;">
+                <circle cx="12" cy="12" r="10"></circle>
+                <polyline points="12 6 12 12 16 14"></polyline>
+              </svg>
+              History
             </button>
           </div>
 
-          <!-- Sent Emails History -->
-          <div style="padding:20px;background:var(--bg-card);border-radius:4px;border:1px solid var(--border);">
+          <!-- Email Broadcast Panel -->
+          <div id="email-broadcast-panel" class="comm-panel">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-              <h4 style="margin:0;">Sent Emails</h4>
-              <button id="refreshSentEmails" class="btn" style="padding:8px 16px;font-size:0.85rem;">Refresh</button>
+              <h4 style="margin:0;">Send Email Broadcast</h4>
+              <button id="openComposeEmailBtn" class="btn" style="background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;margin-right:6px;">
+                  <line x1="22" y1="2" x2="11" y2="13"></line>
+                  <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                </svg>
+                Compose Email
+              </button>
             </div>
-            <p class="muted" style="margin-bottom:16px;">History of bulk emails sent to users (newest first)</p>
+            <p class="muted" style="margin-bottom:20px;">Send bulk emails to waitlist users, registered users, members, or subscribers via SES.</p>
 
-            <div id="sentEmailsList" style="display:flex;flex-direction:column;gap:12px;">
-              <!-- Sent emails will be displayed here -->
+            <!-- Email compose form is handled by modal -->
+            <div style="padding:20px;background:#050505;border-radius:8px;border:1px solid var(--border);">
+              <p style="margin:0;color:var(--gray);text-align:center;">Click "Compose Email" to create a new email broadcast.</p>
+            </div>
+          </div>
+
+          <!-- Vault Broadcast Panel -->
+          <div id="vault-broadcast-panel" class="comm-panel" style="display:none;">
+            <h4 style="margin:0 0 8px 0;">Send Vault Broadcast</h4>
+            <p class="muted" style="margin-bottom:20px;">Send real-time notifications to all active vaults via NATS messaging.</p>
+
+            <div style="padding:20px;background:#050505;border-radius:8px;border:1px solid var(--border);">
+              <div style="display:grid;gap:16px;">
+                <!-- Broadcast Type -->
+                <div>
+                  <label style="display:block;margin-bottom:8px;color:var(--text);font-weight:600;">Broadcast Type</label>
+                  <select id="broadcastType" style="width:100%;padding:12px;background:var(--bg-card);border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;">
+                    <option value="system_announcement">System Announcement</option>
+                    <option value="security_alert">Security Alert</option>
+                    <option value="admin_message">Admin Message</option>
+                  </select>
+                  <p style="margin:4px 0 0 0;color:var(--gray);font-size:0.8rem;">
+                    <span id="broadcastTypeDesc">Maintenance notices, new features, terms updates</span>
+                  </p>
+                </div>
+
+                <!-- Priority -->
+                <div>
+                  <label style="display:block;margin-bottom:8px;color:var(--text);font-weight:600;">Priority</label>
+                  <div style="display:flex;gap:12px;flex-wrap:wrap;">
+                    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:10px 16px;background:var(--bg-card);border:2px solid #222;border-radius:6px;">
+                      <input type="radio" name="broadcastPriority" value="normal" checked style="width:16px;height:16px;">
+                      <span style="color:var(--text);">Normal</span>
+                    </label>
+                    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:10px 16px;background:var(--bg-card);border:2px solid #222;border-radius:6px;">
+                      <input type="radio" name="broadcastPriority" value="high" style="width:16px;height:16px;">
+                      <span style="color:#f59e0b;">High</span>
+                    </label>
+                    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:10px 16px;background:var(--bg-card);border:2px solid #222;border-radius:6px;">
+                      <input type="radio" name="broadcastPriority" value="critical" style="width:16px;height:16px;">
+                      <span style="color:#ef4444;">Critical</span>
+                    </label>
+                  </div>
+                  <p style="margin:4px 0 0 0;color:var(--gray);font-size:0.8rem;">
+                    High requires acknowledgment. Critical interrupts user flow.
+                  </p>
+                </div>
+
+                <!-- Title -->
+                <div>
+                  <label style="display:block;margin-bottom:8px;color:var(--text);font-weight:600;">Title</label>
+                  <input type="text" id="broadcastTitle" placeholder="Brief notification title" maxlength="100"
+                    style="width:100%;padding:12px;background:var(--bg-card);border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;">
+                  <p style="margin:4px 0 0 0;color:var(--gray);font-size:0.8rem;">Max 100 characters</p>
+                </div>
+
+                <!-- Message -->
+                <div>
+                  <label style="display:block;margin-bottom:8px;color:var(--text);font-weight:600;">Message</label>
+                  <textarea id="broadcastMessage" placeholder="Full message content..." rows="4" maxlength="2000"
+                    style="width:100%;padding:12px;background:var(--bg-card);border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;resize:vertical;"></textarea>
+                  <p style="margin:4px 0 0 0;color:var(--gray);font-size:0.8rem;">Max 2000 characters</p>
+                </div>
+
+                <!-- Send Button -->
+                <div style="display:flex;gap:12px;margin-top:8px;">
+                  <button id="sendVaultBroadcastBtn" class="btn" style="padding:12px 24px;background:linear-gradient(135deg,#10b981 0%,#059669 100%);font-weight:600;">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle;margin-right:6px;">
+                      <line x1="22" y1="2" x2="11" y2="13"></line>
+                      <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                    </svg>
+                    Send Broadcast
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Broadcast History Panel -->
+          <div id="broadcast-history-panel" class="comm-panel" style="display:none;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+              <h4 style="margin:0;">Broadcast History</h4>
+              <div style="display:flex;gap:8px;">
+                <select id="historyTypeFilter" style="padding:8px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.9rem;">
+                  <option value="all">All Types</option>
+                  <option value="email">Emails Only</option>
+                  <option value="vault">Vault Broadcasts Only</option>
+                </select>
+                <button id="refreshBroadcastHistory" class="btn" style="padding:8px 16px;font-size:0.85rem;">Refresh</button>
+              </div>
+            </div>
+            <p class="muted" style="margin-bottom:16px;">Combined history of email and vault broadcasts (newest first)</p>
+
+            <!-- History List -->
+            <div id="broadcastHistoryList" style="display:flex;flex-direction:column;gap:12px;">
+              <div style="padding:20px;background:#050505;border-radius:8px;text-align:center;color:var(--gray);">Loading history...</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+        <!-- Security Events Sub-Tab -->
+        <div id="security-events" class="sub-tab-content">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+            <h3 style="margin:0;">Security Events</h3>
+            <div style="display:flex;gap:8px;">
+              <select id="securityTimeRange" style="padding:8px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.9rem;">
+                <option value="24h">Last 24 Hours</option>
+                <option value="7d">Last 7 Days</option>
+                <option value="30d">Last 30 Days</option>
+              </select>
+              <select id="securitySeverityFilter" style="padding:8px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.9rem;">
+                <option value="all">All Severities</option>
+                <option value="critical">Critical Only</option>
+                <option value="high">High</option>
+                <option value="medium">Medium</option>
+                <option value="low">Low</option>
+              </select>
+              <button id="refreshSecurityEvents" class="btn" style="padding:8px 16px;font-size:0.85rem;">Refresh</button>
+            </div>
+          </div>
+
+          <!-- Security Metrics Summary -->
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:24px;">
+            <div style="padding:16px;background:#050505;border-radius:8px;border:1px solid var(--border);text-align:center;">
+              <p style="margin:0;color:var(--gray);font-size:0.8rem;text-transform:uppercase;letter-spacing:0.5px;">Total Events</p>
+              <p id="secMetricTotal" style="margin:8px 0 0 0;color:var(--text);font-weight:700;font-size:1.5rem;">--</p>
+            </div>
+            <div style="padding:16px;background:linear-gradient(135deg,rgba(239,68,68,0.1) 0%,rgba(220,38,38,0.05) 100%);border-radius:8px;border:1px solid #ef4444;text-align:center;">
+              <p style="margin:0;color:#ef4444;font-size:0.8rem;text-transform:uppercase;letter-spacing:0.5px;">Critical</p>
+              <p id="secMetricCritical" style="margin:8px 0 0 0;color:#ef4444;font-weight:700;font-size:1.5rem;">--</p>
+            </div>
+            <div style="padding:16px;background:linear-gradient(135deg,rgba(245,158,11,0.1) 0%,rgba(217,119,6,0.05) 100%);border-radius:8px;border:1px solid #f59e0b;text-align:center;">
+              <p style="margin:0;color:#f59e0b;font-size:0.8rem;text-transform:uppercase;letter-spacing:0.5px;">High</p>
+              <p id="secMetricHigh" style="margin:8px 0 0 0;color:#f59e0b;font-weight:700;font-size:1.5rem;">--</p>
+            </div>
+            <div style="padding:16px;background:#050505;border-radius:8px;border:1px solid var(--border);text-align:center;">
+              <p style="margin:0;color:var(--gray);font-size:0.8rem;text-transform:uppercase;letter-spacing:0.5px;">Auth Failures</p>
+              <p id="secMetricAuth" style="margin:8px 0 0 0;color:var(--text);font-weight:700;font-size:1.5rem;">--</p>
+            </div>
+            <div style="padding:16px;background:linear-gradient(135deg,rgba(99,102,241,0.1) 0%,rgba(79,70,229,0.05) 100%);border-radius:8px;border:1px solid #6366f1;text-align:center;">
+              <p style="margin:0;color:#6366f1;font-size:0.8rem;text-transform:uppercase;letter-spacing:0.5px;">Pending Recovery</p>
+              <p id="secMetricRecovery" style="margin:8px 0 0 0;color:#6366f1;font-weight:700;font-size:1.5rem;">--</p>
+            </div>
+            <div style="padding:16px;background:linear-gradient(135deg,rgba(239,68,68,0.1) 0%,rgba(185,28,28,0.05) 100%);border-radius:8px;border:1px solid #dc2626;text-align:center;">
+              <p style="margin:0;color:#dc2626;font-size:0.8rem;text-transform:uppercase;letter-spacing:0.5px;">Pending Deletion</p>
+              <p id="secMetricDeletion" style="margin:8px 0 0 0;color:#dc2626;font-weight:700;font-size:1.5rem;">--</p>
+            </div>
+          </div>
+
+          <!-- Pending Credential Recovery Requests -->
+          <div style="margin-bottom:24px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+              <h4 style="margin:0;color:var(--accent);">Pending Credential Recovery Requests</h4>
+              <button id="refreshRecoveryRequests" class="btn" style="padding:6px 12px;font-size:0.8rem;background:#333;">↻</button>
+            </div>
+            <div id="recoveryRequestsList" style="display:flex;flex-direction:column;gap:8px;">
+              <div style="padding:16px;background:#050505;border-radius:8px;text-align:center;color:var(--gray);">Loading...</div>
+            </div>
+          </div>
+
+          <!-- Pending Vault Deletion Requests -->
+          <div style="margin-bottom:24px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+              <h4 style="margin:0;color:#ef4444;">Pending Vault Deletion Requests</h4>
+              <button id="refreshDeletionRequests" class="btn" style="padding:6px 12px;font-size:0.8rem;background:#333;">↻</button>
+            </div>
+            <div id="deletionRequestsList" style="display:flex;flex-direction:column;gap:8px;">
+              <div style="padding:16px;background:#050505;border-radius:8px;text-align:center;color:var(--gray);">Loading...</div>
+            </div>
+          </div>
+
+          <!-- Security Event Log -->
+          <div>
+            <h4 style="margin:0 0 12px 0;">Security Event Log</h4>
+            <div id="securityEventsList" style="display:flex;flex-direction:column;gap:8px;max-height:400px;overflow-y:auto;">
+              <div style="padding:16px;background:#050505;border-radius:8px;text-align:center;color:var(--gray);">Loading security events...</div>
             </div>
           </div>
         </div>
@@ -1316,6 +1663,7 @@
                   <th>Plan</th>
                   <th>Status</th>
                   <th>PIN</th>
+                  <th>Vault</th>
                   <th>Emails</th>
                   <th>Expires</th>
                   <th>Days Left</th>

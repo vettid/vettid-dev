@@ -8,11 +8,19 @@ import {
   DescribeTargetGroupsCommand,
   DescribeTargetHealthCommand,
 } from "@aws-sdk/client-elastic-load-balancing-v2";
+import {
+  AutoScalingClient,
+  DescribeAutoScalingGroupsCommand,
+  DescribeInstanceRefreshesCommand,
+} from "@aws-sdk/client-auto-scaling";
+import { SSMClient, GetParameterCommand } from "@aws-sdk/client-ssm";
 
 const ses = new SESClient({});
 const ddb = new DynamoDBClient({});
 const cloudwatch = new CloudWatchClient({});
 const elbv2 = new ElasticLoadBalancingV2Client({});
+const autoscaling = new AutoScalingClient({});
+const ssm = new SSMClient({});
 
 // Table names from environment variables (set by CDK)
 const TABLE_NAMES: Record<string, string | undefined> = {
@@ -136,6 +144,117 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       // Keep default 'unknown' status
     }
 
+    // Fetch Nitro Enclave ASG health
+    let nitroHealth = {
+      status: 'unknown' as 'healthy' | 'degraded' | 'unhealthy' | 'unknown',
+      desiredCapacity: 0,
+      runningInstances: 0,
+      healthyInstances: 0,
+      currentAmi: '',
+      latestAmi: '',
+      amiUpToDate: false,
+      instanceRefresh: null as null | {
+        status: string;
+        percentComplete: number;
+        startTime?: string;
+      },
+    };
+
+    try {
+      // Find the Nitro enclave ASG by name pattern
+      const asgResult = await autoscaling.send(new DescribeAutoScalingGroupsCommand({}));
+      const nitroAsg = asgResult.AutoScalingGroups?.find(asg =>
+        asg.AutoScalingGroupName?.toLowerCase().includes('nitro') ||
+        asg.AutoScalingGroupName?.toLowerCase().includes('enclave') ||
+        asg.AutoScalingGroupName?.toLowerCase().includes('vaultinfra')
+      );
+
+      if (nitroAsg) {
+        nitroHealth.desiredCapacity = nitroAsg.DesiredCapacity || 0;
+
+        // Count instances by health status
+        const instances = nitroAsg.Instances || [];
+        nitroHealth.runningInstances = instances.filter(i =>
+          i.LifecycleState === 'InService' || i.LifecycleState === 'Pending'
+        ).length;
+        nitroHealth.healthyInstances = instances.filter(i =>
+          i.HealthStatus === 'Healthy' && i.LifecycleState === 'InService'
+        ).length;
+
+        // Get the current AMI from launch template or launch configuration
+        if (nitroAsg.LaunchTemplate?.LaunchTemplateId) {
+          // AMI is in launch template - would need additional API call
+          // For now, get from first running instance
+          const runningInstance = instances.find(i => i.LifecycleState === 'InService');
+          if (runningInstance?.InstanceId) {
+            // Instance ID available - AMI would need EC2 DescribeInstances call
+            // Instead, check SSM parameter for current deployed AMI
+            try {
+              const currentAmiParam = await ssm.send(new GetParameterCommand({
+                Name: '/vettid/nitro-enclave/current-ami',
+              }));
+              nitroHealth.currentAmi = currentAmiParam.Parameter?.Value || '';
+            } catch {
+              // Parameter might not exist
+            }
+          }
+        }
+
+        // Get latest available AMI from SSM parameter (set by Packer builds)
+        try {
+          const latestAmiParam = await ssm.send(new GetParameterCommand({
+            Name: '/vettid/nitro-enclave/latest-ami',
+          }));
+          nitroHealth.latestAmi = latestAmiParam.Parameter?.Value || '';
+        } catch {
+          // Parameter might not exist
+        }
+
+        // Check if current AMI matches latest
+        nitroHealth.amiUpToDate = nitroHealth.currentAmi !== '' &&
+          nitroHealth.currentAmi === nitroHealth.latestAmi;
+
+        // Check for active instance refresh
+        try {
+          const refreshResult = await autoscaling.send(new DescribeInstanceRefreshesCommand({
+            AutoScalingGroupName: nitroAsg.AutoScalingGroupName,
+            MaxRecords: 1,
+          }));
+
+          const latestRefresh = refreshResult.InstanceRefreshes?.[0];
+          if (latestRefresh) {
+            // Only show if in progress or recently completed (within last hour)
+            const isRecent = latestRefresh.StartTime &&
+              (Date.now() - latestRefresh.StartTime.getTime()) < 60 * 60 * 1000;
+            const isActive = latestRefresh.Status === 'InProgress' ||
+              latestRefresh.Status === 'Pending';
+
+            if (isActive || isRecent) {
+              nitroHealth.instanceRefresh = {
+                status: latestRefresh.Status || 'unknown',
+                percentComplete: latestRefresh.PercentageComplete || 0,
+                startTime: latestRefresh.StartTime?.toISOString(),
+              };
+            }
+          }
+        } catch (refreshError) {
+          console.error('Error fetching instance refresh:', refreshError);
+        }
+
+        // Determine overall status
+        if (nitroHealth.healthyInstances >= nitroHealth.desiredCapacity && nitroHealth.desiredCapacity > 0) {
+          nitroHealth.status = 'healthy';
+        } else if (nitroHealth.healthyInstances > 0) {
+          nitroHealth.status = 'degraded';
+        } else if (nitroHealth.desiredCapacity > 0) {
+          nitroHealth.status = 'unhealthy';
+        }
+      }
+    } catch (nitroError) {
+      console.error('Error fetching Nitro ASG health:', nitroError);
+      // Keep default 'unknown' status
+    }
+
     // Build response
     const response = {
       ses: {
@@ -160,7 +279,8 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         status: 'healthy',
         timestamp: new Date().toISOString()
       },
-      nats: natsHealth
+      nats: natsHealth,
+      nitro: nitroHealth
     };
 
     // Log system health check
@@ -173,6 +293,10 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         nats_status: natsHealth.status,
         nats_healthy_nodes: natsHealth.healthyNodes,
         nats_total_nodes: natsHealth.totalNodes,
+        nitro_status: nitroHealth.status,
+        nitro_healthy_instances: nitroHealth.healthyInstances,
+        nitro_desired_capacity: nitroHealth.desiredCapacity,
+        nitro_ami_up_to_date: nitroHealth.amiUpToDate,
       }
     });
 

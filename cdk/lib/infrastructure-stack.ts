@@ -62,6 +62,10 @@ export class InfrastructureStack extends cdk.Stack {
     supportedServices: dynamodb.Table;
     // Dynamic Handler Loading
     handlerManifest: dynamodb.Table;
+    // Admin Portal: Handler Marketplace
+    handlerSubmissions: dynamodb.Table;
+    // Admin Portal: Communications
+    vaultBroadcasts: dynamodb.Table;
   };
 
   // S3 Buckets
@@ -609,6 +613,82 @@ export class InfrastructureStack extends cdk.Stack {
       pointInTimeRecovery: true,
     });
 
+    // ===== ADMIN PORTAL: HANDLER MARKETPLACE =====
+
+    // Handler Submissions table - tracks handler submission workflow for curated marketplace
+    // Schema:
+    //   submission_id (PK): UUID for the submission
+    //   handler_id: target handler ID (e.g., "messaging.telegram")
+    //   name: human-readable handler name
+    //   version: submitted version (semver)
+    //   description: handler description
+    //   submitter_email: email of the submitter
+    //   status: "pending" | "reviewing" | "approved" | "rejected" | "deployed"
+    //   s3_key: S3 key for the uploaded WASM file
+    //   wasm_hash: SHA-256 hash of the WASM file
+    //   submitted_at: ISO timestamp
+    //   reviewed_by: admin email who reviewed
+    //   reviewed_at: ISO timestamp
+    //   rejection_reason: if rejected, the reason
+    const handlerSubmissions = new dynamodb.Table(this, 'HandlerSubmissions', {
+      partitionKey: { name: 'submission_id', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      pointInTimeRecovery: true,
+    });
+
+    // GSI for listing submissions by status (pending, approved, rejected)
+    handlerSubmissions.addGlobalSecondaryIndex({
+      indexName: 'status-index',
+      partitionKey: { name: 'status', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'submitted_at', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // GSI for listing submissions by handler_id
+    handlerSubmissions.addGlobalSecondaryIndex({
+      indexName: 'handler-index',
+      partitionKey: { name: 'handler_id', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'submitted_at', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // ===== ADMIN PORTAL: COMMUNICATIONS =====
+
+    // Vault Broadcasts table - stores broadcast history for NATS vault messaging
+    // Schema:
+    //   broadcast_id (PK): UUID for the broadcast
+    //   type: "system_announcement" | "security_alert" | "admin_message"
+    //   priority: "normal" | "high" | "critical"
+    //   title: broadcast title
+    //   message: broadcast message content
+    //   sent_at: ISO timestamp
+    //   sent_by: admin email who sent it
+    //   delivery_count: number of vaults that received it
+    //   nats_subject: NATS subject used for delivery
+    const vaultBroadcasts = new dynamodb.Table(this, 'VaultBroadcasts', {
+      partitionKey: { name: 'broadcast_id', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      pointInTimeRecovery: true,
+    });
+
+    // GSI for listing broadcasts by type (sorted by sent_at)
+    vaultBroadcasts.addGlobalSecondaryIndex({
+      indexName: 'type-sent-index',
+      partitionKey: { name: 'type', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'sent_at', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // GSI for listing all broadcasts by sent_at (for history view)
+    vaultBroadcasts.addGlobalSecondaryIndex({
+      indexName: 'sent-at-index',
+      partitionKey: { name: 'year_month', type: dynamodb.AttributeType.STRING },  // e.g., "2025-01"
+      sortKey: { name: 'sent_at', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
     // ===== S3 BUCKETS =====
 
     // S3 bucket for membership terms PDFs (shared by VettIDStack and AdminStack)
@@ -694,6 +774,10 @@ export class InfrastructureStack extends cdk.Stack {
       supportedServices,
       // Dynamic Handler Loading
       handlerManifest,
+      // Admin Portal: Handler Marketplace
+      handlerSubmissions,
+      // Admin Portal: Communications
+      vaultBroadcasts,
     };
 
     this.termsBucket = termsBucket;

@@ -99,6 +99,30 @@ export class AdminStack extends cdk.Stack {
   public readonly listServices!: lambdaNode.NodejsFunction;
   public readonly toggleServiceStatus!: lambdaNode.NodejsFunction;
 
+  // Vault management admin functions
+  public readonly getVaultStatus!: lambdaNode.NodejsFunction;
+  public readonly getVaultMetrics!: lambdaNode.NodejsFunction;
+
+  // Handler marketplace functions
+  public readonly listDeployedHandlers!: lambdaNode.NodejsFunction;
+  public readonly listHandlerSubmissions!: lambdaNode.NodejsFunction;
+  public readonly submitHandler!: lambdaNode.NodejsFunction;
+  public readonly confirmHandlerSubmission!: lambdaNode.NodejsFunction;
+  public readonly approveHandlerSubmission!: lambdaNode.NodejsFunction;
+  public readonly rejectHandlerSubmission!: lambdaNode.NodejsFunction;
+  public readonly forceUpdateHandler!: lambdaNode.NodejsFunction;
+
+  // Communications / Vault broadcast functions
+  public readonly sendVaultBroadcast!: lambdaNode.NodejsFunction;
+  public readonly listVaultBroadcasts!: lambdaNode.NodejsFunction;
+
+  // Security events functions
+  public readonly getSecurityEvents!: lambdaNode.NodejsFunction;
+  public readonly listCredentialRecoveryRequests!: lambdaNode.NodejsFunction;
+  public readonly listVaultDeletionRequests!: lambdaNode.NodejsFunction;
+  public readonly cancelRecoveryRequest!: lambdaNode.NodejsFunction;
+  public readonly cancelDeletionRequest!: lambdaNode.NodejsFunction;
+
   constructor(scope: Construct, id: string, props: AdminStackProps) {
     super(scope, id, props);
 
@@ -106,6 +130,7 @@ export class AdminStack extends cdk.Stack {
     const adminUserPool = props.infrastructure.adminUserPool;
     const memberUserPool = props.infrastructure.memberUserPool;
     const termsBucket = props.infrastructure.termsBucket;
+    const handlersBucket = props.infrastructure.handlersBucket;
 
     // Default environment variables for all admin functions
     const defaultEnv = {
@@ -971,6 +996,21 @@ export class AdminStack extends cdk.Stack {
       ],
       resources: ['*'], // Target group discovery requires listing all target groups
     }));
+    // Nitro Enclave ASG health monitoring
+    getSystemHealth.addToRolePolicy(new iam.PolicyStatement({
+      actions: [
+        'autoscaling:DescribeAutoScalingGroups',
+        'autoscaling:DescribeInstanceRefreshes',
+      ],
+      resources: ['*'], // ASG discovery requires listing all groups
+    }));
+    // SSM parameter access for AMI version tracking
+    getSystemHealth.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['ssm:GetParameter'],
+      resources: [
+        `arn:aws:ssm:${this.region}:${this.account}:parameter/vettid/nitro-enclave/*`,
+      ],
+    }));
 
     // SECURITY: Scope logs access to VettID log groups only
     getSystemLogs.addToRolePolicy(new iam.PolicyStatement({
@@ -1159,6 +1199,209 @@ export class AdminStack extends cdk.Stack {
     this.listServices = listServices;
     this.toggleServiceStatus = toggleServiceStatus;
 
+    // ===== VAULT MANAGEMENT ADMIN FUNCTIONS =====
+
+    const vaultEnv = {
+      TABLE_VAULT_INSTANCES: tables.vaultInstances.tableName,
+      TABLE_ENROLLMENT_SESSIONS: tables.enrollmentSessions.tableName,
+    };
+
+    const getVaultStatus = new lambdaNode.NodejsFunction(this, 'GetVaultStatusFn', {
+      entry: 'lambda/handlers/admin/getVaultStatus.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: { ...defaultEnv, ...vaultEnv },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const getVaultMetrics = new lambdaNode.NodejsFunction(this, 'GetVaultMetricsFn', {
+      entry: 'lambda/handlers/admin/getVaultMetrics.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: { ...defaultEnv, ...vaultEnv },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    // Vault management table permissions
+    tables.vaultInstances.grantReadData(getVaultStatus);
+    tables.enrollmentSessions.grantReadData(getVaultStatus);
+    tables.vaultInstances.grantReadData(getVaultMetrics);
+    tables.enrollmentSessions.grantReadData(getVaultMetrics);
+    tables.registrations.grantReadData(getVaultMetrics);
+    tables.audit.grantReadData(getVaultMetrics);
+
+    this.getVaultStatus = getVaultStatus;
+    this.getVaultMetrics = getVaultMetrics;
+
+    // ===== HANDLER MARKETPLACE =====
+    const marketplaceEnv = {
+      ...defaultEnv,
+      TABLE_HANDLER_SUBMISSIONS: tables.handlerSubmissions.tableName,
+      HANDLER_BUCKET: handlersBucket.bucketName,
+    };
+
+    const listDeployedHandlers = new lambdaNode.NodejsFunction(this, 'ListDeployedHandlersFn', {
+      entry: 'lambda/handlers/admin/listDeployedHandlers.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: marketplaceEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const listHandlerSubmissions = new lambdaNode.NodejsFunction(this, 'ListHandlerSubmissionsFn', {
+      entry: 'lambda/handlers/admin/listHandlerSubmissions.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: marketplaceEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const submitHandler = new lambdaNode.NodejsFunction(this, 'SubmitHandlerFn', {
+      entry: 'lambda/handlers/admin/submitHandler.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: marketplaceEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const confirmHandlerSubmission = new lambdaNode.NodejsFunction(this, 'ConfirmHandlerSubmissionFn', {
+      entry: 'lambda/handlers/admin/confirmHandlerSubmission.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: marketplaceEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const approveHandlerSubmission = new lambdaNode.NodejsFunction(this, 'ApproveHandlerSubmissionFn', {
+      entry: 'lambda/handlers/admin/approveHandlerSubmission.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: marketplaceEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const rejectHandlerSubmission = new lambdaNode.NodejsFunction(this, 'RejectHandlerSubmissionFn', {
+      entry: 'lambda/handlers/admin/rejectHandlerSubmission.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: marketplaceEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const forceUpdateHandler = new lambdaNode.NodejsFunction(this, 'ForceUpdateHandlerFn', {
+      entry: 'lambda/handlers/admin/forceUpdateHandler.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: marketplaceEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    // Handler marketplace permissions
+    tables.handlerSubmissions.grantReadData(listDeployedHandlers);
+    tables.handlerSubmissions.grantReadData(listHandlerSubmissions);
+    tables.handlerSubmissions.grantReadWriteData(submitHandler);
+    tables.handlerSubmissions.grantReadWriteData(confirmHandlerSubmission);
+    tables.handlerSubmissions.grantReadWriteData(approveHandlerSubmission);
+    tables.handlerSubmissions.grantReadWriteData(rejectHandlerSubmission);
+    tables.handlerSubmissions.grantReadData(forceUpdateHandler);
+    tables.audit.grantReadWriteData(listDeployedHandlers);
+    tables.audit.grantReadWriteData(listHandlerSubmissions);
+    tables.audit.grantReadWriteData(submitHandler);
+    tables.audit.grantReadWriteData(confirmHandlerSubmission);
+    tables.audit.grantReadWriteData(approveHandlerSubmission);
+    tables.audit.grantReadWriteData(rejectHandlerSubmission);
+    tables.audit.grantReadWriteData(forceUpdateHandler);
+
+    // S3 bucket permissions for handler WASM files
+    handlersBucket.grantPut(submitHandler);
+    handlersBucket.grantRead(confirmHandlerSubmission);
+    handlersBucket.grantRead(approveHandlerSubmission);
+    handlersBucket.grantPut(approveHandlerSubmission);
+    handlersBucket.grantDelete(rejectHandlerSubmission);
+
+    this.listDeployedHandlers = listDeployedHandlers;
+    this.listHandlerSubmissions = listHandlerSubmissions;
+    this.submitHandler = submitHandler;
+    this.confirmHandlerSubmission = confirmHandlerSubmission;
+    this.approveHandlerSubmission = approveHandlerSubmission;
+    this.rejectHandlerSubmission = rejectHandlerSubmission;
+    this.forceUpdateHandler = forceUpdateHandler;
+
+    // ===== COMMUNICATIONS / VAULT BROADCASTS =====
+    const broadcastEnv = {
+      ...defaultEnv,
+      TABLE_VAULT_BROADCASTS: tables.vaultBroadcasts.tableName,
+    };
+
+    const sendVaultBroadcast = new lambdaNode.NodejsFunction(this, 'SendVaultBroadcastFn', {
+      entry: 'lambda/handlers/admin/sendVaultBroadcast.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: broadcastEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const listVaultBroadcasts = new lambdaNode.NodejsFunction(this, 'ListVaultBroadcastsFn', {
+      entry: 'lambda/handlers/admin/listVaultBroadcasts.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: broadcastEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    // Broadcast permissions
+    tables.vaultBroadcasts.grantReadWriteData(sendVaultBroadcast);
+    tables.vaultBroadcasts.grantReadData(listVaultBroadcasts);
+    tables.audit.grantReadWriteData(sendVaultBroadcast);
+    tables.audit.grantReadWriteData(listVaultBroadcasts);
+
+    this.sendVaultBroadcast = sendVaultBroadcast;
+    this.listVaultBroadcasts = listVaultBroadcasts;
+
+    // ===== SECURITY EVENTS =====
+
+    const securityEnv = {
+      ...defaultEnv,
+      TABLE_CREDENTIAL_RECOVERY_REQUESTS: tables.credentialRecoveryRequests.tableName,
+      TABLE_VAULT_DELETION_REQUESTS: tables.vaultDeletionRequests.tableName,
+    };
+
+    const getSecurityEvents = new lambdaNode.NodejsFunction(this, 'GetSecurityEventsFn', {
+      entry: 'lambda/handlers/admin/getSecurityEvents.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: securityEnv,
+    });
+
+    const listCredentialRecoveryRequests = new lambdaNode.NodejsFunction(this, 'ListCredentialRecoveryRequestsFn', {
+      entry: 'lambda/handlers/admin/listCredentialRecoveryRequests.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: securityEnv,
+    });
+
+    const listVaultDeletionRequests = new lambdaNode.NodejsFunction(this, 'ListVaultDeletionRequestsFn', {
+      entry: 'lambda/handlers/admin/listVaultDeletionRequests.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: securityEnv,
+    });
+
+    const cancelRecoveryRequest = new lambdaNode.NodejsFunction(this, 'CancelRecoveryRequestFn', {
+      entry: 'lambda/handlers/admin/cancelRecoveryRequest.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: securityEnv,
+    });
+
+    const cancelDeletionRequest = new lambdaNode.NodejsFunction(this, 'CancelDeletionRequestFn', {
+      entry: 'lambda/handlers/admin/cancelDeletionRequest.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: securityEnv,
+    });
+
+    // Grant permissions for security functions
+    tables.audit.grantReadData(getSecurityEvents);
+    tables.credentialRecoveryRequests.grantReadData(getSecurityEvents);
+    tables.vaultDeletionRequests.grantReadData(getSecurityEvents);
+    tables.credentialRecoveryRequests.grantReadData(listCredentialRecoveryRequests);
+    tables.vaultDeletionRequests.grantReadData(listVaultDeletionRequests);
+    tables.credentialRecoveryRequests.grantReadWriteData(cancelRecoveryRequest);
+    tables.vaultDeletionRequests.grantReadWriteData(cancelDeletionRequest);
+    tables.audit.grantReadWriteData(cancelRecoveryRequest);
+    tables.audit.grantReadWriteData(cancelDeletionRequest);
+
+    this.getSecurityEvents = getSecurityEvents;
+    this.listCredentialRecoveryRequests = listCredentialRecoveryRequests;
+    this.listVaultDeletionRequests = listVaultDeletionRequests;
+    this.cancelRecoveryRequest = cancelRecoveryRequest;
+    this.cancelDeletionRequest = cancelDeletionRequest;
+
     // ===== NATS CONTROL PERMISSIONS =====
     tables.natsAccounts.grantReadData(generateNatsControlToken);
     tables.natsTokens.grantReadWriteData(generateNatsControlToken);
@@ -1299,5 +1542,29 @@ export class AdminStack extends cdk.Stack {
     this.route('UpdateService', httpApi, '/admin/services', apigw.HttpMethod.PUT, this.updateService, adminAuthorizer);
     this.route('DeleteService', httpApi, '/admin/services/delete', apigw.HttpMethod.POST, this.deleteService, adminAuthorizer);
     this.route('ToggleServiceStatus', httpApi, '/admin/services/status', apigw.HttpMethod.POST, this.toggleServiceStatus, adminAuthorizer);
+
+    // Vault Management Admin - Admin-only endpoints for vault monitoring
+    this.route('GetVaultStatus', httpApi, '/admin/vault-status', apigw.HttpMethod.GET, this.getVaultStatus, adminAuthorizer);
+    this.route('GetVaultMetrics', httpApi, '/admin/vault-metrics', apigw.HttpMethod.GET, this.getVaultMetrics, adminAuthorizer);
+
+    // Handler Marketplace - WASM handler submission, review, and deployment
+    this.route('ListDeployedHandlers', httpApi, '/admin/handlers/deployed', apigw.HttpMethod.GET, this.listDeployedHandlers, adminAuthorizer);
+    this.route('ListHandlerSubmissions', httpApi, '/admin/handlers/submissions', apigw.HttpMethod.GET, this.listHandlerSubmissions, adminAuthorizer);
+    this.route('SubmitHandler', httpApi, '/admin/handlers/submit', apigw.HttpMethod.POST, this.submitHandler, adminAuthorizer);
+    this.route('ConfirmHandlerSubmission', httpApi, '/admin/handlers/submissions/{submission_id}/confirm', apigw.HttpMethod.POST, this.confirmHandlerSubmission, adminAuthorizer);
+    this.route('ApproveHandlerSubmission', httpApi, '/admin/handlers/submissions/{submission_id}/approve', apigw.HttpMethod.POST, this.approveHandlerSubmission, adminAuthorizer);
+    this.route('RejectHandlerSubmission', httpApi, '/admin/handlers/submissions/{submission_id}/reject', apigw.HttpMethod.POST, this.rejectHandlerSubmission, adminAuthorizer);
+    this.route('ForceUpdateHandler', httpApi, '/admin/handlers/submissions/{submission_id}/force-update', apigw.HttpMethod.POST, this.forceUpdateHandler, adminAuthorizer);
+
+    // Communications / Vault Broadcasts
+    this.route('SendVaultBroadcast', httpApi, '/admin/broadcasts', apigw.HttpMethod.POST, this.sendVaultBroadcast, adminAuthorizer);
+    this.route('ListVaultBroadcasts', httpApi, '/admin/broadcasts', apigw.HttpMethod.GET, this.listVaultBroadcasts, adminAuthorizer);
+
+    // Security Events - Security monitoring and request management
+    this.route('GetSecurityEvents', httpApi, '/admin/security-events', apigw.HttpMethod.GET, this.getSecurityEvents, adminAuthorizer);
+    this.route('ListCredentialRecoveryRequests', httpApi, '/admin/credential-recovery-requests', apigw.HttpMethod.GET, this.listCredentialRecoveryRequests, adminAuthorizer);
+    this.route('ListVaultDeletionRequests', httpApi, '/admin/vault-deletion-requests', apigw.HttpMethod.GET, this.listVaultDeletionRequests, adminAuthorizer);
+    this.route('CancelRecoveryRequest', httpApi, '/admin/credential-recovery-requests/{recovery_id}/cancel', apigw.HttpMethod.POST, this.cancelRecoveryRequest, adminAuthorizer);
+    this.route('CancelDeletionRequest', httpApi, '/admin/vault-deletion-requests/{request_id}/cancel', apigw.HttpMethod.POST, this.cancelDeletionRequest, adminAuthorizer);
   }
 }
