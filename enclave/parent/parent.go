@@ -216,9 +216,17 @@ func (p *ParentProcess) forwardToEnclave(ctx context.Context, msg *NATSMessage) 
 			}
 		}
 
+		// For credential operations, parse the JSON payload to extract owner_space and credential_request
+		if msgType == EnclaveMessageTypeCredentialCreate || msgType == EnclaveMessageTypeCredentialUnseal {
+			if err := p.parseCredentialRequest(msg.Data, enclaveMsg); err != nil {
+				log.Warn().Err(err).Msg("Failed to parse credential request, using raw payload")
+			}
+		}
+
 		log.Debug().
 			Str("type", string(msgType)).
 			Int("nonce_len", len(enclaveMsg.Nonce)).
+			Str("owner_space", enclaveMsg.OwnerSpace).
 			Msg("Forwarding enclave control message to vsock")
 	} else {
 		// Extract owner space from subject (OwnerSpace.{guid}.* or MessageSpace.{guid}.*)
@@ -227,13 +235,23 @@ func (p *ParentProcess) forwardToEnclave(ctx context.Context, msg *NATSMessage) 
 			return err
 		}
 
-		// Create enclave message for vault operations
+		// Determine message type based on subject suffix
+		msgType := mapSubjectToMessageType(msg.Subject)
+
+		// Create enclave message
 		enclaveMsg = &EnclaveMessage{
-			Type:       EnclaveMessageTypeVaultOp,
+			Type:       msgType,
 			OwnerSpace: ownerSpace,
 			Subject:    msg.Subject,
 			Payload:    msg.Data,
 			ReplyTo:    msg.Reply,
+		}
+
+		// For credential operations, parse the JSON payload
+		if msgType == EnclaveMessageTypeCredentialCreate || msgType == EnclaveMessageTypeCredentialUnseal {
+			if err := p.parseCredentialRequestFromPayload(msg.Data, enclaveMsg); err != nil {
+				log.Warn().Err(err).Msg("Failed to parse credential request from payload")
+			}
 		}
 	}
 
@@ -273,8 +291,17 @@ func (p *ParentProcess) sendWithHandlerSupport(ctx context.Context, msg *Enclave
 	for {
 		response, err := p.vsockClient.readMessage()
 		if err != nil {
+			log.Error().Err(err).Msg("Failed to read vsock response")
 			return nil, fmt.Errorf("failed to read response: %w", err)
 		}
+
+		log.Debug().
+			Str("type", string(response.Type)).
+			Bool("has_error", response.Error != "").
+			Str("error", response.Error).
+			Int("credential_len", len(response.Credential)).
+			Int("payload_len", len(response.Payload)).
+			Msg("Received vsock response")
 
 		// Check if this is a handler request
 		if response.Type == EnclaveMessageTypeHandlerGet {
@@ -292,6 +319,58 @@ func (p *ParentProcess) sendWithHandlerSupport(ctx context.Context, msg *Enclave
 				}
 				p.vsockClient.writeMu.Lock()
 				p.vsockClient.writeMessage(errMsg)
+				p.vsockClient.writeMu.Unlock()
+			}
+			continue // Wait for next response
+		}
+
+		// Check if this is a KMS encrypt request (enclave needs to seal data)
+		if response.Type == EnclaveMessageTypeKMSEncrypt {
+			log.Debug().
+				Int("plaintext_len", len(response.Plaintext)).
+				Msg("Enclave requested KMS encrypt during operation")
+
+			kmsResp, err := p.handleKMSEncrypt(ctx, response)
+			if err != nil {
+				log.Error().Err(err).Msg("Failed to handle KMS encrypt request")
+				errMsg := &EnclaveMessage{
+					Type:  EnclaveMessageTypeError,
+					Error: err.Error(),
+				}
+				p.vsockClient.writeMu.Lock()
+				p.vsockClient.writeMessage(errMsg)
+				p.vsockClient.writeMu.Unlock()
+			} else {
+				p.vsockClient.writeMu.Lock()
+				if err := p.vsockClient.writeMessage(kmsResp); err != nil {
+					log.Error().Err(err).Msg("Failed to send KMS encrypt response")
+				}
+				p.vsockClient.writeMu.Unlock()
+			}
+			continue // Wait for next response
+		}
+
+		// Check if this is a KMS decrypt request (enclave needs to unseal data)
+		if response.Type == EnclaveMessageTypeKMSDecrypt {
+			log.Debug().
+				Int("ciphertext_len", len(response.CiphertextDEK)).
+				Msg("Enclave requested KMS decrypt during operation")
+
+			kmsResp, err := p.handleKMSDecrypt(ctx, response)
+			if err != nil {
+				log.Error().Err(err).Msg("Failed to handle KMS decrypt request")
+				errMsg := &EnclaveMessage{
+					Type:  EnclaveMessageTypeError,
+					Error: err.Error(),
+				}
+				p.vsockClient.writeMu.Lock()
+				p.vsockClient.writeMessage(errMsg)
+				p.vsockClient.writeMu.Unlock()
+			} else {
+				p.vsockClient.writeMu.Lock()
+				if err := p.vsockClient.writeMessage(kmsResp); err != nil {
+					log.Error().Err(err).Msg("Failed to send KMS decrypt response")
+				}
 				p.vsockClient.writeMu.Unlock()
 			}
 			continue // Wait for next response
@@ -346,6 +425,124 @@ func (p *ParentProcess) parseAttestationRequest(data []byte, msg *EnclaveMessage
 	return nil
 }
 
+// parseCredentialRequest parses the JSON credential request from enclave.credential.* subjects
+// Lambda sends flat fields: { owner_space, encrypted_auth, auth_type } or { owner_space, sealed_credential, encrypted_challenge }
+func (p *ParentProcess) parseCredentialRequest(data []byte, msg *EnclaveMessage) error {
+	var req struct {
+		OwnerSpace string `json:"owner_space"`
+		// For credential create
+		EncryptedAuth string `json:"encrypted_auth,omitempty"` // Base64-encoded
+		AuthType      string `json:"auth_type,omitempty"`
+		// For credential unseal
+		SealedCredential   string `json:"sealed_credential,omitempty"`   // Base64-encoded
+		EncryptedChallenge string `json:"encrypted_challenge,omitempty"` // Base64-encoded
+	}
+
+	if err := json.Unmarshal(data, &req); err != nil {
+		return fmt.Errorf("failed to unmarshal credential request: %w", err)
+	}
+
+	if req.OwnerSpace == "" {
+		return fmt.Errorf("owner_space is required in credential request")
+	}
+
+	msg.OwnerSpace = req.OwnerSpace
+
+	// Handle credential create (has encrypted_auth)
+	if req.EncryptedAuth != "" {
+		encryptedAuth, err := base64.StdEncoding.DecodeString(req.EncryptedAuth)
+		if err != nil {
+			return fmt.Errorf("failed to decode encrypted_auth: %w", err)
+		}
+		msg.CredentialRequest = &CredentialRequest{
+			EncryptedPIN: encryptedAuth,
+			AuthType:     req.AuthType,
+		}
+		log.Debug().
+			Str("owner_space", req.OwnerSpace).
+			Str("auth_type", req.AuthType).
+			Int("encrypted_auth_len", len(encryptedAuth)).
+			Msg("Parsed credential create request")
+	}
+
+	// Handle credential unseal (has sealed_credential)
+	if req.SealedCredential != "" {
+		sealedCredential, err := base64.StdEncoding.DecodeString(req.SealedCredential)
+		if err != nil {
+			return fmt.Errorf("failed to decode sealed_credential: %w", err)
+		}
+		msg.SealedCredential = sealedCredential
+		log.Debug().
+			Str("owner_space", req.OwnerSpace).
+			Int("sealed_credential_len", len(sealedCredential)).
+			Msg("Parsed credential unseal request")
+	}
+
+	return nil
+}
+
+// parseCredentialRequestFromPayload parses the Lambda's credential request format
+// Lambda sends: { "user_guid": "...", "encrypted_auth": "base64...", "auth_type": "pin" }
+// We need to map this to the enclave message format
+func (p *ParentProcess) parseCredentialRequestFromPayload(data []byte, msg *EnclaveMessage) error {
+	// For credential create
+	var createReq struct {
+		UserGUID      string `json:"user_guid"`
+		EncryptedAuth string `json:"encrypted_auth"` // Base64-encoded
+		AuthType      string `json:"auth_type"`
+	}
+
+	// For credential unseal
+	var unsealReq struct {
+		UserGUID           string `json:"user_guid"`
+		SealedCredential   string `json:"sealed_credential"`   // Base64-encoded
+		EncryptedChallenge string `json:"encrypted_challenge"` // Base64-encoded
+	}
+
+	if msg.Type == EnclaveMessageTypeCredentialCreate {
+		if err := json.Unmarshal(data, &createReq); err != nil {
+			return fmt.Errorf("failed to unmarshal credential create request: %w", err)
+		}
+
+		// Decode encrypted auth
+		encryptedAuth, err := base64.StdEncoding.DecodeString(createReq.EncryptedAuth)
+		if err != nil {
+			return fmt.Errorf("failed to decode encrypted_auth: %w", err)
+		}
+
+		msg.CredentialRequest = &CredentialRequest{
+			EncryptedPIN: encryptedAuth,
+			AuthType:     createReq.AuthType,
+		}
+
+		log.Debug().
+			Str("user_guid", createReq.UserGUID).
+			Str("auth_type", createReq.AuthType).
+			Int("encrypted_auth_len", len(encryptedAuth)).
+			Msg("Parsed credential create request from Lambda")
+
+	} else if msg.Type == EnclaveMessageTypeCredentialUnseal {
+		if err := json.Unmarshal(data, &unsealReq); err != nil {
+			return fmt.Errorf("failed to unmarshal credential unseal request: %w", err)
+		}
+
+		// Decode sealed credential
+		sealedCredential, err := base64.StdEncoding.DecodeString(unsealReq.SealedCredential)
+		if err != nil {
+			return fmt.Errorf("failed to decode sealed_credential: %w", err)
+		}
+
+		msg.SealedCredential = sealedCredential
+
+		log.Debug().
+			Str("user_guid", unsealReq.UserGUID).
+			Int("sealed_credential_len", len(sealedCredential)).
+			Msg("Parsed credential unseal request from Lambda")
+	}
+
+	return nil
+}
+
 // formatEnclaveResponse formats an enclave response for NATS reply
 func (p *ParentProcess) formatEnclaveResponse(response *EnclaveMessage) []byte {
 	// For attestation responses, format with proper fields
@@ -368,6 +565,62 @@ func (p *ParentProcess) formatEnclaveResponse(response *EnclaveMessage) []byte {
 		return data
 	}
 
+	// For credential responses, format with proper fields
+	// The Lambda expects: sealed_credential, public_key, backup_key (all base64)
+	if response.Type == EnclaveMessageTypeCredentialResponse {
+		// If there's an error, return error response
+		if response.Error != "" {
+			resp := struct {
+				Error string `json:"error"`
+			}{
+				Error: response.Error,
+			}
+			data, _ := json.Marshal(resp)
+			return data
+		}
+
+		// Return credential response with base64-encoded sealed credential
+		resp := struct {
+			SealedCredential string `json:"sealed_credential"`
+			PublicKey        string `json:"public_key,omitempty"`
+			BackupKey        string `json:"backup_key,omitempty"`
+		}{
+			SealedCredential: base64.StdEncoding.EncodeToString(response.Credential),
+			// TODO: Enclave should return these separately
+			PublicKey: "",
+			BackupKey: "",
+		}
+
+		data, err := json.Marshal(resp)
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to marshal credential response")
+			return response.Payload
+		}
+
+		log.Debug().
+			Int("sealed_len", len(response.Credential)).
+			Msg("Formatted credential response")
+		return data
+	}
+
+	// For error responses, include the error message
+	if response.Type == EnclaveMessageTypeError && response.Error != "" {
+		resp := struct {
+			Type  string `json:"type"`
+			Error string `json:"error"`
+		}{
+			Type:  string(response.Type),
+			Error: response.Error,
+		}
+
+		data, err := json.Marshal(resp)
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to marshal error response")
+			return response.Payload
+		}
+		return data
+	}
+
 	// For other responses, use the payload directly
 	return response.Payload
 }
@@ -377,16 +630,47 @@ func isEnclaveSubject(subject string) bool {
 	return len(subject) >= 8 && subject[:8] == "enclave."
 }
 
+// mapSubjectToMessageType maps NATS subjects to enclave message types
+// This handles OwnerSpace.*.forVault.* patterns
+func mapSubjectToMessageType(subject string) EnclaveMessageType {
+	// Check for credential operations in OwnerSpace pattern
+	// OwnerSpace.{guid}.forVault.credential.create
+	// OwnerSpace.{guid}.forVault.credential.unseal
+	if hasSubjectSuffix(subject, "credential.create") {
+		return EnclaveMessageTypeCredentialCreate
+	}
+	if hasSubjectSuffix(subject, "credential.unseal") {
+		return EnclaveMessageTypeCredentialUnseal
+	}
+
+	// Default to vault operation
+	return EnclaveMessageTypeVaultOp
+}
+
+// hasSubjectSuffix checks if a NATS subject ends with a given suffix
+func hasSubjectSuffix(subject, suffix string) bool {
+	if len(subject) < len(suffix) {
+		return false
+	}
+	return subject[len(subject)-len(suffix):] == suffix
+}
+
 // mapEnclaveSubjectToType maps enclave.* subjects to message types
 func mapEnclaveSubjectToType(subject string) EnclaveMessageType {
 	// Map known enclave subjects to message types
 	// enclave.attestation.request -> attestation_request
 	// enclave.health -> health_check
+	// enclave.credential.create -> credential_create
+	// enclave.credential.unseal -> credential_unseal
 	switch {
 	case subject == "enclave.attestation.request":
 		return EnclaveMessageTypeAttestationRequest
 	case subject == "enclave.health" || subject == "enclave.health.check":
 		return EnclaveMessageTypeHealthCheck
+	case subject == "enclave.credential.create":
+		return EnclaveMessageTypeCredentialCreate
+	case subject == "enclave.credential.unseal":
+		return EnclaveMessageTypeCredentialUnseal
 	default:
 		// For unknown enclave subjects, use vault_op as fallback
 		log.Warn().Str("subject", subject).Msg("Unknown enclave subject, using vault_op")

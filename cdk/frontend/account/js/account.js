@@ -677,9 +677,6 @@ function activateSubTab(parentTab, subTabName) {
   }
 
   // Initialize tab-specific data
-  if (parentTab === 'deploy-vault' && subTabName === 'backup') {
-    initBackupTab();
-  }
   if (parentTab === 'deploy-vault' && subTabName === 'credential-backup') {
     initCredentialBackupTab();
   }
@@ -1205,7 +1202,7 @@ async function loadMembershipStatus() {
         statusSpan.style.fontWeight = '600';
         // Only show "Activate a paid subscription" if user doesn't have an active paid subscription
         if (!isPaidSubscriber()) {
-          detailsP.innerHTML = '<span class="muted" style="font-size:0.85rem;"><a href="#" onclick="switchToTab(\'subscription\'); return false;" style="color:var(--accent);text-decoration:underline;font-weight:600;">Activate a paid subscription</a> to unlock all features.</span>';
+          detailsP.innerHTML = '<span class="muted" style="font-size:0.85rem;"><a href="#" data-action="switchTab" data-tab="subscription" style="color:var(--accent);text-decoration:underline;font-weight:600;">Activate a paid subscription</a> to unlock all features.</span>';
         } else {
           detailsP.innerHTML = '<span class="muted" style="font-size:0.85rem;">You have an active subscription with access to all features.</span>';
         }
@@ -1237,7 +1234,7 @@ async function loadMembershipStatus() {
             // Reload the page to apply new token
             window.location.reload();
           } else {
-            detailsP.innerHTML += '<br><br><div style="padding:12px;background:#ff9800;color:#000;border-radius:4px;margin-top:12px;"><strong>Action Required:</strong> Your membership has been approved! Please <a href="#" onclick="signOut(); return false;" style="color:#000;text-decoration:underline;font-weight:700;">sign out and sign back in</a> to update your account and gain access to member features.</div>';
+            detailsP.innerHTML += '<br><br><div style="padding:12px;background:#ff9800;color:#000;border-radius:4px;margin-top:12px;"><strong>Action Required:</strong> Your membership has been approved! Please <a href="#" data-action="signOut" style="color:#000;text-decoration:underline;font-weight:700;">sign out and sign back in</a> to update your account and gain access to member features.</div>';
           }
         }
         break;
@@ -1467,7 +1464,7 @@ function updateSubscriptionUI() {
         <p style="margin-bottom:0;"><strong>Expires:</strong> ${expiresAt}</p>
       </div>
       ${status === 'cancelled' ? '<p style="color:#ff9800;font-size:0.9rem;margin-top:8px;"><strong>Note:</strong> Your subscription has been cancelled but you retain access until the expiration date above.</p>' : ''}
-      ${status === 'active' ? '<button class="btn" onclick="cancelSubscription()" style="background:linear-gradient(135deg,#d32f2f 0%,#a00 100%);color:#fff;">Cancel Subscription</button>' : ''}
+      ${status === 'active' ? '<button class="btn" data-action="cancelSubscription" style="background:linear-gradient(135deg,#d32f2f 0%,#a00 100%);color:#fff;">Cancel Subscription</button>' : ''}
     `;
 
     // Update profile subscription status
@@ -1709,7 +1706,7 @@ async function renderProposals(filter) {
             </div>
             <h4 style="color:var(--accent);margin:0 0 12px 0;font-size:1.2rem;">No Active Proposals</h4>
             <p style="color:var(--gray);margin:0 0 20px 0;line-height:1.6;">There are no proposals currently open for voting. Check back soon for new community proposals.</p>
-            <button class="btn proposal-filter" data-filter="completed" onclick="document.getElementById('filterCompletedProposals').click()" style="background:linear-gradient(135deg,#6366f1 0%,#4f46e5 100%);padding:10px 24px;font-weight:600;">
+            <button class="btn proposal-filter" data-action="filterProposals" data-filter="completed" style="background:linear-gradient(135deg,#6366f1 0%,#4f46e5 100%);padding:10px 24px;font-weight:600;">
               View Completed Proposals
             </button>
           </div>
@@ -1731,7 +1728,7 @@ async function renderProposals(filter) {
             </div>
             <h4 style="color:var(--accent);margin:0 0 12px 0;font-size:1.2rem;">No Completed Proposals</h4>
             <p style="color:var(--gray);margin:0 0 20px 0;line-height:1.6;">No proposals have been completed yet. Completed proposals will appear here after voting closes.</p>
-            <button class="btn proposal-filter" data-filter="active" onclick="document.getElementById('filterActiveProposals').click()" style="background:linear-gradient(135deg,#10b981 0%,#059669 100%);padding:10px 24px;font-weight:600;">
+            <button class="btn proposal-filter" data-action="filterProposals" data-filter="active" style="background:linear-gradient(135deg,#10b981 0%,#059669 100%);padding:10px 24px;font-weight:600;">
               View Active Proposals
             </button>
           </div>
@@ -1768,7 +1765,7 @@ async function renderProposals(filter) {
           <div style="margin-bottom:8px;padding:8px;background:#1a1a1a;border-radius:6px;text-align:center;">
             <span style="font-size:0.85rem;color:var(--accent);font-weight:600;">Closes in ${timeRemaining}</span>
           </div>
-          <button onclick="toggleProposalText('proposal-text-${proposalId}')" class="btn" style="width:100%;padding:8px 12px;font-size:0.8rem;background:linear-gradient(135deg,#ffd93d 0%,#ffc125 100%);color:#000;font-weight:600;margin-bottom:8px;">View Proposal</button>
+          <button data-action="toggleProposalText" data-target="proposal-text-${proposalId}" class="btn" style="width:100%;padding:8px 12px;font-size:0.8rem;background:linear-gradient(135deg,#ffd93d 0%,#ffc125 100%);color:#000;font-weight:600;margin-bottom:8px;">View Proposal</button>
           <div id="proposal-text-${proposalId}" style="display:none;padding:10px;background:#050505;border-left:3px solid var(--accent);border-radius:4px;margin-bottom:8px;line-height:1.6;font-size:0.85rem;">${proposal.proposal_text}</div>
           ${hasVoted ? `
             <div style="margin-bottom:8px;padding:10px;background:#050505;border-left:3px solid ${userVote && userVote.vote ? (userVote.vote.toLowerCase() === 'yes' ? '#10b981' : userVote.vote.toLowerCase() === 'no' ? '#ef4444' : '#6b7280') : '#4caf50'};border-radius:4px;">
@@ -1779,11 +1776,11 @@ async function renderProposals(filter) {
             </div>
           ` : `
             <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:8px;">
-              <button class="btn" onclick="selectVote('${proposalId}', 'yes')" id="vote-${proposalId}-yes" style="padding:10px 8px;font-size:0.8rem;background:#16a34a;color:#fff;border:2px solid transparent;font-weight:600;">Yes</button>
-              <button class="btn" onclick="selectVote('${proposalId}', 'no')" id="vote-${proposalId}-no" style="padding:10px 8px;font-size:0.8rem;background:#dc2626;color:#fff;border:2px solid transparent;font-weight:600;">No</button>
-              <button class="btn" onclick="selectVote('${proposalId}', 'abstain')" id="vote-${proposalId}-abstain" style="padding:10px 8px;font-size:0.8rem;background:#6b7280;color:#fff;border:2px solid transparent;font-weight:600;">Abstain</button>
+              <button class="btn" data-action="selectVote" data-proposal-id="${proposalId}" data-vote="yes" id="vote-${proposalId}-yes" style="padding:10px 8px;font-size:0.8rem;background:#16a34a;color:#fff;border:2px solid transparent;font-weight:600;">Yes</button>
+              <button class="btn" data-action="selectVote" data-proposal-id="${proposalId}" data-vote="no" id="vote-${proposalId}-no" style="padding:10px 8px;font-size:0.8rem;background:#dc2626;color:#fff;border:2px solid transparent;font-weight:600;">No</button>
+              <button class="btn" data-action="selectVote" data-proposal-id="${proposalId}" data-vote="abstain" id="vote-${proposalId}-abstain" style="padding:10px 8px;font-size:0.8rem;background:#6b7280;color:#fff;border:2px solid transparent;font-weight:600;">Abstain</button>
             </div>
-            <button class="btn" onclick="submitVote('${proposalId}')" id="submit-${proposalId}" style="width:100%;display:none;padding:10px;font-size:0.85rem;background:var(--accent);color:#000;font-weight:600;">Submit Vote</button>
+            <button class="btn" data-action="submitVote" data-proposal-id="${proposalId}" id="submit-${proposalId}" style="width:100%;display:none;padding:10px;font-size:0.85rem;background:var(--accent);color:#000;font-weight:600;">Submit Vote</button>
           `}
           <div id="results-${proposalId}" style="margin-top:8px;"></div>
         </div>
@@ -2646,13 +2643,14 @@ async function populateGettingStartedSteps() {
     },
     {
       number: 6,
-      title: 'Configure Data Backups',
-      description: 'Have VettID securely store encrypted backups of your critical data.',
+      title: 'Enable Credential Backups',
+      description: 'Securely backup your vault credentials for recovery if your device is lost.',
       completed: steps.backupsConfigured,
       accessible: hasSubscription,
       tab: 'deploy-vault',
+      subTab: 'credential-backup',
       cardId: null,
-      note: hasSubscription ? 'Coming soon' : 'Complete step 3 to unlock'
+      note: hasSubscription ? null : 'Complete step 3 to unlock'
     }
   ];
 
@@ -2667,7 +2665,7 @@ async function populateGettingStartedSteps() {
     const iconBg = isCompleted ? '#4caf50' : isPending ? '#ff9800' : isAccessible ? 'var(--accent)' : '#333';
 
     return `
-      <div ${isAccessible && !isCompleted && !isPending && step.tab ? `onclick="navigateToStep('${step.tab}','${step.cardId || 'null'}','${step.subTab || 'null'}')"` : ''} style="padding:20px;background:#0a0a0a;border-radius:8px;border:2px solid ${borderColor};opacity:${opacity};cursor:${cursor};position:relative;">
+      <div ${isAccessible && !isCompleted && !isPending && step.tab ? `data-action="navigateToStep" data-step-tab="${step.tab}" data-step-card="${step.cardId || 'null'}" data-step-subtab="${step.subTab || 'null'}"` : ''} style="padding:20px;background:#0a0a0a;border-radius:8px;border:2px solid ${borderColor};opacity:${opacity};cursor:${cursor};position:relative;">
         <div style="display:flex;align-items:start;gap:16px;">
           <div style="flex-shrink:0;width:40px;height:40px;border-radius:50%;background:${iconBg};display:flex;align-items:center;justify-content:center;font-weight:700;font-size:1.2rem;color:${isCompleted || isPending || isAccessible ? '#000' : '#666'};">
             ${isCompleted ? '✓' : step.number}
@@ -2730,11 +2728,12 @@ async function loadVaultStatus() {
     vaultStatus = await res.json();
     renderVaultStatusContent(vaultStatus);
 
-    // If active, also load health data
-    if (vaultStatus.status === 'active') {
+    // If active, also load health data (if health card exists)
+    const healthCard = document.getElementById('vaultHealthCard');
+    if (vaultStatus.status === 'active' && healthCard) {
       await loadVaultHealth();
-    } else {
-      document.getElementById('vaultHealthCard').style.display = 'none';
+    } else if (healthCard) {
+      healthCard.style.display = 'none';
     }
   } catch (error) {
     console.error('Error loading vault status:', error);
@@ -2743,7 +2742,7 @@ async function loadVaultStatus() {
         <div style="font-size:2rem;margin-bottom:12px;">⚠</div>
         <div style="color:#ef4444;font-weight:600;margin-bottom:8px;">Error Loading Status</div>
         <p class="muted" style="margin:0;">${error.message}</p>
-        <button onclick="loadVaultStatus()" class="btn" style="margin-top:16px;padding:8px 16px;background:#333;">Try Again</button>
+        <button data-action="loadVaultStatus" class="btn" style="margin-top:16px;padding:8px 16px;background:#333;">Try Again</button>
       </div>
     `;
   }
@@ -2751,25 +2750,25 @@ async function loadVaultStatus() {
 
 function renderVaultStatusContent(status) {
   const statusContent = document.getElementById('vaultStatusContent');
-  const healthCard = document.getElementById('vaultHealthCard');
   const provisioningCard = document.getElementById('vaultProvisioningCard');
 
   if (!statusContent) return;
 
-  // Hide provisioning card by default
+  // Hide cards by default - only show in appropriate states
   if (provisioningCard) provisioningCard.style.display = 'none';
+  const deletionCard = document.getElementById('vaultDeletionCard');
+  if (deletionCard) deletionCard.style.display = 'none';
 
   switch (status.status) {
     case 'not_enrolled':
-      healthCard.style.display = 'none';
       statusContent.innerHTML = `
         <div style="padding:24px;background:#050505;border-radius:4px;border:1px solid #333;text-align:center;">
           <div style="font-size:3rem;margin-bottom:16px;">🔐</div>
           <div style="font-size:1.2rem;font-weight:600;color:var(--text);margin-bottom:8px;">Set Up Your Vault</div>
           <p class="muted" style="margin-bottom:20px;max-width:400px;margin-left:auto;margin-right:auto;">
-            Your vault provides secure storage for your secrets and data. It allows you to securely and privately connect, communicate and transact with other users, apps and services. Start by enrolling your mobile device.
+            Your vault runs in a secure Nitro Enclave, providing hardware-isolated protection for your credentials and secrets. Start by enrolling your mobile device.
           </p>
-          <button onclick="startEnrollment()" class="btn" style="padding:12px 24px;background:linear-gradient(135deg,var(--accent) 0%,#2563eb 100%);font-weight:600;">
+          <button data-action="startEnrollment" class="btn" style="padding:12px 24px;background:linear-gradient(135deg,var(--accent) 0%,#2563eb 100%);font-weight:600;">
             Start Enrollment
           </button>
         </div>
@@ -2777,7 +2776,6 @@ function renderVaultStatusContent(status) {
       break;
 
     case 'pending':
-      healthCard.style.display = 'none';
       statusContent.innerHTML = `
         <div style="padding:24px;background:#0a0a05;border-radius:4px;border:1px solid #f59e0b;text-align:center;">
           <div style="width:40px;height:40px;border:3px solid #f59e0b;border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 16px;"></div>
@@ -2789,28 +2787,26 @@ function renderVaultStatusContent(status) {
       break;
 
     case 'enrolled':
-      healthCard.style.display = 'none';
       statusContent.innerHTML = `
         <div style="padding:24px;background:#050a05;border-radius:4px;border:1px solid #10b981;text-align:center;">
           <div style="font-size:3rem;margin-bottom:16px;">✓</div>
-          <div style="font-size:1.2rem;font-weight:600;color:#10b981;margin-bottom:8px;">Ready to Deploy</div>
+          <div style="font-size:1.2rem;font-weight:600;color:#10b981;margin-bottom:8px;">Device Enrolled</div>
           <p class="muted" style="margin-bottom:20px;">
-            Your mobile device is enrolled. Now provision your vault instance to begin using VettID services.
+            Your mobile device is enrolled and connected to your Nitro Enclave vault.
           </p>
-          <button onclick="provisionVault()" class="btn" style="padding:12px 24px;background:linear-gradient(135deg,#10b981 0%,#059669 100%);font-weight:600;">
-            Provision Vault
+          <button data-action="provisionVault" class="btn" style="padding:12px 24px;background:linear-gradient(135deg,#10b981 0%,#059669 100%);font-weight:600;">
+            Initialize Vault
           </button>
         </div>
       `;
       break;
 
     case 'provisioning':
-      healthCard.style.display = 'none';
       if (provisioningCard) provisioningCard.style.display = 'block';
       statusContent.innerHTML = `
         <div style="padding:24px;background:#050505;border-radius:4px;border:1px solid var(--accent);text-align:center;">
-          <div style="font-size:1.2rem;font-weight:600;color:var(--accent);margin-bottom:8px;">Provisioning...</div>
-          <p class="muted">Your vault is being provisioned. This may take a few minutes.</p>
+          <div style="font-size:1.2rem;font-weight:600;color:var(--accent);margin-bottom:8px;">Initializing Vault...</div>
+          <p class="muted">Setting up your secure Nitro Enclave vault. This may take a moment.</p>
         </div>
       `;
       // Start polling for provisioning completion
@@ -2818,75 +2814,89 @@ function renderVaultStatusContent(status) {
       break;
 
     case 'active':
-      healthCard.style.display = 'block';
       const enrolledDate = status.enrolled_at ? new Date(status.enrolled_at).toLocaleDateString() : 'Unknown';
-      const lastSync = status.last_sync_at ? new Date(status.last_sync_at).toLocaleString() : 'Never';
+      const lastActivity = status.last_sync_at ? new Date(status.last_sync_at).toLocaleString() : 'Never';
       const deviceIcon = status.device_type === 'ios' ? '📱' : status.device_type === 'android' ? '🤖' : '📱';
       const deviceLabel = status.device_type === 'ios' ? 'iOS' : status.device_type === 'android' ? 'Android' : 'Mobile';
-      const securityColor = status.security_level === 'hardware' ? '#10b981' : status.security_level === 'software' ? '#f59e0b' : '#6b7280';
       const keysRemaining = status.transaction_keys_remaining !== undefined ? status.transaction_keys_remaining : 'N/A';
       const keysColor = keysRemaining === 'N/A' ? '#6b7280' : keysRemaining < 5 ? '#ef4444' : keysRemaining < 10 ? '#f59e0b' : '#10b981';
+      // Attestation info
+      const attestationTime = status.attestation_time ? new Date(status.attestation_time).toLocaleString() : null;
+      const pcrHash = status.pcr_hash ? status.pcr_hash.substring(0, 12) + '...' : null;
       statusContent.innerHTML = `
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:16px;">
-          <div style="padding:16px;background:#050505;border-radius:4px;border:1px solid #333;">
-            <div class="muted" style="font-size:0.8rem;margin-bottom:4px;">Status</div>
+          <div style="padding:16px;background:#050505;border-radius:4px;border:1px solid #10b981;">
+            <div class="muted" style="font-size:0.8rem;margin-bottom:4px;">Enclave Status</div>
             <div style="display:flex;align-items:center;gap:8px;">
-              <span style="width:10px;height:10px;background:#10b981;border-radius:50%;"></span>
-              <span style="color:#10b981;font-weight:600;">Active</span>
+              <span style="width:10px;height:10px;background:#10b981;border-radius:50%;animation:pulse 2s ease-in-out infinite;"></span>
+              <span style="color:#10b981;font-weight:600;">Connected</span>
             </div>
           </div>
           <div style="padding:16px;background:#050505;border-radius:4px;border:1px solid #333;">
-            <div class="muted" style="font-size:0.8rem;margin-bottom:4px;">Device</div>
+            <div class="muted" style="font-size:0.8rem;margin-bottom:4px;">Enrolled Device</div>
             <div style="color:var(--text);font-weight:600;">${deviceIcon} ${deviceLabel}</div>
           </div>
           <div style="padding:16px;background:#050505;border-radius:4px;border:1px solid #333;">
-            <div class="muted" style="font-size:0.8rem;margin-bottom:4px;">Security Level</div>
-            <div style="color:${securityColor};font-weight:600;text-transform:capitalize;">${status.security_level || 'Unknown'}</div>
-          </div>
-          <div style="padding:16px;background:#050505;border-radius:4px;border:1px solid #333;">
-            <div class="muted" style="font-size:0.8rem;margin-bottom:4px;">Enrolled</div>
+            <div class="muted" style="font-size:0.8rem;margin-bottom:4px;">Enrolled Since</div>
             <div style="color:var(--text);font-size:0.9rem;">${enrolledDate}</div>
           </div>
           <div style="padding:16px;background:#050505;border-radius:4px;border:1px solid #333;">
-            <div class="muted" style="font-size:0.8rem;margin-bottom:4px;">Last Sync</div>
-            <div style="color:var(--text);font-size:0.9rem;">${lastSync}</div>
+            <div class="muted" style="font-size:0.8rem;margin-bottom:4px;">Last Activity</div>
+            <div style="color:var(--text);font-size:0.9rem;">${lastActivity}</div>
           </div>
           <div style="padding:16px;background:#050505;border-radius:4px;border:1px solid #333;">
             <div class="muted" style="font-size:0.8rem;margin-bottom:4px;">Transaction Keys</div>
             <div style="color:${keysColor};font-weight:600;">${keysRemaining}</div>
           </div>
-        </div>
-        <div style="margin-top:16px;display:flex;gap:12px;flex-wrap:wrap;">
-          <button onclick="syncVault()" id="syncVaultBtn" class="btn" style="padding:10px 20px;background:linear-gradient(135deg,var(--accent) 0%,#2563eb 100%);">
-            🔄 Sync Now
-          </button>
-        </div>
-      `;
-      break;
-
-    case 'stopped':
-      healthCard.style.display = 'none';
-      statusContent.innerHTML = `
-        <div style="padding:24px;background:#0a0a05;border-radius:4px;border:1px solid #f59e0b;text-align:center;">
-          <div style="font-size:3rem;margin-bottom:16px;">⏸</div>
-          <div style="font-size:1.2rem;font-weight:600;color:#f59e0b;margin-bottom:8px;">Vault Stopped</div>
-          <p class="muted" style="margin-bottom:20px;">
-            Your vault instance is stopped. Start it to resume services.
-          </p>
-          <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;">
-            <button onclick="startVault()" class="btn" style="padding:12px 24px;background:linear-gradient(135deg,#10b981 0%,#059669 100%);font-weight:600;">
-              Start Vault
-            </button>
-            <button onclick="confirmTerminateVault()" class="btn" style="padding:12px 24px;background:#333;color:#ef4444;">
-              Terminate
-            </button>
+          <div style="padding:16px;background:#050505;border-radius:4px;border:1px solid #333;">
+            <div class="muted" style="font-size:0.8rem;margin-bottom:4px;">Protection</div>
+            <div style="color:#10b981;font-weight:600;">Nitro Enclave</div>
           </div>
         </div>
+
+        <!-- Attestation Section -->
+        <div style="margin-top:20px;padding:16px;background:linear-gradient(135deg,rgba(16,185,129,0.05) 0%,rgba(5,150,105,0.02) 100%);border:1px solid rgba(16,185,129,0.3);border-radius:8px;">
+          <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+            <div style="width:32px;height:32px;background:linear-gradient(135deg,#10b981 0%,#059669 100%);border-radius:50%;display:flex;align-items:center;justify-content:center;">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+                <polyline points="9 12 12 15 22 5"></polyline>
+              </svg>
+            </div>
+            <div>
+              <div style="color:#10b981;font-weight:600;font-size:0.95rem;">Enclave Attestation Verified</div>
+              <div style="color:var(--gray);font-size:0.8rem;">Hardware-backed cryptographic proof</div>
+            </div>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;font-size:0.85rem;">
+            ${attestationTime ? `
+            <div style="display:flex;flex-direction:column;gap:2px;">
+              <span class="muted">Last Attestation</span>
+              <span style="color:var(--text);font-family:monospace;">${attestationTime}</span>
+            </div>
+            ` : ''}
+            ${pcrHash ? `
+            <div style="display:flex;flex-direction:column;gap:2px;">
+              <span class="muted">PCR Hash</span>
+              <span style="color:var(--text);font-family:monospace;">${pcrHash}</span>
+            </div>
+            ` : ''}
+            <div style="display:flex;flex-direction:column;gap:2px;">
+              <span class="muted">Enclave Type</span>
+              <span style="color:var(--text);">AWS Nitro</span>
+            </div>
+          </div>
+        </div>
+
       `;
+      // Show deletion card for active vaults and load deletion status
+      if (deletionCard) {
+        deletionCard.style.display = 'block';
+        loadVaultDeletionStatus();
+      }
       break;
 
     default:
-      healthCard.style.display = 'none';
       statusContent.innerHTML = `
         <div style="padding:24px;background:#050505;border-radius:4px;border:1px solid #333;text-align:center;">
           <div class="muted">Unknown status: ${status.status}</div>
@@ -3181,10 +3191,10 @@ function confirmTerminateVault() {
         If you have credential backups, they will remain safe. You can provision a new vault and restore from backup.
       </p>
       <div style="display:flex;gap:12px;justify-content:center;">
-        <button onclick="closeTerminateModal()" class="btn" style="padding:12px 24px;background:#333;">
+        <button data-action="closeTerminateModal" class="btn" style="padding:12px 24px;background:#333;">
           Cancel
         </button>
-        <button onclick="terminateVault()" class="btn" style="padding:12px 24px;background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);font-weight:600;">
+        <button data-action="terminateVault" class="btn" style="padding:12px 24px;background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);font-weight:600;">
           Terminate Vault
         </button>
       </div>
@@ -3245,10 +3255,10 @@ function confirmStopVault() {
         While stopped, you won't be able to use vault-based authentication or sync credentials.
       </p>
       <div style="display:flex;gap:12px;justify-content:center;">
-        <button onclick="closeStopModal()" class="btn" style="padding:12px 24px;background:#333;">
+        <button data-action="closeStopModal" class="btn" style="padding:12px 24px;background:#333;">
           Cancel
         </button>
-        <button onclick="stopVault();closeStopModal();" class="btn" style="padding:12px 24px;background:linear-gradient(135deg,#f59e0b 0%,#d97706 100%);font-weight:600;">
+        <button data-action="stopVaultAndClose" class="btn" style="padding:12px 24px;background:linear-gradient(135deg,#f59e0b 0%,#d97706 100%);font-weight:600;">
           Stop Vault
         </button>
       </div>
@@ -3376,7 +3386,7 @@ async function loadByovStatus() {
         <div style="font-size:2rem;margin-bottom:12px;">⚠</div>
         <div style="color:#ef4444;font-weight:600;margin-bottom:8px;">Error Loading Status</div>
         <p class="muted" style="margin:0;">${error.message}</p>
-        <button onclick="loadByovStatus()" class="btn" style="margin-top:16px;padding:8px 16px;background:#333;">Try Again</button>
+        <button data-action="loadByovStatus" class="btn" style="margin-top:16px;padding:8px 16px;background:#333;">Try Again</button>
       </div>
     `;
     registerCard.style.display = 'none';
@@ -3718,10 +3728,10 @@ function confirmDeleteByovVault() {
         This will disconnect your vault from VettID. You can re-register it later if needed.
       </p>
       <div style="display:flex;gap:12px;justify-content:center;">
-        <button onclick="closeDeleteByovModal()" class="btn" style="padding:12px 24px;background:#333;">
+        <button data-action="closeDeleteByovModal" class="btn" style="padding:12px 24px;background:#333;">
           Cancel
         </button>
-        <button onclick="deleteByovVault();closeDeleteByovModal();" class="btn" style="padding:12px 24px;background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);font-weight:600;">
+        <button data-action="deleteByovAndClose" class="btn" style="padding:12px 24px;background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);font-weight:600;">
           Remove Vault
         </button>
       </div>
@@ -3763,503 +3773,6 @@ async function deleteByovVault() {
 function initByovTab() {
   loadByovStatus();
 }
-
-// ============================================
-// BACKUP SERVICES FUNCTIONS
-// ============================================
-
-let backupSettings = null;
-let backupList = [];
-
-async function loadBackupSettings() {
-  const content = document.getElementById('backupSettingsContent');
-  if (!content) return;
-
-  try {
-    const token = idToken();
-    if (!token) throw new Error('No authentication token');
-
-    const res = await fetch(API_URL + '/vault/backup/settings', {
-      method: 'GET',
-      headers: { 'Authorization': 'Bearer ' + token }
-    });
-
-    if (!res.ok) throw new Error('Failed to load backup settings');
-
-    backupSettings = await res.json();
-    renderBackupSettings(backupSettings);
-  } catch (error) {
-    console.error('Error loading backup settings:', error);
-    content.innerHTML = `
-      <div style="padding:16px;background:#1a0a0a;border-radius:4px;border:1px solid #ef4444;text-align:center;">
-        <span style="color:#ef4444;">Error loading settings: ${error.message}</span>
-        <button onclick="loadBackupSettings()" class="btn" style="margin-top:12px;padding:8px 16px;background:#333;">Try Again</button>
-      </div>
-    `;
-  }
-}
-
-function renderBackupSettings(settings) {
-  const content = document.getElementById('backupSettingsContent');
-  if (!content) return;
-
-  content.innerHTML = `
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;">
-      <!-- Auto Backup Toggle -->
-      <div style="padding:16px;background:#050505;border-radius:4px;border:1px solid #333;">
-        <div style="display:flex;justify-content:space-between;align-items:center;">
-          <div>
-            <div style="color:var(--text);font-weight:600;">Auto Backup</div>
-            <div class="muted" style="font-size:0.85rem;margin-top:4px;">Automatically backup your data</div>
-          </div>
-          <label class="toggle-switch">
-            <input type="checkbox" id="autoBackupEnabled" ${settings.auto_backup_enabled ? 'checked' : ''} onchange="markSettingsChanged()">
-            <span class="toggle-slider"></span>
-          </label>
-        </div>
-      </div>
-
-      <!-- Backup Frequency -->
-      <div style="padding:16px;background:#050505;border-radius:4px;border:1px solid #333;">
-        <div style="color:var(--text);font-weight:600;margin-bottom:8px;">Backup Frequency</div>
-        <select id="backupFrequency" onchange="markSettingsChanged()" style="width:100%;padding:10px;background:#111;border:1px solid #333;border-radius:4px;color:var(--text);font-size:0.95rem;">
-          <option value="daily" ${settings.backup_frequency === 'daily' ? 'selected' : ''}>Daily</option>
-          <option value="weekly" ${settings.backup_frequency === 'weekly' ? 'selected' : ''}>Weekly</option>
-          <option value="monthly" ${settings.backup_frequency === 'monthly' ? 'selected' : ''}>Monthly</option>
-        </select>
-      </div>
-
-      <!-- Backup Time -->
-      <div style="padding:16px;background:#050505;border-radius:4px;border:1px solid #333;">
-        <div style="color:var(--text);font-weight:600;margin-bottom:8px;">Backup Time (UTC)</div>
-        <input type="time" id="backupTime" value="${settings.backup_time_utc || '03:00'}" onchange="markSettingsChanged()" style="width:100%;padding:10px;background:#111;border:1px solid #333;border-radius:4px;color:var(--text);font-size:0.95rem;">
-      </div>
-
-      <!-- Retention Period -->
-      <div style="padding:16px;background:#050505;border-radius:4px;border:1px solid #333;">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-          <div style="color:var(--text);font-weight:600;">Retention Period</div>
-          <span id="retentionValue" style="color:var(--accent);font-weight:600;">${settings.retention_days || 30} days</span>
-        </div>
-        <input type="range" id="retentionDays" min="7" max="365" value="${settings.retention_days || 30}" onchange="updateRetentionDisplay();markSettingsChanged()" style="width:100%;accent-color:var(--accent);">
-        <div style="display:flex;justify-content:space-between;margin-top:4px;">
-          <span class="muted" style="font-size:0.75rem;">7 days</span>
-          <span class="muted" style="font-size:0.75rem;">365 days</span>
-        </div>
-      </div>
-
-      <!-- Include Messages Toggle -->
-      <div style="padding:16px;background:#050505;border-radius:4px;border:1px solid #333;">
-        <div style="display:flex;justify-content:space-between;align-items:center;">
-          <div>
-            <div style="color:var(--text);font-weight:600;">Include Messages</div>
-            <div class="muted" style="font-size:0.85rem;margin-top:4px;">Backup message history</div>
-          </div>
-          <label class="toggle-switch">
-            <input type="checkbox" id="includeMessages" ${settings.include_messages ? 'checked' : ''} onchange="markSettingsChanged()">
-            <span class="toggle-slider"></span>
-          </label>
-        </div>
-      </div>
-
-      <!-- WiFi Only Toggle -->
-      <div style="padding:16px;background:#050505;border-radius:4px;border:1px solid #333;">
-        <div style="display:flex;justify-content:space-between;align-items:center;">
-          <div>
-            <div style="color:var(--text);font-weight:600;">WiFi Only</div>
-            <div class="muted" style="font-size:0.85rem;margin-top:4px;">Only backup on WiFi networks</div>
-          </div>
-          <label class="toggle-switch">
-            <input type="checkbox" id="wifiOnly" ${settings.wifi_only ? 'checked' : ''} onchange="markSettingsChanged()">
-            <span class="toggle-slider"></span>
-          </label>
-        </div>
-      </div>
-    </div>
-  `;
-}
-
-function updateRetentionDisplay() {
-  const slider = document.getElementById('retentionDays');
-  const display = document.getElementById('retentionValue');
-  if (slider && display) {
-    display.textContent = slider.value + ' days';
-  }
-}
-
-function markSettingsChanged() {
-  const saveBtn = document.getElementById('saveSettingsBtn');
-  if (saveBtn) {
-    saveBtn.style.background = 'linear-gradient(135deg,#f59e0b 0%,#d97706 100%)';
-    saveBtn.textContent = 'Save Changes';
-  }
-}
-
-async function saveBackupSettings() {
-  const saveBtn = document.getElementById('saveSettingsBtn');
-  const originalText = saveBtn ? saveBtn.textContent : '';
-
-  try {
-    const token = idToken();
-    if (!token) throw new Error('No authentication token');
-
-    if (saveBtn) {
-      saveBtn.disabled = true;
-      saveBtn.textContent = 'Saving...';
-    }
-
-    const settings = {
-      auto_backup_enabled: document.getElementById('autoBackupEnabled')?.checked ?? true,
-      backup_frequency: document.getElementById('backupFrequency')?.value || 'daily',
-      backup_time_utc: document.getElementById('backupTime')?.value || '03:00',
-      retention_days: parseInt(document.getElementById('retentionDays')?.value || '30', 10),
-      include_messages: document.getElementById('includeMessages')?.checked ?? true,
-      wifi_only: document.getElementById('wifiOnly')?.checked ?? true,
-    };
-
-    const res = await fetch(API_URL + '/vault/backup/settings', {
-      method: 'PUT',
-      headers: {
-        'Authorization': 'Bearer ' + token,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(settings)
-    });
-
-    if (!res.ok) {
-      const errorData = await res.json().catch(() => ({}));
-      throw new Error(errorData.message || 'Failed to save settings');
-    }
-
-    showToast('Backup settings saved', 'success');
-
-    if (saveBtn) {
-      saveBtn.style.background = 'linear-gradient(135deg,var(--accent) 0%,#2563eb 100%)';
-      saveBtn.textContent = 'Save Settings';
-    }
-  } catch (error) {
-    console.error('Error saving backup settings:', error);
-    showToast('Failed to save settings: ' + error.message, 'error');
-  } finally {
-    if (saveBtn) {
-      saveBtn.disabled = false;
-      if (saveBtn.textContent === 'Saving...') {
-        saveBtn.textContent = originalText;
-      }
-    }
-  }
-}
-
-async function loadBackupList() {
-  const content = document.getElementById('backupListContent');
-  if (!content) return;
-
-  try {
-    const token = idToken();
-    if (!token) throw new Error('No authentication token');
-
-    const res = await fetch(API_URL + '/vault/backups', {
-      method: 'GET',
-      headers: { 'Authorization': 'Bearer ' + token }
-    });
-
-    if (!res.ok) throw new Error('Failed to load backups');
-
-    const data = await res.json();
-    backupList = data.backups || [];
-    renderBackupList(backupList);
-  } catch (error) {
-    console.error('Error loading backups:', error);
-    content.innerHTML = `
-      <div style="padding:16px;background:#1a0a0a;border-radius:4px;border:1px solid #ef4444;text-align:center;">
-        <span style="color:#ef4444;">Error loading backups: ${error.message}</span>
-        <button onclick="loadBackupList()" class="btn" style="margin-top:12px;padding:8px 16px;background:#333;">Try Again</button>
-      </div>
-    `;
-  }
-}
-
-function renderBackupList(backups) {
-  const content = document.getElementById('backupListContent');
-  if (!content) return;
-
-  if (!backups || backups.length === 0) {
-    content.innerHTML = `
-      <div style="padding:32px;background:#050505;border-radius:4px;border:1px solid #333;text-align:center;">
-        <div style="font-size:2rem;margin-bottom:12px;">📦</div>
-        <div style="color:var(--text);font-weight:600;margin-bottom:8px;">No Backups Yet</div>
-        <p class="muted" style="margin-bottom:16px;">Create your first backup to protect your data.</p>
-        <button onclick="triggerBackup()" class="btn" style="padding:10px 20px;background:linear-gradient(135deg,#10b981 0%,#059669 100%);">
-          Create First Backup
-        </button>
-      </div>
-    `;
-    return;
-  }
-
-  const rows = backups.map(backup => {
-    const date = new Date(backup.created_at);
-    const sizeKB = (backup.size_bytes / 1024).toFixed(1);
-    const sizeMB = (backup.size_bytes / (1024 * 1024)).toFixed(2);
-    const sizeDisplay = backup.size_bytes > 1024 * 1024 ? `${sizeMB} MB` : `${sizeKB} KB`;
-    const typeColor = backup.type === 'auto' ? '#3b82f6' : '#10b981';
-    const typeLabel = backup.type === 'auto' ? 'Auto' : 'Manual';
-    const statusColor = backup.status === 'complete' ? '#10b981' : backup.status === 'pending' ? '#f59e0b' : '#ef4444';
-
-    return `
-      <div style="display:grid;grid-template-columns:1fr auto auto auto;gap:16px;align-items:center;padding:16px;background:#050505;border-radius:4px;border:1px solid #333;">
-        <div>
-          <div style="color:var(--text);font-weight:600;">${date.toLocaleDateString()} ${date.toLocaleTimeString()}</div>
-          <div class="muted" style="font-size:0.85rem;margin-top:4px;">
-            ${backup.contents?.connections_count || 0} connections, ${backup.contents?.messages_count || 0} messages
-          </div>
-        </div>
-        <div style="text-align:center;">
-          <span style="background:${typeColor}22;color:${typeColor};padding:4px 10px;border-radius:12px;font-size:0.8rem;font-weight:600;">${typeLabel}</span>
-        </div>
-        <div style="text-align:center;">
-          <div style="color:var(--text);font-weight:600;">${sizeDisplay}</div>
-          <div style="display:flex;align-items:center;gap:4px;justify-content:center;margin-top:2px;">
-            <span style="width:8px;height:8px;background:${statusColor};border-radius:50%;"></span>
-            <span class="muted" style="font-size:0.75rem;text-transform:capitalize;">${backup.status}</span>
-          </div>
-        </div>
-        <div style="display:flex;gap:8px;">
-          <button onclick="confirmRestoreBackup('${backup.backup_id}')" class="btn" style="padding:8px 12px;background:#333;font-size:0.85rem;" title="Restore">
-            ↻ Restore
-          </button>
-          <button onclick="confirmDeleteBackup('${backup.backup_id}')" class="btn" style="padding:8px 12px;background:#333;color:#ef4444;font-size:0.85rem;" title="Delete">
-            ✕
-          </button>
-        </div>
-      </div>
-    `;
-  }).join('');
-
-  content.innerHTML = `
-    <div style="display:flex;flex-direction:column;gap:12px;">
-      ${rows}
-    </div>
-    <p class="muted" style="margin-top:12px;font-size:0.85rem;text-align:center;">
-      Showing ${backups.length} backup${backups.length !== 1 ? 's' : ''}
-    </p>
-  `;
-}
-
-async function triggerBackup() {
-  const btn = document.getElementById('backupNowBtn');
-  const originalText = btn ? btn.innerHTML : '';
-
-  try {
-    const token = idToken();
-    if (!token) throw new Error('No authentication token');
-
-    if (btn) {
-      btn.disabled = true;
-      btn.innerHTML = 'Creating...';
-    }
-
-    showToast('Creating backup...', 'info');
-
-    const res = await fetch(API_URL + '/vault/backup', {
-      method: 'POST',
-      headers: {
-        'Authorization': 'Bearer ' + token,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ type: 'manual' })
-    });
-
-    if (!res.ok) {
-      const errorData = await res.json().catch(() => ({}));
-      throw new Error(errorData.message || 'Failed to create backup');
-    }
-
-    const data = await res.json();
-
-    if (data.skipped) {
-      showToast('Recent backup exists. Skipped.', 'info');
-    } else {
-      showToast('Backup created successfully', 'success');
-    }
-
-    // Refresh backup list
-    await loadBackupList();
-  } catch (error) {
-    console.error('Error creating backup:', error);
-    showToast('Failed to create backup: ' + error.message, 'error');
-  } finally {
-    if (btn) {
-      btn.disabled = false;
-      btn.innerHTML = originalText;
-    }
-  }
-}
-
-function confirmRestoreBackup(backupId) {
-  const modal = document.createElement('div');
-  modal.id = 'restoreBackupModal';
-  modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.8);display:flex;align-items:center;justify-content:center;z-index:9999;';
-  modal.innerHTML = `
-    <div style="background:#0a0a0a;border:1px solid #3b82f6;border-radius:12px;padding:32px;max-width:480px;width:90%;">
-      <div style="text-align:center;margin-bottom:24px;">
-        <div style="font-size:3rem;margin-bottom:16px;">↻</div>
-        <h3 style="margin:0 0 12px 0;color:#3b82f6;">Restore Backup?</h3>
-        <p style="color:var(--gray);line-height:1.6;">
-          This will restore your data from the selected backup.
-        </p>
-      </div>
-
-      <div style="background:#050505;border-radius:8px;padding:16px;margin-bottom:24px;border:1px solid #333;">
-        <div style="margin-bottom:16px;">
-          <div style="color:var(--text);font-weight:600;margin-bottom:8px;">Restore Mode</div>
-          <select id="restoreMode" style="width:100%;padding:10px;background:#111;border:1px solid #333;border-radius:4px;color:var(--text);">
-            <option value="merge">Merge (keep existing, add missing)</option>
-            <option value="overwrite">Overwrite (replace all data)</option>
-          </select>
-        </div>
-
-        <div style="display:grid;gap:12px;">
-          <label style="display:flex;align-items:center;gap:8px;color:var(--text);cursor:pointer;">
-            <input type="checkbox" id="restoreConnections" checked style="accent-color:var(--accent);">
-            Restore Connections
-          </label>
-          <label style="display:flex;align-items:center;gap:8px;color:var(--text);cursor:pointer;">
-            <input type="checkbox" id="restoreMessages" checked style="accent-color:var(--accent);">
-            Restore Messages
-          </label>
-          <label style="display:flex;align-items:center;gap:8px;color:var(--text);cursor:pointer;">
-            <input type="checkbox" id="restoreProfile" checked style="accent-color:var(--accent);">
-            Restore Profile
-          </label>
-        </div>
-      </div>
-
-      <div style="display:flex;gap:12px;justify-content:center;">
-        <button onclick="closeRestoreModal()" class="btn" style="padding:12px 24px;background:#333;">
-          Cancel
-        </button>
-        <button onclick="restoreBackup('${backupId}')" class="btn" style="padding:12px 24px;background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);font-weight:600;">
-          Restore Backup
-        </button>
-      </div>
-    </div>
-  `;
-  document.body.appendChild(modal);
-  modal.onclick = (e) => { if (e.target === modal) closeRestoreModal(); };
-}
-
-function closeRestoreModal() {
-  const modal = document.getElementById('restoreBackupModal');
-  if (modal) modal.remove();
-}
-
-async function restoreBackup(backupId) {
-  closeRestoreModal();
-
-  try {
-    const token = idToken();
-    if (!token) throw new Error('No authentication token');
-
-    showToast('Restoring backup...', 'info');
-
-    const res = await fetch(API_URL + '/vault/restore', {
-      method: 'POST',
-      headers: {
-        'Authorization': 'Bearer ' + token,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        backup_id: backupId,
-        mode: document.getElementById('restoreMode')?.value || 'merge',
-        restore_connections: document.getElementById('restoreConnections')?.checked ?? true,
-        restore_messages: document.getElementById('restoreMessages')?.checked ?? true,
-        restore_profile: document.getElementById('restoreProfile')?.checked ?? true,
-      })
-    });
-
-    if (!res.ok) {
-      const errorData = await res.json().catch(() => ({}));
-      throw new Error(errorData.message || 'Failed to restore backup');
-    }
-
-    const data = await res.json();
-    showToast(`Restored ${data.restored_items} items successfully`, 'success');
-
-    if (data.conflicts && data.conflicts.length > 0) {
-      console.log('Restore conflicts:', data.conflicts);
-    }
-  } catch (error) {
-    console.error('Error restoring backup:', error);
-    showToast('Failed to restore backup: ' + error.message, 'error');
-  }
-}
-
-function confirmDeleteBackup(backupId) {
-  const modal = document.createElement('div');
-  modal.id = 'deleteBackupModal';
-  modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.8);display:flex;align-items:center;justify-content:center;z-index:9999;';
-  modal.innerHTML = `
-    <div style="background:#0a0a0a;border:1px solid #ef4444;border-radius:12px;padding:32px;max-width:420px;width:90%;text-align:center;">
-      <div style="font-size:3rem;margin-bottom:16px;">🗑</div>
-      <h3 style="margin:0 0 12px 0;color:#ef4444;">Delete Backup?</h3>
-      <p style="color:var(--gray);margin-bottom:24px;line-height:1.6;">
-        This action cannot be undone. The backup will be permanently deleted.
-      </p>
-      <div style="display:flex;gap:12px;justify-content:center;">
-        <button onclick="closeDeleteModal()" class="btn" style="padding:12px 24px;background:#333;">
-          Cancel
-        </button>
-        <button onclick="deleteBackup('${backupId}')" class="btn" style="padding:12px 24px;background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);font-weight:600;">
-          Delete Backup
-        </button>
-      </div>
-    </div>
-  `;
-  document.body.appendChild(modal);
-  modal.onclick = (e) => { if (e.target === modal) closeDeleteModal(); };
-}
-
-function closeDeleteModal() {
-  const modal = document.getElementById('deleteBackupModal');
-  if (modal) modal.remove();
-}
-
-async function deleteBackup(backupId) {
-  closeDeleteModal();
-
-  try {
-    const token = idToken();
-    if (!token) throw new Error('No authentication token');
-
-    showToast('Deleting backup...', 'info');
-
-    const res = await fetch(API_URL + '/vault/backups/' + backupId, {
-      method: 'DELETE',
-      headers: { 'Authorization': 'Bearer ' + token }
-    });
-
-    if (!res.ok) {
-      const errorData = await res.json().catch(() => ({}));
-      throw new Error(errorData.message || 'Failed to delete backup');
-    }
-
-    showToast('Backup deleted', 'success');
-    await loadBackupList();
-  } catch (error) {
-    console.error('Error deleting backup:', error);
-    showToast('Failed to delete backup: ' + error.message, 'error');
-  }
-}
-
-function initBackupTab() {
-  loadBackupSettings();
-  loadBackupList();
-}
-
-// ============================================
-// END BACKUP SERVICES FUNCTIONS
-// ============================================
 
 // ============================================
 // CREDENTIAL BACKUP FUNCTIONS
@@ -4858,6 +4371,472 @@ async function recoverCredentials() {
  */
 function initCredentialBackupTab() {
   loadCredentialBackupStatus();
+  loadBackupSettings();
+  loadRestoreStatus();
+}
+
+// ============================================
+// BACKUP SETTINGS FUNCTIONS
+// ============================================
+
+/**
+ * Load backup settings from API
+ */
+async function loadBackupSettings() {
+  const toggle = document.getElementById('credentialBackupEnabled');
+  if (!toggle) return;
+
+  try {
+    const token = idToken();
+    if (!token) return;
+
+    const res = await fetch(API_URL + '/vault/credentials/backup/settings', {
+      method: 'GET',
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+
+    if (res.ok) {
+      const settings = await res.json();
+      toggle.checked = settings.enabled || false;
+      updateBackupCardsState(settings.enabled || false);
+    } else {
+      // If no settings exist, assume disabled
+      updateBackupCardsState(false);
+    }
+  } catch (error) {
+    console.error('Error loading backup settings:', error);
+    updateBackupCardsState(false);
+  }
+
+  // Add change handler for toggle
+  toggle.addEventListener('change', async () => {
+    await updateBackupSettings(toggle.checked);
+    updateBackupCardsState(toggle.checked);
+  });
+}
+
+/**
+ * Update backup status and restore cards enabled/disabled state
+ */
+function updateBackupCardsState(enabled) {
+  const statusCard = document.getElementById('credentialBackupStatusCard');
+  const restoreCard = document.getElementById('credentialRestoreCard');
+
+  const disabledStyles = {
+    opacity: '0.5',
+    pointerEvents: 'none',
+    filter: 'grayscale(0.5)'
+  };
+
+  const enabledStyles = {
+    opacity: '1',
+    pointerEvents: 'auto',
+    filter: 'none'
+  };
+
+  const styles = enabled ? enabledStyles : disabledStyles;
+
+  if (statusCard) {
+    Object.assign(statusCard.style, styles);
+  }
+  if (restoreCard) {
+    Object.assign(restoreCard.style, styles);
+    // Also show/hide disabled message
+    let disabledMsg = restoreCard.querySelector('.backup-disabled-msg');
+    if (!enabled) {
+      if (!disabledMsg) {
+        disabledMsg = document.createElement('div');
+        disabledMsg.className = 'backup-disabled-msg';
+        disabledMsg.style.cssText = 'padding:12px;background:rgba(107,114,128,0.1);border:1px solid #6b7280;border-radius:6px;margin-bottom:16px;text-align:center;';
+        disabledMsg.innerHTML = '<span style="color:#6b7280;font-size:0.9rem;">Enable automatic backups above to use restore features.</span>';
+        restoreCard.insertBefore(disabledMsg, restoreCard.children[2]);
+      }
+    } else if (disabledMsg) {
+      disabledMsg.remove();
+    }
+  }
+}
+
+/**
+ * Update backup settings
+ */
+async function updateBackupSettings(enabled) {
+  try {
+    const token = idToken();
+    if (!token) throw new Error('No authentication token');
+
+    const res = await fetch(API_URL + '/vault/credentials/backup/settings', {
+      method: 'PUT',
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ enabled })
+    });
+
+    if (!res.ok) {
+      throw new Error('Failed to update backup settings');
+    }
+
+    showToast(enabled ? 'Automatic backups enabled' : 'Automatic backups disabled', 'success');
+  } catch (error) {
+    console.error('Error updating backup settings:', error);
+    showToast('Failed to update settings', 'error');
+  }
+}
+
+// ============================================
+// CREDENTIAL RESTORE FUNCTIONS
+// ============================================
+
+/**
+ * Load restore status from API
+ */
+async function loadRestoreStatus() {
+  try {
+    const token = idToken();
+    if (!token) return;
+
+    const res = await fetch(API_URL + '/vault/credentials/restore/status', {
+      method: 'GET',
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+
+    if (!res.ok) return;
+
+    const status = await res.json();
+    renderRestoreStatus(status);
+  } catch (error) {
+    console.error('Error loading restore status:', error);
+  }
+}
+
+/**
+ * Render restore status UI
+ */
+function renderRestoreStatus(status) {
+  const statusSection = document.getElementById('restoreStatusSection');
+  const optionsSection = document.getElementById('restoreOptionsSection');
+  const confirmSection = document.getElementById('confirmRecoverySection');
+  const statusContent = document.getElementById('restoreStatusContent');
+
+  if (!statusSection || !optionsSection) return;
+
+  if (!status.has_pending_request) {
+    statusSection.style.display = 'none';
+    optionsSection.style.display = 'grid';
+    confirmSection.style.display = 'none';
+    return;
+  }
+
+  optionsSection.style.display = 'none';
+  statusSection.style.display = 'block';
+
+  if (status.is_ready) {
+    confirmSection.style.display = 'block';
+    statusContent.innerHTML = `
+      <div style="display:flex;align-items:center;gap:12px;">
+        <div style="width:40px;height:40px;background:#10b981;border-radius:50%;display:flex;align-items:center;justify-content:center;">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5"><polyline points="20 6 9 17 4 12"></polyline></svg>
+        </div>
+        <div>
+          <p style="margin:0;color:#10b981;font-weight:600;">${status.status === 'approved' ? 'Transfer Approved!' : 'Recovery Ready'}</p>
+          <p style="margin:4px 0 0 0;color:var(--gray);font-size:0.9rem;">${status.message}</p>
+        </div>
+      </div>
+    `;
+  } else {
+    confirmSection.style.display = 'none';
+    const isPendingApproval = status.status === 'pending_approval';
+    statusContent.innerHTML = `
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">
+        <div style="width:40px;height:40px;background:var(--accent);border-radius:50%;display:flex;align-items:center;justify-content:center;">
+          <div style="width:20px;height:20px;border:3px solid #000;border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite;"></div>
+        </div>
+        <div>
+          <p style="margin:0;color:var(--accent);font-weight:600;">${isPendingApproval ? 'Waiting for Approval' : 'Recovery Pending'}</p>
+          <p style="margin:4px 0 0 0;color:var(--gray);font-size:0.9rem;">${status.message || (isPendingApproval ? 'Check your device for approval request' : 'Time remaining: ' + (status.time_remaining_display || '--'))}</p>
+        </div>
+      </div>
+      <button data-action="cancelRestore" class="btn" style="padding:8px 16px;background:#333;">Cancel Request</button>
+    `;
+  }
+}
+
+/**
+ * Request credential transfer (old device still active)
+ */
+async function requestTransfer() {
+  try {
+    const token = idToken();
+    if (!token) throw new Error('No authentication token');
+
+    const res = await fetch(API_URL + '/vault/credentials/restore/request', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ lost_device: false })
+    });
+
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({}));
+      throw new Error(error.message || 'Failed to request transfer');
+    }
+
+    showToast('Transfer request sent! Check your device for approval.', 'success');
+    loadRestoreStatus();
+  } catch (error) {
+    console.error('Error requesting transfer:', error);
+    showToast(error.message, 'error');
+  }
+}
+
+/**
+ * Request credential recovery (device lost)
+ */
+async function requestRecovery() {
+  if (!confirm('Are you sure? A 24-hour security delay will begin. If you find your device during this time, you can cancel the request.')) {
+    return;
+  }
+
+  try {
+    const token = idToken();
+    if (!token) throw new Error('No authentication token');
+
+    const res = await fetch(API_URL + '/vault/credentials/restore/request', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ lost_device: true })
+    });
+
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({}));
+      throw new Error(error.message || 'Failed to request recovery');
+    }
+
+    showToast('Recovery request submitted. 24-hour security delay started.', 'success');
+    loadRestoreStatus();
+  } catch (error) {
+    console.error('Error requesting recovery:', error);
+    showToast(error.message, 'error');
+  }
+}
+
+/**
+ * Cancel restore request
+ */
+async function cancelRestore() {
+  try {
+    const token = idToken();
+    if (!token) throw new Error('No authentication token');
+
+    const res = await fetch(API_URL + '/vault/credentials/restore/cancel', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+
+    if (!res.ok) {
+      throw new Error('Failed to cancel request');
+    }
+
+    showToast('Restore request cancelled', 'success');
+    loadRestoreStatus();
+  } catch (error) {
+    console.error('Error cancelling restore:', error);
+    showToast(error.message, 'error');
+  }
+}
+
+/**
+ * Confirm recovery with phrase
+ */
+async function confirmRecovery() {
+  const phrase = document.getElementById('credRecoveryPhrase')?.value?.trim();
+  const errorDiv = document.getElementById('credRecoveryError');
+
+  if (!phrase) {
+    errorDiv.textContent = 'Please enter your recovery phrase';
+    errorDiv.style.display = 'block';
+    return;
+  }
+
+  try {
+    const token = idToken();
+    if (!token) throw new Error('No authentication token');
+
+    const res = await fetch(API_URL + '/vault/credentials/restore/confirm', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ recovery_phrase: phrase })
+    });
+
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({}));
+      throw new Error(error.message || 'Failed to confirm recovery');
+    }
+
+    const result = await res.json();
+    showToast('Credentials restored successfully!', 'success');
+    errorDiv.style.display = 'none';
+    loadRestoreStatus();
+    loadCredentialBackupStatus();
+  } catch (error) {
+    console.error('Error confirming recovery:', error);
+    errorDiv.textContent = error.message;
+    errorDiv.style.display = 'block';
+  }
+}
+
+// ============================================
+// VAULT DELETION FUNCTIONS
+// ============================================
+
+/**
+ * Load vault deletion status
+ */
+async function loadVaultDeletionStatus() {
+  const deletionCard = document.getElementById('vaultDeletionCard');
+  if (!deletionCard) return;
+
+  try {
+    const token = idToken();
+    if (!token) return;
+
+    const res = await fetch(API_URL + '/vault/delete/status', {
+      method: 'GET',
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+
+    if (!res.ok) return;
+
+    const status = await res.json();
+    renderVaultDeletionStatus(status);
+  } catch (error) {
+    console.error('Error loading vault deletion status:', error);
+  }
+}
+
+/**
+ * Render vault deletion status
+ */
+function renderVaultDeletionStatus(status) {
+  const normalState = document.getElementById('deletionNormalState');
+  const pendingState = document.getElementById('deletionPendingState');
+  const readyState = document.getElementById('deletionReadyState');
+  const timeRemaining = document.getElementById('deletionTimeRemaining');
+
+  if (!normalState || !pendingState || !readyState) return;
+
+  if (!status.has_pending_request) {
+    normalState.style.display = 'block';
+    pendingState.style.display = 'none';
+    readyState.style.display = 'none';
+  } else if (status.is_ready) {
+    normalState.style.display = 'none';
+    pendingState.style.display = 'none';
+    readyState.style.display = 'block';
+  } else {
+    normalState.style.display = 'none';
+    pendingState.style.display = 'block';
+    readyState.style.display = 'none';
+    if (timeRemaining) {
+      timeRemaining.textContent = 'Time remaining: ' + (status.time_remaining_display || '--');
+    }
+  }
+}
+
+/**
+ * Request vault deletion
+ */
+async function requestVaultDeletion() {
+  if (!confirm('Are you sure you want to delete your vault? A 24-hour waiting period will begin.')) {
+    return;
+  }
+
+  try {
+    const token = idToken();
+    if (!token) throw new Error('No authentication token');
+
+    const res = await fetch(API_URL + '/vault/delete/request', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({}));
+      throw new Error(error.message || 'Failed to request deletion');
+    }
+
+    showToast('Vault deletion requested. 24-hour waiting period started.', 'success');
+    loadVaultDeletionStatus();
+  } catch (error) {
+    console.error('Error requesting vault deletion:', error);
+    showToast(error.message, 'error');
+  }
+}
+
+/**
+ * Cancel vault deletion
+ */
+async function cancelVaultDeletion() {
+  try {
+    const token = idToken();
+    if (!token) throw new Error('No authentication token');
+
+    const res = await fetch(API_URL + '/vault/delete/cancel', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+
+    if (!res.ok) {
+      throw new Error('Failed to cancel deletion');
+    }
+
+    showToast('Vault deletion cancelled', 'success');
+    loadVaultDeletionStatus();
+  } catch (error) {
+    console.error('Error cancelling vault deletion:', error);
+    showToast(error.message, 'error');
+  }
+}
+
+/**
+ * Confirm vault deletion
+ */
+async function confirmVaultDeletion() {
+  if (!confirm('⚠️ FINAL WARNING: This will PERMANENTLY DELETE your vault and all associated data. This action CANNOT be undone. Are you absolutely sure?')) {
+    return;
+  }
+
+  try {
+    const token = idToken();
+    if (!token) throw new Error('No authentication token');
+
+    const res = await fetch(API_URL + '/vault/delete/confirm', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({}));
+      throw new Error(error.message || 'Failed to confirm deletion');
+    }
+
+    showToast('Vault has been permanently deleted', 'success');
+    loadVaultStatus();
+    loadVaultDeletionStatus();
+  } catch (error) {
+    console.error('Error confirming vault deletion:', error);
+    showToast(error.message, 'error');
+  }
 }
 
 // ============================================
@@ -4947,7 +4926,7 @@ function showManualEnrollmentModal() {
         </a>
       </div>
 
-      <button onclick="closeEnrollmentModal()" class="btn" style="padding:12px 24px;background:#333;">
+      <button data-action="closeEnrollmentModal" class="btn" style="padding:12px 24px;background:#333;">
         Close
       </button>
     </div>
@@ -4990,7 +4969,7 @@ function showEnrollmentModal(session) {
       </div>
 
       <div style="display:flex;gap:12px;justify-content:center;">
-        <button onclick="closeEnrollmentModal()" class="btn" style="padding:12px 24px;background:#333;">
+        <button data-action="closeEnrollmentModal" class="btn" style="padding:12px 24px;background:#333;">
           Cancel
         </button>
       </div>
@@ -5294,7 +5273,7 @@ document.addEventListener('click', (e) => {
 
   const action = target.dataset.action;
 
-  // Map action names to functions
+  // Map action names to functions (simple actions with no parameters)
   const actions = {
     'requestMembership': requestMembership,
     'loadVaultStatus': loadVaultStatus,
@@ -5305,8 +5284,6 @@ document.addEventListener('click', (e) => {
     'verifyByovVault': verifyByovVault,
     'showByovSettingsModal': showByovSettingsModal,
     'confirmDeleteByovVault': confirmDeleteByovVault,
-    'saveBackupSettings': saveBackupSettings,
-    'triggerBackup': triggerBackup,
     'loadCredentialBackupStatus': loadCredentialBackupStatus,
     'createCredentialBackup': createCredentialBackup,
     'copyRecoveryPhrase': copyRecoveryPhrase,
@@ -5322,11 +5299,90 @@ document.addEventListener('click', (e) => {
     'confirmMembership': confirmMembership,
     'closeByovSettingsModal': closeByovSettingsModal,
     'clearByovApiKey': clearByovApiKey,
-    'saveByovSettings': saveByovSettings
+    'saveByovSettings': saveByovSettings,
+    // Vault deletion actions
+    'requestVaultDeletion': requestVaultDeletion,
+    'cancelVaultDeletion': cancelVaultDeletion,
+    'confirmVaultDeletion': confirmVaultDeletion,
+    // Credential restore actions
+    'requestTransfer': requestTransfer,
+    'requestRecovery': requestRecovery,
+    'cancelRestore': cancelRestore,
+    'confirmRecovery': confirmRecovery,
+    // Vault management actions
+    'startEnrollment': startEnrollment,
+    'provisionVault': provisionVault,
+    'startVault': startVault,
+    // Modal close actions
+    'closeTerminateModal': closeTerminateModal,
+    'terminateVault': terminateVault,
+    'closeStopModal': closeStopModal,
+    'stopVaultAndClose': () => { stopVault(); closeStopModal(); },
+    'closeDeleteByovModal': closeDeleteByovModal,
+    'deleteByovAndClose': () => { deleteByovVault(); closeDeleteByovModal(); },
+    'closeEnrollmentModal': closeEnrollmentModal,
+    // Subscription actions
+    'cancelSubscription': cancelSubscription
   };
 
+  // Handle simple actions
   if (actions[action]) {
     e.preventDefault();
     actions[action]();
+    return;
+  }
+
+  // Handle parameterized actions
+  switch (action) {
+    case 'filterProposals': {
+      const filter = target.dataset.filter;
+      if (filter) {
+        const filterInput = document.getElementById(filter === 'completed' ? 'filterCompletedProposals' : 'filterActiveProposals');
+        if (filterInput) filterInput.click();
+      }
+      e.preventDefault();
+      break;
+    }
+    case 'toggleProposalText': {
+      const targetId = target.dataset.target;
+      if (targetId) toggleProposalText(targetId);
+      e.preventDefault();
+      break;
+    }
+    case 'selectVote': {
+      const proposalId = target.dataset.proposalId;
+      const vote = target.dataset.vote;
+      if (proposalId && vote) selectVote(proposalId, vote);
+      e.preventDefault();
+      break;
+    }
+    case 'submitVote': {
+      const proposalId = target.dataset.proposalId;
+      if (proposalId) submitVote(proposalId);
+      e.preventDefault();
+      break;
+    }
+    case 'switchTab': {
+      const tab = target.dataset.tab;
+      if (tab) switchToTab(tab);
+      e.preventDefault();
+      break;
+    }
+    case 'navigateToStep': {
+      const stepTab = target.dataset.stepTab;
+      const stepCard = target.dataset.stepCard;
+      const stepSubtab = target.dataset.stepSubtab;
+      if (stepTab) {
+        navigateToStep(stepTab, stepCard === 'null' ? null : stepCard, stepSubtab === 'null' ? null : stepSubtab);
+      }
+      e.preventDefault();
+      break;
+    }
+    case 'selectSubscription': {
+      const subscriptionId = target.dataset.subscriptionId;
+      if (subscriptionId) selectSubscriptionType(subscriptionId);
+      e.preventDefault();
+      break;
+    }
   }
 });

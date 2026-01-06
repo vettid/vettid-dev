@@ -95,11 +95,28 @@ export class VaultStack extends cdk.Stack {
   public readonly verifyNitroAttestation!: lambdaNode.NodejsFunction;
   public readonly getPcrConfig!: lambdaNode.NodejsFunction;
 
-  // Credential Recovery (24-hour delay)
+  // Credential Recovery (24-hour delay) - Legacy
   public readonly requestCredentialRecovery!: lambdaNode.NodejsFunction;
   public readonly getRecoveryStatus!: lambdaNode.NodejsFunction;
   public readonly cancelCredentialRecovery!: lambdaNode.NodejsFunction;
   public readonly downloadRecoveredCredential!: lambdaNode.NodejsFunction;
+
+  // Vault Deletion (24-hour delay)
+  public readonly deleteVaultRequest!: lambdaNode.NodejsFunction;
+  public readonly deleteVaultCancel!: lambdaNode.NodejsFunction;
+  public readonly deleteVaultConfirm!: lambdaNode.NodejsFunction;
+  public readonly deleteVaultStatus!: lambdaNode.NodejsFunction;
+
+  // Credential Restore (transfer and recovery flows)
+  public readonly restoreRequest!: lambdaNode.NodejsFunction;
+  public readonly restoreApprove!: lambdaNode.NodejsFunction;
+  public readonly restoreDeny!: lambdaNode.NodejsFunction;
+  public readonly restoreCancel!: lambdaNode.NodejsFunction;
+  public readonly restoreConfirm!: lambdaNode.NodejsFunction;
+  public readonly restoreStatus!: lambdaNode.NodejsFunction;
+
+  // Backup Settings
+  public readonly backupSettingsHandler!: lambdaNode.NodejsFunction;
 
   // BYOV (Bring Your Own Vault)
   public readonly registerByovVault!: lambdaNode.NodejsFunction;
@@ -229,6 +246,7 @@ export class VaultStack extends cdk.Stack {
         ...enclaveEnv,
       },
       timeout: cdk.Duration.seconds(60), // Increased for auto-provisioning
+      ...vpcConfig, // Required for NATS internal DNS resolution
     });
     // Grant SSM read permission for vault AMI parameter
     vaultAmiParameter.grantRead(this.enrollFinalize);
@@ -862,6 +880,8 @@ export class VaultStack extends cdk.Stack {
       runtime: lambda.Runtime.NODEJS_22_X,
       environment: {
         TABLE_AUDIT: tables.audit.tableName,
+        TABLE_CREDENTIALS: tables.credentials.tableName,
+        TABLE_ENROLLMENT_SESSIONS: tables.enrollmentSessions.tableName,
         // PCR values will be fetched from SSM Parameter Store in production
         // NITRO_EXPECTED_PCRS: JSON.stringify([...])
       },
@@ -943,9 +963,146 @@ export class VaultStack extends cdk.Stack {
     tables.credentialBackups.grantReadData(this.downloadRecoveredCredential);
     props.infrastructure.backupBucket.grantRead(this.downloadRecoveredCredential);
     tables.audit.grantWriteData(this.verifyNitroAttestation);
+    tables.credentials.grantReadWriteData(this.verifyNitroAttestation);
+    tables.enrollmentSessions.grantReadData(this.verifyNitroAttestation);
     tables.audit.grantWriteData(this.requestCredentialRecovery);
     tables.audit.grantWriteData(this.cancelCredentialRecovery);
     tables.audit.grantWriteData(this.downloadRecoveredCredential);
+
+    // ===== VAULT DELETION (24-hour delay) =====
+
+    const vaultDeletionEnv = {
+      TABLE_VAULT_DELETION_REQUESTS: tables.vaultDeletionRequests.tableName,
+      TABLE_CREDENTIALS: tables.credentials.tableName,
+      TABLE_NATS_ACCOUNTS: tables.natsAccounts.tableName,
+      TABLE_LEDGER_AUTH_TOKENS: tables.ledgerAuthTokens.tableName,
+      TABLE_AUDIT: tables.audit.tableName,
+    };
+
+    this.deleteVaultRequest = new lambdaNode.NodejsFunction(this, 'DeleteVaultRequestFn', {
+      entry: 'lambda/handlers/vault/deleteVaultRequest.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: vaultDeletionEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    this.deleteVaultCancel = new lambdaNode.NodejsFunction(this, 'DeleteVaultCancelFn', {
+      entry: 'lambda/handlers/vault/deleteVaultCancel.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: vaultDeletionEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    this.deleteVaultConfirm = new lambdaNode.NodejsFunction(this, 'DeleteVaultConfirmFn', {
+      entry: 'lambda/handlers/vault/deleteVaultConfirm.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: vaultDeletionEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    this.deleteVaultStatus = new lambdaNode.NodejsFunction(this, 'DeleteVaultStatusFn', {
+      entry: 'lambda/handlers/vault/deleteVaultStatus.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: vaultDeletionEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    // Grant permissions for vault deletion functions
+    tables.vaultDeletionRequests.grantReadWriteData(this.deleteVaultRequest);
+    tables.vaultDeletionRequests.grantReadWriteData(this.deleteVaultCancel);
+    tables.vaultDeletionRequests.grantReadWriteData(this.deleteVaultConfirm);
+    tables.vaultDeletionRequests.grantReadData(this.deleteVaultStatus);
+    tables.credentials.grantReadWriteData(this.deleteVaultRequest);
+    tables.credentials.grantReadWriteData(this.deleteVaultConfirm);
+    tables.natsAccounts.grantReadWriteData(this.deleteVaultConfirm);
+    tables.audit.grantWriteData(this.deleteVaultRequest);
+    tables.audit.grantWriteData(this.deleteVaultCancel);
+    tables.audit.grantWriteData(this.deleteVaultConfirm);
+
+    // ===== CREDENTIAL RESTORE (transfer and recovery flows) =====
+
+    const credentialRestoreEnv = {
+      TABLE_CREDENTIAL_RECOVERY_REQUESTS: tables.credentialRecoveryRequests.tableName,
+      TABLE_CREDENTIALS: tables.credentials.tableName,
+      TABLE_LEDGER_AUTH_TOKENS: tables.ledgerAuthTokens.tableName,
+      TABLE_CREDENTIAL_BACKUPS: tables.credentialBackups.tableName,
+      TABLE_AUDIT: tables.audit.tableName,
+    };
+
+    this.restoreRequest = new lambdaNode.NodejsFunction(this, 'RestoreRequestFn', {
+      entry: 'lambda/handlers/vault/restoreRequest.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: credentialRestoreEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    this.restoreApprove = new lambdaNode.NodejsFunction(this, 'RestoreApproveFn', {
+      entry: 'lambda/handlers/vault/restoreApprove.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: credentialRestoreEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    this.restoreDeny = new lambdaNode.NodejsFunction(this, 'RestoreDenyFn', {
+      entry: 'lambda/handlers/vault/restoreDeny.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: credentialRestoreEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    this.restoreCancel = new lambdaNode.NodejsFunction(this, 'RestoreCancelFn', {
+      entry: 'lambda/handlers/vault/restoreCancel.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: credentialRestoreEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    this.restoreConfirm = new lambdaNode.NodejsFunction(this, 'RestoreConfirmFn', {
+      entry: 'lambda/handlers/vault/restoreConfirm.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: credentialRestoreEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    this.restoreStatus = new lambdaNode.NodejsFunction(this, 'RestoreStatusFn', {
+      entry: 'lambda/handlers/vault/restoreStatus.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: credentialRestoreEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    // Grant permissions for credential restore functions
+    tables.credentialRecoveryRequests.grantReadWriteData(this.restoreRequest);
+    tables.credentialRecoveryRequests.grantReadWriteData(this.restoreApprove);
+    tables.credentialRecoveryRequests.grantReadWriteData(this.restoreDeny);
+    tables.credentialRecoveryRequests.grantReadWriteData(this.restoreCancel);
+    tables.credentialRecoveryRequests.grantReadWriteData(this.restoreConfirm);
+    tables.credentialRecoveryRequests.grantReadData(this.restoreStatus);
+    tables.credentials.grantReadWriteData(this.restoreRequest);
+    tables.credentials.grantReadWriteData(this.restoreApprove);
+    tables.credentials.grantReadWriteData(this.restoreConfirm);
+    tables.credentialBackups.grantReadData(this.restoreConfirm);
+    tables.ledgerAuthTokens.grantReadWriteData(this.restoreConfirm);
+    tables.audit.grantWriteData(this.restoreRequest);
+    tables.audit.grantWriteData(this.restoreApprove);
+    tables.audit.grantWriteData(this.restoreDeny);
+    tables.audit.grantWriteData(this.restoreCancel);
+    tables.audit.grantWriteData(this.restoreConfirm);
+
+    // ===== BACKUP SETTINGS =====
+
+    this.backupSettingsHandler = new lambdaNode.NodejsFunction(this, 'BackupSettingsHandlerFn', {
+      entry: 'lambda/handlers/vault/backupSettings.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        TABLE_BACKUP_SETTINGS: tables.backupSettings.tableName,
+        TABLE_AUDIT: tables.audit.tableName,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    tables.backupSettings.grantReadWriteData(this.backupSettingsHandler);
+    tables.audit.grantWriteData(this.backupSettingsHandler);
 
     // ===== BYOV (Bring Your Own Vault) =====
 
@@ -1363,6 +1520,41 @@ export class VaultStack extends cdk.Stack {
     this.route('GetRecoveryStatus', httpApi, '/vault/recovery/status', apigw.HttpMethod.GET, this.getRecoveryStatus, memberAuthorizer);
     this.route('CancelCredentialRecovery', httpApi, '/vault/recovery/cancel', apigw.HttpMethod.POST, this.cancelCredentialRecovery, memberAuthorizer);
     this.route('DownloadRecoveredCredential', httpApi, '/vault/recovery/download', apigw.HttpMethod.GET, this.downloadRecoveredCredential, memberAuthorizer);
+
+    // Vault Deletion Routes (24-hour delay)
+    this.route('DeleteVaultRequest', httpApi, '/vault/delete/request', apigw.HttpMethod.POST, this.deleteVaultRequest, memberAuthorizer);
+    this.route('DeleteVaultCancel', httpApi, '/vault/delete/cancel', apigw.HttpMethod.POST, this.deleteVaultCancel, memberAuthorizer);
+    this.route('DeleteVaultConfirm', httpApi, '/vault/delete/confirm', apigw.HttpMethod.POST, this.deleteVaultConfirm, memberAuthorizer);
+    this.route('DeleteVaultStatus', httpApi, '/vault/delete/status', apigw.HttpMethod.GET, this.deleteVaultStatus, memberAuthorizer);
+
+    // Credential Restore Routes (transfer and recovery flows)
+    this.route('RestoreRequest', httpApi, '/vault/credentials/restore/request', apigw.HttpMethod.POST, this.restoreRequest, memberAuthorizer);
+    this.route('RestoreCancel', httpApi, '/vault/credentials/restore/cancel', apigw.HttpMethod.POST, this.restoreCancel, memberAuthorizer);
+    this.route('RestoreConfirm', httpApi, '/vault/credentials/restore/confirm', apigw.HttpMethod.POST, this.restoreConfirm, memberAuthorizer);
+    this.route('RestoreStatus', httpApi, '/vault/credentials/restore/status', apigw.HttpMethod.GET, this.restoreStatus, memberAuthorizer);
+
+    // Credential Restore from Mobile Device (uses enrollment JWT authorizer)
+    // These are called by the mobile app when approving/denying transfer requests
+    new apigw.HttpRoute(this, 'RestoreApprove', {
+      httpApi,
+      routeKey: apigw.HttpRouteKey.with('/vault/credentials/restore/approve', apigw.HttpMethod.POST),
+      integration: new integrations.HttpLambdaIntegration('RestoreApproveInt', this.restoreApprove),
+      authorizer: new authorizers.HttpLambdaAuthorizer('RestoreApproveAuthorizer', this.props.infrastructure.enrollmentAuthorizerFn, {
+        responseTypes: [authorizers.HttpLambdaResponseType.SIMPLE],
+      }),
+    });
+    new apigw.HttpRoute(this, 'RestoreDeny', {
+      httpApi,
+      routeKey: apigw.HttpRouteKey.with('/vault/credentials/restore/deny', apigw.HttpMethod.POST),
+      integration: new integrations.HttpLambdaIntegration('RestoreDenyInt', this.restoreDeny),
+      authorizer: new authorizers.HttpLambdaAuthorizer('RestoreDenyAuthorizer', this.props.infrastructure.enrollmentAuthorizerFn, {
+        responseTypes: [authorizers.HttpLambdaResponseType.SIMPLE],
+      }),
+    });
+
+    // Backup Settings Routes
+    this.route('GetBackupSettingsNew', httpApi, '/vault/credentials/backup/settings', apigw.HttpMethod.GET, this.backupSettingsHandler, memberAuthorizer);
+    this.route('UpdateBackupSettingsNew', httpApi, '/vault/credentials/backup/settings', apigw.HttpMethod.PUT, this.backupSettingsHandler, memberAuthorizer);
 
     // BYOV (Bring Your Own Vault) Routes
     this.route('RegisterByovVault', httpApi, '/vault/byov/register', apigw.HttpMethod.POST, this.registerByovVault, memberAuthorizer);

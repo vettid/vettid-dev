@@ -11,6 +11,8 @@
  */
 
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
+import { DynamoDBClient, GetItemCommand, UpdateItemCommand, QueryCommand } from '@aws-sdk/client-dynamodb';
+import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import {
   ok,
   badRequest,
@@ -22,6 +24,7 @@ import {
   hashIdentifier,
   tooManyRequests,
   getClientIp,
+  extractUserClaims,
 } from '../../common/util';
 import {
   verifyNitroAttestation,
@@ -29,6 +32,11 @@ import {
   generateAttestationNonce,
   NitroAttestationResult,
 } from '../../common/nitro-attestation';
+
+const ddb = new DynamoDBClient({});
+
+const TABLE_CREDENTIALS = process.env.TABLE_CREDENTIALS!;
+const TABLE_ENROLLMENT_SESSIONS = process.env.TABLE_ENROLLMENT_SESSIONS!;
 
 // Rate limiting: 20 attestation verifications per IP per 5 minutes
 const RATE_LIMIT_MAX_REQUESTS = 20;
@@ -144,6 +152,73 @@ export const handler = async (
       pcr_version: result.details.matchedPCRSet || null,
       error_count: result.errors.length,
     });
+
+    // If attestation is valid, update the credential record with attestation data
+    if (result.valid) {
+      let userGuid: string | null = null;
+
+      // Try to get user_guid from member JWT claims
+      const claims = extractUserClaims(event);
+      if (claims && claims.user_guid) {
+        userGuid = claims.user_guid;
+      }
+
+      // If no JWT, try to get user_guid from session_id (enrollment flow)
+      if (!userGuid && session_id) {
+        try {
+          const sessionResult = await ddb.send(new GetItemCommand({
+            TableName: TABLE_ENROLLMENT_SESSIONS,
+            Key: marshall({ session_id: session_id }),
+          }));
+
+          if (sessionResult.Item) {
+            const session = unmarshall(sessionResult.Item);
+            userGuid = session.user_guid;
+          }
+        } catch (e) {
+          console.warn('Failed to look up session for attestation:', e);
+        }
+      }
+
+      // Update credential with attestation data if we have a user
+      if (userGuid) {
+        try {
+          // First, query to get the credential (table has composite key: user_guid + credential_id)
+          const credentialResult = await ddb.send(new QueryCommand({
+            TableName: TABLE_CREDENTIALS,
+            KeyConditionExpression: 'user_guid = :guid',
+            ExpressionAttributeValues: marshall({ ':guid': userGuid }),
+            Limit: 1,
+          }));
+
+          if (credentialResult.Items && credentialResult.Items.length > 0) {
+            const credential = unmarshall(credentialResult.Items[0]);
+
+            // Compute a short hash of PCR0 for display (first 24 chars of hex = 12 bytes)
+            const pcrHash = result.pcrs.pcr0 ? result.pcrs.pcr0.substring(0, 24) : null;
+
+            await ddb.send(new UpdateItemCommand({
+              TableName: TABLE_CREDENTIALS,
+              Key: marshall({
+                user_guid: userGuid,
+                credential_id: credential.credential_id,
+              }),
+              UpdateExpression: 'SET attestation_time = :time, pcr_hash = :pcr, enclave_id = :enclave, last_attestation_at = :time',
+              ExpressionAttributeValues: marshall({
+                ':time': result.timestamp.toISOString(),
+                ':pcr': pcrHash,
+                ':enclave': result.moduleId || 'nitro-enclave',
+              }),
+            }));
+
+            console.log(`Updated attestation data for user ${userGuid}`);
+          }
+        } catch (e: any) {
+          // Don't fail the request if credential update fails
+          console.warn('Failed to update credential with attestation data:', e);
+        }
+      }
+    }
 
     // Build response
     const response: VerifyAttestationResponse = {

@@ -42,8 +42,8 @@ export interface EnclaveAttestationResponse {
 }
 
 export interface EnclaveCredentialCreateRequest {
-  user_guid: string;
-  encrypted_auth: string;    // Auth input encrypted to enclave's public key
+  owner_space: string;         // User GUID - identifies which vault to use
+  encrypted_auth: string;      // Auth input encrypted to enclave's public key
   auth_type: 'pin' | 'password' | 'pattern';
 }
 
@@ -54,7 +54,7 @@ export interface EnclaveCredentialCreateResponse {
 }
 
 export interface EnclaveCredentialUnsealRequest {
-  user_guid: string;
+  owner_space: string;         // User GUID - identifies which vault to use
   sealed_credential: string;
   encrypted_challenge: string;  // Challenge response encrypted to enclave
 }
@@ -209,15 +209,15 @@ export async function requestCredentialCreate(
   authType: 'pin' | 'password' | 'pattern'
 ): Promise<EnclaveCredentialCreateResponse> {
   const request: EnclaveCredentialCreateRequest = {
-    user_guid: userGuid,
+    owner_space: userGuid,  // Required for parent to route to correct vault
     encrypted_auth: encryptedAuth.toString('base64'),
     auth_type: authType,
   };
 
-  // Credential creation goes to the user's vault topic
-  // The parent routes this to the appropriate vault process
+  // Use enclave.credential.create (backend -> enclave pattern)
+  // NOT OwnerSpace.*.forVault.> (that's for mobile apps -> vault)
   return enclaveRequest<EnclaveCredentialCreateRequest, EnclaveCredentialCreateResponse>(
-    `OwnerSpace.${userGuid}.forVault.credential.create`,
+    'enclave.credential.create',
     request,
     30000  // 30s timeout for credential creation
   );
@@ -233,13 +233,14 @@ export async function requestCredentialUnseal(
   encryptedChallenge: Buffer
 ): Promise<EnclaveCredentialUnsealResponse> {
   const request: EnclaveCredentialUnsealRequest = {
-    user_guid: userGuid,
+    owner_space: userGuid,  // Required for parent to route to correct vault
     sealed_credential: sealedCredential.toString('base64'),
     encrypted_challenge: encryptedChallenge.toString('base64'),
   };
 
+  // Use enclave.credential.unseal (backend -> enclave pattern)
   return enclaveRequest<EnclaveCredentialUnsealRequest, EnclaveCredentialUnsealResponse>(
-    `OwnerSpace.${userGuid}.forVault.credential.unseal`,
+    'enclave.credential.unseal',
     request
   );
 }

@@ -47,6 +47,11 @@ const (
 	EnclaveMessageTypeKMSDecrypt  EnclaveMessageType = "kms_decrypt"
 	EnclaveMessageTypeKMSResponse EnclaveMessageType = "kms_response"
 
+	// Credential operations
+	EnclaveMessageTypeCredentialCreate   EnclaveMessageType = "credential_create"
+	EnclaveMessageTypeCredentialUnseal   EnclaveMessageType = "credential_unseal"
+	EnclaveMessageTypeCredentialResponse EnclaveMessageType = "credential_response"
+
 	// General
 	EnclaveMessageTypeOK              EnclaveMessageType = "ok"
 	EnclaveMessageTypeError           EnclaveMessageType = "error"
@@ -81,6 +86,17 @@ type EnclaveMessage struct {
 	Plaintext    []byte `json:"plaintext,omitempty"`      // Data to encrypt (for encrypt)
 	Ciphertext   []byte `json:"ciphertext,omitempty"`     // Encrypted data (for decrypt)
 	CiphertextDEK []byte `json:"ciphertext_dek,omitempty"` // Encrypted DEK from KMS
+
+	// Credential operation fields
+	CredentialRequest *CredentialRequest `json:"credential_request,omitempty"`
+	SealedCredential  []byte             `json:"sealed_credential,omitempty"`
+	Credential        []byte             `json:"credential,omitempty"`
+}
+
+// CredentialRequest is the request to create a new credential
+type CredentialRequest struct {
+	EncryptedPIN []byte `json:"encrypted_pin"` // PIN encrypted to enclave's pubkey
+	AuthType     string `json:"auth_type"`     // "pin", "password", "pattern"
 }
 
 // VsockClient handles communication with the enclave

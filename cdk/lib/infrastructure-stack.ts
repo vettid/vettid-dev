@@ -57,6 +57,7 @@ export class InfrastructureStack extends cdk.Stack {
     credentialBackups: dynamodb.Table;
     backupSettings: dynamodb.Table;
     credentialRecoveryRequests: dynamodb.Table;
+    vaultDeletionRequests: dynamodb.Table;
     // Supported Services Registry
     supportedServices: dynamodb.Table;
     // Dynamic Handler Loading
@@ -546,6 +547,23 @@ export class InfrastructureStack extends cdk.Stack {
       projectionType: dynamodb.ProjectionType.ALL,
     });
 
+    // Vault Deletion Requests table - tracks 24-hour delayed vault deletion requests
+    const vaultDeletionRequests = new dynamodb.Table(this, 'VaultDeletionRequests', {
+      partitionKey: { name: 'request_id', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      pointInTimeRecovery: true,
+      timeToLiveAttribute: 'ttl',  // Auto-delete expired requests
+    });
+
+    // GSI for finding active deletion requests by member
+    vaultDeletionRequests.addGlobalSecondaryIndex({
+      indexName: 'member-status-index',
+      partitionKey: { name: 'member_guid', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'status', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
     // ===== SUPPORTED SERVICES REGISTRY =====
 
     // Supported Services table - stores third-party service integrations
@@ -671,6 +689,7 @@ export class InfrastructureStack extends cdk.Stack {
       credentialBackups,
       backupSettings,
       credentialRecoveryRequests,
+      vaultDeletionRequests,
       // Supported Services Registry
       supportedServices,
       // Dynamic Handler Loading

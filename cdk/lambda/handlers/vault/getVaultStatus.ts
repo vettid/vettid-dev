@@ -30,6 +30,10 @@ interface VaultStatusResponse {
   transaction_keys_remaining?: number;
   credential_version?: number;
   error_message?: string;
+  // Nitro Enclave attestation fields
+  attestation_time?: string;
+  pcr_hash?: string;
+  enclave_id?: string;
 }
 
 /**
@@ -94,6 +98,10 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
         security_level: credential.security_level,
         transaction_keys_remaining: tkResult.Count || 0,
         credential_version: credential.version || 1,
+        // Include attestation info if available
+        attestation_time: credential.attestation_time,
+        pcr_hash: credential.pcr_hash,
+        enclave_id: credential.enclave_id,
       };
 
       return ok(response);

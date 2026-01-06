@@ -123,8 +123,10 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     const userGuid = session.user_guid;
 
     // Generate LAT (Ledger Auth Token)
+    console.log('DEBUG: Starting LAT generation');
     const lat = generateLAT(1);
     const latTokenHash = hashLATToken(lat.token);
+    console.log('DEBUG: LAT generated, storing to DynamoDB');
 
     await ddb.send(new PutItemCommand({
       TableName: TABLE_LEDGER_AUTH_TOKENS,
@@ -134,8 +136,9 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
         version: lat.version,
         status: 'ACTIVE',
         created_at: now.toISOString(),
-      }),
+      }, { removeUndefinedValues: true }),
     }));
+    console.log('DEBUG: LAT stored successfully');
 
     // Get remaining unused transaction keys
     const unusedKeysResult = await ddb.send(new QueryCommand({
@@ -189,35 +192,48 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       status: 'ACTIVE',
       storage_type: 'enclave',
       lat_version: lat.version,
-      device_id: session.device_id,
-      enclave_public_key: enclaveResult.public_key,  // User's identity public key from enclave
       created_at: now.toISOString(),
       last_action_at: now.toISOString(),
       failed_auth_count: 0,
     };
 
+    // Add optional fields only if they exist
+    if (session.device_id) {
+      credentialItem.device_id = session.device_id;
+    }
+    if (enclaveResult.public_key) {
+      credentialItem.enclave_public_key = enclaveResult.public_key;
+    }
     if (session.invitation_code) {
       credentialItem.invitation_code = session.invitation_code;
     }
 
+    console.log('DEBUG: Storing credential to DynamoDB, item:', JSON.stringify(credentialItem));
     await ddb.send(new PutItemCommand({
       TableName: TABLE_CREDENTIALS,
-      Item: marshall(credentialItem),
+      Item: marshall(credentialItem, { removeUndefinedValues: true }),
     }));
+    console.log('DEBUG: Credential stored successfully');
 
     // Build credential package
-    const credentialPackage = {
+    const credentialPackage: Record<string, any> = {
       user_guid: userGuid,
       credential_id: credentialId,
       sealed_credential: enclaveResult.sealed_credential,
-      enclave_public_key: enclaveResult.public_key,
-      backup_key: enclaveResult.backup_key,
       ledger_auth_token: {
         token: lat.token,
         version: lat.version,
       },
       transaction_keys: remainingKeys,
     };
+
+    // Add optional enclave fields if present
+    if (enclaveResult.public_key) {
+      credentialPackage.enclave_public_key = enclaveResult.public_key;
+    }
+    if (enclaveResult.backup_key) {
+      credentialPackage.backup_key = enclaveResult.backup_key;
+    }
 
     console.log(`Created enclave credential for user ${userGuid}`);
 
@@ -304,7 +320,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
             status: 'active',
             storage_type: 'enclave',
             created_at: now.toISOString(),
-          }),
+          }, { removeUndefinedValues: true }),
         }));
 
         console.log(`Created NATS account for user ${userGuid}`);

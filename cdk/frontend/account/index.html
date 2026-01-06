@@ -441,9 +441,8 @@
         <span class="tab-chevron">&#9656;</span>
       </button>
       <div class="tab-children" id="vaultChildren">
-        <button class="tab tab-child" data-tab="deploy-vault" data-sub-tab="deploy">Deploy a Vault</button>
+        <button class="tab tab-child" data-tab="deploy-vault" data-sub-tab="deploy">My Vault</button>
         <button class="tab tab-child" data-tab="deploy-vault" data-sub-tab="byov">Bring Your Own Vault</button>
-        <button class="tab tab-child" data-tab="deploy-vault" data-sub-tab="backup">Backup Services</button>
         <button class="tab tab-child" data-tab="deploy-vault" data-sub-tab="credential-backup">Credential Backup</button>
       </div>
     </div>
@@ -700,29 +699,6 @@
       </div>
     </div>
 
-    <!-- Health Dashboard Card - Only shown when vault is active -->
-    <div class="card" id="vaultHealthCard" style="display:none;">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-        <h3 style="margin:0;">Health Dashboard</h3>
-        <span id="vaultHealthBadge" class="status-badge" style="padding:4px 12px;border-radius:12px;font-size:0.8rem;font-weight:600;">--</span>
-      </div>
-
-      <div id="vaultHealthContent" class="grid" style="gap:12px;">
-        <!-- Health metrics will be populated here -->
-      </div>
-
-      <div style="margin-top:20px;padding-top:16px;border-top:1px solid #333;">
-        <div style="display:flex;gap:12px;flex-wrap:wrap;">
-          <button id="vaultStopBtn" data-action="confirmStopVault" class="btn" style="padding:10px 20px;background:linear-gradient(135deg,#f59e0b 0%,#d97706 100%);">
-            ⏹ Stop Vault
-          </button>
-          <button id="vaultTerminateBtn" data-action="confirmTerminateVault" class="btn" style="padding:10px 20px;background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);">
-            ⛔ Terminate
-          </button>
-        </div>
-        <p class="muted" style="margin-top:12px;font-size:0.8rem;">Stopping preserves data. Terminating is permanent and cannot be undone.</p>
-      </div>
-    </div>
 
     <!-- Provisioning Card - Shown during provisioning -->
     <div class="card" id="vaultProvisioningCard" style="display:none;">
@@ -742,6 +718,81 @@
           </div>
         </div>
         <p class="muted" style="margin-top:12px;font-size:0.85rem;">This usually takes 2-3 minutes. You can leave this page and come back.</p>
+      </div>
+    </div>
+
+    <!-- Vault Deletion Card - Shown when vault is active -->
+    <div class="card" id="vaultDeletionCard" style="display:none;margin-top:20px;border-color:#f44336;">
+      <h3 style="margin:0 0 16px 0;color:#f44336;">Danger Zone</h3>
+
+      <!-- Normal state: No deletion pending -->
+      <div id="deletionNormalState">
+        <p class="muted" style="margin-bottom:16px;font-size:0.95rem;">
+          Permanently delete your vault and all associated data. This action cannot be undone.
+        </p>
+        <button data-action="requestVaultDeletion" class="btn" style="padding:10px 20px;background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);font-weight:600;">
+          Request Vault Deletion
+        </button>
+      </div>
+
+      <!-- Pending state: Deletion requested, waiting for 24hr -->
+      <div id="deletionPendingState" style="display:none;">
+        <div style="padding:20px;background:rgba(244,67,54,0.1);border-radius:8px;border:1px solid #f44336;">
+          <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+            <div style="width:40px;height:40px;background:#f44336;border-radius:50%;display:flex;align-items:center;justify-content:center;">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10"></circle>
+                <line x1="12" y1="8" x2="12" y2="12"></line>
+                <line x1="12" y1="16" x2="12.01" y2="16"></line>
+              </svg>
+            </div>
+            <div>
+              <p style="margin:0;color:#f44336;font-weight:600;">Deletion Pending</p>
+              <p id="deletionTimeRemaining" style="margin:4px 0 0 0;color:var(--gray);font-size:0.9rem;">Time remaining: --</p>
+            </div>
+          </div>
+          <p style="margin:0 0 16px 0;color:var(--gray);font-size:0.9rem;">
+            Your vault deletion has been scheduled. You can cancel this request at any time before confirmation.
+          </p>
+          <button data-action="cancelVaultDeletion" class="btn" style="padding:10px 20px;background:#333;font-weight:600;">
+            Cancel Deletion Request
+          </button>
+        </div>
+      </div>
+
+      <!-- Ready state: 24hr passed, can confirm deletion -->
+      <div id="deletionReadyState" style="display:none;">
+        <div style="padding:20px;background:rgba(244,67,54,0.2);border-radius:8px;border:2px solid #f44336;">
+          <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+            <div style="width:40px;height:40px;background:#f44336;border-radius:50%;display:flex;align-items:center;justify-content:center;">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M3 6h18"></path>
+                <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path>
+                <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path>
+              </svg>
+            </div>
+            <div>
+              <p style="margin:0;color:#f44336;font-weight:600;">Ready to Delete</p>
+              <p style="margin:4px 0 0 0;color:var(--gray);font-size:0.9rem;">The 24-hour waiting period has passed.</p>
+            </div>
+          </div>
+          <div style="padding:12px;background:rgba(0,0,0,0.3);border-radius:6px;margin-bottom:16px;">
+            <p style="margin:0;color:#f44336;font-weight:600;font-size:0.9rem;">⚠️ WARNING: This action is IRREVERSIBLE</p>
+            <ul style="margin:8px 0 0 0;padding-left:20px;color:var(--gray);font-size:0.85rem;line-height:1.6;">
+              <li>All vault data will be permanently deleted</li>
+              <li>Your credentials will no longer be accessible</li>
+              <li>You will need to re-enroll to use VettID again</li>
+            </ul>
+          </div>
+          <div style="display:flex;gap:12px;flex-wrap:wrap;">
+            <button data-action="confirmVaultDeletion" class="btn" style="padding:10px 20px;background:linear-gradient(135deg,#ef4444 0%,#b91c1c 100%);font-weight:600;">
+              Confirm Permanent Deletion
+            </button>
+            <button data-action="cancelVaultDeletion" class="btn" style="padding:10px 20px;background:#333;font-weight:600;">
+              Cancel
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -902,179 +953,129 @@
     </div>
   </div>
 
-  <!-- Backup Services Sub-tab -->
-  <div id="vault-backup" class="sub-tab-content">
-    <!-- Backup Settings Card -->
-    <div class="card" id="backupSettingsCard">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-        <h3 style="margin:0;">Backup Settings</h3>
-        <button data-action="saveBackupSettings" id="saveSettingsBtn" class="btn" style="padding:8px 16px;background:linear-gradient(135deg,var(--accent) 0%,#2563eb 100%);">
-          Save Settings
-        </button>
-      </div>
-
-      <div id="backupSettingsContent" style="display:grid;gap:16px;">
-        <!-- Settings will be loaded here -->
-        <div style="padding:24px;background:#050505;border-radius:4px;border:1px solid var(--border);text-align:center;">
-          <div class="skeleton" style="height:24px;width:200px;margin:0 auto;border-radius:4px;"></div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Backup Actions Card -->
-    <div class="card" style="margin-top:20px;">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-        <h3 style="margin:0;">Your Backups</h3>
-        <button data-action="triggerBackup" id="backupNowBtn" class="btn" style="padding:10px 20px;background:linear-gradient(135deg,#10b981 0%,#059669 100%);font-weight:600;">
-          Backup Now
-        </button>
-      </div>
-
-      <div id="backupListContent">
-        <!-- Backup list will be loaded here -->
-        <div style="padding:24px;background:#050505;border-radius:4px;border:1px solid var(--border);text-align:center;">
-          <div class="skeleton" style="height:20px;width:150px;margin:0 auto 12px auto;border-radius:4px;"></div>
-          <div class="skeleton" style="height:16px;width:250px;margin:0 auto;border-radius:4px;"></div>
-        </div>
-      </div>
-    </div>
-  </div>
-
   <!-- Credential Backup Sub-tab -->
   <div id="vault-credential-backup" class="sub-tab-content">
-    <!-- Credential Backup Status Card -->
-    <div class="card" id="credentialBackupStatusCard">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-        <h3 style="margin:0;">Credential Backup</h3>
-        <button data-action="loadCredentialBackupStatus" class="btn" style="padding:6px 12px;font-size:0.85rem;background:#333;" title="Refresh">↻ Refresh</button>
-      </div>
-      <p class="muted" style="margin-bottom:20px;font-size:0.95rem;">
-        Securely backup your vault credentials. Your backup is encrypted with a password you choose and can only be decrypted with your recovery phrase.
-      </p>
-
-      <div id="credentialBackupStatusContent">
-        <!-- Status will be loaded here -->
-        <div style="padding:24px;background:#050505;border-radius:4px;border:1px solid var(--border);text-align:center;">
-          <div class="skeleton" style="height:24px;width:200px;margin:0 auto;border-radius:4px;"></div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Create/Update Backup Card -->
-    <div class="card" style="margin-top:20px;" id="credentialBackupCreateCard">
-      <h3 style="margin:0 0 16px 0;">Create Credential Backup</h3>
-      <p class="muted" style="margin-bottom:20px;font-size:0.95rem;">
-        Enter a strong password to encrypt your credential backup. You'll need this password along with your recovery phrase to restore your credentials.
-      </p>
-
-      <div style="display:grid;gap:16px;">
+    <!-- Backup Settings Card -->
+    <div class="card" id="backupSettingsCard">
+      <h3 style="margin:0 0 16px 0;">Backup Settings</h3>
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:16px;background:#050505;border-radius:8px;border:1px solid var(--border);">
         <div>
-          <label style="display:block;margin-bottom:8px;color:var(--text);font-weight:600;">Backup Password</label>
-          <input type="password" id="credBackupPassword" placeholder="Enter a strong password"
-            style="width:100%;padding:12px;background:var(--bg-card);border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;" />
-          <p style="margin:8px 0 0 0;color:var(--gray);font-size:0.8rem;">Minimum 12 characters. Use a mix of letters, numbers, and symbols.</p>
+          <p style="margin:0;color:var(--text);font-weight:600;">Automatic Credential Backups</p>
+          <p style="margin:4px 0 0 0;color:var(--gray);font-size:0.9rem;">When enabled, your encrypted credentials are backed up automatically.</p>
         </div>
-
-        <div>
-          <label style="display:block;margin-bottom:8px;color:var(--text);font-weight:600;">Confirm Password</label>
-          <input type="password" id="credBackupPasswordConfirm" placeholder="Confirm your password"
-            style="width:100%;padding:12px;background:var(--bg-card);border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;" />
-        </div>
-
-        <div id="credBackupError" style="display:none;padding:12px;background:rgba(244,67,54,0.1);border:1px solid #f44336;border-radius:6px;color:#f44336;font-size:0.9rem;">
-        </div>
-
-        <button data-action="createCredentialBackup" id="createCredBackupBtn" class="btn"
-          style="padding:12px 24px;background:linear-gradient(135deg,#10b981 0%,#059669 100%);font-weight:600;width:fit-content;">
-          Create Encrypted Backup
-        </button>
-      </div>
-    </div>
-
-    <!-- Recovery Phrase Card (shown after backup creation) -->
-    <div class="card" style="margin-top:20px;display:none;" id="recoveryPhraseCard">
-      <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">
-        <div style="width:48px;height:48px;background:linear-gradient(135deg,#ffc125 0%,#ff9800 100%);border-radius:50%;display:flex;align-items:center;justify-content:center;">
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
-          </svg>
-        </div>
-        <div>
-          <h3 style="margin:0;color:var(--accent);">Recovery Phrase</h3>
-          <p style="margin:4px 0 0 0;color:var(--gray);font-size:0.85rem;">Save this securely - you'll need it to recover your credentials</p>
-        </div>
-      </div>
-
-      <div style="padding:20px;background:linear-gradient(135deg,rgba(255,193,37,0.1) 0%,rgba(255,152,0,0.05) 100%);border:2px solid var(--accent);border-radius:8px;margin-bottom:20px;">
-        <p style="margin:0 0 12px 0;color:var(--accent);font-weight:600;font-size:0.9rem;">YOUR RECOVERY PHRASE:</p>
-        <div id="recoveryPhraseDisplay" style="font-family:monospace;font-size:1.1rem;color:var(--text);word-spacing:8px;line-height:1.8;background:var(--bg-card);padding:16px;border-radius:6px;text-align:center;">
-          <!-- Recovery phrase will be displayed here -->
-        </div>
-        <div style="display:flex;gap:12px;margin-top:16px;justify-content:center;flex-wrap:wrap;">
-          <button data-action="copyRecoveryPhrase" class="btn" style="padding:8px 16px;background:#333;font-size:0.9rem;">
-            Copy to Clipboard
-          </button>
-          <button data-action="downloadRecoveryPhrase" class="btn" style="padding:8px 16px;background:#333;font-size:0.9rem;">
-            Download as File
-          </button>
-        </div>
-      </div>
-
-      <div style="padding:16px;background:rgba(244,67,54,0.1);border-left:4px solid #f44336;border-radius:4px;">
-        <p style="margin:0;color:#f44336;font-weight:600;font-size:0.95rem;">Important Security Warning</p>
-        <ul style="margin:8px 0 0 0;padding-left:20px;color:var(--gray);font-size:0.9rem;line-height:1.6;">
-          <li>Store this recovery phrase in a secure location (password manager, safe, etc.)</li>
-          <li>Never share your recovery phrase with anyone</li>
-          <li>Without this phrase and your password, you cannot recover your credentials</li>
-          <li>VettID cannot recover your credentials if you lose this phrase</li>
-        </ul>
-      </div>
-
-      <div style="margin-top:20px;display:flex;gap:12px;align-items:center;">
-        <input type="checkbox" id="recoveryPhraseAcknowledge" style="width:20px;height:20px;cursor:pointer;" />
-        <label for="recoveryPhraseAcknowledge" style="color:var(--text);cursor:pointer;">
-          I have saved my recovery phrase in a secure location
+        <label class="toggle-switch" style="position:relative;display:inline-block;width:52px;height:28px;">
+          <input type="checkbox" id="credentialBackupEnabled" style="opacity:0;width:0;height:0;">
+          <span class="toggle-slider" style="position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:#333;border-radius:28px;transition:0.3s;"></span>
         </label>
       </div>
-
-      <button data-action="acknowledgeRecoveryPhrase" id="acknowledgeRecoveryBtn" class="btn" disabled
-        style="margin-top:16px;padding:12px 24px;background:linear-gradient(135deg,var(--accent) 0%,#ff9800 100%);color:#000;font-weight:600;">
-        I've Saved My Recovery Phrase
-      </button>
+      <style>
+        .toggle-switch input:checked + .toggle-slider { background: var(--accent); }
+        .toggle-slider:before { position:absolute;content:'';height:20px;width:20px;left:4px;bottom:4px;background:#fff;border-radius:50%;transition:0.3s; }
+        .toggle-switch input:checked + .toggle-slider:before { transform:translateX(24px); }
+      </style>
     </div>
 
-    <!-- Recover Credentials Card -->
-    <div class="card" style="margin-top:20px;" id="credentialRecoveryCard">
-      <h3 style="margin:0 0 16px 0;">Recover Credentials</h3>
-      <p class="muted" style="margin-bottom:20px;font-size:0.95rem;">
-        If you need to restore your credentials on a new device or after reinstalling, enter your recovery phrase and backup password below.
-      </p>
-
-      <div style="display:grid;gap:16px;">
-        <div>
-          <label style="display:block;margin-bottom:8px;color:var(--text);font-weight:600;">Recovery Phrase</label>
-          <textarea id="credRecoveryPhrase" placeholder="Enter your 24-word recovery phrase" rows="3"
-            style="width:100%;padding:12px;background:var(--bg-card);border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;resize:vertical;font-family:monospace;"></textarea>
+    <!-- Backup Status Card -->
+    <div class="card" style="margin-top:20px;" id="credentialBackupStatusCard">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+        <h3 style="margin:0;">Backup Status</h3>
+        <button data-action="loadCredentialBackupStatus" class="btn" style="padding:6px 12px;font-size:0.85rem;background:#333;" title="Refresh">↻ Refresh</button>
+      </div>
+      <div id="credentialBackupStatusContent">
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:16px;">
+          <div style="padding:16px;background:#050505;border-radius:8px;border:1px solid var(--border);">
+            <p style="margin:0;color:var(--gray);font-size:0.85rem;">Status</p>
+            <p id="backupStatusValue" style="margin:8px 0 0 0;color:var(--text);font-weight:600;font-size:1.1rem;">--</p>
+          </div>
+          <div style="padding:16px;background:#050505;border-radius:8px;border:1px solid var(--border);">
+            <p style="margin:0;color:var(--gray);font-size:0.85rem;">Last Backup</p>
+            <p id="lastBackupValue" style="margin:8px 0 0 0;color:var(--text);font-weight:600;font-size:1.1rem;">--</p>
+          </div>
         </div>
-
-        <div>
-          <label style="display:block;margin-bottom:8px;color:var(--text);font-weight:600;">Backup Password</label>
-          <input type="password" id="credRecoveryPassword" placeholder="Enter your backup password"
-            style="width:100%;padding:12px;background:var(--bg-card);border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;" />
-        </div>
-
-        <div id="credRecoveryError" style="display:none;padding:12px;background:rgba(244,67,54,0.1);border:1px solid #f44336;border-radius:6px;color:#f44336;font-size:0.9rem;">
-        </div>
-
-        <div id="credRecoverySuccess" style="display:none;padding:12px;background:rgba(16,185,129,0.1);border:1px solid #10b981;border-radius:6px;color:#10b981;font-size:0.9rem;">
-        </div>
-
-        <button data-action="recoverCredentials" id="recoverCredBtn" class="btn"
-          style="padding:12px 24px;background:linear-gradient(135deg,#6366f1 0%,#4f46e5 100%);font-weight:600;width:fit-content;">
-          Recover Credentials
-        </button>
       </div>
     </div>
+
+    <!-- Credential Restore Card -->
+    <div class="card" style="margin-top:20px;" id="credentialRestoreCard">
+      <h3 style="margin:0 0 8px 0;">Restore Credentials</h3>
+      <p class="muted" style="margin-bottom:20px;font-size:0.95rem;">
+        Transfer your credentials to a new device or recover them if your device is lost.
+      </p>
+
+      <!-- Restore Status (shown when restore is pending) -->
+      <div id="restoreStatusSection" style="display:none;margin-bottom:20px;">
+        <div id="restoreStatusContent" style="padding:20px;background:#050505;border-radius:8px;border:2px solid var(--accent);">
+          <!-- Status will be loaded dynamically -->
+        </div>
+      </div>
+
+      <!-- Restore Options (shown when no restore is pending) -->
+      <div id="restoreOptionsSection" style="display:grid;gap:16px;">
+        <!-- Transfer to New Device -->
+        <div style="padding:20px;background:#050505;border-radius:8px;border:1px solid var(--border);">
+          <div style="display:flex;align-items:start;gap:16px;">
+            <div style="width:48px;height:48px;background:linear-gradient(135deg,#10b981 0%,#059669 100%);border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="5" y="2" width="14" height="20" rx="2" ry="2"></rect>
+                <line x1="12" y1="18" x2="12" y2="18"></line>
+              </svg>
+            </div>
+            <div style="flex:1;">
+              <h4 style="margin:0 0 8px 0;color:var(--text);">Transfer to New Device</h4>
+              <p style="margin:0 0 16px 0;color:var(--gray);font-size:0.9rem;">
+                Have your old device? We'll send a notification for instant approval.
+              </p>
+              <button data-action="requestTransfer" class="btn" style="padding:10px 20px;background:linear-gradient(135deg,#10b981 0%,#059669 100%);font-weight:600;">
+                Request Transfer
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Recover Lost Credentials -->
+        <div style="padding:20px;background:#050505;border-radius:8px;border:1px solid var(--border);">
+          <div style="display:flex;align-items:start;gap:16px;">
+            <div style="width:48px;height:48px;background:linear-gradient(135deg,#f59e0b 0%,#d97706 100%);border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+              </svg>
+            </div>
+            <div style="flex:1;">
+              <h4 style="margin:0 0 8px 0;color:var(--text);">Recover Lost Credentials</h4>
+              <p style="margin:0 0 16px 0;color:var(--gray);font-size:0.9rem;">
+                Lost your device? A 24-hour security delay protects your account.
+              </p>
+              <button data-action="requestRecovery" class="btn" style="padding:10px 20px;background:linear-gradient(135deg,#f59e0b 0%,#d97706 100%);color:#000;font-weight:600;">
+                Start Recovery
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Confirm Recovery Section (shown when ready) -->
+      <div id="confirmRecoverySection" style="display:none;margin-top:20px;">
+        <div style="padding:20px;background:linear-gradient(135deg,rgba(16,185,129,0.1) 0%,rgba(5,150,105,0.05) 100%);border:2px solid #10b981;border-radius:8px;">
+          <h4 style="margin:0 0 16px 0;color:#10b981;">Recovery Ready</h4>
+          <p style="margin:0 0 16px 0;color:var(--gray);font-size:0.9rem;">
+            Enter your recovery phrase to complete the restoration.
+          </p>
+          <div style="display:grid;gap:16px;">
+            <div>
+              <label style="display:block;margin-bottom:8px;color:var(--text);font-weight:600;">Recovery Phrase</label>
+              <textarea id="credRecoveryPhrase" placeholder="Enter your recovery phrase" rows="3"
+                style="width:100%;padding:12px;background:var(--bg-card);border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;resize:vertical;font-family:monospace;"></textarea>
+            </div>
+            <div id="credRecoveryError" style="display:none;padding:12px;background:rgba(244,67,54,0.1);border:1px solid #f44336;border-radius:6px;color:#f44336;font-size:0.9rem;"></div>
+            <button data-action="confirmRecovery" id="confirmRecoveryBtn" class="btn"
+              style="padding:12px 24px;background:linear-gradient(135deg,#10b981 0%,#059669 100%);font-weight:600;width:fit-content;">
+              Complete Recovery
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
   </div>
 </div>
 

@@ -287,7 +287,7 @@ async function loadSubscriptionTypes() {
             <div style="color:var(--gray);font-size:0.8rem;margin-top:2px;">${termDisplay}</div>
           </div>
 
-          <button class="btn subscription-btn" id="sub-btn-${st.subscription_type_id}" data-subscription-id="${st.subscription_type_id}" onclick="selectSubscriptionType('${st.subscription_type_id}')" style="background:${buttonBg};color:${buttonColor};padding:12px 24px;font-size:0.95rem;font-weight:700;white-space:nowrap;">
+          <button class="btn subscription-btn" id="sub-btn-${st.subscription_type_id}" data-subscription-id="${st.subscription_type_id}" data-action="selectSubscription" style="background:${buttonBg};color:${buttonColor};padding:12px 24px;font-size:0.95rem;font-weight:700;white-space:nowrap;">
             ${isFree ? 'Start Free' : 'Subscribe'}
           </button>
         </div>

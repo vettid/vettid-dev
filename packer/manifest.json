@@ -44,7 +44,52 @@
       "artifact_id": "us-east-1:ami-05360a18b0fd0ec68",
       "packer_run_uuid": "e132b9e9-55fd-4739-620c-175a083080f5",
       "custom_data": null
+    },
+    {
+      "name": "nitro-enclave",
+      "builder_type": "amazon-ebs",
+      "build_time": 1767565382,
+      "files": null,
+      "artifact_id": "us-east-1:ami-0cf96df201e149fb7",
+      "packer_run_uuid": "eeee05ce-f69d-2ae9-68b1-0cbcf8c0e6e3",
+      "custom_data": null
+    },
+    {
+      "name": "nitro-enclave",
+      "builder_type": "amazon-ebs",
+      "build_time": 1767568206,
+      "files": null,
+      "artifact_id": "us-east-1:ami-07a504d45b3768bc9",
+      "packer_run_uuid": "38f32472-1e0f-c347-1cfb-f779bd470574",
+      "custom_data": null
+    },
+    {
+      "name": "nitro-enclave",
+      "builder_type": "amazon-ebs",
+      "build_time": 1767571113,
+      "files": null,
+      "artifact_id": "us-east-1:ami-0aa18a997cdbb90ea",
+      "packer_run_uuid": "cac95f5b-94c9-4051-c283-45f23ebb8c3c",
+      "custom_data": null
+    },
+    {
+      "name": "nitro-enclave",
+      "builder_type": "amazon-ebs",
+      "build_time": 1767663616,
+      "files": null,
+      "artifact_id": "us-east-1:ami-092d69d9ba6a1cfbd",
+      "packer_run_uuid": "6d14eb3f-180d-bfdf-5bd6-c0790ce0c56a",
+      "custom_data": null
+    },
+    {
+      "name": "nitro-enclave",
+      "builder_type": "amazon-ebs",
+      "build_time": 1767664859,
+      "files": null,
+      "artifact_id": "us-east-1:ami-054eac79ae2ec958a",
+      "packer_run_uuid": "acbd9d00-0ae3-336b-9630-d5a51c8929e7",
+      "custom_data": null
     }
   ],
-  "last_run_uuid": "e132b9e9-55fd-4739-620c-175a083080f5"
+  "last_run_uuid": "acbd9d00-0ae3-336b-9630-d5a51c8929e7"
 }
