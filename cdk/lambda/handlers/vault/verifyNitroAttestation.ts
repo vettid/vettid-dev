@@ -8,10 +8,14 @@
  *
  * This endpoint is called by mobile apps during enrollment to verify
  * they are communicating with a genuine VettID Nitro Enclave.
+ *
+ * In the Nitro model, attestation happens BEFORE credential creation.
+ * The app verifies the enclave's identity, then trusts it to create
+ * and store the Protean Credential.
  */
 
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
-import { DynamoDBClient, GetItemCommand, UpdateItemCommand, QueryCommand } from '@aws-sdk/client-dynamodb';
+import { DynamoDBClient, GetItemCommand, UpdateItemCommand } from '@aws-sdk/client-dynamodb';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import {
   ok,
@@ -29,13 +33,11 @@ import {
 import {
   verifyNitroAttestation,
   getCurrentPCRs,
-  generateAttestationNonce,
   NitroAttestationResult,
 } from '../../common/nitro-attestation';
 
 const ddb = new DynamoDBClient({});
 
-const TABLE_CREDENTIALS = process.env.TABLE_CREDENTIALS!;
 const TABLE_ENROLLMENT_SESSIONS = process.env.TABLE_ENROLLMENT_SESSIONS!;
 
 // Rate limiting: 20 attestation verifications per IP per 5 minutes
@@ -153,70 +155,38 @@ export const handler = async (
       error_count: result.errors.length,
     });
 
-    // If attestation is valid, update the credential record with attestation data
-    if (result.valid) {
-      let userGuid: string | null = null;
+    // If attestation is valid and we have a session_id, update the enrollment session
+    // This records that the app verified the enclave before proceeding with enrollment
+    if (result.valid && session_id) {
+      try {
+        const sessionResult = await ddb.send(new GetItemCommand({
+          TableName: TABLE_ENROLLMENT_SESSIONS,
+          Key: marshall({ session_id: session_id }),
+        }));
 
-      // Try to get user_guid from member JWT claims
-      const claims = extractUserClaims(event);
-      if (claims && claims.user_guid) {
-        userGuid = claims.user_guid;
-      }
+        if (sessionResult.Item) {
+          const session = unmarshall(sessionResult.Item);
 
-      // If no JWT, try to get user_guid from session_id (enrollment flow)
-      if (!userGuid && session_id) {
-        try {
-          const sessionResult = await ddb.send(new GetItemCommand({
+          // Compute a short hash of PCR0 for display (first 24 chars of hex = 12 bytes)
+          const pcrHash = result.pcrs.pcr0 ? result.pcrs.pcr0.substring(0, 24) : null;
+
+          await ddb.send(new UpdateItemCommand({
             TableName: TABLE_ENROLLMENT_SESSIONS,
             Key: marshall({ session_id: session_id }),
+            UpdateExpression: 'SET attestation_verified = :verified, attestation_time = :time, pcr_hash = :pcr, enclave_id = :enclave',
+            ExpressionAttributeValues: marshall({
+              ':verified': true,
+              ':time': result.timestamp.toISOString(),
+              ':pcr': pcrHash,
+              ':enclave': result.moduleId || 'nitro-enclave',
+            }),
           }));
 
-          if (sessionResult.Item) {
-            const session = unmarshall(sessionResult.Item);
-            userGuid = session.user_guid;
-          }
-        } catch (e) {
-          console.warn('Failed to look up session for attestation:', e);
+          console.log(`Updated attestation data for session ${session_id}`);
         }
-      }
-
-      // Update credential with attestation data if we have a user
-      if (userGuid) {
-        try {
-          // First, query to get the credential (table has composite key: user_guid + credential_id)
-          const credentialResult = await ddb.send(new QueryCommand({
-            TableName: TABLE_CREDENTIALS,
-            KeyConditionExpression: 'user_guid = :guid',
-            ExpressionAttributeValues: marshall({ ':guid': userGuid }),
-            Limit: 1,
-          }));
-
-          if (credentialResult.Items && credentialResult.Items.length > 0) {
-            const credential = unmarshall(credentialResult.Items[0]);
-
-            // Compute a short hash of PCR0 for display (first 24 chars of hex = 12 bytes)
-            const pcrHash = result.pcrs.pcr0 ? result.pcrs.pcr0.substring(0, 24) : null;
-
-            await ddb.send(new UpdateItemCommand({
-              TableName: TABLE_CREDENTIALS,
-              Key: marshall({
-                user_guid: userGuid,
-                credential_id: credential.credential_id,
-              }),
-              UpdateExpression: 'SET attestation_time = :time, pcr_hash = :pcr, enclave_id = :enclave, last_attestation_at = :time',
-              ExpressionAttributeValues: marshall({
-                ':time': result.timestamp.toISOString(),
-                ':pcr': pcrHash,
-                ':enclave': result.moduleId || 'nitro-enclave',
-              }),
-            }));
-
-            console.log(`Updated attestation data for user ${userGuid}`);
-          }
-        } catch (e: any) {
-          // Don't fail the request if credential update fails
-          console.warn('Failed to update credential with attestation data:', e);
-        }
+      } catch (e: any) {
+        // Don't fail the request if session update fails
+        console.warn('Failed to update session with attestation data:', e);
       }
     }
 

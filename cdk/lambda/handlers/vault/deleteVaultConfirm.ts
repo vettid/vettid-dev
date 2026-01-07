@@ -15,9 +15,7 @@ import {
 const ddb = new DynamoDBClient({});
 
 const TABLE_VAULT_DELETION_REQUESTS = process.env.TABLE_VAULT_DELETION_REQUESTS!;
-const TABLE_CREDENTIALS = process.env.TABLE_CREDENTIALS!;
 const TABLE_NATS_ACCOUNTS = process.env.TABLE_NATS_ACCOUNTS!;
-const TABLE_LEDGER_AUTH_TOKENS = process.env.TABLE_LEDGER_AUTH_TOKENS!;
 
 /**
  * POST /vault/delete/confirm
@@ -75,23 +73,10 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     }
 
     // Proceed with vault deletion
-    const credentialId = request.credential_id;
+    // In Nitro model, marking the NATS account as deleted invalidates vault access
+    // The vault-manager will reject any further requests from this account
 
-    // 1. Mark credential as deleted
-    await ddb.send(new UpdateItemCommand({
-      TableName: TABLE_CREDENTIALS,
-      Key: marshall({ user_guid: memberGuid }),
-      UpdateExpression: 'SET #status = :deleted, deleted_at = :now',
-      ExpressionAttributeNames: {
-        '#status': 'status',
-      },
-      ExpressionAttributeValues: marshall({
-        ':deleted': 'DELETED',
-        ':now': now.toISOString(),
-      }),
-    }));
-
-    // 2. Revoke NATS account (mark as deleted, don't remove for audit trail)
+    // 1. Mark NATS account as deleted (don't remove for audit trail)
     try {
       await ddb.send(new UpdateItemCommand({
         TableName: TABLE_NATS_ACCOUNTS,
@@ -110,11 +95,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       console.log('NATS account not found or already deleted');
     }
 
-    // 3. Revoke all LAT tokens for this user
-    // Query by user_guid GSI if it exists, otherwise we track the token hash
-    // For now, we'll rely on the credential being marked as deleted to invalidate tokens
-
-    // 4. Mark deletion request as completed
+    // 2. Mark deletion request as completed
     await ddb.send(new UpdateItemCommand({
       TableName: TABLE_VAULT_DELETION_REQUESTS,
       Key: marshall({ request_id: request.request_id }),
@@ -133,7 +114,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       type: 'vault_deleted',
       member_guid: memberGuid,
       request_id: request.request_id,
-      credential_id: credentialId,
+      nats_account_public_key: request.nats_account_public_key,
     }, requestId);
 
     return ok({

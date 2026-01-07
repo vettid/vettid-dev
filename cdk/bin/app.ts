@@ -6,7 +6,7 @@ import { VettIdStack } from '../lib/vettid-stack';
 import { AdminStack } from '../lib/admin-stack';
 import { VaultStack } from '../lib/vault-stack';
 import { NatsStack } from '../lib/nats-stack';
-import { LedgerStack } from '../lib/ledger-stack';
+// LedgerStack removed - legacy Protean Credential System replaced by vault-manager JetStream
 import { MonitoringStack } from '../lib/monitoring-stack';
 import { NitroStack } from '../lib/nitro-stack';
 
@@ -43,14 +43,6 @@ const admin = new AdminStack(app, 'VettID-Admin', {
   adminAuthorizer: core.adminAuthorizer,
 });
 
-// 4. Deploy Ledger stack (Aurora PostgreSQL for Protean Credential System)
-// This stack creates its own VPC for database isolation
-// Must be deployed before VaultStack if Ledger integration is enabled
-const ledger = new LedgerStack(app, 'VettID-Ledger', {
-  env,
-  environment: (process.env.ENVIRONMENT as 'development' | 'staging' | 'production') || 'development',
-});
-
 // 6. Deploy NATS infrastructure stack (VPC, EC2 cluster, NLB)
 // Uses Route53 fromLookup to auto-discover hosted zone (cached in cdk.context.json)
 // VPC peering with Nitro VPC to allow enclave parent processes to connect to NATS
@@ -68,13 +60,11 @@ const nats = new NatsStack(app, 'VettID-NATS', {
 
 // 7. Deploy vault stack (vault Lambda functions + API routes)
 // Routes are added in VaultStack to stay under CloudFormation's 500 resource limit
-// Pass ledger stack to enable Protean Credential System Lambda handlers
 const vault = new VaultStack(app, 'VettID-Vault', {
   env,
   infrastructure,
   httpApi: core.httpApi,
   memberAuthorizer: core.memberAuthorizer,
-  ledger,
   nitro,  // For enclave communication
 });
 

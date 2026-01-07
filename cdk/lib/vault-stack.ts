@@ -12,14 +12,13 @@ import {
   custom_resources as cr,
 } from 'aws-cdk-lib';
 import { InfrastructureStack } from './infrastructure-stack';
-import { LedgerStack } from './ledger-stack';
+// LedgerStack removed - legacy Protean Credential System replaced by vault-manager JetStream
 import { NitroStack } from './nitro-stack';
 
 export interface VaultStackProps extends cdk.StackProps {
   infrastructure: InfrastructureStack;
   httpApi: apigw.HttpApi;
   memberAuthorizer: apigw.IHttpRouteAuthorizer;
-  ledger?: LedgerStack;  // Optional until Ledger is deployed
   nitro?: NitroStack;    // For enclave communication
 }
 
@@ -33,19 +32,20 @@ export interface VaultStackProps extends cdk.StackProps {
  * - API routes added by VettIDStack after instantiation
  *
  * Depends on: Infrastructure Stack (for tables, user pool)
+ *
+ * Note: Legacy credential tables (Credentials, CredentialKeys, TransactionKeys, LedgerAuthTokens)
+ * have been removed - vault-manager uses JetStream storage in Nitro enclave.
  */
 export class VaultStack extends cdk.Stack {
   private readonly props: VaultStackProps;
 
   // Public Lambda functions to be used by VettIDStack for route creation
-  public readonly enrollStart!: lambdaNode.NodejsFunction;
-  public readonly enrollSetPassword!: lambdaNode.NodejsFunction;
+  // Legacy enrollStart and enrollSetPassword removed - enrollment now via vault-manager
   public readonly enrollFinalize!: lambdaNode.NodejsFunction;
   public readonly createEnrollmentSession!: lambdaNode.NodejsFunction;
   public readonly cancelEnrollmentSession!: lambdaNode.NodejsFunction;
   public readonly authenticateEnrollment!: lambdaNode.NodejsFunction;
-  public readonly actionRequest!: lambdaNode.NodejsFunction;
-  public readonly authExecute!: lambdaNode.NodejsFunction;
+  // Legacy auth handlers removed - vault-manager handles auth via NATS
 
   // Device attestation handlers (Phase 2)
   public readonly verifyAndroidAttestation!: lambdaNode.NodejsFunction;
@@ -60,13 +60,12 @@ export class VaultStack extends cdk.Stack {
 
   // Vault status functions (enclave-based)
   public readonly initializeVault!: lambdaNode.NodejsFunction;
-  public readonly getVaultStatus!: lambdaNode.NodejsFunction;
+  // Legacy getVaultStatus removed - status via vault-manager
   public readonly getVaultHealth!: lambdaNode.NodejsFunction;
   public readonly vaultReady!: lambdaNode.NodejsFunction;  // Internal endpoint for vault-manager ready signal
   public readonly updateVaultHealth!: lambdaNode.NodejsFunction;  // Internal endpoint for vault-manager health updates
 
-  // Action-token authenticated vault status (for mobile apps)
-  public readonly vaultStatusAction!: lambdaNode.NodejsFunction;
+  // Legacy vaultStatusAction removed - use Cognito-authenticated getVaultStatus instead
 
   // Handler registry functions (public endpoints)
   public readonly listHandlers!: lambdaNode.NodejsFunction;
@@ -125,13 +124,7 @@ export class VaultStack extends cdk.Stack {
   public readonly updateByovVault!: lambdaNode.NodejsFunction;
   public readonly deleteByovVault!: lambdaNode.NodejsFunction;
 
-  // Ledger (Protean Credential System) - Phase 1
-  public readonly ledgerVerifyPassword?: lambdaNode.NodejsFunction;
-  public readonly ledgerValidateLAT?: lambdaNode.NodejsFunction;
-  public readonly ledgerGetTransactionKeys?: lambdaNode.NodejsFunction;
-  public readonly ledgerReplenishTransactionKeys?: lambdaNode.NodejsFunction;
-  public readonly ledgerCreateCredential?: lambdaNode.NodejsFunction;
-  public readonly ledgerRotateKeys?: lambdaNode.NodejsFunction;
+  // Note: Ledger handlers removed - vault-manager uses JetStream storage
 
   // Test Automation Endpoints (for Android E2E testing)
   public readonly testHealth!: lambdaNode.NodejsFunction;
@@ -139,18 +132,19 @@ export class VaultStack extends cdk.Stack {
   public readonly testCleanup!: lambdaNode.NodejsFunction;
 
   constructor(scope: Construct, id: string, props: VaultStackProps) {
-    super(scope, id, props);
+    super(scope, id, {
+      ...props,
+      description: 'VettID Vault - enrollment and authentication services (v2: JetStream storage)',
+    });
 
     this.props = props;
     const tables = props.infrastructure.tables;
     const memberUserPool = props.infrastructure.memberUserPool;
 
     // Default environment variables for vault functions
+    // Note: Legacy tables (Credentials, CredentialKeys, TransactionKeys, LedgerAuthTokens)
+    // removed - vault-manager uses JetStream storage. Handlers referencing these will fail.
     const defaultEnv = {
-      TABLE_CREDENTIALS: tables.credentials.tableName,
-      TABLE_CREDENTIAL_KEYS: tables.credentialKeys.tableName,
-      TABLE_TRANSACTION_KEYS: tables.transactionKeys.tableName,
-      TABLE_LEDGER_AUTH_TOKENS: tables.ledgerAuthTokens.tableName,
       TABLE_ACTION_TOKENS: tables.actionTokens.tableName,
       TABLE_ENROLLMENT_SESSIONS: tables.enrollmentSessions.tableName,
       TABLE_REGISTRATIONS: tables.registrations.tableName,
@@ -173,39 +167,7 @@ export class VaultStack extends cdk.Stack {
       securityGroups: [props.nitro.lambdaSecurityGroup],
     } : {};
 
-    this.enrollStart = new lambdaNode.NodejsFunction(this, 'EnrollStartFn', {
-      entry: 'lambda/handlers/vault/enrollStart.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: {
-        ...defaultEnv,
-        SES_FROM: 'no-reply@auth.vettid.dev',
-        ENROLLMENT_JWT_SECRET_ARN: props.infrastructure.enrollmentJwtSecretArn,
-        ...enclaveEnv,
-        // Force cold start to pick up new NATS credentials
-        DEPLOY_VERSION: '2026-01-03-v3',
-      },
-      timeout: cdk.Duration.seconds(30),
-      ...vpcConfig,
-    });
-
-    // Grant enrollStart read access to the enrollment JWT secret (for generating tokens in invitation_code flow)
-    this.enrollStart.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['secretsmanager:GetSecretValue'],
-      resources: [props.infrastructure.enrollmentJwtSecretArn],
-    }));
-
-    // Grant SSM read permission for NATS credentials (for enclave communication)
-    this.enrollStart.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['ssm:GetParameter'],
-      resources: [`arn:aws:ssm:${this.region}:${this.account}:parameter/vettid/nitro/parent-nats-creds`],
-    }));
-
-    this.enrollSetPassword = new lambdaNode.NodejsFunction(this, 'EnrollSetPasswordFn', {
-      entry: 'lambda/handlers/vault/enrollSetPassword.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: defaultEnv,
-      timeout: cdk.Duration.seconds(30),
-    });
+    // Legacy enrollStart and enrollSetPassword removed - enrollment via vault-manager
 
     // SSM Parameter for vault AMI ID
     // Update this parameter to change the AMI without redeploying Lambda:
@@ -263,6 +225,7 @@ export class VaultStack extends cdk.Stack {
       runtime: lambda.Runtime.NODEJS_22_X,
       environment: {
         ...defaultEnv,
+        TABLE_NATS_ACCOUNTS: tables.natsAccounts.tableName,
         API_URL: 'https://tiqpij5mue.execute-api.us-east-1.amazonaws.com',
       },
       timeout: cdk.Duration.seconds(30),
@@ -322,39 +285,7 @@ export class VaultStack extends cdk.Stack {
     });
 
     // ===== VAULT AUTHENTICATION =====
-
-    this.actionRequest = new lambdaNode.NodejsFunction(this, 'ActionRequestFn', {
-      entry: 'lambda/handlers/vault/actionRequest.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: {
-        ...defaultEnv,
-        SES_FROM: 'no-reply@auth.vettid.dev',
-        ACTION_TOKEN_SECRET_ARN: props.infrastructure.actionTokenSecretArn,
-      },
-      timeout: cdk.Duration.seconds(30),
-    });
-
-    // Grant actionRequest read access to the action token signing secret
-    this.actionRequest.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['secretsmanager:GetSecretValue'],
-      resources: [props.infrastructure.actionTokenSecretArn],
-    }));
-
-    this.authExecute = new lambdaNode.NodejsFunction(this, 'AuthExecuteFn', {
-      entry: 'lambda/handlers/vault/authExecute.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: {
-        ...defaultEnv,
-        ACTION_TOKEN_SECRET_ARN: props.infrastructure.actionTokenSecretArn,
-      },
-      timeout: cdk.Duration.seconds(30),
-    });
-
-    // Grant authExecute read access to the action token signing secret (for signature verification)
-    this.authExecute.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['secretsmanager:GetSecretValue'],
-      resources: [props.infrastructure.actionTokenSecretArn],
-    }));
+    // Legacy actionRequest and authExecute removed - vault-manager handles auth via NATS
 
     // ===== NATS ACCOUNT MANAGEMENT =====
 
@@ -434,16 +365,7 @@ export class VaultStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(30),
     });
 
-    this.getVaultStatus = new lambdaNode.NodejsFunction(this, 'GetVaultStatusFn', {
-      entry: 'lambda/handlers/vault/getVaultStatus.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: {
-        TABLE_ENROLLMENT_SESSIONS: tables.enrollmentSessions.tableName,
-        TABLE_CREDENTIALS: tables.credentials.tableName,
-        TABLE_TRANSACTION_KEYS: tables.transactionKeys.tableName,
-      },
-      timeout: cdk.Duration.seconds(30),
-    });
+    // Legacy getVaultStatus removed - status via vault-manager
 
     // Internal endpoint called by vault-manager when it's ready
     this.vaultReady = new lambdaNode.NodejsFunction(this, 'VaultReadyFn', {
@@ -466,25 +388,7 @@ export class VaultStack extends cdk.Stack {
     });
 
     // ===== ACTION-TOKEN AUTHENTICATED VAULT STATUS =====
-    // These endpoints use action tokens instead of Cognito JWT for mobile apps
-    // that have already proven identity via the action request flow
-
-    const vaultActionEnv = {
-      TABLE_VAULT_INSTANCES: tables.vaultInstances.tableName,
-      TABLE_ACTION_TOKENS: tables.actionTokens.tableName,
-      TABLE_AUDIT: tables.audit.tableName,
-      // Additional tables for vaultStatusAction
-      TABLE_ENROLLMENT_SESSIONS: tables.enrollmentSessions.tableName,
-      TABLE_CREDENTIALS: tables.credentials.tableName,
-      TABLE_TRANSACTION_KEYS: tables.transactionKeys.tableName,
-    };
-
-    this.vaultStatusAction = new lambdaNode.NodejsFunction(this, 'VaultStatusActionFn', {
-      entry: 'lambda/handlers/vault/vaultStatusAction.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: vaultActionEnv,
-      timeout: cdk.Duration.seconds(30),
-    });
+    // Legacy vaultActionEnv and vaultStatusAction removed - status via vault-manager
 
     // ===== HANDLER REGISTRY =====
 
@@ -540,11 +444,10 @@ export class VaultStack extends cdk.Stack {
     // ===== PERMISSIONS =====
 
     // Grant table permissions
-    tables.enrollmentSessions.grantReadWriteData(this.enrollStart);
-    tables.enrollmentSessions.grantReadWriteData(this.enrollSetPassword);
+    // Legacy enrollStart/enrollSetPassword grants removed
     tables.enrollmentSessions.grantReadWriteData(this.enrollFinalize);
     tables.enrollmentSessions.grantReadWriteData(this.createEnrollmentSession);
-    tables.credentials.grantReadData(this.createEnrollmentSession);
+    tables.natsAccounts.grantReadData(this.createEnrollmentSession);
     tables.audit.grantReadWriteData(this.createEnrollmentSession);
     tables.enrollmentSessions.grantReadWriteData(this.cancelEnrollmentSession);
     tables.audit.grantReadWriteData(this.cancelEnrollmentSession);
@@ -553,42 +456,17 @@ export class VaultStack extends cdk.Stack {
     tables.enrollmentSessions.grantReadWriteData(this.authenticateEnrollment);
     tables.audit.grantReadWriteData(this.authenticateEnrollment);
 
-    tables.credentials.grantReadWriteData(this.enrollFinalize);
-    tables.credentials.grantReadData(this.actionRequest);
-    tables.credentials.grantReadData(this.authExecute);
+    // Legacy credential table grants removed - vault-manager uses JetStream storage
 
-    tables.credentialKeys.grantReadWriteData(this.enrollFinalize);
-    tables.credentialKeys.grantReadData(this.actionRequest);
-    tables.credentialKeys.grantReadData(this.authExecute);
-
-    // Transaction keys - enrollStart creates them, enrollSetPassword/enrollFinalize use them
-    tables.transactionKeys.grantReadWriteData(this.enrollStart);
-    tables.transactionKeys.grantReadWriteData(this.enrollSetPassword);
-    tables.transactionKeys.grantReadWriteData(this.enrollFinalize);
-    tables.transactionKeys.grantReadWriteData(this.actionRequest);
-    tables.transactionKeys.grantReadWriteData(this.authExecute);
-
-    // Invites table - enrollStart validates, enrollFinalize marks as used
-    tables.invites.grantReadWriteData(this.enrollStart);
+    // Invites table - enrollFinalize marks as used
     tables.invites.grantReadWriteData(this.enrollFinalize);
 
-    // Ledger auth tokens - enrollFinalize creates them, actionRequest reads via GSI
-    tables.ledgerAuthTokens.grantReadWriteData(this.enrollFinalize);
-    tables.ledgerAuthTokens.grantReadWriteData(this.authExecute);
-    tables.ledgerAuthTokens.grantReadData(this.actionRequest);  // Queries user-index GSI
+    // Legacy actionRequest/authExecute grants removed
 
-    tables.actionTokens.grantReadWriteData(this.actionRequest);
-    tables.actionTokens.grantReadWriteData(this.authExecute);
-
-    tables.registrations.grantReadData(this.enrollStart);
     tables.registrations.grantReadData(this.enrollFinalize);
 
-    // Grant audit table permissions for all vault functions
-    tables.audit.grantReadWriteData(this.enrollStart);
-    tables.audit.grantReadWriteData(this.enrollSetPassword);
+    // Grant audit table permissions for vault functions
     tables.audit.grantReadWriteData(this.enrollFinalize);
-    tables.audit.grantReadWriteData(this.actionRequest);
-    tables.audit.grantReadWriteData(this.authExecute);
 
     // ===== DEVICE ATTESTATION PERMISSIONS (Phase 2) =====
     tables.enrollmentSessions.grantReadWriteData(this.verifyAndroidAttestation);
@@ -676,14 +554,7 @@ export class VaultStack extends cdk.Stack {
       resources: [`arn:aws:iam::${this.account}:role/vettid-vault-*`],
     }));
 
-    // Grant SES permissions for email sending
-    const sesIdentityArn = `arn:aws:ses:${this.region}:${this.account}:identity/auth.vettid.dev`;
-    [this.enrollStart, this.actionRequest].forEach(fn => {
-      fn.addToRolePolicy(new iam.PolicyStatement({
-        actions: ['ses:SendEmail', 'ses:SendTemplatedEmail'],
-        resources: [sesIdentityArn],
-      }));
-    });
+    // Legacy SES permissions for enrollStart/actionRequest removed
 
     // ===== NATS PERMISSIONS =====
 
@@ -718,22 +589,7 @@ export class VaultStack extends cdk.Stack {
     tables.vaultInstances.grantReadWriteData(this.vaultReady);
     tables.vaultInstances.grantReadWriteData(this.updateVaultHealth);
 
-    // Grant getVaultStatus access to enrollment sessions, credentials, and transaction keys
-    tables.enrollmentSessions.grantReadData(this.getVaultStatus);
-    tables.credentials.grantReadData(this.getVaultStatus);
-    tables.transactionKeys.grantReadData(this.getVaultStatus);
-
-    // ===== ACTION-TOKEN VAULT STATUS PERMISSIONS =====
-
-    // Grant table access for action-token authenticated vault status
-    tables.vaultInstances.grantReadData(this.vaultStatusAction);
-    tables.actionTokens.grantReadWriteData(this.vaultStatusAction);
-    tables.audit.grantReadWriteData(this.vaultStatusAction);
-
-    // vaultStatusAction needs additional table access for enrollment/credential info
-    tables.enrollmentSessions.grantReadData(this.vaultStatusAction);
-    tables.credentials.grantReadData(this.vaultStatusAction);
-    tables.transactionKeys.grantReadData(this.vaultStatusAction);
+    // Legacy getVaultStatus and vaultStatusAction grants removed - status via vault-manager
 
     // ===== HANDLER REGISTRY PERMISSIONS =====
 
@@ -887,8 +743,8 @@ export class VaultStack extends cdk.Stack {
       runtime: lambda.Runtime.NODEJS_22_X,
       environment: {
         TABLE_AUDIT: tables.audit.tableName,
-        TABLE_CREDENTIALS: tables.credentials.tableName,
         TABLE_ENROLLMENT_SESSIONS: tables.enrollmentSessions.tableName,
+        // Legacy TABLE_CREDENTIALS removed - vault-manager uses JetStream storage
         // PCR values will be fetched from SSM Parameter Store in production
         // NITRO_EXPECTED_PCRS: JSON.stringify([...])
       },
@@ -970,8 +826,8 @@ export class VaultStack extends cdk.Stack {
     tables.credentialBackups.grantReadData(this.downloadRecoveredCredential);
     props.infrastructure.backupBucket.grantRead(this.downloadRecoveredCredential);
     tables.audit.grantWriteData(this.verifyNitroAttestation);
-    tables.credentials.grantReadWriteData(this.verifyNitroAttestation);
     tables.enrollmentSessions.grantReadData(this.verifyNitroAttestation);
+    // Legacy credentials grant removed
     tables.audit.grantWriteData(this.requestCredentialRecovery);
     tables.audit.grantWriteData(this.cancelCredentialRecovery);
     tables.audit.grantWriteData(this.downloadRecoveredCredential);
@@ -980,10 +836,9 @@ export class VaultStack extends cdk.Stack {
 
     const vaultDeletionEnv = {
       TABLE_VAULT_DELETION_REQUESTS: tables.vaultDeletionRequests.tableName,
-      TABLE_CREDENTIALS: tables.credentials.tableName,
       TABLE_NATS_ACCOUNTS: tables.natsAccounts.tableName,
-      TABLE_LEDGER_AUTH_TOKENS: tables.ledgerAuthTokens.tableName,
       TABLE_AUDIT: tables.audit.tableName,
+      // Legacy credential tables removed - vault-manager uses JetStream storage
     };
 
     this.deleteVaultRequest = new lambdaNode.NodejsFunction(this, 'DeleteVaultRequestFn', {
@@ -1019,8 +874,7 @@ export class VaultStack extends cdk.Stack {
     tables.vaultDeletionRequests.grantReadWriteData(this.deleteVaultCancel);
     tables.vaultDeletionRequests.grantReadWriteData(this.deleteVaultConfirm);
     tables.vaultDeletionRequests.grantReadData(this.deleteVaultStatus);
-    tables.credentials.grantReadWriteData(this.deleteVaultRequest);
-    tables.credentials.grantReadWriteData(this.deleteVaultConfirm);
+    tables.natsAccounts.grantReadData(this.deleteVaultRequest);
     tables.natsAccounts.grantReadWriteData(this.deleteVaultConfirm);
     tables.audit.grantWriteData(this.deleteVaultRequest);
     tables.audit.grantWriteData(this.deleteVaultCancel);
@@ -1030,10 +884,13 @@ export class VaultStack extends cdk.Stack {
 
     const credentialRestoreEnv = {
       TABLE_CREDENTIAL_RECOVERY_REQUESTS: tables.credentialRecoveryRequests.tableName,
-      TABLE_CREDENTIALS: tables.credentials.tableName,
-      TABLE_LEDGER_AUTH_TOKENS: tables.ledgerAuthTokens.tableName,
       TABLE_CREDENTIAL_BACKUPS: tables.credentialBackups.tableName,
+      TABLE_NATS_ACCOUNTS: tables.natsAccounts.tableName,
       TABLE_AUDIT: tables.audit.tableName,
+      NATS_OPERATOR_SECRET_ARN: natsOperatorSecretRef.secretArn,
+      NATS_ENDPOINT: 'nats.vettid.dev:443',
+      CREDENTIAL_BACKUP_BUCKET: props.infrastructure.backupBucket.bucketName,
+      // Legacy credential tables removed - vault-manager uses JetStream storage
     };
 
     this.restoreRequest = new lambdaNode.NodejsFunction(this, 'RestoreRequestFn', {
@@ -1085,16 +942,23 @@ export class VaultStack extends cdk.Stack {
     tables.credentialRecoveryRequests.grantReadWriteData(this.restoreCancel);
     tables.credentialRecoveryRequests.grantReadWriteData(this.restoreConfirm);
     tables.credentialRecoveryRequests.grantReadData(this.restoreStatus);
-    tables.credentials.grantReadWriteData(this.restoreRequest);
-    tables.credentials.grantReadWriteData(this.restoreApprove);
-    tables.credentials.grantReadWriteData(this.restoreConfirm);
     tables.credentialBackups.grantReadData(this.restoreConfirm);
-    tables.ledgerAuthTokens.grantReadWriteData(this.restoreConfirm);
     tables.audit.grantWriteData(this.restoreRequest);
     tables.audit.grantWriteData(this.restoreApprove);
     tables.audit.grantWriteData(this.restoreDeny);
     tables.audit.grantWriteData(this.restoreCancel);
     tables.audit.grantWriteData(this.restoreConfirm);
+
+    // NATS accounts table access for restore handlers
+    tables.natsAccounts.grantReadData(this.restoreRequest);
+    tables.natsAccounts.grantReadWriteData(this.restoreApprove);
+    tables.natsAccounts.grantReadWriteData(this.restoreConfirm);
+
+    // NATS operator secret for restoreConfirm to generate bootstrap credentials
+    natsOperatorSecretRef.grantRead(this.restoreConfirm);
+
+    // S3 bucket read access for restoreConfirm to fetch credential backups
+    props.infrastructure.backupBucket.grantRead(this.restoreConfirm);
 
     // ===== BACKUP SETTINGS =====
 
@@ -1213,6 +1077,7 @@ export class VaultStack extends cdk.Stack {
 
     const testEnv = {
       ...defaultEnv,
+      TABLE_NATS_ACCOUNTS: tables.natsAccounts.tableName,
       // SECURITY: Empty string disables validation in handler (endpoints return 403)
       TEST_API_KEY: testApiKey || '',
       API_URL: 'https://tiqpij5mue.execute-api.us-east-1.amazonaws.com',
@@ -1237,10 +1102,8 @@ export class VaultStack extends cdk.Stack {
       runtime: lambda.Runtime.NODEJS_22_X,
       environment: {
         ...testEnv,
-        TABLE_CREDENTIALS: tables.credentials.tableName,
-        TABLE_CREDENTIAL_KEYS: tables.credentialKeys.tableName,
-        TABLE_LEDGER_AUTH_TOKENS: tables.ledgerAuthTokens.tableName,
         TABLE_ACTION_TOKENS: tables.actionTokens.tableName,
+        // Legacy credential tables removed - vault-manager uses JetStream storage
       },
       timeout: cdk.Duration.seconds(60), // Cleanup may take longer
     });
@@ -1248,7 +1111,7 @@ export class VaultStack extends cdk.Stack {
     // Grant table access for test endpoints
     tables.invites.grantReadWriteData(this.testHealth);
     tables.enrollmentSessions.grantReadData(this.testHealth);
-    tables.transactionKeys.grantReadData(this.testHealth);
+    tables.natsAccounts.grantReadData(this.testHealth);
 
     tables.invites.grantReadWriteData(this.testCreateInvitation);
     tables.enrollmentSessions.grantReadWriteData(this.testCreateInvitation);
@@ -1256,105 +1119,12 @@ export class VaultStack extends cdk.Stack {
 
     tables.invites.grantReadWriteData(this.testCleanup);
     tables.enrollmentSessions.grantReadWriteData(this.testCleanup);
-    tables.transactionKeys.grantReadWriteData(this.testCleanup);
-    tables.credentials.grantReadWriteData(this.testCleanup);
-    tables.credentialKeys.grantReadWriteData(this.testCleanup);
-    tables.ledgerAuthTokens.grantReadWriteData(this.testCleanup);
+    tables.natsAccounts.grantReadWriteData(this.testCleanup);
     tables.actionTokens.grantReadWriteData(this.testCleanup);
     tables.audit.grantReadWriteData(this.testCleanup);
 
-    // ===== LEDGER (PROTEAN CREDENTIAL SYSTEM) - Phase 1 =====
-    // Only created if LedgerStack is provided
-    if (props.ledger) {
-      const ledgerDbEnv = props.ledger.getDatabaseEnv();
-      const ledgerVpcConfig = props.ledger.getLambdaVpcConfig();
-
-      // Password verification (uses argon2id)
-      this.ledgerVerifyPassword = new lambdaNode.NodejsFunction(this, 'LedgerVerifyPasswordFn', {
-        entry: 'lambda/handlers/ledger/verifyPassword.ts',
-        runtime: lambda.Runtime.NODEJS_22_X,
-        environment: ledgerDbEnv,
-        ...ledgerVpcConfig,
-        timeout: cdk.Duration.seconds(30),
-        memorySize: 256, // Argon2id needs more memory
-      });
-      props.ledger.grantDatabaseAccess(this.ledgerVerifyPassword);
-
-      // LAT validation and rotation
-      this.ledgerValidateLAT = new lambdaNode.NodejsFunction(this, 'LedgerValidateLATFn', {
-        entry: 'lambda/handlers/ledger/validateLAT.ts',
-        runtime: lambda.Runtime.NODEJS_22_X,
-        environment: ledgerDbEnv,
-        ...ledgerVpcConfig,
-        timeout: cdk.Duration.seconds(30),
-      });
-      props.ledger.grantDatabaseAccess(this.ledgerValidateLAT);
-
-      // Get transaction keys
-      this.ledgerGetTransactionKeys = new lambdaNode.NodejsFunction(this, 'LedgerGetTransactionKeysFn', {
-        entry: 'lambda/handlers/ledger/getTransactionKeys.ts',
-        runtime: lambda.Runtime.NODEJS_22_X,
-        environment: ledgerDbEnv,
-        ...ledgerVpcConfig,
-        timeout: cdk.Duration.seconds(30),
-      });
-      props.ledger.grantDatabaseAccess(this.ledgerGetTransactionKeys);
-
-      // Replenish transaction keys
-      this.ledgerReplenishTransactionKeys = new lambdaNode.NodejsFunction(this, 'LedgerReplenishTransactionKeysFn', {
-        entry: 'lambda/handlers/ledger/replenishTransactionKeys.ts',
-        runtime: lambda.Runtime.NODEJS_22_X,
-        environment: ledgerDbEnv,
-        ...ledgerVpcConfig,
-        timeout: cdk.Duration.seconds(30),
-      });
-      props.ledger.grantDatabaseAccess(this.ledgerReplenishTransactionKeys);
-
-      // Create credential (CEK)
-      this.ledgerCreateCredential = new lambdaNode.NodejsFunction(this, 'LedgerCreateCredentialFn', {
-        entry: 'lambda/handlers/ledger/createCredential.ts',
-        runtime: lambda.Runtime.NODEJS_22_X,
-        environment: ledgerDbEnv,
-        ...ledgerVpcConfig,
-        timeout: cdk.Duration.seconds(30),
-      });
-      props.ledger.grantDatabaseAccess(this.ledgerCreateCredential);
-
-      // Rotate keys
-      this.ledgerRotateKeys = new lambdaNode.NodejsFunction(this, 'LedgerRotateKeysFn', {
-        entry: 'lambda/handlers/ledger/rotateKeys.ts',
-        runtime: lambda.Runtime.NODEJS_22_X,
-        environment: ledgerDbEnv,
-        ...ledgerVpcConfig,
-        timeout: cdk.Duration.seconds(30),
-      });
-      props.ledger.grantDatabaseAccess(this.ledgerRotateKeys);
-
-      // Database migration Lambda
-      const runMigration = new lambdaNode.NodejsFunction(this, 'LedgerRunMigrationFn', {
-        entry: 'lambda/handlers/ledger/runMigration.ts',
-        runtime: lambda.Runtime.NODEJS_22_X,
-        environment: ledgerDbEnv,
-        ...ledgerVpcConfig,
-        timeout: cdk.Duration.minutes(5),  // Migrations may take time
-        memorySize: 256,
-      });
-      props.ledger.grantDatabaseAccess(runMigration);
-
-      // Custom resource to run migrations on deploy
-      const migrationProvider = new cr.Provider(this, 'MigrationProvider', {
-        onEventHandler: runMigration,
-      });
-
-      new cdk.CustomResource(this, 'LedgerMigration', {
-        serviceToken: migrationProvider.serviceToken,
-        properties: {
-          // Change this to force migration re-run (e.g., bump version)
-          version: '2',  // Bumped from 1 to 2 to re-run after SSL fix
-          action: 'run',
-        },
-      });
-    }
+    // Note: Ledger (Protean Credential System) section removed
+    // Legacy PostgreSQL ledger replaced by vault-manager JetStream storage
 
     // Add API routes - done here to keep route resources in VaultStack
     this.addRoutes(props.httpApi, props.memberAuthorizer);
@@ -1410,28 +1180,15 @@ export class VaultStack extends cdk.Stack {
       // No authorizer - this is a public endpoint
     });
 
-    // Mobile enrollment endpoints (requires enrollment JWT from authenticate endpoint)
-    this.route('EnrollStart', httpApi, '/vault/enroll/start', apigw.HttpMethod.POST, this.enrollStart, enrollmentLambdaAuthorizer);
-    this.route('EnrollSetPassword', httpApi, '/vault/enroll/set-password', apigw.HttpMethod.POST, this.enrollSetPassword, enrollmentLambdaAuthorizer);
+    // Mobile enrollment - enrollFinalize now handles complete enrollment via vault-manager
+    // Legacy enrollStart/enrollSetPassword removed - vault-manager handles key generation
     this.route('EnrollFinalize', httpApi, '/vault/enroll/finalize', apigw.HttpMethod.POST, this.enrollFinalize, enrollmentLambdaAuthorizer);
-
-    // Direct enrollment via invitation code (public endpoint - no JWT required)
-    // This allows mobile apps to enroll directly using an invitation code
-    // The handler validates the invitation code internally
-    new apigw.HttpRoute(this, 'EnrollStartDirect', {
-      httpApi,
-      routeKey: apigw.HttpRouteKey.with('/vault/enroll/start-direct', apigw.HttpMethod.POST),
-      integration: new integrations.HttpLambdaIntegration('EnrollStartDirectInt', this.enrollStart),
-      // No authorizer - uses invitation code for authorization
-    });
 
     // Device Attestation (Phase 2) - also uses enrollment JWT
     this.route('VerifyAndroidAttestation', httpApi, '/vault/enroll/attestation/android', apigw.HttpMethod.POST, this.verifyAndroidAttestation, enrollmentLambdaAuthorizer);
     this.route('VerifyIosAttestation', httpApi, '/vault/enroll/attestation/ios', apigw.HttpMethod.POST, this.verifyIosAttestation, enrollmentLambdaAuthorizer);
 
-    // Vault Authentication
-    this.route('ActionRequest', httpApi, '/vault/action/request', apigw.HttpMethod.POST, this.actionRequest, memberAuthorizer);
-    this.route('AuthExecute', httpApi, '/vault/auth/execute', apigw.HttpMethod.POST, this.authExecute, memberAuthorizer);
+    // Legacy vault auth endpoints removed - auth now via NATS to vault-manager
 
     // NATS Account Management
     this.route('NatsCreateAccount', httpApi, '/vault/nats/account', apigw.HttpMethod.POST, this.natsCreateAccount, memberAuthorizer);
@@ -1449,7 +1206,7 @@ export class VaultStack extends cdk.Stack {
     // Vault Lifecycle Management (Nitro enclave model - no EC2-per-user provisioning)
     this.route('InitializeVault', httpApi, '/vault/initialize', apigw.HttpMethod.POST, this.initializeVault, memberAuthorizer);
     this.route('GetVaultHealth', httpApi, '/vault/health', apigw.HttpMethod.GET, this.getVaultHealth, memberAuthorizer);
-    this.route('GetVaultStatus', httpApi, '/vault/status', apigw.HttpMethod.GET, this.getVaultStatus, memberAuthorizer);
+    // Legacy getVaultStatus removed - status via vault-manager
 
     // Internal endpoint called by vault-manager when it's ready (no auth - validated by instance ID and EC2 tags)
     new apigw.HttpRoute(this, 'VaultReady', {
@@ -1465,27 +1222,7 @@ export class VaultStack extends cdk.Stack {
       integration: new integrations.HttpLambdaIntegration('UpdateVaultHealthIntegration', this.updateVaultHealth),
     });
 
-    // ===== ACTION-TOKEN VAULT LIFECYCLE ENDPOINTS =====
-    // These endpoints use action tokens instead of Cognito JWT for mobile apps.
-    // Mobile apps request an action token via /api/v1/action/request (no Cognito),
-    // then use that token to call these endpoints.
-
-    // Action request endpoint for mobile apps (no Cognito auth)
-    // Mobile apps authenticate via their enrolled credentials, not Cognito JWT
-    // The handler validates the user by checking their credential in DynamoDB
-    new apigw.HttpRoute(this, 'ActionRequestPublic', {
-      httpApi,
-      routeKey: apigw.HttpRouteKey.with('/api/v1/action/request', apigw.HttpMethod.POST),
-      integration: new integrations.HttpLambdaIntegration('ActionRequestPublicInt', this.actionRequest),
-      // No authorizer - user validation done via credential lookup in handler
-    });
-
-    new apigw.HttpRoute(this, 'VaultStatusAction', {
-      httpApi,
-      routeKey: apigw.HttpRouteKey.with('/api/v1/vault/status', apigw.HttpMethod.GET),
-      integration: new integrations.HttpLambdaIntegration('VaultStatusActionInt', this.vaultStatusAction),
-      // No authorizer - action token is validated in handler
-    });
+    // Legacy ACTION-TOKEN endpoints removed - mobile auth now via NATS to vault-manager
 
     // Handler Registry Routes
     this.route('ListHandlers', httpApi, '/registry/handlers', apigw.HttpMethod.GET, this.listHandlers, memberAuthorizer);
@@ -1578,26 +1315,7 @@ export class VaultStack extends cdk.Stack {
     this.route('UpdateByovVault', httpApi, '/vault/byov', apigw.HttpMethod.PATCH, this.updateByovVault, memberAuthorizer);
     this.route('DeleteByovVault', httpApi, '/vault/byov', apigw.HttpMethod.DELETE, this.deleteByovVault, memberAuthorizer);
 
-    // Ledger (Protean Credential System) Routes - Phase 1
-    // Only added if Ledger Lambda functions are created
-    if (this.ledgerVerifyPassword) {
-      this.route('LedgerVerifyPassword', httpApi, '/vault/auth/verify-password', apigw.HttpMethod.POST, this.ledgerVerifyPassword, memberAuthorizer);
-    }
-    if (this.ledgerValidateLAT) {
-      this.route('LedgerValidateLAT', httpApi, '/vault/auth/validate-lat', apigw.HttpMethod.POST, this.ledgerValidateLAT, memberAuthorizer);
-    }
-    if (this.ledgerGetTransactionKeys) {
-      this.route('LedgerGetTransactionKeys', httpApi, '/vault/transaction-keys', apigw.HttpMethod.GET, this.ledgerGetTransactionKeys, memberAuthorizer);
-    }
-    if (this.ledgerReplenishTransactionKeys) {
-      this.route('LedgerReplenishTransactionKeys', httpApi, '/vault/transaction-keys/replenish', apigw.HttpMethod.POST, this.ledgerReplenishTransactionKeys, memberAuthorizer);
-    }
-    if (this.ledgerCreateCredential) {
-      this.route('LedgerCreateCredential', httpApi, '/vault/credentials/create', apigw.HttpMethod.POST, this.ledgerCreateCredential, memberAuthorizer);
-    }
-    if (this.ledgerRotateKeys) {
-      this.route('LedgerRotateKeys', httpApi, '/vault/credentials/rotate', apigw.HttpMethod.POST, this.ledgerRotateKeys, memberAuthorizer);
-    }
+    // Note: Ledger routes removed - vault-manager uses JetStream storage
 
     // ===== TEST AUTOMATION ENDPOINTS =====
     // Public endpoints protected by TEST_API_KEY header (validated in handler)

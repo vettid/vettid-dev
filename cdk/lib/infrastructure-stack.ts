@@ -38,10 +38,7 @@ export class InfrastructureStack extends cdk.Stack {
     votes: dynamodb.Table;
     subscriptionTypes: dynamodb.Table;
     sentEmails: dynamodb.Table;
-    credentials: dynamodb.Table;
-    credentialKeys: dynamodb.Table;
-    transactionKeys: dynamodb.Table;
-    ledgerAuthTokens: dynamodb.Table;
+    // Legacy credential tables removed - replaced by vault-manager JetStream storage
     actionTokens: dynamodb.Table;
     enrollmentSessions: dynamodb.Table;
     notificationPreferences: dynamodb.Table;
@@ -316,67 +313,8 @@ export class InfrastructureStack extends cdk.Stack {
     });
 
     // ===== VAULT SERVICES TABLES =====
-
-    // Credentials table
-    const credentials = new dynamodb.Table(this, 'Credentials', {
-      partitionKey: { name: 'user_guid', type: dynamodb.AttributeType.STRING },
-      sortKey: { name: 'credential_id', type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-      pointInTimeRecovery: true,
-      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
-      encryptionKey: dynamoDbEncryptionKey,
-    });
-
-    // Credential keys table
-    const credentialKeys = new dynamodb.Table(this, 'CredentialKeys', {
-      partitionKey: { name: 'credential_id', type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-      pointInTimeRecovery: true,
-      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
-      encryptionKey: dynamoDbEncryptionKey,
-    });
-
-    credentialKeys.addGlobalSecondaryIndex({
-      indexName: 'user-index',
-      partitionKey: { name: 'user_guid', type: dynamodb.AttributeType.STRING },
-      projectionType: dynamodb.ProjectionType.ALL,
-    });
-
-    // Transaction keys table
-    const transactionKeys = new dynamodb.Table(this, 'TransactionKeys', {
-      partitionKey: { name: 'transaction_id', type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-      timeToLiveAttribute: 'ttl',
-      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
-      encryptionKey: dynamoDbEncryptionKey,
-    });
-
-    transactionKeys.addGlobalSecondaryIndex({
-      indexName: 'user-index',
-      partitionKey: { name: 'user_guid', type: dynamodb.AttributeType.STRING },
-      sortKey: { name: 'created_at', type: dynamodb.AttributeType.NUMBER },
-      projectionType: dynamodb.ProjectionType.ALL,
-    });
-
-    // Ledger auth tokens table
-    const ledgerAuthTokens = new dynamodb.Table(this, 'LedgerAuthTokens', {
-      partitionKey: { name: 'token', type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-      timeToLiveAttribute: 'ttl',
-      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
-      encryptionKey: dynamoDbEncryptionKey,
-    });
-
-    // GSI to look up LAT by user_guid (for action token issuance)
-    ledgerAuthTokens.addGlobalSecondaryIndex({
-      indexName: 'user-index',
-      partitionKey: { name: 'user_guid', type: dynamodb.AttributeType.STRING },
-      projectionType: dynamodb.ProjectionType.ALL,
-    });
+    // Note: Legacy credential tables (Credentials, CredentialKeys, TransactionKeys, LedgerAuthTokens)
+    // have been removed - replaced by vault-manager JetStream storage in Nitro enclave
 
     // Action tokens table
     const actionTokens = new dynamodb.Table(this, 'ActionTokens', {
@@ -832,10 +770,7 @@ export class InfrastructureStack extends cdk.Stack {
       votes,
       subscriptionTypes,
       sentEmails,
-      credentials,
-      credentialKeys,
-      transactionKeys,
-      ledgerAuthTokens,
+      // Legacy credential tables removed - vault-manager uses JetStream storage
       actionTokens,
       enrollmentSessions,
       notificationPreferences,

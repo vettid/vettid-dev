@@ -1,5 +1,5 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
-import { DynamoDBClient, GetItemCommand, PutItemCommand, UpdateItemCommand, QueryCommand } from '@aws-sdk/client-dynamodb';
+import { DynamoDBClient, GetItemCommand, PutItemCommand, UpdateItemCommand } from '@aws-sdk/client-dynamodb';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import {
   ok,
@@ -9,25 +9,17 @@ import {
   internalError,
   getRequestId,
   putAudit,
-  generateSecureId,
   checkRateLimit,
   hashIdentifier,
   tooManyRequests,
 } from '../../common/util';
 import { generateAccountCredentials, generateBootstrapCredentials, formatCredsFile } from '../../common/nats-jwt';
-import { generateLAT, hashLATToken } from '../../common/crypto-keys';
-import { requestCredentialCreate } from '../../common/enclave-client';
 
 const ddb = new DynamoDBClient({});
 
 const TABLE_ENROLLMENT_SESSIONS = process.env.TABLE_ENROLLMENT_SESSIONS!;
 const TABLE_INVITES = process.env.TABLE_INVITES!;
-const TABLE_CREDENTIALS = process.env.TABLE_CREDENTIALS!;
-const TABLE_CREDENTIAL_KEYS = process.env.TABLE_CREDENTIAL_KEYS!;
-const TABLE_LEDGER_AUTH_TOKENS = process.env.TABLE_LEDGER_AUTH_TOKENS!;
-const TABLE_TRANSACTION_KEYS = process.env.TABLE_TRANSACTION_KEYS!;
 const TABLE_NATS_ACCOUNTS = process.env.TABLE_NATS_ACCOUNTS!;
-// NATS_CA_SECRET_ARN no longer needed - NLB terminates TLS with ACM (publicly trusted)
 
 // Rate limiting: 3 finalize attempts per session per 15 minutes
 const RATE_LIMIT_MAX_REQUESTS = 3;
@@ -40,8 +32,11 @@ interface FinalizeRequest {
 /**
  * POST /vault/enroll/finalize
  *
- * Finalize enrollment and create the credential.
- * Generates CEK, encrypts credential blob, creates LAT.
+ * Finalize enrollment and set up vault access.
+ * Creates NATS account and returns bootstrap credentials.
+ *
+ * The actual Protean Credential is created by the vault-manager when
+ * the mobile app calls app.bootstrap on its vault via NATS.
  *
  * Supports two flows:
  * 1. QR Code Flow: session_id comes from enrollment JWT (authorizer context)
@@ -49,8 +44,8 @@ interface FinalizeRequest {
  *
  * Returns:
  * - status: 'enrolled'
- * - credential_package with encrypted_blob, cek_version, lat, and remaining transaction_keys
- * - vault_status
+ * - vault_bootstrap: NATS credentials and topics for app to connect to vault
+ * - vault_status: 'ENCLAVE_READY'
  */
 export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   const requestId = getRequestId(event);
@@ -105,13 +100,9 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       return badRequest('Session does not belong to authenticated user', origin);
     }
 
-    // Validate session state
+    // Validate session state - STARTED is valid (password set is optional for Nitro model)
     if (session.status !== 'STARTED') {
       return conflict(`Invalid session status: ${session.status}`, origin);
-    }
-
-    if (session.step !== 'password_set') {
-      return conflict('Password must be set before finalizing enrollment', origin);
     }
 
     // Check session expiry
@@ -122,120 +113,61 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     const now = new Date();
     const userGuid = session.user_guid;
 
-    // Generate LAT (Ledger Auth Token)
-    console.log('DEBUG: Starting LAT generation');
-    const lat = generateLAT(1);
-    const latTokenHash = hashLATToken(lat.token);
-    console.log('DEBUG: LAT generated, storing to DynamoDB');
+    // === NATS ACCOUNT SETUP ===
+    // Create NATS account for mobile app communication with the vault.
+    // The Nitro enclave is already running - no EC2 provisioning needed.
+    // The vault-manager will create the Protean Credential when the app
+    // calls app.bootstrap on its vault via NATS.
+    const vaultStatus = 'ENCLAVE_READY';
+    const ownerSpaceId = `OwnerSpace.${userGuid.replace(/-/g, '')}`;
+    const messageSpaceId = `MessageSpace.${userGuid.replace(/-/g, '')}`;
+    let bootstrapCredentials = '';
+    let accountSeed: string;
 
-    await ddb.send(new PutItemCommand({
-      TableName: TABLE_LEDGER_AUTH_TOKENS,
-      Item: marshall({
-        token: latTokenHash,  // Primary key - store hash as the key
-        user_guid: userGuid,
-        version: lat.version,
-        status: 'ACTIVE',
-        created_at: now.toISOString(),
-      }, { removeUndefinedValues: true }),
-    }));
-    console.log('DEBUG: LAT stored successfully');
-
-    // Get remaining unused transaction keys
-    const unusedKeysResult = await ddb.send(new QueryCommand({
-      TableName: TABLE_TRANSACTION_KEYS,
-      IndexName: 'user-index',
-      KeyConditionExpression: 'user_guid = :user_guid',
-      FilterExpression: '#status = :status',
-      ExpressionAttributeNames: {
-        '#status': 'status',
-      },
-      ExpressionAttributeValues: marshall({
-        ':user_guid': userGuid,
-        ':status': 'UNUSED',
-      }),
+    // Check if this user already has a NATS account (e.g., re-enrollment)
+    const existingAccountResult = await ddb.send(new GetItemCommand({
+      TableName: TABLE_NATS_ACCOUNTS,
+      Key: marshall({ user_guid: userGuid }),
     }));
 
-    const remainingKeys = (unusedKeysResult.Items || []).map(item => {
-      const key = unmarshall(item);
-      return {
-        key_id: key.key_id,
-        public_key: key.public_key,
-        algorithm: key.algorithm,
-      };
-    });
+    if (existingAccountResult.Item) {
+      // Reusing existing account - use the existing seed for bootstrap credentials
+      const existingAccount = unmarshall(existingAccountResult.Item);
+      accountSeed = existingAccount.account_seed;
+      console.log(`Re-enrollment with existing NATS account for user ${userGuid}`);
+    } else {
+      // New user - create NATS account
+      const accountCredentials = await generateAccountCredentials(userGuid);
+      accountSeed = accountCredentials.seed;
 
-    // ============================================
-    // ENCLAVE CREDENTIAL CREATION
-    // ============================================
-    // The enclave creates a sealed credential that only it can unseal.
-    // Mobile encrypted auth data to the enclave's public key during set-password step.
+      await ddb.send(new PutItemCommand({
+        TableName: TABLE_NATS_ACCOUNTS,
+        Item: marshall({
+          user_guid: userGuid,
+          account_public_key: accountCredentials.publicKey,
+          account_seed: accountCredentials.seed,
+          account_jwt: accountCredentials.accountJwt,
+          owner_space_id: ownerSpaceId,
+          message_space_id: messageSpaceId,
+          status: 'active',
+          storage_type: 'enclave',
+          created_at: now.toISOString(),
+        }, { removeUndefinedValues: true }),
+      }));
 
-    const credentialId = generateSecureId('cred', 16);
+      console.log(`Created NATS account for user ${userGuid}`);
+    }
 
-    // Get the encrypted auth data from the session
-    const encryptedAuth = Buffer.from(session.encrypted_password_hash, 'base64');
-
-    // Determine auth type from session
-    const authType = session.auth_type || 'password';
-
-    // Request credential creation from enclave
-    const enclaveResult = await requestCredentialCreate(
+    // Generate temporary bootstrap credentials for initial app connection
+    // These have minimal permissions - just enough to call app.bootstrap
+    // The vault-manager will generate full credentials after bootstrap
+    const bootstrapCreds = await generateBootstrapCredentials(
       userGuid,
-      encryptedAuth,
-      authType as 'pin' | 'password' | 'pattern'
+      accountSeed,
+      ownerSpaceId
     );
 
-    // Store credential metadata (enclave manages the actual keys)
-    const credentialItem: Record<string, any> = {
-      user_guid: userGuid,
-      credential_id: credentialId,
-      status: 'ACTIVE',
-      storage_type: 'enclave',
-      lat_version: lat.version,
-      created_at: now.toISOString(),
-      last_action_at: now.toISOString(),
-      failed_auth_count: 0,
-    };
-
-    // Add optional fields only if they exist
-    if (session.device_id) {
-      credentialItem.device_id = session.device_id;
-    }
-    if (enclaveResult.public_key) {
-      credentialItem.enclave_public_key = enclaveResult.public_key;
-    }
-    if (session.invitation_code) {
-      credentialItem.invitation_code = session.invitation_code;
-    }
-
-    console.log('DEBUG: Storing credential to DynamoDB, item:', JSON.stringify(credentialItem));
-    await ddb.send(new PutItemCommand({
-      TableName: TABLE_CREDENTIALS,
-      Item: marshall(credentialItem, { removeUndefinedValues: true }),
-    }));
-    console.log('DEBUG: Credential stored successfully');
-
-    // Build credential package
-    const credentialPackage: Record<string, any> = {
-      user_guid: userGuid,
-      credential_id: credentialId,
-      sealed_credential: enclaveResult.sealed_credential,
-      ledger_auth_token: {
-        token: lat.token,
-        version: lat.version,
-      },
-      transaction_keys: remainingKeys,
-    };
-
-    // Add optional enclave fields if present
-    if (enclaveResult.public_key) {
-      credentialPackage.enclave_public_key = enclaveResult.public_key;
-    }
-    if (enclaveResult.backup_key) {
-      credentialPackage.backup_key = enclaveResult.backup_key;
-    }
-
-    console.log(`Created enclave credential for user ${userGuid}`);
+    bootstrapCredentials = formatCredsFile(bootstrapCreds.jwt, bootstrapCreds.seed);
 
     // Mark session as completed
     await ddb.send(new UpdateItemCommand({
@@ -274,81 +206,18 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       user_guid: userGuid,
       session_id: sessionId,
       storage_type: 'enclave',
-      lat_version: lat.version,
-      transaction_keys_remaining: remainingKeys.length,
+      nats_account_created: !existingAccountResult.Item,
     }, requestId);
-
-    // === NATS ACCOUNT SETUP ===
-    // Create NATS account for mobile app communication with the enclave.
-    // The Nitro enclave is already running - no EC2 provisioning needed.
-    const vaultStatus = 'ENCLAVE_READY';
-    let ownerSpaceId = '';
-    let messageSpaceId = '';
-    let bootstrapCredentials = '';
-
-    try {
-      ownerSpaceId = `OwnerSpace.${userGuid.replace(/-/g, '')}`;
-      messageSpaceId = `MessageSpace.${userGuid.replace(/-/g, '')}`;
-
-      // Check if this user already has a NATS account (e.g., re-enrollment)
-      const existingAccountResult = await ddb.send(new GetItemCommand({
-        TableName: TABLE_NATS_ACCOUNTS,
-        Key: marshall({ user_guid: userGuid }),
-      }));
-
-      let accountSeed: string;
-
-      if (existingAccountResult.Item) {
-        // Reusing existing account - use the existing seed for bootstrap credentials
-        const existingAccount = unmarshall(existingAccountResult.Item);
-        accountSeed = existingAccount.account_seed;
-        console.log(`Re-enrollment with existing NATS account for user ${userGuid}`);
-      } else {
-        // New user - create NATS account
-        const accountCredentials = await generateAccountCredentials(userGuid);
-        accountSeed = accountCredentials.seed;
-
-        await ddb.send(new PutItemCommand({
-          TableName: TABLE_NATS_ACCOUNTS,
-          Item: marshall({
-            user_guid: userGuid,
-            account_public_key: accountCredentials.publicKey,
-            account_seed: accountCredentials.seed,
-            account_jwt: accountCredentials.accountJwt,
-            owner_space_id: ownerSpaceId,
-            message_space_id: messageSpaceId,
-            status: 'active',
-            storage_type: 'enclave',
-            created_at: now.toISOString(),
-          }, { removeUndefinedValues: true }),
-        }));
-
-        console.log(`Created NATS account for user ${userGuid}`);
-      }
-
-      // Generate temporary bootstrap credentials for initial app connection
-      // These have minimal permissions - just enough to call app.bootstrap
-      const bootstrapCreds = await generateBootstrapCredentials(
-        userGuid,
-        accountSeed,
-        ownerSpaceId
-      );
-
-      bootstrapCredentials = formatCredsFile(bootstrapCreds.jwt, bootstrapCreds.seed);
-
-    } catch (provisionError: any) {
-      // Non-fatal: enrollment succeeded, but NATS account creation failed
-      console.warn('NATS account setup failed (non-fatal):', provisionError.message);
-    }
 
     return ok({
       status: 'enrolled',
-      credential_package: credentialPackage,
       vault_status: vaultStatus,
       // Vault bootstrap info - app uses these temporary credentials to call app.bootstrap
-      // on the vault and receive full NATS credentials generated by the vault.
+      // on the vault and receive:
+      // 1. Full NATS credentials for vault communication
+      // 2. The Protean Credential (created by vault-manager, stored in vault's JetStream)
       // Enclave is immediately available - no EC2 startup delay.
-      vault_bootstrap: bootstrapCredentials ? {
+      vault_bootstrap: {
         credentials: bootstrapCredentials,
         owner_space: ownerSpaceId,
         message_space: messageSpaceId,
@@ -357,7 +226,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
         response_topic: `${ownerSpaceId}.forApp.app.bootstrap.>`,
         credentials_ttl_seconds: 3600,
         estimated_ready_at: new Date().toISOString(),  // Enclave is immediately ready
-      } : undefined,
+      },
     }, origin);
 
   } catch (error: any) {

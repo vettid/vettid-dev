@@ -14,7 +14,7 @@ import {
 const ddb = new DynamoDBClient({});
 
 const TABLE_CREDENTIAL_RECOVERY_REQUESTS = process.env.TABLE_CREDENTIAL_RECOVERY_REQUESTS!;
-const TABLE_CREDENTIALS = process.env.TABLE_CREDENTIALS!;
+const TABLE_NATS_ACCOUNTS = process.env.TABLE_NATS_ACCOUNTS!;
 
 interface ApproveRequestBody {
   recovery_id: string;
@@ -104,26 +104,28 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       }),
     }));
 
-    // Invalidate the old credential
-    await ddb.send(new UpdateItemCommand({
-      TableName: TABLE_CREDENTIALS,
-      Key: marshall({ user_guid: memberGuid }),
-      UpdateExpression: 'SET #status = :transferred, transferred_at = :now',
-      ExpressionAttributeNames: {
-        '#status': 'status',
-      },
-      ExpressionAttributeValues: marshall({
-        ':transferred': 'TRANSFERRED',
-        ':now': now.toISOString(),
-      }),
-    }));
+    // Mark NATS account as transferring (vault-manager will handle credential transfer)
+    // The new device will complete the transfer via vault-manager
+    try {
+      await ddb.send(new UpdateItemCommand({
+        TableName: TABLE_NATS_ACCOUNTS,
+        Key: marshall({ user_guid: memberGuid }),
+        UpdateExpression: 'SET transfer_approved_at = :now, transfer_status = :status',
+        ExpressionAttributeValues: marshall({
+          ':now': now.toISOString(),
+          ':status': 'approved',
+        }),
+      }));
+    } catch (err) {
+      console.log('NATS account not found or already updated');
+    }
 
     // Audit log
     await putAudit({
       type: 'credential_transfer_approved',
       member_guid: memberGuid,
       recovery_id: body.recovery_id,
-      credential_id: request.credential_id,
+      nats_account_public_key: request.nats_account_public_key,
     }, requestId);
 
     return ok({

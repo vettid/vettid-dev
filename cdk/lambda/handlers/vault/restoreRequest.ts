@@ -1,5 +1,5 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
-import { DynamoDBClient, PutItemCommand, QueryCommand } from '@aws-sdk/client-dynamodb';
+import { DynamoDBClient, PutItemCommand, QueryCommand, GetItemCommand } from '@aws-sdk/client-dynamodb';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import {
   ok,
@@ -15,7 +15,7 @@ import {
 const ddb = new DynamoDBClient({});
 
 const TABLE_CREDENTIAL_RECOVERY_REQUESTS = process.env.TABLE_CREDENTIAL_RECOVERY_REQUESTS!;
-const TABLE_CREDENTIALS = process.env.TABLE_CREDENTIALS!;
+const TABLE_NATS_ACCOUNTS = process.env.TABLE_NATS_ACCOUNTS!;
 
 // 24 hours in milliseconds
 const RECOVERY_DELAY_MS = 24 * 60 * 60 * 1000;
@@ -62,23 +62,18 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
 
     const lostDevice = body.lost_device === true;
 
-    // Check if user has a credential (even if not active - they may be recovering)
-    const credentialResult = await ddb.send(new QueryCommand({
-      TableName: TABLE_CREDENTIALS,
-      IndexName: 'user-index',
-      KeyConditionExpression: 'user_guid = :guid',
-      ExpressionAttributeValues: marshall({
-        ':guid': memberGuid,
-      }),
-      ScanIndexForward: false,
-      Limit: 1,
+    // Check if user has a NATS account (vault)
+    // In the Nitro model, having a NATS account means the user has a vault
+    const natsAccountResult = await ddb.send(new GetItemCommand({
+      TableName: TABLE_NATS_ACCOUNTS,
+      Key: marshall({ user_guid: memberGuid }),
     }));
 
-    if (!credentialResult.Items || credentialResult.Items.length === 0) {
-      return badRequest('No credential found. Please enroll first.', origin);
+    if (!natsAccountResult.Item) {
+      return badRequest('No vault found. Please enroll first.', origin);
     }
 
-    const credential = unmarshall(credentialResult.Items[0]);
+    const natsAccount = unmarshall(natsAccountResult.Item);
 
     // Check for existing pending restore request
     const existingRequest = await ddb.send(new QueryCommand({
@@ -144,7 +139,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     const item: Record<string, any> = {
       recovery_id: recoveryId,
       member_guid: memberGuid,
-      credential_id: credential.credential_id,
+      nats_account_public_key: natsAccount.account_public_key,
       status,
       lost_device: lostDevice,
       requested_at: now.toISOString(),
@@ -172,7 +167,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       member_guid: memberGuid,
       recovery_id: recoveryId,
       lost_device: lostDevice,
-      credential_id: credential.credential_id,
+      nats_account_public_key: natsAccount.account_public_key,
     }, requestId);
 
     const response: Record<string, any> = {

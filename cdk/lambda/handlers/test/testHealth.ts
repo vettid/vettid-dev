@@ -16,7 +16,7 @@ const ddb = new DynamoDBClient({});
 // Environment configuration
 const TEST_API_KEY = process.env.TEST_API_KEY;
 const TABLE_ENROLLMENT_SESSIONS = process.env.TABLE_ENROLLMENT_SESSIONS!;
-const TABLE_TRANSACTION_KEYS = process.env.TABLE_TRANSACTION_KEYS!;
+const TABLE_NATS_ACCOUNTS = process.env.TABLE_NATS_ACCOUNTS!;
 const TABLE_INVITES = process.env.TABLE_INVITES!;
 
 /**
@@ -46,7 +46,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
 
     const tablesToCheck = [
       { name: 'enrollment_sessions', tableName: TABLE_ENROLLMENT_SESSIONS },
-      { name: 'transaction_keys', tableName: TABLE_TRANSACTION_KEYS },
+      { name: 'nats_accounts', tableName: TABLE_NATS_ACCOUNTS },
       { name: 'invites', tableName: TABLE_INVITES },
     ];
 
@@ -74,6 +74,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
         mock_attestation_enabled: true,
         skip_attestation_available: true,
         test_user_prefix: 'test_android_',
+        nitro_model: true,  // Using Nitro enclave architecture
       },
       tables: tableChecks,
     }, origin);

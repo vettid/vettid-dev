@@ -12,7 +12,6 @@ import {
   DynamoDBClient,
   DeleteItemCommand,
   QueryCommand,
-  BatchWriteItemCommand,
   ScanCommand,
 } from '@aws-sdk/client-dynamodb';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
@@ -32,10 +31,7 @@ const ddb = new DynamoDBClient({});
 const TEST_API_KEY = process.env.TEST_API_KEY;
 const TABLE_INVITES = process.env.TABLE_INVITES!;
 const TABLE_ENROLLMENT_SESSIONS = process.env.TABLE_ENROLLMENT_SESSIONS!;
-const TABLE_TRANSACTION_KEYS = process.env.TABLE_TRANSACTION_KEYS!;
-const TABLE_CREDENTIALS = process.env.TABLE_CREDENTIALS!;
-const TABLE_CREDENTIAL_KEYS = process.env.TABLE_CREDENTIAL_KEYS!;
-const TABLE_LEDGER_AUTH_TOKENS = process.env.TABLE_LEDGER_AUTH_TOKENS!;
+const TABLE_NATS_ACCOUNTS = process.env.TABLE_NATS_ACCOUNTS!;
 const TABLE_ACTION_TOKENS = process.env.TABLE_ACTION_TOKENS!;
 
 // Test user prefix
@@ -57,51 +53,6 @@ function validateTestApiKey(event: APIGatewayProxyEventV2): boolean {
 
   const apiKey = event.headers['x-test-api-key'] || event.headers['X-Test-Api-Key'];
   return apiKey === TEST_API_KEY;
-}
-
-/**
- * Delete items from a table using GSI query
- */
-async function deleteByUserGuid(tableName: string, userGuid: string, pkField: string): Promise<number> {
-  let deletedCount = 0;
-  let lastEvaluatedKey: any = undefined;
-
-  do {
-    // Query by user_guid GSI
-    const queryResult = await ddb.send(new QueryCommand({
-      TableName: tableName,
-      IndexName: 'user-index',
-      KeyConditionExpression: 'user_guid = :guid',
-      ExpressionAttributeValues: marshall({ ':guid': userGuid }),
-      ExclusiveStartKey: lastEvaluatedKey,
-    }));
-
-    if (queryResult.Items && queryResult.Items.length > 0) {
-      const items = queryResult.Items.map(item => unmarshall(item));
-
-      // Delete in batches of 25
-      for (let i = 0; i < items.length; i += 25) {
-        const batch = items.slice(i, i + 25);
-        const deleteRequests = batch.map(item => ({
-          DeleteRequest: {
-            Key: marshall({ [pkField]: item[pkField] }),
-          },
-        }));
-
-        await ddb.send(new BatchWriteItemCommand({
-          RequestItems: {
-            [tableName]: deleteRequests,
-          },
-        }));
-
-        deletedCount += batch.length;
-      }
-    }
-
-    lastEvaluatedKey = queryResult.LastEvaluatedKey;
-  } while (lastEvaluatedKey);
-
-  return deletedCount;
 }
 
 /**
@@ -180,6 +131,22 @@ async function deleteEnrollmentSessions(userGuid: string): Promise<number> {
   return deletedCount;
 }
 
+/**
+ * Delete NATS account for a user (Nitro model)
+ */
+async function deleteNatsAccount(userGuid: string): Promise<number> {
+  try {
+    await ddb.send(new DeleteItemCommand({
+      TableName: TABLE_NATS_ACCOUNTS,
+      Key: marshall({ user_guid: userGuid }),
+    }));
+    return 1;
+  } catch (e) {
+    console.log('No NATS account to delete or error:', e);
+    return 0;
+  }
+}
+
 export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   const requestId = getRequestId(event);
   const origin = event.headers?.origin;
@@ -221,30 +188,8 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       cleanupResults.invitations = await deleteTestInvitations(testUserId);
       cleanupResults.enrollment_sessions = await deleteEnrollmentSessions(testUserId);
 
-      // Tables with user-index GSI
-      try {
-        cleanupResults.transaction_keys = await deleteByUserGuid(
-          TABLE_TRANSACTION_KEYS, testUserId, 'transaction_id'
-        );
-      } catch (e) {
-        console.log('No transaction keys to delete or GSI not available');
-      }
-
-      try {
-        cleanupResults.credentials = await deleteByUserGuid(
-          TABLE_CREDENTIALS, testUserId, 'credential_id'
-        );
-      } catch (e) {
-        console.log('No credentials to delete or GSI not available');
-      }
-
-      try {
-        cleanupResults.ledger_auth_tokens = await deleteByUserGuid(
-          TABLE_LEDGER_AUTH_TOKENS, testUserId, 'token_id'
-        );
-      } catch (e) {
-        console.log('No LATs to delete or GSI not available');
-      }
+      // Delete NATS account (Nitro model - replaces legacy credential tables)
+      cleanupResults.nats_accounts = await deleteNatsAccount(testUserId);
     }
 
     // Audit log

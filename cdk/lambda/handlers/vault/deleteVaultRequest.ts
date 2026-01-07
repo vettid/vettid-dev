@@ -15,7 +15,7 @@ import {
 const ddb = new DynamoDBClient({});
 
 const TABLE_VAULT_DELETION_REQUESTS = process.env.TABLE_VAULT_DELETION_REQUESTS!;
-const TABLE_CREDENTIALS = process.env.TABLE_CREDENTIALS!;
+const TABLE_NATS_ACCOUNTS = process.env.TABLE_NATS_ACCOUNTS!;
 
 // 24 hours in milliseconds
 const DELETION_DELAY_MS = 24 * 60 * 60 * 1000;
@@ -48,23 +48,19 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     const { claims } = claimsResult;
     const memberGuid = claims.user_guid;
 
-    // Check if user has an active credential/vault
-    const credentialResult = await ddb.send(new QueryCommand({
-      TableName: TABLE_CREDENTIALS,
-      IndexName: 'user-index',
-      KeyConditionExpression: 'user_guid = :guid',
-      FilterExpression: '#status = :active',
-      ExpressionAttributeNames: {
-        '#status': 'status',
-      },
-      ExpressionAttributeValues: marshall({
-        ':guid': memberGuid,
-        ':active': 'ACTIVE',
-      }),
-      Limit: 1,
+    // Check if user has an active NATS account (vault)
+    // In the Nitro model, having an active NATS account means the user has a vault
+    const natsAccountResult = await ddb.send(new GetItemCommand({
+      TableName: TABLE_NATS_ACCOUNTS,
+      Key: marshall({ user_guid: memberGuid }),
     }));
 
-    if (!credentialResult.Items || credentialResult.Items.length === 0) {
+    if (!natsAccountResult.Item) {
+      return badRequest('No active vault found', origin);
+    }
+
+    const natsAccount = unmarshall(natsAccountResult.Item);
+    if (natsAccount.status !== 'active') {
       return badRequest('No active vault found', origin);
     }
 
@@ -94,14 +90,12 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     const ttl = Math.floor(readyAt.getTime() / 1000) + (TTL_DAYS * 24 * 60 * 60);
     const deletionRequestId = generateSecureId('del', 16);
 
-    const credential = unmarshall(credentialResult.Items[0]);
-
     await ddb.send(new PutItemCommand({
       TableName: TABLE_VAULT_DELETION_REQUESTS,
       Item: marshall({
         request_id: deletionRequestId,
         member_guid: memberGuid,
-        credential_id: credential.credential_id,
+        nats_account_public_key: natsAccount.account_public_key,
         status: 'pending',
         requested_at: now.toISOString(),
         ready_at: readyAt.toISOString(),
@@ -114,7 +108,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       type: 'vault_deletion_requested',
       member_guid: memberGuid,
       request_id: deletionRequestId,
-      credential_id: credential.credential_id,
+      nats_account_public_key: natsAccount.account_public_key,
       ready_at: readyAt.toISOString(),
     }, requestId);
 

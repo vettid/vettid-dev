@@ -1,5 +1,5 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
-import { DynamoDBClient, PutItemCommand, QueryCommand } from '@aws-sdk/client-dynamodb';
+import { DynamoDBClient, PutItemCommand, QueryCommand, GetItemCommand } from '@aws-sdk/client-dynamodb';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import {
   ok,
@@ -14,7 +14,7 @@ import {
 const ddb = new DynamoDBClient({});
 
 const TABLE_ENROLLMENT_SESSIONS = process.env.TABLE_ENROLLMENT_SESSIONS!;
-const TABLE_CREDENTIALS = process.env.TABLE_CREDENTIALS!;
+const TABLE_NATS_ACCOUNTS = process.env.TABLE_NATS_ACCOUNTS!;
 
 /**
  * POST /vault/enroll/session
@@ -42,19 +42,16 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     const userGuid = claims.user_guid;
     const userEmail = claims.email;
 
-    // Check if user already has an active credential (user_guid is the partition key)
-    const credentialResult = await ddb.send(new QueryCommand({
-      TableName: TABLE_CREDENTIALS,
-      KeyConditionExpression: 'user_guid = :guid',
-      ExpressionAttributeValues: marshall({
-        ':guid': userGuid,
-      }),
-      Limit: 1,
+    // Check if user already has an active NATS account (vault is enrolled)
+    // In the Nitro model, having a NATS account means the user has a vault
+    const natsAccountResult = await ddb.send(new GetItemCommand({
+      TableName: TABLE_NATS_ACCOUNTS,
+      Key: marshall({ user_guid: userGuid }),
     }));
 
-    if (credentialResult.Items && credentialResult.Items.length > 0) {
-      const credential = unmarshall(credentialResult.Items[0]);
-      if (credential.status === 'ACTIVE') {
+    if (natsAccountResult.Item) {
+      const natsAccount = unmarshall(natsAccountResult.Item);
+      if (natsAccount.status === 'active') {
         return conflict('Vault is already enrolled. Terminate existing vault before re-enrolling.', origin);
       }
     }
