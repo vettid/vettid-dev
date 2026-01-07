@@ -627,6 +627,7 @@ export class VaultStack extends cdk.Stack {
 
     // EC2 RunInstances - split into two statements:
     // 1. Resources being created (instance, volume) - require Application tag
+    // SECURITY: Restrict to specific instance types and single instance per request
     this.enrollFinalize.addToRolePolicy(new iam.PolicyStatement({
       actions: ['ec2:RunInstances'],
       resources: [
@@ -636,6 +637,12 @@ export class VaultStack extends cdk.Stack {
       conditions: {
         StringEquals: {
           'aws:RequestTag/Application': 'vettid-vault',
+          // SECURITY: Only allow Nitro Enclave capable instance types
+          'ec2:InstanceType': ['c5a.xlarge', 'c6a.xlarge', 'm5.xlarge', 'm6a.xlarge'],
+        },
+        NumericLessThanEquals: {
+          // SECURITY: Limit to 1 instance per request to prevent runaway costs
+          'ec2:InstanceCount': '1',
         },
       },
     }));
@@ -1195,11 +1202,19 @@ export class VaultStack extends cdk.Stack {
 
     // ===== TEST AUTOMATION ENDPOINTS =====
     // These endpoints enable automated E2E testing for Android app
-    // SECURITY: Protected by TEST_API_KEY in handler (not deployed in production)
+    // SECURITY: Protected by TEST_API_KEY - endpoints disabled if key not configured
+    // SECURITY: Test endpoints should not be deployed in production
+
+    // SECURITY: Require explicit configuration - no fallback to prevent accidental exposure
+    const testApiKey = process.env.VETTID_TEST_API_KEY;
+    if (!testApiKey) {
+      console.warn('VETTID_TEST_API_KEY not set - test endpoints will be disabled');
+    }
 
     const testEnv = {
       ...defaultEnv,
-      TEST_API_KEY: process.env.VETTID_TEST_API_KEY || 'vettid-test-key-dev-only',
+      // SECURITY: Empty string disables validation in handler (endpoints return 403)
+      TEST_API_KEY: testApiKey || '',
       API_URL: 'https://tiqpij5mue.execute-api.us-east-1.amazonaws.com',
     };
 

@@ -1,5 +1,5 @@
 import { APIGatewayProxyHandlerV2 } from "aws-lambda";
-import { ddb, ok, badRequest, forbidden, internalError, requireAdminGroup, getAdminEmail, putAudit } from "../../common/util";
+import { ddb, ok, badRequest, forbidden, internalError, requireAdminGroup, validateOrigin, getAdminEmail, putAudit } from "../../common/util";
 import { PutItemCommand, UpdateItemCommand, QueryCommand, ScanCommand } from "@aws-sdk/client-dynamodb";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
@@ -136,6 +136,10 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   // Validate admin group membership
   const authError = requireAdminGroup(event);
   if (authError) return authError;
+
+  // CSRF protection: Validate request origin
+  const csrfError = validateOrigin(event);
+  if (csrfError) return csrfError;
 
   // SECURITY: Only full admins can manage membership terms
   const adminType = (event.requestContext as any)?.authorizer?.jwt?.claims?.['custom:admin_type'];

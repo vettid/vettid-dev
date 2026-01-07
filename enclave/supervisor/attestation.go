@@ -1,18 +1,58 @@
 package main
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/sha512"
+	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
+	"errors"
 	"fmt"
+	"math/big"
 	"os"
+	"strings"
 	"time"
 
+	"github.com/fxamacker/cbor/v2"
 	"github.com/hf/nsm"
 	"github.com/hf/nsm/request"
 	"github.com/rs/zerolog/log"
+)
+
+// SECURITY: Maximum age for attestation documents (5 minutes)
+const maxAttestationAgeSeconds = 300
+
+// SECURITY: AWS Nitro Attestation Root CA (embedded for trust anchor)
+// This is the root certificate used to verify Nitro attestation signatures
+// Source: https://aws-nitro-enclaves.amazonaws.com/AWS_NitroEnclaves_Root-G1.zip
+const awsNitroRootCAPEM = `-----BEGIN CERTIFICATE-----
+MIICETCCAZagAwIBAgIRAPkxdWgbkK/hHUbMtOTn+FYwCgYIKoZIzj0EAwMwSTEL
+MAkGA1UEBhMCVVMxDzANBgNVBAoMBkFtYXpvbjEMMAoGA1UECwwDQVdTMRswGQYD
+VQQDDBJhd3Mubml0cm8tZW5jbGF2ZXMwHhcNMTkxMDI4MTMyODA1WhcNNDkxMDI4
+MTQyODA1WjBJMQswCQYDVQQGEwJVUzEPMA0GA1UECgwGQW1hem9uMQwwCgYDVQQL
+DANBV1MxGzAZBgNVBAMMEmF3cy5uaXRyby1lbmNsYXZlczB2MBAGByqGSM49AgEG
+BSuBBAAiA2IABPwCVOumCMHzaHDimtqQvkY4MpJzbolL//Zy2YlES1BR5TSksfbb
+48C8WBoyt7F2Bw7eEtaaP+ohG2bnUs990d0JX28TcPQXCEPZ3BABIeTPYwEoCWZE
+h8l5YoQwTcU/9KNCMEAwDwYDVR0TAQH/BAUwAwEB/zAdBgNVHQ4EFgQUkCW1DdkF
+R+eWw5b6cp3PmanfS5YwDgYDVR0PAQH/BAQDAgGGMAoGCCqGSM49BAMDA2kAMGYC
+MQCjfy+Rocm9Xue4YnwWmNJVA44fA0P5W2OpYow9OYCVRaEevL8uO1XYru5xtMPW
+rfMCMQCi85sWBbJwKKXdS6BptQFuZbT73o/gBh1qUxl/nNr12UO8Yfwr6wPLb+6N
+IwLz3/Y=
+-----END CERTIFICATE-----`
+
+var (
+	// ErrInvalidAttestation indicates the attestation document is invalid
+	ErrInvalidAttestation = errors.New("invalid attestation document")
+	// ErrPCRMismatch indicates PCR values don't match expected
+	ErrPCRMismatch = errors.New("PCR values do not match expected")
+	// ErrAttestationExpired indicates the attestation is too old
+	ErrAttestationExpired = errors.New("attestation document expired")
+	// ErrInvalidSignature indicates the signature verification failed
+	ErrInvalidSignature = errors.New("attestation signature verification failed")
 )
 
 // GenerateAttestation generates a Nitro attestation document
@@ -152,16 +192,222 @@ func serializeMockDoc(doc MockAttestationDocument) []byte {
 	))
 }
 
-// VerifyAttestation verifies an attestation document
-// This is typically done on the client side, but the enclave can also verify
-// attestations from other enclaves for peer-to-peer scenarios
+// COSESign1 represents a COSE_Sign1 structure (RFC 8152)
+type COSESign1 struct {
+	_           struct{} `cbor:",toarray"`
+	Protected   []byte
+	Unprotected map[interface{}]interface{}
+	Payload     []byte
+	Signature   []byte
+}
+
+// AttestationDocument represents the payload of a Nitro attestation
+type AttestationDocument struct {
+	ModuleID    string          `cbor:"module_id"`
+	Timestamp   uint64          `cbor:"timestamp"`
+	Digest      string          `cbor:"digest"`
+	PCRs        map[int][]byte  `cbor:"pcrs"`
+	Certificate []byte          `cbor:"certificate"`
+	CABundle    [][]byte        `cbor:"cabundle"`
+	PublicKey   []byte          `cbor:"public_key,omitempty"`
+	UserData    []byte          `cbor:"user_data,omitempty"`
+	Nonce       []byte          `cbor:"nonce,omitempty"`
+}
+
+// VerifyAttestation verifies a Nitro attestation document
+// SECURITY: This is critical - it validates the enclave's identity
 func VerifyAttestation(attestation *Attestation, expectedPCRs map[int][]byte) error {
-	// TODO: Implement attestation verification
-	// 1. Verify COSE signature using AWS Nitro root CA
-	// 2. Parse CBOR document
-	// 3. Compare PCR values against expected
-	// 4. Check timestamp is recent (within acceptable window)
-	// 5. Verify nonce matches expected (if provided)
+	if attestation == nil || len(attestation.Document) == 0 {
+		return ErrInvalidAttestation
+	}
+
+	// Check for mock attestation (development only)
+	if bytes.HasPrefix(attestation.Document, []byte("MOCK_ATTESTATION:")) {
+		return verifyMockAttestation(attestation, expectedPCRs)
+	}
+
+	// Parse COSE_Sign1 structure
+	var coseSign1 COSESign1
+	if err := cbor.Unmarshal(attestation.Document, &coseSign1); err != nil {
+		log.Error().Err(err).Msg("Failed to parse COSE_Sign1 structure")
+		return fmt.Errorf("%w: failed to parse COSE_Sign1", ErrInvalidAttestation)
+	}
+
+	// Parse the attestation document payload
+	var attDoc AttestationDocument
+	if err := cbor.Unmarshal(coseSign1.Payload, &attDoc); err != nil {
+		log.Error().Err(err).Msg("Failed to parse attestation document payload")
+		return fmt.Errorf("%w: failed to parse payload", ErrInvalidAttestation)
+	}
+
+	// 1. Verify certificate chain against AWS Nitro root CA
+	if err := verifyCertificateChain(attDoc.Certificate, attDoc.CABundle); err != nil {
+		log.Error().Err(err).Msg("Certificate chain verification failed")
+		return fmt.Errorf("%w: %v", ErrInvalidSignature, err)
+	}
+
+	// 2. Verify COSE signature using the leaf certificate's public key
+	if err := verifyCOSESignature(&coseSign1, attDoc.Certificate); err != nil {
+		log.Error().Err(err).Msg("COSE signature verification failed")
+		return fmt.Errorf("%w: %v", ErrInvalidSignature, err)
+	}
+
+	// 3. Validate timestamp (freshness check)
+	now := uint64(time.Now().Unix())
+	docAge := now - attDoc.Timestamp
+	if docAge > maxAttestationAgeSeconds {
+		log.Error().
+			Uint64("doc_timestamp", attDoc.Timestamp).
+			Uint64("now", now).
+			Uint64("age_seconds", docAge).
+			Msg("Attestation document too old")
+		return fmt.Errorf("%w: document is %d seconds old (max %d)",
+			ErrAttestationExpired, docAge, maxAttestationAgeSeconds)
+	}
+
+	// 4. Verify PCR values
+	if err := verifyPCRs(attDoc.PCRs, expectedPCRs); err != nil {
+		return err
+	}
+
+	log.Info().
+		Str("module_id", attDoc.ModuleID).
+		Uint64("timestamp", attDoc.Timestamp).
+		Msg("Attestation verification successful")
+
+	return nil
+}
+
+// verifyCertificateChain verifies the certificate chain against AWS Nitro root CA
+func verifyCertificateChain(leafCertDER []byte, caBundle [][]byte) error {
+	// Parse the AWS Nitro root CA
+	rootPool := x509.NewCertPool()
+	if !rootPool.AppendCertsFromPEM([]byte(awsNitroRootCAPEM)) {
+		return errors.New("failed to parse AWS Nitro root CA")
+	}
+
+	// Parse the leaf certificate
+	leafCert, err := x509.ParseCertificate(leafCertDER)
+	if err != nil {
+		return fmt.Errorf("failed to parse leaf certificate: %w", err)
+	}
+
+	// Build intermediate certificate pool from CA bundle
+	intermediatePool := x509.NewCertPool()
+	for i, certDER := range caBundle {
+		cert, err := x509.ParseCertificate(certDER)
+		if err != nil {
+			return fmt.Errorf("failed to parse intermediate cert %d: %w", i, err)
+		}
+		intermediatePool.AddCert(cert)
+	}
+
+	// Verify the certificate chain
+	opts := x509.VerifyOptions{
+		Roots:         rootPool,
+		Intermediates: intermediatePool,
+		CurrentTime:   time.Now(),
+		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
+	}
+
+	if _, err := leafCert.Verify(opts); err != nil {
+		return fmt.Errorf("certificate chain verification failed: %w", err)
+	}
+
+	return nil
+}
+
+// verifyCOSESignature verifies the COSE_Sign1 signature
+func verifyCOSESignature(coseSign1 *COSESign1, certDER []byte) error {
+	// Parse the certificate to get the public key
+	cert, err := x509.ParseCertificate(certDER)
+	if err != nil {
+		return fmt.Errorf("failed to parse certificate: %w", err)
+	}
+
+	// Get ECDSA public key (Nitro uses P-384)
+	ecdsaPubKey, ok := cert.PublicKey.(*ecdsa.PublicKey)
+	if !ok {
+		return errors.New("certificate does not contain ECDSA public key")
+	}
+
+	// Build Sig_structure for verification (COSE specification)
+	// Sig_structure = ["Signature1", protected, external_aad, payload]
+	sigStructure := []interface{}{
+		"Signature1",
+		coseSign1.Protected,
+		[]byte{}, // external_aad (empty for attestation)
+		coseSign1.Payload,
+	}
+
+	sigStructureBytes, err := cbor.Marshal(sigStructure)
+	if err != nil {
+		return fmt.Errorf("failed to build Sig_structure: %w", err)
+	}
+
+	// Hash with SHA-384 (P-384 curve uses SHA-384)
+	hash := sha512.Sum384(sigStructureBytes)
+
+	// The signature is in raw R||S format, each 48 bytes for P-384
+	if len(coseSign1.Signature) != 96 {
+		return fmt.Errorf("invalid signature length: expected 96, got %d", len(coseSign1.Signature))
+	}
+
+	// Parse R and S from signature
+	r := new(big.Int).SetBytes(coseSign1.Signature[:48])
+	s := new(big.Int).SetBytes(coseSign1.Signature[48:])
+
+	// Verify signature
+	if !ecdsa.Verify(ecdsaPubKey, hash[:], r, s) {
+		return errors.New("ECDSA signature verification failed")
+	}
+
+	return nil
+}
+
+// verifyPCRs compares actual PCR values against expected
+func verifyPCRs(actualPCRs map[int][]byte, expectedPCRs map[int][]byte) error {
+	for index, expected := range expectedPCRs {
+		actual, ok := actualPCRs[index]
+		if !ok {
+			log.Error().Int("pcr_index", index).Msg("Missing PCR value")
+			return fmt.Errorf("%w: PCR%d not present in attestation", ErrPCRMismatch, index)
+		}
+
+		if !bytes.Equal(actual, expected) {
+			log.Error().
+				Int("pcr_index", index).
+				Str("expected", hex.EncodeToString(expected)).
+				Str("actual", hex.EncodeToString(actual)).
+				Msg("PCR value mismatch")
+			return fmt.Errorf("%w: PCR%d mismatch", ErrPCRMismatch, index)
+		}
+	}
+
+	log.Debug().
+		Int("pcr_count", len(expectedPCRs)).
+		Msg("All PCR values verified")
+
+	return nil
+}
+
+// verifyMockAttestation verifies a mock attestation (development only)
+// SECURITY: This should never be used in production
+func verifyMockAttestation(attestation *Attestation, expectedPCRs map[int][]byte) error {
+	log.Warn().Msg("SECURITY WARNING: Verifying mock attestation - development mode only")
+
+	// Parse the mock attestation format
+	docStr := string(attestation.Document)
+	if !strings.HasPrefix(docStr, "MOCK_ATTESTATION:") {
+		return ErrInvalidAttestation
+	}
+
+	// In development, we accept mock attestations but log a warning
+	// This allows testing without actual Nitro hardware
+	// SECURITY: Production builds should reject mock attestations
+	if os.Getenv("VETTID_PRODUCTION") == "true" {
+		return errors.New("mock attestations not allowed in production")
+	}
 
 	return nil
 }

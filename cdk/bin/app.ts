@@ -58,8 +58,9 @@ const nats = new NatsStack(app, 'VettID-NATS', {
   env,
   domainName: 'nats.vettid.dev',
   zoneName: 'vettid.dev',
-  // URL resolver for member account JWTs (fetched dynamically)
-  accountResolverUrl: 'https://tiqpij5mue.execute-api.us-east-1.amazonaws.com/nats/jwt/v1/accounts/',
+  // SECURITY: Dynamic URL resolver using the actual API Gateway ID (not hardcoded)
+  // This ensures the URL stays in sync if API Gateway is recreated
+  accountResolverUrl: `https://${core.httpApi.apiId}.execute-api.${env.region || 'us-east-1'}.amazonaws.com/nats/jwt/v1/accounts/`,
   // VPC peering: allow Nitro enclave parent processes to connect to NATS cluster
   nitroVpc: nitro.vpc,
   nitroVpcCidr: NitroStack.VPC_CIDR,

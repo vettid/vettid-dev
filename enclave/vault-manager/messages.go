@@ -269,8 +269,41 @@ func (mh *MessageHandler) errorResponse(id string, errMsg string) (*OutgoingMess
 	return &OutgoingMessage{
 		ID:    id,
 		Type:  MessageTypeError,
-		Error: errMsg,
+		Error: sanitizeErrorForClient(errMsg),
 	}, nil
+}
+
+// sanitizeErrorForClient removes potentially sensitive information from error messages
+// before returning them to clients. Internal errors are logged but replaced with generic messages.
+func sanitizeErrorForClient(errMsg string) string {
+	// List of patterns that might expose internal details
+	sensitivePatterns := []string{
+		"file", "path", "/", "\\",
+		"connection", "socket", "vsock",
+		"internal", "memory", "malloc",
+		"json", "unmarshal", "marshal",
+		"EOF", "broken pipe",
+		"timeout", "context",
+		"storage", "database", "db",
+		"key", "secret", "credential",
+		"crypto", "cipher", "decrypt", "encrypt",
+		"stack", "panic", "runtime",
+	}
+
+	lowerErr := strings.ToLower(errMsg)
+	for _, pattern := range sensitivePatterns {
+		if strings.Contains(lowerErr, pattern) {
+			// Log the full error internally
+			log.Error().Str("internal_error", errMsg).Msg("Sanitized error returned to client")
+			return "operation failed"
+		}
+	}
+
+	// For known safe error types, return as-is (truncated)
+	if len(errMsg) > 100 {
+		return errMsg[:100]
+	}
+	return errMsg
 }
 
 func generateMessageID() string {

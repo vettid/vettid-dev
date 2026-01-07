@@ -21,6 +21,7 @@ import {
   aws_events as events,
   aws_events_targets as targets_events,
   aws_logs as logs,
+  aws_kms as kms,
 } from 'aws-cdk-lib';
 import { InfrastructureStack } from './infrastructure-stack';
 
@@ -341,11 +342,41 @@ const webAcl = new wafv2.CfnWebACL(this, 'WebAcl', {
       ),
     });
 
-    // SECURITY: Enable API Gateway access logging for audit trail
+    // SECURITY: KMS key for encrypting API access logs at rest
+    // CloudWatch Logs encryption protects audit trail from unauthorized access
+    const apiLogsEncryptionKey = new kms.Key(this, 'ApiLogsEncryptionKey', {
+      alias: 'vettid-api-logs',
+      description: 'KMS key for encrypting API Gateway access logs',
+      enableKeyRotation: true,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
+    // Grant CloudWatch Logs permission to use the key
+    apiLogsEncryptionKey.addToResourcePolicy(new iam.PolicyStatement({
+      sid: 'AllowCloudWatchLogs',
+      effect: iam.Effect.ALLOW,
+      principals: [new iam.ServicePrincipal(`logs.${this.region}.amazonaws.com`)],
+      actions: [
+        'kms:Encrypt',
+        'kms:Decrypt',
+        'kms:ReEncrypt*',
+        'kms:GenerateDataKey*',
+        'kms:DescribeKey',
+      ],
+      resources: ['*'],
+      conditions: {
+        ArnLike: {
+          'kms:EncryptionContext:aws:logs:arn': `arn:aws:logs:${this.region}:${this.account}:log-group:/aws/apigateway/*`,
+        },
+      },
+    }));
+
+    // SECURITY: Enable API Gateway access logging for audit trail with encryption
     const apiAccessLogGroup = new logs.LogGroup(this, 'ApiAccessLogs', {
       logGroupName: '/aws/apigateway/vettid-api-access',
       retention: logs.RetentionDays.ONE_YEAR,
       removalPolicy: cdk.RemovalPolicy.RETAIN, // Retain logs for audit purposes
+      encryptionKey: apiLogsEncryptionKey, // SECURITY: Encrypt logs at rest
     });
 
     // Configure access logging on the default stage using escape hatch

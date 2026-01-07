@@ -4,8 +4,8 @@
 
 | Field | Value |
 |-------|-------|
-| Version | 1.5 Draft |
-| Date | 2026-01-02 |
+| Version | 1.7 |
+| Date | 2026-01-06 |
 | Status | Proposal - Pending Review |
 | Author | Architecture Team |
 
@@ -2352,62 +2352,133 @@ interface VaultConfig {
 
 ## 13. Implementation Phases
 
+**Last Updated:** 2026-01-06
+
 ### 13.1 Phase Overview
 
-| Phase | Duration | Focus | Deliverables |
-|-------|----------|-------|--------------|
-| 1 | 3-4 weeks | Core enclave | Working enclave vault-manager |
-| 2 | 2-3 weeks | Integration | Parent process, S3, NATS |
-| 3 | 2-3 weeks | Mobile apps | Attestation verification |
-| 4 | 2-3 weeks | Operations | Deployment, monitoring, scaling |
-| 5 | 1-2 weeks | Launch | Production deployment |
+| Phase | Duration | Focus | Status |
+|-------|----------|-------|--------|
+| 1 | 3-4 weeks | Core enclave | ✅ Complete |
+| 2 | 2-3 weeks | Integration | ✅ Complete |
+| 3 | 2-3 weeks | Mobile apps | 🟢 95% Complete (E2E test pending) |
+| 4 | 2-3 weeks | Operations | 🟡 Partial |
+| 5 | 1-2 weeks | Launch | 🔴 Not Started |
 
-### 13.2 Phase 1: Core Enclave
+### 13.2 Phase 1: Core Enclave ✅
 
 **Objective**: Port vault-manager to run inside Nitro Enclave
 
-Tasks:
-- [ ] Set up enclave development environment
-- [ ] Create minimal enclave image with vault-manager
-- [ ] Implement vsock communication layer
-- [ ] Implement sealed storage for vault DEK
-- [ ] Implement encrypted storage adapter
-- [ ] Port embedded NATS to use custom storage backend
-- [ ] Unit tests for all enclave components
-- [ ] Generate and document PCRs
+**Status**: Complete (deployed 2026-01-03)
 
-### 13.3 Phase 2: Integration
+Tasks:
+- [x] Set up enclave development environment
+- [x] Create minimal enclave image with vault-manager
+- [x] Implement vsock communication layer
+- [x] Implement sealed storage for vault DEK
+- [x] Implement encrypted storage adapter
+- [x] Port embedded NATS to use custom storage backend
+- [x] Unit tests for all enclave components
+- [x] Generate and document PCRs
+
+### 13.3 Phase 2: Integration ✅
 
 **Objective**: Connect enclave to external systems
 
-Tasks:
-- [ ] Implement parent process (vsock ↔ NATS ↔ S3)
-- [ ] Set up S3 bucket structure
-- [ ] Integrate with central NATS cluster
-- [ ] Implement supervisor process
-- [ ] Implement vault lifecycle management
-- [ ] Integration tests with mock external services
-- [ ] End-to-end tests with real infrastructure
+**Status**: Complete (deployed 2026-01-03)
 
-### 13.4 Phase 3: Mobile Apps
+Tasks:
+- [x] Implement parent process (vsock ↔ NATS ↔ S3)
+- [x] Set up S3 bucket structure
+- [x] Integrate with central NATS cluster
+- [x] Implement supervisor process
+- [x] Implement vault lifecycle management
+- [x] Integration tests with mock external services
+- [x] End-to-end tests with real infrastructure
+
+**Lambda handlers updated:**
+- `enrollStart.ts` - Always requests enclave attestation
+- `enrollFinalize.ts` - Uses `requestCredentialCreate()` for enclave-based credential creation
+- `vault-stack.ts` - Removed `USE_NITRO_ENCLAVE` feature flag (always enclave mode)
+
+**Frontend integration (Phases 1-4 complete):**
+- Vault status dashboard
+- Mobile app enrollment flow with QR
+- Vault provisioning & lifecycle UI
+- Backup services tab
+
+### 13.4 Phase 3: Mobile Apps 🟢
 
 **Objective**: Update iOS and Android apps to support attestation
 
-Tasks:
-- [ ] Implement attestation document parsing
-- [ ] Implement PCR verification
-- [ ] Update bootstrap flow for attestation
-- [ ] Store expected PCRs in app configuration
-- [ ] Support for PCR updates via app update
-- [ ] Fallback handling for attestation failures
-- [ ] QA testing on both platforms
+**Status**: 95% Complete - End-to-end testing remaining (blockers resolved 2026-01-06)
 
-### 13.5 Phase 4: Operations
+#### iOS Implementation (85-90% Complete)
+
+| Task | Status | Notes |
+|------|--------|-------|
+| CBOR parsing | ✅ Complete | Custom RFC 7049 decoder in `NitroAttestationVerifier.swift` (730 lines) |
+| COSE_Sign1 verification | ✅ Complete | Tag 18 parsing, signature verification |
+| Certificate chain verification | ✅ Complete | SecTrust framework integration |
+| PCR verification | ✅ Complete | `ExpectedPCRStore.swift` (384 lines) |
+| PCR update mechanism | ✅ Complete | `PCRUpdateService.swift` (258 lines), Ed25519 signature verification |
+| Enrollment integration | ✅ Complete | `EnrollmentService.swift` calls verifier |
+| Nonce replay protection | ✅ Complete | Optional nonce matching |
+| Timestamp freshness | ✅ Complete | 5-minute max age |
+| Unit tests | ✅ Complete | 20+ test cases in `NitroAttestationVerifierTests.swift` |
+| UI component | ✅ Complete | `AttestationView.swift` |
+
+**iOS Remaining Tasks:**
+- [x] ~~Bundle AWS Nitro Root CA certificate~~ - **Fixed 2026-01-06**: Now uses dynamic validation like Android
+- [x] ~~Update `expected_pcrs.json`~~ - **Fixed 2026-01-06**: Real PCR values copied from Android
+- [ ] End-to-end testing with production enclave
+
+#### Android Implementation (95% Complete - Production Ready)
+
+| Task | Status | Notes |
+|------|--------|-------|
+| CBOR parsing | ✅ Complete | Jackson CBOR 2.16.1 in `NitroAttestationVerifier.kt` (685 lines) |
+| COSE_Sign1 verification | ✅ Complete | Full parsing and signature verification |
+| Certificate chain verification | ✅ Complete | Bouncy Castle PKIX, dynamic root CA validation |
+| PCR verification | ✅ Complete | `PcrConfigManager.kt` (395 lines) |
+| PCR values bundled | ✅ Complete | Real PCR values from 2026-01-03 enclave build |
+| Ed25519 PCR update signatures | ✅ Complete | Bouncy Castle integration |
+| Enrollment integration | ✅ Complete | `EnrollmentViewModel.kt` blocks on verification failure |
+| Nonce replay protection | ✅ Complete | Optional nonce verification |
+| Timestamp freshness | ✅ Complete | 5-minute max age |
+| Hardware attestation | ✅ Complete | `HardwareAttestationManager.kt` (StrongBox/TEE support) |
+
+**Android Notes:**
+- Does NOT bundle root CA certificate (dynamically validates from attestation doc - more secure)
+- Has actual PCR values: `pcr0=c4fbe857...`, `pcr1=4b4d5b36...`, `pcr2=3f37ae4b...`
+- Ed25519 signing key embedded: `MCowBQYDK2VwAyEA+1FRzTi+cZ1BIuBzNjnarDkN4T+gxNnDi4BCS7tbwX0=`
+
+**Android Remaining Tasks:**
+- [ ] End-to-end testing (backend 500 fixed 2026-01-06 - ready for testing)
+
+#### Cross-Platform Status
+
+| Requirement | iOS | Android |
+|-------------|-----|---------|
+| CBOR parsing | ✅ | ✅ |
+| COSE_Sign1 | ✅ | ✅ |
+| Cert chain verification | ✅ | ✅ |
+| Root CA validation | ✅ Dynamic (fixed 2026-01-06) | ✅ Dynamic |
+| PCR verification | ✅ | ✅ |
+| PCR values configured | ✅ Real values (fixed 2026-01-06) | ✅ Real values |
+| Enrollment integration | ✅ | ✅ |
+| Unit tests | ✅ | ✅ |
+
+**Documentation available:**
+- `docs/NITRO-ENCLAVE-MIGRATION-FOR-MOBILE.md` (pushed to both repos)
+
+### 13.5 Phase 4: Operations 🟡
 
 **Objective**: Production-ready deployment and monitoring
 
+**Status**: Partial - CDK deployed, monitoring/alerting pending
+
 Tasks:
-- [ ] CDK stack for enclave infrastructure
+- [x] CDK stack for enclave infrastructure
 - [ ] Auto-scaling configuration
 - [ ] CloudWatch metrics and dashboards
 - [ ] Alerting for enclave health
@@ -2416,9 +2487,11 @@ Tasks:
 - [ ] Load testing and performance validation
 - [ ] Security review
 
-### 13.6 Phase 5: Launch
+### 13.6 Phase 5: Launch 🔴
 
 **Objective**: Deploy to production and begin user onboarding
+
+**Status**: Not Started - Blocked by Phase 3 (Mobile Apps)
 
 Tasks:
 - [ ] Production deployment with monitoring
@@ -2427,6 +2500,31 @@ Tasks:
 - [ ] On-call procedures and alerting
 - [ ] Performance monitoring and tuning
 - [ ] General availability rollout
+
+### 13.7 Current Blockers
+
+~~1. **iOS: Missing runtime resources**~~ - **RESOLVED 2026-01-06**
+   - ~~AWS Nitro Root CA certificate not bundled~~ → Now uses dynamic validation
+   - ~~expected_pcrs.json contains placeholder zeros~~ → Real PCR values added
+
+~~2. **Backend: Enrollment endpoint returning HTTP 500**~~ - **RESOLVED 2026-01-06**
+   - Enclave was temporarily unresponsive (NATS 503 "No Responders")
+   - Now working: enrollment successfully returns `enclave_attestation`
+
+3. **Phase 4 (Operations)** monitoring/alerting not configured
+   - System is running but lacks observability
+   - Auto-scaling, dashboards, alerting still needed
+
+### 13.8 Remaining Action Items
+
+| Priority | Task | Owner | Status |
+|----------|------|-------|--------|
+| ~~1~~ | ~~Fix backend HTTP 500 on enrollment~~ | Backend | ✅ Fixed |
+| ~~2~~ | ~~Update iOS root CA validation~~ | iOS Dev | ✅ Fixed (dynamic) |
+| ~~3~~ | ~~Copy Android PCR values to iOS~~ | iOS Dev | ✅ Fixed |
+| 4 | End-to-end enrollment test (Android) | Android Dev | Pending |
+| 5 | End-to-end enrollment test (iOS) | iOS Dev | Pending |
+| 6 | Configure CloudWatch monitoring | DevOps | Pending |
 
 ---
 
@@ -2523,3 +2621,5 @@ Tasks:
 | 1.3 | 2026-01-02 | Architecture Team | Added Section 5.12: Post-Enrollment Vault Access (clarifies connection flow, no chicken-and-egg). Removed Migration Strategy section (no existing vaults to migrate). Renumbered sections 10-15. Updated Phase 5 to Launch (not migration). |
 | 1.4 | 2026-01-02 | Architecture Team | Added Section 5.13: Credential Backup & Recovery (VettID-hosted backup, device loss recovery, inactive user handling). Added Section 5.14: Account Portal Changes (vault management UI, new API endpoints). Clarified what needs backup (only credential + PIN knowledge). |
 | 1.5 | 2026-01-02 | Architecture Team | Added 24-hour time-delay recovery for credential restore (Section 5.13). Added Section 5.14: Flexible Vault Authentication (PIN/password/pattern options). Pattern serialization spec for cross-platform consistency. Biometrics as local convenience only (not hashable). Moved Account Portal to Section 5.15. Updated credential structure for flexible auth_type. |
+| 1.6 | 2026-01-06 | Claude Code | Updated Section 13 with actual completion status. Phases 1-2 complete. Phase 3 ~90% complete after reviewing iOS/Android repos - both have full attestation verification implemented. iOS missing: root CA cert bundle and real PCR values. Android production-ready. Added detailed per-platform status tables and immediate action items (Section 13.8). |
+| 1.7 | 2026-01-06 | Claude Code | Fixed blockers: (1) iOS now uses dynamic root CA validation like Android - no bundled cert needed. (2) Updated iOS expected_pcrs.json with real PCR values from Android. (3) Backend HTTP 500 resolved (enclave now responding). Phase 3 now 95% complete - only E2E testing remaining. |

@@ -1,5 +1,5 @@
 import { APIGatewayProxyHandlerV2 } from "aws-lambda";
-import { ddb, TABLES, ok, putAudit, requireAdminGroup, badRequest, internalError } from "../../common/util";
+import { ddb, TABLES, ok, putAudit, requireAdminGroup, validateOrigin, badRequest, internalError } from "../../common/util";
 import { DeleteItemCommand } from "@aws-sdk/client-dynamodb";
 import { marshall } from "@aws-sdk/util-dynamodb";
 
@@ -10,6 +10,10 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     // Validate admin group membership
     const authError = requireAdminGroup(event, origin);
     if (authError) return authError;
+
+    // CSRF protection: Validate request origin
+    const csrfError = validateOrigin(event);
+    if (csrfError) return csrfError;
 
     const code = event.pathParameters?.code;
     if (!code) {

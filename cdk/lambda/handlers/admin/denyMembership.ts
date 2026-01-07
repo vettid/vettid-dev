@@ -11,6 +11,7 @@ import {
   TABLES,
   NotFoundError,
   requireAdminGroup,
+  validateOrigin,
   parseJsonBody,
   ValidationError,
   validateUUID
@@ -22,6 +23,10 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   // Validate admin group membership
   const authError = requireAdminGroup(event);
   if (authError) return authError;
+
+  // CSRF protection: Validate request origin
+  const csrfError = validateOrigin(event);
+  if (csrfError) return csrfError;
 
   // SECURITY: Validate path parameter as UUID
   let id: string;

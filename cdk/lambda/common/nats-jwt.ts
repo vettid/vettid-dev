@@ -25,6 +25,27 @@ let cacheTime = 0;
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 /**
+ * SECURITY: JWT expiration and resource limit constants
+ */
+const ACCOUNT_JWT_TTL_SECONDS = 30 * 24 * 60 * 60; // 30 days - monthly renewal required
+const USER_JWT_MAX_TTL_MS = 24 * 60 * 60 * 1000;   // 24 hours max for user JWTs
+
+/**
+ * SECURITY: Per-account resource limits to prevent DoS
+ * These are reasonable limits for mobile app + vault use case
+ */
+const ACCOUNT_LIMITS = {
+  subs: 100,           // Max subscriptions per account
+  data: 10_000_000,    // 10 MB/sec data transfer
+  payload: 1_048_576,  // 1 MB max message payload
+  imports: 10,         // Max imports
+  exports: 10,         // Max exports
+  wildcards: true,     // Allow wildcards for OwnerSpace.{guid}.>
+  conn: 10,            // Max connections (mobile + vault + backup)
+  leaf: 0,             // No leaf nodes needed
+};
+
+/**
  * Force invalidate the operator keys cache
  * Call this when keys are rotated in Secrets Manager
  */
@@ -177,20 +198,12 @@ export async function createAccountJwt(
   const claims: NatsAccountClaims = {
     jti,
     iat: now,
+    exp: now + ACCOUNT_JWT_TTL_SECONDS, // SECURITY: 90-day expiration requires renewal
     iss: operatorKeys.operatorPublicKey,
     sub: accountPublicKey,
     name: accountName,
     nats: {
-      limits: {
-        subs: -1,          // Unlimited subscriptions
-        data: -1,          // Unlimited data
-        payload: -1,       // Unlimited payload
-        imports: -1,       // Unlimited imports
-        exports: -1,       // Unlimited exports
-        wildcards: true,   // Allow wildcards
-        conn: -1,          // Unlimited connections
-        leaf: -1,          // Unlimited leaf nodes
-      },
+      limits: ACCOUNT_LIMITS, // SECURITY: Use defined resource limits instead of unlimited
       type: 'account',
       version: 2,
     },
@@ -221,20 +234,30 @@ export async function createUserJwt(
   },
   expiresAt: Date
 ): Promise<string> {
+  // SECURITY: Validate expiration doesn't exceed max TTL (prevents long-lived tokens)
+  const now = Date.now();
+  const requestedTtl = expiresAt.getTime() - now;
+  if (requestedTtl > USER_JWT_MAX_TTL_MS) {
+    throw new Error(`User JWT expiration exceeds maximum TTL of ${USER_JWT_MAX_TTL_MS / (1000 * 60 * 60)} hours`);
+  }
+  if (requestedTtl <= 0) {
+    throw new Error('User JWT expiration must be in the future');
+  }
+
   const accountKeyPair = nkeys.fromSeed(new TextEncoder().encode(accountSeed));
   const accountPublicKey = accountKeyPair.getPublicKey();
 
-  const now = Math.floor(Date.now() / 1000);
+  const nowSeconds = Math.floor(now / 1000);
   const exp = Math.floor(expiresAt.getTime() / 1000);
 
   const jti = createHash('sha256')
-    .update(`${userPublicKey}:${now}`)
+    .update(`${userPublicKey}:${nowSeconds}`)
     .digest('hex')
     .substring(0, 22);
 
   const claims: NatsUserClaims = {
     jti,
-    iat: now,
+    iat: nowSeconds,
     exp,
     iss: accountPublicKey,
     sub: userPublicKey,
@@ -242,9 +265,9 @@ export async function createUserJwt(
     nats: {
       pub: permissions.pub,
       sub: permissions.sub,
-      subs: -1,      // Unlimited subscriptions
-      data: -1,      // Unlimited data
-      payload: -1,   // Unlimited payload
+      subs: 50,             // SECURITY: Reasonable subscription limit
+      data: 5_000_000,      // SECURITY: 5 MB/sec per user
+      payload: 1_048_576,   // SECURITY: 1 MB max payload
       type: 'user',
       version: 2,
     },
@@ -299,6 +322,14 @@ export async function generateUserCredentials(
   let pubAllow: string[];
   let subAllow: string[];
 
+  // SECURITY: Explicit deny rules to prevent cross-namespace access and system topic abuse
+  const systemDenyPatterns = [
+    '$SYS.>',           // System topics
+    '$JS.>',            // JetStream internal topics
+    '_INBOX.>',         // Internal inbox topics
+    'Broadcast.>',      // Admin broadcast topics (only admins should publish)
+  ];
+
   if (clientType === 'app') {
     // Mobile app: publish to vault, subscribe from vault
     pubAllow = [`${ownerSpace}.forVault.>`];
@@ -318,6 +349,7 @@ export async function generateUserCredentials(
       `${ownerSpace}.eventTypes`,
       `${messageSpace}.forOwner.>`,
       `${messageSpace}.call.>`,        // Vault-to-vault call signaling (inbound)
+      'Broadcast.>',                    // Allow subscribing to admin broadcasts
     ];
   } else {
     // Control: publish to control topic only
@@ -332,8 +364,9 @@ export async function generateUserCredentials(
     publicKey,
     accountSeed,
     {
-      pub: { allow: pubAllow },
-      sub: { allow: subAllow },
+      // SECURITY: Explicit allow and deny lists for defense-in-depth
+      pub: { allow: pubAllow, deny: systemDenyPatterns },
+      sub: { allow: subAllow, deny: systemDenyPatterns.filter(p => p !== 'Broadcast.>') }, // Vaults can subscribe to broadcasts
     },
     expiresAt
   );

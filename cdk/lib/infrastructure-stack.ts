@@ -10,6 +10,7 @@ import {
   aws_iam as iam,
   aws_s3 as s3,
   aws_secretsmanager as secretsmanager,
+  aws_kms as kms,
 } from 'aws-cdk-lib';
 
 /**
@@ -103,6 +104,19 @@ export class InfrastructureStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
+    // ===== KMS KEY FOR DYNAMODB ENCRYPTION =====
+    // SECURITY: Customer-managed key for DynamoDB table encryption
+    // This provides:
+    // - Audit trail via CloudTrail for key usage
+    // - Ability to revoke access by disabling the key
+    // - Compliance with data protection requirements
+    const dynamoDbEncryptionKey = new kms.Key(this, 'DynamoDbEncryptionKey', {
+      alias: 'vettid-dynamodb',
+      description: 'Customer-managed KMS key for DynamoDB table encryption',
+      enableKeyRotation: true,
+      removalPolicy: cdk.RemovalPolicy.RETAIN, // Retain key to prevent data loss
+    });
+
     // ===== DYNAMODB TABLES =====
 
     // Invites table
@@ -110,7 +124,9 @@ export class InfrastructureStack extends cdk.Stack {
       partitionKey: { name: 'code', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
-      pointInTimeRecovery: true
+      pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: dynamoDbEncryptionKey,
     });
 
     // GSI for looking up invites by user_guid (used by deployVault to find pending invites)
@@ -127,6 +143,8 @@ export class InfrastructureStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       pointInTimeRecovery: true,
       stream: dynamodb.StreamViewType.NEW_AND_OLD_IMAGES,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: dynamoDbEncryptionKey,
     });
 
     registrations.addGlobalSecondaryIndex({
@@ -156,6 +174,8 @@ export class InfrastructureStack extends cdk.Stack {
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       pointInTimeRecovery: true, // SECURITY: Enable PITR for critical audit logs
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: dynamoDbEncryptionKey,
     });
 
     audit.addGlobalSecondaryIndex({
@@ -170,7 +190,9 @@ export class InfrastructureStack extends cdk.Stack {
       partitionKey: { name: 'email', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
-      pointInTimeRecovery: true
+      pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: dynamoDbEncryptionKey,
     });
 
     waitlist.addGlobalSecondaryIndex({
@@ -186,6 +208,8 @@ export class InfrastructureStack extends cdk.Stack {
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       timeToLiveAttribute: 'ttl',
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: dynamoDbEncryptionKey,
     });
 
     // Membership terms table
@@ -193,7 +217,9 @@ export class InfrastructureStack extends cdk.Stack {
       partitionKey: { name: 'version_id', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
-      pointInTimeRecovery: true
+      pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: dynamoDbEncryptionKey,
     });
 
     membershipTerms.addGlobalSecondaryIndex({
@@ -215,7 +241,9 @@ export class InfrastructureStack extends cdk.Stack {
       partitionKey: { name: 'user_guid', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
-      pointInTimeRecovery: true
+      pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: dynamoDbEncryptionKey,
     });
 
     // Proposals table
@@ -225,6 +253,8 @@ export class InfrastructureStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       pointInTimeRecovery: true,
       stream: dynamodb.StreamViewType.NEW_AND_OLD_IMAGES,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: dynamoDbEncryptionKey,
     });
 
     proposals.addGlobalSecondaryIndex({
@@ -240,7 +270,9 @@ export class InfrastructureStack extends cdk.Stack {
       sortKey: { name: 'user_guid', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
-      pointInTimeRecovery: true
+      pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: dynamoDbEncryptionKey,
     });
 
     votes.addGlobalSecondaryIndex({
@@ -262,6 +294,9 @@ export class InfrastructureStack extends cdk.Stack {
       partitionKey: { name: 'subscription_type_id', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
+      pointInTimeRecovery: true, // SECURITY: Enable PITR for configuration data
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: dynamoDbEncryptionKey,
     });
 
     // Sent emails table (for bulk email tracking)
@@ -269,7 +304,9 @@ export class InfrastructureStack extends cdk.Stack {
       partitionKey: { name: 'email_id', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
-      pointInTimeRecovery: true
+      pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: dynamoDbEncryptionKey,
     });
 
     sentEmails.addGlobalSecondaryIndex({
@@ -286,7 +323,9 @@ export class InfrastructureStack extends cdk.Stack {
       sortKey: { name: 'credential_id', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
-      pointInTimeRecovery: true
+      pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: dynamoDbEncryptionKey,
     });
 
     // Credential keys table
@@ -294,7 +333,9 @@ export class InfrastructureStack extends cdk.Stack {
       partitionKey: { name: 'credential_id', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
-      pointInTimeRecovery: true
+      pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: dynamoDbEncryptionKey,
     });
 
     credentialKeys.addGlobalSecondaryIndex({
@@ -309,6 +350,8 @@ export class InfrastructureStack extends cdk.Stack {
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       timeToLiveAttribute: 'ttl',
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: dynamoDbEncryptionKey,
     });
 
     transactionKeys.addGlobalSecondaryIndex({
@@ -324,6 +367,8 @@ export class InfrastructureStack extends cdk.Stack {
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       timeToLiveAttribute: 'ttl',
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: dynamoDbEncryptionKey,
     });
 
     // GSI to look up LAT by user_guid (for action token issuance)
@@ -340,6 +385,8 @@ export class InfrastructureStack extends cdk.Stack {
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       timeToLiveAttribute: 'ttl',
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: dynamoDbEncryptionKey,
     });
 
     actionTokens.addGlobalSecondaryIndex({
@@ -354,6 +401,8 @@ export class InfrastructureStack extends cdk.Stack {
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       timeToLiveAttribute: 'ttl',
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: dynamoDbEncryptionKey,
     });
 
     enrollmentSessions.addGlobalSecondaryIndex({
@@ -384,6 +433,8 @@ export class InfrastructureStack extends cdk.Stack {
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: dynamoDbEncryptionKey,
     });
 
     // Pending Admins table - stores admin invitations awaiting SES verification
@@ -393,6 +444,8 @@ export class InfrastructureStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       pointInTimeRecovery: true,
       timeToLiveAttribute: 'expires_at',
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: dynamoDbEncryptionKey,
     });
 
     // ===== NATS INFRASTRUCTURE TABLES =====
@@ -403,6 +456,8 @@ export class InfrastructureStack extends cdk.Stack {
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: dynamoDbEncryptionKey,
     });
 
     // GSI for NATS account JWT lookup by account public key (used by NATS URL resolver)
@@ -418,6 +473,8 @@ export class InfrastructureStack extends cdk.Stack {
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       timeToLiveAttribute: 'ttl',
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: dynamoDbEncryptionKey,
     });
 
     natsTokens.addGlobalSecondaryIndex({
@@ -435,6 +492,8 @@ export class InfrastructureStack extends cdk.Stack {
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: dynamoDbEncryptionKey,
     });
 
     vaultInstances.addGlobalSecondaryIndex({
@@ -458,6 +517,8 @@ export class InfrastructureStack extends cdk.Stack {
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: dynamoDbEncryptionKey,
     });
 
     handlers.addGlobalSecondaryIndex({
@@ -481,6 +542,8 @@ export class InfrastructureStack extends cdk.Stack {
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: dynamoDbEncryptionKey,
     });
 
     handlerInstallations.addGlobalSecondaryIndex({
@@ -498,6 +561,8 @@ export class InfrastructureStack extends cdk.Stack {
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: dynamoDbEncryptionKey,
     });
 
     // ===== PHASE 8: BACKUP SYSTEM TABLES =====
@@ -508,6 +573,8 @@ export class InfrastructureStack extends cdk.Stack {
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: dynamoDbEncryptionKey,
     });
 
     // GSI for querying backups by member (sorted by created_at)
@@ -524,6 +591,8 @@ export class InfrastructureStack extends cdk.Stack {
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: dynamoDbEncryptionKey,
     });
 
     // Backup Settings table - stores per-member backup preferences
@@ -532,6 +601,8 @@ export class InfrastructureStack extends cdk.Stack {
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: dynamoDbEncryptionKey,
     });
 
     // Credential Recovery Requests table - tracks 24-hour delayed recovery requests
@@ -541,6 +612,8 @@ export class InfrastructureStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       pointInTimeRecovery: true,
       timeToLiveAttribute: 'ttl',  // Auto-delete expired requests
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: dynamoDbEncryptionKey,
     });
 
     // GSI for finding active recovery requests by member
@@ -558,6 +631,8 @@ export class InfrastructureStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       pointInTimeRecovery: true,
       timeToLiveAttribute: 'ttl',  // Auto-delete expired requests
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: dynamoDbEncryptionKey,
     });
 
     // GSI for finding active deletion requests by member
@@ -576,6 +651,8 @@ export class InfrastructureStack extends cdk.Stack {
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: dynamoDbEncryptionKey,
     });
 
     // GSI for filtering by status
@@ -611,6 +688,8 @@ export class InfrastructureStack extends cdk.Stack {
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: dynamoDbEncryptionKey,
     });
 
     // ===== ADMIN PORTAL: HANDLER MARKETPLACE =====
@@ -635,6 +714,8 @@ export class InfrastructureStack extends cdk.Stack {
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: dynamoDbEncryptionKey,
     });
 
     // GSI for listing submissions by status (pending, approved, rejected)
@@ -671,6 +752,8 @@ export class InfrastructureStack extends cdk.Stack {
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: dynamoDbEncryptionKey,
     });
 
     // GSI for listing broadcasts by type (sorted by sent_at)
@@ -1112,7 +1195,7 @@ export class InfrastructureStack extends cdk.Stack {
     // Ed25519 keypair for signing WASM handler packages
     // The private key is used by CI/CD to sign handlers
     // The public key is embedded in the enclave AMI for verification
-    // NOTE: Generate the keypair manually and update this secret:
+    // SECURITY: Secret is created empty - keypair MUST be generated and stored manually:
     //   openssl genpkey -algorithm ed25519 -out private.pem
     //   openssl pkey -in private.pem -pubout -out public.pem
     //   aws secretsmanager put-secret-value --secret-id vettid/handler-signing-key \
@@ -1120,12 +1203,17 @@ export class InfrastructureStack extends cdk.Stack {
     //       '{private_key: $priv, public_key: $pub}')"
     const handlerSigningKeySecret = new secretsmanager.Secret(this, 'HandlerSigningKeySecret', {
       secretName: 'vettid/handler-signing-key',
-      description: 'Ed25519 keypair for signing WASM handler packages',
-      // Placeholder - actual keys generated separately for security
-      secretStringValue: cdk.SecretValue.unsafePlainText(JSON.stringify({
-        private_key: 'PLACEHOLDER_GENERATE_ED25519_KEYPAIR',
-        public_key: 'PLACEHOLDER_GENERATE_ED25519_KEYPAIR',
-      })),
+      description: 'Ed25519 keypair for signing WASM handler packages - REQUIRES MANUAL INITIALIZATION',
+      // Generate a random placeholder that forces manual initialization
+      // The enclave will fail to verify signatures until real keys are stored
+      generateSecretString: {
+        secretStringTemplate: JSON.stringify({
+          status: 'UNINITIALIZED',
+          instructions: 'Run: openssl genpkey -algorithm ed25519 -out private.pem && aws secretsmanager put-secret-value --secret-id vettid/handler-signing-key --secret-string "$(jq -n --rawfile priv private.pem --rawfile pub <(openssl pkey -in private.pem -pubout) \'{private_key: $priv, public_key: $pub}\')"',
+        }),
+        generateStringKey: 'initialization_token',
+        excludePunctuation: true,
+      },
     });
 
     // Export the secret ARN

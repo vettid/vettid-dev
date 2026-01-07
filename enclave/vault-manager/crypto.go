@@ -59,9 +59,19 @@ func hashAuthInput(input, salt []byte) []byte {
 
 // verifyAuthHash verifies the auth input against the stored hash
 // Uses constant-time comparison to prevent timing attacks
+// SECURITY: Zeroizes computed hash after comparison to prevent memory leakage
 func verifyAuthHash(input, salt, expectedHash []byte) bool {
 	computedHash := hashAuthInput(input, salt)
+	defer zeroBytes(computedHash) // SECURITY: Zero hash after use
 	return timingSafeEqual(computedHash, expectedHash)
+}
+
+// zeroBytes overwrites a byte slice with zeros
+// SECURITY: Used to clear sensitive data from memory
+func zeroBytes(b []byte) {
+	for i := range b {
+		b[i] = 0
+	}
 }
 
 // timingSafeEqual performs a constant-time comparison of two byte slices

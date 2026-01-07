@@ -1,5 +1,5 @@
 import { APIGatewayProxyHandlerV2 } from "aws-lambda";
-import { ok, badRequest, internalError, requireAdminGroup, putAudit, getAdminEmail } from "../../common/util";
+import { ok, badRequest, internalError, requireAdminGroup, validateOrigin, putAudit, getAdminEmail } from "../../common/util";
 import { DynamoDBClient, PutItemCommand, UpdateItemCommand } from "@aws-sdk/client-dynamodb";
 import { marshall } from "@aws-sdk/util-dynamodb";
 import { randomUUID } from "crypto";
@@ -47,6 +47,10 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     });
     return authError;
   }
+
+  // CSRF protection: Validate request origin
+  const csrfError = validateOrigin(event);
+  if (csrfError) return csrfError;
 
   try {
     if (!event.body) {

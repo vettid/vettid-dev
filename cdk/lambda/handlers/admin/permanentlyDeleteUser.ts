@@ -1,5 +1,5 @@
 import { APIGatewayProxyHandlerV2 } from "aws-lambda";
-import { ddb, TABLES, ok, badRequest, notFound, putAudit, requireAdminGroup, validatePathParam, ValidationError, hashForLog } from "../../common/util";
+import { ddb, TABLES, ok, badRequest, notFound, putAudit, requireAdminGroup, validateOrigin, validatePathParam, ValidationError, hashForLog } from "../../common/util";
 import { DeleteItemCommand, GetItemCommand } from "@aws-sdk/client-dynamodb";
 import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
 import { CognitoIdentityProviderClient, AdminDeleteUserCommand, AdminGetUserCommand } from "@aws-sdk/client-cognito-identity-provider";
@@ -12,6 +12,10 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   // Validate admin group membership
   const authError = requireAdminGroup(event);
   if (authError) return authError;
+
+  // CSRF protection: Validate request origin
+  const csrfError = validateOrigin(event);
+  if (csrfError) return csrfError;
 
   let id: string;
   try {

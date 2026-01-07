@@ -12,7 +12,8 @@ import {
   ddb,
   TABLES,
   NotFoundError,
-  requireAdminGroup
+  requireAdminGroup,
+  validateOrigin
 } from "../../common/util";
 import { UpdateItemCommand } from "@aws-sdk/client-dynamodb";
 import { marshall } from "@aws-sdk/util-dynamodb";
@@ -22,6 +23,10 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   // Validate admin group membership
   const authError = requireAdminGroup(event);
   if (authError) return authError;
+
+  // CSRF protection: Validate request origin
+  const csrfError = validateOrigin(event);
+  if (csrfError) return csrfError;
 
   const id = event.pathParameters?.id;
   if (!id) return badRequest("id required");

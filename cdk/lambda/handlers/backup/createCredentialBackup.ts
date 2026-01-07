@@ -57,7 +57,16 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       return badRequest("nonce is required", origin);
     }
 
-    // Validate Base64 format
+    // SECURITY: Validate input sizes BEFORE parsing Base64 to prevent DoS
+    // Max base64 string length: 5MB raw * 4/3 (base64 overhead) ≈ 6.7MB
+    const MAX_BLOB_BASE64_LENGTH = 7 * 1024 * 1024; // 7MB max base64 string
+    const MAX_BLOB_BYTES = 5 * 1024 * 1024; // 5MB max decoded size
+
+    if (request.encrypted_blob.length > MAX_BLOB_BASE64_LENGTH) {
+      return badRequest(`encrypted_blob exceeds maximum size (${MAX_BLOB_BASE64_LENGTH} base64 chars)`, origin);
+    }
+
+    // Validate Base64 format and sizes
     try {
       const blobBuffer = Buffer.from(request.encrypted_blob, "base64");
       const saltBuffer = Buffer.from(request.salt, "base64");
@@ -66,8 +75,15 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       if (blobBuffer.length === 0) {
         return badRequest("encrypted_blob cannot be empty", origin);
       }
+      // SECURITY: Enforce maximum decoded size to prevent storage exhaustion
+      if (blobBuffer.length > MAX_BLOB_BYTES) {
+        return badRequest(`encrypted_blob exceeds maximum size (${MAX_BLOB_BYTES} bytes)`, origin);
+      }
       if (saltBuffer.length < 16) {
         return badRequest("salt must be at least 16 bytes", origin);
+      }
+      if (saltBuffer.length > 64) {
+        return badRequest("salt must be at most 64 bytes", origin);
       }
       if (nonceBuffer.length !== 24) {
         return badRequest("nonce must be exactly 24 bytes (XChaCha20)", origin);

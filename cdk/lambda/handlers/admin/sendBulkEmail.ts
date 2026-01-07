@@ -8,7 +8,7 @@ import { randomUUID, createHash } from 'crypto';
 function hashEmail(email: string): string {
   return createHash('sha256').update(email.toLowerCase()).digest('hex').substring(0, 12);
 }
-import { ok, badRequest, internalError, requireAdminGroup, getAdminEmail, validateUUID, putAudit } from '../../common/util';
+import { ok, badRequest, internalError, requireAdminGroup, validateOrigin, getAdminEmail, validateUUID, putAudit } from '../../common/util';
 
 const ddb = new DynamoDBClient({});
 const ses = new SESClient({});
@@ -257,6 +257,10 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
   // Require admin group membership
   const authError = requireAdminGroup(event);
   if (authError) return authError;
+
+  // CSRF protection: Validate request origin
+  const csrfError = validateOrigin(event);
+  if (csrfError) return csrfError;
 
   const adminEmail = getAdminEmail(event);
 

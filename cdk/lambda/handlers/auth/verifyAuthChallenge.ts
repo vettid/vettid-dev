@@ -1,14 +1,25 @@
 // lambda/handlers/auth/verifyAuthChallenge.ts
 import { VerifyAuthChallengeResponseTriggerHandler } from 'aws-lambda';
-import { DynamoDBClient, GetItemCommand, DeleteItemCommand, ScanCommand } from '@aws-sdk/client-dynamodb';
+import { DynamoDBClient, GetItemCommand, DeleteItemCommand, QueryCommand } from '@aws-sdk/client-dynamodb';
 import { CloudWatchClient, PutMetricDataCommand } from '@aws-sdk/client-cloudwatch';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import { createHash, timingSafeEqual } from 'crypto';
+import { recordFailedAttempt, isBlockedByBruteForce, clearFailedAttempts } from '../../common/rateLimit';
 
 const ddb = new DynamoDBClient({});
 const cloudwatch = new CloudWatchClient({});
 const MAGIC_LINK_TABLE = process.env.MAGIC_LINK_TABLE!;
 const REGISTRATIONS_TABLE = process.env.REGISTRATIONS_TABLE!;
+
+/**
+ * PIN brute force protection configuration
+ * 5 failed attempts in 15 minutes = 30 minute block
+ */
+const PIN_BRUTE_FORCE_CONFIG = {
+  maxFailedAttempts: 5,
+  windowSeconds: 900,        // 15 minutes
+  blockDurationSeconds: 1800, // 30 minutes
+};
 
 /**
  * Hash PIN using SHA-256
@@ -93,18 +104,22 @@ export const handler: VerifyAuthChallengeResponseTriggerHandler = async (event) 
 
   try {
     // First, check if user has PIN enabled
-    const userEmail = event.request.userAttributes.email;
-    // Note: Remove Limit when using FilterExpression - Limit applies BEFORE filtering
-    const regQuery = await ddb.send(new ScanCommand({
+    const email = event.request.userAttributes.email;
+    // SECURITY: Use email-index GSI instead of table scan for O(1) lookup
+    // This prevents DDoS via expensive scan operations
+    const regQuery = await ddb.send(new QueryCommand({
       TableName: REGISTRATIONS_TABLE,
-      FilterExpression: "email = :email AND #s = :approved",
+      IndexName: 'email-index',
+      KeyConditionExpression: 'email = :email',
+      FilterExpression: '#s = :approved',
       ExpressionAttributeNames: {
-        "#s": "status"
+        '#s': 'status',
       },
       ExpressionAttributeValues: marshall({
-        ":email": userEmail,
-        ":approved": "approved"
-      })
+        ':email': email,
+        ':approved': 'approved',
+      }),
+      Limit: 1, // Only need one result
     }));
 
     let pinRequired = false;
@@ -123,7 +138,7 @@ export const handler: VerifyAuthChallengeResponseTriggerHandler = async (event) 
       return event;
     }
 
-    // If PIN is provided, validate it
+    // If PIN is provided, validate it with brute force protection
     if (pinRequired && providedPin) {
       if (!storedPinHash) {
         await publishFailedLoginMetric('PinHashMissing');
@@ -131,13 +146,33 @@ export const handler: VerifyAuthChallengeResponseTriggerHandler = async (event) 
         return event;
       }
 
+      // SECURITY: Check if user is blocked due to too many failed PIN attempts
+      const isBlocked = await isBlockedByBruteForce(email, 'pin', PIN_BRUTE_FORCE_CONFIG);
+      if (isBlocked) {
+        console.warn('PIN auth blocked due to brute force protection: user_hash=%s', hashForLog(email));
+        await publishFailedLoginMetric('PinBlocked');
+        event.response.answerCorrect = false;
+        return event;
+      }
+
       const providedPinHash = hashPin(providedPin);
       // SECURITY: Use timing-safe comparison to prevent timing attacks
       if (!secureCompare(providedPinHash, storedPinHash)) {
+        // SECURITY: Record failed attempt for brute force detection
+        const { blocked, attemptsRemaining } = await recordFailedAttempt(
+          email,
+          'pin',
+          PIN_BRUTE_FORCE_CONFIG
+        );
+        console.warn('Invalid PIN: user_hash=%s, attempts_remaining=%d, blocked=%s',
+          hashForLog(email), attemptsRemaining, blocked);
         await publishFailedLoginMetric('InvalidPin');
         event.response.answerCorrect = false;
         return event;
       }
+
+      // SECURITY: Clear failed attempts on successful PIN validation
+      await clearFailedAttempts(email, 'pin');
     }
 
     // Retrieve token from DynamoDB to verify it exists and hasn't expired
@@ -165,7 +200,7 @@ export const handler: VerifyAuthChallengeResponseTriggerHandler = async (event) 
     }
 
     // Check if token belongs to the correct user
-    if (tokenData.email !== userEmail) {
+    if (tokenData.email !== email) {
       await publishFailedLoginMetric('EmailMismatch');
       event.response.answerCorrect = false;
       return event;

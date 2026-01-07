@@ -2,15 +2,21 @@ package main
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
 	"golang.org/x/crypto/argon2"
+	"golang.org/x/crypto/curve25519"
+	"golang.org/x/crypto/hkdf"
 )
 
 // ParentSender is the interface for sending messages to parent
@@ -48,6 +54,12 @@ type VaultProcess struct {
 
 	// Credential state (unsealed in enclave memory)
 	credential *UnsealedCredential
+
+	// ECIES keypair for PIN/password encryption (X25519)
+	// The public key is provided to mobile apps during attestation
+	// The private key decrypts incoming encrypted PINs
+	eciesPrivateKey []byte
+	eciesPublicKey  []byte
 
 	// Block list for call filtering
 	blockList map[string]*BlockListEntry
@@ -147,19 +159,31 @@ func (vm *VaultManager) GetOrCreate(ctx context.Context, ownerSpace string) (*Va
 		vm.evictLRU()
 	}
 
+	// Generate X25519 keypair for ECIES PIN encryption
+	eciesPrivateKey := make([]byte, 32)
+	if _, err := rand.Read(eciesPrivateKey); err != nil {
+		return nil, fmt.Errorf("failed to generate ECIES private key: %w", err)
+	}
+	eciesPublicKey, err := curve25519.X25519(eciesPrivateKey, curve25519.Basepoint)
+	if err != nil {
+		return nil, fmt.Errorf("failed to derive ECIES public key: %w", err)
+	}
+
 	// Create new vault
 	vault := &VaultProcess{
-		OwnerSpace:   ownerSpace,
-		StartedAt:    time.Now(),
-		LastAccess:   time.Now(),
-		MemoryMB:     40, // Estimated memory per vault
-		parentSender: vm.parentSender,
-		sealer:       vm.sealer,
-		requestChan:  make(chan *vaultRequest, 10),
-		responseChan: make(chan *vaultResponse, 10),
-		stopChan:     make(chan struct{}),
-		blockList:    make(map[string]*BlockListEntry),
-		callHistory:  make([]*CallRecord, 0),
+		OwnerSpace:      ownerSpace,
+		StartedAt:       time.Now(),
+		LastAccess:      time.Now(),
+		MemoryMB:        40, // Estimated memory per vault
+		parentSender:    vm.parentSender,
+		sealer:          vm.sealer,
+		requestChan:     make(chan *vaultRequest, 10),
+		responseChan:    make(chan *vaultResponse, 10),
+		stopChan:        make(chan struct{}),
+		eciesPrivateKey: eciesPrivateKey,
+		eciesPublicKey:  eciesPublicKey,
+		blockList:       make(map[string]*BlockListEntry),
+		callHistory:     make([]*CallRecord, 0),
 	}
 
 	// Reserve memory
@@ -216,6 +240,9 @@ func (vm *VaultManager) evictVault(ownerSpace string) {
 	// Stop the vault
 	close(vault.stopChan)
 
+	// SECURITY: Zero sensitive key material before releasing memory
+	vault.zeroSensitiveData()
+
 	// Release memory
 	vm.memoryManager.Release(vault.MemoryMB)
 
@@ -227,6 +254,37 @@ func (vm *VaultManager) evictVault(ownerSpace string) {
 		Str("owner_space", ownerSpace).
 		Int("active_vaults", len(vm.vaults)).
 		Msg("Evicted vault")
+}
+
+// zeroSensitiveData zeros all sensitive key material in the vault
+// SECURITY: Called before vault eviction to prevent key leakage
+func (vp *VaultProcess) zeroSensitiveData() {
+	vp.mu.Lock()
+	defer vp.mu.Unlock()
+
+	// Zero ECIES private key
+	for i := range vp.eciesPrivateKey {
+		vp.eciesPrivateKey[i] = 0
+	}
+
+	// Zero credential data if present
+	if vp.credential != nil {
+		for i := range vp.credential.IdentityPrivateKey {
+			vp.credential.IdentityPrivateKey[i] = 0
+		}
+		for i := range vp.credential.VaultMasterSecret {
+			vp.credential.VaultMasterSecret[i] = 0
+		}
+		for i := range vp.credential.AuthHash {
+			vp.credential.AuthHash[i] = 0
+		}
+		for _, key := range vp.credential.CryptoKeys {
+			for i := range key.PrivateKey {
+				key.PrivateKey[i] = 0
+			}
+		}
+		vp.credential = nil
+	}
 }
 
 // evictLRU evicts the least recently used vault
@@ -738,10 +796,14 @@ func (vp *VaultProcess) CreateCredential(ctx context.Context, req *CredentialReq
 		Str("auth_type", req.AuthType).
 		Msg("Creating credential")
 
-	// 1. Get PIN from request
-	// TODO: In production, decrypt PIN using ECIES with attestation-bound key
-	// For now, we accept the PIN directly (suitable for internal/dev use)
-	pin := req.EncryptedPIN
+	// 1. Decrypt PIN from request using ECIES
+	// Mobile app encrypts PIN with vault's public key (from GetECIESPublicKey)
+	// This ensures PIN is never transmitted in plaintext
+	pin, err := vp.decryptPIN(req.EncryptedPIN)
+	if err != nil {
+		log.Error().Err(err).Str("owner_space", vp.OwnerSpace).Msg("Failed to decrypt PIN")
+		return nil, fmt.Errorf("failed to decrypt PIN: %w", err)
+	}
 
 	// Validate PIN length (minimum 4 digits/chars, maximum 64)
 	if len(pin) < 4 || len(pin) > 64 {
@@ -857,10 +919,28 @@ func (vp *VaultProcess) UnsealCredential(ctx context.Context, sealed []byte, cha
 		return nil, fmt.Errorf("failed to parse credential: %w", err)
 	}
 
-	// 2. Verify challenge response (PIN/password/pattern)
-	// The challenge.Response is the PIN/password provided by the user
-	// We hash it with the stored salt and compare to stored hash
-	providedHash := argon2.IDKey(challenge.Response, credential.AuthSalt, 3, 64*1024, 4, 32)
+	// 2. Decrypt challenge response (PIN/password encrypted by mobile app)
+	decryptedResponse, err := vp.decryptPIN(challenge.Response)
+	if err != nil {
+		log.Warn().
+			Str("owner_space", vp.OwnerSpace).
+			Err(err).
+			Msg("Failed to decrypt challenge response")
+		// Zero the unsealed data before returning
+		for i := range unsealedJSON {
+			unsealedJSON[i] = 0
+		}
+		return nil, fmt.Errorf("failed to decrypt challenge response: %w", err)
+	}
+
+	// 3. Verify challenge response (PIN/password/pattern)
+	// Hash the decrypted PIN with the stored salt and compare to stored hash
+	providedHash := argon2.IDKey(decryptedResponse, credential.AuthSalt, 3, 64*1024, 4, 32)
+
+	// Zero the decrypted response immediately after hashing
+	for i := range decryptedResponse {
+		decryptedResponse[i] = 0
+	}
 
 	// Constant-time comparison to prevent timing attacks
 	if !constantTimeCompare(providedHash, credential.AuthHash) {
@@ -923,7 +1003,101 @@ var (
 	ErrOutOfMemory    = &Error{Code: "OUT_OF_MEMORY", Message: "Not enough memory to create vault"}
 	ErrNotImplemented = &Error{Code: "NOT_IMPLEMENTED", Message: "Feature not yet implemented"}
 	ErrInvalidAuth    = &Error{Code: "INVALID_AUTH", Message: "Invalid PIN, password, or pattern"}
+	ErrDecryptionFailed = &Error{Code: "DECRYPTION_FAILED", Message: "Failed to decrypt PIN"}
 )
+
+// EncryptedPINPackage represents the ECIES-encrypted PIN from mobile app
+// Mobile app encrypts: PIN -> Argon2id hash -> ECIES encrypt with vault's public key
+type EncryptedPINPackage struct {
+	EphemeralPublicKey []byte `json:"ephemeral_public_key"` // X25519 ephemeral public key (32 bytes)
+	Nonce              []byte `json:"nonce"`                // AES-GCM nonce (12 bytes)
+	Ciphertext         []byte `json:"ciphertext"`           // Encrypted PIN hash
+}
+
+// decryptPIN decrypts an ECIES-encrypted PIN using the vault's private key
+// SECURITY: This implements X25519 + HKDF + AES-256-GCM (ECIES)
+func (vp *VaultProcess) decryptPIN(encryptedPackage []byte) ([]byte, error) {
+	// Check if we're in development mode (accept plaintext PIN)
+	if os.Getenv("VETTID_PRODUCTION") != "true" {
+		// In development, check if this looks like JSON (encrypted) or plaintext
+		if len(encryptedPackage) > 0 && encryptedPackage[0] != '{' {
+			log.Warn().Msg("SECURITY WARNING: Accepting plaintext PIN - development mode only")
+			return encryptedPackage, nil
+		}
+	}
+
+	// Parse the encrypted package
+	var pkg EncryptedPINPackage
+	if err := json.Unmarshal(encryptedPackage, &pkg); err != nil {
+		// In production, reject non-encrypted PINs
+		if os.Getenv("VETTID_PRODUCTION") == "true" {
+			return nil, fmt.Errorf("PIN must be encrypted in production: %w", err)
+		}
+		// Development fallback: treat as plaintext
+		log.Warn().Msg("SECURITY WARNING: Accepting plaintext PIN - development mode only")
+		return encryptedPackage, nil
+	}
+
+	// Validate package
+	if len(pkg.EphemeralPublicKey) != 32 {
+		return nil, fmt.Errorf("%w: invalid ephemeral public key length", ErrDecryptionFailed)
+	}
+	if len(pkg.Nonce) != 12 {
+		return nil, fmt.Errorf("%w: invalid nonce length", ErrDecryptionFailed)
+	}
+	if len(pkg.Ciphertext) == 0 {
+		return nil, fmt.Errorf("%w: empty ciphertext", ErrDecryptionFailed)
+	}
+
+	// Perform X25519 key agreement
+	sharedSecret, err := curve25519.X25519(vp.eciesPrivateKey, pkg.EphemeralPublicKey)
+	if err != nil {
+		return nil, fmt.Errorf("%w: key agreement failed", ErrDecryptionFailed)
+	}
+
+	// Derive AES key using HKDF-SHA256
+	// Info string includes both public keys for domain separation
+	info := append([]byte("vettid-pin-encryption"), pkg.EphemeralPublicKey...)
+	info = append(info, vp.eciesPublicKey...)
+
+	hkdfReader := hkdf.New(sha256.New, sharedSecret, nil, info)
+	aesKey := make([]byte, 32) // AES-256
+	if _, err := hkdfReader.Read(aesKey); err != nil {
+		return nil, fmt.Errorf("%w: key derivation failed", ErrDecryptionFailed)
+	}
+
+	// Decrypt using AES-256-GCM
+	block, err := aes.NewCipher(aesKey)
+	if err != nil {
+		return nil, fmt.Errorf("%w: cipher creation failed", ErrDecryptionFailed)
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("%w: GCM creation failed", ErrDecryptionFailed)
+	}
+
+	plaintext, err := gcm.Open(nil, pkg.Nonce, pkg.Ciphertext, nil)
+	if err != nil {
+		return nil, fmt.Errorf("%w: decryption failed (invalid ciphertext or key)", ErrDecryptionFailed)
+	}
+
+	// Zero sensitive data
+	for i := range sharedSecret {
+		sharedSecret[i] = 0
+	}
+	for i := range aesKey {
+		aesKey[i] = 0
+	}
+
+	return plaintext, nil
+}
+
+// GetECIESPublicKey returns the vault's ECIES public key for PIN encryption
+// Mobile apps use this key to encrypt PINs before sending to the vault
+func (vp *VaultProcess) GetECIESPublicKey() []byte {
+	return vp.eciesPublicKey
+}
 
 // Error represents an error with a code
 type Error struct {

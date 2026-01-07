@@ -1,13 +1,21 @@
 package main
 
 import (
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
+	"os"
+	"time"
 
 	"github.com/mdlayher/vsock"
+	"github.com/rs/zerolog/log"
 )
 
 // MessageType identifies the type of message being sent over vsock
@@ -51,6 +59,20 @@ const (
 	// Error
 	MessageTypeError MessageType = "error"
 	MessageTypeOK    MessageType = "ok"
+
+	// Mutual authentication handshake
+	MessageTypeHandshake         MessageType = "handshake"
+	MessageTypeHandshakeResponse MessageType = "handshake_response"
+)
+
+// SECURITY: Handshake constants
+const (
+	// Maximum time allowed for handshake completion
+	handshakeTimeout = 10 * time.Second
+	// Nonce size for handshake challenge
+	handshakeNonceSize = 32
+	// Maximum handshake attempts before blocking connection
+	maxHandshakeAttempts = 3
 )
 
 // Message is the wire format for vsock communication
@@ -93,6 +115,10 @@ type Message struct {
 
 	// Error
 	Error string `json:"error,omitempty"`
+
+	// Handshake (mutual authentication)
+	HandshakeNonce []byte `json:"handshake_nonce,omitempty"`
+	HandshakeMAC   []byte `json:"handshake_mac,omitempty"`
 }
 
 // Attestation holds a Nitro attestation document
@@ -128,6 +154,238 @@ type HealthStatus struct {
 	MemoryTotalMB int    `json:"memory_total_mb"`
 	UptimeSeconds int64  `json:"uptime_seconds"`
 	Version       string `json:"version"`
+}
+
+// SECURITY: Authentication errors
+var (
+	ErrHandshakeFailed   = errors.New("handshake authentication failed")
+	ErrHandshakeTimeout  = errors.New("handshake timeout")
+	ErrInvalidMAC        = errors.New("invalid handshake MAC")
+	ErrNotAuthenticated  = errors.New("connection not authenticated")
+	ErrNoSharedSecret    = errors.New("shared secret not configured")
+)
+
+// AuthenticatedConnection wraps a Connection with mutual authentication
+// SECURITY: This ensures both parent and enclave verify each other's identity
+type AuthenticatedConnection struct {
+	conn          Connection
+	authenticated bool
+	sharedSecret  []byte // Pre-shared key for HMAC-based authentication
+	localNonce    []byte
+	remoteNonce   []byte
+}
+
+// getSharedSecret retrieves the shared secret for vsock authentication
+// SECURITY: This secret is provisioned via KMS and enclave attestation
+func getSharedSecret() ([]byte, error) {
+	// In production, this comes from KMS decryption using attestation
+	// The parent encrypts the secret to the enclave's PCRs
+	secretHex := os.Getenv("VSOCK_SHARED_SECRET")
+	if secretHex == "" {
+		// Development mode: use hardcoded test secret
+		if os.Getenv("VETTID_PRODUCTION") != "true" {
+			log.Warn().Msg("SECURITY WARNING: Using development shared secret - not for production")
+			return []byte("development-vsock-secret-32bytes!"), nil
+		}
+		return nil, ErrNoSharedSecret
+	}
+
+	secret, err := hex.DecodeString(secretHex)
+	if err != nil {
+		return nil, fmt.Errorf("invalid shared secret format: %w", err)
+	}
+
+	// SECURITY: Validate secret length (256-bit minimum)
+	if len(secret) < 32 {
+		return nil, fmt.Errorf("shared secret too short: need 32 bytes, got %d", len(secret))
+	}
+
+	return secret, nil
+}
+
+// NewAuthenticatedConnection creates a new authenticated connection wrapper
+func NewAuthenticatedConnection(conn Connection) *AuthenticatedConnection {
+	return &AuthenticatedConnection{
+		conn:          conn,
+		authenticated: false,
+	}
+}
+
+// PerformServerHandshake performs the server-side (enclave) handshake
+// SECURITY: The enclave verifies the parent's identity via HMAC and provides attestation
+func (ac *AuthenticatedConnection) PerformServerHandshake(expectedPCRs map[int][]byte) error {
+	secret, err := getSharedSecret()
+	if err != nil {
+		return err
+	}
+	ac.sharedSecret = secret
+
+	// Set deadline for handshake
+	if tcpConn, ok := ac.conn.(*tcpConnection); ok {
+		tcpConn.conn.SetDeadline(time.Now().Add(handshakeTimeout))
+		defer tcpConn.conn.SetDeadline(time.Time{})
+	}
+
+	// 1. Receive handshake from parent
+	msg, err := ac.conn.ReadMessage()
+	if err != nil {
+		return fmt.Errorf("failed to read handshake: %w", err)
+	}
+
+	if msg.Type != MessageTypeHandshake {
+		return fmt.Errorf("%w: expected handshake, got %s", ErrHandshakeFailed, msg.Type)
+	}
+
+	// SECURITY: Validate parent's nonce
+	if len(msg.HandshakeNonce) != handshakeNonceSize {
+		return fmt.Errorf("%w: invalid nonce size", ErrHandshakeFailed)
+	}
+	ac.remoteNonce = msg.HandshakeNonce
+
+	// 2. Verify parent's MAC: HMAC-SHA256(secret, "parent:" || nonce)
+	expectedMAC := computeHandshakeMAC(ac.sharedSecret, "parent:", ac.remoteNonce)
+	if !hmac.Equal(msg.HandshakeMAC, expectedMAC) {
+		log.Error().Msg("SECURITY: Parent handshake MAC verification failed")
+		return ErrInvalidMAC
+	}
+
+	// 3. Generate our nonce
+	ac.localNonce = make([]byte, handshakeNonceSize)
+	if _, err := rand.Read(ac.localNonce); err != nil {
+		return fmt.Errorf("failed to generate nonce: %w", err)
+	}
+
+	// 4. Generate attestation with combined nonce (proves enclave identity)
+	combinedNonce := append(ac.remoteNonce, ac.localNonce...)
+	attestation, err := GenerateAttestation(combinedNonce)
+	if err != nil {
+		return fmt.Errorf("failed to generate attestation: %w", err)
+	}
+
+	// 5. Compute our MAC: HMAC-SHA256(secret, "enclave:" || local_nonce || attestation_hash)
+	attestHash := sha256.Sum256(attestation.Document)
+	responseMAC := computeHandshakeMAC(ac.sharedSecret, "enclave:", append(ac.localNonce, attestHash[:]...))
+
+	// 6. Send handshake response with attestation
+	response := &Message{
+		Type:           MessageTypeHandshakeResponse,
+		HandshakeNonce: ac.localNonce,
+		HandshakeMAC:   responseMAC,
+		Attestation:    attestation,
+	}
+
+	if err := ac.conn.WriteMessage(response); err != nil {
+		return fmt.Errorf("failed to send handshake response: %w", err)
+	}
+
+	ac.authenticated = true
+	log.Info().Msg("Vsock mutual authentication completed (server)")
+	return nil
+}
+
+// PerformClientHandshake performs the client-side (parent) handshake
+// SECURITY: The parent verifies the enclave's attestation and PCRs
+func (ac *AuthenticatedConnection) PerformClientHandshake(expectedPCRs map[int][]byte) error {
+	secret, err := getSharedSecret()
+	if err != nil {
+		return err
+	}
+	ac.sharedSecret = secret
+
+	// 1. Generate our nonce
+	ac.localNonce = make([]byte, handshakeNonceSize)
+	if _, err := rand.Read(ac.localNonce); err != nil {
+		return fmt.Errorf("failed to generate nonce: %w", err)
+	}
+
+	// 2. Compute our MAC: HMAC-SHA256(secret, "parent:" || nonce)
+	mac := computeHandshakeMAC(ac.sharedSecret, "parent:", ac.localNonce)
+
+	// 3. Send handshake
+	msg := &Message{
+		Type:           MessageTypeHandshake,
+		HandshakeNonce: ac.localNonce,
+		HandshakeMAC:   mac,
+	}
+
+	if err := ac.conn.WriteMessage(msg); err != nil {
+		return fmt.Errorf("failed to send handshake: %w", err)
+	}
+
+	// 4. Receive handshake response
+	response, err := ac.conn.ReadMessage()
+	if err != nil {
+		return fmt.Errorf("failed to read handshake response: %w", err)
+	}
+
+	if response.Type != MessageTypeHandshakeResponse {
+		return fmt.Errorf("%w: expected handshake_response, got %s", ErrHandshakeFailed, response.Type)
+	}
+
+	// SECURITY: Validate enclave's nonce
+	if len(response.HandshakeNonce) != handshakeNonceSize {
+		return fmt.Errorf("%w: invalid nonce size", ErrHandshakeFailed)
+	}
+	ac.remoteNonce = response.HandshakeNonce
+
+	// 5. Verify attestation document
+	if response.Attestation == nil {
+		return fmt.Errorf("%w: missing attestation", ErrHandshakeFailed)
+	}
+
+	// Verify attestation with expected PCRs (if provided)
+	if expectedPCRs != nil {
+		if err := VerifyAttestation(response.Attestation, expectedPCRs); err != nil {
+			log.Error().Err(err).Msg("SECURITY: Enclave attestation verification failed")
+			return fmt.Errorf("%w: attestation verification failed: %v", ErrHandshakeFailed, err)
+		}
+	}
+
+	// 6. Verify enclave's MAC: HMAC-SHA256(secret, "enclave:" || enclave_nonce || attestation_hash)
+	attestHash := sha256.Sum256(response.Attestation.Document)
+	expectedMAC := computeHandshakeMAC(ac.sharedSecret, "enclave:", append(ac.remoteNonce, attestHash[:]...))
+	if !hmac.Equal(response.HandshakeMAC, expectedMAC) {
+		log.Error().Msg("SECURITY: Enclave handshake MAC verification failed")
+		return ErrInvalidMAC
+	}
+
+	ac.authenticated = true
+	log.Info().Msg("Vsock mutual authentication completed (client)")
+	return nil
+}
+
+// ReadMessage reads a message (requires authentication)
+func (ac *AuthenticatedConnection) ReadMessage() (*Message, error) {
+	if !ac.authenticated {
+		return nil, ErrNotAuthenticated
+	}
+	return ac.conn.ReadMessage()
+}
+
+// WriteMessage writes a message (requires authentication)
+func (ac *AuthenticatedConnection) WriteMessage(msg *Message) error {
+	if !ac.authenticated {
+		return ErrNotAuthenticated
+	}
+	return ac.conn.WriteMessage(msg)
+}
+
+// Close closes the underlying connection
+func (ac *AuthenticatedConnection) Close() error {
+	return ac.conn.Close()
+}
+
+// IsAuthenticated returns whether the connection is authenticated
+func (ac *AuthenticatedConnection) IsAuthenticated() bool {
+	return ac.authenticated
+}
+
+// computeHandshakeMAC computes HMAC-SHA256 for handshake authentication
+func computeHandshakeMAC(secret []byte, prefix string, data []byte) []byte {
+	h := hmac.New(sha256.New, secret)
+	h.Write([]byte(prefix))
+	h.Write(data)
+	return h.Sum(nil)
 }
 
 // Listener is the interface for accepting connections

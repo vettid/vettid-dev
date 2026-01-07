@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -260,25 +261,17 @@ func (s *NitroSealer) generateAttestationForKMS() ([]byte, *rsa.PrivateKey, erro
 }
 
 // publicKeyToBytes serializes an RSA public key for inclusion in attestation
+// SECURITY: Uses standard SPKI/DER encoding as required by AWS KMS
 func publicKeyToBytes(pub *rsa.PublicKey) []byte {
 	// For KMS Recipient, we need the SubjectPublicKeyInfo (SPKI) DER encoding
-	// This is what AWS KMS expects
-	// Using a simple approach: marshal N and E
-	// In production, use x509.MarshalPKIXPublicKey
-
-	// For now, use a simple format that NSM accepts
-	// The actual format depends on how KMS interprets it
-	nBytes := pub.N.Bytes()
-	eBytes := []byte{byte(pub.E >> 16), byte(pub.E >> 8), byte(pub.E)}
-
-	// Combine: length of N (2 bytes) + N + E
-	result := make([]byte, 2+len(nBytes)+len(eBytes))
-	result[0] = byte(len(nBytes) >> 8)
-	result[1] = byte(len(nBytes))
-	copy(result[2:], nBytes)
-	copy(result[2+len(nBytes):], eBytes)
-
-	return result
+	// This is the standard format that AWS KMS expects and uses for CiphertextForRecipient
+	der, err := x509.MarshalPKIXPublicKey(pub)
+	if err != nil {
+		// This should never happen with a valid RSA public key
+		log.Error().Err(err).Msg("Failed to marshal RSA public key to SPKI/DER")
+		return nil
+	}
+	return der
 }
 
 // kmsEncrypt sends plaintext to parent for KMS encryption
