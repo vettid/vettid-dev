@@ -217,7 +217,7 @@
   .hero .subtitle {
     font-size: 1.25rem;
     color: var(--text-muted);
-    max-width: 600px;
+    max-width: 650px;
     margin-bottom: 40px;
   }
 
@@ -253,128 +253,337 @@
     transform: rotate(15deg);
   }
 
-  /* Features Section */
-  .features {
+  /* Trust Badge */
+  .trust-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(255,193,37,0.1);
+    border: 1px solid rgba(255,193,37,0.3);
+    border-radius: 100px;
+    padding: 8px 20px;
+    margin-bottom: 32px;
+    font-size: 0.9rem;
+    color: var(--accent);
+  }
+
+  .trust-badge svg {
+    width: 18px;
+    height: 18px;
+  }
+
+  /* Security Section */
+  .security {
     padding: 100px 24px;
     background: linear-gradient(180deg, var(--bg-dark) 0%, #0a0a0a 100%);
   }
 
-  .features h2 {
+  .security h2 {
     text-align: center;
     font-size: 2.5rem;
     margin-bottom: 16px;
     color: #fff;
   }
 
-  .features .section-subtitle {
+  .security .section-subtitle {
     text-align: center;
     color: var(--text-muted);
     font-size: 1.1rem;
-    max-width: 600px;
+    max-width: 700px;
     margin: 0 auto 60px;
   }
 
-  .features-grid {
+  .security-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
     gap: 32px;
     max-width: 1200px;
     margin: 0 auto;
   }
 
-  .feature-card {
+  .security-card {
     background: linear-gradient(135deg, var(--bg-elevated) 0%, var(--bg-card) 100%);
     border: 1px solid var(--border-accent);
     border-radius: 12px;
     padding: 32px;
-    text-align: center;
     transition: transform var(--duration-slow) var(--ease-out-expo),
                 border-color var(--duration-slow) var(--ease-out-expo),
                 box-shadow var(--duration-slow) var(--ease-out-expo);
   }
 
-  .feature-card:hover {
+  .security-card:hover {
     border-color: rgba(255,193,37,0.4);
     transform: translateY(-6px);
     box-shadow: 0 16px 48px rgba(255,193,37,0.15);
   }
 
-  .feature-icon {
-    width: 80px;
-    height: 80px;
-    margin: 0 auto 24px;
+  .security-icon {
+    width: 64px;
+    height: 64px;
+    margin-bottom: 20px;
   }
 
-  .feature-card h3 {
-    font-size: 1.3rem;
+  .security-card h3 {
+    font-size: 1.2rem;
     color: var(--accent);
     margin-bottom: 12px;
   }
 
-  .feature-card p {
+  .security-card p {
     color: var(--text-muted);
     font-size: 0.95rem;
+    margin-bottom: 16px;
   }
 
-  /* How It Works Section */
-  .how-it-works {
+  .security-card .tech-tag {
+    display: inline-block;
+    background: rgba(255,193,37,0.1);
+    color: var(--accent);
+    font-size: 0.75rem;
+    font-weight: 600;
+    padding: 4px 10px;
+    border-radius: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  /* Nitro Section */
+  .nitro {
     padding: 100px 24px;
     background: var(--bg-dark);
+    position: relative;
+    overflow: hidden;
   }
 
-  .how-it-works h2 {
+  .nitro::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 800px;
+    height: 800px;
+    background: radial-gradient(circle, rgba(255,193,37,0.04) 0%, transparent 70%);
+    pointer-events: none;
+  }
+
+  .nitro-content {
+    max-width: 1100px;
+    margin: 0 auto;
+    position: relative;
+    z-index: 1;
+  }
+
+  .nitro h2 {
     text-align: center;
     font-size: 2.5rem;
-    margin-bottom: 60px;
+    margin-bottom: 16px;
     color: #fff;
   }
 
-  .steps {
+  .nitro .section-subtitle {
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 1.1rem;
+    max-width: 750px;
+    margin: 0 auto 50px;
+  }
+
+  .nitro-diagram {
+    background: var(--bg-card);
+    border: 1px solid var(--border-accent);
+    border-radius: 16px;
+    padding: 40px;
+    margin-bottom: 50px;
+  }
+
+  .diagram-title {
+    text-align: center;
+    font-size: 1rem;
+    color: var(--text-muted);
+    margin-bottom: 30px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+  }
+
+  .diagram-visual {
     display: flex;
-    flex-wrap: wrap;
+    flex-direction: column;
+    align-items: center;
+    gap: 20px;
+  }
+
+  .diagram-layer {
+    display: flex;
+    align-items: center;
     justify-content: center;
+    gap: 16px;
+    width: 100%;
+    max-width: 600px;
+  }
+
+  .diagram-box {
+    background: var(--bg-elevated);
+    border: 2px solid var(--border-accent);
+    border-radius: 8px;
+    padding: 16px 24px;
+    text-align: center;
+    flex: 1;
+  }
+
+  .diagram-box.trusted {
+    border-color: var(--accent);
+    background: rgba(255,193,37,0.05);
+  }
+
+  .diagram-box.untrusted {
+    border-color: var(--text-subtle);
+    opacity: 0.7;
+  }
+
+  .diagram-box h4 {
+    color: var(--accent);
+    font-size: 0.9rem;
+    margin-bottom: 4px;
+  }
+
+  .diagram-box.untrusted h4 {
+    color: var(--text-muted);
+  }
+
+  .diagram-box p {
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    margin: 0;
+  }
+
+  .diagram-divider {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    max-width: 600px;
+    color: var(--accent);
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+  }
+
+  .diagram-divider::before,
+  .diagram-divider::after {
+    content: '';
+    flex: 1;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  }
+
+  .diagram-arrow {
+    color: var(--accent);
+    font-size: 1.5rem;
+  }
+
+  .nitro-features {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 24px;
+  }
+
+  .nitro-feature {
+    background: var(--accent-muted);
+    border: 1px solid var(--border-accent);
+    border-radius: 12px;
+    padding: 24px;
+  }
+
+  .nitro-feature h4 {
+    color: var(--accent);
+    margin-bottom: 8px;
+    font-size: 1.1rem;
+  }
+
+  .nitro-feature p {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+    margin: 0;
+  }
+
+  /* Zero Knowledge Section */
+  .zero-knowledge {
+    padding: 100px 24px;
+    background: linear-gradient(180deg, #0a0a0a 0%, var(--bg-dark) 100%);
+  }
+
+  .zero-knowledge h2 {
+    text-align: center;
+    font-size: 2.5rem;
+    margin-bottom: 16px;
+    color: #fff;
+  }
+
+  .zero-knowledge .section-subtitle {
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 1.1rem;
+    max-width: 700px;
+    margin: 0 auto 60px;
+  }
+
+  .zk-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
     gap: 40px;
     max-width: 1000px;
     margin: 0 auto;
   }
 
-  .step {
-    flex: 1;
-    min-width: 250px;
-    max-width: 300px;
-    text-align: center;
-    position: relative;
+  .zk-column h3 {
+    font-size: 1.3rem;
+    margin-bottom: 24px;
+    padding-bottom: 12px;
+    border-bottom: 2px solid;
   }
 
-  .step-number {
-    width: 60px;
-    height: 60px;
-    background: linear-gradient(135deg, var(--accent) 0%, var(--accent-dark) 100%);
-    color: #000;
-    border-radius: 50%;
+  .zk-column.can-see h3 {
+    color: var(--text-muted);
+    border-color: var(--text-subtle);
+  }
+
+  .zk-column.cannot-see h3 {
+    color: var(--accent);
+    border-color: var(--accent);
+  }
+
+  .zk-list {
+    list-style: none;
+  }
+
+  .zk-list li {
     display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 1.5rem;
-    font-weight: 800;
-    margin: 0 auto 20px;
-  }
-
-  .step h3 {
-    color: #fff;
-    margin-bottom: 12px;
-    font-size: 1.2rem;
-  }
-
-  .step p {
+    align-items: flex-start;
+    gap: 12px;
+    margin-bottom: 16px;
     color: var(--text-muted);
     font-size: 0.95rem;
+  }
+
+  .zk-list li svg {
+    flex-shrink: 0;
+    margin-top: 2px;
+  }
+
+  .zk-column.can-see .zk-list li svg {
+    color: var(--text-subtle);
+  }
+
+  .zk-column.cannot-see .zk-list li svg {
+    color: var(--accent);
   }
 
   /* Cooperative Section */
   .cooperative {
     padding: 100px 24px;
-    background: linear-gradient(180deg, #0a0a0a 0%, var(--bg-dark) 100%);
+    background: var(--bg-dark);
     position: relative;
     overflow: hidden;
   }
@@ -451,6 +660,61 @@
     color: var(--text-muted);
     font-size: 0.9rem;
     margin: 0;
+  }
+
+  /* How It Works Section */
+  .how-it-works {
+    padding: 100px 24px;
+    background: linear-gradient(180deg, var(--bg-dark) 0%, #0a0a0a 100%);
+  }
+
+  .how-it-works h2 {
+    text-align: center;
+    font-size: 2.5rem;
+    margin-bottom: 60px;
+    color: #fff;
+  }
+
+  .steps {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 40px;
+    max-width: 1000px;
+    margin: 0 auto;
+  }
+
+  .step {
+    flex: 1;
+    min-width: 250px;
+    max-width: 300px;
+    text-align: center;
+    position: relative;
+  }
+
+  .step-number {
+    width: 60px;
+    height: 60px;
+    background: linear-gradient(135deg, var(--accent) 0%, var(--accent-dark) 100%);
+    color: #000;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.5rem;
+    font-weight: 800;
+    margin: 0 auto 20px;
+  }
+
+  .step h3 {
+    color: #fff;
+    margin-bottom: 12px;
+    font-size: 1.2rem;
+  }
+
+  .step p {
+    color: var(--text-muted);
+    font-size: 0.95rem;
   }
 
   /* CTA Section */
@@ -544,7 +808,7 @@
     .hero h1 { font-size: 2.5rem; }
     .hero .tagline { font-size: 1rem; letter-spacing: 2px; }
     .header-logo span { display: none; }
-    .features h2, .how-it-works h2, .cooperative h2 { font-size: 2rem; }
+    .security h2, .nitro h2, .zero-knowledge h2, .how-it-works h2, .cooperative h2 { font-size: 2rem; }
     .geo-accent { display: none; }
     header {
       padding: 10px 16px;
@@ -573,6 +837,16 @@
     body:has(.dev-banner) .hero {
       padding-top: 130px;
     }
+    .zk-grid {
+      grid-template-columns: 1fr;
+      gap: 32px;
+    }
+    .nitro-diagram {
+      padding: 24px;
+    }
+    .diagram-layer {
+      flex-direction: column;
+    }
   }
 </style>
 </head>
@@ -580,7 +854,7 @@
 
 <!-- Development Site Banner -->
 <div class="dev-banner">
-  <p>⚙️ Development Site - Testing environment for <a href="https://www.vettid.org" target="_blank" rel="noopener noreferrer">VettID.org</a></p>
+  <p>Development Site - Testing environment for <a href="https://www.vettid.org" target="_blank" rel="noopener noreferrer">VettID.org</a></p>
 </div>
 
 <!-- Header -->
@@ -628,88 +902,233 @@
     <line x1="75" y1="25" x2="25" y2="75" stroke="#ffc125" stroke-width="0.15" opacity="0.2"/>
   </svg>
 
+  <div class="trust-badge">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+      <path d="M9 12l2 2 4-4"/>
+    </svg>
+    Powered by AWS Nitro Enclaves
+  </div>
+
   <img src="/assets/logo.jpg" alt="VettID" class="hero-logo">
   <h1>VettID</h1>
   <p class="tagline">Secure. Private. Trusted.</p>
-  <p class="subtitle">A member-owned cooperative dedicated to protecting your online security and privacy. Join a community that puts you first.</p>
+  <p class="subtitle">Your digital vault, protected by hardware-level security. A member-owned cooperative where even we can't access your data.</p>
   <div class="hero-buttons">
     <a href="/signin" class="btn btn-outline">Sign In</a>
     <a href="/register" class="btn btn-primary">Register with Invite</a>
   </div>
 </section>
 
-<!-- Features Section -->
-<section class="features">
-  <h2>Why VettID?</h2>
-  <p class="section-subtitle">We believe your digital identity should be protected by people who share your values, not corporations seeking profit.</p>
+<!-- Security Section -->
+<section class="security">
+  <h2>Security Without Compromise</h2>
+  <p class="section-subtitle">VettID uses cutting-edge hardware security to protect your data. Not through promises, but through cryptographic proof.</p>
 
-  <div class="features-grid">
-    <div class="feature-card">
-      <svg class="feature-icon" viewBox="0 0 100 100">
-        <!-- Shield with Tower -->
-        <path d="M50 5 L90 20 L90 50 Q90 80 50 95 Q10 80 10 50 L10 20 Z" fill="none" stroke="#ffc125" stroke-width="3"/>
-        <path d="M35 45 L35 38 L38 38 L38 32 L42 32 L42 38 L48 38 L48 32 L52 32 L52 38 L58 38 L58 32 L62 32 L62 38 L65 38 L65 45 L65 48 L35 48 Z" fill="#ffc125"/>
-        <path d="M37 48 L63 48 L65 75 L35 75 Z" fill="#ffc125"/>
-        <ellipse cx="50" cy="58" rx="5" ry="6" fill="#000"/>
-        <path d="M47 64 L47 70 L53 70 L53 64 Q50 62 47 64" fill="#000"/>
+  <div class="security-grid">
+    <div class="security-card">
+      <svg class="security-icon" viewBox="0 0 64 64" fill="none">
+        <!-- Hardware chip icon -->
+        <rect x="16" y="16" width="32" height="32" rx="4" stroke="#ffc125" stroke-width="2"/>
+        <rect x="22" y="22" width="20" height="20" rx="2" fill="#ffc125" opacity="0.2"/>
+        <rect x="26" y="26" width="12" height="12" rx="1" fill="#ffc125"/>
+        <!-- Connection pins -->
+        <line x1="20" y1="8" x2="20" y2="16" stroke="#ffc125" stroke-width="2"/>
+        <line x1="32" y1="8" x2="32" y2="16" stroke="#ffc125" stroke-width="2"/>
+        <line x1="44" y1="8" x2="44" y2="16" stroke="#ffc125" stroke-width="2"/>
+        <line x1="20" y1="48" x2="20" y2="56" stroke="#ffc125" stroke-width="2"/>
+        <line x1="32" y1="48" x2="32" y2="56" stroke="#ffc125" stroke-width="2"/>
+        <line x1="44" y1="48" x2="44" y2="56" stroke="#ffc125" stroke-width="2"/>
+        <line x1="8" y1="24" x2="16" y2="24" stroke="#ffc125" stroke-width="2"/>
+        <line x1="8" y1="40" x2="16" y2="40" stroke="#ffc125" stroke-width="2"/>
+        <line x1="48" y1="24" x2="56" y2="24" stroke="#ffc125" stroke-width="2"/>
+        <line x1="48" y1="40" x2="56" y2="40" stroke="#ffc125" stroke-width="2"/>
       </svg>
-      <h3>Member-Owned Security</h3>
-      <p>As a cooperative, every member has a voice. Your security decisions are made by people like you, not shareholders.</p>
+      <h3>Hardware-Isolated Vaults</h3>
+      <p>Your vault runs inside AWS Nitro Enclaves, hardware-isolated environments that even AWS employees cannot access. Your secrets exist only in protected memory.</p>
+      <span class="tech-tag">Nitro Enclaves</span>
     </div>
 
-    <div class="feature-card">
-      <svg class="feature-icon" viewBox="0 0 100 100">
-        <!-- Lock with keyhole -->
-        <rect x="20" y="40" width="60" height="50" rx="8" fill="none" stroke="#ffc125" stroke-width="3"/>
-        <path d="M30 40 L30 30 Q30 10 50 10 Q70 10 70 30 L70 40" fill="none" stroke="#ffc125" stroke-width="3"/>
-        <circle cx="50" cy="60" r="8" fill="#ffc125"/>
-        <rect x="47" y="60" width="6" height="15" fill="#ffc125"/>
+    <div class="security-card">
+      <svg class="security-icon" viewBox="0 0 64 64" fill="none">
+        <!-- Attestation document icon -->
+        <rect x="12" y="8" width="40" height="48" rx="4" stroke="#ffc125" stroke-width="2"/>
+        <path d="M20 20h24M20 28h24M20 36h16" stroke="#ffc125" stroke-width="2" stroke-linecap="round"/>
+        <circle cx="44" cy="44" r="10" fill="#ffc125" opacity="0.2" stroke="#ffc125" stroke-width="2"/>
+        <path d="M40 44l3 3 6-6" stroke="#ffc125" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
       </svg>
-      <h3>Zero-Knowledge Privacy</h3>
-      <p>We can't see your data because we designed it that way. True privacy means even we can't access your information.</p>
+      <h3>Cryptographic Attestation</h3>
+      <p>Before connecting, your app verifies the exact code running in the enclave. You don't have to trust us, you can mathematically verify it.</p>
+      <span class="tech-tag">AWS Attestation</span>
     </div>
 
-    <div class="feature-card">
-      <svg class="feature-icon" viewBox="0 0 100 100">
-        <!-- Connected towers -->
-        <g transform="translate(10, 20) scale(0.6)">
-          <path d="M15 30 L15 22 L18 22 L18 15 L22 15 L22 22 L28 22 L28 15 L32 15 L32 22 L35 22 L35 30 L35 33 L15 33 Z" fill="#ffc125"/>
-          <path d="M16 33 L34 33 L35 60 L15 60 Z" fill="#ffc125"/>
-          <ellipse cx="25" cy="42" rx="4" ry="5" fill="#000"/>
-        </g>
-        <g transform="translate(50, 20) scale(0.6)">
-          <path d="M15 30 L15 22 L18 22 L18 15 L22 15 L22 22 L28 22 L28 15 L32 15 L32 22 L35 22 L35 30 L35 33 L15 33 Z" fill="#ffc125"/>
-          <path d="M16 33 L34 33 L35 60 L15 60 Z" fill="#ffc125"/>
-          <ellipse cx="25" cy="42" rx="4" ry="5" fill="#000"/>
-        </g>
-        <!-- Connection line -->
-        <line x1="38" y1="50" x2="62" y2="50" stroke="#ffc125" stroke-width="3" stroke-dasharray="4"/>
-        <circle cx="50" cy="50" r="6" fill="#ffc125"/>
+    <div class="security-card">
+      <svg class="security-icon" viewBox="0 0 64 64" fill="none">
+        <!-- Encrypted tunnel icon -->
+        <ellipse cx="16" cy="32" rx="8" ry="16" stroke="#ffc125" stroke-width="2"/>
+        <ellipse cx="48" cy="32" rx="8" ry="16" stroke="#ffc125" stroke-width="2"/>
+        <line x1="16" y1="16" x2="48" y2="16" stroke="#ffc125" stroke-width="2"/>
+        <line x1="16" y1="48" x2="48" y2="48" stroke="#ffc125" stroke-width="2"/>
+        <!-- Lock in center -->
+        <rect x="26" y="28" width="12" height="10" rx="2" fill="#ffc125"/>
+        <path d="M29 28v-3a3 3 0 016 0v3" stroke="#ffc125" stroke-width="2" fill="none"/>
       </svg>
-      <h3>Trusted Community</h3>
-      <p>Join through invitation from existing members. Our vetting process ensures a community built on trust and shared values.</p>
+      <h3>End-to-End Encryption</h3>
+      <p>All communication between your device and your vault is encrypted using keys that only exist at the endpoints. Infrastructure sees only encrypted blobs.</p>
+      <span class="tech-tag">X25519 + ChaCha20</span>
+    </div>
+
+    <div class="security-card">
+      <svg class="security-icon" viewBox="0 0 64 64" fill="none">
+        <!-- Blind infrastructure icon -->
+        <circle cx="32" cy="24" r="12" stroke="#ffc125" stroke-width="2"/>
+        <path d="M20 24h24" stroke="#ffc125" stroke-width="2"/>
+        <path d="M24 56v-20c0-4 4-8 8-8s8 4 8 8v20" stroke="#ffc125" stroke-width="2" fill="none"/>
+        <rect x="20" y="52" width="24" height="8" rx="2" stroke="#ffc125" stroke-width="2"/>
+        <!-- Question marks to indicate blindness -->
+        <text x="32" y="28" text-anchor="middle" fill="#ffc125" font-size="10" font-weight="bold">?</text>
+      </svg>
+      <h3>Zero-Knowledge Design</h3>
+      <p>VettID infrastructure only sees encrypted data. We literally cannot read your messages, access your keys, or view your secrets, even if compelled.</p>
+      <span class="tech-tag">Zero Access</span>
     </div>
   </div>
 </section>
 
-<!-- How It Works Section -->
-<section class="how-it-works">
-  <h2>How It Works</h2>
-  <div class="steps">
-    <div class="step">
-      <div class="step-number">1</div>
-      <h3>Get Invited</h3>
-      <p>Receive an invitation from an existing VettID member who can vouch for your commitment to privacy.</p>
+<!-- Nitro Enclave Section -->
+<section class="nitro">
+  <div class="nitro-content">
+    <h2>The Trust Model</h2>
+    <p class="section-subtitle">Traditional services ask you to trust them. VettID uses hardware isolation to make trust unnecessary. Your app verifies the vault before sharing any data.</p>
+
+    <div class="nitro-diagram">
+      <div class="diagram-title">Security Architecture</div>
+      <div class="diagram-visual">
+        <div class="diagram-layer">
+          <div class="diagram-box trusted">
+            <h4>Your Device</h4>
+            <p>Holds encrypted credential</p>
+          </div>
+          <div class="diagram-box trusted">
+            <h4>Nitro Enclave</h4>
+            <p>Decrypts and processes</p>
+          </div>
+        </div>
+
+        <div class="diagram-divider">Trusted Boundary</div>
+
+        <div class="diagram-layer">
+          <div class="diagram-box untrusted">
+            <h4>VettID Servers</h4>
+            <p>Routes encrypted blobs</p>
+          </div>
+          <div class="diagram-box untrusted">
+            <h4>Cloud Storage</h4>
+            <p>Stores encrypted data</p>
+          </div>
+          <div class="diagram-box untrusted">
+            <h4>VettID Staff</h4>
+            <p>No key access</p>
+          </div>
+        </div>
+      </div>
     </div>
-    <div class="step">
-      <div class="step-number">2</div>
-      <h3>Register</h3>
-      <p>Complete your registration with your invite code. Your information is encrypted from day one.</p>
+
+    <div class="nitro-features">
+      <div class="nitro-feature">
+        <h4>Hardware Attestation</h4>
+        <p>AWS Nitro provides cryptographic proof of the exact code running in your vault. Published PCR values let you verify independently.</p>
+      </div>
+      <div class="nitro-feature">
+        <h4>Memory Isolation</h4>
+        <p>Your vault's memory is hardware-isolated. Not even hypervisor-level access can read your decrypted secrets.</p>
+      </div>
+      <div class="nitro-feature">
+        <h4>Sealed Storage</h4>
+        <p>Encryption keys are sealed to the enclave's code. If anyone modifies the code, sealed data becomes permanently inaccessible.</p>
+      </div>
     </div>
-    <div class="step">
-      <div class="step-number">3</div>
-      <h3>Join the Co-op</h3>
-      <p>Become a member with voting rights. Help shape the future of online privacy and security.</p>
+  </div>
+</section>
+
+<!-- Zero Knowledge Section -->
+<section class="zero-knowledge">
+  <h2>What We Can and Can't See</h2>
+  <p class="section-subtitle">Transparency about our access. This isn't a policy choice, it's a technical guarantee enforced by hardware.</p>
+
+  <div class="zk-grid">
+    <div class="zk-column can-see">
+      <h3>What VettID Infrastructure Sees</h3>
+      <ul class="zk-list">
+        <li>
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
+            <circle cx="10" cy="10" r="8" fill="none" stroke="currentColor" stroke-width="2"/>
+            <circle cx="10" cy="10" r="3"/>
+          </svg>
+          Encrypted blobs (opaque ciphertext)
+        </li>
+        <li>
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
+            <circle cx="10" cy="10" r="8" fill="none" stroke="currentColor" stroke-width="2"/>
+            <circle cx="10" cy="10" r="3"/>
+          </svg>
+          Message routing metadata (timestamps, sizes)
+        </li>
+        <li>
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
+            <circle cx="10" cy="10" r="8" fill="none" stroke="currentColor" stroke-width="2"/>
+            <circle cx="10" cy="10" r="3"/>
+          </svg>
+          User account identifiers
+        </li>
+        <li>
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
+            <circle cx="10" cy="10" r="8" fill="none" stroke="currentColor" stroke-width="2"/>
+            <circle cx="10" cy="10" r="3"/>
+          </svg>
+          Vault activity patterns (not content)
+        </li>
+      </ul>
+    </div>
+    <div class="zk-column cannot-see">
+      <h3>What We Cannot Access</h3>
+      <ul class="zk-list">
+        <li>
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" transform="scale(0.8) translate(2,2)"/>
+            <path d="M9 12l2 2 4-4" transform="scale(0.8) translate(2,2)"/>
+          </svg>
+          Your messages and communications
+        </li>
+        <li>
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" transform="scale(0.8) translate(2,2)"/>
+            <path d="M9 12l2 2 4-4" transform="scale(0.8) translate(2,2)"/>
+          </svg>
+          Private keys and seed phrases
+        </li>
+        <li>
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" transform="scale(0.8) translate(2,2)"/>
+            <path d="M9 12l2 2 4-4" transform="scale(0.8) translate(2,2)"/>
+          </svg>
+          Vault encryption keys
+        </li>
+        <li>
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" transform="scale(0.8) translate(2,2)"/>
+            <path d="M9 12l2 2 4-4" transform="scale(0.8) translate(2,2)"/>
+          </svg>
+          Contact lists and connections
+        </li>
+        <li>
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" transform="scale(0.8) translate(2,2)"/>
+            <path d="M9 12l2 2 4-4" transform="scale(0.8) translate(2,2)"/>
+          </svg>
+          Any plaintext vault data
+        </li>
+      </ul>
     </div>
   </div>
 </section>
@@ -768,10 +1187,32 @@
   </div>
 </section>
 
+<!-- How It Works Section -->
+<section class="how-it-works">
+  <h2>How It Works</h2>
+  <div class="steps">
+    <div class="step">
+      <div class="step-number">1</div>
+      <h3>Get Invited</h3>
+      <p>Receive an invitation from an existing VettID member who can vouch for your commitment to privacy.</p>
+    </div>
+    <div class="step">
+      <div class="step-number">2</div>
+      <h3>Create Your Vault</h3>
+      <p>Your personal vault is provisioned inside a hardware-isolated enclave. Only you control the keys.</p>
+    </div>
+    <div class="step">
+      <div class="step-number">3</div>
+      <h3>Verify & Connect</h3>
+      <p>Your app cryptographically verifies the vault before connecting. No trust required, just math.</p>
+    </div>
+  </div>
+</section>
+
 <!-- CTA Section -->
 <section class="cta">
-  <h2>Ready to Take Control of Your Privacy?</h2>
-  <p>Join a community that believes your data belongs to you.</p>
+  <h2>Ready to Own Your Digital Identity?</h2>
+  <p>Join a community that proves security instead of promising it.</p>
   <div class="cta-buttons">
     <a href="/signin" class="btn btn-outline">Sign In</a>
     <a href="/register" class="btn btn-primary">Register with Invite</a>
