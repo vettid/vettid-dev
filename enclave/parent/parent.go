@@ -472,9 +472,23 @@ func (p *ParentProcess) parseCredentialRequest(data []byte, msg *EnclaveMessage)
 			return fmt.Errorf("failed to decode sealed_credential: %w", err)
 		}
 		msg.SealedCredential = sealedCredential
+
+		// Decode encrypted challenge (PIN/password for verification)
+		if req.EncryptedChallenge != "" {
+			encryptedChallenge, err := base64.StdEncoding.DecodeString(req.EncryptedChallenge)
+			if err != nil {
+				return fmt.Errorf("failed to decode encrypted_challenge: %w", err)
+			}
+			msg.Challenge = &Challenge{
+				ChallengeID: "unseal-" + req.OwnerSpace,
+				Response:    encryptedChallenge,
+			}
+		}
+
 		log.Debug().
 			Str("owner_space", req.OwnerSpace).
 			Int("sealed_credential_len", len(sealedCredential)).
+			Bool("has_challenge", msg.Challenge != nil).
 			Msg("Parsed credential unseal request")
 	}
 
@@ -494,7 +508,8 @@ func (p *ParentProcess) parseCredentialRequestFromPayload(data []byte, msg *Encl
 
 	// For credential unseal
 	var unsealReq struct {
-		UserGUID           string `json:"user_guid"`
+		OwnerSpace         string `json:"owner_space"`         // Primary field
+		UserGUID           string `json:"user_guid"`           // Fallback for legacy compatibility
 		SealedCredential   string `json:"sealed_credential"`   // Base64-encoded
 		EncryptedChallenge string `json:"encrypted_challenge"` // Base64-encoded
 	}
@@ -534,9 +549,27 @@ func (p *ParentProcess) parseCredentialRequestFromPayload(data []byte, msg *Encl
 
 		msg.SealedCredential = sealedCredential
 
+		// Decode encrypted challenge (PIN/password for verification)
+		ownerSpace := unsealReq.OwnerSpace
+		if ownerSpace == "" {
+			ownerSpace = unsealReq.UserGUID // Fallback to user_guid for compatibility
+		}
+
+		if unsealReq.EncryptedChallenge != "" {
+			encryptedChallenge, err := base64.StdEncoding.DecodeString(unsealReq.EncryptedChallenge)
+			if err != nil {
+				return fmt.Errorf("failed to decode encrypted_challenge: %w", err)
+			}
+			msg.Challenge = &Challenge{
+				ChallengeID: "unseal-" + ownerSpace,
+				Response:    encryptedChallenge,
+			}
+		}
+
 		log.Debug().
-			Str("user_guid", unsealReq.UserGUID).
+			Str("owner_space", ownerSpace).
 			Int("sealed_credential_len", len(sealedCredential)).
+			Bool("has_challenge", msg.Challenge != nil).
 			Msg("Parsed credential unseal request from Lambda")
 	}
 

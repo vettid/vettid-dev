@@ -14,10 +14,17 @@ import (
 	"os"
 	"sync"
 
+	"github.com/fxamacker/cbor/v2"
 	"github.com/hf/nsm"
 	"github.com/hf/nsm/request"
 	"github.com/rs/zerolog/log"
 )
+
+// CiphertextForRecipientEnvelope is the CBOR-encoded structure returned by KMS
+// when using the Recipient parameter for Nitro Enclaves
+type CiphertextForRecipientEnvelope struct {
+	KeyMaterial []byte `cbor:"key_material"`
+}
 
 // NitroSealer handles sealing/unsealing data using Nitro KMS attestation
 type NitroSealer struct {
@@ -181,14 +188,26 @@ func (s *NitroSealer) nitroKMSUnseal(sealed *SealedData) ([]byte, error) {
 	}
 
 	// 2. Send encrypted DEK to parent for KMS decryption with attestation
-	// KMS returns CiphertextForRecipient - the DEK encrypted to our RSA public key
+	// KMS returns CiphertextForRecipient - a CBOR envelope containing the DEK encrypted to our RSA public key
 	ciphertextForRecipient, err := s.kmsDecrypt(sealed.EncryptedDEK, attestation)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decrypt DEK with KMS: %w", err)
 	}
 
-	// 3. Decrypt CiphertextForRecipient with our RSA private key to get DEK
-	dek, err := rsa.DecryptOAEP(sha256.New(), rand.Reader, privateKey, ciphertextForRecipient, nil)
+	// 3. Decode CBOR envelope to get the RSA-encrypted key material
+	// CiphertextForRecipient is CBOR-encoded: { "key_material": <RSA-encrypted DEK> }
+	var envelope CiphertextForRecipientEnvelope
+	if err := cbor.Unmarshal(ciphertextForRecipient, &envelope); err != nil {
+		return nil, fmt.Errorf("failed to decode CiphertextForRecipient CBOR: %w", err)
+	}
+
+	log.Debug().
+		Int("envelope_len", len(ciphertextForRecipient)).
+		Int("key_material_len", len(envelope.KeyMaterial)).
+		Msg("Decoded CiphertextForRecipient CBOR envelope")
+
+	// 4. Decrypt key material with our RSA private key to get DEK
+	dek, err := rsa.DecryptOAEP(sha256.New(), rand.Reader, privateKey, envelope.KeyMaterial, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decrypt DEK from KMS response: %w", err)
 	}

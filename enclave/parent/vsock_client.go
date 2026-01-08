@@ -90,6 +90,7 @@ type EnclaveMessage struct {
 	// Credential operation fields
 	CredentialRequest *CredentialRequest `json:"credential_request,omitempty"`
 	SealedCredential  []byte             `json:"sealed_credential,omitempty"`
+	Challenge         *Challenge         `json:"challenge,omitempty"`
 	Credential        []byte             `json:"credential,omitempty"`
 }
 
@@ -97,6 +98,12 @@ type EnclaveMessage struct {
 type CredentialRequest struct {
 	EncryptedPIN []byte `json:"encrypted_pin"` // PIN encrypted to enclave's pubkey
 	AuthType     string `json:"auth_type"`     // "pin", "password", "pattern"
+}
+
+// Challenge is a PIN/password challenge for credential unseal
+type Challenge struct {
+	ChallengeID string `json:"challenge_id"`
+	Response    []byte `json:"response"` // Encrypted PIN/password
 }
 
 // VsockClient handles communication with the enclave
