@@ -40,3 +40,4 @@ coverage/
 enclave/parent/parent
 enclave/parent/vettid-parent
 enclave/supervisor/supervisor
+enclave/bin/

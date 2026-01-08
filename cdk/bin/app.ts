@@ -56,6 +56,8 @@ const nats = new NatsStack(app, 'VettID-NATS', {
   // VPC peering: allow Nitro enclave parent processes to connect to NATS cluster
   nitroVpc: nitro.vpc,
   nitroVpcCidr: NitroStack.VPC_CIDR,
+  // Use pre-built NATS AMI from SSM parameter (created by scripts/deploy-nats-ami.sh)
+  amiSsmParameter: '/vettid/nats/ami-id',
 });
 
 // 7. Deploy vault stack (vault Lambda functions + API routes)

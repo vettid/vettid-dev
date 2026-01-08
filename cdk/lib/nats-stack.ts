@@ -13,6 +13,7 @@ import {
   aws_lambda_nodejs as nodejs,
   aws_events as events,
   aws_events_targets as eventTargets,
+  aws_ssm as ssm,
 } from 'aws-cdk-lib';
 import * as path from 'path';
 
@@ -44,6 +45,14 @@ export interface NatsStackProps extends cdk.StackProps {
    * Required when nitroVpc is provided.
    */
   nitroVpcCidr?: string;
+
+  /**
+   * SSM parameter name containing the pre-built NATS AMI ID.
+   * When provided, uses the pre-built AMI instead of installing NATS via user data.
+   * The AMI should be created using deploy-nats-ami.sh script.
+   * @default - Uses Amazon Linux 2023 and installs NATS via user data
+   */
+  amiSsmParameter?: string;
 }
 
 /**
@@ -319,14 +328,56 @@ export class NatsStack extends cdk.Stack {
       resources: ['*'],
     }));
 
-    // User data script to install and configure NATS
+    // Determine machine image based on whether pre-built AMI is specified
+    let machineImage: ec2.IMachineImage;
+
+    if (props.amiSsmParameter) {
+      // Use pre-built AMI from SSM parameter
+      // Note: SSM parameter must exist before stack deployment
+      const amiId = ssm.StringParameter.valueForStringParameter(this, props.amiSsmParameter);
+      machineImage = ec2.MachineImage.genericLinux({
+        [cdk.Stack.of(this).region]: amiId,
+      });
+    } else {
+      // Legacy mode: use Amazon Linux 2023 and install NATS via user data
+      machineImage = ec2.MachineImage.latestAmazonLinux2023({
+        cpuType: ec2.AmazonLinuxCpuType.ARM_64,
+      });
+    }
+
+    // User data script
     const userData = ec2.UserData.forLinux();
-    userData.addCommands(
-      '#!/bin/bash',
-      'set -e',
-      '',
-      '# Install dependencies',
-      'dnf install -y jq awscli',
+
+    if (props.amiSsmParameter) {
+      // Minimal user data for pre-built AMI - just run init script
+      userData.addCommands(
+        '#!/bin/bash',
+        'set -e',
+        'exec > >(tee /var/log/user-data.log) 2>&1',
+        '',
+        '# Pre-built AMI: run init script and start services',
+        '/usr/local/bin/nats-init.sh',
+        'systemctl start nats.service',
+        '',
+        '# Wait for NATS to be ready',
+        'for i in {1..60}; do',
+        '  if curl -sf http://127.0.0.1:8222/healthz > /dev/null 2>&1; then',
+        '    echo "NATS is ready"',
+        '    break',
+        '  fi',
+        '  sleep 1',
+        'done',
+        '',
+        'echo "NATS startup complete"'
+      );
+    } else {
+      // Legacy mode: full installation via user data
+      userData.addCommands(
+        '#!/bin/bash',
+        'set -e',
+        '',
+        '# Install dependencies',
+        'dnf install -y jq awscli unzip',
       '',
       '# Create nats user',
       'useradd -r -s /sbin/nologin nats || true',
@@ -526,19 +577,18 @@ export class NatsStack extends cdk.Stack {
       'done',
       '',
       '# Download NATS CLI for administration',
-      'curl -L -o /tmp/nats-cli.tar.gz "https://github.com/nats-io/natscli/releases/download/v0.1.5/nats-0.1.5-linux-arm64.tar.gz"',
-      'tar -xzf /tmp/nats-cli.tar.gz -C /tmp',
-      'mv /tmp/nats-0.1.5-linux-arm64/nats /usr/local/bin/',
+      'curl -L -o /tmp/nats-cli.zip "https://github.com/nats-io/natscli/releases/download/v0.3.0/nats-0.3.0-linux-arm64.zip"',
+      'unzip -q /tmp/nats-cli.zip -d /tmp',
+      'mv /tmp/nats-0.3.0-linux-arm64/nats /usr/local/bin/',
       'chmod +x /usr/local/bin/nats',
       '',
       'echo "NATS server installation complete"'
-    );
+      );
+    }
 
     const launchTemplate = new ec2.LaunchTemplate(this, 'NatsLaunchTemplate', {
       instanceType: ec2.InstanceType.of(ec2.InstanceClass.T4G, ec2.InstanceSize.MICRO),
-      machineImage: ec2.MachineImage.latestAmazonLinux2023({
-        cpuType: ec2.AmazonLinuxCpuType.ARM_64,
-      }),
+      machineImage,
       role: natsRole,
       securityGroup: this.natsSecurityGroup,
       userData,
