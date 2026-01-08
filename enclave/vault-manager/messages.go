@@ -44,9 +44,16 @@ type OutgoingMessage struct {
 
 // MessageHandler processes incoming messages
 type MessageHandler struct {
-	ownerSpace  string
-	callHandler *CallHandler
-	publisher   *VsockPublisher
+	ownerSpace           string
+	storage              *EncryptedStorage
+	callHandler          *CallHandler
+	secretsHandler       *SecretsHandler
+	profileHandler       *ProfileHandler
+	credentialHandler    *CredentialHandler
+	messagingHandler     *MessagingHandler
+	connectionsHandler   *ConnectionsHandler
+	notificationsHandler *NotificationsHandler
+	publisher            *VsockPublisher
 }
 
 // VsockPublisher implements CallPublisher using vsock to parent
@@ -102,12 +109,17 @@ func (p *VsockPublisher) PublishToVault(ctx context.Context, targetOwnerSpace st
 
 // NewMessageHandler creates a new message handler
 func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *VsockPublisher) *MessageHandler {
-	callHandler := NewCallHandler(ownerSpace, storage, publisher)
-
 	return &MessageHandler{
-		ownerSpace:  ownerSpace,
-		callHandler: callHandler,
-		publisher:   publisher,
+		ownerSpace:           ownerSpace,
+		storage:              storage,
+		callHandler:          NewCallHandler(ownerSpace, storage, publisher),
+		secretsHandler:       NewSecretsHandler(ownerSpace, storage),
+		profileHandler:       NewProfileHandler(ownerSpace, storage),
+		credentialHandler:    NewCredentialHandler(ownerSpace, storage),
+		messagingHandler:     NewMessagingHandler(ownerSpace, storage, publisher),
+		connectionsHandler:   NewConnectionsHandler(ownerSpace, storage),
+		notificationsHandler: NewNotificationsHandler(ownerSpace, storage, publisher),
+		publisher:            publisher,
 	}
 }
 
@@ -172,6 +184,30 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 		return mh.handleSign(ctx, msg)
 	case "block":
 		return mh.handleBlockOperation(ctx, msg, parts[opIndex+1:])
+	case "secrets":
+		return mh.handleSecretsOperation(ctx, msg, parts[opIndex+1:])
+	case "profile":
+		return mh.handleProfileOperation(ctx, msg, parts[opIndex+1:])
+	case "credential":
+		return mh.handleCredentialOperation(ctx, msg, parts[opIndex+1:])
+	case "message":
+		return mh.handleMessageOperation(ctx, msg, parts[opIndex+1:])
+	case "connection":
+		return mh.handleConnectionOperation(ctx, msg, parts[opIndex+1:])
+	case "notification":
+		return mh.handleNotificationOperation(ctx, msg, parts[opIndex+1:])
+	case "profile-update":
+		// Incoming notification from peer vault
+		return mh.handleIncomingProfileUpdate(ctx, msg)
+	case "revoked":
+		// Incoming revocation notice from peer vault
+		return mh.handleIncomingRevocation(ctx, msg)
+	case "new-message":
+		// Incoming message from peer vault
+		return mh.handleIncomingPeerMessage(ctx, msg)
+	case "read-receipt":
+		// Incoming read receipt from peer vault
+		return mh.handleIncomingReadReceipt(ctx, msg)
 	default:
 		return mh.errorResponse(msg.ID, fmt.Sprintf("unknown operation: %s", operation))
 	}
@@ -270,6 +306,166 @@ func (mh *MessageHandler) handleUnseal(ctx context.Context, msg *IncomingMessage
 func (mh *MessageHandler) handleSign(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	// TODO: Implement signing logic
 	log.Info().Msg("Sign requested")
+	return mh.successResponse(msg.ID, nil)
+}
+
+// handleSecretsOperation routes secrets-related operations
+func (mh *MessageHandler) handleSecretsOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
+	if len(opParts) < 2 {
+		return mh.errorResponse(msg.ID, "missing secrets operation type")
+	}
+
+	opType := opParts[1]
+
+	switch opType {
+	case "add":
+		return mh.secretsHandler.HandleAdd(msg)
+	case "update":
+		return mh.secretsHandler.HandleUpdate(msg)
+	case "retrieve":
+		return mh.secretsHandler.HandleRetrieve(msg)
+	case "delete":
+		return mh.secretsHandler.HandleDelete(msg)
+	case "list":
+		return mh.secretsHandler.HandleList(msg)
+	default:
+		return mh.errorResponse(msg.ID, fmt.Sprintf("unknown secrets operation: %s", opType))
+	}
+}
+
+// handleProfileOperation routes profile-related operations
+func (mh *MessageHandler) handleProfileOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
+	if len(opParts) < 2 {
+		return mh.errorResponse(msg.ID, "missing profile operation type")
+	}
+
+	opType := opParts[1]
+
+	switch opType {
+	case "get":
+		return mh.profileHandler.HandleGet(msg)
+	case "update":
+		return mh.profileHandler.HandleUpdate(msg)
+	case "delete":
+		return mh.profileHandler.HandleDelete(msg)
+	default:
+		return mh.errorResponse(msg.ID, fmt.Sprintf("unknown profile operation: %s", opType))
+	}
+}
+
+// handleCredentialOperation routes credential-related operations
+func (mh *MessageHandler) handleCredentialOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
+	if len(opParts) < 2 {
+		return mh.errorResponse(msg.ID, "missing credential operation type")
+	}
+
+	opType := opParts[1]
+
+	switch opType {
+	case "store":
+		return mh.credentialHandler.HandleStore(msg)
+	case "sync":
+		return mh.credentialHandler.HandleSync(msg)
+	case "get":
+		return mh.credentialHandler.HandleGet(msg)
+	case "version":
+		return mh.credentialHandler.HandleVersion(msg)
+	default:
+		return mh.errorResponse(msg.ID, fmt.Sprintf("unknown credential operation: %s", opType))
+	}
+}
+
+// handleMessageOperation routes messaging-related operations
+func (mh *MessageHandler) handleMessageOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
+	if len(opParts) < 2 {
+		return mh.errorResponse(msg.ID, "missing message operation type")
+	}
+
+	opType := opParts[1]
+
+	switch opType {
+	case "send":
+		return mh.messagingHandler.HandleSend(msg)
+	case "read-receipt":
+		return mh.messagingHandler.HandleReadReceipt(msg)
+	default:
+		return mh.errorResponse(msg.ID, fmt.Sprintf("unknown message operation: %s", opType))
+	}
+}
+
+// handleConnectionOperation routes connection-related operations
+func (mh *MessageHandler) handleConnectionOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
+	if len(opParts) < 2 {
+		return mh.errorResponse(msg.ID, "missing connection operation type")
+	}
+
+	opType := opParts[1]
+
+	switch opType {
+	case "create-invite":
+		return mh.connectionsHandler.HandleCreateInvite(msg)
+	case "store-credentials":
+		return mh.connectionsHandler.HandleStoreCredentials(msg)
+	case "revoke":
+		return mh.connectionsHandler.HandleRevoke(msg)
+	case "list":
+		return mh.connectionsHandler.HandleList(msg)
+	case "get":
+		return mh.connectionsHandler.HandleGet(msg)
+	default:
+		return mh.errorResponse(msg.ID, fmt.Sprintf("unknown connection operation: %s", opType))
+	}
+}
+
+// handleNotificationOperation routes notification-related operations
+func (mh *MessageHandler) handleNotificationOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
+	if len(opParts) < 2 {
+		return mh.errorResponse(msg.ID, "missing notification operation type")
+	}
+
+	opType := opParts[1]
+
+	switch opType {
+	case "profile-broadcast":
+		return mh.notificationsHandler.HandleProfileBroadcast(msg)
+	case "revoke-notify":
+		return mh.notificationsHandler.HandleRevokeNotify(msg)
+	default:
+		return mh.errorResponse(msg.ID, fmt.Sprintf("unknown notification operation: %s", opType))
+	}
+}
+
+// Incoming peer message handlers
+
+// handleIncomingProfileUpdate handles profile update notifications from peer vaults
+func (mh *MessageHandler) handleIncomingProfileUpdate(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	if err := mh.notificationsHandler.HandleIncomingProfileUpdate(ctx, msg.Payload); err != nil {
+		return mh.errorResponse(msg.ID, fmt.Sprintf("failed to handle profile update: %v", err))
+	}
+	return mh.successResponse(msg.ID, nil)
+}
+
+// handleIncomingRevocation handles revocation notices from peer vaults
+func (mh *MessageHandler) handleIncomingRevocation(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	if err := mh.notificationsHandler.HandleIncomingRevocation(ctx, msg.Payload); err != nil {
+		return mh.errorResponse(msg.ID, fmt.Sprintf("failed to handle revocation: %v", err))
+	}
+	return mh.successResponse(msg.ID, nil)
+}
+
+// handleIncomingPeerMessage handles messages from peer vaults
+func (mh *MessageHandler) handleIncomingPeerMessage(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	if err := mh.messagingHandler.HandleIncomingMessage(ctx, msg.Payload); err != nil {
+		return mh.errorResponse(msg.ID, fmt.Sprintf("failed to handle peer message: %v", err))
+	}
+	return mh.successResponse(msg.ID, nil)
+}
+
+// handleIncomingReadReceipt handles read receipts from peer vaults
+func (mh *MessageHandler) handleIncomingReadReceipt(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	if err := mh.messagingHandler.HandleIncomingReadReceipt(ctx, msg.Payload); err != nil {
+		return mh.errorResponse(msg.ID, fmt.Sprintf("failed to handle read receipt: %v", err))
+	}
 	return mh.successResponse(msg.ID, nil)
 }
 
