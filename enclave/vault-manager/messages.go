@@ -162,6 +162,8 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 	switch operation {
 	case "call":
 		return mh.handleCallOperation(ctx, msg, parts[opIndex+1:])
+	case "app":
+		return mh.handleAppOperation(ctx, msg, parts[opIndex+1:])
 	case "bootstrap":
 		return mh.handleBootstrap(ctx, msg)
 	case "unseal":
@@ -172,6 +174,22 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 		return mh.handleBlockOperation(ctx, msg, parts[opIndex+1:])
 	default:
 		return mh.errorResponse(msg.ID, fmt.Sprintf("unknown operation: %s", operation))
+	}
+}
+
+// handleAppOperation routes app-related operations (like authenticate)
+func (mh *MessageHandler) handleAppOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
+	if len(opParts) < 2 {
+		return mh.errorResponse(msg.ID, "missing app operation type")
+	}
+
+	opType := opParts[1] // e.g., "authenticate"
+
+	switch opType {
+	case "authenticate":
+		return mh.handleAuthenticate(msg)
+	default:
+		return mh.errorResponse(msg.ID, fmt.Sprintf("unknown app operation: %s", opType))
 	}
 }
 
