@@ -1,69 +1,12 @@
 /**
  * Key generation tests
- * Tests for LAT and transaction key generation
+ * Tests for transaction key generation
  */
 
 import {
-  generateLAT,
-  verifyLAT,
   generateTransactionKeyPool,
   generateX25519KeyPair,
-  LAT
 } from '../../utils/cryptoTestUtils';
-
-describe('LAT (Ledger Authentication Token)', () => {
-  test('should generate valid LAT', () => {
-    const lat = generateLAT();
-
-    expect(lat.token).toBeTruthy();
-    expect(lat.token.length).toBe(64); // 32 bytes = 64 hex chars
-    expect(lat.version).toBe(1);
-  });
-
-  test('should generate unique tokens', () => {
-    const lat1 = generateLAT();
-    const lat2 = generateLAT();
-
-    expect(lat1.token).not.toBe(lat2.token);
-  });
-
-  test('should respect version parameter', () => {
-    const lat = generateLAT(42);
-
-    expect(lat.version).toBe(42);
-  });
-
-  test('should verify matching LATs', () => {
-    const lat = generateLAT();
-    const copy: LAT = { token: lat.token, version: lat.version };
-
-    expect(verifyLAT(copy, lat)).toBe(true);
-  });
-
-  test('should reject LAT with wrong token', () => {
-    const lat1 = generateLAT();
-    const lat2 = generateLAT();
-    lat2.version = lat1.version; // Same version, different token
-
-    expect(verifyLAT(lat2, lat1)).toBe(false);
-  });
-
-  test('should reject LAT with wrong version', () => {
-    const lat = generateLAT();
-    const copy: LAT = { token: lat.token, version: lat.version + 1 };
-
-    expect(verifyLAT(copy, lat)).toBe(false);
-  });
-
-  test('should use constant-time comparison', () => {
-    // This test verifies the structure but can't directly test timing
-    const lat1 = generateLAT();
-    const lat2: LAT = { token: lat1.token, version: lat1.version };
-
-    // Should not throw
-    expect(() => verifyLAT(lat2, lat1)).not.toThrow();
-  });
-});
 
 describe('Transaction Key Pool', () => {
   test('should generate correct number of keys', () => {

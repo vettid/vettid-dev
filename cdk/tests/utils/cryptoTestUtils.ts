@@ -250,41 +250,6 @@ export function verifyPassword(hash: string, password: string): boolean {
 }
 
 // ============================================
-// LAT (Ledger Authentication Token)
-// ============================================
-
-export interface LAT {
-  token: string;
-  version: number;
-}
-
-/**
- * Generate a new LAT
- */
-export function generateLAT(version: number = 1): LAT {
-  const token = crypto.randomBytes(32).toString('hex');
-  return { token, version };
-}
-
-/**
- * Verify LAT matches (constant-time)
- */
-export function verifyLAT(received: LAT, stored: LAT): boolean {
-  if (received.version !== stored.version) {
-    return false;
-  }
-
-  const receivedBuffer = Buffer.from(received.token, 'hex');
-  const storedBuffer = Buffer.from(stored.token, 'hex');
-
-  if (receivedBuffer.length !== storedBuffer.length) {
-    return false;
-  }
-
-  return crypto.timingSafeEqual(receivedBuffer, storedBuffer);
-}
-
-// ============================================
 // Transaction Keys
 // ============================================
 

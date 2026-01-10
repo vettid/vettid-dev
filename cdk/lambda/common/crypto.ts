@@ -6,7 +6,7 @@
  * - crypto-password.ts: Password hashing with Argon2id (native dep)
  *
  * IMPORTANT: If your Lambda only needs key operations (X25519, encryption,
- * signing, LAT), import directly from 'crypto-keys' to avoid bundling
+ * signing), import directly from 'crypto-keys' to avoid bundling
  * the argon2 native module.
  *
  * @see cdk/coordination/specs/credential-format.md
@@ -18,7 +18,6 @@ export {
   X25519KeyPair,
   EncryptedBlob,
   TransactionKeyPair,
-  LAT,
   Ed25519KeyPair,
   SignedMessage,
   // X25519 key operations
@@ -33,10 +32,6 @@ export {
   decryptCredentialBlob,
   encryptWithTransactionKey,
   decryptWithTransactionKey,
-  // LAT operations
-  generateLAT,
-  hashLATToken,
-  verifyLATToken,
   // Transaction key pool
   generateTransactionKeyPool,
   // Serialization

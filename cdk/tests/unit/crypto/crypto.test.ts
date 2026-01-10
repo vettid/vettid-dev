@@ -7,7 +7,6 @@
  * - ChaCha20-Poly1305 encryption/decryption
  * - Password hashing with Argon2id
  * - Ed25519 signing and verification
- * - LAT generation and verification
  * - Transaction key pool management
  * - Serialization helpers
  *
@@ -28,9 +27,6 @@ import {
   hashPassword,
   verifyPassword,
   needsRehash,
-  generateLAT,
-  hashLATToken,
-  verifyLATToken,
   generateTransactionKeyPool,
   serializeEncryptedBlob,
   deserializeEncryptedBlob,
@@ -46,7 +42,6 @@ import {
   verifyChallengeResponse,
   X25519KeyPair,
   EncryptedBlob,
-  LAT,
   TransactionKeyPair,
   Ed25519KeyPair,
 } from '../../../lambda/common/crypto';
@@ -461,110 +456,6 @@ describe('Password Hashing (Argon2id)', () => {
 });
 
 // ============================================
-// LAT (Ledger Authentication Token) Tests
-// ============================================
-
-describe('LAT Generation and Verification', () => {
-  describe('generateLAT', () => {
-    it('should generate LAT with 64-character hex token', () => {
-      const lat = generateLAT();
-
-      expect(lat.token).toMatch(/^[0-9a-f]{64}$/);
-      expect(lat.token.length).toBe(64);
-    });
-
-    it('should generate LAT with specified version', () => {
-      const lat1 = generateLAT(1);
-      const lat5 = generateLAT(5);
-
-      expect(lat1.version).toBe(1);
-      expect(lat5.version).toBe(5);
-    });
-
-    it('should default to version 1', () => {
-      const lat = generateLAT();
-
-      expect(lat.version).toBe(1);
-    });
-
-    it('should generate unique tokens', () => {
-      const tokens = Array.from({ length: 100 }, () => generateLAT().token);
-      const uniqueTokens = new Set(tokens);
-
-      expect(uniqueTokens.size).toBe(100);
-    });
-  });
-
-  describe('hashLATToken', () => {
-    it('should return 64-character hex hash', () => {
-      const lat = generateLAT();
-      const hash = hashLATToken(lat.token);
-
-      expect(hash).toMatch(/^[0-9a-f]{64}$/);
-      expect(hash.length).toBe(64);
-    });
-
-    it('should produce different hash from original token', () => {
-      const lat = generateLAT();
-      const hash = hashLATToken(lat.token);
-
-      expect(hash).not.toBe(lat.token);
-    });
-
-    it('should produce same hash for same token', () => {
-      const token = 'a'.repeat(64);
-
-      const hash1 = hashLATToken(token);
-      const hash2 = hashLATToken(token);
-
-      expect(hash1).toBe(hash2);
-    });
-
-    it('should produce different hash for different tokens', () => {
-      const hash1 = hashLATToken('a'.repeat(64));
-      const hash2 = hashLATToken('b'.repeat(64));
-
-      expect(hash1).not.toBe(hash2);
-    });
-  });
-
-  describe('verifyLATToken', () => {
-    it('should verify matching token and hash', () => {
-      const lat = generateLAT();
-      const storedHash = hashLATToken(lat.token);
-
-      const result = verifyLATToken(lat.token, storedHash);
-
-      expect(result).toBe(true);
-    });
-
-    it('should reject non-matching token', () => {
-      const lat = generateLAT();
-      const storedHash = hashLATToken(lat.token);
-      const wrongToken = generateLAT().token;
-
-      const result = verifyLATToken(wrongToken, storedHash);
-
-      expect(result).toBe(false);
-    });
-
-    it('should reject modified token', () => {
-      const lat = generateLAT();
-      const storedHash = hashLATToken(lat.token);
-
-      // Flip one character
-      const modifiedToken = lat.token.charAt(0) === '0'
-        ? '1' + lat.token.slice(1)
-        : '0' + lat.token.slice(1);
-
-      const result = verifyLATToken(modifiedToken, storedHash);
-
-      expect(result).toBe(false);
-    });
-  });
-});
-
-// ============================================
 // Transaction Key Pool Tests
 // ============================================
 
@@ -803,31 +694,6 @@ describe('Security Properties', () => {
     });
   });
 
-  describe('Timing-Safe Comparison', () => {
-    it('should verify LAT in constant time', () => {
-      const lat = generateLAT();
-      const storedHash = hashLATToken(lat.token);
-
-      // Run multiple verifications to check for timing consistency
-      const iterations = 100;
-      const timings: bigint[] = [];
-
-      for (let i = 0; i < iterations; i++) {
-        const start = process.hrtime.bigint();
-        verifyLATToken(lat.token, storedHash);
-        timings.push(process.hrtime.bigint() - start);
-      }
-
-      // Basic statistical check - times should be relatively consistent
-      const mean = timings.reduce((a, b) => a + b) / BigInt(timings.length);
-      const variance = timings.reduce((acc, t) => acc + (t - mean) * (t - mean), BigInt(0)) / BigInt(timings.length);
-      const stdDev = Math.sqrt(Number(variance));
-      const cv = stdDev / Number(mean);
-
-      // CV should be reasonable (timing variations exist but should be bounded)
-      expect(cv).toBeLessThan(2.0);
-    });
-  });
 });
 
 // ============================================

@@ -6,7 +6,6 @@
  * - ChaCha20-Poly1305 authenticated encryption
  * - HKDF-SHA256 key derivation
  * - Ed25519 signing
- * - Secure LAT generation and validation
  *
  * This module has NO native dependencies and works on all Node.js versions.
  * Password hashing (argon2) is in crypto-password.ts
@@ -50,11 +49,6 @@ export interface TransactionKeyPair {
   publicKey: Buffer;
   privateKey: Buffer;
   algorithm: string;
-}
-
-export interface LAT {
-  token: string;    // 64 hex chars (32 bytes)
-  version: number;
 }
 
 export interface Ed25519KeyPair {
@@ -306,44 +300,6 @@ export function encryptWithTransactionKey(plaintext: Buffer, utkPublicKey: Buffe
  */
 export function decryptWithTransactionKey(encrypted: EncryptedBlob, ltkPrivateKey: Buffer): Buffer {
   return decryptWithPrivateKey(encrypted, ltkPrivateKey, 'transaction-encryption-v1');
-}
-
-// ============================================
-// LAT (Ledger Authentication Token)
-// ============================================
-
-/**
- * Generate a new LAT
- * @param version LAT version number (increments on each rotation)
- * @returns LAT with 256-bit random token
- */
-export function generateLAT(version: number = 1): LAT {
-  const token = randomBytes(32).toString('hex');
-  return { token, version };
-}
-
-/**
- * Hash LAT token for storage
- * Never store raw LAT tokens - always hash them
- */
-export function hashLATToken(token: string): string {
-  return createHash('sha256').update(token).digest('hex');
-}
-
-/**
- * Verify LAT token against stored hash
- * Uses timing-safe comparison
- */
-export function verifyLATToken(providedToken: string, storedHash: string): boolean {
-  const providedHash = hashLATToken(providedToken);
-  const providedBuffer = Buffer.from(providedHash, 'hex');
-  const storedBuffer = Buffer.from(storedHash, 'hex');
-
-  if (providedBuffer.length !== storedBuffer.length) {
-    return false;
-  }
-
-  return timingSafeEqual(providedBuffer, storedBuffer);
 }
 
 // ============================================
