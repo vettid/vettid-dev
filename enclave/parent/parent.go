@@ -111,10 +111,20 @@ func (p *ParentProcess) Run(ctx context.Context) error {
 		}
 	}()
 
-	// Route Enclave → NATS/S3
-	// TODO: Re-enable when enclave-initiated messages are needed
-	// Currently disabled because it blocks on read holding the mutex,
-	// which prevents SendMessage from working. Need a proper async design.
+	// Route Enclave → NATS/S3 (Disabled by design)
+	//
+	// The routeEnclaveToExternal goroutine is intentionally disabled because:
+	// 1. Current architecture uses request-response pattern only (NATS→Enclave→NATS)
+	// 2. The enclave doesn't need to initiate messages - it only responds to requests
+	// 3. Enabling it causes a mutex conflict: it blocks on read while holding readMu,
+	//    which prevents sendWithHandlerSupport from reading responses
+	//
+	// If enclave-initiated messages are needed in the future (e.g., push notifications,
+	// async events), this requires architectural changes:
+	// - Separate channels for request-response vs event streams
+	// - Non-blocking vsock read with message type discrimination
+	// - Consider using NATS JetStream for durable event delivery instead
+	//
 	// go func() {
 	// 	err := p.routeEnclaveToExternal(ctx)
 	// 	if err != nil && ctx.Err() == nil {
@@ -613,15 +623,16 @@ func (p *ParentProcess) formatEnclaveResponse(response *EnclaveMessage) []byte {
 		}
 
 		// Return credential response with base64-encoded sealed credential
+		// Note: PublicKey and BackupKey fields are reserved for future use.
+		// Currently, the identity public key is embedded inside the sealed_credential blob.
+		// If mobile apps need direct access to the identity public key (for independent
+		// verification), the supervisor would need to extract and return it separately.
 		resp := struct {
 			SealedCredential string `json:"sealed_credential"`
 			PublicKey        string `json:"public_key,omitempty"`
 			BackupKey        string `json:"backup_key,omitempty"`
 		}{
 			SealedCredential: base64.StdEncoding.EncodeToString(response.Credential),
-			// TODO: Enclave should return these separately
-			PublicKey: "",
-			BackupKey: "",
 		}
 
 		data, err := json.Marshal(resp)
@@ -906,8 +917,28 @@ func (p *ParentProcess) handleKMSDecrypt(ctx context.Context, msg *EnclaveMessag
 
 // getHealthStatus returns the current health status
 func (p *ParentProcess) getHealthStatus() []byte {
-	// TODO: Implement proper health status
-	return []byte(`{"status":"healthy"}`)
+	// Build health status from current connection states
+	natsConnected := p.natsClient != nil && p.natsClient.IsConnected()
+	enclaveConnected := p.vsockClient != nil && p.vsockClient.IsConnected()
+
+	status := struct {
+		Healthy          bool   `json:"healthy"`
+		NATSConnected    bool   `json:"nats_connected"`
+		EnclaveConnected bool   `json:"enclave_connected"`
+		Version          string `json:"version"`
+	}{
+		Healthy:          natsConnected && enclaveConnected,
+		NATSConnected:    natsConnected,
+		EnclaveConnected: enclaveConnected,
+		Version:          Version,
+	}
+
+	data, err := json.Marshal(status)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to marshal health status")
+		return []byte(`{"healthy":false,"error":"marshal_failed"}`)
+	}
+	return data
 }
 
 // updateHealthStatus updates the health server with current connection states

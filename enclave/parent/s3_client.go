@@ -3,11 +3,13 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/rs/zerolog/log"
 )
 
@@ -133,9 +135,18 @@ func (c *S3Client) Exists(ctx context.Context, key string) (bool, error) {
 		Key:    &key,
 	})
 	if err != nil {
-		// Check if it's a "not found" error
-		// TODO: Properly check error type
-		return false, nil
+		// Check if it's a "not found" error (returns 404 for missing objects)
+		var notFound *types.NotFound
+		if errors.As(err, &notFound) {
+			return false, nil
+		}
+		// Also check for NoSuchKey which some operations return
+		var noSuchKey *types.NoSuchKey
+		if errors.As(err, &noSuchKey) {
+			return false, nil
+		}
+		// For any other error, return it
+		return false, fmt.Errorf("S3 HeadObject failed: %w", err)
 	}
 	return true, nil
 }

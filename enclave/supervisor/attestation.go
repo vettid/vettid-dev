@@ -419,9 +419,17 @@ type PCRValues struct {
 	PCR2 []byte // Application hash
 }
 
-// LoadExpectedPCRs loads expected PCR values from configuration
+// LoadExpectedPCRs would load expected PCR values from configuration.
+// Currently unused because PCR validation happens at the KMS key policy level:
+// - The KMS sealing key has a policy condition requiring PCR0 to match
+// - This is enforced by AWS KMS during Decrypt operations
+// - The enclave doesn't verify other enclaves, so it doesn't need to load PCRs
+//
+// This function is preserved for reference in case future features require
+// enclave-to-enclave verification or local PCR validation.
 func LoadExpectedPCRs(configPath string) (*PCRValues, error) {
-	// TODO: Load from configuration file
-	// These values are generated when building the enclave image
+	// PCR values are generated during enclave build (nitro-cli build-enclave)
+	// and stored in the SSM parameter /vettid/enclave/pcr0
+	// The KMS key policy references this value for attestation-based decryption
 	return &PCRValues{}, nil
 }
