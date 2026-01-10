@@ -125,15 +125,16 @@ describe('Account JWT Generation', () => {
       const jwt = await createAccountJwt('test-account', accountPublicKey);
       const decoded = decodeJwt(jwt);
 
+      // SECURITY: Account limits prevent DoS attacks against the NATS cluster
       expect(decoded.payload.nats.limits).toEqual({
-        subs: -1,
-        data: -1,
-        payload: -1,
-        imports: -1,
-        exports: -1,
-        wildcards: true,
-        conn: -1,
-        leaf: -1,
+        subs: 100,           // Max subscriptions per account
+        data: 10_000_000,    // 10 MB/sec data transfer
+        payload: 1_048_576,  // 1 MB max message payload
+        imports: 10,         // Max imports
+        exports: 10,         // Max exports
+        wildcards: true,     // Allow wildcards for OwnerSpace.{guid}.>
+        conn: 10,            // Max connections (mobile + vault + backup)
+        leaf: 0,             // No leaf nodes needed
       });
     });
 
@@ -501,12 +502,13 @@ describe('Credential File Formatting', () => {
 
       const credsFile = formatCredsFile(jwt, seed);
 
+      // Standard NATS creds format uses 5 dashes for both BEGIN and END
       expect(credsFile).toContain('-----BEGIN NATS USER JWT-----');
       expect(credsFile).toContain(jwt);
-      expect(credsFile).toContain('------END NATS USER JWT------');
+      expect(credsFile).toContain('-----END NATS USER JWT-----');
       expect(credsFile).toContain('-----BEGIN USER NKEY SEED-----');
       expect(credsFile).toContain(seed);
-      expect(credsFile).toContain('------END USER NKEY SEED------');
+      expect(credsFile).toContain('-----END USER NKEY SEED-----');
     });
 
     it('should include security warning', () => {
@@ -524,16 +526,16 @@ describe('Credential File Formatting', () => {
 
       const credsFile = formatCredsFile(jwt, seed);
 
-      // Extract JWT using regex similar to NATS client libraries
+      // Extract JWT using regex similar to NATS client libraries (5 dashes)
       const jwtMatch = credsFile.match(
-        /-----BEGIN NATS USER JWT-----\n([^\n]+)\n------END NATS USER JWT------/
+        /-----BEGIN NATS USER JWT-----\n([^\n]+)\n-----END NATS USER JWT-----/
       );
       expect(jwtMatch).not.toBeNull();
       expect(jwtMatch![1]).toBe(jwt);
 
-      // Extract seed using regex similar to NATS client libraries
+      // Extract seed using regex similar to NATS client libraries (5 dashes)
       const seedMatch = credsFile.match(
-        /-----BEGIN USER NKEY SEED-----\n([^\n]+)\n------END USER NKEY SEED------/
+        /-----BEGIN USER NKEY SEED-----\n([^\n]+)\n-----END USER NKEY SEED-----/
       );
       expect(seedMatch).not.toBeNull();
       expect(seedMatch![1]).toBe(seed);
