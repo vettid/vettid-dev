@@ -4512,7 +4512,108 @@ async function loadRestoreStatus() {
 }
 
 /**
+ * Load and display recovery QR code
+ * Architecture v2.0: Recovery via QR code scanned by mobile app
+ */
+let recoveryQRRefreshTimer = null;
+
+async function loadRecoveryQR(recoveryId) {
+  const qrContainer = document.getElementById('recoveryQRContainer');
+  const qrImage = document.getElementById('recoveryQRImage');
+  const qrExpiry = document.getElementById('recoveryQRExpiry');
+  const qrError = document.getElementById('recoveryQRError');
+
+  if (!qrContainer || !qrImage) return;
+
+  try {
+    const token = idToken();
+    if (!token) throw new Error('No authentication token');
+
+    // Fetch QR code data from new endpoint
+    const res = await fetch(API_URL + '/vault/recovery/qr?recovery_id=' + encodeURIComponent(recoveryId), {
+      method: 'GET',
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({}));
+      throw new Error(error.message || 'Failed to load recovery QR code');
+    }
+
+    const data = await res.json();
+
+    // Generate QR code using Google Charts API (simple, no library needed)
+    // The qr_data is base64-encoded JSON payload
+    const qrCodeUrl = `https://chart.googleapis.com/chart?cht=qr&chs=250x250&chl=${encodeURIComponent(data.qr_data)}&choe=UTF-8`;
+    qrImage.src = qrCodeUrl;
+    qrImage.style.display = 'block';
+
+    // Show expiry countdown
+    if (qrExpiry && data.expires_at) {
+      updateQRExpiryCountdown(data.expires_at);
+    }
+
+    if (qrError) qrError.style.display = 'none';
+
+  } catch (error) {
+    console.error('Error loading recovery QR:', error);
+    if (qrError) {
+      qrError.textContent = error.message;
+      qrError.style.display = 'block';
+    }
+    if (qrImage) qrImage.style.display = 'none';
+  }
+}
+
+/**
+ * Update QR code expiry countdown
+ */
+function updateQRExpiryCountdown(expiresAt) {
+  const qrExpiry = document.getElementById('recoveryQRExpiry');
+  if (!qrExpiry) return;
+
+  // Clear any existing timer
+  if (recoveryQRRefreshTimer) {
+    clearInterval(recoveryQRRefreshTimer);
+  }
+
+  const expiryTime = new Date(expiresAt).getTime();
+
+  function updateCountdown() {
+    const now = Date.now();
+    const remaining = Math.max(0, expiryTime - now);
+
+    if (remaining === 0) {
+      qrExpiry.textContent = 'QR code expired. Click "Refresh QR Code" to generate a new one.';
+      qrExpiry.style.color = '#f44336';
+      clearInterval(recoveryQRRefreshTimer);
+      return;
+    }
+
+    const minutes = Math.floor(remaining / 60000);
+    const seconds = Math.floor((remaining % 60000) / 1000);
+    qrExpiry.textContent = `QR code expires in ${minutes}:${seconds.toString().padStart(2, '0')}`;
+    qrExpiry.style.color = minutes < 2 ? '#f59e0b' : 'var(--gray)';
+  }
+
+  updateCountdown();
+  recoveryQRRefreshTimer = setInterval(updateCountdown, 1000);
+}
+
+/**
+ * Refresh the recovery QR code
+ */
+async function refreshRecoveryQR() {
+  const recoveryId = document.getElementById('recoveryQRContainer')?.dataset?.recoveryId;
+  if (recoveryId) {
+    await loadRecoveryQR(recoveryId);
+    showToast('QR code refreshed', 'success');
+  }
+}
+
+/**
  * Render restore status UI
+ * Updated for Architecture v2.0: QR code recovery flow
  */
 function renderRestoreStatus(status) {
   const statusSection = document.getElementById('restoreStatusSection');
@@ -4532,34 +4633,76 @@ function renderRestoreStatus(status) {
   optionsSection.style.display = 'none';
   statusSection.style.display = 'block';
 
+  // Escape dynamic values from server to prevent XSS
+  const safeMessage = escapeHtml(status.message || '');
+  const safeRecoveryId = escapeHtml(status.recovery_id || '');
+  const safeTimeRemaining = escapeHtml(status.time_remaining_display || '--');
+
   if (status.is_ready) {
+    // Show QR code section for recovery (Architecture v2.0)
     confirmSection.style.display = 'block';
-    statusContent.innerHTML = `
-      <div style="display:flex;align-items:center;gap:12px;">
-        <div style="width:40px;height:40px;background:#10b981;border-radius:50%;display:flex;align-items:center;justify-content:center;">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5"><polyline points="20 6 9 17 4 12"></polyline></svg>
-        </div>
-        <div>
-          <p style="margin:0;color:#10b981;font-weight:600;">${status.status === 'approved' ? 'Transfer Approved!' : 'Recovery Ready'}</p>
-          <p style="margin:4px 0 0 0;color:var(--gray);font-size:0.9rem;">${status.message}</p>
-        </div>
-      </div>
-    `;
+
+    // For transfers, show old flow; for recovery, show QR code
+    if (status.status === 'approved') {
+      // Transfer flow (device-to-device) - keep old behavior
+      statusContent.innerHTML = '<div style="display:flex;align-items:center;gap:12px;">' +
+        '<div style="width:40px;height:40px;background:#10b981;border-radius:50%;display:flex;align-items:center;justify-content:center;">' +
+        '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5"><polyline points="20 6 9 17 4 12"></polyline></svg>' +
+        '</div><div>' +
+        '<p style="margin:0;color:#10b981;font-weight:600;">Transfer Approved!</p>' +
+        '<p style="margin:4px 0 0 0;color:var(--gray);font-size:0.9rem;">' + safeMessage + '</p>' +
+        '</div></div>';
+    } else {
+      // Recovery flow (device lost) - show QR code
+      statusContent.innerHTML = '<div style="text-align:center;">' +
+        '<div style="display:flex;align-items:center;justify-content:center;gap:12px;margin-bottom:20px;">' +
+        '<div style="width:40px;height:40px;background:#10b981;border-radius:50%;display:flex;align-items:center;justify-content:center;">' +
+        '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5"><polyline points="20 6 9 17 4 12"></polyline></svg>' +
+        '</div><div style="text-align:left;">' +
+        '<p style="margin:0;color:#10b981;font-weight:600;">Recovery Ready</p>' +
+        '<p style="margin:4px 0 0 0;color:var(--gray);font-size:0.9rem;">Scan the QR code with your VettID app</p>' +
+        '</div></div>' +
+        '<div id="recoveryQRContainer" data-recovery-id="' + safeRecoveryId + '" style="background:#fff;padding:20px;border-radius:12px;display:inline-block;margin:20px 0;">' +
+        '<img id="recoveryQRImage" alt="Recovery QR Code" style="width:250px;height:250px;display:none;" />' +
+        '<div id="recoveryQRError" style="display:none;color:#f44336;padding:20px;"></div>' +
+        '<div id="recoveryQRLoading" style="width:250px;height:250px;display:flex;align-items:center;justify-content:center;">' +
+        '<div style="width:40px;height:40px;border:4px solid #e5e7eb;border-top-color:#10b981;border-radius:50%;animation:spin 1s linear infinite;"></div>' +
+        '</div></div>' +
+        '<p id="recoveryQRExpiry" style="margin:0 0 16px 0;color:var(--gray);font-size:0.9rem;">Loading QR code...</p>' +
+        '<div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;">' +
+        '<button data-action="refreshRecoveryQR" class="btn" style="padding:10px 20px;background:linear-gradient(135deg,#10b981 0%,#059669 100%);color:#fff;font-weight:600;">' +
+        '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:8px;vertical-align:middle;"><path d="M21 12a9 9 0 11-6.22-8.56"/><polyline points="21 3 21 9 15 9"/></svg>' +
+        'Refresh QR Code</button>' +
+        '<button data-action="cancelRestore" class="btn" style="padding:10px 20px;background:#333;">Cancel Request</button>' +
+        '</div>' +
+        '<p style="margin:20px 0 0 0;color:var(--gray);font-size:0.85rem;">' +
+        'Open the VettID app on your new device and scan this QR code to recover your vault credentials.</p>' +
+        '</div>';
+
+      // Hide the old recovery phrase section
+      confirmSection.style.display = 'none';
+
+      // Load QR code after DOM update
+      if (status.recovery_id) {
+        setTimeout(function() {
+          var loading = document.getElementById('recoveryQRLoading');
+          if (loading) loading.style.display = 'flex';
+          loadRecoveryQR(status.recovery_id);
+        }, 100);
+      }
+    }
   } else {
     confirmSection.style.display = 'none';
     const isPendingApproval = status.status === 'pending_approval';
-    statusContent.innerHTML = `
-      <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">
-        <div style="width:40px;height:40px;background:var(--accent);border-radius:50%;display:flex;align-items:center;justify-content:center;">
-          <div style="width:20px;height:20px;border:3px solid #000;border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite;"></div>
-        </div>
-        <div>
-          <p style="margin:0;color:var(--accent);font-weight:600;">${isPendingApproval ? 'Waiting for Approval' : 'Recovery Pending'}</p>
-          <p style="margin:4px 0 0 0;color:var(--gray);font-size:0.9rem;">${status.message || (isPendingApproval ? 'Check your device for approval request' : 'Time remaining: ' + (status.time_remaining_display || '--'))}</p>
-        </div>
-      </div>
-      <button data-action="cancelRestore" class="btn" style="padding:8px 16px;background:#333;">Cancel Request</button>
-    `;
+    const pendingMessage = isPendingApproval ? 'Check your device for approval request' : 'Time remaining: ' + safeTimeRemaining;
+    statusContent.innerHTML = '<div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">' +
+      '<div style="width:40px;height:40px;background:var(--accent);border-radius:50%;display:flex;align-items:center;justify-content:center;">' +
+      '<div style="width:20px;height:20px;border:3px solid #000;border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite;"></div>' +
+      '</div><div>' +
+      '<p style="margin:0;color:var(--accent);font-weight:600;">' + (isPendingApproval ? 'Waiting for Approval' : 'Recovery Pending') + '</p>' +
+      '<p style="margin:4px 0 0 0;color:var(--gray);font-size:0.9rem;">' + (safeMessage || pendingMessage) + '</p>' +
+      '</div></div>' +
+      '<button data-action="cancelRestore" class="btn" style="padding:8px 16px;background:#333;">Cancel Request</button>';
   }
 }
 
@@ -5309,6 +5452,7 @@ document.addEventListener('click', (e) => {
     'requestRecovery': requestRecovery,
     'cancelRestore': cancelRestore,
     'confirmRecovery': confirmRecovery,
+    'refreshRecoveryQR': refreshRecoveryQR,
     // Vault management actions
     'startEnrollment': startEnrollment,
     'provisionVault': provisionVault,

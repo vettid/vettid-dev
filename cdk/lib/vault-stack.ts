@@ -99,6 +99,7 @@ export class VaultStack extends cdk.Stack {
   public readonly getRecoveryStatus!: lambdaNode.NodejsFunction;
   public readonly cancelCredentialRecovery!: lambdaNode.NodejsFunction;
   public readonly downloadRecoveredCredential!: lambdaNode.NodejsFunction;
+  public readonly getRecoveryQR!: lambdaNode.NodejsFunction;  // QR code for recovery (Architecture v2.0)
 
   // Vault Deletion (24-hour delay)
   public readonly deleteVaultRequest!: lambdaNode.NodejsFunction;
@@ -817,13 +818,27 @@ export class VaultStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(30),
     });
 
+    // QR code recovery endpoint (Architecture v2.0 Section 5.18)
+    this.getRecoveryQR = new lambdaNode.NodejsFunction(this, 'GetRecoveryQRFn', {
+      entry: 'lambda/handlers/backup/getRecoveryQR.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        TABLE_RECOVERY_REQUESTS: tables.credentialRecoveryRequests.tableName,
+        TABLE_AUDIT: tables.audit.tableName,
+        NATS_ENDPOINT: 'nats.vettid.dev:443',
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
     // Grant permissions for recovery functions
     tables.credentialRecoveryRequests.grantReadWriteData(this.requestCredentialRecovery);
     tables.credentialRecoveryRequests.grantReadWriteData(this.getRecoveryStatus);
     tables.credentialRecoveryRequests.grantReadWriteData(this.cancelCredentialRecovery);
     tables.credentialRecoveryRequests.grantReadWriteData(this.downloadRecoveredCredential);
+    tables.credentialRecoveryRequests.grantReadWriteData(this.getRecoveryQR);
     tables.credentialBackups.grantReadData(this.requestCredentialRecovery);
     tables.credentialBackups.grantReadData(this.downloadRecoveredCredential);
+    tables.audit.grantWriteData(this.getRecoveryQR);
     props.infrastructure.backupBucket.grantRead(this.downloadRecoveredCredential);
     tables.audit.grantWriteData(this.verifyNitroAttestation);
     tables.enrollmentSessions.grantReadData(this.verifyNitroAttestation);
@@ -1272,6 +1287,7 @@ export class VaultStack extends cdk.Stack {
     this.route('GetRecoveryStatus', httpApi, '/vault/recovery/status', apigw.HttpMethod.GET, this.getRecoveryStatus, memberAuthorizer);
     this.route('CancelCredentialRecovery', httpApi, '/vault/recovery/cancel', apigw.HttpMethod.POST, this.cancelCredentialRecovery, memberAuthorizer);
     this.route('DownloadRecoveredCredential', httpApi, '/vault/recovery/download', apigw.HttpMethod.GET, this.downloadRecoveredCredential, memberAuthorizer);
+    this.route('GetRecoveryQR', httpApi, '/vault/recovery/qr', apigw.HttpMethod.GET, this.getRecoveryQR, memberAuthorizer);
 
     // Vault Deletion Routes (24-hour delay)
     this.route('DeleteVaultRequest', httpApi, '/vault/delete/request', apigw.HttpMethod.POST, this.deleteVaultRequest, memberAuthorizer);
