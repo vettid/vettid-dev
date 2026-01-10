@@ -4,9 +4,11 @@ import (
 	"github.com/mesmerverse/vettid-dev/enclave/vault-manager/storage"
 )
 
-// EncryptedStorage wraps the storage adapter for the vault manager
+// EncryptedStorage wraps the SQLite storage for the vault manager.
+// It provides encrypted, persistent storage for vault data using
+// an in-memory SQLite database that can be synced to S3.
 type EncryptedStorage struct {
-	adapter    *storage.EncryptedStorageAdapter
+	sqlite     *storage.SQLiteStorage
 	ownerSpace string
 }
 
@@ -19,42 +21,80 @@ func NewEncryptedStorage(ownerSpace string) (*EncryptedStorage, error) {
 	}, nil
 }
 
-// InitializeWithDEK initializes storage with the data encryption key
+// InitializeWithDEK initializes storage with the data encryption key.
+// This creates the SQLite database with the DEK for encryption.
 func (s *EncryptedStorage) InitializeWithDEK(dek []byte) error {
-	adapter, err := storage.NewEncryptedStorageAdapter(s.ownerSpace, dek)
+	sqlite, err := storage.NewSQLiteStorage(s.ownerSpace, dek)
 	if err != nil {
 		return err
 	}
-	s.adapter = adapter
+	s.sqlite = sqlite
 	return nil
 }
 
-// Get retrieves and decrypts data
+// Get retrieves and decrypts data by key
 func (s *EncryptedStorage) Get(key string) ([]byte, error) {
-	if s.adapter == nil {
+	if s.sqlite == nil {
 		return nil, ErrStorageNotInitialized
 	}
-	return s.adapter.Get(key)
+	data, err := s.sqlite.Get(key)
+	if err == storage.ErrKeyNotFound {
+		return nil, ErrKeyNotFound
+	}
+	return data, err
 }
 
-// Put encrypts and stores data
+// Put encrypts and stores data by key
 func (s *EncryptedStorage) Put(key string, value []byte) error {
-	if s.adapter == nil {
+	if s.sqlite == nil {
 		return ErrStorageNotInitialized
 	}
-	return s.adapter.Put(key, value)
+	return s.sqlite.Put(key, value)
 }
 
-// Delete removes data
+// Delete removes data by key
 func (s *EncryptedStorage) Delete(key string) error {
-	if s.adapter == nil {
+	if s.sqlite == nil {
 		return ErrStorageNotInitialized
 	}
-	return s.adapter.Delete(key)
+	return s.sqlite.Delete(key)
+}
+
+// SQLite returns the underlying SQLite storage for domain-specific operations.
+// Use this for CEK keypair, transport key, and ledger entry operations.
+func (s *EncryptedStorage) SQLite() *storage.SQLiteStorage {
+	return s.sqlite
+}
+
+// CreateBackup creates an encrypted backup of the database
+func (s *EncryptedStorage) CreateBackup() (*storage.BackupData, error) {
+	if s.sqlite == nil {
+		return nil, ErrStorageNotInitialized
+	}
+	return s.sqlite.CreateBackup()
+}
+
+// RestoreBackup restores the database from a backup
+func (s *EncryptedStorage) RestoreBackup(backup *storage.BackupData) error {
+	if s.sqlite == nil {
+		return ErrStorageNotInitialized
+	}
+	return s.sqlite.RestoreBackup(backup)
+}
+
+// Close closes the storage
+func (s *EncryptedStorage) Close() error {
+	if s.sqlite != nil {
+		return s.sqlite.Close()
+	}
+	return nil
 }
 
 // Errors
-var ErrStorageNotInitialized = &StorageError{Message: "storage not initialized - unseal credential first"}
+var (
+	ErrStorageNotInitialized = &StorageError{Message: "storage not initialized - unseal credential first"}
+	ErrKeyNotFound           = &StorageError{Message: "key not found"}
+)
 
 // StorageError represents a storage error
 type StorageError struct {
