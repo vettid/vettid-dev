@@ -766,87 +766,194 @@ The credential system uses asymmetric transaction keys for secure communication 
 - Compromising one doesn't compromise the other
 - PIN is verified by enclave hardware (NSM/KMS), password by vault software
 
-### 5.6 Enrollment Flow (Detailed)
+### 5.6 Enrollment Flow (Complete)
 
-Enrollment establishes the user's vault with proper key setup. Critical: the **supervisor** handles NSM/KMS operations, the **vault-manager** handles credential operations.
+Enrollment establishes the user's vault with proper key setup. This flow combines all phases from Account Portal initiation through final credential verification.
+
+**Critical Roles:**
+- **Account Portal**: Web interface where users initiate vault creation
+- **Lambda**: API endpoints that orchestrate enrollment sessions
+- **App**: Mobile application that scans QR and manages local credential
+- **Supervisor**: Handles NSM/KMS operations (attestation, DEK creation)
+- **Vault-Manager**: Handles credential operations (CEK, Protean Credential)
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         Enrollment Flow                                      │
-│                                                                             │
-│  ┌────────────┐    ┌────────────┐    ┌────────────┐    ┌────────────────┐  │
-│  │   Lambda   │    │    App     │    │ Supervisor │    │ Vault-Manager  │  │
-│  └─────┬──────┘    └─────┬──────┘    └─────┬──────┘    └───────┬────────┘  │
-│        │                 │                 │                   │           │
-│  ┌─────┴─────────────────┴─────────────────┴───────────────────┴─────────┐ │
-│  │ PHASE 1: Lambda Initiates Vault                                       │ │
-│  └───────────────────────────────────────────────────────────────────────┘ │
-│        │                 │                 │                   │           │
-│        │ 1. Create vault session          │                   │           │
-│        │    (generate bootstrap token)    │                   │           │
-│        │─────────────────────────────────►│                   │           │
-│        │                 │                 │                   │           │
-│        │ 2. Start vault-manager           │                   │           │
-│        │    with owner_id                │─────────────────────►          │
-│        │                 │                 │                   │           │
-│        │                 │                 │     3. Initialize │           │
-│        │                 │                 │        SQLite DB  │           │
-│        │                 │                 │                   │           │
-│        │ 4. Return vault_id, bootstrap_token                  │           │
-│        │◄────────────────────────────────────────────────────────────────  │
-│        │                 │                 │                   │           │
-│  ┌─────┴─────────────────┴─────────────────┴───────────────────┴─────────┐ │
-│  │ PHASE 2: App Bootstraps with Vault                                    │ │
-│  └───────────────────────────────────────────────────────────────────────┘ │
-│        │                 │                 │                   │           │
-│        │  5. Return vault info to app     │                   │           │
-│        │────────────────►│                 │                   │           │
-│        │                 │                 │                   │           │
-│        │                 │ 6. app.bootstrap (via NATS)        │           │
-│        │                 │────────────────────────────────────►│           │
-│        │                 │    { bootstrap_token }              │           │
-│        │                 │                 │                   │           │
-│        │                 │                 │     7. Generate:  │           │
-│        │                 │                 │        • CEK pair │           │
-│        │                 │                 │        • UTKs     │           │
-│        │                 │                 │        • LTKs     │           │
-│        │                 │                 │                   │           │
-│        │                 │                 │     8. Store in SQLite:       │
-│        │                 │                 │        • CEK private key      │
-│        │                 │                 │        • LTKs (keyed by UTK)  │
-│        │                 │                 │        → Sync to S3           │
-│        │                 │                 │                   │           │
-│        │                 │ 9. Response: UTKs only              │           │
-│        │                 │◄────────────────────────────────────│           │
-│        │                 │    + "enter credential password"    │           │
-│        │                 │    (no CEK sent - vault holds both) │           │
-│        │                 │                 │                   │           │
-│  ┌─────┴─────────────────┴─────────────────┴───────────────────┴─────────┐ │
-│  │ PHASE 3: App Sets Credential Password                                 │ │
-│  └───────────────────────────────────────────────────────────────────────┘ │
-│        │                 │                 │                   │           │
-│        │                 │ 10. User enters credential password │           │
-│        │                 │     (app prompts)                   │           │
-│        │                 │                 │                   │           │
-│        │                 │ 11. Hash password (Argon2id)        │           │
-│        │                 │     Encrypt hash with UTK           │           │
-│        │                 │     send to vault                   │           │
-│        │                 │────────────────────────────────────►│           │
-│        │                 │                 │                   │           │
-│        │                 │                 │    12. Decrypt hash with LTK  │
-│        │                 │                 │        Build credential:      │
-│        │                 │                 │        • identity_keypair     │
-│        │                 │                 │        • master_secret        │
-│        │                 │                 │        • password_hash (rcvd) │
-│        │                 │                 │        Encrypt with CEK       │
-│        │                 │                 │                   │           │
-│        │                 │ 13. Return encrypted credential     │           │
-│        │                 │◄────────────────────────────────────│           │
-│        │                 │    + new UTKs (no CEK sent to app)  │           │
-│        │                 │                 │                   │           │
-│        │                 │ 14. Store credential locally        │           │
-│        │                 │                 │                   │           │
-└─────────────────────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────────────────────────────┐
+│                              Complete Enrollment Flow                                       │
+│                                                                                            │
+│  ┌──────────┐  ┌────────┐  ┌────────┐  ┌──────────┐  ┌─────────┐  ┌───────────────┐       │
+│  │ Account  │  │ Lambda │  │  App   │  │Supervisor│  │ AWS KMS │  │ Vault-Manager │       │
+│  │  Portal  │  │        │  │        │  │          │  │         │  │               │       │
+│  └────┬─────┘  └───┬────┘  └───┬────┘  └────┬─────┘  └────┬────┘  └───────┬───────┘       │
+│       │            │           │            │             │               │               │
+│  ═════════════════════════════════════════════════════════════════════════════════════    │
+│  PHASE 1: ACCOUNT PORTAL INITIATES ENROLLMENT                                              │
+│  ═════════════════════════════════════════════════════════════════════════════════════    │
+│       │            │           │            │             │               │               │
+│       │ 1. User clicks         │            │             │               │               │
+│       │    "Create Vault"      │            │             │               │               │
+│       │───────────►│           │            │             │               │               │
+│       │            │           │            │             │               │               │
+│       │            │ 2. POST /vault/enroll/session        │               │               │
+│       │            │    Creates enrollment session        │               │               │
+│       │            │    - session_id, session_token       │               │               │
+│       │            │    - qr_data { api_url, token, guid }│               │               │
+│       │            │           │            │             │               │               │
+│       │ 3. Returns │           │            │             │               │               │
+│       │    QR code │           │            │             │               │               │
+│       │◄───────────│           │            │             │               │               │
+│       │    (displays to user)  │            │             │               │               │
+│       │            │           │            │             │               │               │
+│  ═════════════════════════════════════════════════════════════════════════════════════    │
+│  PHASE 2: APP SCANS QR & AUTHENTICATES                                                     │
+│  ═════════════════════════════════════════════════════════════════════════════════════    │
+│       │            │           │            │             │               │               │
+│       │            │ 4. User scans QR code  │             │               │               │
+│       │            │    with mobile app     │             │               │               │
+│       │            │           │            │             │               │               │
+│       │            │ 5. POST /vault/enroll/authenticate   │               │               │
+│       │            │◄──────────│            │             │               │               │
+│       │            │    { session_token,    │             │               │               │
+│       │            │      device_id,        │             │               │               │
+│       │            │      device_type }     │             │               │               │
+│       │            │           │            │             │               │               │
+│       │            │ 6. Returns enrollment_token (JWT)    │               │               │
+│       │            │───────────►            │             │               │               │
+│       │            │    + user_guid         │             │               │               │
+│       │            │           │            │             │               │               │
+│       │            │ 7. POST /vault/enroll/finalize       │               │               │
+│       │            │◄──────────│            │             │               │               │
+│       │            │    (uses enrollment_token)           │               │               │
+│       │            │           │            │             │               │               │
+│       │            │ 8. Creates NATS account              │               │               │
+│       │            │    Returns vault_bootstrap:          │               │               │
+│       │            │    - NATS credentials  │             │               │               │
+│       │            │    - bootstrap_topic   │             │               │               │
+│       │            │    - owner_space       │             │               │               │
+│       │            │───────────►            │             │               │               │
+│       │            │           │            │             │               │               │
+│       │            │           │ 9. Connect to NATS       │               │               │
+│       │            │           │    with bootstrap creds  │               │               │
+│       │            │           │            │             │               │               │
+│  ═════════════════════════════════════════════════════════════════════════════════════    │
+│  PHASE 3: ATTESTATION                                                                      │
+│  ═════════════════════════════════════════════════════════════════════════════════════    │
+│       │            │           │            │             │               │               │
+│       │            │           │ 10. Generate random nonce (32 bytes)     │               │
+│       │            │           │            │             │               │               │
+│       │            │           │ 11. Request attestation  │               │               │
+│       │            │           │     with nonce           │               │               │
+│       │            │           │───────────►│             │               │               │
+│       │            │           │            │             │               │               │
+│       │            │           │            │ 12. NSM.GetAttestation()    │               │
+│       │            │           │            │     (ephemeral pubkey       │               │
+│       │            │           │            │      + nonce in doc)        │               │
+│       │            │           │            │             │               │               │
+│       │            │           │ 13. Attestation document │               │               │
+│       │            │           │◄───────────│             │               │               │
+│       │            │           │    (AWS signed, PCRs,    │               │               │
+│       │            │           │     ephemeral pubkey)    │               │               │
+│       │            │           │            │             │               │               │
+│       │            │           │ 14. VERIFY:              │               │               │
+│       │            │           │   • AWS Nitro signature? │               │               │
+│       │            │           │   • PCRs match published?│               │               │
+│       │            │           │   • Timestamp < 5 min?   │               │               │
+│       │            │           │   • NONCE matches ours?  │               │               │
+│       │            │           │            │             │               │               │
+│  ═════════════════════════════════════════════════════════════════════════════════════    │
+│  PHASE 4: PIN SETUP & DEK CREATION                                                         │
+│  ═════════════════════════════════════════════════════════════════════════════════════    │
+│       │            │           │            │             │               │               │
+│       │            │           │ 15. User creates PIN     │               │               │
+│       │            │           │     (app prompts for     │               │               │
+│       │            │           │      6-digit PIN)        │               │               │
+│       │            │           │            │             │               │               │
+│       │            │           │ 16. Encrypt PIN to       │               │               │
+│       │            │           │     attested ephemeral   │               │               │
+│       │            │           │     pubkey (X25519)      │               │               │
+│       │            │           │───────────►│             │               │               │
+│       │            │           │            │             │               │               │
+│       │            │           │            │ 17. Generate random material (32 bytes)     │
+│       │            │           │            │             │               │               │
+│       │            │           │            │ 18. KMS.Encrypt(material, attestation)      │
+│       │            │           │            │────────────►│               │               │
+│       │            │           │            │             │               │               │
+│       │            │           │            │ 19. sealed_material         │               │
+│       │            │           │            │◄────────────│               │               │
+│       │            │           │            │    (PCR-bound)              │               │
+│       │            │           │            │             │               │               │
+│       │            │           │            │ 20. DEK = KDF(material, PIN)│               │
+│       │            │           │            │             │               │               │
+│       │            │           │            │ 21. Store sealed_material to S3             │
+│       │            │           │            │             │               │               │
+│       │            │           │ 22. PIN setup complete   │               │               │
+│       │            │           │◄───────────│             │               │               │
+│       │            │           │            │             │               │               │
+│  ═════════════════════════════════════════════════════════════════════════════════════    │
+│  PHASE 5: VAULT INITIALIZATION WITH DEK                                                    │
+│  ═════════════════════════════════════════════════════════════════════════════════════    │
+│       │            │           │            │             │               │               │
+│       │            │           │            │ 23. Start vault-manager ────────────────►   │
+│       │            │           │            │     with DEK               │               │
+│       │            │           │            │             │               │               │
+│       │            │           │            │             │  24. Initialize SQLite DB     │
+│       │            │           │            │             │      (DEK-encrypted)          │
+│       │            │           │            │             │               │               │
+│       │            │           │            │             │  25. Generate:                │
+│       │            │           │            │             │      • CEK keypair            │
+│       │            │           │            │             │      • UTK/LTK pairs          │
+│       │            │           │            │             │               │               │
+│       │            │           │ 26. Vault ready, send UTKs              │               │
+│       │            │           │◄─────────────────────────────────────────│               │
+│       │            │           │            │             │               │               │
+│  ═════════════════════════════════════════════════════════════════════════════════════    │
+│  PHASE 6: CREDENTIAL CREATION                                                              │
+│  ═════════════════════════════════════════════════════════════════════════════════════    │
+│       │            │           │            │             │               │               │
+│       │            │           │ 27. App prompts for      │               │               │
+│       │            │           │     credential password  │               │               │
+│       │            │           │            │             │               │               │
+│       │            │           │ 28. User enters password │               │               │
+│       │            │           │     App hashes (Argon2id)│               │               │
+│       │            │           │     Encrypts with UTK    │               │               │
+│       │            │           │───────────────────────────────────────────►              │
+│       │            │           │            │             │               │               │
+│       │            │           │            │             │  29. Create Protean Cred:     │
+│       │            │           │            │             │      • identity_keypair       │
+│       │            │           │            │             │      • master_secret          │
+│       │            │           │            │             │      • password_hash          │
+│       │            │           │            │             │      • crypto_keys[]          │
+│       │            │           │            │             │               │               │
+│       │            │           │            │             │  30. Encrypt credential       │
+│       │            │           │            │             │      with CEK                 │
+│       │            │           │            │             │               │               │
+│       │            │           │            │             │  31. Store CEK, LTKs          │
+│       │            │           │            │             │      in SQLite                │
+│       │            │           │            │             │               │               │
+│       │            │           │            │             │  32. Sync SQLite to S3        │
+│       │            │           │            │             │               │               │
+│       │            │           │ 33. Return: encrypted credential + new UTKs              │
+│       │            │           │◄─────────────────────────────────────────│               │
+│       │            │           │            │             │               │               │
+│       │            │           │ 34. Store credential     │               │               │
+│       │            │           │     + UTKs locally       │               │               │
+│       │            │           │            │             │               │               │
+│  ═════════════════════════════════════════════════════════════════════════════════════    │
+│  PHASE 7: VERIFY ENROLLMENT WITH FIRST AUTHENTICATION                                      │
+│  ═════════════════════════════════════════════════════════════════════════════════════    │
+│       │            │           │            │             │               │               │
+│       │            │           │ 35. Send test operation  │               │               │
+│       │            │           │     (e.g., get_info)     │               │               │
+│       │            │           │───────────────────────────────────────────►              │
+│       │            │           │            │             │               │               │
+│       │            │           │            │             │  36. Decrypt credential       │
+│       │            │           │            │             │      Verify password hash     │
+│       │            │           │            │             │      Return info              │
+│       │            │           │            │             │               │               │
+│       │            │           │ 37. Success! Enrollment verified         │               │
+│       │            │           │◄─────────────────────────────────────────│               │
+│       │            │           │            │             │               │               │
+└───────────────────────────────────────────────────────────────────────────────────────────┘
 
 Key Storage After Enrollment:
 ─────────────────────────────
@@ -857,17 +964,33 @@ Key Storage After Enrollment:
   │   (opaque blob)     │        │ • LTKs (indexed by UTK ID)      │
   │ • UTKs (public)     │        │ • User ledger data              │
   │ • Vault ID          │        └─────────────────────────────────┘
+  │ • NATS credentials  │
   │                     │
-  │ NOTE: App does NOT  │
-  │ have CEK - vault    │
-  │ handles encryption  │
-  └─────────────────────┘        Supervisor Memory:
-                                 ┌─────────────────────────────────┐
-  User's Mind:                   │ • DEK (derived from PIN)        │
-  ┌─────────────────────┐        │ • sealed_material (PCR-bound)   │
-  │ • PIN               │        └─────────────────────────────────┘
+  │ NOTE: App does NOT  │        Supervisor Memory (volatile):
+  │ have CEK - vault    │        ┌─────────────────────────────────┐
+  │ handles encryption  │        │ • DEK (derived from PIN)        │
+  └─────────────────────┘        │ • sealed_material (PCR-bound)   │
+                                 └─────────────────────────────────┘
+  User's Mind:
+  ┌─────────────────────┐
+  │ • PIN               │
   │ • Credential pwd    │
   └─────────────────────┘
+
+Lambda Endpoints Used:
+──────────────────────
+  POST /vault/enroll/session       → Creates enrollment session, returns QR data
+  POST /vault/enroll/authenticate  → Exchanges session_token for enrollment JWT
+  POST /vault/enroll/finalize      → Returns NATS bootstrap credentials
+
+Security Properties:
+────────────────────
+• Attestation verifies enclave identity BEFORE PIN is transmitted
+• App-provided nonce prevents attestation replay attacks
+• PIN encrypted to ephemeral key (only enclave can decrypt)
+• DEK never leaves enclave memory - derived from PIN + KMS-sealed material
+• Protean Credential generated inside enclave - secrets never leave
+• Final authentication verifies entire chain works correctly
 ```
 
 ### 5.7 PIN Setup and Vault DEK Binding
@@ -1383,128 +1506,7 @@ What attacker gets if device is fully compromised:
 • Cannot replay challenge → Nonce is single-use
 ```
 
-### 5.12 Enrollment Flow (Complete)
-
-**Critical**: The Protean Credential is created by the vault-manager, not on the device. The device cannot be trusted to generate cryptographic secrets.
-
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                       Complete Enrollment Flow                           │
-│                                                                         │
-│  ┌──────────┐    ┌────────────┐    ┌────────────┐    ┌───────────────┐ │
-│  │   App    │    │ Supervisor │    │   AWS KMS  │    │ Vault-Manager │ │
-│  └────┬─────┘    └─────┬──────┘    └─────┬──────┘    └───────┬───────┘ │
-│       │                │                 │                   │         │
-│  ═══════════════════════════════════════════════════════════════════   │
-│  PHASE 1: ATTESTATION                                                   │
-│  ═══════════════════════════════════════════════════════════════════   │
-│       │                │                 │                   │         │
-│       │ 1. Request     │                 │                   │         │
-│       │    attestation │                 │                   │         │
-│       │───────────────►│                 │                   │         │
-│       │                │                 │                   │         │
-│       │                │ 2. NSM.GetAttestation()             │         │
-│       │                │    (includes ephemeral pubkey)      │         │
-│       │                │                 │                   │         │
-│       │ 3. Attestation │                 │                   │         │
-│       │    document    │                 │                   │         │
-│       │◄───────────────│                 │                   │         │
-│       │   (AWS signed) │                 │                   │         │
-│       │                │                 │                   │         │
-│       │ 4. VERIFY:     │                 │                   │         │
-│       │  • AWS sig?    │                 │                   │         │
-│       │  • PCRs match? │                 │                   │         │
-│       │  • Timestamp?  │                 │                   │         │
-│       │                │                 │                   │         │
-│  ═══════════════════════════════════════════════════════════════════   │
-│  PHASE 2: PIN SETUP & DEK CREATION (Supervisor)                         │
-│  ═══════════════════════════════════════════════════════════════════   │
-│       │                │                 │                   │         │
-│       │ 5. User enters │                 │                   │         │
-│       │    PIN         │                 │                   │         │
-│       │                │                 │                   │         │
-│       │ 6. Send PIN    │                 │                   │         │
-│       │ (encrypted to  │                 │                   │         │
-│       │  attested key) │                 │                   │         │
-│       │───────────────►│                 │                   │         │
-│       │                │                 │                   │         │
-│       │                │ 7. Generate random material (32 bytes)        │
-│       │                │                 │                   │         │
-│       │                │ 8. KMS.Encrypt  │                   │         │
-│       │                │    (material,   │                   │         │
-│       │                │     attestation)│                   │         │
-│       │                │────────────────►│                   │         │
-│       │                │                 │                   │         │
-│       │                │ 9. sealed_      │                   │         │
-│       │                │    material     │                   │         │
-│       │                │◄────────────────│                   │         │
-│       │                │   (PCR-bound)   │                   │         │
-│       │                │                 │                   │         │
-│       │                │ 10. DEK = KDF(material, PIN)        │         │
-│       │                │                 │                   │         │
-│       │                │ 11. Store sealed_material to S3     │         │
-│       │                │                 │                   │         │
-│       │                │ 12. Start vault-manager with DEK ───────────► │
-│       │                │                 │                   │         │
-│  ═══════════════════════════════════════════════════════════════════   │
-│  PHASE 3: CREDENTIAL CREATION (Vault-Manager)                           │
-│  ═══════════════════════════════════════════════════════════════════   │
-│       │                │                 │                   │         │
-│       │                │                 │      13. Initialize SQLite  │
-│       │                │                 │          (DEK encrypted)    │
-│       │                │                 │                   │         │
-│       │                │                 │      14. Generate:          │
-│       │                │                 │          • CEK keypair      │
-│       │                │                 │          • UTK/LTK pairs    │
-│       │                │                 │                   │         │
-│       │ 15. Vault ready, send UTKs       │                   │         │
-│       │◄────────────────────────────────────────────────────│         │
-│       │                │                 │                   │         │
-│       │ 16. Prompt for credential password                   │         │
-│       │                │                 │                   │         │
-│       │ 17. User enters password                             │         │
-│       │     App hashes (Argon2id)        │                   │         │
-│       │     Encrypts hash with UTK       │                   │         │
-│       │───────────────────────────────────────────────────────►        │
-│       │                │                 │                   │         │
-│       │                │                 │      18. Create Protean     │
-│       │                │                 │          Credential:        │
-│       │                │                 │          • identity_keypair │
-│       │                │                 │          • master_secret    │
-│       │                │                 │          • password_hash    │
-│       │                │                 │          • crypto_keys[]    │
-│       │                │                 │                   │         │
-│       │                │                 │      19. Encrypt credential │
-│       │                │                 │          with CEK           │
-│       │                │                 │                   │         │
-│       │                │                 │      20. Store CEK, LTKs    │
-│       │                │                 │          in SQLite          │
-│       │                │                 │                   │         │
-│       │                │                 │      21. Sync SQLite to S3  │
-│       │                │                 │                   │         │
-│       │ 22. Return: encrypted credential + new UTKs          │         │
-│       │◄────────────────────────────────────────────────────│         │
-│       │                │                 │                   │         │
-│       │ 23. Store credential + UTKs locally                  │         │
-│       │                │                 │                   │         │
-└─────────────────────────────────────────────────────────────────────────┘
-
-Summary:
-─────────
-  Phase 1: App verifies enclave identity via attestation
-  Phase 2: Supervisor creates DEK from PIN + sealed material
-  Phase 3: Vault-manager creates credential and encrypts with CEK
-
-What device provides:     What vault-manager generates:
-─────────────────────     ────────────────────────────
-• PIN (for DEK)           • Identity keypair (Ed25519)
-• Password hash           • Vault master secret
-• Operation requests      • All cryptographic keys
-                          • Credential structure
-                          • CEK, UTK/LTK pairs
-```
-
-### 5.13 Adding Keys to Credential
+### 5.12 Adding Keys to Credential
 
 When the user wants to add a new key (e.g., BTC private key), two options:
 
@@ -1524,7 +1526,7 @@ Returns:    New encrypted credential blob + PUBLIC KEY/ADDRESS only
 
 For maximum security, Option B is preferred - private keys are generated inside the enclave and never exist anywhere else.
 
-### 5.14 Encryption Schemes (CEK vs KMS Sealing)
+### 5.13 Encryption Schemes (CEK vs KMS Sealing)
 
 **Important Distinction:** There are two different encryption mechanisms in the vault architecture:
 
@@ -1585,7 +1587,7 @@ Summary:
   Sealed Material    │ KMS (PCR-bound)        │ Supervisor      │ S3
 ```
 
-### 5.15 Security Properties
+### 5.14 Security Properties
 
 | Property | How Achieved |
 |----------|--------------|
@@ -1606,7 +1608,7 @@ Summary:
 | **Vault-Manager** | CEK management, credential decryption, password verification, operations |
 | **App** | UTK storage, password hashing (Argon2id), credential blob storage |
 
-### 5.16 Simplified Credential vs Two-Credential Model
+### 5.15 Simplified Credential vs Two-Credential Model
 
 The Protean Credential consolidates what was previously separate:
 
@@ -1638,7 +1640,7 @@ The Protean Credential consolidates what was previously separate:
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 5.17 Post-Enrollment Vault Access
+### 5.16 Post-Enrollment Vault Access
 
 After enrollment, users access their vault through a two-step process:
 1. **Vault warming** (PIN → DEK derivation via supervisor)
@@ -1761,7 +1763,7 @@ Session Properties:
   • Session expires or is cleared on high-risk operations
 ```
 
-### 5.18 Credential Backup & Recovery
+### 5.17 Credential Backup & Recovery
 
 The encrypted credential blob is the user's "key to the vault." If lost, they lose access to all secrets. **Backup is critical.**
 
@@ -1984,7 +1986,7 @@ Scenario: User returns after long absence
 2. Remember vault authentication (PIN/password/pattern)
 3. Everything else is backed up server-side
 
-### 5.19 Flexible Vault Authentication
+### 5.18 Flexible Vault Authentication
 
 Users can choose their preferred authentication method for vault operations. All methods are hashed and stored in the Protean Credential.
 
@@ -2120,7 +2122,7 @@ User can change their auth type at any time:
 9. Vault-manager sends updated credential to backup service
 ```
 
-### 5.20 Account Portal Changes
+### 5.19 Account Portal Changes
 
 The Account Portal needs **minimal changes**. Key management and sensitive operations belong in **mobile apps**, not the web portal (larger attack surface: XSS, malicious extensions, etc.).
 
@@ -2201,11 +2203,11 @@ POST /vault/pin/change         - Change PIN
 POST /vault/sign               - Sign transaction
 ```
 
-### 5.21 App↔Vault Message Protocol
+### 5.20 App↔Vault Message Protocol
 
 This section defines the exact message formats exchanged between mobile apps and the vault. All messages are JSON-encoded and transmitted via NATS with E2E encryption.
 
-#### 5.21.1 Message Envelope
+#### 5.20.1 Message Envelope
 
 All messages share a common envelope structure:
 
@@ -2248,7 +2250,7 @@ enum MessageType {
 }
 ```
 
-#### 5.21.2 NATS Subject Hierarchy
+#### 5.20.2 NATS Subject Hierarchy
 
 ```
 vettid.vault.
@@ -2265,7 +2267,7 @@ Examples:
   vettid.vault.attestation              # Get fresh attestation document
 ```
 
-#### 5.21.3 Enrollment Messages
+#### 5.20.3 Enrollment Messages
 
 **Attestation Request** (App → Vault)
 ```typescript
@@ -2424,7 +2426,7 @@ interface CredentialResponse extends MessageEnvelope {
 }
 ```
 
-#### 5.21.4 Vault Warming Messages
+#### 5.20.4 Vault Warming Messages
 
 **Warmup Request** (App → Vault)
 ```typescript
@@ -2453,7 +2455,7 @@ enum WarmupStatus {
 }
 ```
 
-#### 5.21.5 Operation Messages
+#### 5.20.5 Operation Messages
 
 **Operation Request** (App → Vault)
 ```typescript
@@ -2588,7 +2590,7 @@ interface KeyInfo {
 }
 ```
 
-#### 5.21.6 Status Messages
+#### 5.20.6 Status Messages
 
 **Status Request** (App → Vault)
 ```typescript
@@ -2615,7 +2617,7 @@ enum VaultState {
 }
 ```
 
-#### 5.21.7 Error Response
+#### 5.20.7 Error Response
 
 **Error** (Vault → App)
 ```typescript
@@ -2670,7 +2672,7 @@ enum ErrorCode {
 }
 ```
 
-#### 5.21.8 Protean Credential Wire Format
+#### 5.20.8 Protean Credential Wire Format
 
 The Protean Credential is transmitted as an encrypted blob. When decrypted, it has this JSON structure:
 
@@ -2742,7 +2744,7 @@ interface SeedPhrase {
 | metadata values | 256 characters |
 | metadata entries per key | 10 |
 
-#### 5.21.9 X25519 Encryption Format
+#### 5.20.9 X25519 Encryption Format
 
 All encrypted fields use X25519 key agreement + ChaCha20-Poly1305:
 
@@ -2769,7 +2771,7 @@ Domain strings (prevents cross-context key confusion):
 - "vettid-pin-v1" for PIN transport (attestation)
 ```
 
-#### 5.21.10 Message Size Limits
+#### 5.20.10 Message Size Limits
 
 | Message Type | Max Size |
 |--------------|----------|
