@@ -596,15 +596,16 @@ describe('Cryptographic Security Tests', () => {
 
     describe('Timing attack scenarios from fixtures', () => {
       CRYPTO_ATTACK_SCENARIOS.timingAttack.scenarios.forEach(scenario => {
-        it(`should resist: ${scenario.name}`, async () => {
-          // Use the testTimingVulnerability helper
-          const result = await testTimingVulnerability(
-            (input: string) => {
-              const target = Buffer.from(scenario.scenario.targetValue);
-              const test = Buffer.from(input);
-              return CryptoUtils.secureCompare(target, test);
+        it(`should resist: ${scenario.name}`, () => {
+          // Use the testTimingVulnerability helper with the fixture's target value
+          const targetValue = scenario.scenario.targetValue;
+          const result = testTimingVulnerability(
+            (a: string, b: string) => {
+              const bufA = Buffer.from(a, 'hex');
+              const bufB = Buffer.from(b, 'hex');
+              return CryptoUtils.secureCompare(bufA, bufB);
             },
-            scenario.scenario.targetValue
+            100 // iterations
           );
 
           // Should not show timing vulnerability

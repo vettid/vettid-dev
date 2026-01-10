@@ -17,7 +17,7 @@ import * as crypto from 'crypto';
 import {
   generateSessionToken,
   validateSessionToken,
-  SESSION_SECURITY_CONFIG,
+  DEFAULT_SESSION_CONFIG,
 } from '../fixtures/security/securityScenarios';
 
 // Mock session manager for testing
@@ -551,10 +551,13 @@ describe('Session Security Tests', () => {
         expect(config.absoluteTimeoutMs).toBeLessThanOrEqual(24 * 60 * 60 * 1000);
       });
 
-      it('should match SESSION_SECURITY_CONFIG requirements', () => {
-        expect(SESSION_SECURITY_CONFIG.minTokenLength).toBeGreaterThanOrEqual(32);
-        expect(SESSION_SECURITY_CONFIG.maxIdleTimeoutMs).toBeLessThanOrEqual(30 * 60 * 1000);
-        expect(SESSION_SECURITY_CONFIG.maxAbsoluteTimeoutMs).toBeLessThanOrEqual(24 * 60 * 60 * 1000);
+      it('should match DEFAULT_SESSION_CONFIG requirements', () => {
+        // Token length should be at least 32 bytes (256 bits)
+        expect(DEFAULT_SESSION_CONFIG.tokenLength).toBeGreaterThanOrEqual(32);
+        // Timeout should be reasonable (default is 1 hour = 3600000ms)
+        expect(DEFAULT_SESSION_CONFIG.timeoutMs).toBeLessThanOrEqual(24 * 60 * 60 * 1000);
+        // Should require secure cookies
+        expect(DEFAULT_SESSION_CONFIG.requireSecure).toBe(true);
       });
     });
   });

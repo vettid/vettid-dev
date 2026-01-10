@@ -13,7 +13,6 @@
 
 import * as crypto from 'crypto';
 import {
-  generateLAT,
   generateTransactionKeyPool,
   generateX25519KeyPair,
 } from '../utils/cryptoTestUtils';
@@ -89,64 +88,14 @@ describe('Transaction Key Replay Prevention', () => {
 });
 
 // ============================================
-// LAT Replay Prevention
+// LAT Replay Prevention (Legacy - Removed)
 // ============================================
+// Note: LAT (Ledger Authentication Token) was part of the legacy centralized
+// ledger system. It has been replaced by vault-manager's NATS-based
+// challenge-response authentication. These tests are skipped.
 
-describe('LAT Replay Prevention', () => {
-  describe('Version Tracking', () => {
-    it('should reject LAT with old version', () => {
-      const currentLAT = generateLAT(5);
-      const oldLAT = { token: crypto.randomBytes(32).toString('hex'), version: 4 };
-
-      const isValid = oldLAT.version >= currentLAT.version;
-      expect(isValid).toBe(false);
-    });
-
-    it('should accept LAT with current version', () => {
-      const storedVersion = 5;
-      const receivedLAT = generateLAT(5);
-
-      const isValid = receivedLAT.version === storedVersion;
-      expect(isValid).toBe(true);
-    });
-
-    it('should not accept future versions (prevents version manipulation)', () => {
-      const storedVersion = 5;
-      const futureVersion = 10;
-
-      // Explicit type conversion to avoid TS literal type comparison warning
-      const isValid = (futureVersion as number) === (storedVersion as number);
-      expect(isValid).toBe(false);
-    });
-
-    it.todo('should maintain version history for audit');
-  });
-
-  describe('Token Rotation', () => {
-    it('should generate new token on each rotation', () => {
-      const lat1 = generateLAT(1);
-      const lat2 = generateLAT(2);
-
-      expect(lat1.token).not.toBe(lat2.token);
-    });
-
-    it('should invalidate old token after rotation', () => {
-      const oldToken = generateLAT(1).token;
-      const currentLAT = generateLAT(2);
-
-      const isOldValid = oldToken === currentLAT.token;
-      expect(isOldValid).toBe(false);
-    });
-
-    it.todo('should provide grace period for in-flight requests');
-    it.todo('should handle concurrent rotation requests');
-  });
-
-  describe('Binding to Credential', () => {
-    it.todo('should bind LAT to specific user GUID');
-    it.todo('should reject LAT used with different credential');
-    it.todo('should not allow LAT transfer between users');
-  });
+describe.skip('LAT Replay Prevention (Legacy - Removed)', () => {
+  it.todo('LAT system replaced by vault-manager challenge-response auth');
 });
 
 // ============================================

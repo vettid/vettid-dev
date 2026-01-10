@@ -13,7 +13,7 @@
  */
 
 import * as crypto from 'crypto';
-import { verifyLAT, verifyPassword, hashPassword } from '../utils/cryptoTestUtils';
+import { verifyPassword, hashPassword } from '../utils/cryptoTestUtils';
 
 // ============================================
 // Constants for Timing Tests
@@ -56,146 +56,14 @@ function timingsAreConstant(time1: bigint, time2: bigint, toleranceRatio: number
 }
 
 // ============================================
-// LAT Timing Tests
+// LAT Timing Tests (Legacy - Removed)
 // ============================================
+// Note: LAT (Ledger Authentication Token) was part of the legacy centralized
+// ledger system. It has been replaced by vault-manager's NATS-based
+// challenge-response authentication. These tests are skipped.
 
-describe('LAT Comparison Timing', () => {
-  describe('Constant-Time Verification', () => {
-    it('should take similar time for wrong first byte vs wrong last byte', async () => {
-      const stored = {
-        token: crypto.randomBytes(32).toString('hex'),
-        version: 1,
-      };
-
-      // Wrong first byte
-      const wrongFirst = {
-        token: 'ff' + stored.token.slice(2),
-        version: 1,
-      };
-
-      // Wrong last byte
-      const wrongLast = {
-        token: stored.token.slice(0, -2) + 'ff',
-        version: 1,
-      };
-
-      const time1 = await measureAverageTime(() => {
-        verifyLAT(wrongFirst, stored);
-      });
-
-      const time2 = await measureAverageTime(() => {
-        verifyLAT(wrongLast, stored);
-      });
-
-      expect(timingsAreConstant(time1, time2)).toBe(true);
-    });
-
-    it('should take similar time for correct vs incorrect token', async () => {
-      const stored = {
-        token: crypto.randomBytes(32).toString('hex'),
-        version: 1,
-      };
-
-      const correct = { ...stored };
-      const incorrect = {
-        token: crypto.randomBytes(32).toString('hex'),
-        version: 1,
-      };
-
-      const timeCorrect = await measureAverageTime(() => {
-        verifyLAT(correct, stored);
-      });
-
-      const timeIncorrect = await measureAverageTime(() => {
-        verifyLAT(incorrect, stored);
-      });
-
-      expect(timingsAreConstant(timeCorrect, timeIncorrect)).toBe(true);
-    });
-
-    it('should take similar time regardless of matching prefix length', async () => {
-      const stored = {
-        token: crypto.randomBytes(32).toString('hex'),
-        version: 1,
-      };
-
-      // Create tokens with varying match lengths
-      const noMatch = {
-        token: crypto.randomBytes(32).toString('hex'),
-        version: 1,
-      };
-
-      const halfMatch = {
-        token: stored.token.slice(0, 32) + crypto.randomBytes(16).toString('hex'),
-        version: 1,
-      };
-
-      const almostMatch = {
-        token: stored.token.slice(0, -2) + 'ff',
-        version: 1,
-      };
-
-      const times = await Promise.all([
-        measureAverageTime(() => verifyLAT(noMatch, stored)),
-        measureAverageTime(() => verifyLAT(halfMatch, stored)),
-        measureAverageTime(() => verifyLAT(almostMatch, stored)),
-      ]);
-
-      // All times should be within tolerance of each other
-      for (let i = 0; i < times.length; i++) {
-        for (let j = i + 1; j < times.length; j++) {
-          expect(timingsAreConstant(times[i], times[j])).toBe(true);
-        }
-      }
-    });
-  });
-
-  describe('Buffer Comparison', () => {
-    it('should use crypto.timingSafeEqual or equivalent', () => {
-      // This test verifies the implementation uses constant-time comparison
-      // by checking behavior with different mismatch positions
-
-      const iterations = 100;
-      const timings: bigint[] = [];
-
-      const stored = {
-        token: crypto.randomBytes(32).toString('hex'),
-        version: 1,
-      };
-
-      for (let mismatchPos = 0; mismatchPos < 32; mismatchPos++) {
-        const token = stored.token.split('');
-        // Flip a character at the mismatch position
-        token[mismatchPos * 2] = token[mismatchPos * 2] === '0' ? '1' : '0';
-
-        const test = {
-          token: token.join(''),
-          version: 1,
-        };
-
-        const start = process.hrtime.bigint();
-        for (let i = 0; i < iterations; i++) {
-          verifyLAT(test, stored);
-        }
-        timings.push(process.hrtime.bigint() - start);
-      }
-
-      // Coefficient of variation should be small for constant-time operations
-      const mean = timings.reduce((a, b) => a + b) / BigInt(timings.length);
-      const variance =
-        timings.reduce((acc, t) => acc + (t - mean) * (t - mean), BigInt(0)) /
-        BigInt(timings.length);
-      const stdDev = Math.sqrt(Number(variance));
-      const cv = stdDev / Number(mean);
-
-      // Coefficient of variation should be under 600% for constant-time
-      // Note: Higher tolerance needed in CI/virtualized environments where
-      // process scheduling can introduce significant variance
-      // Proper timing analysis requires controlled hardware conditions
-      // ARM64/Raspberry Pi environments show even higher variance
-      expect(cv).toBeLessThan(6.0);
-    });
-  });
+describe.skip('LAT Comparison Timing (Legacy - Removed)', () => {
+  it.todo('LAT system replaced by vault-manager challenge-response auth');
 });
 
 // ============================================

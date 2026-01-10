@@ -565,6 +565,102 @@ export interface CryptoAttackScenario {
 }
 
 /**
+ * Cryptographic attack scenarios for security testing
+ * These scenarios test resistance to common cryptographic attacks
+ */
+export const CRYPTO_ATTACK_SCENARIOS = {
+  timingAttack: {
+    description: 'Timing attack resistance scenarios',
+    scenarios: [
+      {
+        name: 'Early termination on first byte mismatch',
+        scenario: {
+          targetValue: crypto.randomBytes(32).toString('hex'),
+          description: 'Attacker tries to detect timing differences when first byte is wrong',
+        },
+      },
+      {
+        name: 'Early termination on last byte mismatch',
+        scenario: {
+          targetValue: crypto.randomBytes(32).toString('hex'),
+          description: 'Attacker tries to detect timing differences when last byte is wrong',
+        },
+      },
+      {
+        name: 'Partial match timing leak',
+        scenario: {
+          targetValue: crypto.randomBytes(32).toString('hex'),
+          description: 'Attacker tries to detect timing differences based on number of matching bytes',
+        },
+      },
+    ],
+  },
+  nonceMisuse: {
+    description: 'Nonce/IV misuse detection scenarios',
+    scenarios: [
+      {
+        name: 'Repeated nonce detection',
+        scenario: {
+          nonces: ['abc123', 'abc123', 'def456'],
+          expectedResult: 'reuse_detected',
+        },
+      },
+      {
+        name: 'Sequential nonce prediction',
+        scenario: {
+          nonces: ['000001', '000002', '000003'],
+          expectedResult: 'predictable_pattern',
+        },
+      },
+      {
+        name: 'Zero nonce usage',
+        scenario: {
+          nonces: ['000000000000000000000000'],
+          expectedResult: 'weak_nonce',
+        },
+      },
+    ],
+  },
+  weakKdf: {
+    description: 'Weak key derivation function detection',
+    scenarios: [
+      {
+        name: 'PBKDF2 with low iterations',
+        scenario: {
+          algorithm: 'pbkdf2',
+          iterations: 1000,
+          expectedResult: 'insufficient_iterations',
+        },
+      },
+      {
+        name: 'Argon2 with insufficient memory',
+        scenario: {
+          algorithm: 'argon2id',
+          memory: 1024, // 1 KB - way too low
+          iterations: 1,
+          parallelism: 1,
+          expectedResult: 'insufficient_memory',
+        },
+      },
+      {
+        name: 'MD5-based key derivation',
+        scenario: {
+          algorithm: 'md5',
+          expectedResult: 'broken_algorithm',
+        },
+      },
+      {
+        name: 'SHA1-based key derivation',
+        scenario: {
+          algorithm: 'sha1',
+          expectedResult: 'deprecated_algorithm',
+        },
+      },
+    ],
+  },
+};
+
+/**
  * Test for timing attack vulnerability in string comparison
  */
 export function testTimingVulnerability(

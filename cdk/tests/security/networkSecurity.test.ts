@@ -14,10 +14,10 @@
  */
 
 import {
-  SECURITY_HEADERS,
-  CORS_VALIDATION,
+  REQUIRED_SECURITY_HEADERS,
+  SECURE_CORS_CONFIG,
   validateSecurityHeaders,
-  validateCorsConfig,
+  validateCORSConfig,
 } from '../fixtures/security/securityScenarios';
 
 // Mock HTTP response for testing security headers
@@ -393,8 +393,8 @@ describe('Network Security Tests', () => {
     it('should have valid certificate dates', () => {
       const now = new Date();
 
-      expect(mockCertificate.validFrom).toBeLessThan(now);
-      expect(mockCertificate.validTo).toBeGreaterThan(now);
+      expect(mockCertificate.validFrom.getTime()).toBeLessThan(now.getTime());
+      expect(mockCertificate.validTo.getTime()).toBeGreaterThan(now.getTime());
     });
 
     it('should match domain name', () => {
@@ -491,14 +491,14 @@ describe('Network Security Tests', () => {
     });
 
     describe('Using fixtures', () => {
-      it('should match CORS_VALIDATION requirements', () => {
-        expect(CORS_VALIDATION.allowedOrigins).toBeDefined();
-        expect(Array.isArray(CORS_VALIDATION.allowedOrigins)).toBe(true);
-        expect(CORS_VALIDATION.allowedOrigins.length).toBeGreaterThan(0);
+      it('should match SECURE_CORS_CONFIG requirements', () => {
+        expect(SECURE_CORS_CONFIG.allowedOrigins).toBeDefined();
+        expect(Array.isArray(SECURE_CORS_CONFIG.allowedOrigins)).toBe(true);
+        expect(SECURE_CORS_CONFIG.allowedOrigins.length).toBeGreaterThan(0);
       });
 
       it('should validate config using fixture function', () => {
-        const result = validateCorsConfig({
+        const result = validateCORSConfig({
           allowedOrigins: ['https://vettid.dev'],
           allowCredentials: false,
         });
@@ -507,7 +507,7 @@ describe('Network Security Tests', () => {
       });
 
       it('should reject insecure config', () => {
-        const result = validateCorsConfig({
+        const result = validateCORSConfig({
           allowedOrigins: ['*'],
           allowCredentials: true,
         });
@@ -645,9 +645,9 @@ describe('Network Security Tests', () => {
     });
 
     describe('Using fixtures', () => {
-      it('should validate against SECURITY_HEADERS requirements', () => {
+      it('should validate against REQUIRED_SECURITY_HEADERS requirements', () => {
         const response: MockHttpResponse = {
-          headers: { ...SECURITY_HEADERS },
+          headers: { ...REQUIRED_SECURITY_HEADERS },
           statusCode: 200,
         };
 
