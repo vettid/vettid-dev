@@ -60,7 +60,7 @@ export class VaultStack extends cdk.Stack {
 
   // Vault status functions (enclave-based)
   public readonly initializeVault!: lambdaNode.NodejsFunction;
-  // Legacy getVaultStatus removed - status via vault-manager
+  public readonly getVaultStatus!: lambdaNode.NodejsFunction;  // Member-facing vault status
   public readonly getVaultHealth!: lambdaNode.NodejsFunction;
   public readonly vaultReady!: lambdaNode.NodejsFunction;  // Internal endpoint for vault-manager ready signal
   public readonly updateVaultHealth!: lambdaNode.NodejsFunction;  // Internal endpoint for vault-manager health updates
@@ -357,6 +357,18 @@ export class VaultStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(30),
     });
 
+    // Member-facing vault status endpoint
+    this.getVaultStatus = new lambdaNode.NodejsFunction(this, 'GetVaultStatusFn', {
+      entry: 'lambda/handlers/vault/getVaultStatus.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        TABLE_VAULT_INSTANCES: tables.vaultInstances.tableName,
+        TABLE_ENROLLMENT_SESSIONS: tables.enrollmentSessions.tableName,
+        TABLE_NATS_ACCOUNTS: tables.natsAccounts.tableName,
+      },
+      timeout: cdk.Duration.seconds(10),
+    });
+
     this.getVaultHealth = new lambdaNode.NodejsFunction(this, 'GetVaultHealthFn', {
       entry: 'lambda/handlers/vault/getVaultHealth.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
@@ -589,6 +601,11 @@ export class VaultStack extends cdk.Stack {
     tables.vaultInstances.grantReadWriteData(this.getVaultHealth);
     tables.vaultInstances.grantReadWriteData(this.vaultReady);
     tables.vaultInstances.grantReadWriteData(this.updateVaultHealth);
+
+    // Member-facing vault status endpoint permissions
+    tables.vaultInstances.grantReadData(this.getVaultStatus);
+    tables.enrollmentSessions.grantReadData(this.getVaultStatus);
+    tables.natsAccounts.grantReadData(this.getVaultStatus);
 
     // Legacy getVaultStatus and vaultStatusAction grants removed - status via vault-manager
 
@@ -1221,7 +1238,7 @@ export class VaultStack extends cdk.Stack {
     // Vault Lifecycle Management (Nitro enclave model - no EC2-per-user provisioning)
     this.route('InitializeVault', httpApi, '/vault/initialize', apigw.HttpMethod.POST, this.initializeVault, memberAuthorizer);
     this.route('GetVaultHealth', httpApi, '/vault/health', apigw.HttpMethod.GET, this.getVaultHealth, memberAuthorizer);
-    // Legacy getVaultStatus removed - status via vault-manager
+    this.route('GetVaultStatus', httpApi, '/vault/status', apigw.HttpMethod.GET, this.getVaultStatus, memberAuthorizer);
 
     // Internal endpoint called by vault-manager when it's ready (no auth - validated by instance ID and EC2 tags)
     new apigw.HttpRoute(this, 'VaultReady', {
