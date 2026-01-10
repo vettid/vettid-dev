@@ -417,6 +417,9 @@ systemctl daemon-reload
 systemctl enable vettid-enclave.service
 systemctl enable vettid-parent.service
 
+# Flush filesystem buffers to ensure service files are persisted before AMI creation
+sync
+
 echo "=== Build complete ==="
 echo "BUILD_SUCCESS" > /tmp/build-status
 BUILDEOF
