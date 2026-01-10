@@ -74,11 +74,11 @@ export class MonitoringStack extends cdk.Stack {
   private readonly props: MonitoringStackProps;
 
   // Default table names if not provided via props
+  // Note: Legacy credential tables removed - vault-manager uses SQLite storage
   private readonly defaultTables = [
     'VettID-Infrastructure-VaultInstances',
     'VettID-Infrastructure-EnrollmentSessions',
     'VettID-Infrastructure-ActionTokens',
-    'VettID-Infrastructure-Credentials',
     'VettID-Infrastructure-NatsAccounts',
     'VettID-Infrastructure-Registrations',
     'VettID-Infrastructure-Invites',
