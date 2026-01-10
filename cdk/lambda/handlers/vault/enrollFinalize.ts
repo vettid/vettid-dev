@@ -100,9 +100,23 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       return badRequest('Session does not belong to authenticated user', origin);
     }
 
-    // Validate session state - STARTED is valid (password set is optional for Nitro model)
-    if (session.status !== 'STARTED') {
-      return conflict(`Invalid session status: ${session.status}`, origin);
+    // Validate session state - must have completed NATS-based enrollment phases
+    // PASSWORD_SET means vault-manager has confirmed credential creation via NATS
+    // STARTED is also accepted for backwards compatibility
+    const validStates = ['PASSWORD_SET', 'STARTED'];
+    if (!validStates.includes(session.status)) {
+      // Provide helpful error message based on current state
+      const stateMessages: Record<string, string> = {
+        'WEB_INITIATED': 'Mobile app has not scanned the QR code yet',
+        'AUTHENTICATED': 'App connected but enrollment not started',
+        'NATS_CONNECTED': 'Waiting for enclave attestation verification',
+        'ATTESTATION_VERIFIED': 'Waiting for PIN setup',
+        'PIN_SET': 'Waiting for credential password setup',
+        'COMPLETED': 'Enrollment already completed',
+        'CANCELLED': 'Enrollment was cancelled',
+      };
+      const message = stateMessages[session.status] || `Invalid session status: ${session.status}`;
+      return conflict(message, origin);
     }
 
     // Check session expiry

@@ -45,6 +45,8 @@ export class VaultStack extends cdk.Stack {
   public readonly createEnrollmentSession!: lambdaNode.NodejsFunction;
   public readonly cancelEnrollmentSession!: lambdaNode.NodejsFunction;
   public readonly authenticateEnrollment!: lambdaNode.NodejsFunction;
+  public readonly enrollUpdateStatus!: lambdaNode.NodejsFunction;
+  public readonly getEnrollmentStatus!: lambdaNode.NodejsFunction;
   // Legacy auth handlers removed - vault-manager handles auth via NATS
 
   // Device attestation handlers (Phase 2)
@@ -260,6 +262,34 @@ export class VaultStack extends cdk.Stack {
       resources: [props.infrastructure.enrollmentJwtSecretArn],
     }));
 
+    // Update enrollment status (app reports progress through NATS-based phases)
+    this.enrollUpdateStatus = new lambdaNode.NodejsFunction(this, 'EnrollUpdateStatusFn', {
+      entry: 'lambda/handlers/vault/enrollUpdateStatus.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+        TABLE_AUDIT: tables.audit.tableName,
+        ENROLLMENT_JWT_SECRET_ARN: props.infrastructure.enrollmentJwtSecretArn,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    // Grant read access to the enrollment JWT secret for status updates
+    this.enrollUpdateStatus.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['secretsmanager:GetSecretValue'],
+      resources: [props.infrastructure.enrollmentJwtSecretArn],
+    }));
+
+    // Get enrollment status (Account Portal polls for progress)
+    this.getEnrollmentStatus = new lambdaNode.NodejsFunction(this, 'GetEnrollmentStatusFn', {
+      entry: 'lambda/handlers/vault/getEnrollmentStatus.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
     // Note: Enrollment authorizer Lambda is defined in InfrastructureStack
     // to avoid cyclic dependencies between VettIDStack and VaultStack
 
@@ -468,6 +498,13 @@ export class VaultStack extends cdk.Stack {
     // Authenticate enrollment permissions
     tables.enrollmentSessions.grantReadWriteData(this.authenticateEnrollment);
     tables.audit.grantReadWriteData(this.authenticateEnrollment);
+
+    // Enrollment status update permissions (app reports progress)
+    tables.enrollmentSessions.grantReadWriteData(this.enrollUpdateStatus);
+    tables.audit.grantWriteData(this.enrollUpdateStatus);
+
+    // Get enrollment status permissions (Account Portal polling)
+    tables.enrollmentSessions.grantReadData(this.getEnrollmentStatus);
 
     // Legacy credential table grants removed - vault-manager uses JetStream storage
 
@@ -1215,6 +1252,17 @@ export class VaultStack extends cdk.Stack {
     // Mobile enrollment - enrollFinalize now handles complete enrollment via vault-manager
     // Legacy enrollStart/enrollSetPassword removed - vault-manager handles key generation
     this.route('EnrollFinalize', httpApi, '/vault/enroll/finalize', apigw.HttpMethod.POST, this.enrollFinalize, enrollmentLambdaAuthorizer);
+
+    // Enrollment status update - mobile app reports phase completion (uses enrollment JWT)
+    new apigw.HttpRoute(this, 'EnrollUpdateStatus', {
+      httpApi,
+      routeKey: apigw.HttpRouteKey.with('/vault/enroll/status', apigw.HttpMethod.POST),
+      integration: new integrations.HttpLambdaIntegration('EnrollUpdateStatusInt', this.enrollUpdateStatus),
+      // Uses enrollment JWT - validated in handler
+    });
+
+    // Get enrollment status - Account Portal polls for progress (uses member JWT)
+    this.route('GetEnrollmentStatus', httpApi, '/vault/enroll/status', apigw.HttpMethod.GET, this.getEnrollmentStatus, memberAuthorizer);
 
     // Device Attestation (Phase 2) - also uses enrollment JWT
     this.route('VerifyAndroidAttestation', httpApi, '/vault/enroll/attestation/android', apigw.HttpMethod.POST, this.verifyAndroidAttestation, enrollmentLambdaAuthorizer);
