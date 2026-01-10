@@ -278,3 +278,52 @@ export function generateTransactionKeyPool(count: number = 20): TransactionKey[]
 
   return keys;
 }
+
+// ============================================
+// LAT (Ledger Authentication Token) - Test Mocks
+// ============================================
+// Note: LAT was part of the legacy centralized ledger system.
+// It has been replaced by vault-manager's NATS-based challenge-response auth.
+// These mock functions are provided for testing legacy flow concepts only.
+
+/**
+ * LAT (Ledger Authentication Token) structure
+ * Used for authentication binding in the legacy system
+ */
+export interface LAT {
+  token: string;  // 32-byte hex string
+  version: number;
+}
+
+/**
+ * Generate a mock LAT token for testing
+ */
+export function generateLAT(version: number = 1): LAT {
+  return {
+    token: crypto.randomBytes(32).toString('hex'),
+    version,
+  };
+}
+
+/**
+ * Hash LAT token for storage (uses SHA-256)
+ */
+export function hashLATToken(token: string): string {
+  return crypto.createHash('sha256').update(token).digest('hex');
+}
+
+/**
+ * Verify LAT token against stored hash
+ */
+export function verifyLATToken(token: string, storedHash: string): boolean {
+  const computedHash = hashLATToken(token);
+  // Use timing-safe comparison
+  try {
+    return crypto.timingSafeEqual(
+      Buffer.from(computedHash, 'hex'),
+      Buffer.from(storedHash, 'hex')
+    );
+  } catch {
+    return false;
+  }
+}

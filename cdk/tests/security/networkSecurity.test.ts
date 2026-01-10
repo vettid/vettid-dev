@@ -363,7 +363,7 @@ describe('Network Security Tests', () => {
       subject: 'CN=vettid.dev',
       issuer: 'CN=Let\'s Encrypt Authority X3',
       validFrom: new Date('2025-01-01'),
-      validTo: new Date('2026-01-01'),
+      validTo: new Date('2027-01-01'),  // Future date for tests
       keyLength: 2048,
       signatureAlgorithm: 'sha256WithRSAEncryption',
     };

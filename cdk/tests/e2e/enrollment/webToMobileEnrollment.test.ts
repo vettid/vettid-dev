@@ -17,14 +17,18 @@ import * as crypto from 'crypto';
 import {
   generateX25519KeyPair,
   generateTransactionKeyPool,
-  generateLAT,
   hashPassword,
   encryptWithTransactionKey,
   serializeEncryptedBlob,
   X25519KeyPair,
   TransactionKeyPair,
-  LAT,
 } from '../../../lambda/common/crypto';
+// LAT functions imported from test utilities - LAT was part of the legacy
+// centralized ledger system, replaced by vault-manager NATS auth
+import {
+  generateLAT,
+  LAT,
+} from '../../utils/cryptoTestUtils';
 
 // ============================================
 // Types (matching API spec)

@@ -415,21 +415,21 @@ describe('Session Security Tests', () => {
     describe('Token validation', () => {
       it('should validate properly formatted tokens', () => {
         const token = generateSessionToken();
-        expect(validateSessionToken(token)).toBe(true);
+        expect(validateSessionToken(token).valid).toBe(true);
       });
 
       it('should reject empty tokens', () => {
-        expect(validateSessionToken('')).toBe(false);
+        expect(validateSessionToken('').valid).toBe(false);
       });
 
       it('should reject tokens that are too short', () => {
         const shortToken = crypto.randomBytes(8).toString('hex');
-        expect(validateSessionToken(shortToken)).toBe(false);
+        expect(validateSessionToken(shortToken).valid).toBe(false);
       });
 
       it('should reject tokens with invalid characters', () => {
         const invalidToken = 'GHIJKLMNOP' + 'a'.repeat(54); // G-P are not hex
-        expect(validateSessionToken(invalidToken)).toBe(false);
+        expect(validateSessionToken(invalidToken).valid).toBe(false);
       });
     });
   });

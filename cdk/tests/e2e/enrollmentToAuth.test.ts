@@ -23,17 +23,21 @@ import {
   decryptWithTransactionKey,
   hashPassword,
   verifyPassword,
-  generateLAT,
-  hashLATToken,
-  verifyLATToken,
   generateTransactionKeyPool,
   serializeEncryptedBlob,
   deserializeEncryptedBlob,
   X25519KeyPair,
   EncryptedBlob,
-  LAT,
   TransactionKeyPair,
 } from '../../lambda/common/crypto';
+// LAT functions imported from test utilities - LAT was part of the legacy
+// centralized ledger system, replaced by vault-manager NATS auth
+import {
+  generateLAT,
+  hashLATToken,
+  verifyLATToken,
+  LAT,
+} from '../utils/cryptoTestUtils';
 
 // ============================================
 // Mock Services (Simulating Backend)

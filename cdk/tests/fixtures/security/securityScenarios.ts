@@ -253,6 +253,8 @@ export interface AuthzBypassScenario {
   name: string;
   description: string;
   owaspRef: string;
+  owaspReference: string;  // Alias for owaspRef (used by some tests)
+  severity: 'critical' | 'high' | 'medium' | 'low';
   testCase: {
     attackerRole: string;
     targetRole: string;
@@ -268,6 +270,8 @@ export const AUTHZ_BYPASS_SCENARIOS: AuthzBypassScenario[] = [
     name: 'horizontal_user_data',
     description: 'User accessing another user\'s data',
     owaspRef: 'A01:2021',
+    owaspReference: 'A01:2021',
+    severity: 'high',
     testCase: {
       attackerRole: 'member',
       targetRole: 'member',
@@ -280,6 +284,8 @@ export const AUTHZ_BYPASS_SCENARIOS: AuthzBypassScenario[] = [
     name: 'horizontal_backup_access',
     description: 'User accessing another user\'s backups',
     owaspRef: 'A01:2021',
+    owaspReference: 'A01:2021',
+    severity: 'critical',
     testCase: {
       attackerRole: 'member',
       targetRole: 'member',
@@ -292,6 +298,8 @@ export const AUTHZ_BYPASS_SCENARIOS: AuthzBypassScenario[] = [
     name: 'horizontal_connection_access',
     description: 'User accessing another user\'s connections',
     owaspRef: 'A01:2021',
+    owaspReference: 'A01:2021',
+    severity: 'high',
     testCase: {
       attackerRole: 'member',
       targetRole: 'member',
@@ -305,6 +313,8 @@ export const AUTHZ_BYPASS_SCENARIOS: AuthzBypassScenario[] = [
     name: 'vertical_member_to_admin',
     description: 'Member accessing admin endpoints',
     owaspRef: 'A01:2021',
+    owaspReference: 'A01:2021',
+    severity: 'critical',
     testCase: {
       attackerRole: 'member',
       targetRole: 'admin',
@@ -317,6 +327,8 @@ export const AUTHZ_BYPASS_SCENARIOS: AuthzBypassScenario[] = [
     name: 'vertical_unauthenticated_to_member',
     description: 'Unauthenticated user accessing member endpoints',
     owaspRef: 'A01:2021',
+    owaspReference: 'A01:2021',
+    severity: 'high',
     testCase: {
       attackerRole: 'anonymous',
       targetRole: 'member',
@@ -330,6 +342,8 @@ export const AUTHZ_BYPASS_SCENARIOS: AuthzBypassScenario[] = [
     name: 'idor_message_access',
     description: 'Accessing messages by guessing IDs',
     owaspRef: 'A01:2021',
+    owaspReference: 'A01:2021',
+    severity: 'high',
     testCase: {
       attackerRole: 'member',
       targetRole: 'member',
@@ -342,6 +356,8 @@ export const AUTHZ_BYPASS_SCENARIOS: AuthzBypassScenario[] = [
     name: 'idor_invite_manipulation',
     description: 'Modifying invite codes belonging to others',
     owaspRef: 'A01:2021',
+    owaspReference: 'A01:2021',
+    severity: 'medium',
     testCase: {
       attackerRole: 'admin',
       targetRole: 'admin',
@@ -355,6 +371,8 @@ export const AUTHZ_BYPASS_SCENARIOS: AuthzBypassScenario[] = [
     name: 'function_level_approve',
     description: 'Non-admin trying to approve registrations',
     owaspRef: 'A01:2021',
+    owaspReference: 'A01:2021',
+    severity: 'critical',
     testCase: {
       attackerRole: 'member',
       targetRole: 'admin',
@@ -378,7 +396,7 @@ export interface RateLimitConfig {
   keyGenerator: 'ip' | 'user' | 'combined';
 }
 
-export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
+export const RATE_LIMIT_CONFIGS_ARRAY: RateLimitConfig[] = [
   {
     endpoint: '/auth/magic-link',
     windowMs: 60000, // 1 minute
@@ -412,19 +430,79 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
 ];
 
 /**
+ * Rate limit configurations organized by category
+ * Used by rate limiting tests
+ */
+export const RATE_LIMIT_CONFIGS = {
+  authentication: {
+    windowMs: 60000, // 1 minute
+    maxRequests: 5,  // Strict limits for auth endpoints
+    keyGenerator: 'ip' as const,
+  },
+  api: {
+    windowMs: 60000,
+    maxRequests: 100, // Higher limits for general API
+    keyGenerator: 'combined' as const,
+  },
+  enrollment: {
+    windowMs: 3600000, // 1 hour
+    maxRequests: 10,
+    keyGenerator: 'ip' as const,
+  },
+};
+
+/**
+ * Rate limit tester configuration
+ */
+export interface RateLimitTesterConfig {
+  endpoint: string;
+  windowMs: number;
+  expectedLimit: number;  // Used by tests for verifyConfig
+  maxRequests?: number;   // Legacy compatibility
+}
+
+/**
  * Simulate rate limit testing
  */
 export class RateLimitTester {
   private requestCounts: Map<string, number[]> = new Map();
+  private testConfig: RateLimitTesterConfig;
+  private internalConfig: RateLimitConfig;
 
-  constructor(private config: RateLimitConfig) {}
+  constructor(config: RateLimitTesterConfig | RateLimitConfig) {
+    // Handle both config formats
+    if ('expectedLimit' in config) {
+      this.testConfig = config;
+      this.internalConfig = {
+        endpoint: config.endpoint,
+        windowMs: config.windowMs,
+        maxRequests: config.expectedLimit,
+        keyGenerator: 'ip',
+      };
+    } else {
+      this.internalConfig = config;
+      this.testConfig = {
+        endpoint: config.endpoint,
+        windowMs: config.windowMs,
+        expectedLimit: config.maxRequests,
+      };
+    }
+  }
+
+  /**
+   * Make a request and check if it would be rate limited
+   * Alias for simulateRequest with default key
+   */
+  makeRequest(key: string = 'default'): { allowed: boolean; remaining: number; resetMs: number } {
+    return this.simulateRequest(key);
+  }
 
   /**
    * Simulate a request and check if it would be rate limited
    */
   simulateRequest(key: string): { allowed: boolean; remaining: number; resetMs: number } {
     const now = Date.now();
-    const windowStart = now - this.config.windowMs;
+    const windowStart = now - this.internalConfig.windowMs;
 
     // Get existing timestamps for this key
     let timestamps = this.requestCounts.get(key) || [];
@@ -432,8 +510,8 @@ export class RateLimitTester {
     // Filter to only timestamps within the window
     timestamps = timestamps.filter(ts => ts > windowStart);
 
-    const remaining = Math.max(0, this.config.maxRequests - timestamps.length - 1);
-    const allowed = timestamps.length < this.config.maxRequests;
+    const remaining = Math.max(0, this.internalConfig.maxRequests - timestamps.length - 1);
+    const allowed = timestamps.length < this.internalConfig.maxRequests;
 
     if (allowed) {
       timestamps.push(now);
@@ -442,9 +520,20 @@ export class RateLimitTester {
 
     // Calculate reset time
     const oldestInWindow = timestamps[0] || now;
-    const resetMs = oldestInWindow + this.config.windowMs - now;
+    const resetMs = oldestInWindow + this.internalConfig.windowMs - now;
 
     return { allowed, remaining, resetMs };
+  }
+
+  /**
+   * Verify that the rate limit configuration is valid
+   */
+  verifyConfig(): boolean {
+    return (
+      this.testConfig.windowMs > 0 &&
+      this.testConfig.expectedLimit > 0 &&
+      this.testConfig.endpoint.length > 0
+    );
   }
 
   /**
@@ -459,7 +548,7 @@ export class RateLimitTester {
    */
   getCount(key: string): number {
     const now = Date.now();
-    const windowStart = now - this.config.windowMs;
+    const windowStart = now - this.internalConfig.windowMs;
     const timestamps = this.requestCounts.get(key) || [];
     return timestamps.filter(ts => ts > windowStart).length;
   }
@@ -779,10 +868,14 @@ export interface SecurityHeaders {
 
 export const REQUIRED_SECURITY_HEADERS: SecurityHeaders = {
   'Strict-Transport-Security': 'max-age=31536000; includeSubDomains',
+  'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'",
   'X-Content-Type-Options': 'nosniff',
   'X-Frame-Options': 'DENY',
   'Referrer-Policy': 'strict-origin-when-cross-origin',
 };
+
+// Alias for backwards compatibility with tests
+export const SECURITY_HEADERS = REQUIRED_SECURITY_HEADERS;
 
 export const RECOMMENDED_CSP = [
   "default-src 'self'",
@@ -859,9 +952,11 @@ export const SECURE_CORS_CONFIG: CORSConfig = {
 
 /**
  * Validate CORS configuration
+ * Accepts partial config for validation - only allowedOrigins is required
  */
-export function validateCORSConfig(config: CORSConfig): {
-  secure: boolean;
+export function validateCORSConfig(config: Partial<CORSConfig> & { allowedOrigins: string[] }): {
+  valid: boolean;
+  secure: boolean;  // Alias for valid
   issues: string[];
 } {
   const issues: string[] = [];
@@ -887,8 +982,10 @@ export function validateCORSConfig(config: CORSConfig): {
     issues.push('Credentials cannot be used with wildcard origin');
   }
 
+  const isValid = issues.length === 0;
   return {
-    secure: issues.length === 0,
+    valid: isValid,
+    secure: isValid,  // Alias
     issues,
   };
 }

@@ -978,7 +978,7 @@ describe('E2E Security Audit Tests', () => {
         'X-Content-Type-Options',
         'X-Frame-Options',
         'Referrer-Policy',
-      ];
+      ] as const;
 
       requiredHeaders.forEach(header => {
         expect(SECURITY_HEADERS[header]).toBeDefined();
