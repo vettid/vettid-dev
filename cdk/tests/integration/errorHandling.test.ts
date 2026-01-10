@@ -94,21 +94,22 @@ const ERROR_CATEGORIES: Record<string, ErrorCategory> = {
 
 class MockErrorHandler {
   private sensitivePatterns: RegExp[] = [
-    /password/i,
-    /secret/i,
-    /token/i,
-    /key/i,
-    /credential/i,
-    /aws[_-]?access/i,
-    /aws[_-]?secret/i,
-    /api[_-]?key/i,
+    /password\s*[=:]\s*\S+/i, // password=xxx or password: xxx
+    /secret[_-]?key?\s*[=:]\s*\S+/i, // secret=xxx, secret_key=xxx
+    /token\s*[=:]\s*\S+/i, // token=xxx (not just the word "token")
+    /api[_-]?key\s*[=:]\s*\S+/i, // api_key=xxx
+    /\bkey\s*[=:]\s*\S+/i, // key=xxx (encryption keys)
+    /credential\s*[=:]\s*\S+/i,
+    /aws[_-]?access[_-]?key[_-]?id?\s*[=:]\s*\S+/i,
+    /aws[_-]?secret[_-]?access[_-]?key?\s*[=:]\s*\S+/i,
     /bearer\s+\S+/i,
     /\b[A-Za-z0-9+/]{40,}={0,2}\b/, // Base64 encoded strings (likely secrets)
     /\bAKIA[A-Z0-9]{16}\b/, // AWS Access Key ID pattern
     /arn:aws:[a-z0-9-]+:[a-z0-9-]*:\d+:[a-z0-9-/]+/i, // AWS ARN pattern
   ];
 
-  private stackTracePattern = /at\s+[\w$.]+\s+\([^)]+:\d+:\d+\)/;
+  // Match stack traces AND file paths with line numbers
+  private stackTracePattern = /at\s+[\w$.]+\s+\([^)]+:\d+:\d+\)|\/[^\s]+\.[a-z]+:\d+:\d+/gi;
 
   sanitizeError(error: Error | string): string {
     let message = typeof error === 'string' ? error : error.message;

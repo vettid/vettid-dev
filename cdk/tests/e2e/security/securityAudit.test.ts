@@ -38,12 +38,13 @@ class MockAuthService {
   };
 
   register(userId: string, password: string): { success: boolean; error?: string } {
+    // Always compute hash to prevent timing attacks that reveal user existence
+    const salt = crypto.randomBytes(16);
+    const passwordHash = crypto.pbkdf2Sync(password, salt, 100000, 32, 'sha256');
+
     if (this.users.has(userId)) {
       return { success: false, error: 'User already exists' };
     }
-
-    const salt = crypto.randomBytes(16);
-    const passwordHash = crypto.pbkdf2Sync(password, salt, 100000, 32, 'sha256');
 
     this.users.set(userId, { passwordHash, salt, mfaEnabled: false });
     return { success: true };

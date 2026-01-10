@@ -46,7 +46,14 @@ class MockAuthorizationService {
 
   private setupDefaultPermissions(): void {
     // Admin role permissions
+    // More specific permissions should come first to ensure proper ownership checks
     this.rolePermissions.set('admin', [
+      // Invites have ownership - admins can only delete their own invites (IDOR prevention)
+      {
+        resource: '/admin/invites/*',
+        actions: ['DELETE'],
+        condition: (userId, resource) => resource.ownerId === userId,
+      },
       { resource: '/admin/*', actions: ['GET', 'POST', 'PUT', 'DELETE'] },
       { resource: '/member/*', actions: ['GET', 'POST', 'PUT', 'DELETE'] },
       { resource: '/vault/*', actions: ['GET', 'POST', 'PUT', 'DELETE'] },
@@ -156,7 +163,11 @@ class MockAuthorizationService {
         // Check condition if exists
         if (perm.condition && resourceId) {
           const resource = this.resources.get(resourceId);
-          if (resource && !perm.condition(userId || '', resource)) {
+          // Fail-safe: if resource doesn't exist, deny access
+          if (!resource) {
+            return { allowed: false, reason: 'Resource not found' };
+          }
+          if (!perm.condition(userId || '', resource)) {
             return { allowed: false, reason: 'Resource ownership check failed' };
           }
         }
@@ -712,12 +723,17 @@ function normalizePath(path: string): string {
   // Remove null bytes
   normalized = normalized.replace(/\x00/g, '');
 
+  // Remove bypass patterns like ....// or ..../
+  // These are attempts to evade simple .. detection
+  normalized = normalized.replace(/\.{3,}\//g, '../');
+  normalized = normalized.replace(/\.\.\/+/g, '../');
+
   // Resolve .. traversals
   const segments = normalized.split('/').filter(Boolean);
   const result: string[] = [];
 
   for (const segment of segments) {
-    if (segment === '..') {
+    if (segment === '..' || /^\.{2,}$/.test(segment)) {
       result.pop();
     } else if (segment !== '.') {
       result.push(segment);

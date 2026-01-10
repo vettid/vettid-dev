@@ -160,7 +160,8 @@ class MockBackupService {
       const expiryDate = new Date(backup.createdAt);
       expiryDate.setDate(expiryDate.getDate() + backup.retentionDays);
 
-      if (now > expiryDate) {
+      // Use >= to include backups that expire at exactly this moment (e.g., 0-day retention)
+      if (now >= expiryDate) {
         expired.push(id);
       }
     });

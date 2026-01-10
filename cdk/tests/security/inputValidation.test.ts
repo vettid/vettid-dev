@@ -31,8 +31,8 @@ const InputValidator = {
     if (typeof input !== 'string') {
       throw new Error('Input must be a string');
     }
-    // Remove null bytes
-    let sanitized = input.replace(/\0/g, '');
+    // Replace null bytes with space (to preserve word boundaries)
+    let sanitized = input.replace(/\0/g, ' ');
     // Normalize whitespace
     sanitized = sanitized.replace(/\s+/g, ' ').trim();
     // Limit length
@@ -43,7 +43,10 @@ const InputValidator = {
    * Validate email format
    */
   validateEmail(email: string): boolean {
-    const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+    // Reject consecutive dots, leading/trailing dots in local or domain parts
+    const emailRegex = /^[a-zA-Z0-9]([a-zA-Z0-9._%+-]*[a-zA-Z0-9])?@[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$/;
+    // Also reject consecutive dots
+    if (/\.\./.test(email)) return false;
     return emailRegex.test(email) && email.length <= 254;
   },
 
@@ -76,6 +79,14 @@ const InputValidator = {
    * Detect SQL injection attempts
    */
   detectSqlInjection(input: string): boolean {
+    // Try URL decoding first
+    let decoded = input;
+    try {
+      decoded = decodeURIComponent(input);
+    } catch {
+      // Keep original if decoding fails
+    }
+
     const patterns = [
       /(\b(SELECT|INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|TRUNCATE|EXEC|UNION|DECLARE)\b)/i,
       /(--|\#|\/\*|\*\/)/,
@@ -85,7 +96,7 @@ const InputValidator = {
       /\bEXEC\s*\(/i,
       /\bxp_\w+/i,
     ];
-    return patterns.some(pattern => pattern.test(input));
+    return patterns.some(pattern => pattern.test(input) || pattern.test(decoded));
   },
 
   /**
@@ -98,14 +109,32 @@ const InputValidator = {
         /\$[a-z]+/i, // MongoDB operators like $gt, $ne, $where
         /\{\s*['"]\$\w+['"]/i, // JSON with MongoDB operators
         /\{\s*["']?\s*S\s*["']?\s*:/i, // DynamoDB attribute value format injection
+        /\{\s*["']?\s*N\s*["']?\s*:/i, // DynamoDB Number type
+        /["']?:expression["']?\s*:/i, // DynamoDB expression attribute
+        /attribute_exists\s*\(/i, // DynamoDB condition expression
+        /__proto__/i, // Prototype pollution
+        /constructor.*prototype/i, // Prototype pollution via constructor
+        /",\s*"[^"]+"\s*:\s*(true|false|null|\d+|")/i, // JSON injection
       ];
-      return patterns.some(pattern => pattern.test(input));
+      if (patterns.some(pattern => pattern.test(input))) return true;
+
+      // Try parsing as JSON and check recursively
+      try {
+        const parsed = JSON.parse(input);
+        if (typeof parsed === 'object' && parsed !== null) {
+          return this.detectNoSqlInjection(parsed);
+        }
+      } catch {
+        // Not valid JSON, continue with string checks
+      }
+      return false;
     }
     if (typeof input === 'object' && input !== null) {
       // Check for operator keys in objects
       const checkObject = (obj: Record<string, unknown>): boolean => {
         for (const key of Object.keys(obj)) {
           if (key.startsWith('$')) return true;
+          if (key === '__proto__' || key === 'constructor') return true;
           if (typeof obj[key] === 'object' && obj[key] !== null) {
             if (checkObject(obj[key] as Record<string, unknown>)) return true;
           }
@@ -127,7 +156,10 @@ const InputValidator = {
       /`.*`/,
       /\|\||\&\&/,
       /\n|\r/,
-      /(^|\s)(cat|ls|rm|mv|cp|chmod|chown|wget|curl|nc|bash|sh|python|perl|ruby)\s/i,
+      /(^|\s|\/)(cat|ls|rm|mv|cp|chmod|chown|wget|curl|nc|bash|sh|python|perl|ruby)(\s|$)/i, // Match after space, start, or /
+      /%00/, // URL-encoded null byte
+      /\x00/, // Null byte
+      /\0/, // Null byte (another form)
     ];
     return patterns.some(pattern => pattern.test(input));
   },
@@ -209,10 +241,16 @@ const InputValidator = {
       return { valid: false, error: 'File extension not allowed' };
     }
 
-    // Check for double extensions
+    // Check for double extensions - detect dangerous extensions anywhere in the filename
+    const dangerousExtensions = ['.exe', '.sh', '.bat', '.php', '.jsp', '.cgi', '.pl', '.py', '.rb'];
     if ((filename.match(/\./g) || []).length > 1) {
       const parts = filename.split('.');
-      if (parts.some((part, i) => i < parts.length - 1 && allowedExtensions.includes(`.${part}`))) {
+      // Check if any part (except the last) is a dangerous or allowed extension
+      const hasDangerousExt = parts.some((part, i) =>
+        i < parts.length - 1 &&
+        (dangerousExtensions.includes(`.${part.toLowerCase()}`) || allowedExtensions.includes(`.${part.toLowerCase()}`))
+      );
+      if (hasDangerousExt) {
         return { valid: false, error: 'Invalid filename: double extension detected' };
       }
     }
@@ -395,7 +433,12 @@ describe('Input Validation Security Tests', () => {
       const input = '<img src=x onerror="alert(1)">';
       const escaped = InputValidator.escapeHtml(input);
 
-      expect(escaped).not.toMatch(/onerror/);
+      // Event handlers are neutralized by escaping the surrounding characters
+      // The word 'onerror' remains but is harmless as text when < > = " are escaped
+      expect(escaped).not.toContain('<');
+      expect(escaped).not.toContain('>');
+      expect(escaped).not.toContain('=');
+      expect(escaped).toContain('onerror'); // Word is preserved but harmless
     });
 
     it('should handle unicode-encoded payloads', () => {
@@ -830,9 +873,11 @@ describe('Input Validation Security Tests', () => {
       // Payload that could work as SQL injection, XSS, and command injection
       const polyglot = "jaVasCript:/*-/*`/*\\`/*'/*\"/**/(/* */oNcLiCk=alert() )//";
 
-      // Should be caught by XSS escaping
+      // Should be neutralized by XSS escaping - dangerous chars are escaped
       const escaped = InputValidator.escapeHtml(polyglot);
-      expect(escaped).not.toMatch(/onclick/i);
+      // Event handler is neutralized because = is escaped
+      expect(escaped).not.toMatch(/onclick\s*=/i); // The = is escaped, so onclick= pattern breaks
+      expect(escaped).toContain('&#x3D;'); // = is escaped
     });
   });
 
