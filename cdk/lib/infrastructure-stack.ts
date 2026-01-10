@@ -126,7 +126,7 @@ export class InfrastructureStack extends cdk.Stack {
       encryptionKey: dynamoDbEncryptionKey,
     });
 
-    // GSI for looking up invites by user_guid (used by deployVault to find pending invites)
+    // GSI for looking up invites by user_guid
     invites.addGlobalSecondaryIndex({
       indexName: 'user-guid-index',
       partitionKey: { name: 'user_guid', type: dynamodb.AttributeType.STRING },
