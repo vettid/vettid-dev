@@ -5,6 +5,7 @@ import (
 	"crypto/cipher"
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -13,18 +14,13 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"time"
 
-	"github.com/fxamacker/cbor/v2"
 	"github.com/hf/nsm"
 	"github.com/hf/nsm/request"
 	"github.com/rs/zerolog/log"
+	"golang.org/x/crypto/argon2"
 )
-
-// CiphertextForRecipientEnvelope is the CBOR-encoded structure returned by KMS
-// when using the Recipient parameter for Nitro Enclaves
-type CiphertextForRecipientEnvelope struct {
-	KeyMaterial []byte `cbor:"key_material"`
-}
 
 // NitroSealer handles sealing/unsealing data using Nitro KMS attestation
 type NitroSealer struct {
@@ -194,23 +190,58 @@ func (s *NitroSealer) nitroKMSUnseal(sealed *SealedData) ([]byte, error) {
 		return nil, fmt.Errorf("failed to decrypt DEK with KMS: %w", err)
 	}
 
-	// 3. Decode CBOR envelope to get the RSA-encrypted key material
-	// CiphertextForRecipient is CBOR-encoded: { "key_material": <RSA-encrypted DEK> }
-	var envelope CiphertextForRecipientEnvelope
-	if err := cbor.Unmarshal(ciphertextForRecipient, &envelope); err != nil {
-		return nil, fmt.Errorf("failed to decode CiphertextForRecipient CBOR: %w", err)
+	// 3. Parse the CMS/PKCS#7 EnvelopedData to get the RSA-encrypted key material
+	// AWS KMS returns CiphertextForRecipient as PKCS#7 EnvelopedData (OID 1.2.840.113549.1.7.3)
+	// The encrypted content is our DEK, encrypted to our RSA public key
+	log.Debug().
+		Int("envelope_len", len(ciphertextForRecipient)).
+		Hex("first_16_bytes", ciphertextForRecipient[:min(16, len(ciphertextForRecipient))]).
+		Msg("CiphertextForRecipient from KMS (PKCS#7 EnvelopedData)")
+
+	// AWS KMS CiphertextForRecipient is CMS EnvelopedData but the pkcs7 library
+	// has trouble parsing it. Extract the encrypted key manually from the ASN.1.
+	//
+	// CMS EnvelopedData structure:
+	// SEQUENCE {
+	//   OID envelopedData
+	//   [0] SEQUENCE {
+	//     INTEGER version
+	//     SET {
+	//       SEQUENCE (RecipientInfo) {
+	//         ...
+	//         OCTET STRING (encryptedKey) <-- this is what we need
+	//       }
+	//     }
+	//     ...
+	//   }
+	// }
+	//
+	// We search for a 256-byte OCTET STRING which is our RSA-encrypted DEK
+	encryptedKey := findEncryptedKeyInCMS(ciphertextForRecipient)
+	if encryptedKey == nil {
+		return nil, fmt.Errorf("failed to find encrypted key in CMS envelope")
 	}
 
 	log.Debug().
-		Int("envelope_len", len(ciphertextForRecipient)).
-		Int("key_material_len", len(envelope.KeyMaterial)).
-		Msg("Decoded CiphertextForRecipient CBOR envelope")
+		Int("encrypted_key_len", len(encryptedKey)).
+		Msg("Extracted encrypted key from CMS envelope")
 
-	// 4. Decrypt key material with our RSA private key to get DEK
-	dek, err := rsa.DecryptOAEP(sha256.New(), rand.Reader, privateKey, envelope.KeyMaterial, nil)
+	// Decrypt the key with RSA-OAEP-SHA256 (what Nitro attestation uses)
+	ciphertext, err := rsa.DecryptOAEP(sha256.New(), rand.Reader, privateKey, encryptedKey, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decrypt DEK from KMS response: %w", err)
+		// Try PKCS1v15 as fallback
+		ciphertext, err = rsa.DecryptPKCS1v15(rand.Reader, privateKey, encryptedKey)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decrypt CMS encrypted key: %w", err)
+		}
 	}
+
+	// The decrypted content is the DEK
+	dek := ciphertext
+	log.Debug().
+		Int("dek_len", len(dek)).
+		Msg("Successfully decrypted DEK from PKCS#7 envelope")
+
 	defer func() {
 		// Zero out DEK from memory
 		for i := range dek {
@@ -466,4 +497,251 @@ func generateMockAttestationWithECDSA(nonce []byte) (*Attestation, *ecdsa.Privat
 		Document:  []byte(mockDoc),
 		PublicKey: pubKeyBytes,
 	}, privateKey, nil
+}
+
+// findEncryptedKeyInCMS extracts the RSA-encrypted key from a CMS EnvelopedData structure.
+// AWS KMS returns CiphertextForRecipient as PKCS#7/CMS EnvelopedData (OID 1.2.840.113549.1.7.3).
+// We search for the 256-byte OCTET STRING containing the RSA-encrypted DEK.
+//
+// CMS EnvelopedData structure:
+// SEQUENCE {
+//   contentType OID (1.2.840.113549.1.7.3)
+//   [0] SEQUENCE (EnvelopedData) {
+//     version INTEGER
+//     recipientInfos SET {
+//       KeyTransRecipientInfo SEQUENCE {
+//         version INTEGER
+//         rid (RecipientIdentifier)
+//         keyEncryptionAlgorithm AlgorithmIdentifier
+//         encryptedKey OCTET STRING  <-- 256 bytes for 2048-bit RSA
+//       }
+//     }
+//     encryptedContentInfo SEQUENCE { ... }
+//   }
+// }
+func findEncryptedKeyInCMS(data []byte) []byte {
+	// Search for OCTET STRING tag (04) followed by length encoding for 256 bytes
+	// 04 82 01 00 = OCTET STRING with 2-byte length 0x0100 (256)
+	pattern := []byte{0x04, 0x82, 0x01, 0x00}
+
+	for i := 0; i <= len(data)-len(pattern)-256; i++ {
+		if data[i] == pattern[0] && data[i+1] == pattern[1] &&
+		   data[i+2] == pattern[2] && data[i+3] == pattern[3] {
+			// Found the pattern, extract the 256 bytes after it
+			start := i + 4
+			end := start + 256
+			if end <= len(data) {
+				log.Debug().
+					Int("offset", i).
+					Msg("Found encrypted key OCTET STRING in CMS")
+				return data[start:end]
+			}
+		}
+	}
+
+	// Also try looking for 128-byte key (1024-bit RSA) in case of different key sizes
+	// 04 81 80 = OCTET STRING with 1-byte length 0x80 (128)
+	pattern128 := []byte{0x04, 0x81, 0x80}
+	for i := 0; i <= len(data)-len(pattern128)-128; i++ {
+		if data[i] == pattern128[0] && data[i+1] == pattern128[1] && data[i+2] == pattern128[2] {
+			start := i + 3
+			end := start + 128
+			if end <= len(data) {
+				log.Debug().
+					Int("offset", i).
+					Msg("Found 128-byte encrypted key OCTET STRING in CMS")
+				return data[start:end]
+			}
+		}
+	}
+
+	log.Error().
+		Int("data_len", len(data)).
+		Hex("first_32_bytes", data[:min(32, len(data))]).
+		Msg("Could not find encrypted key pattern in CMS data")
+
+	return nil
+}
+
+// ============================================================================
+// PIN-Based DEK Derivation (Architecture v2.0 Section 5.7)
+// ============================================================================
+
+// SealedMaterialData contains the KMS-sealed random material used for DEK derivation
+type SealedMaterialData struct {
+	Version        int    `json:"version"`
+	SealedMaterial []byte `json:"sealed_material"` // KMS-sealed random bytes
+	OwnerID        string `json:"owner_id"`        // User GUID (for key binding)
+	CreatedAt      int64  `json:"created_at"`
+}
+
+// GenerateSealedMaterial creates new random material and seals it with KMS
+// This is called during PIN setup (enrollment Phase 2)
+// Returns the sealed material blob to be stored in S3
+func (s *NitroSealer) GenerateSealedMaterial(ownerID string) ([]byte, error) {
+	log.Info().Str("owner_id", ownerID).Msg("Generating sealed material for PIN-DEK derivation")
+
+	// Generate 32 bytes of random material
+	randomMaterial := make([]byte, 32)
+	if _, err := rand.Read(randomMaterial); err != nil {
+		return nil, fmt.Errorf("failed to generate random material: %w", err)
+	}
+
+	// Seal the material using KMS (this creates PCR-bound ciphertext)
+	sealedData, err := s.Seal(randomMaterial)
+	if err != nil {
+		// Zero the material before returning
+		for i := range randomMaterial {
+			randomMaterial[i] = 0
+		}
+		return nil, fmt.Errorf("failed to seal material: %w", err)
+	}
+
+	// Zero the plaintext material
+	for i := range randomMaterial {
+		randomMaterial[i] = 0
+	}
+
+	// Wrap in SealedMaterialData for storage
+	smData := SealedMaterialData{
+		Version:        1,
+		SealedMaterial: sealedData,
+		OwnerID:        ownerID,
+		CreatedAt:      getCurrentTimestamp(),
+	}
+
+	result, err := json.Marshal(smData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal sealed material: %w", err)
+	}
+
+	log.Info().
+		Str("owner_id", ownerID).
+		Int("sealed_len", len(sealedData)).
+		Msg("Sealed material generated successfully")
+
+	return result, nil
+}
+
+// DeriveDEKFromPIN unseals the material and derives DEK using Argon2id
+// This is called on vault load (app open) when user provides PIN
+// Returns the 32-byte DEK for vault storage encryption
+//
+// Per Architecture v2.0 Section 4.6:
+// DEK = Argon2id(PIN, salt=SHA256(owner_id || material)) followed by
+// HKDF.Extract(material, stretched_pin) → vault_dek
+func (s *NitroSealer) DeriveDEKFromPIN(sealedMaterialBlob []byte, pin string, ownerID string) ([]byte, error) {
+	log.Debug().Str("owner_id", ownerID).Msg("Deriving DEK from PIN")
+
+	// Parse sealed material blob
+	var smData SealedMaterialData
+	if err := json.Unmarshal(sealedMaterialBlob, &smData); err != nil {
+		return nil, fmt.Errorf("failed to parse sealed material: %w", err)
+	}
+
+	// Verify owner ID matches (prevents cross-user attacks)
+	if smData.OwnerID != ownerID {
+		return nil, fmt.Errorf("sealed material owner mismatch")
+	}
+
+	// Unseal the random material using KMS/attestation
+	randomMaterial, err := s.Unseal(smData.SealedMaterial)
+	if err != nil {
+		return nil, fmt.Errorf("failed to unseal material: %w", err)
+	}
+
+	defer func() {
+		// Zero the random material after use
+		for i := range randomMaterial {
+			randomMaterial[i] = 0
+		}
+	}()
+
+	// Step 1: Compute salt = SHA256(owner_id || material)
+	saltInput := append([]byte(ownerID), randomMaterial...)
+	salt := sha256.Sum256(saltInput)
+	// Zero the salt input
+	for i := range saltInput {
+		saltInput[i] = 0
+	}
+
+	// Step 2: Stretch PIN using Argon2id
+	// Parameters match mobile apps: time=3, memory=256MB, threads=4
+	stretchedPIN := argon2IDKey([]byte(pin), salt[:], 3, 256*1024, 4, 32)
+
+	defer func() {
+		// Zero stretched PIN after use
+		for i := range stretchedPIN {
+			stretchedPIN[i] = 0
+		}
+	}()
+
+	// Step 3: Extract final DEK using HKDF
+	// DEK = HKDF-Extract(salt=randomMaterial, IKM=stretchedPIN)
+	dek := hkdfExtract(randomMaterial, stretchedPIN)
+
+	log.Debug().
+		Str("owner_id", ownerID).
+		Msg("DEK derived from PIN successfully")
+
+	return dek, nil
+}
+
+// VerifyPINWithDEK checks if the provided PIN produces the expected DEK
+// This is used for PIN verification before vault operations
+// Returns true if PIN is correct, false otherwise
+func (s *NitroSealer) VerifyPINWithDEK(sealedMaterialBlob []byte, pin string, ownerID string, expectedDEKHash []byte) (bool, error) {
+	dek, err := s.DeriveDEKFromPIN(sealedMaterialBlob, pin, ownerID)
+	if err != nil {
+		return false, err
+	}
+
+	defer func() {
+		// Zero DEK after use
+		for i := range dek {
+			dek[i] = 0
+		}
+	}()
+
+	// Compare hash of derived DEK with expected hash
+	actualHash := sha256.Sum256(dek)
+	return constantTimeEqual(actualHash[:], expectedDEKHash), nil
+}
+
+// argon2IDKey wraps golang.org/x/crypto/argon2
+func argon2IDKey(password, salt []byte, time, memory uint32, threads uint8, keyLen uint32) []byte {
+	// This uses the same parameters as vault_lifecycle.go
+	return argon2.IDKey(password, salt, time, memory, threads, keyLen)
+}
+
+// hkdfExtract performs HKDF-Extract (RFC 5869)
+func hkdfExtract(salt, ikm []byte) []byte {
+	h := hmacSHA256(salt, ikm)
+	return h
+}
+
+// hmacSHA256 computes HMAC-SHA256
+func hmacSHA256(key, data []byte) []byte {
+	// Using crypto/hmac
+	h := sha256.New
+	mac := hmac.New(h, key)
+	mac.Write(data)
+	return mac.Sum(nil)
+}
+
+// constantTimeEqual compares two byte slices in constant time
+func constantTimeEqual(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	var result byte
+	for i := range a {
+		result |= a[i] ^ b[i]
+	}
+	return result == 0
+}
+
+// getCurrentTimestamp returns current Unix timestamp
+func getCurrentTimestamp() int64 {
+	return time.Now().Unix()
 }
