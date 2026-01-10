@@ -428,13 +428,18 @@ describe('Cryptographic Security Tests', () => {
 
       // Expected count per byte value: totalBytes / 256 ≈ 39
       const expectedCount = totalBytes / 256;
-      const tolerance = expectedCount * 0.5; // Allow 50% deviation
 
-      // Check that no byte value is significantly over/under represented
+      // Use chi-squared test approach: sum of (observed - expected)^2 / expected
+      // For 255 degrees of freedom, critical value at p=0.01 is ~310
+      // This is more statistically valid than checking individual deviations
+      let chiSquared = 0;
       for (let i = 0; i < 256; i++) {
-        const deviation = Math.abs(byteCounts[i] - expectedCount);
-        expect(deviation).toBeLessThan(tolerance);
+        chiSquared += Math.pow(byteCounts[i] - expectedCount, 2) / expectedCount;
       }
+
+      // Chi-squared critical value for 255 df at p=0.01 is ~310
+      // We use a generous threshold to avoid flaky tests
+      expect(chiSquared).toBeLessThan(350);
     });
 
     it('should handle large random data requests', () => {
