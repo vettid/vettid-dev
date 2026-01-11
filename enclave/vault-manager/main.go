@@ -141,11 +141,15 @@ func (vm *VaultManager) Run(ctx context.Context) error {
 
 	// Channel for sealer responses from supervisor
 	// This allows the sealer proxy to receive KMS responses asynchronously
+	// IMPORTANT: Sealer responses are routed directly in receiveMessages() to avoid
+	// a deadlock where the main loop blocks in HandleMessage waiting for the sealer
+	// response, but the main loop is the only thing that reads from msgChan.
 	sealerResponseCh := make(chan *IncomingMessage, 5)
 	vm.messageHandler.SetSealerResponseChannel(sealerResponseCh)
 
 	// Start message receiver (reads from parent FD)
-	go vm.receiveMessages(ctx, msgChan)
+	// Pass sealerResponseCh so sealer responses can be routed directly, bypassing the main loop
+	go vm.receiveMessages(ctx, msgChan, sealerResponseCh)
 
 	for {
 		select {
@@ -153,17 +157,8 @@ func (vm *VaultManager) Run(ctx context.Context) error {
 			log.Info().Msg("Vault manager shutting down")
 			return nil
 		case msg := <-msgChan:
-			// Check if this is a sealer response from supervisor
-			if vm.messageHandler.IsSealerResponse(msg) {
-				// Route sealer responses to the sealer proxy
-				select {
-				case sealerResponseCh <- msg:
-					log.Debug().Str("msg_id", msg.GetID()).Msg("Routed sealer response")
-				default:
-					log.Warn().Str("msg_id", msg.GetID()).Msg("Sealer response channel full, dropping")
-				}
-				continue
-			}
+			// Note: Sealer responses are now routed directly in receiveMessages()
+			// to avoid a deadlock when HandleMessage blocks waiting for sealer responses.
 
 			// Handle regular vault operations
 			response, err := vm.messageHandler.HandleMessage(ctx, msg)
@@ -184,8 +179,10 @@ func (vm *VaultManager) Run(ctx context.Context) error {
 	}
 }
 
-// receiveMessages reads messages from the supervisor via stdin pipe
-func (vm *VaultManager) receiveMessages(ctx context.Context, msgChan chan<- *IncomingMessage) {
+// receiveMessages reads messages from the supervisor via stdin pipe.
+// Sealer responses (sealer_response type) are routed directly to sealerResponseCh
+// to avoid a deadlock with the main message processing loop.
+func (vm *VaultManager) receiveMessages(ctx context.Context, msgChan chan<- *IncomingMessage, sealerResponseCh chan<- *IncomingMessage) {
 	log.Debug().Msg("Message receiver started, reading from stdin")
 
 	for {
@@ -202,7 +199,20 @@ func (vm *VaultManager) receiveMessages(ctx context.Context, msgChan chan<- *Inc
 				return
 			}
 
-			// Send to processing channel
+			// Route sealer responses directly to avoid deadlock.
+			// The main loop blocks in HandleMessage waiting for sealer responses,
+			// so we can't route through msgChan (main loop can't read it when blocked).
+			if vm.messageHandler.IsSealerResponse(msg) {
+				select {
+				case sealerResponseCh <- msg:
+					log.Debug().Str("msg_id", msg.GetID()).Msg("Routed sealer response directly")
+				default:
+					log.Warn().Str("msg_id", msg.GetID()).Msg("Sealer response channel full, dropping")
+				}
+				continue
+			}
+
+			// Send regular messages to processing channel
 			select {
 			case msgChan <- msg:
 			case <-ctx.Done():
