@@ -245,14 +245,14 @@ func NewBackupHandler(ownerSpace string, bm *BackupManager) *BackupHandler {
 func (h *BackupHandler) HandleTrigger(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	notification, err := h.backupManager.TriggerBackup(ctx)
 	if err != nil {
-		return h.errorResponse(msg.ID, err.Error())
+		return h.errorResponse(msg.GetID(), err.Error())
 	}
 
 	respBytes, _ := json.Marshal(notification)
 	return &OutgoingMessage{
-		ID:      msg.ID,
-		Type:    MessageTypeResponse,
-		Payload: respBytes,
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
 	}, nil
 }
 
@@ -260,7 +260,7 @@ func (h *BackupHandler) HandleTrigger(ctx context.Context, msg *IncomingMessage)
 func (h *BackupHandler) HandleStatus(msg *IncomingMessage) (*OutgoingMessage, error) {
 	counter, err := h.backupManager.GetLastBackupInfo()
 	if err != nil {
-		return h.errorResponse(msg.ID, err.Error())
+		return h.errorResponse(msg.GetID(), err.Error())
 	}
 
 	resp := map[string]interface{}{
@@ -270,9 +270,9 @@ func (h *BackupHandler) HandleStatus(msg *IncomingMessage) (*OutgoingMessage, er
 	respBytes, _ := json.Marshal(resp)
 
 	return &OutgoingMessage{
-		ID:      msg.ID,
-		Type:    MessageTypeResponse,
-		Payload: respBytes,
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
 	}, nil
 }
 
@@ -283,8 +283,8 @@ func (h *BackupHandler) errorResponse(id string, message string) (*OutgoingMessa
 	}
 	respBytes, _ := json.Marshal(resp)
 	return &OutgoingMessage{
-		ID:      id,
-		Type:    MessageTypeResponse,
-		Payload: respBytes,
+		RequestID: id,
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
 	}, nil
 }

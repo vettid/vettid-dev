@@ -55,24 +55,24 @@ type DecryptedCredentialBlob struct {
 func (mh *MessageHandler) handleAuthenticate(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req AuthenticateRequest
 	if err := json.Unmarshal(msg.Payload, &req); err != nil {
-		return mh.authErrorResponse(msg.ID, "Invalid request format")
+		return mh.authErrorResponse(msg.GetID(), "Invalid request format")
 	}
 
 	// Validate required fields
 	if req.DeviceID == "" {
-		return mh.authErrorResponse(msg.ID, "device_id is required")
+		return mh.authErrorResponse(msg.GetID(), "device_id is required")
 	}
 	if req.EncryptedCredential == "" {
-		return mh.authErrorResponse(msg.ID, "encrypted_credential is required")
+		return mh.authErrorResponse(msg.GetID(), "encrypted_credential is required")
 	}
 	if req.PasswordHash == "" {
-		return mh.authErrorResponse(msg.ID, "password_hash is required")
+		return mh.authErrorResponse(msg.GetID(), "password_hash is required")
 	}
 	if req.Nonce == "" {
-		return mh.authErrorResponse(msg.ID, "nonce is required")
+		return mh.authErrorResponse(msg.GetID(), "nonce is required")
 	}
 	if req.BackupKey == "" {
-		return mh.authErrorResponse(msg.ID, "backup_key is required")
+		return mh.authErrorResponse(msg.GetID(), "backup_key is required")
 	}
 
 	log.Info().
@@ -84,37 +84,37 @@ func (mh *MessageHandler) handleAuthenticate(msg *IncomingMessage) (*OutgoingMes
 	encryptedCred, err := base64.StdEncoding.DecodeString(req.EncryptedCredential)
 	if err != nil {
 		log.Warn().Err(err).Msg("Invalid encrypted_credential encoding")
-		return mh.authErrorResponse(msg.ID, "Invalid encrypted_credential encoding")
+		return mh.authErrorResponse(msg.GetID(), "Invalid encrypted_credential encoding")
 	}
 
 	nonce, err := base64.StdEncoding.DecodeString(req.Nonce)
 	if err != nil {
 		log.Warn().Err(err).Msg("Invalid nonce encoding")
-		return mh.authErrorResponse(msg.ID, "Invalid nonce encoding")
+		return mh.authErrorResponse(msg.GetID(), "Invalid nonce encoding")
 	}
 
 	backupKey, err := base64.StdEncoding.DecodeString(req.BackupKey)
 	if err != nil {
 		log.Warn().Err(err).Msg("Invalid backup_key encoding")
-		return mh.authErrorResponse(msg.ID, "Invalid backup_key encoding")
+		return mh.authErrorResponse(msg.GetID(), "Invalid backup_key encoding")
 	}
 
 	if len(backupKey) != 32 {
 		log.Warn().Int("key_len", len(backupKey)).Msg("Invalid backup key length")
-		return mh.authErrorResponse(msg.ID, "Invalid backup key")
+		return mh.authErrorResponse(msg.GetID(), "Invalid backup key")
 	}
 
 	providedHash, err := base64.StdEncoding.DecodeString(req.PasswordHash)
 	if err != nil {
 		log.Warn().Err(err).Msg("Invalid password_hash encoding")
-		return mh.authErrorResponse(msg.ID, "Invalid password_hash encoding")
+		return mh.authErrorResponse(msg.GetID(), "Invalid password_hash encoding")
 	}
 
 	// Step 2: Decrypt the credential blob using ChaCha20-Poly1305
 	credentialBytes, err := decryptWithKey(backupKey, encryptedCred, nonce)
 	if err != nil {
 		log.Warn().Err(err).Msg("Failed to decrypt credential backup")
-		return mh.authErrorResponse(msg.ID, "Failed to decrypt credential - invalid key or corrupted backup")
+		return mh.authErrorResponse(msg.GetID(), "Failed to decrypt credential - invalid key or corrupted backup")
 	}
 	// SECURITY: Zero the backup key after use
 	defer zeroBytes(backupKey)
@@ -123,7 +123,7 @@ func (mh *MessageHandler) handleAuthenticate(msg *IncomingMessage) (*OutgoingMes
 	var credential DecryptedCredentialBlob
 	if err := json.Unmarshal(credentialBytes, &credential); err != nil {
 		log.Warn().Err(err).Msg("Failed to parse decrypted credential")
-		return mh.authErrorResponse(msg.ID, "Invalid credential format")
+		return mh.authErrorResponse(msg.GetID(), "Invalid credential format")
 	}
 	// SECURITY: Zero the credential bytes after parsing
 	defer zeroBytes(credentialBytes)
@@ -132,7 +132,7 @@ func (mh *MessageHandler) handleAuthenticate(msg *IncomingMessage) (*OutgoingMes
 	storedHash, err := base64.StdEncoding.DecodeString(credential.PasswordHash)
 	if err != nil {
 		log.Error().Msg("Stored password hash has invalid encoding")
-		return mh.authErrorResponse(msg.ID, "Credential data corrupted")
+		return mh.authErrorResponse(msg.GetID(), "Credential data corrupted")
 	}
 
 	// Constant-time comparison to prevent timing attacks
@@ -141,7 +141,7 @@ func (mh *MessageHandler) handleAuthenticate(msg *IncomingMessage) (*OutgoingMes
 			Str("device_id", req.DeviceID).
 			Str("user_guid", credential.UserGUID).
 			Msg("Password verification failed during restore")
-		return mh.authErrorResponse(msg.ID, "Password verification failed")
+		return mh.authErrorResponse(msg.GetID(), "Password verification failed")
 	}
 
 	log.Info().
@@ -165,9 +165,9 @@ func (mh *MessageHandler) handleAuthenticate(msg *IncomingMessage) (*OutgoingMes
 	}
 
 	return &OutgoingMessage{
-		ID:      msg.ID,
-		Type:    MessageTypeResponse,
-		Payload: respBytes,
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
 	}, nil
 }
 
@@ -180,9 +180,9 @@ func (mh *MessageHandler) authErrorResponse(id string, message string) (*Outgoin
 	respBytes, _ := json.Marshal(resp)
 
 	return &OutgoingMessage{
-		ID:      id,
-		Type:    MessageTypeResponse,
-		Payload: respBytes,
+		RequestID: id,
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
 	}, nil
 }
 

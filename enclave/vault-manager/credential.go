@@ -72,25 +72,25 @@ const credentialStorageKey = "credential/blob"
 func (h *CredentialHandler) HandleStore(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req CredentialStoreRequest
 	if err := json.Unmarshal(msg.Payload, &req); err != nil {
-		return h.errorResponse(msg.ID, "Invalid request format")
+		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
 	if req.EncryptedBlob == "" {
-		return h.errorResponse(msg.ID, "encrypted_blob is required")
+		return h.errorResponse(msg.GetID(), "encrypted_blob is required")
 	}
 	if req.EphemeralPublicKey == "" {
-		return h.errorResponse(msg.ID, "ephemeral_public_key is required")
+		return h.errorResponse(msg.GetID(), "ephemeral_public_key is required")
 	}
 	if req.Nonce == "" {
-		return h.errorResponse(msg.ID, "nonce is required")
+		return h.errorResponse(msg.GetID(), "nonce is required")
 	}
 	if req.Version <= 0 {
-		return h.errorResponse(msg.ID, "version must be positive")
+		return h.errorResponse(msg.GetID(), "version must be positive")
 	}
 
 	// Check if credential already exists
 	if _, err := h.storage.Get(credentialStorageKey); err == nil {
-		return h.errorResponse(msg.ID, "credential already exists - use credential.sync to update")
+		return h.errorResponse(msg.GetID(), "credential already exists - use credential.sync to update")
 	}
 
 	entry := CredentialEntry{
@@ -103,12 +103,12 @@ func (h *CredentialHandler) HandleStore(msg *IncomingMessage) (*OutgoingMessage,
 
 	data, err := json.Marshal(entry)
 	if err != nil {
-		return h.errorResponse(msg.ID, "Failed to marshal credential")
+		return h.errorResponse(msg.GetID(), "Failed to marshal credential")
 	}
 
 	if err := h.storage.Put(credentialStorageKey, data); err != nil {
 		log.Error().Err(err).Msg("Failed to store credential")
-		return h.errorResponse(msg.ID, "Failed to store credential")
+		return h.errorResponse(msg.GetID(), "Failed to store credential")
 	}
 
 	log.Info().Int("version", req.Version).Msg("Credential stored")
@@ -120,9 +120,9 @@ func (h *CredentialHandler) HandleStore(msg *IncomingMessage) (*OutgoingMessage,
 	respBytes, _ := json.Marshal(resp)
 
 	return &OutgoingMessage{
-		ID:      msg.ID,
-		Type:    MessageTypeResponse,
-		Payload: respBytes,
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
 	}, nil
 }
 
@@ -130,20 +130,20 @@ func (h *CredentialHandler) HandleStore(msg *IncomingMessage) (*OutgoingMessage,
 func (h *CredentialHandler) HandleSync(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req CredentialSyncRequest
 	if err := json.Unmarshal(msg.Payload, &req); err != nil {
-		return h.errorResponse(msg.ID, "Invalid request format")
+		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
 	if req.EncryptedBlob == "" {
-		return h.errorResponse(msg.ID, "encrypted_blob is required")
+		return h.errorResponse(msg.GetID(), "encrypted_blob is required")
 	}
 	if req.EphemeralPublicKey == "" {
-		return h.errorResponse(msg.ID, "ephemeral_public_key is required")
+		return h.errorResponse(msg.GetID(), "ephemeral_public_key is required")
 	}
 	if req.Nonce == "" {
-		return h.errorResponse(msg.ID, "nonce is required")
+		return h.errorResponse(msg.GetID(), "nonce is required")
 	}
 	if req.Version <= 0 {
-		return h.errorResponse(msg.ID, "version must be positive")
+		return h.errorResponse(msg.GetID(), "version must be positive")
 	}
 
 	// Check existing version
@@ -152,7 +152,7 @@ func (h *CredentialHandler) HandleSync(msg *IncomingMessage) (*OutgoingMessage, 
 		var existing CredentialEntry
 		if json.Unmarshal(existingData, &existing) == nil {
 			if req.Version <= existing.Version {
-				return h.errorResponse(msg.ID, "version must be greater than current version")
+				return h.errorResponse(msg.GetID(), "version must be greater than current version")
 			}
 		}
 	}
@@ -167,12 +167,12 @@ func (h *CredentialHandler) HandleSync(msg *IncomingMessage) (*OutgoingMessage, 
 
 	data, err := json.Marshal(entry)
 	if err != nil {
-		return h.errorResponse(msg.ID, "Failed to marshal credential")
+		return h.errorResponse(msg.GetID(), "Failed to marshal credential")
 	}
 
 	if err := h.storage.Put(credentialStorageKey, data); err != nil {
 		log.Error().Err(err).Msg("Failed to sync credential")
-		return h.errorResponse(msg.ID, "Failed to sync credential")
+		return h.errorResponse(msg.GetID(), "Failed to sync credential")
 	}
 
 	log.Info().Int("version", req.Version).Msg("Credential synced")
@@ -184,9 +184,9 @@ func (h *CredentialHandler) HandleSync(msg *IncomingMessage) (*OutgoingMessage, 
 	respBytes, _ := json.Marshal(resp)
 
 	return &OutgoingMessage{
-		ID:      msg.ID,
-		Type:    MessageTypeResponse,
-		Payload: respBytes,
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
 	}, nil
 }
 
@@ -194,12 +194,12 @@ func (h *CredentialHandler) HandleSync(msg *IncomingMessage) (*OutgoingMessage, 
 func (h *CredentialHandler) HandleGet(msg *IncomingMessage) (*OutgoingMessage, error) {
 	data, err := h.storage.Get(credentialStorageKey)
 	if err != nil {
-		return h.errorResponse(msg.ID, "Credential not found")
+		return h.errorResponse(msg.GetID(), "Credential not found")
 	}
 
 	var entry CredentialEntry
 	if err := json.Unmarshal(data, &entry); err != nil {
-		return h.errorResponse(msg.ID, "Failed to read credential")
+		return h.errorResponse(msg.GetID(), "Failed to read credential")
 	}
 
 	resp := CredentialGetResponse{
@@ -212,9 +212,9 @@ func (h *CredentialHandler) HandleGet(msg *IncomingMessage) (*OutgoingMessage, e
 	respBytes, _ := json.Marshal(resp)
 
 	return &OutgoingMessage{
-		ID:      msg.ID,
-		Type:    MessageTypeResponse,
-		Payload: respBytes,
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
 	}, nil
 }
 
@@ -236,9 +236,9 @@ func (h *CredentialHandler) HandleVersion(msg *IncomingMessage) (*OutgoingMessag
 	respBytes, _ := json.Marshal(resp)
 
 	return &OutgoingMessage{
-		ID:      msg.ID,
-		Type:    MessageTypeResponse,
-		Payload: respBytes,
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
 	}, nil
 }
 
@@ -250,8 +250,8 @@ func (h *CredentialHandler) errorResponse(id string, message string) (*OutgoingM
 	respBytes, _ := json.Marshal(resp)
 
 	return &OutgoingMessage{
-		ID:      id,
-		Type:    MessageTypeResponse,
-		Payload: respBytes,
+		RequestID: id,
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
 	}, nil
 }

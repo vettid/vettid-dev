@@ -91,29 +91,10 @@ type VaultManager struct {
 	session        *Session
 	messageHandler *MessageHandler
 	publisher      *VsockPublisher
+	parentConn     *ParentConnection // IPC connection to supervisor
 }
 
-// UnsealedCredential holds the decrypted credential in memory
-type UnsealedCredential struct {
-	IdentityPrivateKey []byte            `json:"identity_private_key"`
-	IdentityPublicKey  []byte            `json:"identity_public_key"`
-	VaultMasterSecret  []byte            `json:"vault_master_secret"`
-	AuthType           string            `json:"auth_type"` // "pin", "password", "pattern"
-	AuthHash           []byte            `json:"auth_hash"` // Argon2id hash
-	AuthSalt           []byte            `json:"auth_salt"`
-	CryptoKeys         []CryptoKey       `json:"crypto_keys"`
-	Metadata           map[string]string `json:"metadata"`
-	CreatedAt          int64             `json:"created_at"`
-	Version            int               `json:"version"`
-}
-
-// CryptoKey represents a cryptographic key in the credential
-type CryptoKey struct {
-	Label      string `json:"label"`
-	Type       string `json:"type"` // "secp256k1", "ed25519", etc.
-	PrivateKey []byte `json:"private_key"`
-	CreatedAt  int64  `json:"created_at"`
-}
+// NOTE: UnsealedCredential and CryptoKey types are defined in credential_types.go
 
 // Session holds session state for authenticated operations
 type Session struct {
@@ -131,15 +112,17 @@ func NewVaultManager(cfg *VaultConfig) (*VaultManager, error) {
 	}
 
 	vm := &VaultManager{
-		config:  cfg,
-		storage: storage,
+		config:     cfg,
+		storage:    storage,
+		parentConn: NewParentConnection(), // IPC to supervisor via stdin/stdout
 	}
 
-	// Create publisher for sending messages via vsock
+	// Create publisher for sending messages via supervisor
 	vm.publisher = NewVsockPublisher(cfg.OwnerSpace, vm.sendToParent)
 
 	// Create message handler with call support
-	vm.messageHandler = NewMessageHandler(cfg.OwnerSpace, storage, vm.publisher)
+	// Pass sendFn so the sealer proxy can request KMS operations from supervisor
+	vm.messageHandler = NewMessageHandler(cfg.OwnerSpace, storage, vm.publisher, vm.sendToParent)
 
 	return vm, nil
 }
@@ -156,6 +139,11 @@ func (vm *VaultManager) Run(ctx context.Context) error {
 	// Message processing loop
 	msgChan := make(chan *IncomingMessage, 10)
 
+	// Channel for sealer responses from supervisor
+	// This allows the sealer proxy to receive KMS responses asynchronously
+	sealerResponseCh := make(chan *IncomingMessage, 5)
+	vm.messageHandler.SetSealerResponseChannel(sealerResponseCh)
+
 	// Start message receiver (reads from parent FD)
 	go vm.receiveMessages(ctx, msgChan)
 
@@ -165,13 +153,26 @@ func (vm *VaultManager) Run(ctx context.Context) error {
 			log.Info().Msg("Vault manager shutting down")
 			return nil
 		case msg := <-msgChan:
+			// Check if this is a sealer response from supervisor
+			if vm.messageHandler.IsSealerResponse(msg) {
+				// Route sealer responses to the sealer proxy
+				select {
+				case sealerResponseCh <- msg:
+					log.Debug().Str("msg_id", msg.GetID()).Msg("Routed sealer response")
+				default:
+					log.Warn().Str("msg_id", msg.GetID()).Msg("Sealer response channel full, dropping")
+				}
+				continue
+			}
+
+			// Handle regular vault operations
 			response, err := vm.messageHandler.HandleMessage(ctx, msg)
 			if err != nil {
-				log.Error().Err(err).Str("msg_id", msg.ID).Msg("Error handling message")
+				log.Error().Err(err).Str("msg_id", msg.GetID()).Msg("Error handling message")
 				response = &OutgoingMessage{
-					ID:    msg.ID,
-					Type:  MessageTypeError,
-					Error: err.Error(),
+					RequestID: msg.GetID(),
+					Type:      MessageTypeError,
+					Error:     err.Error(),
 				}
 			}
 			if response != nil {
@@ -183,35 +184,37 @@ func (vm *VaultManager) Run(ctx context.Context) error {
 	}
 }
 
-// receiveMessages reads messages from the parent process via FD
+// receiveMessages reads messages from the supervisor via stdin pipe
 func (vm *VaultManager) receiveMessages(ctx context.Context, msgChan chan<- *IncomingMessage) {
-	// TODO: Implement actual vsock/FD reading from supervisor
-	// For now, this is a placeholder that will be implemented with the supervisor
-	log.Debug().Int("fd", vm.config.ParentFD).Msg("Message receiver started")
+	log.Debug().Msg("Message receiver started, reading from stdin")
 
-	// Block until context is cancelled
-	<-ctx.Done()
+	for {
+		select {
+		case <-ctx.Done():
+			log.Debug().Msg("Message receiver stopping")
+			return
+		default:
+			// Read next message from supervisor
+			msg, err := vm.parentConn.ReadMessage()
+			if err != nil {
+				log.Error().Err(err).Msg("Failed to read message from supervisor")
+				// If pipe is closed, the supervisor has terminated us
+				return
+			}
+
+			// Send to processing channel
+			select {
+			case msgChan <- msg:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}
 }
 
-// sendToParent sends a message to the parent process
+// sendToParent sends a message to the supervisor via stdout pipe
 func (vm *VaultManager) sendToParent(msg *OutgoingMessage) error {
-	// TODO: Implement actual vsock/FD writing to supervisor
-	// For now, log the outgoing message
-	log.Debug().
-		Str("id", msg.ID).
-		Str("type", string(msg.Type)).
-		Str("subject", msg.Subject).
-		Msg("Sending message to parent")
-
-	// Serialize and write to parent FD
-	data, err := json.Marshal(msg)
-	if err != nil {
-		return fmt.Errorf("failed to marshal message: %w", err)
-	}
-
-	// In production, write to vm.config.ParentFD
-	_ = data
-	return nil
+	return vm.parentConn.WriteMessage(msg)
 }
 
 // CreateCredential creates a new Protean Credential
@@ -252,7 +255,6 @@ func (vm *VaultManager) CreateCredential(ctx context.Context, req *CredentialCre
 		AuthHash:           authHash,
 		AuthSalt:           authSalt,
 		CryptoKeys:         []CryptoKey{},
-		Metadata:           make(map[string]string),
 		CreatedAt:          currentTimestamp(),
 		Version:            1,
 	}

@@ -122,7 +122,7 @@ type GetConnectionRequest struct {
 func (h *ConnectionsHandler) HandleCreateInvite(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req CreateInviteRequest
 	if err := json.Unmarshal(msg.Payload, &req); err != nil {
-		return h.errorResponse(msg.ID, "Invalid request format")
+		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
 	// Generate connection_id if not provided
@@ -168,12 +168,12 @@ func (h *ConnectionsHandler) HandleCreateInvite(msg *IncomingMessage) (*Outgoing
 
 	data, err := json.Marshal(record)
 	if err != nil {
-		return h.errorResponse(msg.ID, "Failed to marshal connection")
+		return h.errorResponse(msg.GetID(), "Failed to marshal connection")
 	}
 
 	storageKey := "connections/" + connectionID
 	if err := h.storage.Put(storageKey, data); err != nil {
-		return h.errorResponse(msg.ID, "Failed to store connection")
+		return h.errorResponse(msg.GetID(), "Failed to store connection")
 	}
 
 	// Add to index
@@ -190,9 +190,9 @@ func (h *ConnectionsHandler) HandleCreateInvite(msg *IncomingMessage) (*Outgoing
 	respBytes, _ := json.Marshal(resp)
 
 	return &OutgoingMessage{
-		ID:      msg.ID,
-		Type:    MessageTypeResponse,
-		Payload: respBytes,
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
 	}, nil
 }
 
@@ -200,17 +200,17 @@ func (h *ConnectionsHandler) HandleCreateInvite(msg *IncomingMessage) (*Outgoing
 func (h *ConnectionsHandler) HandleStoreCredentials(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req StoreCredentialsRequest
 	if err := json.Unmarshal(msg.Payload, &req); err != nil {
-		return h.errorResponse(msg.ID, "Invalid request format")
+		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
 	if req.ConnectionID == "" {
-		return h.errorResponse(msg.ID, "connection_id is required")
+		return h.errorResponse(msg.GetID(), "connection_id is required")
 	}
 	if req.Credentials == "" {
-		return h.errorResponse(msg.ID, "credentials are required")
+		return h.errorResponse(msg.GetID(), "credentials are required")
 	}
 	if req.MessageSpaceTopic == "" {
-		return h.errorResponse(msg.ID, "message_space_topic is required")
+		return h.errorResponse(msg.GetID(), "message_space_topic is required")
 	}
 
 	// Generate our X25519 key pair
@@ -239,12 +239,12 @@ func (h *ConnectionsHandler) HandleStoreCredentials(msg *IncomingMessage) (*Outg
 
 	data, err := json.Marshal(record)
 	if err != nil {
-		return h.errorResponse(msg.ID, "Failed to marshal connection")
+		return h.errorResponse(msg.GetID(), "Failed to marshal connection")
 	}
 
 	storageKey := "connections/" + req.ConnectionID
 	if err := h.storage.Put(storageKey, data); err != nil {
-		return h.errorResponse(msg.ID, "Failed to store connection")
+		return h.errorResponse(msg.GetID(), "Failed to store connection")
 	}
 
 	h.addToConnectionIndex(req.ConnectionID)
@@ -259,9 +259,9 @@ func (h *ConnectionsHandler) HandleStoreCredentials(msg *IncomingMessage) (*Outg
 	respBytes, _ := json.Marshal(resp)
 
 	return &OutgoingMessage{
-		ID:      msg.ID,
-		Type:    MessageTypeResponse,
-		Payload: respBytes,
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
 	}, nil
 }
 
@@ -269,29 +269,29 @@ func (h *ConnectionsHandler) HandleStoreCredentials(msg *IncomingMessage) (*Outg
 func (h *ConnectionsHandler) HandleRevoke(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req RevokeConnectionRequest
 	if err := json.Unmarshal(msg.Payload, &req); err != nil {
-		return h.errorResponse(msg.ID, "Invalid request format")
+		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
 	if req.ConnectionID == "" {
-		return h.errorResponse(msg.ID, "connection_id is required")
+		return h.errorResponse(msg.GetID(), "connection_id is required")
 	}
 
 	storageKey := "connections/" + req.ConnectionID
 	data, err := h.storage.Get(storageKey)
 	if err != nil {
-		return h.errorResponse(msg.ID, "Connection not found")
+		return h.errorResponse(msg.GetID(), "Connection not found")
 	}
 
 	var record ConnectionRecord
 	if err := json.Unmarshal(data, &record); err != nil {
-		return h.errorResponse(msg.ID, "Failed to read connection")
+		return h.errorResponse(msg.GetID(), "Failed to read connection")
 	}
 
 	record.Status = "revoked"
 
 	newData, _ := json.Marshal(record)
 	if err := h.storage.Put(storageKey, newData); err != nil {
-		return h.errorResponse(msg.ID, "Failed to revoke connection")
+		return h.errorResponse(msg.GetID(), "Failed to revoke connection")
 	}
 
 	log.Info().Str("connection_id", req.ConnectionID).Msg("Connection revoked")
@@ -303,9 +303,9 @@ func (h *ConnectionsHandler) HandleRevoke(msg *IncomingMessage) (*OutgoingMessag
 	respBytes, _ := json.Marshal(resp)
 
 	return &OutgoingMessage{
-		ID:      msg.ID,
-		Type:    MessageTypeResponse,
-		Payload: respBytes,
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
 	}, nil
 }
 
@@ -368,9 +368,9 @@ func (h *ConnectionsHandler) HandleList(msg *IncomingMessage) (*OutgoingMessage,
 	respBytes, _ := json.Marshal(resp)
 
 	return &OutgoingMessage{
-		ID:      msg.ID,
-		Type:    MessageTypeResponse,
-		Payload: respBytes,
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
 	}, nil
 }
 
@@ -378,21 +378,21 @@ func (h *ConnectionsHandler) HandleList(msg *IncomingMessage) (*OutgoingMessage,
 func (h *ConnectionsHandler) HandleGet(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req GetConnectionRequest
 	if err := json.Unmarshal(msg.Payload, &req); err != nil {
-		return h.errorResponse(msg.ID, "Invalid request format")
+		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
 	if req.ConnectionID == "" {
-		return h.errorResponse(msg.ID, "connection_id is required")
+		return h.errorResponse(msg.GetID(), "connection_id is required")
 	}
 
 	data, err := h.storage.Get("connections/" + req.ConnectionID)
 	if err != nil {
-		return h.errorResponse(msg.ID, "Connection not found")
+		return h.errorResponse(msg.GetID(), "Connection not found")
 	}
 
 	var record ConnectionRecord
 	if err := json.Unmarshal(data, &record); err != nil {
-		return h.errorResponse(msg.ID, "Failed to read connection")
+		return h.errorResponse(msg.GetID(), "Failed to read connection")
 	}
 
 	info := ConnectionInfo{
@@ -409,9 +409,9 @@ func (h *ConnectionsHandler) HandleGet(msg *IncomingMessage) (*OutgoingMessage, 
 	respBytes, _ := json.Marshal(info)
 
 	return &OutgoingMessage{
-		ID:      msg.ID,
-		Type:    MessageTypeResponse,
-		Payload: respBytes,
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
 	}, nil
 }
 
@@ -444,8 +444,8 @@ func (h *ConnectionsHandler) errorResponse(id string, message string) (*Outgoing
 	respBytes, _ := json.Marshal(resp)
 
 	return &OutgoingMessage{
-		ID:      id,
-		Type:    MessageTypeResponse,
-		Payload: respBytes,
+		RequestID: id,
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
 	}, nil
 }

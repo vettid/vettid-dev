@@ -27,11 +27,12 @@ type ParentSender interface {
 
 // VaultManager manages the lifecycle of vault-manager processes
 type VaultManager struct {
-	config        *Config
-	memoryManager *MemoryManager
-	handlerCache  *HandlerCache
-	parentSender  ParentSender
-	sealer        *NitroSealer
+	config         *Config
+	memoryManager  *MemoryManager
+	handlerCache   *HandlerCache
+	parentSender   ParentSender
+	sealer         *NitroSealer
+	processManager *ProcessManager // Manages vault-manager subprocesses
 
 	vaults    map[string]*VaultProcess
 	lruOrder  []string // Least recently used order for eviction
@@ -48,12 +49,16 @@ type VaultProcess struct {
 	parentSender ParentSender
 	sealer       *NitroSealer
 
-	// Communication channels
+	// Process-based architecture (when processManager is used)
+	process *ManagedProcess // Reference to spawned vault-manager process
+
+	// Goroutine-based architecture (legacy, used when processManager is nil)
 	requestChan  chan *vaultRequest
 	responseChan chan *vaultResponse
 	stopChan     chan struct{}
 
 	// Credential state (unsealed in enclave memory)
+	// Note: In process-based mode, this is held by vault-manager subprocess
 	credential *UnsealedCredential
 
 	// ECIES keypair for PIN/password encryption (X25519)
@@ -145,15 +150,23 @@ type VaultStats struct {
 
 // NewVaultManager creates a new vault manager
 func NewVaultManager(cfg *Config, memMgr *MemoryManager, cache *HandlerCache, parentSender ParentSender, sealer *NitroSealer) *VaultManager {
+	// Create sealer handler for proxying KMS operations to vault-manager processes
+	sealerHandler := NewSealerHandler(sealer)
+
+	// Create process manager for spawning vault-manager subprocesses
+	// Per Architecture v3.1: Each vault runs in its own isolated process
+	procMgr := NewProcessManager(cfg.VaultManagerPath, cfg.DevMode, sealerHandler)
+
 	return &VaultManager{
-		config:        cfg,
-		memoryManager: memMgr,
-		handlerCache:  cache,
-		parentSender:  parentSender,
-		sealer:        sealer,
-		vaults:        make(map[string]*VaultProcess),
-		lruOrder:      make([]string, 0),
-		startTime:     time.Now(),
+		config:         cfg,
+		memoryManager:  memMgr,
+		handlerCache:   cache,
+		parentSender:   parentSender,
+		sealer:         sealer,
+		processManager: procMgr,
+		vaults:         make(map[string]*VaultProcess),
+		lruOrder:       make([]string, 0),
+		startTime:      time.Now(),
 	}
 }
 
@@ -174,45 +187,39 @@ func (vm *VaultManager) GetOrCreate(ctx context.Context, ownerSpace string) (*Va
 		vm.evictLRU()
 	}
 
-	// Generate X25519 keypair for ECIES PIN encryption
-	eciesPrivateKey := make([]byte, 32)
-	if _, err := rand.Read(eciesPrivateKey); err != nil {
-		return nil, fmt.Errorf("failed to generate ECIES private key: %w", err)
-	}
-	eciesPublicKey, err := curve25519.X25519(eciesPrivateKey, curve25519.Basepoint)
-	if err != nil {
-		return nil, fmt.Errorf("failed to derive ECIES public key: %w", err)
-	}
-
-	// Create new vault
-	vault := &VaultProcess{
-		OwnerSpace:      ownerSpace,
-		StartedAt:       time.Now(),
-		LastAccess:      time.Now(),
-		MemoryMB:        40, // Estimated memory per vault
-		parentSender:    vm.parentSender,
-		sealer:          vm.sealer,
-		requestChan:     make(chan *vaultRequest, 10),
-		responseChan:    make(chan *vaultResponse, 10),
-		stopChan:        make(chan struct{}),
-		eciesPrivateKey: eciesPrivateKey,
-		eciesPublicKey:  eciesPublicKey,
-		blockList:       make(map[string]*BlockListEntry),
-		callHistory:     make([]*CallRecord, 0),
-	}
-
 	// Reserve memory
-	if !vm.memoryManager.Reserve(vault.MemoryMB) {
+	memoryMB := 40 // Estimated memory per vault subprocess
+	if !vm.memoryManager.Reserve(memoryMB) {
 		// Try evicting and reserving again
 		vm.evictLRU()
-		if !vm.memoryManager.Reserve(vault.MemoryMB) {
+		if !vm.memoryManager.Reserve(memoryMB) {
 			log.Error().Str("owner_space", ownerSpace).Msg("Cannot allocate memory for vault")
 			return nil, ErrOutOfMemory
 		}
 	}
 
-	// Start vault process goroutine
-	go vault.run()
+	// Spawn vault-manager subprocess
+	// Per Architecture Section 3.1: Each vault runs in its own isolated process
+	proc, err := vm.processManager.Spawn(ownerSpace)
+	if err != nil {
+		vm.memoryManager.Release(memoryMB)
+		return nil, fmt.Errorf("failed to spawn vault-manager: %w", err)
+	}
+
+	// Create vault wrapper around the subprocess
+	vault := &VaultProcess{
+		OwnerSpace:   ownerSpace,
+		StartedAt:    time.Now(),
+		LastAccess:   time.Now(),
+		MemoryMB:     memoryMB,
+		parentSender: vm.parentSender,
+		sealer:       vm.sealer,
+		process:      proc,
+		// Note: Credential state, ECIES keys, CEK, UTK are now held by the subprocess
+		// The following fields are for legacy goroutine mode (kept for gradual migration)
+		blockList:   make(map[string]*BlockListEntry),
+		callHistory: make([]*CallRecord, 0),
+	}
 
 	vm.vaults[ownerSpace] = vault
 	vm.lruOrder = append(vm.lruOrder, ownerSpace)
@@ -220,7 +227,8 @@ func (vm *VaultManager) GetOrCreate(ctx context.Context, ownerSpace string) (*Va
 	log.Info().
 		Str("owner_space", ownerSpace).
 		Int("active_vaults", len(vm.vaults)).
-		Msg("Created new vault")
+		Int("pid", proc.Cmd.Process.Pid).
+		Msg("Created new vault (subprocess)")
 
 	return vault, nil
 }
@@ -252,11 +260,21 @@ func (vm *VaultManager) evictVault(ownerSpace string) {
 		return
 	}
 
-	// Stop the vault
-	close(vault.stopChan)
-
-	// SECURITY: Zero sensitive key material before releasing memory
-	vault.zeroSensitiveData()
+	// Process-based architecture: kill the subprocess
+	if vault.process != nil {
+		// Kill the subprocess via ProcessManager
+		if err := vm.processManager.Kill(ownerSpace); err != nil {
+			log.Warn().
+				Err(err).
+				Str("owner_space", ownerSpace).
+				Msg("Error killing vault-manager subprocess")
+		}
+	} else if vault.stopChan != nil {
+		// Legacy goroutine-based architecture: close the channel
+		close(vault.stopChan)
+		// SECURITY: Zero sensitive key material before releasing memory
+		vault.zeroSensitiveData()
+	}
 
 	// Release memory
 	vm.memoryManager.Release(vault.MemoryMB)
@@ -358,8 +376,14 @@ func (vm *VaultManager) ShutdownAll() {
 	vm.mu.Lock()
 	defer vm.mu.Unlock()
 
+	// Evict all vaults (handles both subprocess and goroutine modes)
 	for ownerSpace := range vm.vaults {
 		vm.evictVault(ownerSpace)
+	}
+
+	// Process-based architecture: ensure all subprocesses are killed
+	if vm.processManager != nil {
+		vm.processManager.KillAll()
 	}
 }
 
@@ -404,6 +428,22 @@ func (vp *VaultProcess) run() {
 func (vp *VaultProcess) ProcessMessage(ctx context.Context, msg *Message) (*Message, error) {
 	vp.touch()
 
+	// Process-based architecture: route through subprocess pipe
+	if vp.process != nil && vp.process.Conn != nil {
+		// Send to vault-manager subprocess and wait for response
+		timeout := 30 * time.Second
+		response, err := vp.process.Conn.SendAndReceive(msg, timeout)
+		if err != nil {
+			log.Error().
+				Err(err).
+				Str("owner_space", vp.OwnerSpace).
+				Msg("Failed to communicate with vault-manager subprocess")
+			return nil, fmt.Errorf("vault-manager communication error: %w", err)
+		}
+		return response, nil
+	}
+
+	// Legacy goroutine-based architecture (fallback)
 	req := &vaultRequest{ctx: ctx, msg: msg}
 	select {
 	case vp.requestChan <- req:

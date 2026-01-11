@@ -107,7 +107,7 @@ func (h *NotificationsHandler) HandleProfileBroadcast(msg *IncomingMessage) (*Ou
 	}
 
 	if len(fieldNames) == 0 {
-		return h.errorResponse(msg.ID, "No profile fields to broadcast")
+		return h.errorResponse(msg.GetID(), "No profile fields to broadcast")
 	}
 
 	// Get profile data
@@ -130,7 +130,7 @@ func (h *NotificationsHandler) HandleProfileBroadcast(msg *IncomingMessage) (*Ou
 	}
 
 	if len(fields) == 0 {
-		return h.errorResponse(msg.ID, "No profile fields to broadcast")
+		return h.errorResponse(msg.GetID(), "No profile fields to broadcast")
 	}
 
 	now := time.Now().UTC()
@@ -193,9 +193,9 @@ func (h *NotificationsHandler) HandleProfileBroadcast(msg *IncomingMessage) (*Ou
 	respBytes, _ := json.Marshal(resp)
 
 	return &OutgoingMessage{
-		ID:      msg.ID,
-		Type:    MessageTypeResponse,
-		Payload: respBytes,
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
 	}, nil
 }
 
@@ -203,22 +203,22 @@ func (h *NotificationsHandler) HandleProfileBroadcast(msg *IncomingMessage) (*Ou
 func (h *NotificationsHandler) HandleRevokeNotify(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req RevokeNotifyRequest
 	if err := json.Unmarshal(msg.Payload, &req); err != nil {
-		return h.errorResponse(msg.ID, "Invalid request format")
+		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
 	if req.ConnectionID == "" {
-		return h.errorResponse(msg.ID, "connection_id is required")
+		return h.errorResponse(msg.GetID(), "connection_id is required")
 	}
 
 	// Get connection
 	data, err := h.storage.Get("connections/" + req.ConnectionID)
 	if err != nil {
-		return h.errorResponse(msg.ID, "Connection not found")
+		return h.errorResponse(msg.GetID(), "Connection not found")
 	}
 
 	var conn ConnectionRecord
 	if json.Unmarshal(data, &conn) != nil {
-		return h.errorResponse(msg.ID, "Invalid connection data")
+		return h.errorResponse(msg.GetID(), "Invalid connection data")
 	}
 
 	now := time.Now().UTC()
@@ -251,9 +251,9 @@ func (h *NotificationsHandler) HandleRevokeNotify(msg *IncomingMessage) (*Outgoi
 	respBytes, _ := json.Marshal(resp)
 
 	return &OutgoingMessage{
-		ID:      msg.ID,
-		Type:    MessageTypeResponse,
-		Payload: respBytes,
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
 	}, nil
 }
 
@@ -316,8 +316,8 @@ func (h *NotificationsHandler) errorResponse(id string, message string) (*Outgoi
 	respBytes, _ := json.Marshal(resp)
 
 	return &OutgoingMessage{
-		ID:      id,
-		Type:    MessageTypeResponse,
-		Payload: respBytes,
+		RequestID: id,
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
 	}, nil
 }

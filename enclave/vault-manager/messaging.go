@@ -116,17 +116,17 @@ type PeerReadReceipt struct {
 func (h *MessagingHandler) HandleSend(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req SendMessageRequest
 	if err := json.Unmarshal(msg.Payload, &req); err != nil {
-		return h.errorResponse(msg.ID, "Invalid request format")
+		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
 	if req.ConnectionID == "" {
-		return h.errorResponse(msg.ID, "connection_id is required")
+		return h.errorResponse(msg.GetID(), "connection_id is required")
 	}
 	if req.EncryptedContent == "" {
-		return h.errorResponse(msg.ID, "encrypted_content is required")
+		return h.errorResponse(msg.GetID(), "encrypted_content is required")
 	}
 	if req.Nonce == "" {
-		return h.errorResponse(msg.ID, "nonce is required")
+		return h.errorResponse(msg.GetID(), "nonce is required")
 	}
 
 	contentType := req.ContentType
@@ -137,16 +137,16 @@ func (h *MessagingHandler) HandleSend(msg *IncomingMessage) (*OutgoingMessage, e
 	// Verify connection exists and is active
 	connData, err := h.storage.Get("connections/" + req.ConnectionID)
 	if err != nil {
-		return h.errorResponse(msg.ID, "Connection not found")
+		return h.errorResponse(msg.GetID(), "Connection not found")
 	}
 
 	var conn ConnectionRecord
 	if err := json.Unmarshal(connData, &conn); err != nil {
-		return h.errorResponse(msg.ID, "Invalid connection data")
+		return h.errorResponse(msg.GetID(), "Invalid connection data")
 	}
 
 	if conn.Status != "active" {
-		return h.errorResponse(msg.ID, "Cannot send to a revoked connection")
+		return h.errorResponse(msg.GetID(), "Cannot send to a revoked connection")
 	}
 
 	// Generate message ID and timestamp
@@ -192,7 +192,7 @@ func (h *MessagingHandler) HandleSend(msg *IncomingMessage) (*OutgoingMessage, e
 		msgData, _ = json.Marshal(localMsg)
 		h.storage.Put(storageKey, msgData)
 
-		return h.errorResponse(msg.ID, "Failed to send message to peer")
+		return h.errorResponse(msg.GetID(), "Failed to send message to peer")
 	}
 
 	log.Info().
@@ -209,9 +209,9 @@ func (h *MessagingHandler) HandleSend(msg *IncomingMessage) (*OutgoingMessage, e
 	respBytes, _ := json.Marshal(resp)
 
 	return &OutgoingMessage{
-		ID:      msg.ID,
-		Type:    MessageTypeResponse,
-		Payload: respBytes,
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
 	}, nil
 }
 
@@ -219,14 +219,14 @@ func (h *MessagingHandler) HandleSend(msg *IncomingMessage) (*OutgoingMessage, e
 func (h *MessagingHandler) HandleReadReceipt(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req ReadReceiptRequest
 	if err := json.Unmarshal(msg.Payload, &req); err != nil {
-		return h.errorResponse(msg.ID, "Invalid request format")
+		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
 	if req.ConnectionID == "" {
-		return h.errorResponse(msg.ID, "connection_id is required")
+		return h.errorResponse(msg.GetID(), "connection_id is required")
 	}
 	if req.MessageID == "" {
-		return h.errorResponse(msg.ID, "message_id is required")
+		return h.errorResponse(msg.GetID(), "message_id is required")
 	}
 
 	now := time.Now().UTC()
@@ -248,12 +248,12 @@ func (h *MessagingHandler) HandleReadReceipt(msg *IncomingMessage) (*OutgoingMes
 	// Get connection for peer info
 	connData, err := h.storage.Get("connections/" + req.ConnectionID)
 	if err != nil {
-		return h.errorResponse(msg.ID, "Connection not found")
+		return h.errorResponse(msg.GetID(), "Connection not found")
 	}
 
 	var conn ConnectionRecord
 	if err := json.Unmarshal(connData, &conn); err != nil {
-		return h.errorResponse(msg.ID, "Invalid connection data")
+		return h.errorResponse(msg.GetID(), "Invalid connection data")
 	}
 
 	// Build read receipt for peer
@@ -279,9 +279,9 @@ func (h *MessagingHandler) HandleReadReceipt(msg *IncomingMessage) (*OutgoingMes
 	respBytes, _ := json.Marshal(resp)
 
 	return &OutgoingMessage{
-		ID:      msg.ID,
-		Type:    MessageTypeResponse,
-		Payload: respBytes,
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
 	}, nil
 }
 
@@ -372,8 +372,8 @@ func (h *MessagingHandler) errorResponse(id string, message string) (*OutgoingMe
 	respBytes, _ := json.Marshal(resp)
 
 	return &OutgoingMessage{
-		ID:      id,
-		Type:    MessageTypeResponse,
-		Payload: respBytes,
+		RequestID: id,
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
 	}, nil
 }

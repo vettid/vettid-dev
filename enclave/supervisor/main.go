@@ -44,14 +44,13 @@ func main() {
 		Int("max_vaults", *maxVaults).
 		Msg("VettID Enclave Supervisor starting")
 
-	// Create supervisor configuration
-	cfg := &Config{
-		DevMode:     *devMode,
-		VsockPort:   uint32(*vsockPort),
-		TCPPort:     uint16(*tcpPort),
-		MaxVaults:   *maxVaults,
-		MaxMemoryMB: *maxMemoryMB,
-	}
+	// Create supervisor configuration - start with defaults and override from flags
+	cfg := DefaultConfig()
+	cfg.DevMode = *devMode
+	cfg.VsockPort = uint32(*vsockPort)
+	cfg.TCPPort = uint16(*tcpPort)
+	cfg.MaxVaults = *maxVaults
+	cfg.MaxMemoryMB = *maxMemoryMB
 
 	// Create and start supervisor
 	supervisor, err := NewSupervisor(cfg)

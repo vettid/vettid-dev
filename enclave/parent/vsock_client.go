@@ -70,7 +70,7 @@ type EnclaveMessage struct {
 	Subject    string             `json:"subject,omitempty"`
 	ReplyTo    string             `json:"reply_to,omitempty"`
 	StorageKey string             `json:"storage_key,omitempty"`
-	Payload    []byte             `json:"payload,omitempty"`
+	Payload    json.RawMessage    `json:"payload,omitempty"`
 	Error      string             `json:"error,omitempty"`
 
 	// Attestation fields

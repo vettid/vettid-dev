@@ -101,7 +101,7 @@ type Message struct {
 	StorageValue []byte `json:"storage_value,omitempty"`
 
 	// Generic payload (JSON-encoded data)
-	Payload []byte `json:"payload,omitempty"`
+	Payload json.RawMessage `json:"payload,omitempty"`
 
 	// Handler loading
 	HandlerID      string `json:"handler_id,omitempty"`

@@ -97,20 +97,20 @@ type SecretsListResponse struct {
 func (h *SecretsHandler) HandleAdd(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req SecretsAddRequest
 	if err := json.Unmarshal(msg.Payload, &req); err != nil {
-		return h.errorResponse(msg.ID, "Invalid request format")
+		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
 	if req.Key == "" {
-		return h.errorResponse(msg.ID, "key is required")
+		return h.errorResponse(msg.GetID(), "key is required")
 	}
 	if req.Value == "" {
-		return h.errorResponse(msg.ID, "value is required")
+		return h.errorResponse(msg.GetID(), "value is required")
 	}
 
 	// Check if secret already exists
 	storageKey := "secrets/" + req.Key
 	if _, err := h.storage.Get(storageKey); err == nil {
-		return h.errorResponse(msg.ID, "Secret already exists - use update to modify")
+		return h.errorResponse(msg.GetID(), "Secret already exists - use update to modify")
 	}
 
 	now := time.Now().UTC()
@@ -126,12 +126,12 @@ func (h *SecretsHandler) HandleAdd(msg *IncomingMessage) (*OutgoingMessage, erro
 
 	data, err := json.Marshal(entry)
 	if err != nil {
-		return h.errorResponse(msg.ID, "Failed to marshal secret")
+		return h.errorResponse(msg.GetID(), "Failed to marshal secret")
 	}
 
 	if err := h.storage.Put(storageKey, data); err != nil {
 		log.Error().Err(err).Str("key", req.Key).Msg("Failed to store secret")
-		return h.errorResponse(msg.ID, "Failed to store secret")
+		return h.errorResponse(msg.GetID(), "Failed to store secret")
 	}
 
 	log.Info().Str("key", req.Key).Msg("Secret added")
@@ -143,9 +143,9 @@ func (h *SecretsHandler) HandleAdd(msg *IncomingMessage) (*OutgoingMessage, erro
 	respBytes, _ := json.Marshal(resp)
 
 	return &OutgoingMessage{
-		ID:      msg.ID,
-		Type:    MessageTypeResponse,
-		Payload: respBytes,
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
 	}, nil
 }
 
@@ -153,14 +153,14 @@ func (h *SecretsHandler) HandleAdd(msg *IncomingMessage) (*OutgoingMessage, erro
 func (h *SecretsHandler) HandleUpdate(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req SecretsUpdateRequest
 	if err := json.Unmarshal(msg.Payload, &req); err != nil {
-		return h.errorResponse(msg.ID, "Invalid request format")
+		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
 	if req.Key == "" {
-		return h.errorResponse(msg.ID, "key is required")
+		return h.errorResponse(msg.GetID(), "key is required")
 	}
 	if req.Value == "" {
-		return h.errorResponse(msg.ID, "value is required")
+		return h.errorResponse(msg.GetID(), "value is required")
 	}
 
 	storageKey := "secrets/" + req.Key
@@ -168,12 +168,12 @@ func (h *SecretsHandler) HandleUpdate(msg *IncomingMessage) (*OutgoingMessage, e
 	// Get existing secret
 	existingData, err := h.storage.Get(storageKey)
 	if err != nil {
-		return h.errorResponse(msg.ID, "Secret not found")
+		return h.errorResponse(msg.GetID(), "Secret not found")
 	}
 
 	var entry SecretEntry
 	if err := json.Unmarshal(existingData, &entry); err != nil {
-		return h.errorResponse(msg.ID, "Failed to read existing secret")
+		return h.errorResponse(msg.GetID(), "Failed to read existing secret")
 	}
 
 	// Update fields
@@ -191,11 +191,11 @@ func (h *SecretsHandler) HandleUpdate(msg *IncomingMessage) (*OutgoingMessage, e
 
 	data, err := json.Marshal(entry)
 	if err != nil {
-		return h.errorResponse(msg.ID, "Failed to marshal secret")
+		return h.errorResponse(msg.GetID(), "Failed to marshal secret")
 	}
 
 	if err := h.storage.Put(storageKey, data); err != nil {
-		return h.errorResponse(msg.ID, "Failed to update secret")
+		return h.errorResponse(msg.GetID(), "Failed to update secret")
 	}
 
 	log.Info().Str("key", req.Key).Msg("Secret updated")
@@ -207,9 +207,9 @@ func (h *SecretsHandler) HandleUpdate(msg *IncomingMessage) (*OutgoingMessage, e
 	respBytes, _ := json.Marshal(resp)
 
 	return &OutgoingMessage{
-		ID:      msg.ID,
-		Type:    MessageTypeResponse,
-		Payload: respBytes,
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
 	}, nil
 }
 
@@ -217,22 +217,22 @@ func (h *SecretsHandler) HandleUpdate(msg *IncomingMessage) (*OutgoingMessage, e
 func (h *SecretsHandler) HandleRetrieve(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req SecretsRetrieveRequest
 	if err := json.Unmarshal(msg.Payload, &req); err != nil {
-		return h.errorResponse(msg.ID, "Invalid request format")
+		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
 	if req.Key == "" {
-		return h.errorResponse(msg.ID, "key is required")
+		return h.errorResponse(msg.GetID(), "key is required")
 	}
 
 	storageKey := "secrets/" + req.Key
 	data, err := h.storage.Get(storageKey)
 	if err != nil {
-		return h.errorResponse(msg.ID, "Secret not found")
+		return h.errorResponse(msg.GetID(), "Secret not found")
 	}
 
 	var entry SecretEntry
 	if err := json.Unmarshal(data, &entry); err != nil {
-		return h.errorResponse(msg.ID, "Failed to read secret")
+		return h.errorResponse(msg.GetID(), "Failed to read secret")
 	}
 
 	resp := SecretsRetrieveResponse{
@@ -243,9 +243,9 @@ func (h *SecretsHandler) HandleRetrieve(msg *IncomingMessage) (*OutgoingMessage,
 	respBytes, _ := json.Marshal(resp)
 
 	return &OutgoingMessage{
-		ID:      msg.ID,
-		Type:    MessageTypeResponse,
-		Payload: respBytes,
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
 	}, nil
 }
 
@@ -253,16 +253,16 @@ func (h *SecretsHandler) HandleRetrieve(msg *IncomingMessage) (*OutgoingMessage,
 func (h *SecretsHandler) HandleDelete(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req SecretsDeleteRequest
 	if err := json.Unmarshal(msg.Payload, &req); err != nil {
-		return h.errorResponse(msg.ID, "Invalid request format")
+		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
 	if req.Key == "" {
-		return h.errorResponse(msg.ID, "key is required")
+		return h.errorResponse(msg.GetID(), "key is required")
 	}
 
 	storageKey := "secrets/" + req.Key
 	if err := h.storage.Delete(storageKey); err != nil {
-		return h.errorResponse(msg.ID, "Failed to delete secret")
+		return h.errorResponse(msg.GetID(), "Failed to delete secret")
 	}
 
 	log.Info().Str("key", req.Key).Msg("Secret deleted")
@@ -274,9 +274,9 @@ func (h *SecretsHandler) HandleDelete(msg *IncomingMessage) (*OutgoingMessage, e
 	respBytes, _ := json.Marshal(resp)
 
 	return &OutgoingMessage{
-		ID:      msg.ID,
-		Type:    MessageTypeResponse,
-		Payload: respBytes,
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
 	}, nil
 }
 
@@ -284,7 +284,7 @@ func (h *SecretsHandler) HandleDelete(msg *IncomingMessage) (*OutgoingMessage, e
 func (h *SecretsHandler) HandleList(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req SecretsListRequest
 	if err := json.Unmarshal(msg.Payload, &req); err != nil {
-		return h.errorResponse(msg.ID, "Invalid request format")
+		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
 	// For enclave, we return an empty list since we don't have KV enumeration
@@ -295,9 +295,9 @@ func (h *SecretsHandler) HandleList(msg *IncomingMessage) (*OutgoingMessage, err
 	respBytes, _ := json.Marshal(resp)
 
 	return &OutgoingMessage{
-		ID:      msg.ID,
-		Type:    MessageTypeResponse,
-		Payload: respBytes,
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
 	}, nil
 }
 
@@ -309,8 +309,8 @@ func (h *SecretsHandler) errorResponse(id string, message string) (*OutgoingMess
 	respBytes, _ := json.Marshal(resp)
 
 	return &OutgoingMessage{
-		ID:      id,
-		Type:    MessageTypeResponse,
-		Payload: respBytes,
+		RequestID: id,
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
 	}, nil
 }

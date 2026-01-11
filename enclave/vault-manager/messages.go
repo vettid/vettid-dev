@@ -25,21 +25,41 @@ const (
 )
 
 // IncomingMessage is a message from the supervisor/parent
+// Field names match the supervisor's Message struct for JSON compatibility
 type IncomingMessage struct {
-	ID         string          `json:"id"`
+	// Core fields - aligned with supervisor's Message struct
 	Type       MessageType     `json:"type"`
-	Subject    string          `json:"subject"`     // NATS subject (e.g., "OwnerSpace.user-123.forVault.call.initiate")
-	Payload    json.RawMessage `json:"payload"`
+	OwnerSpace string          `json:"owner_space,omitempty"`
+	RequestID  string          `json:"request_id,omitempty"` // Matches supervisor's RequestID
+	Subject    string          `json:"subject,omitempty"`    // NATS subject
 	ReplyTo    string          `json:"reply_to,omitempty"`
+	Payload    json.RawMessage `json:"payload,omitempty"`
+
+	// Legacy field for backward compatibility
+	ID string `json:"id,omitempty"` // Fallback if RequestID not set
+}
+
+// GetID returns the message ID, preferring RequestID over ID
+func (m *IncomingMessage) GetID() string {
+	if m.RequestID != "" {
+		return m.RequestID
+	}
+	return m.ID
 }
 
 // OutgoingMessage is a message to the supervisor/parent
+// Field names match the supervisor's Message struct for JSON compatibility
 type OutgoingMessage struct {
-	ID         string          `json:"id"`
 	Type       MessageType     `json:"type"`
+	OwnerSpace string          `json:"owner_space,omitempty"`
+	RequestID  string          `json:"request_id,omitempty"` // Matches supervisor's RequestID
 	Subject    string          `json:"subject,omitempty"`
+	ReplyTo    string          `json:"reply_to,omitempty"`
 	Payload    json.RawMessage `json:"payload,omitempty"`
 	Error      string          `json:"error,omitempty"`
+
+	// Legacy field for backward compatibility
+	ID string `json:"id,omitempty"`
 }
 
 // MessageHandler processes incoming messages
@@ -54,6 +74,12 @@ type MessageHandler struct {
 	connectionsHandler   *ConnectionsHandler
 	notificationsHandler *NotificationsHandler
 	publisher            *VsockPublisher
+
+	// Cryptographic state and handlers for Phase 4
+	vaultState       *VaultState
+	bootstrapHandler *BootstrapHandler
+	pinHandler       *PINHandler
+	sealerProxy      *SealerProxy
 }
 
 // VsockPublisher implements CallPublisher using vsock to parent
@@ -108,7 +134,20 @@ func (p *VsockPublisher) PublishToVault(ctx context.Context, targetOwnerSpace st
 }
 
 // NewMessageHandler creates a new message handler
-func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *VsockPublisher) *MessageHandler {
+func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *VsockPublisher, sendFn func(msg *OutgoingMessage) error) *MessageHandler {
+	// Create vault state - this holds all cryptographic material in memory
+	vaultState := NewVaultState()
+
+	// Create sealer proxy for KMS-dependent operations
+	// The sendFn allows the proxy to request KMS operations from the supervisor
+	sealerProxy := NewSealerProxy(ownerSpace, sendFn)
+
+	// Create bootstrap handler - generates CEK/UTK pairs
+	bootstrapHandler := NewBootstrapHandler(ownerSpace, vaultState)
+
+	// Create PIN handler - handles PIN setup/unlock/change using the sealer proxy
+	pinHandler := NewPINHandler(ownerSpace, vaultState, bootstrapHandler, sealerProxy)
+
 	return &MessageHandler{
 		ownerSpace:           ownerSpace,
 		storage:              storage,
@@ -120,6 +159,12 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 		connectionsHandler:   NewConnectionsHandler(ownerSpace, storage),
 		notificationsHandler: NewNotificationsHandler(ownerSpace, storage, publisher),
 		publisher:            publisher,
+
+		// Cryptographic components
+		vaultState:       vaultState,
+		bootstrapHandler: bootstrapHandler,
+		pinHandler:       pinHandler,
+		sealerProxy:      sealerProxy,
 	}
 }
 
@@ -132,10 +177,26 @@ func (mh *MessageHandler) Initialize(ctx context.Context) error {
 	return nil
 }
 
+// SetSealerResponseChannel sets the channel for receiving sealer responses from supervisor
+// This must be called before any PIN operations that require KMS access
+func (mh *MessageHandler) SetSealerResponseChannel(ch chan *IncomingMessage) {
+	mh.sealerProxy.SetResponseChannel(ch)
+}
+
+// GetSealerProxy returns the sealer proxy for routing sealer responses
+func (mh *MessageHandler) GetSealerProxy() *SealerProxy {
+	return mh.sealerProxy
+}
+
+// IsSealerResponse checks if a message is a sealer response from supervisor
+func (mh *MessageHandler) IsSealerResponse(msg *IncomingMessage) bool {
+	return msg.Type == MessageTypeSealerResponse
+}
+
 // HandleMessage processes an incoming message
 func (mh *MessageHandler) HandleMessage(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	log.Debug().
-		Str("id", msg.ID).
+		Str("id", msg.GetID()).
 		Str("type", string(msg.Type)).
 		Str("subject", msg.Subject).
 		Msg("Handling message")
@@ -154,7 +215,7 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 	// Format: OwnerSpace.{guid}.forVault.{operation...}
 	parts := strings.Split(msg.Subject, ".")
 	if len(parts) < 4 {
-		return mh.errorResponse(msg.ID, "invalid subject format")
+		return mh.errorResponse(msg.GetID(), "invalid subject format")
 	}
 
 	// Extract operation path (everything after forVault)
@@ -166,7 +227,7 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 		}
 	}
 	if opIndex == -1 || opIndex+1 >= len(parts) {
-		return mh.errorResponse(msg.ID, "missing operation in subject")
+		return mh.errorResponse(msg.GetID(), "missing operation in subject")
 	}
 
 	operation := parts[opIndex+1]
@@ -178,6 +239,12 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 		return mh.handleAppOperation(ctx, msg, parts[opIndex+1:])
 	case "bootstrap":
 		return mh.handleBootstrap(ctx, msg)
+	case "pin-setup":
+		return mh.pinHandler.HandlePINSetup(ctx, msg)
+	case "pin-unlock":
+		return mh.pinHandler.HandlePINUnlock(ctx, msg)
+	case "pin-change":
+		return mh.pinHandler.HandlePINChange(ctx, msg)
 	case "unseal":
 		return mh.handleUnseal(ctx, msg)
 	case "sign":
@@ -209,14 +276,14 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 		// Incoming read receipt from peer vault
 		return mh.handleIncomingReadReceipt(ctx, msg)
 	default:
-		return mh.errorResponse(msg.ID, fmt.Sprintf("unknown operation: %s", operation))
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown operation: %s", operation))
 	}
 }
 
 // handleAppOperation routes app-related operations (like authenticate)
 func (mh *MessageHandler) handleAppOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
 	if len(opParts) < 2 {
-		return mh.errorResponse(msg.ID, "missing app operation type")
+		return mh.errorResponse(msg.GetID(), "missing app operation type")
 	}
 
 	opType := opParts[1] // e.g., "authenticate"
@@ -225,14 +292,14 @@ func (mh *MessageHandler) handleAppOperation(ctx context.Context, msg *IncomingM
 	case "authenticate":
 		return mh.handleAuthenticate(msg)
 	default:
-		return mh.errorResponse(msg.ID, fmt.Sprintf("unknown app operation: %s", opType))
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown app operation: %s", opType))
 	}
 }
 
 // handleCallOperation routes call-related operations
 func (mh *MessageHandler) handleCallOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
 	if len(opParts) < 2 {
-		return mh.errorResponse(msg.ID, "missing call event type")
+		return mh.errorResponse(msg.GetID(), "missing call event type")
 	}
 
 	eventTypeStr := opParts[1] // e.g., "initiate", "offer", "answer"
@@ -240,7 +307,7 @@ func (mh *MessageHandler) handleCallOperation(ctx context.Context, msg *Incoming
 	// Parse the call event
 	var event CallEvent
 	if err := json.Unmarshal(msg.Payload, &event); err != nil {
-		return mh.errorResponse(msg.ID, fmt.Sprintf("invalid call event payload: %v", err))
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("invalid call event payload: %v", err))
 	}
 
 	// Map string to CallEventType
@@ -249,16 +316,16 @@ func (mh *MessageHandler) handleCallOperation(ctx context.Context, msg *Incoming
 
 	// Handle the call event
 	if err := mh.callHandler.HandleCallEvent(ctx, &event); err != nil {
-		return mh.errorResponse(msg.ID, fmt.Sprintf("call handling error: %v", err))
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("call handling error: %v", err))
 	}
 
-	return mh.successResponse(msg.ID, nil)
+	return mh.successResponse(msg.GetID(), nil)
 }
 
 // handleBlockOperation handles block/unblock requests from the app
 func (mh *MessageHandler) handleBlockOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
 	if len(opParts) < 2 {
-		return mh.errorResponse(msg.ID, "missing block operation type")
+		return mh.errorResponse(msg.GetID(), "missing block operation type")
 	}
 
 	opType := opParts[1] // "add" or "remove"
@@ -269,50 +336,48 @@ func (mh *MessageHandler) handleBlockOperation(ctx context.Context, msg *Incomin
 		DurationSecs int64  `json:"duration_secs,omitempty"`
 	}
 	if err := json.Unmarshal(msg.Payload, &req); err != nil {
-		return mh.errorResponse(msg.ID, fmt.Sprintf("invalid block request: %v", err))
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("invalid block request: %v", err))
 	}
 
 	switch opType {
 	case "add":
 		if err := mh.callHandler.BlockCaller(ctx, req.TargetID, req.Reason, req.DurationSecs); err != nil {
-			return mh.errorResponse(msg.ID, err.Error())
+			return mh.errorResponse(msg.GetID(), err.Error())
 		}
 	case "remove":
 		if err := mh.callHandler.UnblockCaller(ctx, req.TargetID); err != nil {
-			return mh.errorResponse(msg.ID, err.Error())
+			return mh.errorResponse(msg.GetID(), err.Error())
 		}
 	default:
-		return mh.errorResponse(msg.ID, fmt.Sprintf("unknown block operation: %s", opType))
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown block operation: %s", opType))
 	}
 
-	return mh.successResponse(msg.ID, nil)
+	return mh.successResponse(msg.GetID(), nil)
 }
 
 // handleBootstrap handles vault bootstrap request
 func (mh *MessageHandler) handleBootstrap(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
-	// TODO: Implement bootstrap logic
-	log.Info().Msg("Bootstrap requested")
-	return mh.successResponse(msg.ID, []byte(`{"status":"bootstrap_pending"}`))
+	return mh.bootstrapHandler.HandleBootstrap(ctx, msg)
 }
 
 // handleUnseal handles credential unseal request
 func (mh *MessageHandler) handleUnseal(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	// TODO: Implement unseal logic
 	log.Info().Msg("Unseal requested")
-	return mh.successResponse(msg.ID, nil)
+	return mh.successResponse(msg.GetID(), nil)
 }
 
 // handleSign handles signing request
 func (mh *MessageHandler) handleSign(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	// TODO: Implement signing logic
 	log.Info().Msg("Sign requested")
-	return mh.successResponse(msg.ID, nil)
+	return mh.successResponse(msg.GetID(), nil)
 }
 
 // handleSecretsOperation routes secrets-related operations
 func (mh *MessageHandler) handleSecretsOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
 	if len(opParts) < 2 {
-		return mh.errorResponse(msg.ID, "missing secrets operation type")
+		return mh.errorResponse(msg.GetID(), "missing secrets operation type")
 	}
 
 	opType := opParts[1]
@@ -329,14 +394,14 @@ func (mh *MessageHandler) handleSecretsOperation(ctx context.Context, msg *Incom
 	case "list":
 		return mh.secretsHandler.HandleList(msg)
 	default:
-		return mh.errorResponse(msg.ID, fmt.Sprintf("unknown secrets operation: %s", opType))
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown secrets operation: %s", opType))
 	}
 }
 
 // handleProfileOperation routes profile-related operations
 func (mh *MessageHandler) handleProfileOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
 	if len(opParts) < 2 {
-		return mh.errorResponse(msg.ID, "missing profile operation type")
+		return mh.errorResponse(msg.GetID(), "missing profile operation type")
 	}
 
 	opType := opParts[1]
@@ -349,14 +414,14 @@ func (mh *MessageHandler) handleProfileOperation(ctx context.Context, msg *Incom
 	case "delete":
 		return mh.profileHandler.HandleDelete(msg)
 	default:
-		return mh.errorResponse(msg.ID, fmt.Sprintf("unknown profile operation: %s", opType))
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown profile operation: %s", opType))
 	}
 }
 
 // handleCredentialOperation routes credential-related operations
 func (mh *MessageHandler) handleCredentialOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
 	if len(opParts) < 2 {
-		return mh.errorResponse(msg.ID, "missing credential operation type")
+		return mh.errorResponse(msg.GetID(), "missing credential operation type")
 	}
 
 	opType := opParts[1]
@@ -371,14 +436,14 @@ func (mh *MessageHandler) handleCredentialOperation(ctx context.Context, msg *In
 	case "version":
 		return mh.credentialHandler.HandleVersion(msg)
 	default:
-		return mh.errorResponse(msg.ID, fmt.Sprintf("unknown credential operation: %s", opType))
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown credential operation: %s", opType))
 	}
 }
 
 // handleMessageOperation routes messaging-related operations
 func (mh *MessageHandler) handleMessageOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
 	if len(opParts) < 2 {
-		return mh.errorResponse(msg.ID, "missing message operation type")
+		return mh.errorResponse(msg.GetID(), "missing message operation type")
 	}
 
 	opType := opParts[1]
@@ -389,14 +454,14 @@ func (mh *MessageHandler) handleMessageOperation(ctx context.Context, msg *Incom
 	case "read-receipt":
 		return mh.messagingHandler.HandleReadReceipt(msg)
 	default:
-		return mh.errorResponse(msg.ID, fmt.Sprintf("unknown message operation: %s", opType))
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown message operation: %s", opType))
 	}
 }
 
 // handleConnectionOperation routes connection-related operations
 func (mh *MessageHandler) handleConnectionOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
 	if len(opParts) < 2 {
-		return mh.errorResponse(msg.ID, "missing connection operation type")
+		return mh.errorResponse(msg.GetID(), "missing connection operation type")
 	}
 
 	opType := opParts[1]
@@ -413,14 +478,14 @@ func (mh *MessageHandler) handleConnectionOperation(ctx context.Context, msg *In
 	case "get":
 		return mh.connectionsHandler.HandleGet(msg)
 	default:
-		return mh.errorResponse(msg.ID, fmt.Sprintf("unknown connection operation: %s", opType))
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown connection operation: %s", opType))
 	}
 }
 
 // handleNotificationOperation routes notification-related operations
 func (mh *MessageHandler) handleNotificationOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
 	if len(opParts) < 2 {
-		return mh.errorResponse(msg.ID, "missing notification operation type")
+		return mh.errorResponse(msg.GetID(), "missing notification operation type")
 	}
 
 	opType := opParts[1]
@@ -431,7 +496,7 @@ func (mh *MessageHandler) handleNotificationOperation(ctx context.Context, msg *
 	case "revoke-notify":
 		return mh.notificationsHandler.HandleRevokeNotify(msg)
 	default:
-		return mh.errorResponse(msg.ID, fmt.Sprintf("unknown notification operation: %s", opType))
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown notification operation: %s", opType))
 	}
 }
 
@@ -440,50 +505,50 @@ func (mh *MessageHandler) handleNotificationOperation(ctx context.Context, msg *
 // handleIncomingProfileUpdate handles profile update notifications from peer vaults
 func (mh *MessageHandler) handleIncomingProfileUpdate(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	if err := mh.notificationsHandler.HandleIncomingProfileUpdate(ctx, msg.Payload); err != nil {
-		return mh.errorResponse(msg.ID, fmt.Sprintf("failed to handle profile update: %v", err))
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("failed to handle profile update: %v", err))
 	}
-	return mh.successResponse(msg.ID, nil)
+	return mh.successResponse(msg.GetID(), nil)
 }
 
 // handleIncomingRevocation handles revocation notices from peer vaults
 func (mh *MessageHandler) handleIncomingRevocation(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	if err := mh.notificationsHandler.HandleIncomingRevocation(ctx, msg.Payload); err != nil {
-		return mh.errorResponse(msg.ID, fmt.Sprintf("failed to handle revocation: %v", err))
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("failed to handle revocation: %v", err))
 	}
-	return mh.successResponse(msg.ID, nil)
+	return mh.successResponse(msg.GetID(), nil)
 }
 
 // handleIncomingPeerMessage handles messages from peer vaults
 func (mh *MessageHandler) handleIncomingPeerMessage(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	if err := mh.messagingHandler.HandleIncomingMessage(ctx, msg.Payload); err != nil {
-		return mh.errorResponse(msg.ID, fmt.Sprintf("failed to handle peer message: %v", err))
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("failed to handle peer message: %v", err))
 	}
-	return mh.successResponse(msg.ID, nil)
+	return mh.successResponse(msg.GetID(), nil)
 }
 
 // handleIncomingReadReceipt handles read receipts from peer vaults
 func (mh *MessageHandler) handleIncomingReadReceipt(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	if err := mh.messagingHandler.HandleIncomingReadReceipt(ctx, msg.Payload); err != nil {
-		return mh.errorResponse(msg.ID, fmt.Sprintf("failed to handle read receipt: %v", err))
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("failed to handle read receipt: %v", err))
 	}
-	return mh.successResponse(msg.ID, nil)
+	return mh.successResponse(msg.GetID(), nil)
 }
 
 // Response helpers
 
 func (mh *MessageHandler) successResponse(id string, payload []byte) (*OutgoingMessage, error) {
 	return &OutgoingMessage{
-		ID:      id,
-		Type:    MessageTypeResponse,
-		Payload: payload,
+		RequestID: id,
+		Type:      MessageTypeResponse,
+		Payload:   payload,
 	}, nil
 }
 
 func (mh *MessageHandler) errorResponse(id string, errMsg string) (*OutgoingMessage, error) {
 	return &OutgoingMessage{
-		ID:    id,
-		Type:  MessageTypeError,
-		Error: sanitizeErrorForClient(errMsg),
+		RequestID: id,
+		Type:      MessageTypeError,
+		Error:     sanitizeErrorForClient(errMsg),
 	}, nil
 }
 

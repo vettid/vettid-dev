@@ -63,7 +63,7 @@ type ProfileDeleteRequest struct {
 func (h *ProfileHandler) HandleGet(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req ProfileGetRequest
 	if err := json.Unmarshal(msg.Payload, &req); err != nil {
-		return h.errorResponse(msg.ID, "Invalid request format")
+		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
 	result := ProfileGetResponse{
@@ -103,9 +103,9 @@ func (h *ProfileHandler) HandleGet(msg *IncomingMessage) (*OutgoingMessage, erro
 	respBytes, _ := json.Marshal(result)
 
 	return &OutgoingMessage{
-		ID:      msg.ID,
-		Type:    MessageTypeResponse,
-		Payload: respBytes,
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
 	}, nil
 }
 
@@ -113,11 +113,11 @@ func (h *ProfileHandler) HandleGet(msg *IncomingMessage) (*OutgoingMessage, erro
 func (h *ProfileHandler) HandleUpdate(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req ProfileUpdateRequest
 	if err := json.Unmarshal(msg.Payload, &req); err != nil {
-		return h.errorResponse(msg.ID, "Invalid request format")
+		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
 	if len(req.Fields) == 0 {
-		return h.errorResponse(msg.ID, "fields are required")
+		return h.errorResponse(msg.GetID(), "fields are required")
 	}
 
 	now := time.Now().UTC()
@@ -171,9 +171,9 @@ func (h *ProfileHandler) HandleUpdate(msg *IncomingMessage) (*OutgoingMessage, e
 	respBytes, _ := json.Marshal(resp)
 
 	return &OutgoingMessage{
-		ID:      msg.ID,
-		Type:    MessageTypeResponse,
-		Payload: respBytes,
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
 	}, nil
 }
 
@@ -181,11 +181,11 @@ func (h *ProfileHandler) HandleUpdate(msg *IncomingMessage) (*OutgoingMessage, e
 func (h *ProfileHandler) HandleDelete(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req ProfileDeleteRequest
 	if err := json.Unmarshal(msg.Payload, &req); err != nil {
-		return h.errorResponse(msg.ID, "Invalid request format")
+		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
 	if len(req.Fields) == 0 {
-		return h.errorResponse(msg.ID, "fields are required")
+		return h.errorResponse(msg.GetID(), "fields are required")
 	}
 
 	deletedCount := 0
@@ -221,9 +221,9 @@ func (h *ProfileHandler) HandleDelete(msg *IncomingMessage) (*OutgoingMessage, e
 	respBytes, _ := json.Marshal(resp)
 
 	return &OutgoingMessage{
-		ID:      msg.ID,
-		Type:    MessageTypeResponse,
-		Payload: respBytes,
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
 	}, nil
 }
 
@@ -235,9 +235,9 @@ func (h *ProfileHandler) errorResponse(id string, message string) (*OutgoingMess
 	respBytes, _ := json.Marshal(resp)
 
 	return &OutgoingMessage{
-		ID:      id,
-		Type:    MessageTypeResponse,
-		Payload: respBytes,
+		RequestID: id,
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
 	}, nil
 }
 
