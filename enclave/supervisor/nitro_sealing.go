@@ -384,8 +384,8 @@ func (s *NitroSealer) kmsDecrypt(ciphertext []byte, attestation []byte) ([]byte,
 		return nil, fmt.Errorf("unexpected response type: %s", response.Type)
 	}
 
-	// The payload contains CiphertextForRecipient
-	return response.Payload, nil
+	// The ciphertext contains CiphertextForRecipient
+	return response.Ciphertext, nil
 }
 
 // Development mode implementations (NOT SECURE - for testing only)
@@ -520,20 +520,66 @@ func generateMockAttestationWithECDSA(nonce []byte) (*Attestation, *ecdsa.Privat
 //   }
 // }
 func findEncryptedKeyInCMS(data []byte) []byte {
-	// Search for OCTET STRING tag (04) followed by length encoding for 256 bytes
+	// Debug: log all OCTET STRING tags found in the data
+	log.Debug().
+		Int("data_len", len(data)).
+		Hex("full_data", data).
+		Msg("CMS data received for parsing")
+
+	// Find all OCTET STRING (0x04) tags and their lengths
+	for i := 0; i < len(data)-2; i++ {
+		if data[i] == 0x04 {
+			// Parse ASN.1 length
+			length := 0
+			headerLen := 0
+			if data[i+1] < 0x80 {
+				// Short form: length is the byte itself
+				length = int(data[i+1])
+				headerLen = 2
+			} else if data[i+1] == 0x81 && i+2 < len(data) {
+				// Long form: 1 byte length
+				length = int(data[i+2])
+				headerLen = 3
+			} else if data[i+1] == 0x82 && i+3 < len(data) {
+				// Long form: 2 byte length
+				length = int(data[i+2])<<8 | int(data[i+3])
+				headerLen = 4
+			}
+			if length > 0 && length <= len(data)-i-headerLen {
+				log.Debug().
+					Int("offset", i).
+					Int("length", length).
+					Int("header_len", headerLen).
+					Msg("Found OCTET STRING in CMS")
+
+				// If this looks like our RSA encrypted key (256 bytes for 2048-bit RSA)
+				if length == 256 {
+					start := i + headerLen
+					end := start + 256
+					if end <= len(data) {
+						log.Info().
+							Int("offset", i).
+							Msg("Found 256-byte encrypted key OCTET STRING in CMS")
+						return data[start:end]
+					}
+				}
+			}
+		}
+	}
+
+	// Search for specific patterns as fallback
 	// 04 82 01 00 = OCTET STRING with 2-byte length 0x0100 (256)
 	pattern := []byte{0x04, 0x82, 0x01, 0x00}
 
 	for i := 0; i <= len(data)-len(pattern)-256; i++ {
 		if data[i] == pattern[0] && data[i+1] == pattern[1] &&
-		   data[i+2] == pattern[2] && data[i+3] == pattern[3] {
-			// Found the pattern, extract the 256 bytes after it
+			data[i+2] == pattern[2] && data[i+3] == pattern[3] {
 			start := i + 4
 			end := start + 256
 			if end <= len(data) {
 				log.Debug().
 					Int("offset", i).
-					Msg("Found encrypted key OCTET STRING in CMS")
+					Msg("Found encrypted key via pattern match")
 				return data[start:end]
 			}
 		}
@@ -557,7 +603,7 @@ func findEncryptedKeyInCMS(data []byte) []byte {
 
 	log.Error().
 		Int("data_len", len(data)).
-		Hex("first_32_bytes", data[:min(32, len(data))]).
+		Hex("first_64_bytes", data[:min(64, len(data))]).
 		Msg("Could not find encrypted key pattern in CMS data")
 
 	return nil
