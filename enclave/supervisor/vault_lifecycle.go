@@ -32,6 +32,7 @@ type VaultManager struct {
 	handlerCache   *HandlerCache
 	parentSender   ParentSender
 	sealer         *NitroSealer
+	sealerHandler  *SealerHandler  // For handling sealer requests from vault-manager
 	processManager *ProcessManager // Manages vault-manager subprocesses
 
 	vaults    map[string]*VaultProcess
@@ -50,7 +51,8 @@ type VaultProcess struct {
 	sealer       *NitroSealer
 
 	// Process-based architecture (when processManager is used)
-	process *ManagedProcess // Reference to spawned vault-manager process
+	process       *ManagedProcess // Reference to spawned vault-manager process
+	sealerHandler *SealerHandler  // For handling sealer requests from vault-manager
 
 	// Goroutine-based architecture (legacy, used when processManager is nil)
 	requestChan  chan *vaultRequest
@@ -163,6 +165,7 @@ func NewVaultManager(cfg *Config, memMgr *MemoryManager, cache *HandlerCache, pa
 		handlerCache:   cache,
 		parentSender:   parentSender,
 		sealer:         sealer,
+		sealerHandler:  sealerHandler,
 		processManager: procMgr,
 		vaults:         make(map[string]*VaultProcess),
 		lruOrder:       make([]string, 0),
@@ -208,13 +211,14 @@ func (vm *VaultManager) GetOrCreate(ctx context.Context, ownerSpace string) (*Va
 
 	// Create vault wrapper around the subprocess
 	vault := &VaultProcess{
-		OwnerSpace:   ownerSpace,
-		StartedAt:    time.Now(),
-		LastAccess:   time.Now(),
-		MemoryMB:     memoryMB,
-		parentSender: vm.parentSender,
-		sealer:       vm.sealer,
-		process:      proc,
+		OwnerSpace:    ownerSpace,
+		StartedAt:     time.Now(),
+		LastAccess:    time.Now(),
+		MemoryMB:      memoryMB,
+		parentSender:  vm.parentSender,
+		sealer:        vm.sealer,
+		process:       proc,
+		sealerHandler: vm.sealerHandler,
 		// Note: Credential state, ECIES keys, CEK, UTK are now held by the subprocess
 		// The following fields are for legacy goroutine mode (kept for gradual migration)
 		blockList:   make(map[string]*BlockListEntry),
@@ -424,23 +428,89 @@ func (vp *VaultProcess) run() {
 	}
 }
 
-// ProcessMessage sends a message to the vault process and waits for response
+// ProcessMessage sends a message to the vault process and waits for response.
+// Handles sealer requests from the vault-manager during the response wait.
 func (vp *VaultProcess) ProcessMessage(ctx context.Context, msg *Message) (*Message, error) {
 	vp.touch()
 
 	// Process-based architecture: route through subprocess pipe
 	if vp.process != nil && vp.process.Conn != nil {
-		// Send to vault-manager subprocess and wait for response
 		timeout := 30 * time.Second
-		response, err := vp.process.Conn.SendAndReceive(msg, timeout)
-		if err != nil {
+		deadline := time.Now().Add(timeout)
+
+		// Send the initial message
+		if err := vp.process.Conn.WriteMessage(msg); err != nil {
 			log.Error().
 				Err(err).
 				Str("owner_space", vp.OwnerSpace).
-				Msg("Failed to communicate with vault-manager subprocess")
-			return nil, fmt.Errorf("vault-manager communication error: %w", err)
+				Msg("Failed to send message to vault-manager subprocess")
+			return nil, fmt.Errorf("vault-manager send error: %w", err)
 		}
-		return response, nil
+
+		// Read messages in a loop, handling sealer requests until we get the final response
+		for {
+			// Check deadline
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				log.Error().
+					Str("owner_space", vp.OwnerSpace).
+					Msg("Timeout waiting for vault-manager response")
+				return nil, fmt.Errorf("timeout waiting for vault-manager response")
+			}
+
+			// Read next message with timeout
+			response, err := vp.process.Conn.ReadMessageWithTimeout(remaining)
+			if err != nil {
+				log.Error().
+					Err(err).
+					Str("owner_space", vp.OwnerSpace).
+					Msg("Failed to read from vault-manager subprocess")
+				return nil, fmt.Errorf("vault-manager read error: %w", err)
+			}
+
+			// Debug: Log the actual message type received
+			log.Info().
+				Str("owner_space", vp.OwnerSpace).
+				Str("message_type", string(response.Type)).
+				Str("expected_sealer", string(MessageTypeSealerRequest)).
+				Int("payload_len", len(response.Payload)).
+				Msg("Received message from vault-manager")
+
+			// Check if this is a sealer request (vault-manager needs KMS operation)
+			if response.Type == MessageTypeSealerRequest {
+				log.Debug().
+					Str("owner_space", vp.OwnerSpace).
+					Msg("Handling sealer request from vault-manager")
+
+				// Handle the sealer request and send response back
+				var sealerResp *Message
+				if vp.sealerHandler != nil {
+					sealerResp = vp.sealerHandler.HandleSealerRequest(response)
+				} else {
+					log.Warn().Msg("Sealer handler not configured, returning error")
+					sealerResp = &Message{
+						RequestID: response.RequestID,
+						Type:      MessageTypeSealerResponse,
+						Payload:   []byte(`{"success":false,"error":"sealer not available"}`),
+					}
+				}
+
+				// Send sealer response back to vault-manager
+				if err := vp.process.Conn.WriteMessage(sealerResp); err != nil {
+					log.Error().
+						Err(err).
+						Str("owner_space", vp.OwnerSpace).
+						Msg("Failed to send sealer response to vault-manager")
+					return nil, fmt.Errorf("failed to send sealer response: %w", err)
+				}
+
+				// Continue waiting for the final response
+				continue
+			}
+
+			// Got the final response
+			return response, nil
+		}
 	}
 
 	// Legacy goroutine-based architecture (fallback)

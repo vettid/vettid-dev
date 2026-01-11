@@ -90,10 +90,39 @@ func (k *KMSClient) DecryptWithAttestation(ctx context.Context, ciphertext []byt
 	// The enclave must decrypt it with its private key
 	// The CiphertextForRecipient contains the encrypted plaintext
 	if result.CiphertextForRecipient != nil {
+		// Log full CMS structure to debug parsing
 		log.Debug().
 			Int("ciphertext_len", len(ciphertext)).
 			Int("recipient_ciphertext_len", len(result.CiphertextForRecipient)).
+			Hex("cms_full", result.CiphertextForRecipient).
 			Msg("KMS decrypt with attestation successful (recipient mode)")
+
+		// Also scan for OCTET STRING patterns to help debugging
+		data := result.CiphertextForRecipient
+		for i := 0; i < len(data)-2; i++ {
+			if data[i] == 0x04 { // OCTET STRING tag
+				length := 0
+				headerLen := 0
+				if data[i+1] < 0x80 {
+					length = int(data[i+1])
+					headerLen = 2
+				} else if data[i+1] == 0x81 && i+2 < len(data) {
+					length = int(data[i+2])
+					headerLen = 3
+				} else if data[i+1] == 0x82 && i+3 < len(data) {
+					length = int(data[i+2])<<8 | int(data[i+3])
+					headerLen = 4
+				}
+				if length > 0 && length <= len(data)-i-headerLen {
+					log.Debug().
+						Int("offset", i).
+						Int("length", length).
+						Int("header_len", headerLen).
+						Msg("Found OCTET STRING in CMS (from parent)")
+				}
+			}
+		}
+
 		return result.CiphertextForRecipient, nil
 	}
 

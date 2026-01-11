@@ -910,8 +910,8 @@ func (p *ParentProcess) handleKMSDecrypt(ctx context.Context, msg *EnclaveMessag
 	}
 
 	return &EnclaveMessage{
-		Type:    EnclaveMessageTypeKMSResponse,
-		Payload: result, // CiphertextForRecipient - enclave must decrypt with its private key
+		Type:       EnclaveMessageTypeKMSResponse,
+		Ciphertext: result, // CiphertextForRecipient - enclave must decrypt with its private key
 	}, nil
 }
 
