@@ -384,6 +384,20 @@ func (s *NitroSealer) kmsDecrypt(ciphertext []byte, attestation []byte) ([]byte,
 		return nil, fmt.Errorf("unexpected response type: %s", response.Type)
 	}
 
+	// Validate CiphertextForRecipient was received
+	if len(response.Ciphertext) == 0 {
+		log.Error().
+			Int("payload_len", len(response.Payload)).
+			Bool("has_error", response.Error != "").
+			Str("error", response.Error).
+			Msg("KMS response has empty Ciphertext field")
+		return nil, fmt.Errorf("KMS response missing CiphertextForRecipient (ciphertext field empty)")
+	}
+
+	log.Debug().
+		Int("ciphertext_len", len(response.Ciphertext)).
+		Msg("KMS decrypt response received with CiphertextForRecipient")
+
 	// The ciphertext contains CiphertextForRecipient
 	return response.Ciphertext, nil
 }

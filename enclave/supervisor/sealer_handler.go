@@ -153,7 +153,7 @@ func (sh *SealerHandler) deriveDEKFromPIN(req SealerRequest) SealerResponse {
 		log.Error().Err(err).Msg("Failed to derive DEK from PIN")
 		return SealerResponse{
 			Success: false,
-			Error:   "failed to derive DEK",
+			Error:   fmt.Sprintf("failed to derive DEK: %v", err),
 		}
 	}
 

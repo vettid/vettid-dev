@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -101,7 +102,8 @@ func (h *PINHandler) HandlePINSetup(ctx context.Context, msg *IncomingMessage) (
 	dek, err := h.sealerProxy.DeriveDEKFromPIN(sealedMaterial, payload.PIN)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to derive DEK")
-		return h.errorResponse(msg.GetID(), "key derivation failed")
+		// Include the actual error for debugging
+		return h.errorResponse(msg.GetID(), fmt.Sprintf("key derivation failed: %v", err))
 	}
 	defer zeroBytes(dek) // SECURITY: Clear DEK after use
 
