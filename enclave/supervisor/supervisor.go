@@ -231,20 +231,8 @@ func (s *Supervisor) processMessage(ctx context.Context, msg *Message) (*Message
 	case MessageTypeAttestationRequest:
 		return s.handleAttestationRequest(ctx, msg)
 
-	case MessageTypeCredentialCreate:
-		return s.handleCredentialCreate(ctx, msg)
-
-	case MessageTypeCredentialUnseal:
-		return s.handleCredentialUnseal(ctx, msg)
-
 	case MessageTypeHealthCheck:
 		return s.handleHealthCheck(ctx, msg)
-
-	case MessageTypeStorageGet:
-		return s.handleStorageGet(ctx, msg)
-
-	case MessageTypeStoragePut:
-		return s.handleStoragePut(ctx, msg)
 
 	default:
 		return nil, fmt.Errorf("unknown message type: %s", msg.Type)
@@ -331,20 +319,6 @@ func (s *Supervisor) handleAttestationRequest(ctx context.Context, msg *Message)
 	}, nil
 }
 
-// handleCredentialCreate creates a new Protean Credential inside the enclave
-// NOTE: This is a legacy handler that is not used by the mobile app.
-// Mobile apps use the bootstrap/pin-setup flow instead.
-func (s *Supervisor) handleCredentialCreate(ctx context.Context, msg *Message) (*Message, error) {
-	return nil, fmt.Errorf("legacy credential_create not implemented - use bootstrap/pin-setup flow")
-}
-
-// handleCredentialUnseal unseals a credential for use
-// NOTE: This is a legacy handler that is not used by the mobile app.
-// Mobile apps use the pin-unlock flow instead.
-func (s *Supervisor) handleCredentialUnseal(ctx context.Context, msg *Message) (*Message, error) {
-	return nil, fmt.Errorf("legacy credential_unseal not implemented - use pin-unlock flow")
-}
-
 // handleHealthCheck returns supervisor health status
 func (s *Supervisor) handleHealthCheck(ctx context.Context, msg *Message) (*Message, error) {
 	stats := s.vaults.GetStats()
@@ -369,20 +343,6 @@ func (s *Supervisor) handleHealthCheck(ctx context.Context, msg *Message) (*Mess
 		Type:    MessageTypeHealthResponse,
 		Payload: healthJSON,
 	}, nil
-}
-
-// handleStorageGet proxies storage read requests to parent
-func (s *Supervisor) handleStorageGet(ctx context.Context, msg *Message) (*Message, error) {
-	// This should be called by vault-manager processes
-	// The supervisor proxies these to the parent via vsock
-	// For now, return an error - this is handled by the vault-manager directly
-	return nil, fmt.Errorf("storage operations should be handled by vault-manager")
-}
-
-// handleStoragePut proxies storage write requests to parent
-func (s *Supervisor) handleStoragePut(ctx context.Context, msg *Message) (*Message, error) {
-	// Same as handleStorageGet
-	return nil, fmt.Errorf("storage operations should be handled by vault-manager")
 }
 
 // shutdown gracefully stops all vaults
