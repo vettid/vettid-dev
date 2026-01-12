@@ -41,29 +41,6 @@ export interface EnclaveAttestationResponse {
   timestamp: number;
 }
 
-export interface EnclaveCredentialCreateRequest {
-  owner_space: string;         // User GUID - identifies which vault to use
-  encrypted_auth: string;      // Auth input encrypted to enclave's public key
-  auth_type: 'pin' | 'password' | 'pattern';
-}
-
-export interface EnclaveCredentialCreateResponse {
-  sealed_credential: string;  // Base64-encoded sealed credential
-  public_key: string;         // User's identity public key
-  backup_key: string;         // Key for backup encryption
-}
-
-export interface EnclaveCredentialUnsealRequest {
-  owner_space: string;         // User GUID - identifies which vault to use
-  sealed_credential: string;
-  encrypted_challenge: string;  // Challenge response encrypted to enclave
-}
-
-export interface EnclaveCredentialUnsealResponse {
-  session_token: string;
-  expires_at: number;
-}
-
 export interface EnclaveHealthResponse {
   healthy: boolean;
   active_vaults: number;
@@ -195,52 +172,6 @@ export async function requestEnclaveAttestation(
   // This doesn't require a user context
   return enclaveRequest<EnclaveAttestationRequest, EnclaveAttestationResponse>(
     'enclave.attestation.request',
-    request
-  );
-}
-
-/**
- * Request credential creation inside the enclave
- * The enclave generates keys and seals the credential to its PCRs
- */
-export async function requestCredentialCreate(
-  userGuid: string,
-  encryptedAuth: Buffer,
-  authType: 'pin' | 'password' | 'pattern'
-): Promise<EnclaveCredentialCreateResponse> {
-  const request: EnclaveCredentialCreateRequest = {
-    owner_space: userGuid,  // Required for parent to route to correct vault
-    encrypted_auth: encryptedAuth.toString('base64'),
-    auth_type: authType,
-  };
-
-  // Use enclave.credential.create (backend -> enclave pattern)
-  // NOT OwnerSpace.*.forVault.> (that's for mobile apps -> vault)
-  return enclaveRequest<EnclaveCredentialCreateRequest, EnclaveCredentialCreateResponse>(
-    'enclave.credential.create',
-    request,
-    30000  // 30s timeout for credential creation
-  );
-}
-
-/**
- * Request credential unsealing inside the enclave
- * Verifies auth challenge and returns a session token
- */
-export async function requestCredentialUnseal(
-  userGuid: string,
-  sealedCredential: Buffer,
-  encryptedChallenge: Buffer
-): Promise<EnclaveCredentialUnsealResponse> {
-  const request: EnclaveCredentialUnsealRequest = {
-    owner_space: userGuid,  // Required for parent to route to correct vault
-    sealed_credential: sealedCredential.toString('base64'),
-    encrypted_challenge: encryptedChallenge.toString('base64'),
-  };
-
-  // Use enclave.credential.unseal (backend -> enclave pattern)
-  return enclaveRequest<EnclaveCredentialUnsealRequest, EnclaveCredentialUnsealResponse>(
-    'enclave.credential.unseal',
     request
   );
 }

@@ -704,19 +704,15 @@ func mapEnclaveSubjectToType(subject string) EnclaveMessageType {
 	// Map known enclave subjects to message types
 	// enclave.attestation.request -> attestation_request
 	// enclave.health -> health_check
-	// enclave.credential.create -> credential_create
-	// enclave.credential.unseal -> credential_unseal
 	switch {
 	case subject == "enclave.attestation.request":
 		return EnclaveMessageTypeAttestationRequest
 	case subject == "enclave.health" || subject == "enclave.health.check":
 		return EnclaveMessageTypeHealthCheck
-	case subject == "enclave.credential.create":
-		return EnclaveMessageTypeCredentialCreate
-	case subject == "enclave.credential.unseal":
-		return EnclaveMessageTypeCredentialUnseal
 	default:
 		// For unknown enclave subjects, use vault_op as fallback
+		// Note: enclave.credential.create/unseal are deprecated - mobile apps use
+		// OwnerSpace.{guid}.forVault.pin-setup/pin-unlock instead
 		log.Warn().Str("subject", subject).Msg("Unknown enclave subject, using vault_op")
 		return EnclaveMessageTypeVaultOp
 	}
