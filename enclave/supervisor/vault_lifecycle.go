@@ -2,11 +2,20 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
+	"math/big"
 	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
+)
+
+// SECURITY: Constants for timing side-channel mitigation
+const (
+	// Random jitter range for eviction operations (0-100ms)
+	// This prevents timing attacks that could infer vault activity
+	evictionJitterMaxMs = 100
 )
 
 // ParentSender is the interface for sending messages to parent
@@ -190,14 +199,36 @@ func (vm *VaultManager) evictVault(ownerSpace string) {
 }
 
 // evictLRU evicts the least recently used vault
+// SECURITY: Uses random jitter to prevent timing side-channel attacks
 func (vm *VaultManager) evictLRU() {
 	if len(vm.lruOrder) == 0 {
 		return
 	}
 
+	// SECURITY: Add random jitter to prevent timing inference
+	// An attacker observing eviction timing could infer vault activity patterns
+	addEvictionJitter()
+
 	// Evict the oldest (first in LRU list)
 	oldest := vm.lruOrder[0]
 	vm.evictVault(oldest)
+}
+
+// addEvictionJitter adds a random delay to eviction operations
+// SECURITY: This prevents timing attacks that could infer which vaults are active
+func addEvictionJitter() {
+	// Generate cryptographically random jitter
+	jitterMs, err := rand.Int(rand.Reader, big.NewInt(evictionJitterMaxMs))
+	if err != nil {
+		// Fallback to no jitter if random fails (shouldn't happen)
+		log.Warn().Err(err).Msg("Failed to generate eviction jitter")
+		return
+	}
+
+	jitter := time.Duration(jitterMs.Int64()) * time.Millisecond
+	if jitter > 0 {
+		time.Sleep(jitter)
+	}
 }
 
 // updateLRU moves an owner to the end of the LRU list

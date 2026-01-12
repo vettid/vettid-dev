@@ -2,12 +2,20 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
+	"math/big"
 	"os/exec"
 	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
+)
+
+// SECURITY: Constants for timing side-channel mitigation
+const (
+	// Random jitter range for process eviction (0-100ms)
+	processEvictionJitterMaxMs = 100
 )
 
 // ProcessManager handles spawning and managing vault-manager processes.
@@ -313,10 +321,30 @@ func (pm *ProcessManager) GetLRU() *ManagedProcess {
 }
 
 // EvictLRU kills the least recently used process
+// SECURITY: Uses random jitter to prevent timing side-channel attacks
 func (pm *ProcessManager) EvictLRU() error {
 	oldest := pm.GetLRU()
 	if oldest == nil {
 		return nil
 	}
+
+	// SECURITY: Add random jitter to prevent timing inference
+	addProcessEvictionJitter()
+
 	return pm.Kill(oldest.OwnerSpace)
+}
+
+// addProcessEvictionJitter adds a random delay to process eviction
+// SECURITY: This prevents timing attacks that could infer which vaults are active
+func addProcessEvictionJitter() {
+	jitterMs, err := rand.Int(rand.Reader, big.NewInt(processEvictionJitterMaxMs))
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to generate process eviction jitter")
+		return
+	}
+
+	jitter := time.Duration(jitterMs.Int64()) * time.Millisecond
+	if jitter > 0 {
+		time.Sleep(jitter)
+	}
 }

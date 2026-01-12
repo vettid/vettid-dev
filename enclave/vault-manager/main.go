@@ -42,6 +42,17 @@ func main() {
 		Bool("dev_mode", *devMode).
 		Msg("Vault Manager starting")
 
+	// SECURITY: Enforce process isolation hardening
+	// This must be done early before any sensitive data is loaded
+	isoCfg := DefaultIsolationConfig(*devMode)
+	if err := EnforceIsolation(isoCfg); err != nil {
+		log.Error().Err(err).Msg("Failed to enforce process isolation")
+		// In production, this is a fatal error
+		if !*devMode {
+			os.Exit(1)
+		}
+	}
+
 	// Create vault manager
 	cfg := &VaultConfig{
 		OwnerSpace: *ownerSpace,
@@ -71,6 +82,9 @@ func main() {
 	if err := vault.Run(ctx); err != nil {
 		log.Fatal().Err(err).Msg("Vault manager error")
 	}
+
+	// SECURITY: Secure erase all sensitive data before exit
+	vault.SecureShutdown()
 
 	log.Info().Msg("Vault manager shutdown complete")
 }
@@ -224,4 +238,37 @@ func (vm *VaultManager) receiveMessages(ctx context.Context, msgChan chan<- *Inc
 // sendToParent sends a message to the supervisor via stdout pipe
 func (vm *VaultManager) sendToParent(msg *OutgoingMessage) error {
 	return vm.parentConn.WriteMessage(msg)
+}
+
+// SecureShutdown performs secure cleanup of all sensitive data
+// SECURITY: This must be called before process exit to prevent credential leakage
+func (vm *VaultManager) SecureShutdown() {
+	log.Info().Msg("Performing secure shutdown")
+
+	// 1. Zero credential if loaded
+	if vm.credential != nil {
+		vm.credential.SecureErase()
+		vm.credential = nil
+		log.Debug().Msg("Zeroed credential data")
+	}
+
+	// 2. Zero session token
+	if vm.session != nil {
+		zeroBytes(vm.session.Token)
+		vm.session = nil
+		log.Debug().Msg("Zeroed session token")
+	}
+
+	// 3. Zero message handler state (which holds VaultState)
+	if vm.messageHandler != nil {
+		vm.messageHandler.SecureErase()
+		log.Debug().Msg("Zeroed message handler state")
+	}
+
+	// 4. Close parent connection
+	if vm.parentConn != nil {
+		vm.parentConn.Close()
+	}
+
+	log.Info().Msg("Secure shutdown complete - all sensitive data zeroed")
 }

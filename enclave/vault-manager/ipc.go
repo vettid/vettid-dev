@@ -107,3 +107,13 @@ func (pc *ParentConnection) WriteMessage(msg *OutgoingMessage) error {
 
 	return nil
 }
+
+// Close closes the parent connection.
+// Note: stdin/stdout are managed by the OS, so this is mostly for interface compliance.
+func (pc *ParentConnection) Close() {
+	// Flush any buffered output
+	if f, ok := pc.writer.(*os.File); ok {
+		f.Sync()
+	}
+	// stdin/stdout will be closed when the process exits
+}

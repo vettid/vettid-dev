@@ -588,3 +588,25 @@ func sanitizeErrorForClient(errMsg string) string {
 func generateMessageID() string {
 	return fmt.Sprintf("msg-%d", currentTimestamp())
 }
+
+// SecureErase zeros all sensitive data in the message handler and its components
+// SECURITY: This must be called before process exit to prevent credential leakage
+func (mh *MessageHandler) SecureErase() {
+	// Zero vault state (holds all cryptographic material)
+	if mh.vaultState != nil {
+		mh.vaultState.SecureErase()
+		mh.vaultState = nil
+	}
+
+	// Clear handler references (they don't hold sensitive data directly)
+	mh.bootstrapHandler = nil
+	mh.pinHandler = nil
+	mh.sealerProxy = nil
+	mh.callHandler = nil
+	mh.secretsHandler = nil
+	mh.profileHandler = nil
+	mh.credentialHandler = nil
+	mh.messagingHandler = nil
+	mh.connectionsHandler = nil
+	mh.notificationsHandler = nil
+}

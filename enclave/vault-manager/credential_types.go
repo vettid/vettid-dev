@@ -214,3 +214,94 @@ func NewVaultState() *VaultState {
 		callHistory: make([]*CallRecord, 0),
 	}
 }
+
+// SecureErase zeros all sensitive data in the vault state
+// SECURITY: This must be called before process exit to prevent credential leakage
+func (vs *VaultState) SecureErase() {
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
+
+	// Zero ECIES keys
+	zeroBytes(vs.eciesPrivateKey)
+	zeroBytes(vs.eciesPublicKey)
+	vs.eciesPrivateKey = nil
+	vs.eciesPublicKey = nil
+
+	// Zero CEK pair
+	if vs.cekPair != nil {
+		zeroBytes(vs.cekPair.PrivateKey)
+		zeroBytes(vs.cekPair.PublicKey)
+		vs.cekPair = nil
+	}
+
+	// Zero all UTK pairs
+	for _, utk := range vs.utkPairs {
+		if utk != nil {
+			zeroBytes(utk.UTK)
+			zeroBytes(utk.LTK)
+		}
+	}
+	vs.utkPairs = nil
+
+	// Zero unsealed credential
+	if vs.credential != nil {
+		vs.credential.SecureErase()
+		vs.credential = nil
+	}
+
+	// Zero sealed material
+	zeroBytes(vs.sealedMaterial)
+	vs.sealedMaterial = nil
+
+	// Clear block list (no sensitive data)
+	vs.blockList = nil
+	vs.callHistory = nil
+}
+
+// SecureErase zeros all sensitive data in the credential
+// SECURITY: This must be called before credential is released
+func (uc *UnsealedCredential) SecureErase() {
+	if uc == nil {
+		return
+	}
+
+	zeroBytes(uc.IdentityPrivateKey)
+	zeroBytes(uc.IdentityPublicKey)
+	zeroBytes(uc.VaultMasterSecret)
+	zeroBytes(uc.AuthHash)
+	zeroBytes(uc.AuthSalt)
+
+	// Zero all crypto keys
+	for i := range uc.CryptoKeys {
+		zeroBytes(uc.CryptoKeys[i].PrivateKey)
+	}
+	uc.CryptoKeys = nil
+
+	uc.IdentityPrivateKey = nil
+	uc.IdentityPublicKey = nil
+	uc.VaultMasterSecret = nil
+	uc.AuthHash = nil
+	uc.AuthSalt = nil
+}
+
+// SecureErase zeros the CEK pair
+func (cp *CEKPair) SecureErase() {
+	if cp == nil {
+		return
+	}
+	zeroBytes(cp.PrivateKey)
+	zeroBytes(cp.PublicKey)
+	cp.PrivateKey = nil
+	cp.PublicKey = nil
+}
+
+// SecureErase zeros the UTK pair
+func (up *UTKPair) SecureErase() {
+	if up == nil {
+		return
+	}
+	zeroBytes(up.UTK)
+	zeroBytes(up.LTK)
+	up.UTK = nil
+	up.LTK = nil
+}
