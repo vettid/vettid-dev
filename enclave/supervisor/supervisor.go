@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/rs/zerolog/log"
 )
@@ -96,9 +97,16 @@ func (s *Supervisor) Run(ctx context.Context) error {
 }
 
 // handleConnection processes messages from a vsock connection
-func (s *Supervisor) handleConnection(ctx context.Context, conn Connection) {
+// SECURITY: All connections must complete mutual authentication before processing messages
+func (s *Supervisor) handleConnection(ctx context.Context, rawConn Connection) {
+	// Generate a connection ID for rate limiting
+	connID := fmt.Sprintf("conn-%d", time.Now().UnixNano())
+
+	// SECURITY: Wrap connection with authentication
+	authConn := NewAuthenticatedConnection(rawConn, connID)
+
 	defer func() {
-		conn.Close()
+		authConn.Close()
 		s.parentConnMu.Lock()
 		s.parentConn = nil
 		s.parentConnMu.Unlock()
@@ -108,21 +116,31 @@ func (s *Supervisor) handleConnection(ctx context.Context, conn Connection) {
 		s.sealer.SetConnection(nil)
 	}()
 
-	// Store connection for outbound messages from vaults
+	// SECURITY: Perform mutual authentication handshake before accepting any messages
+	// The server side (enclave) doesn't verify PCRs (it IS the enclave)
+	// PCR verification happens on the client side (parent verifying enclave)
+	log.Debug().Str("conn_id", connID).Msg("Starting mutual authentication handshake")
+	if err := authConn.PerformServerHandshake(nil); err != nil {
+		log.Error().Err(err).Str("conn_id", connID).Msg("SECURITY: Handshake failed, rejecting connection")
+		return
+	}
+	log.Info().Str("conn_id", connID).Msg("Mutual authentication successful")
+
+	// Store authenticated connection for outbound messages from vaults
 	s.parentConnMu.Lock()
-	s.parentConn = conn
+	s.parentConn = authConn
 	s.parentConnMu.Unlock()
 
 	// Set connection for sealer (for KMS operations)
-	s.sealer.SetConnection(conn)
+	s.sealer.SetConnection(authConn)
 
 	// Set up handler fetcher that uses this connection
-	// This closure captures 'conn' so handlers can be fetched during message processing
+	// This closure captures 'authConn' so handlers can be fetched during message processing
 	s.handlerCache.SetFetcher(func(ctx context.Context, handlerID string) ([]byte, string, error) {
-		return s.fetchHandlerFromParent(conn, handlerID)
+		return s.fetchHandlerFromParent(authConn, handlerID)
 	})
 
-	log.Debug().Msg("New connection from parent process, handler fetcher configured")
+	log.Debug().Msg("New authenticated connection from parent process, handler fetcher configured")
 
 	// Read messages in a loop
 	for {
@@ -132,8 +150,8 @@ func (s *Supervisor) handleConnection(ctx context.Context, conn Connection) {
 		default:
 		}
 
-		// Read message from connection
-		msg, err := conn.ReadMessage()
+		// Read message from authenticated connection
+		msg, err := authConn.ReadMessage()
 		if err != nil {
 			log.Debug().Err(err).Msg("Connection closed")
 			return
@@ -152,7 +170,7 @@ func (s *Supervisor) handleConnection(ctx context.Context, conn Connection) {
 
 		// Send response
 		if response != nil {
-			if err := conn.WriteMessage(response); err != nil {
+			if err := authConn.WriteMessage(response); err != nil {
 				log.Error().Err(err).Msg("Error writing response")
 				return
 			}

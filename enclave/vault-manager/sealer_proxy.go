@@ -3,9 +3,14 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/rs/zerolog/log"
 )
+
+// SECURITY: Timeout for sealer proxy responses
+// Prevents indefinite hangs if supervisor becomes unresponsive
+const sealerProxyTimeout = 30 * time.Second
 
 // SealerProxy handles communication with the supervisor for KMS-dependent operations.
 // The vault-manager cannot directly access KMS - it must proxy through the supervisor
@@ -159,6 +164,7 @@ func (p *SealerProxy) UnsealCredential(sealedData []byte) ([]byte, error) {
 // sendRequest sends a sealer request to the supervisor and waits for response
 // NOTE: This is a synchronous call - the vault-manager message loop must handle
 // routing sealer responses back to this channel
+// SECURITY: Uses a timeout to prevent indefinite hangs
 func (p *SealerProxy) sendRequest(req SealerRequest) (*SealerResponse, error) {
 	reqBytes, err := json.Marshal(req)
 	if err != nil {
@@ -180,23 +186,34 @@ func (p *SealerProxy) sendRequest(req SealerRequest) (*SealerResponse, error) {
 		return nil, fmt.Errorf("failed to send sealer request: %w", err)
 	}
 
-	// Wait for response on the response channel
+	// Wait for response on the response channel with timeout
 	// The main message loop routes sealer responses here
 	if p.responseCh == nil {
 		return nil, fmt.Errorf("response channel not set")
 	}
 
-	respMsg := <-p.responseCh
-	if respMsg == nil {
-		return nil, fmt.Errorf("no response received")
-	}
+	// SECURITY: Use timeout to prevent indefinite hangs
+	select {
+	case respMsg := <-p.responseCh:
+		if respMsg == nil {
+			return nil, fmt.Errorf("no response received (channel closed)")
+		}
 
-	var resp SealerResponse
-	if err := json.Unmarshal(respMsg.Payload, &resp); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal sealer response: %w", err)
-	}
+		var resp SealerResponse
+		if err := json.Unmarshal(respMsg.Payload, &resp); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal sealer response: %w", err)
+		}
 
-	return &resp, nil
+		return &resp, nil
+
+	case <-time.After(sealerProxyTimeout):
+		log.Error().
+			Str("operation", string(req.Operation)).
+			Str("owner_space", req.OwnerSpace).
+			Dur("timeout", sealerProxyTimeout).
+			Msg("SECURITY: Sealer proxy timeout waiting for supervisor response")
+		return nil, fmt.Errorf("sealer proxy timeout after %v", sealerProxyTimeout)
+	}
 }
 
 // SetResponseChannel sets the channel for receiving responses

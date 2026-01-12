@@ -13,6 +13,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mdlayher/vsock"
@@ -74,6 +75,12 @@ const (
 	handshakeNonceSize = 32
 	// Maximum handshake attempts before blocking connection
 	maxHandshakeAttempts = 3
+	// Maximum age of handshake timestamp (5 minutes)
+	maxHandshakeAgeSeconds = 300
+	// Nonce cache retention period (10 minutes to cover clock skew)
+	nonceCacheRetentionSeconds = 600
+	// Maximum nonces to cache (prevent memory exhaustion)
+	maxNonceCacheSize = 10000
 )
 
 // Message is the wire format for vsock communication
@@ -118,8 +125,9 @@ type Message struct {
 	Error string `json:"error,omitempty"`
 
 	// Handshake (mutual authentication)
-	HandshakeNonce []byte `json:"handshake_nonce,omitempty"`
-	HandshakeMAC   []byte `json:"handshake_mac,omitempty"`
+	HandshakeNonce     []byte `json:"handshake_nonce,omitempty"`
+	HandshakeMAC       []byte `json:"handshake_mac,omitempty"`
+	HandshakeTimestamp int64  `json:"handshake_timestamp,omitempty"` // Unix timestamp for freshness validation
 }
 
 // Attestation holds a Nitro attestation document
@@ -159,11 +167,130 @@ type HealthStatus struct {
 
 // SECURITY: Authentication errors
 var (
-	ErrHandshakeFailed   = errors.New("handshake authentication failed")
-	ErrHandshakeTimeout  = errors.New("handshake timeout")
-	ErrInvalidMAC        = errors.New("invalid handshake MAC")
-	ErrNotAuthenticated  = errors.New("connection not authenticated")
-	ErrNoSharedSecret    = errors.New("shared secret not configured")
+	ErrHandshakeFailed    = errors.New("handshake authentication failed")
+	ErrHandshakeTimeout   = errors.New("handshake timeout")
+	ErrInvalidMAC         = errors.New("invalid handshake MAC")
+	ErrNotAuthenticated   = errors.New("connection not authenticated")
+	ErrNoSharedSecret     = errors.New("shared secret not configured")
+	ErrReplayedNonce      = errors.New("replayed nonce detected")
+	ErrExpiredHandshake   = errors.New("handshake timestamp expired")
+	ErrRateLimitExceeded  = errors.New("handshake rate limit exceeded")
+	ErrFutureTimestamp    = errors.New("handshake timestamp in the future")
+)
+
+// nonceEntry stores a nonce with its creation time for cache expiration
+type nonceEntry struct {
+	nonce     [32]byte
+	timestamp time.Time
+}
+
+// NonceCache prevents replay attacks by tracking used nonces
+// SECURITY: Thread-safe cache with automatic expiration and size limits
+type NonceCache struct {
+	entries map[[32]byte]time.Time
+	mu      sync.RWMutex
+}
+
+// NewNonceCache creates a new nonce cache
+func NewNonceCache() *NonceCache {
+	return &NonceCache{
+		entries: make(map[[32]byte]time.Time),
+	}
+}
+
+// Add attempts to add a nonce to the cache. Returns false if already present (replay detected).
+// SECURITY: Atomically checks and inserts to prevent race conditions
+func (nc *NonceCache) Add(nonce []byte) bool {
+	if len(nonce) != handshakeNonceSize {
+		return false
+	}
+
+	var key [32]byte
+	copy(key[:], nonce)
+
+	nc.mu.Lock()
+	defer nc.mu.Unlock()
+
+	// Check if nonce already exists
+	if _, exists := nc.entries[key]; exists {
+		return false // Replay detected
+	}
+
+	// Clean up expired entries if cache is getting full
+	if len(nc.entries) >= maxNonceCacheSize {
+		nc.cleanupLocked()
+	}
+
+	// Still full after cleanup? Reject to prevent memory exhaustion
+	if len(nc.entries) >= maxNonceCacheSize {
+		return false
+	}
+
+	// Add the nonce
+	nc.entries[key] = time.Now()
+	return true
+}
+
+// cleanupLocked removes expired entries (must be called with lock held)
+func (nc *NonceCache) cleanupLocked() {
+	cutoff := time.Now().Add(-time.Duration(nonceCacheRetentionSeconds) * time.Second)
+	for key, ts := range nc.entries {
+		if ts.Before(cutoff) {
+			delete(nc.entries, key)
+		}
+	}
+}
+
+// RateLimiter tracks handshake attempts per connection
+// SECURITY: Prevents brute-force attacks on the shared secret
+type RateLimiter struct {
+	attempts  map[string][]time.Time // IP -> attempt timestamps
+	mu        sync.Mutex
+	window    time.Duration
+	maxAttempts int
+}
+
+// NewRateLimiter creates a new rate limiter
+func NewRateLimiter(maxAttempts int, window time.Duration) *RateLimiter {
+	return &RateLimiter{
+		attempts:    make(map[string][]time.Time),
+		window:      window,
+		maxAttempts: maxAttempts,
+	}
+}
+
+// Allow checks if a connection is allowed to attempt handshake
+// SECURITY: Returns false if rate limit exceeded
+func (rl *RateLimiter) Allow(connID string) bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	now := time.Now()
+	cutoff := now.Add(-rl.window)
+
+	// Filter out old attempts
+	attempts := rl.attempts[connID]
+	var recent []time.Time
+	for _, t := range attempts {
+		if t.After(cutoff) {
+			recent = append(recent, t)
+		}
+	}
+
+	// Check limit
+	if len(recent) >= rl.maxAttempts {
+		return false
+	}
+
+	// Record this attempt
+	rl.attempts[connID] = append(recent, now)
+	return true
+}
+
+// Global nonce cache and rate limiter
+var (
+	globalNonceCache   = NewNonceCache()
+	globalRateLimiter  = NewRateLimiter(maxHandshakeAttempts, time.Minute)
 )
 
 // AuthenticatedConnection wraps a Connection with mutual authentication
@@ -174,6 +301,7 @@ type AuthenticatedConnection struct {
 	sharedSecret  []byte // Pre-shared key for HMAC-based authentication
 	localNonce    []byte
 	remoteNonce   []byte
+	connID        string // Connection identifier for rate limiting
 }
 
 // SECURITY: Secret file path - provisioned by parent from Secrets Manager
@@ -276,16 +404,24 @@ func zeroString(b []byte) {
 }
 
 // NewAuthenticatedConnection creates a new authenticated connection wrapper
-func NewAuthenticatedConnection(conn Connection) *AuthenticatedConnection {
+// connID should be a unique identifier for the connection (e.g., remote address)
+func NewAuthenticatedConnection(conn Connection, connID string) *AuthenticatedConnection {
 	return &AuthenticatedConnection{
 		conn:          conn,
 		authenticated: false,
+		connID:        connID,
 	}
 }
 
 // PerformServerHandshake performs the server-side (enclave) handshake
-// SECURITY: The enclave verifies the parent's identity via HMAC and provides attestation
+// SECURITY: The enclave verifies the parent's identity via HMAC, timestamp, and nonce freshness
 func (ac *AuthenticatedConnection) PerformServerHandshake(expectedPCRs map[int][]byte) error {
+	// SECURITY: Check rate limit before processing
+	if !globalRateLimiter.Allow(ac.connID) {
+		log.Warn().Str("conn_id", ac.connID).Msg("SECURITY: Handshake rate limit exceeded")
+		return ErrRateLimitExceeded
+	}
+
 	secret, err := getSharedSecret()
 	if err != nil {
 		return err
@@ -308,14 +444,53 @@ func (ac *AuthenticatedConnection) PerformServerHandshake(expectedPCRs map[int][
 		return fmt.Errorf("%w: expected handshake, got %s", ErrHandshakeFailed, msg.Type)
 	}
 
-	// SECURITY: Validate parent's nonce
+	// SECURITY: Validate parent's nonce size
 	if len(msg.HandshakeNonce) != handshakeNonceSize {
 		return fmt.Errorf("%w: invalid nonce size", ErrHandshakeFailed)
 	}
+
+	// SECURITY: Validate timestamp freshness (prevents replay of old handshakes)
+	now := time.Now().Unix()
+	if msg.HandshakeTimestamp == 0 {
+		// In production, require timestamp
+		if isProductionMode() {
+			log.Error().Msg("SECURITY: Handshake missing timestamp in production mode")
+			return fmt.Errorf("%w: timestamp required", ErrHandshakeFailed)
+		}
+		log.Warn().Msg("SECURITY WARNING: Handshake without timestamp (dev mode only)")
+	} else {
+		// Check timestamp is not too old
+		age := now - msg.HandshakeTimestamp
+		if age > maxHandshakeAgeSeconds {
+			log.Error().
+				Int64("timestamp", msg.HandshakeTimestamp).
+				Int64("now", now).
+				Int64("age_seconds", age).
+				Msg("SECURITY: Handshake timestamp expired")
+			return ErrExpiredHandshake
+		}
+		// Check timestamp is not in the future (with 60s tolerance for clock skew)
+		if msg.HandshakeTimestamp > now+60 {
+			log.Error().
+				Int64("timestamp", msg.HandshakeTimestamp).
+				Int64("now", now).
+				Msg("SECURITY: Handshake timestamp in the future")
+			return ErrFutureTimestamp
+		}
+	}
+
+	// SECURITY: Check for nonce replay
+	if !globalNonceCache.Add(msg.HandshakeNonce) {
+		log.Error().Msg("SECURITY: Nonce replay detected")
+		return ErrReplayedNonce
+	}
+
 	ac.remoteNonce = msg.HandshakeNonce
 
-	// 2. Verify parent's MAC: HMAC-SHA256(secret, "parent:" || nonce)
-	expectedMAC := computeHandshakeMAC(ac.sharedSecret, "parent:", ac.remoteNonce)
+	// 2. Verify parent's MAC: HMAC-SHA256(secret, "parent:" || timestamp || nonce)
+	// Include timestamp in MAC to bind it cryptographically
+	macData := append([]byte(fmt.Sprintf("%d:", msg.HandshakeTimestamp)), ac.remoteNonce...)
+	expectedMAC := computeHandshakeMAC(ac.sharedSecret, "parent:", macData)
 	if !hmac.Equal(msg.HandshakeMAC, expectedMAC) {
 		log.Error().Msg("SECURITY: Parent handshake MAC verification failed")
 		return ErrInvalidMAC
@@ -334,16 +509,20 @@ func (ac *AuthenticatedConnection) PerformServerHandshake(expectedPCRs map[int][
 		return fmt.Errorf("failed to generate attestation: %w", err)
 	}
 
-	// 5. Compute our MAC: HMAC-SHA256(secret, "enclave:" || local_nonce || attestation_hash)
+	// 5. Compute our MAC: HMAC-SHA256(secret, "enclave:" || timestamp || local_nonce || attestation_hash)
 	attestHash := sha256.Sum256(attestation.Document)
-	responseMAC := computeHandshakeMAC(ac.sharedSecret, "enclave:", append(ac.localNonce, attestHash[:]...))
+	responseTimestamp := time.Now().Unix()
+	responseMacData := append([]byte(fmt.Sprintf("%d:", responseTimestamp)), ac.localNonce...)
+	responseMacData = append(responseMacData, attestHash[:]...)
+	responseMAC := computeHandshakeMAC(ac.sharedSecret, "enclave:", responseMacData)
 
 	// 6. Send handshake response with attestation
 	response := &Message{
-		Type:           MessageTypeHandshakeResponse,
-		HandshakeNonce: ac.localNonce,
-		HandshakeMAC:   responseMAC,
-		Attestation:    attestation,
+		Type:               MessageTypeHandshakeResponse,
+		HandshakeNonce:     ac.localNonce,
+		HandshakeMAC:       responseMAC,
+		HandshakeTimestamp: responseTimestamp,
+		Attestation:        attestation,
 	}
 
 	if err := ac.conn.WriteMessage(response); err != nil {
@@ -356,8 +535,14 @@ func (ac *AuthenticatedConnection) PerformServerHandshake(expectedPCRs map[int][
 }
 
 // PerformClientHandshake performs the client-side (parent) handshake
-// SECURITY: The parent verifies the enclave's attestation and PCRs
+// SECURITY: The parent verifies the enclave's attestation, PCRs, timestamp, and nonce
 func (ac *AuthenticatedConnection) PerformClientHandshake(expectedPCRs map[int][]byte) error {
+	// SECURITY: In production mode, PCR validation is mandatory
+	if isProductionMode() && (expectedPCRs == nil || len(expectedPCRs) == 0) {
+		log.Error().Msg("SECURITY: PCR validation required in production mode")
+		return fmt.Errorf("%w: PCR values required in production", ErrHandshakeFailed)
+	}
+
 	secret, err := getSharedSecret()
 	if err != nil {
 		return err
@@ -370,14 +555,17 @@ func (ac *AuthenticatedConnection) PerformClientHandshake(expectedPCRs map[int][
 		return fmt.Errorf("failed to generate nonce: %w", err)
 	}
 
-	// 2. Compute our MAC: HMAC-SHA256(secret, "parent:" || nonce)
-	mac := computeHandshakeMAC(ac.sharedSecret, "parent:", ac.localNonce)
+	// 2. Compute our MAC with timestamp: HMAC-SHA256(secret, "parent:" || timestamp || nonce)
+	timestamp := time.Now().Unix()
+	macData := append([]byte(fmt.Sprintf("%d:", timestamp)), ac.localNonce...)
+	mac := computeHandshakeMAC(ac.sharedSecret, "parent:", macData)
 
-	// 3. Send handshake
+	// 3. Send handshake with timestamp
 	msg := &Message{
-		Type:           MessageTypeHandshake,
-		HandshakeNonce: ac.localNonce,
-		HandshakeMAC:   mac,
+		Type:               MessageTypeHandshake,
+		HandshakeNonce:     ac.localNonce,
+		HandshakeMAC:       mac,
+		HandshakeTimestamp: timestamp,
 	}
 
 	if err := ac.conn.WriteMessage(msg); err != nil {
@@ -400,22 +588,54 @@ func (ac *AuthenticatedConnection) PerformClientHandshake(expectedPCRs map[int][
 	}
 	ac.remoteNonce = response.HandshakeNonce
 
+	// SECURITY: Validate response timestamp
+	now := time.Now().Unix()
+	if response.HandshakeTimestamp == 0 {
+		if isProductionMode() {
+			log.Error().Msg("SECURITY: Response missing timestamp in production mode")
+			return fmt.Errorf("%w: response timestamp required", ErrHandshakeFailed)
+		}
+		log.Warn().Msg("SECURITY WARNING: Response without timestamp (dev mode only)")
+	} else {
+		age := now - response.HandshakeTimestamp
+		if age > maxHandshakeAgeSeconds {
+			log.Error().
+				Int64("timestamp", response.HandshakeTimestamp).
+				Int64("now", now).
+				Int64("age_seconds", age).
+				Msg("SECURITY: Response timestamp expired")
+			return ErrExpiredHandshake
+		}
+		if response.HandshakeTimestamp > now+60 {
+			log.Error().
+				Int64("timestamp", response.HandshakeTimestamp).
+				Int64("now", now).
+				Msg("SECURITY: Response timestamp in the future")
+			return ErrFutureTimestamp
+		}
+	}
+
 	// 5. Verify attestation document
 	if response.Attestation == nil {
 		return fmt.Errorf("%w: missing attestation", ErrHandshakeFailed)
 	}
 
-	// Verify attestation with expected PCRs (if provided)
-	if expectedPCRs != nil {
+	// SECURITY: Verify attestation with expected PCRs
+	// In production, this is mandatory. In dev mode, it's optional.
+	if expectedPCRs != nil && len(expectedPCRs) > 0 {
 		if err := VerifyAttestation(response.Attestation, expectedPCRs); err != nil {
 			log.Error().Err(err).Msg("SECURITY: Enclave attestation verification failed")
 			return fmt.Errorf("%w: attestation verification failed: %v", ErrHandshakeFailed, err)
 		}
+	} else if !isProductionMode() {
+		log.Warn().Msg("SECURITY WARNING: Skipping PCR validation (dev mode only)")
 	}
 
-	// 6. Verify enclave's MAC: HMAC-SHA256(secret, "enclave:" || enclave_nonce || attestation_hash)
+	// 6. Verify enclave's MAC: HMAC-SHA256(secret, "enclave:" || timestamp || enclave_nonce || attestation_hash)
 	attestHash := sha256.Sum256(response.Attestation.Document)
-	expectedMAC := computeHandshakeMAC(ac.sharedSecret, "enclave:", append(ac.remoteNonce, attestHash[:]...))
+	responseMacData := append([]byte(fmt.Sprintf("%d:", response.HandshakeTimestamp)), ac.remoteNonce...)
+	responseMacData = append(responseMacData, attestHash[:]...)
+	expectedMAC := computeHandshakeMAC(ac.sharedSecret, "enclave:", responseMacData)
 	if !hmac.Equal(response.HandshakeMAC, expectedMAC) {
 		log.Error().Msg("SECURITY: Enclave handshake MAC verification failed")
 		return ErrInvalidMAC
@@ -561,7 +781,16 @@ func (c *tcpConnection) Close() error {
 	return c.conn.Close()
 }
 
+// SECURITY: Message size limits to prevent resource exhaustion
+const (
+	// Maximum message size (10MB) - prevents memory exhaustion attacks
+	maxMessageSize uint32 = 10 * 1024 * 1024
+	// Minimum reasonable message size (empty JSON object)
+	minMessageSize uint32 = 2
+)
+
 // readMessage reads a length-prefixed JSON message
+// SECURITY: Implements strict bounds checking to prevent integer overflow and resource exhaustion
 func readMessage(r io.Reader) (*Message, error) {
 	// Read 4-byte length prefix
 	var length uint32
@@ -569,9 +798,15 @@ func readMessage(r io.Reader) (*Message, error) {
 		return nil, err
 	}
 
-	// Sanity check - max 10MB message
-	if length > 10*1024*1024 {
-		return nil, fmt.Errorf("message too large: %d bytes", length)
+	// SECURITY: Check message size bounds
+	// - Prevents zero-length allocation (could cause issues with empty slice)
+	// - Prevents excessive memory allocation (DoS via resource exhaustion)
+	// - The uint32 type prevents negative values, but we still check explicitly
+	if length < minMessageSize {
+		return nil, fmt.Errorf("message too small: %d bytes (minimum %d)", length, minMessageSize)
+	}
+	if length > maxMessageSize {
+		return nil, fmt.Errorf("message too large: %d bytes (maximum %d)", length, maxMessageSize)
 	}
 
 	// Read message body
