@@ -291,9 +291,23 @@ aws s3 cp "s3://${S3_BUCKET}/${S3_KEY}" source.tar.gz --region "$REGION"
 tar -xzf source.tar.gz
 rm source.tar.gz
 
-# Build Docker image
+# SECURITY: Fetch vsock shared secret from Secrets Manager and write to build context
+# This secret will be baked into the EIF for enclave-side authentication
+echo "=== Fetching vsock shared secret ==="
+aws secretsmanager get-secret-value \
+    --secret-id vettid/vsock-shared-secret \
+    --region "$REGION" \
+    --query SecretString \
+    --output text > vsock-secret.hex
+chmod 600 vsock-secret.hex
+echo "Vsock secret fetched (length: $(wc -c < vsock-secret.hex) bytes)"
+
+# Build Docker image (secret file is in build context)
 echo "=== Building Docker image ==="
 docker build -f Dockerfile.enclave -t vettid-enclave:latest .
+
+# SECURITY: Remove secret from build context after Docker build
+rm -f vsock-secret.hex
 
 # Build EIF
 echo "=== Building EIF ==="

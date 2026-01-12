@@ -58,6 +58,9 @@ type S3Config struct {
 type EnclaveConfig struct {
 	CID  uint32 `yaml:"cid"`
 	Port uint32 `yaml:"port"`
+	// VsockSecretID is the Secrets Manager secret ID for vsock authentication
+	// SECURITY: Fetched at startup and written to /etc/vettid/vsock-secret
+	VsockSecretID string `yaml:"vsock_secret_id"`
 }
 
 // HealthConfig holds health check settings

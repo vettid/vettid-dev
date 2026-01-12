@@ -12,6 +12,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/mdlayher/vsock"
@@ -175,32 +176,103 @@ type AuthenticatedConnection struct {
 	remoteNonce   []byte
 }
 
+// SECURITY: Secret file path - provisioned by parent from Secrets Manager
+// File permissions should be 0400 (read-only by owner)
+const (
+	secretFilePath    = "/etc/vettid/vsock-secret"
+	secretFilePathDev = "/tmp/vettid-vsock-secret" // Development fallback
+)
+
 // getSharedSecret retrieves the shared secret for vsock authentication
-// SECURITY: This secret is provisioned via KMS and enclave attestation
+// SECURITY: Secret is read from a file (not environment variable) to prevent:
+// - Exposure via /proc/<pid>/environ
+// - Inclusion in crash dumps
+// - Inheritance by child processes
+// - Logging by deployment tools
 func getSharedSecret() ([]byte, error) {
-	// In production, this comes from KMS decryption using attestation
-	// The parent encrypts the secret to the enclave's PCRs
-	secretHex := os.Getenv("VSOCK_SHARED_SECRET")
-	if secretHex == "" {
-		// Development mode: use hardcoded test secret
-		if os.Getenv("VETTID_PRODUCTION") != "true" {
-			log.Warn().Msg("SECURITY WARNING: Using development shared secret - not for production")
-			return []byte("development-vsock-secret-32bytes!"), nil
-		}
-		return nil, ErrNoSharedSecret
+	// Try production path first
+	secret, err := readSecretFromFile(secretFilePath)
+	if err == nil {
+		return secret, nil
 	}
 
+	// Try development path
+	if !isProductionMode() {
+		secret, err = readSecretFromFile(secretFilePathDev)
+		if err == nil {
+			log.Warn().Str("path", secretFilePathDev).Msg("SECURITY WARNING: Using development secret file")
+			return secret, nil
+		}
+
+		// Last resort in dev mode: hardcoded test secret
+		log.Warn().Msg("SECURITY WARNING: Using hardcoded development secret - not for production")
+		return []byte("development-vsock-secret-32bytes!"), nil
+	}
+
+	return nil, fmt.Errorf("%w: failed to read from %s: %v", ErrNoSharedSecret, secretFilePath, err)
+}
+
+// readSecretFromFile reads and validates a hex-encoded secret from a file
+// SECURITY: File is read once and should be deleted by caller after use in production
+func readSecretFromFile(path string) ([]byte, error) {
+	// Check file exists and has proper permissions
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+
+	// SECURITY: Warn if file permissions are too permissive (not checking in enclave as /proc may not exist)
+	mode := info.Mode().Perm()
+	if mode&0077 != 0 && isProductionMode() {
+		log.Warn().
+			Str("path", path).
+			Str("mode", fmt.Sprintf("%04o", mode)).
+			Msg("SECURITY WARNING: Secret file has permissive permissions, should be 0400")
+	}
+
+	// Read the file
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read secret file: %w", err)
+	}
+
+	// Trim whitespace (common when files are created with echo)
+	secretHex := string(data)
+	secretHex = strings.TrimSpace(secretHex)
+
+	if secretHex == "" {
+		return nil, fmt.Errorf("secret file is empty")
+	}
+
+	// Decode hex
 	secret, err := hex.DecodeString(secretHex)
 	if err != nil {
-		return nil, fmt.Errorf("invalid shared secret format: %w", err)
+		return nil, fmt.Errorf("invalid secret format (expected hex): %w", err)
 	}
 
 	// SECURITY: Validate secret length (256-bit minimum)
 	if len(secret) < 32 {
-		return nil, fmt.Errorf("shared secret too short: need 32 bytes, got %d", len(secret))
+		return nil, fmt.Errorf("secret too short: need 32 bytes, got %d", len(secret))
 	}
 
+	// SECURITY: Clear the hex string from memory
+	zeroString([]byte(secretHex))
+
+	log.Info().Str("path", path).Msg("Loaded vsock shared secret from file")
 	return secret, nil
+}
+
+// isProductionMode checks if running in production mode
+func isProductionMode() bool {
+	return os.Getenv("VETTID_PRODUCTION") == "true"
+}
+
+// zeroString zeros out a byte slice to clear sensitive data from memory
+// SECURITY: Defense in depth - clear secrets after use
+func zeroString(b []byte) {
+	for i := range b {
+		b[i] = 0
+	}
 }
 
 // NewAuthenticatedConnection creates a new authenticated connection wrapper

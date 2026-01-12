@@ -10,6 +10,7 @@ import {
   aws_route53 as route53,
   aws_route53_targets as route53Targets,
   aws_certificatemanager as acm,
+  aws_secretsmanager as secretsmanager,
   custom_resources as cr,
 } from 'aws-cdk-lib';
 
@@ -147,6 +148,36 @@ export class NitroStack extends cdk.Stack {
         },
       ],
       removalPolicy: cdk.RemovalPolicy.RETAIN, // Keep data on stack deletion
+    });
+
+    // ===== VSOCK SHARED SECRET =====
+    // SECURITY: This secret is used for mutual authentication between parent and enclave
+    // - Parent fetches it from Secrets Manager at EC2 startup
+    // - Enclave has it baked into the EIF during AMI build
+    // - Both sides use HMAC-SHA256 with this secret for handshake verification
+    //
+    // The secret is generated automatically by Secrets Manager and must be:
+    // - At least 32 bytes (256 bits) for cryptographic strength
+    // - Stored as hex-encoded string for file-based loading
+    const vsockSecret = new secretsmanager.Secret(this, 'VsockSharedSecret', {
+      secretName: 'vettid/vsock-shared-secret',
+      description: 'Shared secret for vsock mutual authentication between parent and enclave',
+      generateSecretString: {
+        // Generate a 64-character hex string (32 bytes when decoded)
+        passwordLength: 64,
+        excludePunctuation: true,
+        excludeUppercase: true,
+        includeSpace: false,
+        // Only hex characters: 0-9 and a-f
+        excludeCharacters: 'ghijklmnopqrstuvwxyz',
+      },
+    });
+
+    // Store secret ARN in SSM for reference by build scripts and runtime
+    new ssm.StringParameter(this, 'VsockSecretArnParam', {
+      parameterName: '/vettid/nitro/vsock-secret-arn',
+      stringValue: vsockSecret.secretArn,
+      description: 'ARN of the vsock shared secret in Secrets Manager',
     });
 
     // ===== SECURITY GROUP =====
@@ -347,6 +378,10 @@ export class NitroStack extends cdk.Stack {
       ],
     }));
 
+    // SECURITY: Allow packer to read vsock secret for baking into EIF
+    // This is needed during AMI build to include the secret in the enclave image
+    vsockSecret.grantRead(packerBuildRole);
+
     // Create instance profile for packer
     const packerInstanceProfile = new iam.InstanceProfile(this, 'PackerInstanceProfile', {
       instanceProfileName: 'vettid-packer-build-profile',
@@ -447,6 +482,11 @@ export class NitroStack extends cdk.Stack {
         `arn:aws:ssm:${this.region}:${this.account}:parameter/vettid/nitro/*`,
       ],
     }));
+
+    // SECURITY: Allow enclave instance to read vsock secret for parent process
+    // The parent process fetches this at startup and writes to /etc/vettid/vsock-secret
+    // for mutual authentication with the enclave
+    vsockSecret.grantRead(this.enclaveInstanceRole);
 
     // ===== DYNAMIC HANDLER LOADING PERMISSIONS =====
     // Grant read access to handler manifest table and handlers bucket
@@ -895,6 +935,14 @@ export class NitroStack extends cdk.Stack {
       'chmod 600 /etc/vettid/nats.creds',
       'chown root:root /etc/vettid/nats.creds',
       'echo "NATS credentials written to /etc/vettid/nats.creds"',
+      '',
+      '# SECURITY: Fetch vsock shared secret from Secrets Manager and write to file',
+      '# This is used for mutual authentication between parent and enclave',
+      'echo "Fetching vsock shared secret from Secrets Manager..."',
+      'aws secretsmanager get-secret-value --secret-id vettid/vsock-shared-secret --region $REGION --query SecretString --output text > /etc/vettid/vsock-secret',
+      'chmod 400 /etc/vettid/vsock-secret',
+      'chown root:root /etc/vettid/vsock-secret',
+      'echo "Vsock shared secret written to /etc/vettid/vsock-secret"',
       '',
       '# Fetch KMS sealing key ARN from SSM',
       'echo "Fetching KMS sealing key ARN from SSM..."',

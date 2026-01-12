@@ -40,9 +40,20 @@ RUN dnf install -y \
 COPY --from=builder /build/bin/supervisor /usr/local/bin/
 COPY --from=builder /build/bin/vault-manager /usr/local/bin/
 
-# Create directories for runtime
-RUN mkdir -p /var/lib/enclave /var/log/enclave \
+# Create directories for runtime and config
+RUN mkdir -p /var/lib/enclave /var/log/enclave /etc/vettid \
     && chown -R enclave:enclave /var/lib/enclave /var/log/enclave
+
+# SECURITY: Copy vsock shared secret for mutual authentication with parent
+# This file is fetched from Secrets Manager during AMI build and placed in the build context
+# File permissions are restricted to owner read-only (0400)
+COPY vsock-secret.hex /etc/vettid/vsock-secret
+RUN chmod 400 /etc/vettid/vsock-secret \
+    && chown enclave:enclave /etc/vettid/vsock-secret
+
+# Set production mode environment variable
+# This ensures the supervisor reads from the proper secret path
+ENV VETTID_PRODUCTION=true
 
 # The supervisor is the entry point - it manages vault-manager processes
 # Supervisor listens on vsock for messages from the parent process
