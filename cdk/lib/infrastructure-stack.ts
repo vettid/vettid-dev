@@ -95,6 +95,9 @@ export class InfrastructureStack extends cdk.Stack {
   // Handler signing key secret ARN (for dynamic handler loading)
   public readonly handlerSigningKeySecretArn!: string;
 
+  // NATS seed encryption key (for application-level envelope encryption of account seeds)
+  public readonly natsSeedEncryptionKey!: kms.Key;
+
   // Shared utilities Lambda layer
   public readonly sharedUtilsLayer!: lambda.LayerVersion;
 
@@ -113,6 +116,21 @@ export class InfrastructureStack extends cdk.Stack {
       enableKeyRotation: true,
       removalPolicy: cdk.RemovalPolicy.RETAIN, // Retain key to prevent data loss
     });
+
+    // ===== KMS KEY FOR NATS SEED ENCRYPTION =====
+    // SECURITY: Application-level envelope encryption for NATS account seeds
+    // This provides defense-in-depth beyond DynamoDB's table-level encryption:
+    // - Seeds remain encrypted even if DynamoDB access is compromised
+    // - Decryption requires explicit KMS permissions (principle of least privilege)
+    // - CloudTrail audit trail for every decrypt operation
+    // - Ability to revoke access by modifying key policy
+    const natsSeedEncryptionKey = new kms.Key(this, 'NatsSeedEncryptionKey', {
+      alias: 'vettid-nats-seed',
+      description: 'Envelope encryption for NATS account seeds (Ed25519 private keys)',
+      enableKeyRotation: true,
+      removalPolicy: cdk.RemovalPolicy.RETAIN, // Retain to prevent credential loss
+    });
+    this.natsSeedEncryptionKey = natsSeedEncryptionKey;
 
     // ===== DYNAMODB TABLES =====
 

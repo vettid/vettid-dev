@@ -8,20 +8,82 @@
  *
  * Returns: Raw account JWT (text/plain) or 404 if not found
  *
- * Security: This endpoint is called by NATS servers only (no user auth required).
- * The JWT itself is cryptographically signed by the operator.
+ * Security:
+ * - This endpoint is called by NATS servers only (no user auth required)
+ * - The JWT itself is cryptographically signed by the operator
+ * - Input validation ensures only valid nkey format is accepted
+ * - Rate limiting prevents enumeration and DoS attacks
  */
 
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
-import { DynamoDBClient, QueryCommand } from '@aws-sdk/client-dynamodb';
+import { DynamoDBClient, QueryCommand, GetItemCommand, UpdateItemCommand } from '@aws-sdk/client-dynamodb';
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
-import { unmarshall } from '@aws-sdk/util-dynamodb';
+import { unmarshall, marshall } from '@aws-sdk/util-dynamodb';
+import { createHash } from 'crypto';
 
 const ddb = new DynamoDBClient({});
 const secretsClient = new SecretsManagerClient({});
 
 const TABLE_NATS_ACCOUNTS = process.env.TABLE_NATS_ACCOUNTS!;
 const NATS_OPERATOR_SECRET_ARN = process.env.NATS_OPERATOR_SECRET_ARN || 'vettid/nats/operator-key';
+
+// SECURITY: Rate limiting configuration
+// Account public keys are 56 characters, base32 encoded
+const NATS_ACCOUNT_PUBLIC_KEY_REGEX = /^A[A-Z0-9]{55}$/;
+
+// SECURITY: In-memory rate limit cache (per Lambda instance)
+// This provides basic protection; for production, consider DynamoDB-based rate limiting
+interface RateLimitEntry {
+  count: number;
+  windowStart: number;
+}
+const rateLimitCache = new Map<string, RateLimitEntry>();
+const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute window
+const RATE_LIMIT_MAX_REQUESTS = 100; // Max requests per IP per window
+const RATE_LIMIT_CLEANUP_INTERVAL = 5 * 60 * 1000; // Cleanup old entries every 5 minutes
+let lastCleanup = Date.now();
+
+/**
+ * SECURITY: Check rate limit for source IP
+ * Returns true if request should be allowed, false if rate limited
+ */
+function checkRateLimit(sourceIp: string): boolean {
+  const now = Date.now();
+
+  // Periodic cleanup of old entries to prevent memory leak
+  if (now - lastCleanup > RATE_LIMIT_CLEANUP_INTERVAL) {
+    const cutoff = now - RATE_LIMIT_WINDOW_MS;
+    for (const [key, entry] of rateLimitCache.entries()) {
+      if (entry.windowStart < cutoff) {
+        rateLimitCache.delete(key);
+      }
+    }
+    lastCleanup = now;
+  }
+
+  const entry = rateLimitCache.get(sourceIp);
+
+  if (!entry || (now - entry.windowStart) > RATE_LIMIT_WINDOW_MS) {
+    // New window
+    rateLimitCache.set(sourceIp, { count: 1, windowStart: now });
+    return true;
+  }
+
+  if (entry.count >= RATE_LIMIT_MAX_REQUESTS) {
+    return false;
+  }
+
+  entry.count++;
+  return true;
+}
+
+/**
+ * SECURITY: Validate NATS account public key format
+ * NATS account public keys start with 'A' and are 56 chars of base32
+ */
+function isValidAccountPublicKey(key: string): boolean {
+  return NATS_ACCOUNT_PUBLIC_KEY_REGEX.test(key);
+}
 
 // Cache for special accounts (system and backend) from Secrets Manager
 interface SpecialAccount {
@@ -81,6 +143,20 @@ async function getSpecialAccounts(): Promise<SpecialAccountsCache> {
 
 export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   try {
+    // SECURITY: Rate limit by source IP
+    const sourceIp = event.requestContext.http?.sourceIp || 'unknown';
+    if (!checkRateLimit(sourceIp)) {
+      console.warn(`SECURITY: Rate limit exceeded for IP ${sourceIp}`);
+      return {
+        statusCode: 429,
+        headers: {
+          'Content-Type': 'text/plain',
+          'Retry-After': '60',
+        },
+        body: 'Too many requests',
+      };
+    }
+
     // Extract account public key from path
     // Path format: /nats/jwt/v1/accounts/{account_public_key}
     const accountPublicKey = event.pathParameters?.account_public_key;
@@ -92,6 +168,19 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
         statusCode: 200,
         headers: { 'Content-Type': 'text/plain' },
         body: 'ok',
+      };
+    }
+
+    // SECURITY: Validate public key format before database lookup
+    // This prevents invalid input from reaching the database
+    if (!isValidAccountPublicKey(accountPublicKey)) {
+      // Return 404 to avoid revealing validation logic
+      // (attacker shouldn't know if key format was wrong vs not found)
+      console.warn(`SECURITY: Invalid account key format from IP ${sourceIp}: ${accountPublicKey.substring(0, 10)}...`);
+      return {
+        statusCode: 404,
+        headers: { 'Content-Type': 'text/plain' },
+        body: 'Account not found',
       };
     }
 

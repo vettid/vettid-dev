@@ -19,7 +19,7 @@
 
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { DynamoDBClient, GetItemCommand, PutItemCommand } from '@aws-sdk/client-dynamodb';
-// SecretsManagerClient no longer needed - NLB terminates TLS with ACM (publicly trusted)
+import { KMSClient, DecryptCommand } from '@aws-sdk/client-kms';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import { randomUUID } from 'crypto';
 import {
@@ -39,10 +39,13 @@ import {
 import { generateUserCredentials, formatCredsFile } from '../../common/nats-jwt';
 
 const ddb = new DynamoDBClient({});
+const kmsClient = new KMSClient({});
 
 const TABLE_NATS_ACCOUNTS = process.env.TABLE_NATS_ACCOUNTS!;
 const TABLE_NATS_TOKENS = process.env.TABLE_NATS_TOKENS!;
 const NATS_DOMAIN = process.env.NATS_DOMAIN || 'nats.vettid.dev';
+// SECURITY: KMS key for envelope decryption of account seeds
+const NATS_SEED_KMS_KEY_ARN = process.env.NATS_SEED_KMS_KEY_ARN!;
 // NATS_CA_SECRET_ARN no longer needed - NLB terminates TLS with ACM (publicly trusted)
 
 // Token validity periods
@@ -59,6 +62,9 @@ interface NatsTokenRecord {
   user_guid: string;
   client_type: 'app' | 'vault';
   device_id?: string;
+  // SECURITY: Store user public key for revocation enforcement
+  // When revoked, this key is added to the account's revocations list
+  user_public_key: string;
   issued_at: string;
   expires_at: string;
   status: 'active' | 'revoked';
@@ -139,10 +145,46 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     // Get account details for credential generation
     const ownerSpace = account.owner_space_id;
     const messageSpace = account.message_space_id;
-    const accountSeed = account.account_seed;
 
-    if (!accountSeed) {
+    // SECURITY: Decrypt the account seed using KMS
+    // The seed is envelope-encrypted with context binding to prevent copy attacks
+    const encryptedSeed = account.account_seed_encrypted || account.account_seed; // Support migration
+
+    if (!encryptedSeed) {
       return internalError('NATS account missing signing key. Please recreate account.', origin);
+    }
+
+    let accountSeed: string;
+
+    // Check if this is an encrypted seed (base64 encoded ciphertext) or legacy plaintext
+    // Legacy seeds start with 'SA' (NATS nkey account seed prefix)
+    if (encryptedSeed.startsWith('SA')) {
+      // SECURITY WARNING: Legacy unencrypted seed - should be migrated
+      console.warn(`SECURITY: Legacy unencrypted seed for user ${userGuid} - migration needed`);
+      accountSeed = encryptedSeed;
+    } else {
+      // Decrypt the seed using KMS
+      try {
+        const decryptResult = await kmsClient.send(new DecryptCommand({
+          KeyId: NATS_SEED_KMS_KEY_ARN,
+          CiphertextBlob: Buffer.from(encryptedSeed, 'base64'),
+          EncryptionContext: {
+            // SECURITY: Must match the context used during encryption
+            user_guid: userGuid,
+            purpose: 'nats_account_seed',
+          },
+        }));
+
+        if (!decryptResult.Plaintext) {
+          console.error('KMS decryption failed - no plaintext returned');
+          return internalError('Failed to access account credentials', origin);
+        }
+
+        accountSeed = Buffer.from(decryptResult.Plaintext).toString('utf-8');
+      } catch (kmsError: any) {
+        console.error('KMS decryption error:', kmsError.message);
+        return internalError('Failed to access account credentials', origin);
+      }
     }
 
     // Define permissions based on client type
@@ -189,12 +231,14 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     const jwt = credentials.jwt;
     const seed = credentials.seed;
 
-    // Store token record
+    // Store token record with user public key for revocation enforcement
     const tokenRecord: NatsTokenRecord = {
       token_id: tokenId,
       user_guid: userGuid,
       client_type: body.client_type,
       device_id: body.device_id,
+      // SECURITY: Store public key so we can add it to account revocations list
+      user_public_key: credentials.publicKey,
       issued_at: now,
       expires_at: expiresAt,
       status: 'active',

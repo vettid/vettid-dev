@@ -206,6 +206,29 @@ func (p *ParentProcess) routeNATSToEnclave(ctx context.Context) error {
 
 // forwardToEnclave forwards a NATS message to the enclave
 func (p *ParentProcess) forwardToEnclave(ctx context.Context, msg *NATSMessage) error {
+	// SECURITY: Check for replay attacks before processing
+	// This prevents attackers from capturing and re-sending messages
+	if allowed, reason := CheckMessageReplay(msg.Subject, msg.Data); !allowed {
+		log.Warn().
+			Str("subject", msg.Subject).
+			Str("reason", reason).
+			Msg("SECURITY: Message rejected - replay attack")
+
+		// Send error response if there's a reply address
+		if msg.Reply != "" {
+			errorResponse := map[string]interface{}{
+				"error":   "message_rejected",
+				"message": "Message failed security validation: " + reason,
+			}
+			if responseData, err := json.Marshal(errorResponse); err == nil {
+				if err := p.natsClient.Publish(msg.Reply, responseData); err != nil {
+					log.Error().Err(err).Str("reply", msg.Reply).Msg("Failed to publish error reply")
+				}
+			}
+		}
+		return fmt.Errorf("message replay detected: %s", reason)
+	}
+
 	var enclaveMsg *EnclaveMessage
 
 	// Check if this is an enclave control message (from Lambdas)

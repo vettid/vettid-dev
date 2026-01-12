@@ -331,6 +331,8 @@ export class VaultStack extends cdk.Stack {
       TABLE_AUDIT: tables.audit.tableName,
       NATS_DOMAIN: 'nats.vettid.dev',
       NATS_OPERATOR_SECRET_ARN: natsOperatorSecret.secretArn,
+      // SECURITY: KMS key for envelope encryption of account seeds (Ed25519 private keys)
+      NATS_SEED_KMS_KEY_ARN: props.infrastructure.natsSeedEncryptionKey.keyArn,
       // Note: NATS_CA_SECRET_ARN no longer needed - NLB terminates TLS with ACM (publicly trusted)
     };
 
@@ -619,6 +621,10 @@ export class VaultStack extends cdk.Stack {
     tables.natsTokens.grantReadWriteData(this.natsRevokeToken);
     tables.natsTokens.grantReadData(this.natsGetStatus);
 
+    // SECURITY: Grant revokeToken access to accounts table for NATS-level revocation enforcement
+    // When a token is revoked, we regenerate the account JWT with the user's public key in revocations
+    tables.natsAccounts.grantReadWriteData(this.natsRevokeToken);
+
     // Grant audit table access for NATS functions
     tables.audit.grantReadWriteData(this.natsCreateAccount);
     tables.audit.grantReadWriteData(this.natsGenerateToken);
@@ -627,6 +633,14 @@ export class VaultStack extends cdk.Stack {
     // Grant NATS operator secret access for JWT signing
     natsOperatorSecret.grantRead(this.natsCreateAccount);
     natsOperatorSecret.grantRead(this.natsGenerateToken);
+    // SECURITY: revokeToken needs operator secret to regenerate account JWT with revocations
+    natsOperatorSecret.grantRead(this.natsRevokeToken);
+
+    // SECURITY: Grant KMS access for NATS seed envelope encryption
+    // - natsCreateAccount: encrypt seeds before storing in DynamoDB
+    // - natsGenerateToken: decrypt seeds to sign user JWTs
+    props.infrastructure.natsSeedEncryptionKey.grantEncrypt(this.natsCreateAccount);
+    props.infrastructure.natsSeedEncryptionKey.grantDecrypt(this.natsGenerateToken);
 
     // Note: NATS internal CA secret grant no longer needed - NLB terminates TLS with ACM (publicly trusted)
 

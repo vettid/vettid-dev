@@ -15,7 +15,7 @@
  */
 
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
-import { DynamoDBClient, GetItemCommand, UpdateItemCommand } from '@aws-sdk/client-dynamodb';
+import { DynamoDBClient, GetItemCommand, UpdateItemCommand, QueryCommand } from '@aws-sdk/client-dynamodb';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import {
   ok,
@@ -30,10 +30,12 @@ import {
   parseJsonBody,
   ValidationError,
 } from '../../common/util';
+import { regenerateAccountJwtWithRevocations } from '../../common/nats-jwt';
 
 const ddb = new DynamoDBClient({});
 
 const TABLE_NATS_TOKENS = process.env.TABLE_NATS_TOKENS!;
+const TABLE_NATS_ACCOUNTS = process.env.TABLE_NATS_ACCOUNTS!;
 
 interface RevokeTokenRequest {
   token_id: string;
@@ -105,8 +107,16 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     }
 
     const now = nowIso();
+    const nowTimestamp = Math.floor(Date.now() / 1000);
 
-    // Revoke the token
+    // SECURITY: Get user public key for NATS-level revocation enforcement
+    const userPublicKey = token.user_public_key;
+    if (!userPublicKey) {
+      // Legacy token without public key - mark as revoked but can't enforce at NATS level
+      console.warn(`Token ${body.token_id} missing user_public_key - NATS-level revocation not possible`);
+    }
+
+    // Revoke the token in DynamoDB
     await ddb.send(new UpdateItemCommand({
       TableName: TABLE_NATS_TOKENS,
       Key: marshall({ token_id: body.token_id }),
@@ -120,12 +130,66 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       }),
     }));
 
+    // SECURITY: Enforce revocation at NATS level by updating account JWT
+    let natsRevocationEnforced = false;
+    if (userPublicKey) {
+      try {
+        // Get the user's account
+        const accountResult = await ddb.send(new GetItemCommand({
+          TableName: TABLE_NATS_ACCOUNTS,
+          Key: marshall({ user_guid: userGuid }),
+        }));
+
+        if (accountResult.Item) {
+          const account = unmarshall(accountResult.Item);
+
+          // Build revocations map: user public key -> revocation timestamp
+          // The timestamp means any JWT issued BEFORE this time is revoked
+          const existingRevocations = account.revocations || {};
+
+          // Add the new revocation (use current timestamp so all existing JWTs are revoked)
+          const updatedRevocations: { [key: string]: number } = {
+            ...existingRevocations,
+            [userPublicKey]: nowTimestamp,
+          };
+
+          // Regenerate account JWT with updated revocations
+          const accountName = `account-${userGuid.substring(0, 8)}`;
+          const newAccountJwt = await regenerateAccountJwtWithRevocations(
+            accountName,
+            account.account_public_key,
+            updatedRevocations
+          );
+
+          // Update the account with new JWT and revocations
+          await ddb.send(new UpdateItemCommand({
+            TableName: TABLE_NATS_ACCOUNTS,
+            Key: marshall({ user_guid: userGuid }),
+            UpdateExpression: 'SET account_jwt = :jwt, revocations = :revocations, updated_at = :now',
+            ExpressionAttributeValues: marshall({
+              ':jwt': newAccountJwt,
+              ':revocations': updatedRevocations,
+              ':now': now,
+            }),
+          }));
+
+          natsRevocationEnforced = true;
+          console.info(`SECURITY: Revoked user key ${userPublicKey.substring(0, 12)}... in account JWT`);
+        }
+      } catch (revocationError: any) {
+        // Log but don't fail - token is still marked revoked in DynamoDB
+        console.error('Failed to enforce NATS-level revocation:', revocationError.message);
+      }
+    }
+
     // Audit log
     await putAudit({
       event: 'nats_token_revoked',
       user_guid: userGuid,
       token_id: body.token_id,
       client_type: token.client_type,
+      user_public_key: userPublicKey,
+      nats_revocation_enforced: natsRevocationEnforced,
       revoked_at: now,
     }, requestId);
 

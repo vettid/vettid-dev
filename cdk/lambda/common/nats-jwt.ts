@@ -102,6 +102,9 @@ interface NatsAccountClaims {
       pub?: { allow?: string[]; deny?: string[] };
       sub?: { allow?: string[]; deny?: string[] };
     };
+    // SECURITY: Revocations - maps user public key to Unix timestamp of revocation
+    // Any user JWT issued BEFORE this timestamp is considered revoked
+    revocations?: { [userPublicKey: string]: number };
     type?: string;
     version?: number;
   };
@@ -181,10 +184,15 @@ function encodeJwt(header: object, payload: object, signingKey: nkeys.KeyPair): 
  *
  * Each member gets their own NATS account which provides namespace isolation.
  * The account is signed by the operator.
+ *
+ * @param accountName - Display name for the account
+ * @param accountPublicKey - The account's nkey public key
+ * @param revocations - Optional map of revoked user public keys to revocation timestamps
  */
 export async function createAccountJwt(
   accountName: string,
-  accountPublicKey: string
+  accountPublicKey: string,
+  revocations?: { [userPublicKey: string]: number }
 ): Promise<string> {
   const operatorKeys = await getOperatorKeys();
   const operatorKeyPair = nkeys.fromSeed(new TextEncoder().encode(operatorKeys.operatorSeed));
@@ -204,6 +212,8 @@ export async function createAccountJwt(
     name: accountName,
     nats: {
       limits: ACCOUNT_LIMITS, // SECURITY: Use defined resource limits instead of unlimited
+      // SECURITY: Include revocations if any - NATS will reject connections from revoked users
+      revocations: revocations && Object.keys(revocations).length > 0 ? revocations : undefined,
       type: 'account',
       version: 2,
     },
@@ -446,6 +456,25 @@ NKEYs are sensitive and should be treated as secrets.
 ${seed}
 -----END USER NKEY SEED-----
 `;
+}
+
+/**
+ * Regenerate an account JWT with updated revocations
+ *
+ * This is called when a user token is revoked to update the account JWT
+ * with the new revocation list. The NATS URL resolver will serve the
+ * updated JWT, and NATS servers will enforce the revocation.
+ *
+ * @param accountName - Display name for the account (e.g., "account-abc12345")
+ * @param accountPublicKey - The account's nkey public key
+ * @param revocations - Map of revoked user public keys to revocation timestamps
+ */
+export async function regenerateAccountJwtWithRevocations(
+  accountName: string,
+  accountPublicKey: string,
+  revocations: { [userPublicKey: string]: number }
+): Promise<string> {
+  return createAccountJwt(accountName, accountPublicKey, revocations);
 }
 
 /**

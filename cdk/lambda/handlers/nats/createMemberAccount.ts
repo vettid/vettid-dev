@@ -21,6 +21,7 @@
 
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { DynamoDBClient, PutItemCommand, GetItemCommand } from '@aws-sdk/client-dynamodb';
+import { KMSClient, EncryptCommand } from '@aws-sdk/client-kms';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import {
   ok,
@@ -35,16 +36,21 @@ import {
 import { generateAccountCredentials } from '../../common/nats-jwt';
 
 const ddb = new DynamoDBClient({});
+const kms = new KMSClient({});
 
 const TABLE_NATS_ACCOUNTS = process.env.TABLE_NATS_ACCOUNTS!;
 const NATS_DOMAIN = process.env.NATS_DOMAIN || 'nats.vettid.dev';
+// SECURITY: KMS key for envelope encryption of account seeds (Ed25519 private keys)
+const NATS_SEED_KMS_KEY_ARN = process.env.NATS_SEED_KMS_KEY_ARN!;
 
 interface NatsAccountRecord {
   user_guid: string;
   owner_space_id: string;
   message_space_id: string;
   account_public_key: string;
-  account_seed: string;  // Stored encrypted, used to sign user JWTs
+  // SECURITY: account_seed is envelope-encrypted with KMS before storage
+  // Format: base64-encoded KMS ciphertext blob
+  account_seed_encrypted: string;
   account_jwt: string;   // Account JWT signed by operator
   status: 'active' | 'suspended' | 'revoked';
   created_at: string;
@@ -105,15 +111,35 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     // Generate account credentials using nkeys
     const accountCredentials = await generateAccountCredentials(userGuid);
 
+    // SECURITY: Encrypt the account seed with KMS before storing
+    // This provides envelope encryption - even if DynamoDB is compromised,
+    // the seed cannot be decrypted without KMS access
+    const encryptResult = await kms.send(new EncryptCommand({
+      KeyId: NATS_SEED_KMS_KEY_ARN,
+      Plaintext: Buffer.from(accountCredentials.seed, 'utf-8'),
+      EncryptionContext: {
+        // SECURITY: Bind ciphertext to this specific user to prevent copy attacks
+        user_guid: userGuid,
+        purpose: 'nats_account_seed',
+      },
+    }));
+
+    if (!encryptResult.CiphertextBlob) {
+      console.error('KMS encryption failed - no ciphertext returned');
+      return internalError('Failed to secure account credentials', origin);
+    }
+
+    const encryptedSeedBase64 = Buffer.from(encryptResult.CiphertextBlob).toString('base64');
+
     const now = nowIso();
 
-    // Create account record
+    // Create account record with encrypted seed
     const accountRecord: NatsAccountRecord = {
       user_guid: userGuid,
       owner_space_id: ownerSpaceId,
       message_space_id: messageSpaceId,
       account_public_key: accountCredentials.publicKey,
-      account_seed: accountCredentials.seed,
+      account_seed_encrypted: encryptedSeedBase64,
       account_jwt: accountCredentials.accountJwt,
       status: 'active',
       created_at: now,
