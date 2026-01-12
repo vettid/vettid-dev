@@ -546,6 +546,15 @@ export class NitroStack extends cdk.Stack {
       userData: this.createUserData(),
     });
 
+    // SECURITY: Enable API termination protection on the launch template
+    // This prevents accidental or unauthorized termination of enclave instances
+    // Admin must explicitly disable termination protection before terminating
+    const cfnLaunchTemplate = launchTemplate.node.defaultChild as ec2.CfnLaunchTemplate;
+    cfnLaunchTemplate.addPropertyOverride(
+      'LaunchTemplateData.DisableApiTermination',
+      true
+    );
+
     // Create Auto Scaling Group
     this.enclaveASG = new autoscaling.AutoScalingGroup(this, 'EnclaveASG', {
       vpc: this.vpc,
@@ -564,7 +573,24 @@ export class NitroStack extends cdk.Stack {
         minInstancesInService: 0, // Allow full replacement for dev
         pauseTime: cdk.Duration.minutes(5),
       }),
+      // SECURITY: Prevent instances from being terminated without explicit permission
+      terminationPolicies: [autoscaling.TerminationPolicy.OLDEST_INSTANCE],
     });
+
+    // SECURITY: Add deny termination policy for enclave instances
+    // This ensures only users with explicit permissions can terminate enclave instances
+    // Combined with DisableApiTermination, this provides defense in depth
+    this.enclaveInstanceRole.addToPolicy(new iam.PolicyStatement({
+      sid: 'DenyUnauthorizedTermination',
+      effect: iam.Effect.DENY,
+      actions: ['ec2:TerminateInstances'],
+      resources: ['*'],
+      conditions: {
+        StringNotEquals: {
+          'aws:PrincipalTag/CanTerminateEnclaves': 'true',
+        },
+      },
+    }));
 
     // ===== AUTO-SCALING POLICIES =====
 

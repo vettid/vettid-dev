@@ -959,22 +959,33 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
     tables.registrations.grantReadData(checkSubscriptionExpiry);
     tables.audit.grantReadWriteData(checkSubscriptionExpiry);
 
-    // SES permissions scoped to specific identity and region
-    // Hardened: restrict to vettid.dev domain only (covers no-reply@vettid.dev)
+    // SECURITY: SES permissions with strict resource constraints
+    // - Scoped to vettid.dev domain identity only
+    // - Pinned to specific templates (no wildcards)
+    // - Condition restricts FROM address to verified identity
     const sesIdentityArn = `arn:aws:ses:${this.region}:${this.account}:identity/vettid.dev`;
-    const sesConfigSetArn = `arn:aws:ses:${this.region}:${this.account}:configuration-set/*`;
     // SECURITY: Pin to specific SES templates (no wildcards) to limit blast radius
     const sesTemplateArns = [
       `arn:aws:ses:${this.region}:${this.account}:template/RegistrationApproved`,
+      `arn:aws:ses:${this.region}:${this.account}:template/RegistrationPending`,
+      `arn:aws:ses:${this.region}:${this.account}:template/RegistrationRejected`,
       `arn:aws:ses:${this.region}:${this.account}:template/SubscriptionExpiryWarning`,
       `arn:aws:ses:${this.region}:${this.account}:template/ProposalVoteReminder`,
       `arn:aws:ses:${this.region}:${this.account}:template/NewProposalNotification`,
     ];
 
+    // SECURITY: Lambdas that send templated emails ONLY (no raw SendEmail)
+    // This prevents misuse for arbitrary email sending
     [submitRegistration, registrationStreamFn, checkSubscriptionExpiry, sendProposalReminders].forEach((fn) => {
       fn.addToRolePolicy(new iam.PolicyStatement({
-        actions: ['ses:SendTemplatedEmail', 'ses:SendEmail'],
-        resources: [sesIdentityArn, sesConfigSetArn, ...sesTemplateArns]
+        actions: ['ses:SendTemplatedEmail'], // SECURITY: Only templated emails, not raw SendEmail
+        resources: [sesIdentityArn, ...sesTemplateArns],
+        conditions: {
+          // SECURITY: Only allow sending FROM our verified domain
+          'StringLike': {
+            'ses:FromAddress': '*@vettid.dev',
+          },
+        },
       }));
     });
     // Cognito permissions scoped to specific User Pools
@@ -998,11 +1009,17 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
         resources: ['*'], // VerifyEmailIdentity doesn't support resource-level permissions
       }),
     );
-    // SECURITY: SES SendEmail scoped to specific identity
+    // SECURITY: SES SendEmail scoped to specific identity with FROM restriction
     submitWaitlist.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ['ses:SendEmail'],
-        resources: [sesIdentityArn, sesConfigSetArn],
+        resources: [sesIdentityArn],
+        conditions: {
+          // SECURITY: Only allow sending FROM our verified domain
+          'StringLike': {
+            'ses:FromAddress': '*@vettid.dev',
+          },
+        },
       }),
     );
     requestMembership.addToRolePolicy(

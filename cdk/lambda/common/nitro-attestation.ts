@@ -545,34 +545,41 @@ export async function verifyNitroAttestation(
 // ============================================
 
 /**
- * Get currently valid PCR sets
- * In production, this would fetch from DynamoDB or SSM Parameter Store
+ * Get currently valid PCR sets from environment configuration
+ *
+ * SECURITY: This function NEVER returns development/bypass PCR values.
+ * Valid PCRs must be explicitly configured via:
+ * - NITRO_EXPECTED_PCRS environment variable (JSON array of PCR sets)
+ *
+ * An attacker cannot bypass attestation by manipulating NODE_ENV or other
+ * environment variables - only explicit PCR configuration is accepted.
  */
 export async function getCurrentPCRs(): Promise<ExpectedPCRs[]> {
-  // TODO: Fetch from SSM Parameter Store or DynamoDB
-  // For now, return development placeholder
-
+  // SECURITY: Only accept explicitly configured PCRs
+  // Never fall back to development/bypass values
   if (process.env.NITRO_EXPECTED_PCRS) {
     try {
-      return JSON.parse(process.env.NITRO_EXPECTED_PCRS);
+      const pcrs = JSON.parse(process.env.NITRO_EXPECTED_PCRS);
+
+      // SECURITY: Validate that PCRs are not all-zeros (bypass attempt)
+      for (const pcrSet of pcrs) {
+        if (pcrSet.pcr0 === '0'.repeat(96)) {
+          console.error('SECURITY: Rejected all-zeros PCR0 - potential bypass attempt');
+          throw new Error('Invalid PCR configuration: all-zeros PCR values not accepted');
+        }
+      }
+
+      return pcrs;
     } catch (e) {
       console.error('Failed to parse NITRO_EXPECTED_PCRS:', e);
+      throw new Error('Invalid PCR configuration');
     }
   }
 
-  // Development mode: accept any PCRs
-  if (process.env.NODE_ENV !== 'production') {
-    return [{
-      id: 'development',
-      pcr0: '0'.repeat(96),  // All zeros accepted in dev
-      pcr1: '0'.repeat(96),
-      pcr2: '0'.repeat(96),
-      validFrom: '2024-01-01T00:00:00Z',
-      isCurrent: true,
-    }];
-  }
-
-  throw new Error('No PCR configuration available');
+  // SECURITY: No bypass for development mode - attestation is ALWAYS required
+  // If you need to test without a real enclave, mock at the test level, not here
+  console.error('SECURITY: No PCR configuration available - NITRO_EXPECTED_PCRS must be set');
+  throw new Error('Attestation verification not configured: NITRO_EXPECTED_PCRS environment variable is required');
 }
 
 /**
