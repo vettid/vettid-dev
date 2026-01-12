@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/rs/zerolog/log"
+	"golang.org/x/crypto/curve25519"
 )
 
 // ConnectionsHandler handles connection credential management.
@@ -143,14 +144,12 @@ func (h *ConnectionsHandler) HandleCreateInvite(msg *IncomingMessage) (*Outgoing
 	// Generate X25519 key pair for E2E encryption
 	localPrivate := make([]byte, 32)
 	rand.Read(localPrivate)
-	// Clamp for X25519
-	localPrivate[0] &= 248
-	localPrivate[31] &= 127
-	localPrivate[31] |= 64
 
-	// For now, store a placeholder - real implementation would derive public key
-	localPublic := make([]byte, 32)
-	copy(localPublic, localPrivate) // Placeholder
+	// Derive public key from private key using X25519 scalar multiplication
+	localPublic, err := curve25519.X25519(localPrivate, curve25519.Basepoint)
+	if err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to derive public key")
+	}
 
 	// Store the outbound connection record
 	record := ConnectionRecord{
