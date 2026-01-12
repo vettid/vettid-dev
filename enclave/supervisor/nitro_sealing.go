@@ -773,7 +773,9 @@ func (s *NitroSealer) GenerateSealedMaterial(ownerID string) ([]byte, error) {
 // Per Architecture v2.0 Section 4.6:
 // DEK = Argon2id(PIN, salt=SHA256(owner_id || material)) followed by
 // HKDF.Extract(material, stretched_pin) → vault_dek
-func (s *NitroSealer) DeriveDEKFromPIN(sealedMaterialBlob []byte, pin string, ownerID string) ([]byte, error) {
+//
+// SECURITY: PIN is passed as []byte so caller can zero it after use
+func (s *NitroSealer) DeriveDEKFromPIN(sealedMaterialBlob []byte, pin []byte, ownerID string) ([]byte, error) {
 	log.Debug().Str("owner_id", ownerID).Msg("Deriving DEK from PIN")
 
 	// Parse sealed material blob
@@ -810,7 +812,8 @@ func (s *NitroSealer) DeriveDEKFromPIN(sealedMaterialBlob []byte, pin string, ow
 
 	// Step 2: Stretch PIN using Argon2id
 	// Parameters match mobile apps: time=3, memory=256MB, threads=4
-	stretchedPIN := argon2IDKey([]byte(pin), salt[:], 3, 256*1024, 4, 32)
+	// SECURITY: PIN is already []byte, no conversion needed
+	stretchedPIN := argon2IDKey(pin, salt[:], 3, 256*1024, 4, 32)
 
 	defer func() {
 		// Zero stretched PIN after use
@@ -833,7 +836,8 @@ func (s *NitroSealer) DeriveDEKFromPIN(sealedMaterialBlob []byte, pin string, ow
 // VerifyPINWithDEK checks if the provided PIN produces the expected DEK
 // This is used for PIN verification before vault operations
 // Returns true if PIN is correct, false otherwise
-func (s *NitroSealer) VerifyPINWithDEK(sealedMaterialBlob []byte, pin string, ownerID string, expectedDEKHash []byte) (bool, error) {
+// SECURITY: PIN is passed as []byte so caller can zero it after use
+func (s *NitroSealer) VerifyPINWithDEK(sealedMaterialBlob []byte, pin []byte, ownerID string, expectedDEKHash []byte) (bool, error) {
 	dek, err := s.DeriveDEKFromPIN(sealedMaterialBlob, pin, ownerID)
 	if err != nil {
 		return false, err

@@ -103,6 +103,7 @@ func currentTimestamp() int64 {
 
 // decryptWithECIES decrypts data using the vault's ECIES private key
 // Format: ephemeral_pubkey (32) || nonce (12) || encrypted_data
+// SECURITY: Zeroizes all intermediate key material after use
 func decryptWithECIES(privateKey []byte, ciphertext []byte) ([]byte, error) {
 	if len(ciphertext) < 32+12 {
 		return nil, fmt.Errorf("ciphertext too short")
@@ -117,6 +118,8 @@ func decryptWithECIES(privateKey []byte, ciphertext []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("key exchange failed: %w", err)
 	}
+	// SECURITY: Zero shared secret after use
+	defer zeroBytes(sharedSecret)
 
 	// Derive AES key using HKDF-SHA256
 	info := append([]byte("vettid-ecies-encryption"), ephemeralPubKey...)
@@ -125,6 +128,8 @@ func decryptWithECIES(privateKey []byte, ciphertext []byte) ([]byte, error) {
 	if _, err := io.ReadFull(hkdfReader, aesKey); err != nil {
 		return nil, fmt.Errorf("key derivation failed: %w", err)
 	}
+	// SECURITY: Zero AES key after use
+	defer zeroBytes(aesKey)
 
 	// Decrypt using AES-256-GCM
 	block, err := aes.NewCipher(aesKey)
@@ -147,12 +152,15 @@ func decryptWithECIES(privateKey []byte, ciphertext []byte) ([]byte, error) {
 
 // encryptWithECIES encrypts data using a recipient's ECIES public key
 // Returns: ephemeral_pubkey (32) || nonce (12) || encrypted_data
+// SECURITY: Zeroizes all intermediate key material after use
 func encryptWithECIES(recipientPubKey []byte, plaintext []byte) ([]byte, error) {
 	// Generate ephemeral keypair
 	ephemeralPrivate := make([]byte, 32)
 	if _, err := rand.Read(ephemeralPrivate); err != nil {
 		return nil, fmt.Errorf("failed to generate ephemeral key: %w", err)
 	}
+	// SECURITY: Zero ephemeral private key after use
+	defer zeroBytes(ephemeralPrivate)
 
 	ephemeralPublic, err := curve25519.X25519(ephemeralPrivate, curve25519.Basepoint)
 	if err != nil {
@@ -164,6 +172,8 @@ func encryptWithECIES(recipientPubKey []byte, plaintext []byte) ([]byte, error) 
 	if err != nil {
 		return nil, fmt.Errorf("key exchange failed: %w", err)
 	}
+	// SECURITY: Zero shared secret after use
+	defer zeroBytes(sharedSecret)
 
 	// Derive AES key using HKDF-SHA256
 	info := append([]byte("vettid-ecies-encryption"), ephemeralPublic...)
@@ -172,6 +182,8 @@ func encryptWithECIES(recipientPubKey []byte, plaintext []byte) ([]byte, error) 
 	if _, err := io.ReadFull(hkdfReader, aesKey); err != nil {
 		return nil, fmt.Errorf("key derivation failed: %w", err)
 	}
+	// SECURITY: Zero AES key after use
+	defer zeroBytes(aesKey)
 
 	// Encrypt using AES-256-GCM
 	block, err := aes.NewCipher(aesKey)

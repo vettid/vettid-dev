@@ -78,6 +78,8 @@ func (h *PINHandler) HandlePINSetup(ctx context.Context, msg *IncomingMessage) (
 	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
 		return h.errorResponse(msg.GetID(), "invalid payload format")
 	}
+	// SECURITY: Zero PIN after use (deferred to ensure cleanup on all exit paths)
+	defer payload.PIN.Zero()
 
 	// Validate PIN format (must be digits only, 4-8 characters)
 	if len(payload.PIN) < 4 || len(payload.PIN) > 8 {
@@ -99,7 +101,8 @@ func (h *PINHandler) HandlePINSetup(ctx context.Context, msg *IncomingMessage) (
 	}
 
 	// Derive DEK from PIN + sealed material (KMS-bound operation)
-	dek, err := h.sealerProxy.DeriveDEKFromPIN(sealedMaterial, payload.PIN)
+	// SECURITY: Pass PIN as []byte so both ends can zero it
+	dek, err := h.sealerProxy.DeriveDEKFromPIN(sealedMaterial, []byte(payload.PIN))
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to derive DEK")
 		// Include the actual error for debugging
@@ -127,7 +130,8 @@ func (h *PINHandler) HandlePINSetup(ctx context.Context, msg *IncomingMessage) (
 		log.Error().Err(err).Msg("Failed to generate auth salt")
 		return h.errorResponse(msg.GetID(), "salt generation failed")
 	}
-	authHash := hashAuthInput([]byte(payload.PIN), authSalt)
+	// SECURITY: payload.PIN is already []byte (SensitiveBytes)
+	authHash := hashAuthInput(payload.PIN, authSalt)
 
 	// Create the credential
 	h.state.mu.Lock()
@@ -236,12 +240,15 @@ func (h *PINHandler) HandlePINUnlock(ctx context.Context, msg *IncomingMessage) 
 	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
 		return h.errorResponse(msg.GetID(), "invalid payload format")
 	}
+	// SECURITY: Zero PIN after use
+	defer payload.PIN.Zero()
 
 	// Mark UTK as used
 	h.bootstrap.MarkUTKUsed(req.UTKID)
 
 	// Derive DEK from PIN + sealed material
-	dek, err := h.sealerProxy.DeriveDEKFromPIN(sealedMaterial, payload.PIN)
+	// SECURITY: Pass PIN as []byte so both ends can zero it
+	dek, err := h.sealerProxy.DeriveDEKFromPIN(sealedMaterial, []byte(payload.PIN))
 	if err != nil {
 		log.Warn().Err(err).Msg("DEK derivation failed - likely wrong PIN")
 		return h.errorResponse(msg.GetID(), "invalid PIN")
@@ -250,7 +257,8 @@ func (h *PINHandler) HandlePINUnlock(ctx context.Context, msg *IncomingMessage) 
 
 	// If we have credential in memory, verify auth hash
 	if storedCredential != nil {
-		if !verifyAuthHash([]byte(payload.PIN), storedCredential.AuthSalt, storedCredential.AuthHash) {
+		// SECURITY: payload.PIN is already []byte (SensitiveBytes), passed directly
+		if !verifyAuthHash(payload.PIN, storedCredential.AuthSalt, storedCredential.AuthHash) {
 			return h.errorResponse(msg.GetID(), "invalid PIN")
 		}
 	}
@@ -338,6 +346,9 @@ func (h *PINHandler) HandlePINChange(ctx context.Context, msg *IncomingMessage) 
 	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
 		return h.errorResponse(msg.GetID(), "invalid payload format")
 	}
+	// SECURITY: Zero both PINs after use
+	defer payload.OldPIN.Zero()
+	defer payload.NewPIN.Zero()
 
 	// Validate new PIN format
 	if len(payload.NewPIN) < 4 || len(payload.NewPIN) > 8 {
@@ -351,13 +362,15 @@ func (h *PINHandler) HandlePINChange(ctx context.Context, msg *IncomingMessage) 
 	h.bootstrap.MarkUTKUsed(req.UTKID)
 
 	// Verify old PIN
-	if !verifyAuthHash([]byte(payload.OldPIN), credential.AuthSalt, credential.AuthHash) {
+	// SECURITY: payload.OldPIN is already []byte (SensitiveBytes)
+	if !verifyAuthHash(payload.OldPIN, credential.AuthSalt, credential.AuthHash) {
 		return h.errorResponse(msg.GetID(), "invalid current PIN")
 	}
 
 	// Derive old DEK to verify (optional additional check)
 	if sealedMaterial != nil {
-		oldDEK, err := h.sealerProxy.DeriveDEKFromPIN(sealedMaterial, payload.OldPIN)
+		// SECURITY: Pass PIN as []byte so both ends can zero it
+		oldDEK, err := h.sealerProxy.DeriveDEKFromPIN(sealedMaterial, []byte(payload.OldPIN))
 		if err != nil {
 			return h.errorResponse(msg.GetID(), "verification failed")
 		}
@@ -372,7 +385,8 @@ func (h *PINHandler) HandlePINChange(ctx context.Context, msg *IncomingMessage) 
 	}
 
 	// Derive new DEK
-	newDEK, err := h.sealerProxy.DeriveDEKFromPIN(newSealedMaterial, payload.NewPIN)
+	// SECURITY: Pass PIN as []byte so both ends can zero it
+	newDEK, err := h.sealerProxy.DeriveDEKFromPIN(newSealedMaterial, []byte(payload.NewPIN))
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to derive new DEK")
 		return h.errorResponse(msg.GetID(), "key derivation failed")
@@ -384,7 +398,8 @@ func (h *PINHandler) HandlePINChange(ctx context.Context, msg *IncomingMessage) 
 	if err != nil {
 		return h.errorResponse(msg.GetID(), "salt generation failed")
 	}
-	newAuthHash := hashAuthInput([]byte(payload.NewPIN), newSalt)
+	// SECURITY: payload.NewPIN is already []byte (SensitiveBytes)
+	newAuthHash := hashAuthInput(payload.NewPIN, newSalt)
 
 	h.state.mu.Lock()
 	h.state.credential.AuthHash = newAuthHash

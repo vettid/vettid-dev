@@ -54,8 +54,8 @@ type SealerRequest struct {
 	OwnerSpace string          `json:"owner_space"`
 
 	// For derive_dek_from_pin
-	SealedMaterial []byte `json:"sealed_material,omitempty"`
-	PIN            string `json:"pin,omitempty"` // SECURITY: Only sent over internal pipe
+	SealedMaterial []byte  `json:"sealed_material,omitempty"`
+	PIN            []byte  `json:"pin,omitempty"` // SECURITY: Only sent over internal pipe, zeroed after use
 
 	// For seal_credential / unseal_credential
 	Data []byte `json:"data,omitempty"`
@@ -101,13 +101,20 @@ func (p *SealerProxy) GenerateSealedMaterial() ([]byte, error) {
 
 // DeriveDEKFromPIN requests the supervisor to derive the DEK from PIN + sealed material
 // SECURITY: The PIN is sent over the internal pipe (not exposed externally)
-func (p *SealerProxy) DeriveDEKFromPIN(sealedMaterial []byte, pin string) ([]byte, error) {
+// SECURITY: PIN is passed as []byte so it can be zeroed by the caller after use
+func (p *SealerProxy) DeriveDEKFromPIN(sealedMaterial []byte, pin []byte) ([]byte, error) {
+	// Make a copy of the PIN for the request so we can zero it after sending
+	pinCopy := make([]byte, len(pin))
+	copy(pinCopy, pin)
+
 	req := SealerRequest{
 		Operation:      SealerOpDeriveDEKFromPIN,
 		OwnerSpace:     p.ownerSpace,
 		SealedMaterial: sealedMaterial,
-		PIN:            pin,
+		PIN:            pinCopy,
 	}
+	// SECURITY: Zero the PIN copy in the request after marshaling
+	defer zeroBytes(pinCopy)
 
 	resp, err := p.sendRequest(req)
 	if err != nil {

@@ -1,8 +1,44 @@
 package main
 
 import (
+	"encoding/json"
 	"sync"
 )
+
+// SensitiveBytes is a []byte wrapper that can be zeroed after use
+// SECURITY: Use this type for PIN, password, and other sensitive data
+// to ensure the underlying memory can be cleared
+type SensitiveBytes []byte
+
+// UnmarshalJSON implements json.Unmarshaler for SensitiveBytes
+// Handles both string and base64-encoded values
+func (s *SensitiveBytes) UnmarshalJSON(data []byte) error {
+	// Try to unmarshal as a string first (most common case for PIN)
+	var str string
+	if err := json.Unmarshal(data, &str); err != nil {
+		return err
+	}
+	*s = SensitiveBytes(str)
+	return nil
+}
+
+// MarshalJSON implements json.Marshaler for SensitiveBytes
+func (s SensitiveBytes) MarshalJSON() ([]byte, error) {
+	return json.Marshal(string(s))
+}
+
+// Zero overwrites the underlying bytes with zeros
+// SECURITY: Call this via defer immediately after decrypting sensitive data
+func (s SensitiveBytes) Zero() {
+	for i := range s {
+		s[i] = 0
+	}
+}
+
+// String returns the string representation (use sparingly)
+func (s SensitiveBytes) String() string {
+	return string(s)
+}
 
 // VaultState holds all cryptographic state for a vault
 // This is the in-memory state that vault-manager maintains for its user
@@ -126,8 +162,9 @@ type PINSetupRequest struct {
 }
 
 // PINSetupPayload is the decrypted PIN payload
+// SECURITY: Uses SensitiveBytes so PIN can be zeroed after use
 type PINSetupPayload struct {
-	PIN string `json:"pin"` // The actual PIN
+	PIN SensitiveBytes `json:"pin"` // The actual PIN (zeroable)
 }
 
 // PINSetupResponse is returned after PIN setup
@@ -157,9 +194,10 @@ type PINChangeRequest struct {
 }
 
 // PINChangePayload is the decrypted payload for PIN change
+// SECURITY: Uses SensitiveBytes so PINs can be zeroed after use
 type PINChangePayload struct {
-	OldPIN string `json:"old_pin"`
-	NewPIN string `json:"new_pin"`
+	OldPIN SensitiveBytes `json:"old_pin"` // Current PIN (zeroable)
+	NewPIN SensitiveBytes `json:"new_pin"` // New PIN (zeroable)
 }
 
 // PINChangeResponse is returned after successful PIN change

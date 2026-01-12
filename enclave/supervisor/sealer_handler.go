@@ -45,7 +45,7 @@ type SealerRequest struct {
 
 	// For derive_dek_from_pin
 	SealedMaterial []byte `json:"sealed_material,omitempty"`
-	PIN            string `json:"pin,omitempty"`
+	PIN            []byte `json:"pin,omitempty"` // SECURITY: []byte so it can be zeroed after use
 
 	// For seal_credential / unseal_credential
 	Data []byte `json:"data,omitempty"`
@@ -138,7 +138,11 @@ func (sh *SealerHandler) generateSealedMaterial(req SealerRequest) SealerRespons
 }
 
 // deriveDEKFromPIN derives the DEK from PIN + sealed material
+// SECURITY: PIN is received as []byte and zeroed after use
 func (sh *SealerHandler) deriveDEKFromPIN(req SealerRequest) SealerResponse {
+	// SECURITY: Zero PIN after processing (regardless of success/failure)
+	defer zeroBytes(req.PIN)
+
 	if sh.sealer == nil {
 		// Dev mode - return mock DEK
 		log.Warn().Msg("No sealer available, returning mock DEK")
@@ -160,6 +164,14 @@ func (sh *SealerHandler) deriveDEKFromPIN(req SealerRequest) SealerResponse {
 	return SealerResponse{
 		Success: true,
 		DEK:     dek,
+	}
+}
+
+// zeroBytes overwrites a byte slice with zeros
+// SECURITY: Used to clear sensitive data from memory
+func zeroBytes(b []byte) {
+	for i := range b {
+		b[i] = 0
 	}
 }
 
