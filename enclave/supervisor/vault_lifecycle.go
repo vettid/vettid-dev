@@ -264,20 +264,16 @@ func (vm *VaultManager) evictVault(ownerSpace string) {
 		return
 	}
 
-	// Process-based architecture: kill the subprocess
+	// Kill the vault-manager subprocess
+	// Note: Process-based architecture is now the only mode.
+	// Subprocess handles its own memory zeroing on exit.
 	if vault.process != nil {
-		// Kill the subprocess via ProcessManager
 		if err := vm.processManager.Kill(ownerSpace); err != nil {
 			log.Warn().
 				Err(err).
 				Str("owner_space", ownerSpace).
 				Msg("Error killing vault-manager subprocess")
 		}
-	} else if vault.stopChan != nil {
-		// Legacy goroutine-based architecture: close the channel
-		close(vault.stopChan)
-		// SECURITY: Zero sensitive key material before releasing memory
-		vault.zeroSensitiveData()
 	}
 
 	// Release memory
@@ -513,20 +509,13 @@ func (vp *VaultProcess) ProcessMessage(ctx context.Context, msg *Message) (*Mess
 		}
 	}
 
-	// Legacy goroutine-based architecture (fallback)
-	req := &vaultRequest{ctx: ctx, msg: msg}
-	select {
-	case vp.requestChan <- req:
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-
-	select {
-	case resp := <-vp.responseChan:
-		return resp.msg, resp.err
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
+	// DEAD CODE: Legacy goroutine-based architecture was removed.
+	// Process-based architecture (vp.process != nil) is now the only path.
+	// If we reach here, something is wrong with process spawning.
+	log.Error().
+		Str("owner_space", vp.OwnerSpace).
+		Msg("FATAL: Reached dead code path - process-based routing failed")
+	return nil, fmt.Errorf("process-based routing not available for owner %s", vp.OwnerSpace)
 }
 
 // handleRequest processes a single request
