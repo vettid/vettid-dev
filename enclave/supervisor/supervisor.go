@@ -332,54 +332,17 @@ func (s *Supervisor) handleAttestationRequest(ctx context.Context, msg *Message)
 }
 
 // handleCredentialCreate creates a new Protean Credential inside the enclave
+// NOTE: This is a legacy handler that is not used by the mobile app.
+// Mobile apps use the bootstrap/pin-setup flow instead.
 func (s *Supervisor) handleCredentialCreate(ctx context.Context, msg *Message) (*Message, error) {
-	if msg.OwnerSpace == "" {
-		return nil, fmt.Errorf("owner_space required for credential creation")
-	}
-
-	// Get or create vault for this owner
-	vault, err := s.vaults.GetOrCreate(ctx, msg.OwnerSpace)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get vault: %w", err)
-	}
-
-	// Create credential inside vault
-	credential, err := vault.CreateCredential(ctx, msg.CredentialRequest)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create credential: %w", err)
-	}
-
-	return &Message{
-		Type:       MessageTypeCredentialResponse,
-		Credential: credential,
-	}, nil
+	return nil, fmt.Errorf("legacy credential_create not implemented - use bootstrap/pin-setup flow")
 }
 
 // handleCredentialUnseal unseals a credential for use
+// NOTE: This is a legacy handler that is not used by the mobile app.
+// Mobile apps use the pin-unlock flow instead.
 func (s *Supervisor) handleCredentialUnseal(ctx context.Context, msg *Message) (*Message, error) {
-	if msg.OwnerSpace == "" {
-		return nil, fmt.Errorf("owner_space required for credential unsealing")
-	}
-	if msg.SealedCredential == nil {
-		return nil, fmt.Errorf("sealed_credential required")
-	}
-
-	// Get or create vault for this owner
-	vault, err := s.vaults.GetOrCreate(ctx, msg.OwnerSpace)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get vault: %w", err)
-	}
-
-	// Unseal credential inside vault
-	result, err := vault.UnsealCredential(ctx, msg.SealedCredential, msg.Challenge)
-	if err != nil {
-		return nil, fmt.Errorf("failed to unseal credential: %w", err)
-	}
-
-	return &Message{
-		Type:         MessageTypeCredentialResponse,
-		UnsealResult: result,
-	}, nil
+	return nil, fmt.Errorf("legacy credential_unseal not implemented - use pin-unlock flow")
 }
 
 // handleHealthCheck returns supervisor health status
