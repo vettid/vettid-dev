@@ -61,6 +61,12 @@ type EnclaveConfig struct {
 	// VsockSecretID is the Secrets Manager secret ID for vsock authentication
 	// SECURITY: Fetched at startup and written to /etc/vettid/vsock-secret
 	VsockSecretID string `yaml:"vsock_secret_id"`
+	// ExpectedPCR0 is the hex-encoded PCR0 value for attestation verification
+	// SECURITY: If set, parent will verify enclave attestation against this value
+	// Can also be loaded from SSM parameter /vettid/enclave/pcr0
+	ExpectedPCR0 string `yaml:"expected_pcr0"`
+	// PCR0SSMParameter is the SSM parameter path for PCR0 (overrides ExpectedPCR0)
+	PCR0SSMParameter string `yaml:"pcr0_ssm_parameter"`
 }
 
 // HealthConfig holds health check settings
@@ -124,8 +130,9 @@ func DefaultConfig() *Config {
 			KeyPrefix: "vaults/",
 		},
 		Enclave: EnclaveConfig{
-			CID:  16, // Default enclave CID
-			Port: 5000,
+			CID:              16, // Default enclave CID
+			Port:             5000,
+			PCR0SSMParameter: "/vettid/enclave/pcr0", // Default SSM parameter for PCR0
 		},
 		Health: HealthConfig{
 			Port:     8080,

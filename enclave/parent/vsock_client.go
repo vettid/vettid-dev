@@ -1,22 +1,30 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"crypto/ecdsa"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/sha512"
+	"crypto/x509"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"os"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/ssm"
+	"github.com/fxamacker/cbor/v2"
 	"github.com/mdlayher/vsock"
 	"github.com/rs/zerolog/log"
 )
@@ -28,6 +36,9 @@ const (
 	maxHandshakeAgeSeconds = 300
 	secretFilePath         = "/etc/vettid/vsock-secret"
 	secretFilePathDev      = "/tmp/vettid-vsock-secret"
+	// SECURITY: Message size limits to prevent resource exhaustion
+	maxMessageSize = 10 * 1024 * 1024 // 10MB maximum
+	minMessageSize = 2                 // Minimum valid JSON "{}"
 )
 
 // SECURITY: Handshake message types
@@ -53,12 +64,37 @@ type HandshakeAttestation struct {
 
 // SECURITY: Authentication errors
 var (
-	ErrHandshakeFailed  = errors.New("handshake authentication failed")
-	ErrInvalidMAC       = errors.New("invalid handshake MAC")
-	ErrExpiredHandshake = errors.New("handshake timestamp expired")
-	ErrFutureTimestamp  = errors.New("handshake timestamp in the future")
-	ErrNoSharedSecret   = errors.New("shared secret not configured")
+	ErrHandshakeFailed     = errors.New("handshake authentication failed")
+	ErrInvalidMAC          = errors.New("invalid handshake MAC")
+	ErrExpiredHandshake    = errors.New("handshake timestamp expired")
+	ErrFutureTimestamp     = errors.New("handshake timestamp in the future")
+	ErrNoSharedSecret      = errors.New("shared secret not configured")
+	ErrInvalidAttestation  = errors.New("invalid attestation document")
+	ErrPCRMismatch         = errors.New("PCR values do not match expected")
+	ErrAttestationExpired  = errors.New("attestation document expired")
+	ErrInvalidSignature    = errors.New("attestation signature verification failed")
+	ErrMessageTooSmall     = errors.New("message too small")
+	ErrMessageTooLarge     = errors.New("message too large")
 )
+
+// SECURITY: AWS Nitro Attestation Root CA (embedded for trust anchor)
+const awsNitroRootCAPEM = `-----BEGIN CERTIFICATE-----
+MIICETCCAZagAwIBAgIRAPkxdWgbkK/hHUbMtOTn+FYwCgYIKoZIzj0EAwMwSTEL
+MAkGA1UEBhMCVVMxDzANBgNVBAoMBkFtYXpvbjEMMAoGA1UECwwDQVdTMRswGQYD
+VQQDDBJhd3Mubml0cm8tZW5jbGF2ZXMwHhcNMTkxMDI4MTMyODA1WhcNNDkxMDI4
+MTQyODA1WjBJMQswCQYDVQQGEwJVUzEPMA0GA1UECgwGQW1hem9uMQwwCgYDVQQL
+DANBV1MxGzAZBgNVBAMMEmF3cy5uaXRyby1lbmNsYXZlczB2MBAGByqGSM49AgEG
+BSuBBAAiA2IABPwCVOumCMHzaHDimtqQvkY4MpJzbolL//Zy2YlES1BR5TSksfbb
+48C8WBoyt7F2Bw7eEtaaP+ohG2bnUs990d0JX28TcPQXCEPZ3BABIeTPYwEoCWZE
+h8l5YoQwTcU/9KNCMEAwDwYDVR0TAQH/BAUwAwEB/zAdBgNVHQ4EFgQUkCW1DdkF
+R+eWw5b6cp3PmanfS5YwDgYDVR0PAQH/BAQDAgGGMAoGCCqGSM49BAMDA2kAMGYC
+MQCjfy+Rocm9Xue4YnwWmNJVA44fA0P5W2OpYow9OYCVRaEevL8uO1XYru5xtMPW
+rfMCMQCi85sWBbJwKKXdS6BptQFuZbT73o/gBh1qUxl/nNr12UO8Yfwr6wPLb+6N
+IwLz3/Y=
+-----END CERTIFICATE-----`
+
+// Maximum age for attestation documents (5 minutes)
+const maxAttestationAgeSeconds = 300
 
 // EnclaveMessageType identifies the type of message
 type EnclaveMessageType string
@@ -162,6 +198,7 @@ type VsockClient struct {
 	writeMu       sync.Mutex // Mutex for write operations
 	authenticated bool       // SECURITY: True if handshake completed
 	sharedSecret  []byte     // Pre-shared key for authentication
+	expectedPCRs  map[int][]byte // SECURITY: Expected PCR values for attestation verification
 }
 
 // NewVsockClient creates a new vsock client to communicate with the enclave
@@ -193,6 +230,14 @@ func NewVsockClient(cfg EnclaveConfig, devMode bool) (*VsockClient, error) {
 		devMode: devMode,
 	}
 
+	// SECURITY: Load expected PCR values for attestation verification
+	if !devMode {
+		if err := client.loadExpectedPCRs(); err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("failed to load PCR values: %w", err)
+		}
+	}
+
 	// SECURITY: Perform mutual authentication handshake
 	if err := client.performHandshake(); err != nil {
 		conn.Close()
@@ -200,6 +245,64 @@ func NewVsockClient(cfg EnclaveConfig, devMode bool) (*VsockClient, error) {
 	}
 
 	return client, nil
+}
+
+// loadExpectedPCRs loads expected PCR values from SSM parameter or config
+// SECURITY: PCR values are critical for attestation verification
+func (c *VsockClient) loadExpectedPCRs() error {
+	var pcr0Hex string
+
+	// Try to load from SSM parameter first
+	if c.config.PCR0SSMParameter != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		cfg, err := config.LoadDefaultConfig(ctx)
+		if err != nil {
+			log.Warn().Err(err).Msg("Failed to load AWS config, falling back to static PCR0")
+		} else {
+			ssmClient := ssm.NewFromConfig(cfg)
+			result, err := ssmClient.GetParameter(ctx, &ssm.GetParameterInput{
+				Name: &c.config.PCR0SSMParameter,
+			})
+			if err != nil {
+				log.Warn().Err(err).Str("param", c.config.PCR0SSMParameter).Msg("Failed to load PCR0 from SSM, falling back to static config")
+			} else if result.Parameter != nil && result.Parameter.Value != nil {
+				pcr0Hex = *result.Parameter.Value
+				log.Info().Str("param", c.config.PCR0SSMParameter).Msg("Loaded PCR0 from SSM parameter")
+			}
+		}
+	}
+
+	// Fall back to static config
+	if pcr0Hex == "" && c.config.ExpectedPCR0 != "" {
+		pcr0Hex = c.config.ExpectedPCR0
+		log.Info().Msg("Using static PCR0 from config")
+	}
+
+	// If no PCR0 available, production mode should fail
+	if pcr0Hex == "" {
+		log.Error().Msg("SECURITY: No PCR0 value available for attestation verification")
+		return fmt.Errorf("PCR0 value required in production mode")
+	}
+
+	// Decode hex PCR0
+	pcr0, err := hex.DecodeString(pcr0Hex)
+	if err != nil {
+		return fmt.Errorf("invalid PCR0 hex format: %w", err)
+	}
+
+	// PCR0 should be 48 bytes (SHA-384)
+	if len(pcr0) != 48 {
+		return fmt.Errorf("invalid PCR0 length: expected 48 bytes, got %d", len(pcr0))
+	}
+
+	c.expectedPCRs = map[int][]byte{
+		0: pcr0,
+	}
+
+	log.Info().Str("pcr0", pcr0Hex[:16]+"...").Msg("PCR0 loaded for attestation verification")
+	return nil
 }
 
 // performHandshake performs the client-side (parent) mutual authentication
@@ -283,15 +386,25 @@ func (c *VsockClient) performHandshake() error {
 		}
 	}
 
-	// 5. Verify attestation document (if provided)
+	// 5. SECURITY: Verify attestation document with PCR values
 	if response.Attestation != nil {
 		log.Debug().
 			Int("attestation_len", len(response.Attestation.Document)).
 			Msg("Attestation document received")
-		// TODO: In production, verify attestation with expected PCRs
-		// For now, we just log that we received it
+
+		// SECURITY: In production, verify attestation with expected PCRs
+		if !c.devMode && c.expectedPCRs != nil && len(c.expectedPCRs) > 0 {
+			if err := verifyAttestation(response.Attestation, c.expectedPCRs); err != nil {
+				log.Error().Err(err).Msg("SECURITY: Enclave attestation verification FAILED")
+				return fmt.Errorf("%w: attestation verification failed: %v", ErrHandshakeFailed, err)
+			}
+			log.Info().Msg("SECURITY: Enclave attestation verified successfully")
+		} else if !c.devMode {
+			log.Warn().Msg("SECURITY WARNING: No PCR values configured, skipping attestation verification")
+		}
 	} else if !c.devMode {
-		log.Warn().Msg("SECURITY WARNING: No attestation in response (expected in production)")
+		log.Error().Msg("SECURITY: No attestation in response - rejecting connection")
+		return fmt.Errorf("%w: attestation required in production", ErrHandshakeFailed)
 	}
 
 	// 6. Verify enclave's MAC: HMAC-SHA256(secret, "enclave:" || timestamp || enclave_nonce || attestation_hash)
@@ -402,14 +515,19 @@ func (c *VsockClient) writeHandshakeMessage(msg *handshakeMessage) error {
 }
 
 // readHandshakeMessage reads a handshake message
+// SECURITY: Implements strict bounds checking to prevent resource exhaustion
 func (c *VsockClient) readHandshakeMessage() (*handshakeMessage, error) {
 	var length uint32
 	if err := binary.Read(c.conn, binary.BigEndian, &length); err != nil {
 		return nil, fmt.Errorf("failed to read length: %w", err)
 	}
 
-	if length > 10*1024*1024 {
-		return nil, fmt.Errorf("message too large: %d bytes", length)
+	// SECURITY: Check message size bounds
+	if length < minMessageSize {
+		return nil, fmt.Errorf("%w: %d bytes (minimum %d)", ErrMessageTooSmall, length, minMessageSize)
+	}
+	if length > maxMessageSize {
+		return nil, fmt.Errorf("%w: %d bytes (maximum %d)", ErrMessageTooLarge, length, maxMessageSize)
 	}
 
 	data := make([]byte, length)
@@ -502,6 +620,7 @@ func (c *VsockClient) writeMessage(msg *EnclaveMessage) error {
 }
 
 // readMessage reads a length-prefixed JSON message
+// SECURITY: Implements strict bounds checking to prevent resource exhaustion
 func (c *VsockClient) readMessage() (*EnclaveMessage, error) {
 	// Read 4-byte length prefix
 	var length uint32
@@ -509,9 +628,14 @@ func (c *VsockClient) readMessage() (*EnclaveMessage, error) {
 		return nil, fmt.Errorf("failed to read length: %w", err)
 	}
 
-	// Sanity check - max 10MB message
-	if length > 10*1024*1024 {
-		return nil, fmt.Errorf("message too large: %d bytes", length)
+	// SECURITY: Check message size bounds
+	// - Prevents zero-length allocation
+	// - Prevents excessive memory allocation (DoS via resource exhaustion)
+	if length < minMessageSize {
+		return nil, fmt.Errorf("%w: %d bytes (minimum %d)", ErrMessageTooSmall, length, minMessageSize)
+	}
+	if length > maxMessageSize {
+		return nil, fmt.Errorf("%w: %d bytes (maximum %d)", ErrMessageTooLarge, length, maxMessageSize)
 	}
 
 	// Read message body
@@ -537,4 +661,206 @@ func (c *VsockClient) Close() error {
 // IsConnected returns true if connected to the enclave
 func (c *VsockClient) IsConnected() bool {
 	return c.conn != nil
+}
+
+// --- Attestation Verification ---
+
+// COSESign1 represents a COSE_Sign1 structure (RFC 8152)
+type COSESign1 struct {
+	_           struct{} `cbor:",toarray"`
+	Protected   []byte
+	Unprotected map[interface{}]interface{}
+	Payload     []byte
+	Signature   []byte
+}
+
+// AttestationDocument represents the payload of a Nitro attestation
+type AttestationDocument struct {
+	ModuleID    string         `cbor:"module_id"`
+	Timestamp   uint64         `cbor:"timestamp"`
+	Digest      string         `cbor:"digest"`
+	PCRs        map[int][]byte `cbor:"pcrs"`
+	Certificate []byte         `cbor:"certificate"`
+	CABundle    [][]byte       `cbor:"cabundle"`
+	PublicKey   []byte         `cbor:"public_key,omitempty"`
+	UserData    []byte         `cbor:"user_data,omitempty"`
+	Nonce       []byte         `cbor:"nonce,omitempty"`
+}
+
+// verifyAttestation verifies a Nitro attestation document
+// SECURITY: This is critical - it validates the enclave's identity
+func verifyAttestation(attestation *HandshakeAttestation, expectedPCRs map[int][]byte) error {
+	if attestation == nil || len(attestation.Document) == 0 {
+		return ErrInvalidAttestation
+	}
+
+	// Check for mock attestation (development only - should be rejected in production)
+	if bytes.HasPrefix(attestation.Document, []byte("MOCK_ATTESTATION:")) {
+		log.Warn().Msg("SECURITY WARNING: Mock attestation detected - rejecting in production")
+		return fmt.Errorf("%w: mock attestations not allowed", ErrInvalidAttestation)
+	}
+
+	// Parse COSE_Sign1 structure
+	var coseSign1 COSESign1
+	if err := cbor.Unmarshal(attestation.Document, &coseSign1); err != nil {
+		log.Error().Err(err).Msg("Failed to parse COSE_Sign1 structure")
+		return fmt.Errorf("%w: failed to parse COSE_Sign1", ErrInvalidAttestation)
+	}
+
+	// Parse the attestation document payload
+	var attDoc AttestationDocument
+	if err := cbor.Unmarshal(coseSign1.Payload, &attDoc); err != nil {
+		log.Error().Err(err).Msg("Failed to parse attestation document payload")
+		return fmt.Errorf("%w: failed to parse payload", ErrInvalidAttestation)
+	}
+
+	// 1. Verify certificate chain against AWS Nitro root CA
+	if err := verifyCertificateChain(attDoc.Certificate, attDoc.CABundle); err != nil {
+		log.Error().Err(err).Msg("Certificate chain verification failed")
+		return fmt.Errorf("%w: %v", ErrInvalidSignature, err)
+	}
+
+	// 2. Verify COSE signature using the leaf certificate's public key
+	if err := verifyCOSESignature(&coseSign1, attDoc.Certificate); err != nil {
+		log.Error().Err(err).Msg("COSE signature verification failed")
+		return fmt.Errorf("%w: %v", ErrInvalidSignature, err)
+	}
+
+	// 3. Validate timestamp (freshness check)
+	now := uint64(time.Now().Unix())
+	docAge := now - attDoc.Timestamp
+	if docAge > maxAttestationAgeSeconds {
+		log.Error().
+			Uint64("doc_timestamp", attDoc.Timestamp).
+			Uint64("now", now).
+			Uint64("age_seconds", docAge).
+			Msg("Attestation document too old")
+		return fmt.Errorf("%w: document is %d seconds old (max %d)",
+			ErrAttestationExpired, docAge, maxAttestationAgeSeconds)
+	}
+
+	// 4. Verify PCR values
+	if err := verifyPCRs(attDoc.PCRs, expectedPCRs); err != nil {
+		return err
+	}
+
+	log.Info().
+		Str("module_id", attDoc.ModuleID).
+		Uint64("timestamp", attDoc.Timestamp).
+		Msg("Attestation verification successful")
+
+	return nil
+}
+
+// verifyCertificateChain verifies the certificate chain against AWS Nitro root CA
+func verifyCertificateChain(leafCertDER []byte, caBundle [][]byte) error {
+	// Parse the AWS Nitro root CA
+	rootPool := x509.NewCertPool()
+	if !rootPool.AppendCertsFromPEM([]byte(awsNitroRootCAPEM)) {
+		return errors.New("failed to parse AWS Nitro root CA")
+	}
+
+	// Parse the leaf certificate
+	leafCert, err := x509.ParseCertificate(leafCertDER)
+	if err != nil {
+		return fmt.Errorf("failed to parse leaf certificate: %w", err)
+	}
+
+	// Build intermediate certificate pool from CA bundle
+	intermediatePool := x509.NewCertPool()
+	for i, certDER := range caBundle {
+		cert, err := x509.ParseCertificate(certDER)
+		if err != nil {
+			return fmt.Errorf("failed to parse intermediate cert %d: %w", i, err)
+		}
+		intermediatePool.AddCert(cert)
+	}
+
+	// Verify the certificate chain
+	opts := x509.VerifyOptions{
+		Roots:         rootPool,
+		Intermediates: intermediatePool,
+		CurrentTime:   time.Now(),
+		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
+	}
+
+	if _, err := leafCert.Verify(opts); err != nil {
+		return fmt.Errorf("certificate chain verification failed: %w", err)
+	}
+
+	return nil
+}
+
+// verifyCOSESignature verifies the COSE_Sign1 signature
+func verifyCOSESignature(coseSign1 *COSESign1, certDER []byte) error {
+	// Parse the certificate to get the public key
+	cert, err := x509.ParseCertificate(certDER)
+	if err != nil {
+		return fmt.Errorf("failed to parse certificate: %w", err)
+	}
+
+	// Get ECDSA public key (Nitro uses P-384)
+	ecdsaPubKey, ok := cert.PublicKey.(*ecdsa.PublicKey)
+	if !ok {
+		return errors.New("certificate does not contain ECDSA public key")
+	}
+
+	// Build Sig_structure for verification (COSE specification)
+	// Sig_structure = ["Signature1", protected, external_aad, payload]
+	sigStructure := []interface{}{
+		"Signature1",
+		coseSign1.Protected,
+		[]byte{}, // external_aad (empty for attestation)
+		coseSign1.Payload,
+	}
+
+	sigStructureBytes, err := cbor.Marshal(sigStructure)
+	if err != nil {
+		return fmt.Errorf("failed to build Sig_structure: %w", err)
+	}
+
+	// Hash with SHA-384 (P-384 curve uses SHA-384)
+	hash := sha512.Sum384(sigStructureBytes)
+
+	// The signature is in raw R||S format, each 48 bytes for P-384
+	if len(coseSign1.Signature) != 96 {
+		return fmt.Errorf("invalid signature length: expected 96, got %d", len(coseSign1.Signature))
+	}
+
+	// Parse R and S from signature
+	r := new(big.Int).SetBytes(coseSign1.Signature[:48])
+	s := new(big.Int).SetBytes(coseSign1.Signature[48:])
+
+	// Verify signature
+	if !ecdsa.Verify(ecdsaPubKey, hash[:], r, s) {
+		return errors.New("ECDSA signature verification failed")
+	}
+
+	return nil
+}
+
+// verifyPCRs compares actual PCR values against expected
+func verifyPCRs(actualPCRs map[int][]byte, expectedPCRs map[int][]byte) error {
+	for index, expected := range expectedPCRs {
+		actual, ok := actualPCRs[index]
+		if !ok {
+			log.Error().Int("pcr_index", index).Msg("Missing PCR value")
+			return fmt.Errorf("%w: PCR%d not present in attestation", ErrPCRMismatch, index)
+		}
+
+		if !bytes.Equal(actual, expected) {
+			log.Error().
+				Int("pcr_index", index).
+				Str("expected", hex.EncodeToString(expected)).
+				Str("actual", hex.EncodeToString(actual)).
+				Msg("PCR value mismatch")
+			return fmt.Errorf("%w: PCR%d mismatch", ErrPCRMismatch, index)
+		}
+	}
+
+	log.Debug().
+		Int("pcr_count", len(expectedPCRs)).
+		Msg("All PCR values verified")
+
+	return nil
 }
