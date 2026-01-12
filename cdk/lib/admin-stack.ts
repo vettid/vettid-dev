@@ -133,6 +133,7 @@ export class AdminStack extends cdk.Stack {
     const handlersBucket = props.infrastructure.handlersBucket;
 
     // Default environment variables for all admin functions
+    // SECURITY: STAGE=prod ensures localhost origins are not allowed in CORS
     const defaultEnv = {
       TABLE_INVITES: tables.invites.tableName,
       TABLE_REGISTRATIONS: tables.registrations.tableName,
@@ -146,7 +147,8 @@ export class AdminStack extends cdk.Stack {
       TABLE_SENT_EMAILS: tables.sentEmails.tableName,
       TABLE_NOTIFICATION_PREFERENCES: tables.notificationPreferences.tableName,
       PENDING_ADMINS_TABLE: tables.pendingAdmins.tableName,
-      ALLOWED_ORIGINS: 'https://admin.vettid.dev,http://localhost:3000,http://localhost:5173',
+      STAGE: 'prod',  // SECURITY: Ensures CORS excludes localhost origins
+      ALLOWED_ORIGINS: 'https://admin.vettid.dev,https://vettid.dev',
     };
 
     // ===== REGISTRATION MANAGEMENT =====

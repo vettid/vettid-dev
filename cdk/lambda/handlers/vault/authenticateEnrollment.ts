@@ -9,6 +9,10 @@ import {
   parseJsonBody,
   getRequestId,
   putAudit,
+  validateSessionToken,
+  validateDeviceId,
+  validateDeviceType,
+  ValidationError,
 } from '../../common/util';
 import { generateEnrollmentToken } from '../../common/enrollment-jwt';
 
@@ -44,14 +48,20 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     // Parse request body
     const body = parseJsonBody<AuthenticateRequest>(event);
 
-    if (!body.session_token) {
-      return badRequest('session_token is required', origin);
-    }
-    if (!body.device_id) {
-      return badRequest('device_id is required', origin);
-    }
-    if (!body.device_type || !['android', 'ios'].includes(body.device_type)) {
-      return badRequest('device_type must be android or ios', origin);
+    // SECURITY: Validate all input fields with strict format checking
+    let sessionToken: string;
+    let deviceId: string;
+    let deviceType: 'android' | 'ios';
+
+    try {
+      sessionToken = validateSessionToken(body.session_token, 'est');
+      deviceId = validateDeviceId(body.device_id);
+      deviceType = validateDeviceType(body.device_type);
+    } catch (err) {
+      if (err instanceof ValidationError) {
+        return badRequest(err.message, origin);
+      }
+      throw err;
     }
 
     // Look up session by session_token using GSI
@@ -61,7 +71,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       IndexName: 'token-index',
       KeyConditionExpression: 'session_token = :token',
       ExpressionAttributeValues: marshall({
-        ':token': body.session_token,
+        ':token': sessionToken,
       }),
       Limit: 1,
     }));
@@ -71,8 +81,8 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       await putAudit({
         type: 'enrollment_auth_failed',
         reason: 'invalid_session_token',
-        device_id: body.device_id.substring(0, 8) + '...',
-        device_type: body.device_type,
+        device_id: deviceId.substring(0, 8) + '...',
+        device_type: deviceType,
       }, requestId);
 
       return unauthorized('Invalid or expired session token', origin);
@@ -118,8 +128,8 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       },
       ExpressionAttributeValues: marshall({
         ':status': 'AUTHENTICATED',
-        ':device_id': body.device_id,
-        ':device_type': body.device_type,
+        ':device_id': deviceId,
+        ':device_type': deviceType,
         ':now': now,
       }),
     }));
@@ -130,8 +140,8 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       session.user_guid,
       session.session_id,
       {
-        deviceId: body.device_id,
-        deviceType: body.device_type,
+        deviceId: deviceId,
+        deviceType: deviceType,
         expiresInSeconds: 600, // 10 minutes
       }
     );
@@ -144,8 +154,8 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       type: 'enrollment_authenticated',
       user_guid: session.user_guid,
       session_id: session.session_id,
-      device_id: body.device_id.substring(0, 8) + '...',
-      device_type: body.device_type,
+      device_id: deviceId.substring(0, 8) + '...',
+      device_type: deviceType,
     }, requestId);
 
     return ok({

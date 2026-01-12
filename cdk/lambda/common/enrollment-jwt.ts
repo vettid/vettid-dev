@@ -15,25 +15,20 @@ let cachedJwtSecret: string | null = null;
 let secretCacheTime = 0;
 const SECRET_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
+// SECURITY: JWT secret must be stored in Secrets Manager, not environment variables
+// Environment variables can be exposed through logs, error messages, and process dumps
 const JWT_SECRET_ARN = process.env.ENROLLMENT_JWT_SECRET_ARN;
 
-// For backwards compatibility, also check ENROLLMENT_JWT_SECRET env var
-const STATIC_JWT_SECRET = process.env.ENROLLMENT_JWT_SECRET;
-
-if (!JWT_SECRET_ARN && !STATIC_JWT_SECRET) {
-  throw new Error('CRITICAL: Either ENROLLMENT_JWT_SECRET_ARN or ENROLLMENT_JWT_SECRET environment variable is required');
+if (!JWT_SECRET_ARN) {
+  throw new Error('CRITICAL: ENROLLMENT_JWT_SECRET_ARN environment variable is required');
 }
 
 /**
- * Get JWT secret - either from Secrets Manager or environment variable
+ * Get JWT secret from Secrets Manager (with caching)
+ * SECURITY: Secrets Manager provides audit logging, rotation support, and encryption at rest
  */
 async function getJwtSecret(): Promise<string> {
-  // Use static secret if available (for backwards compatibility)
-  if (STATIC_JWT_SECRET) {
-    return STATIC_JWT_SECRET;
-  }
-
-  // Check cache
+  // Check cache first to minimize Secrets Manager calls
   const now = Date.now();
   if (cachedJwtSecret && (now - secretCacheTime) < SECRET_CACHE_TTL_MS) {
     return cachedJwtSecret;

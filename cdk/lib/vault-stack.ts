@@ -147,12 +147,14 @@ export class VaultStack extends cdk.Stack {
     // Default environment variables for vault functions
     // Note: Legacy tables (Credentials, CredentialKeys, TransactionKeys, LedgerAuthTokens)
     // removed - vault-manager uses JetStream storage. Handlers referencing these will fail.
+    // SECURITY: STAGE=prod ensures localhost origins are not allowed in CORS
     const defaultEnv = {
       TABLE_ACTION_TOKENS: tables.actionTokens.tableName,
       TABLE_ENROLLMENT_SESSIONS: tables.enrollmentSessions.tableName,
       TABLE_REGISTRATIONS: tables.registrations.tableName,
       TABLE_INVITES: tables.invites.tableName,
       TABLE_AUDIT: tables.audit.tableName,
+      STAGE: 'prod',  // SECURITY: Ensures CORS excludes localhost origins
     };
 
     // ===== VAULT ENROLLMENT =====

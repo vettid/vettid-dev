@@ -551,16 +551,31 @@ export function getClientIp(event: APIGatewayProxyEventV2): string {
 
 /**
  * ALLOWED_ORIGINS for CORS - explicitly define allowed origins
- * Never allow wildcard (*) in production for security
+ * SECURITY: Never allow wildcard (*) in production
+ * Development origins (localhost) are only included when STAGE != 'prod'
  */
-const ALLOWED_ORIGINS = [
+const PRODUCTION_ORIGINS = [
   'https://vettid.dev',
   'https://www.vettid.dev',
   'https://admin.vettid.dev',
-  // Development origins (should be removed in production)
+  'https://account.vettid.dev',
+  'https://register.vettid.dev',
+  'https://api.vettid.dev',
+];
+
+const DEVELOPMENT_ORIGINS = [
   'http://localhost:3000',
   'http://localhost:5173',
+  'http://localhost:5174',
+  'http://127.0.0.1:3000',
+  'http://127.0.0.1:5173',
 ];
+
+// SECURITY: Only include development origins when not in production
+const isProduction = process.env.STAGE === 'prod' || process.env.NODE_ENV === 'production';
+const ALLOWED_ORIGINS = isProduction
+  ? PRODUCTION_ORIGINS
+  : [...PRODUCTION_ORIGINS, ...DEVELOPMENT_ORIGINS];
 
 /**
  * Get CORS headers with strict origin validation
@@ -1091,6 +1106,91 @@ export function validatePathParam(value: string | undefined, fieldName: string =
   }
 
   return trimmed;
+}
+
+/**
+ * Validate device ID format
+ * SECURITY: Device IDs should be alphanumeric with limited length to prevent injection
+ * @param value The device ID to validate
+ * @returns The validated device ID or throws ValidationError
+ */
+export function validateDeviceId(value: string | undefined): string {
+  if (!value || typeof value !== 'string') {
+    throw new ValidationError('device_id is required');
+  }
+
+  const trimmed = value.trim();
+
+  // Device IDs should be 8-128 characters, alphanumeric with hyphens/underscores
+  if (trimmed.length < 8) {
+    throw new ValidationError('device_id must be at least 8 characters');
+  }
+
+  if (trimmed.length > 128) {
+    throw new ValidationError('device_id must be at most 128 characters');
+  }
+
+  // Only allow safe characters
+  if (!/^[a-zA-Z0-9_-]+$/.test(trimmed)) {
+    throw new ValidationError('device_id contains invalid characters');
+  }
+
+  return trimmed;
+}
+
+/**
+ * Validate session token format
+ * SECURITY: Session tokens must match expected format (prefix + alphanumeric)
+ * @param value The session token to validate
+ * @param prefix Optional expected prefix (e.g., 'est' for enrollment session token)
+ * @returns The validated token or throws ValidationError
+ */
+export function validateSessionToken(value: string | undefined, prefix?: string): string {
+  if (!value || typeof value !== 'string') {
+    throw new ValidationError('session_token is required');
+  }
+
+  const trimmed = value.trim();
+
+  // Session tokens should be 16-128 characters
+  if (trimmed.length < 16) {
+    throw new ValidationError('session_token is too short');
+  }
+
+  if (trimmed.length > 128) {
+    throw new ValidationError('session_token is too long');
+  }
+
+  // Only allow alphanumeric with underscores/hyphens (matches generateSecureId output)
+  if (!/^[a-zA-Z0-9_-]+$/.test(trimmed)) {
+    throw new ValidationError('session_token contains invalid characters');
+  }
+
+  // Check prefix if specified
+  if (prefix && !trimmed.toLowerCase().startsWith(prefix.toLowerCase())) {
+    throw new ValidationError('session_token has invalid format');
+  }
+
+  return trimmed;
+}
+
+/**
+ * Validate device type (android or ios)
+ * @param value The device type to validate
+ * @returns The validated device type or throws ValidationError
+ */
+export function validateDeviceType(value: string | undefined): 'android' | 'ios' {
+  if (!value || typeof value !== 'string') {
+    throw new ValidationError('device_type is required');
+  }
+
+  const trimmed = value.trim().toLowerCase();
+
+  if (trimmed !== 'android' && trimmed !== 'ios') {
+    throw new ValidationError('device_type must be android or ios');
+  }
+
+  return trimmed as 'android' | 'ios';
 }
 
 /**

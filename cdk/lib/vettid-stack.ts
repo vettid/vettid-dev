@@ -647,6 +647,7 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
     // ===== LAMBDA FUNCTIONS =====
 
     // Lambda env
+    // SECURITY: STAGE=prod ensures localhost origins are not allowed in CORS
     const defaultEnv = {
       TABLE_INVITES: tables.invites.tableName,
       TABLE_REGISTRATIONS: tables.registrations.tableName,
@@ -658,6 +659,7 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       TABLE_SUBSCRIPTION_TYPES: tables.subscriptionTypes.tableName,
       TERMS_BUCKET: termsBucket.bucketName,
       SES_FROM: 'no-reply@auth.vettid.dev',
+      STAGE: 'prod',  // SECURITY: Ensures CORS excludes localhost origins
       CORS_ORIGIN: 'https://vettid.dev,https://www.vettid.dev,https://admin.vettid.dev,https://account.vettid.dev,https://register.vettid.dev',
       ALLOWED_ORIGINS: 'https://vettid.dev,https://www.vettid.dev,https://admin.vettid.dev,https://account.vettid.dev,https://register.vettid.dev',
     };
