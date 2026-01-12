@@ -198,49 +198,65 @@ func (s *NitroSealer) nitroKMSUnseal(sealed *SealedData) ([]byte, error) {
 		Hex("first_16_bytes", ciphertextForRecipient[:min(16, len(ciphertextForRecipient))]).
 		Msg("CiphertextForRecipient from KMS (PKCS#7 EnvelopedData)")
 
-	// AWS KMS CiphertextForRecipient is CMS EnvelopedData but the pkcs7 library
-	// has trouble parsing it. Extract the encrypted key manually from the ASN.1.
+	// AWS KMS CiphertextForRecipient is CMS EnvelopedData with TWO stages of encryption:
+	// 1. RSA-encrypted CEK (Content Encryption Key) - 256 bytes for 2048-bit RSA
+	// 2. AES-256-GCM encrypted content (our DEK) using the CEK
 	//
-	// CMS EnvelopedData structure:
-	// SEQUENCE {
-	//   OID envelopedData
-	//   [0] SEQUENCE {
-	//     INTEGER version
-	//     SET {
-	//       SEQUENCE (RecipientInfo) {
-	//         ...
-	//         OCTET STRING (encryptedKey) <-- this is what we need
-	//       }
-	//     }
-	//     ...
-	//   }
-	// }
-	//
-	// We search for a 256-byte OCTET STRING which is our RSA-encrypted DEK
-	encryptedKey := findEncryptedKeyInCMS(ciphertextForRecipient)
-	if encryptedKey == nil {
-		return nil, fmt.Errorf("failed to find encrypted key in CMS envelope")
+	// We must:
+	// 1. Parse the CMS structure to extract encrypted key, IV, and encrypted content
+	// 2. RSA decrypt the encrypted key to get the CEK
+	// 3. Use CEK + IV to AES-GCM decrypt the content to get our actual DEK
+	cms, err := parseCMSEnvelopedData(ciphertextForRecipient)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse CMS envelope: %w", err)
 	}
 
 	log.Debug().
-		Int("encrypted_key_len", len(encryptedKey)).
-		Msg("Extracted encrypted key from CMS envelope")
+		Int("encrypted_key_len", len(cms.EncryptedKey)).
+		Int("iv_len", len(cms.ContentIV)).
+		Int("content_len", len(cms.EncryptedContent)).
+		Msg("Parsed CMS EnvelopedData structure")
 
-	// Decrypt the key with RSA-OAEP-SHA256 (what Nitro attestation uses)
-	ciphertext, err := rsa.DecryptOAEP(sha256.New(), rand.Reader, privateKey, encryptedKey, nil)
+	// Stage 1: Decrypt the CEK (Content Encryption Key) with RSA-OAEP-SHA256
+	cek, err := rsa.DecryptOAEP(sha256.New(), rand.Reader, privateKey, cms.EncryptedKey, nil)
 	if err != nil {
 		// Try PKCS1v15 as fallback
-		ciphertext, err = rsa.DecryptPKCS1v15(rand.Reader, privateKey, encryptedKey)
+		cek, err = rsa.DecryptPKCS1v15(rand.Reader, privateKey, cms.EncryptedKey)
 		if err != nil {
-			return nil, fmt.Errorf("failed to decrypt CMS encrypted key: %w", err)
+			return nil, fmt.Errorf("failed to decrypt CEK from CMS: %w", err)
 		}
+		log.Debug().Msg("Decrypted CEK using RSA PKCS1v15")
+	} else {
+		log.Debug().Msg("Decrypted CEK using RSA-OAEP-SHA256")
 	}
 
-	// The decrypted content is the DEK
-	dek := ciphertext
+	log.Debug().
+		Int("cek_len", len(cek)).
+		Msg("Successfully decrypted CEK (Content Encryption Key)")
+
+	// Stage 2: Decrypt the content with CEK to get our actual DEK
+	dek, err := decryptCMSContent(cms, cek)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decrypt DEK from CMS content: %w", err)
+	}
+
+	// Zero out CEK after use
+	for i := range cek {
+		cek[i] = 0
+	}
+
 	log.Debug().
 		Int("dek_len", len(dek)).
-		Msg("Successfully decrypted DEK from PKCS#7 envelope")
+		Msg("Successfully extracted DEK from CMS EnvelopedData")
+
+	// Log sealed data for comparison
+	log.Debug().
+		Int("nonce_len", len(sealed.Nonce)).
+		Int("ciphertext_len", len(sealed.Ciphertext)).
+		Int("encrypted_dek_len", len(sealed.EncryptedDEK)).
+		Hex("nonce", sealed.Nonce).
+		Hex("encrypted_dek_first_8", sealed.EncryptedDEK[:min(8, len(sealed.EncryptedDEK))]).
+		Msg("Sealed data details")
 
 	defer func() {
 		// Zero out DEK from memory
@@ -513,26 +529,185 @@ func generateMockAttestationWithECDSA(nonce []byte) (*Attestation, *ecdsa.Privat
 	}, privateKey, nil
 }
 
+// CMSEnvelopedData holds the parsed components of a CMS EnvelopedData structure
+type CMSEnvelopedData struct {
+	EncryptedKey      []byte // RSA-encrypted CEK (Content Encryption Key)
+	ContentIV         []byte // IV/nonce for content decryption
+	EncryptedContent  []byte // Content encrypted with CEK (our DEK is inside)
+}
+
+// parseCMSEnvelopedData extracts all necessary parts from a CMS EnvelopedData structure.
+// AWS KMS returns CiphertextForRecipient as PKCS#7/CMS EnvelopedData.
+// The structure contains:
+// - RecipientInfo with RSA-encrypted CEK (Content Encryption Key)
+// - EncryptedContentInfo with AES-256-GCM encrypted content (our DEK)
+func parseCMSEnvelopedData(data []byte) (*CMSEnvelopedData, error) {
+	result := &CMSEnvelopedData{}
+
+	log.Debug().
+		Int("cms_len", len(data)).
+		Hex("cms_first_32", data[:min(32, len(data))]).
+		Msg("Parsing CMS EnvelopedData")
+
+	// Find the 256-byte RSA-encrypted key (OCTET STRING with length 256)
+	for i := 0; i < len(data)-4; i++ {
+		if data[i] == 0x04 && data[i+1] == 0x82 && data[i+2] == 0x01 && data[i+3] == 0x00 {
+			// Found OCTET STRING with length 0x0100 (256)
+			start := i + 4
+			if start+256 <= len(data) {
+				result.EncryptedKey = data[start : start+256]
+				log.Debug().
+					Int("offset", i).
+					Int("key_len", len(result.EncryptedKey)).
+					Msg("Found RSA-encrypted CEK in CMS")
+			}
+			break
+		}
+	}
+
+	if result.EncryptedKey == nil {
+		return nil, fmt.Errorf("failed to find RSA-encrypted key in CMS")
+	}
+
+	// Find AES-256-CBC OID (2.16.840.1.101.3.4.1.42) = 0x06 0x09 0x60 0x86 0x48 0x01 0x65 0x03 0x04 0x01 0x2a
+	// AWS KMS uses AES-CBC for CiphertextForRecipient, not AES-GCM
+	aesCBCOID := []byte{0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x01, 0x2a}
+
+	var ivPos int
+	for i := 0; i < len(data)-len(aesCBCOID)-16; i++ {
+		match := true
+		for j := 0; j < len(aesCBCOID); j++ {
+			if data[i+j] != aesCBCOID[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			// Found AES-CBC OID, IV follows after OCTET STRING header (04 10 = 16 bytes)
+			ivPos = i + len(aesCBCOID)
+			if ivPos+2 < len(data) && data[ivPos] == 0x04 && data[ivPos+1] == 0x10 {
+				// OCTET STRING with 16 bytes
+				result.ContentIV = data[ivPos+2 : ivPos+2+16]
+				log.Debug().
+					Int("iv_offset", ivPos+2).
+					Hex("iv", result.ContentIV).
+					Msg("Found content IV in CMS")
+			}
+			break
+		}
+	}
+
+	if result.ContentIV == nil {
+		return nil, fmt.Errorf("failed to find content IV in CMS")
+	}
+
+	// Find encrypted content - it's in a context-specific [0] tag after the IV
+	// Look for a0 80 04 (indefinite [0] with OCTET STRING) or a0 8X XX (definite)
+	for i := ivPos + 2 + 16; i < len(data)-4; i++ {
+		if data[i] == 0xa0 { // context-specific [0]
+			contentStart := i + 1
+			// Check for indefinite length (0x80) or definite
+			if data[i+1] == 0x80 {
+				// Indefinite length, look for OCTET STRING inside
+				contentStart = i + 2
+				if data[contentStart] == 0x04 {
+					length := 0
+					if data[contentStart+1] < 0x80 {
+						length = int(data[contentStart+1])
+						result.EncryptedContent = data[contentStart+2 : contentStart+2+length]
+					} else if data[contentStart+1] == 0x81 {
+						length = int(data[contentStart+2])
+						result.EncryptedContent = data[contentStart+3 : contentStart+3+length]
+					}
+				}
+			} else if data[i+1] < 0x80 {
+				// Short definite length
+				length := int(data[i+1])
+				contentStart = i + 2
+				result.EncryptedContent = data[contentStart : contentStart+length]
+			}
+			if len(result.EncryptedContent) > 0 {
+				log.Debug().
+					Int("content_len", len(result.EncryptedContent)).
+					Hex("content_first_16", result.EncryptedContent[:min(16, len(result.EncryptedContent))]).
+					Msg("Found encrypted content in CMS")
+				break
+			}
+		}
+	}
+
+	if result.EncryptedContent == nil {
+		return nil, fmt.Errorf("failed to find encrypted content in CMS")
+	}
+
+	return result, nil
+}
+
+// decryptCMSContent decrypts the content from CMS using the CEK
+// AWS KMS CiphertextForRecipient uses AES-CBC with PKCS#7 padding (not GCM!)
+// Returns the plaintext (our DEK)
+func decryptCMSContent(cms *CMSEnvelopedData, cek []byte) ([]byte, error) {
+	log.Debug().
+		Int("cek_len", len(cek)).
+		Int("iv_len", len(cms.ContentIV)).
+		Int("content_len", len(cms.EncryptedContent)).
+		Msg("Decrypting CMS content with AES-CBC")
+
+	block, err := aes.NewCipher(cek)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create AES cipher for CMS content: %w", err)
+	}
+
+	// AWS KMS uses AES-CBC, not AES-GCM
+	if len(cms.ContentIV) != aes.BlockSize {
+		return nil, fmt.Errorf("invalid IV length for AES-CBC: got %d, expected %d", len(cms.ContentIV), aes.BlockSize)
+	}
+
+	if len(cms.EncryptedContent)%aes.BlockSize != 0 {
+		return nil, fmt.Errorf("encrypted content length %d is not a multiple of block size", len(cms.EncryptedContent))
+	}
+
+	// Decrypt with CBC mode
+	mode := cipher.NewCBCDecrypter(block, cms.ContentIV)
+	plaintext := make([]byte, len(cms.EncryptedContent))
+	mode.CryptBlocks(plaintext, cms.EncryptedContent)
+
+	// Remove PKCS#7 padding
+	plaintext, err = removePKCS7Padding(plaintext)
+	if err != nil {
+		return nil, fmt.Errorf("failed to remove PKCS#7 padding: %w", err)
+	}
+
+	log.Debug().
+		Int("plaintext_len", len(plaintext)).
+		Msg("CMS content decrypted successfully")
+
+	return plaintext, nil
+}
+
+// removePKCS7Padding removes PKCS#7 padding from decrypted data
+func removePKCS7Padding(data []byte) ([]byte, error) {
+	if len(data) == 0 {
+		return nil, fmt.Errorf("empty data")
+	}
+
+	paddingLen := int(data[len(data)-1])
+	if paddingLen == 0 || paddingLen > aes.BlockSize || paddingLen > len(data) {
+		return nil, fmt.Errorf("invalid padding length: %d", paddingLen)
+	}
+
+	// Verify all padding bytes are correct
+	for i := len(data) - paddingLen; i < len(data); i++ {
+		if data[i] != byte(paddingLen) {
+			return nil, fmt.Errorf("invalid padding byte at position %d", i)
+		}
+	}
+
+	return data[:len(data)-paddingLen], nil
+}
+
 // findEncryptedKeyInCMS extracts the RSA-encrypted key from a CMS EnvelopedData structure.
-// AWS KMS returns CiphertextForRecipient as PKCS#7/CMS EnvelopedData (OID 1.2.840.113549.1.7.3).
-// We search for the 256-byte OCTET STRING containing the RSA-encrypted DEK.
-//
-// CMS EnvelopedData structure:
-// SEQUENCE {
-//   contentType OID (1.2.840.113549.1.7.3)
-//   [0] SEQUENCE (EnvelopedData) {
-//     version INTEGER
-//     recipientInfos SET {
-//       KeyTransRecipientInfo SEQUENCE {
-//         version INTEGER
-//         rid (RecipientIdentifier)
-//         keyEncryptionAlgorithm AlgorithmIdentifier
-//         encryptedKey OCTET STRING  <-- 256 bytes for 2048-bit RSA
-//       }
-//     }
-//     encryptedContentInfo SEQUENCE { ... }
-//   }
-// }
+// DEPRECATED: Use parseCMSEnvelopedData for proper two-stage decryption
 func findEncryptedKeyInCMS(data []byte) []byte {
 	// Debug: log all OCTET STRING tags found in the data
 	log.Debug().
