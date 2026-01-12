@@ -52,6 +52,26 @@ export const RATE_LIMIT_CONFIGS: Record<string, RateLimitConfig> = {
     perIpLimit: 10,
     burstAllowance: 2,
   },
+
+  // PIN verification endpoints (very strict - prevent brute force)
+  "pin:verify": {
+    maxRequests: 5,
+    windowSeconds: 300, // 5 minutes
+    perIpLimit: 10,
+    perUserLimit: 5,
+  },
+  "pin:update": {
+    maxRequests: 3,
+    windowSeconds: 300, // 5 minutes
+    perIpLimit: 5,
+    perUserLimit: 3,
+  },
+  "pin:disable": {
+    maxRequests: 3,
+    windowSeconds: 300, // 5 minutes
+    perIpLimit: 5,
+    perUserLimit: 3,
+  },
   "auth:password_reset": {
     maxRequests: 3,
     windowSeconds: 300, // 5 minutes
@@ -404,6 +424,17 @@ const DEFAULT_BRUTE_FORCE_CONFIG: BruteForceConfig = {
   maxFailedAttempts: 5,
   windowSeconds: 300, // 5 minutes
   blockDurationSeconds: 900, // 15 minutes
+};
+
+/**
+ * Stricter brute force config for PIN verification
+ * PINs are 4-6 digits (10,000 to 1,000,000 combinations)
+ * We must be extra strict to prevent enumeration
+ */
+export const PIN_BRUTE_FORCE_CONFIG: BruteForceConfig = {
+  maxFailedAttempts: 5,
+  windowSeconds: 300, // 5 minutes
+  blockDurationSeconds: 1800, // 30 minutes - longer block for PIN attempts
 };
 
 /**

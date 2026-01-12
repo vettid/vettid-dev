@@ -6,6 +6,7 @@ import {
   badRequest,
   notFound,
   internalError,
+  tooManyRequests,
   putAudit,
   requireRegisteredOrMemberGroup,
   getRequestId,
@@ -13,6 +14,13 @@ import {
   ValidationError,
   secureCompare
 } from "../../common/util";
+import {
+  isBlockedByBruteForce,
+  recordFailedAttempt,
+  clearFailedAttempts,
+  PIN_BRUTE_FORCE_CONFIG,
+  getRateLimitHeaders
+} from "../../common/rateLimit";
 import { QueryCommand } from "@aws-sdk/client-dynamodb";
 import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
 import { createHash } from "crypto";
@@ -43,6 +51,29 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     const userEmail = (event.requestContext as any)?.authorizer?.jwt?.claims?.email;
     if (!userEmail) {
       return badRequest("Unable to identify user");
+    }
+
+    // SECURITY: Check if user is blocked due to too many failed PIN attempts
+    const isBlocked = await isBlockedByBruteForce(userEmail, "pin_verify", PIN_BRUTE_FORCE_CONFIG);
+    if (isBlocked) {
+      await putAudit({
+        type: "pin_verification_blocked",
+        email: userEmail,
+        reason: "brute_force_protection",
+        blocked_at: new Date().toISOString()
+      }, requestId);
+
+      return {
+        statusCode: 429,
+        headers: {
+          "Content-Type": "application/json",
+          "Retry-After": String(PIN_BRUTE_FORCE_CONFIG.blockDurationSeconds),
+        },
+        body: JSON.stringify({
+          message: "Too many failed PIN attempts. Please try again later.",
+          retryAfter: PIN_BRUTE_FORCE_CONFIG.blockDurationSeconds
+        })
+      };
     }
 
     const body = parseJsonBody(event);
@@ -90,22 +121,50 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     // Verify PIN matches stored hash using timing-safe comparison
     const pinHash = hashPin(pin);
     if (!secureCompare(pinHash, reg.pin_hash)) {
+      // SECURITY: Record failed attempt for brute force detection
+      const bruteForceResult = await recordFailedAttempt(
+        userEmail,
+        "pin_verify",
+        PIN_BRUTE_FORCE_CONFIG
+      );
+
       // SECURITY: Log failed PIN verification attempts for security monitoring
       await putAudit({
         type: "pin_verification_failed",
         registration_id: reg.registration_id,
         email: userEmail,
-        failed_at: new Date().toISOString()
+        failed_at: new Date().toISOString(),
+        attempts_remaining: bruteForceResult.attemptsRemaining,
+        now_blocked: bruteForceResult.blocked
       }, requestId);
+
+      // If this attempt caused a block, return 429
+      if (bruteForceResult.blocked) {
+        return {
+          statusCode: 429,
+          headers: {
+            "Content-Type": "application/json",
+            "Retry-After": String(PIN_BRUTE_FORCE_CONFIG.blockDurationSeconds),
+          },
+          body: JSON.stringify({
+            verified: false,
+            message: "Too many failed PIN attempts. Account temporarily locked.",
+            retryAfter: PIN_BRUTE_FORCE_CONFIG.blockDurationSeconds
+          })
+        };
+      }
 
       return ok({
         verified: false,
         pin_enabled: true,
-        message: "Incorrect PIN"
+        message: "Incorrect PIN",
+        attemptsRemaining: bruteForceResult.attemptsRemaining
       });
     }
 
-    // PIN verified successfully
+    // PIN verified successfully - clear any failed attempt tracking
+    await clearFailedAttempts(userEmail, "pin_verify");
+
     await putAudit({
       type: "pin_verification_success",
       registration_id: reg.registration_id,
