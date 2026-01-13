@@ -5331,19 +5331,25 @@ function updateEnrollmentStatus(state, message) {
 async function closeEnrollmentModal() {
   stopEnrollmentPoll();
 
-  // Cancel the enrollment session on the backend
+  // Cancel the enrollment session on the backend (best-effort cleanup)
+  // 404 is expected if session already completed/expired - don't log as error
   if (enrollmentSession) {
     try {
       const token = idToken();
-      await fetch(API_URL + '/vault/enroll/cancel', {
+      const res = await fetch(API_URL + '/vault/enroll/cancel', {
         method: 'POST',
         headers: {
           'Authorization': 'Bearer ' + token,
           'Content-Type': 'application/json'
         }
       });
+      // Only log unexpected errors (not 404 which means session already gone)
+      if (!res.ok && res.status !== 404) {
+        console.error('Error cancelling enrollment session:', res.status);
+      }
     } catch (e) {
-      console.error('Error cancelling enrollment session:', e);
+      // Network errors only - HTTP errors are handled above
+      console.error('Network error cancelling enrollment session:', e);
     }
   }
 
