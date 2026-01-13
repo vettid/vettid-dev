@@ -512,6 +512,42 @@ function isTokenExpired(token) {
   }
 }
 
+// Handle session expiry - logs out user and redirects to signin
+function handleSessionExpired() {
+  clearTokens();
+  // Redirect to signin with message
+  window.location.href = '/signin?expired=1';
+}
+
+// Check API response for auth errors and handle logout
+// Returns true if response indicates auth failure (caller should stop processing)
+function isAuthError(response) {
+  if (response.status === 401 || response.status === 403) {
+    handleSessionExpired();
+    return true;
+  }
+  return false;
+}
+
+// Periodic token expiry check (every 30 seconds)
+let tokenCheckInterval = null;
+function startTokenExpiryCheck() {
+  if (tokenCheckInterval) return;
+  tokenCheckInterval = setInterval(() => {
+    const token = idToken();
+    if (isTokenExpired(token)) {
+      handleSessionExpired();
+    }
+  }, 30000);
+}
+
+function stopTokenExpiryCheck() {
+  if (tokenCheckInterval) {
+    clearInterval(tokenCheckInterval);
+    tokenCheckInterval = null;
+  }
+}
+
 // ---- Auth check ----
 function checkAuth() {
   if (!signedIn()) {
@@ -2700,7 +2736,7 @@ async function populateGettingStartedSteps() {
 
 document.getElementById('gotItBtn').onclick = async () => {
   await markGettingStartedComplete();
-  switchToTab('account');
+  switchToTab('deploy-vault');
 };
 
 // ---- Vault Services Functions ----
@@ -5386,6 +5422,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // Initialize
 if (checkAuth()) {
+  // Start periodic token expiry checking
+  startTokenExpiryCheck();
+
   // Define the main app initialization function
   const runAppInitialization = async () => {
     populateProfile();
@@ -5413,7 +5452,7 @@ if (checkAuth()) {
     // This is independent of membership status - getting started has multiple steps
     const complete = await isGettingStartedComplete();
     if (complete) {
-      switchToTab('account');
+      switchToTab('deploy-vault');
     } else {
       switchToTab('getting-started');
     }

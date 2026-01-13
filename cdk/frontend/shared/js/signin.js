@@ -80,3 +80,11 @@ async function sendMagicLink(e) {
 
 // Event listeners
 document.getElementById('signinForm').addEventListener('submit', sendMagicLink);
+
+// Check for session expiry redirect
+const urlParams = new URLSearchParams(window.location.search);
+if (urlParams.get('expired') === '1') {
+  showStatus('Your session has expired. Please sign in again.', 'info');
+  // Clean up URL
+  window.history.replaceState({}, document.title, window.location.pathname);
+}
