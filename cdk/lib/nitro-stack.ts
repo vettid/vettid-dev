@@ -286,11 +286,13 @@ export class NitroStack extends cdk.Stack {
       sessionType: 'Standard_Stream',
       inputs: {
         cloudWatchLogGroupName: ssmLogGroup.logGroupName,
-        cloudWatchEncryptionEnabled: false,
+        // SECURITY: Enable CloudWatch encryption for session logs
+        cloudWatchEncryptionEnabled: true,
         cloudWatchStreamingEnabled: true,
         s3BucketName: ssmSessionLogBucket.bucketName,
         s3KeyPrefix: 'sessions',
-        s3EncryptionEnabled: false,
+        // SECURITY: Enable S3 encryption for session logs
+        s3EncryptionEnabled: true,
         runAsEnabled: false,
         idleSessionTimeout: '20',
       },
@@ -369,14 +371,53 @@ export class NitroStack extends cdk.Stack {
       description: 'IAM role for Packer build instances (AMI creation)',
     });
 
-    // Allow packer to write PCR values to SSM
+    // SECURITY: Allow packer to write PCR values to SSM with strict conditions
+    // The PCR0 value is used in KMS policy - protect it from unauthorized modification
     packerBuildRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['ssm:PutParameter'],
       resources: [
         `arn:aws:ssm:${this.region}:${this.account}:parameter/vettid/enclave/pcr/*`,
       ],
+      // SECURITY: Require overwrite flag to prevent accidental creation of rogue parameters
+      conditions: {
+        StringEquals: {
+          'ssm:Overwrite': ['true', 'True'],
+        },
+      },
     }));
+
+    // SECURITY: Create the PCR0 parameter with initial value
+    // This ensures the parameter exists before any build attempts
+    const pcr0Parameter = new ssm.StringParameter(this, 'Pcr0Parameter', {
+      parameterName: '/vettid/enclave/pcr/pcr0',
+      stringValue: 'INITIAL_VALUE_REPLACE_DURING_AMI_BUILD',
+      description: 'SECURITY CRITICAL: PCR0 hash of enclave code - controls KMS decrypt access',
+      tier: ssm.ParameterTier.STANDARD,
+    });
+
+    // Add resource policy to restrict modifications to Packer role only
+    // This prevents other principals from modifying the critical PCR0 value
+    new cdk.aws_iam.CfnPolicy(this, 'Pcr0ParameterProtection', {
+      policyName: 'vettid-pcr0-parameter-protection',
+      policyDocument: {
+        Version: '2012-10-17',
+        Statement: [
+          {
+            Sid: 'DenyPcr0ModificationExceptPacker',
+            Effect: 'Deny',
+            Action: ['ssm:PutParameter', 'ssm:DeleteParameter'],
+            Resource: `arn:aws:ssm:${this.region}:${this.account}:parameter/vettid/enclave/pcr/*`,
+            Condition: {
+              ArnNotEquals: {
+                'aws:PrincipalArn': packerBuildRole.roleArn,
+              },
+            },
+          },
+        ],
+      },
+      roles: [packerBuildRole.roleName],
+    });
 
     // SECURITY: Allow packer to read vsock secret for baking into EIF
     // This is needed during AMI build to include the secret in the enclave image

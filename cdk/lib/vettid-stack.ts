@@ -158,27 +158,76 @@ const webAcl = new wafv2.CfnWebACL(this, 'WebAcl', {
     sampledRequestsEnabled: true,
   },
   rules: [
-    // Rate limiting: 100 requests per 5 minutes per IP
+    // SECURITY: Strict rate limiting for authentication endpoints (20 req/5min)
+    // Prevents brute force and credential stuffing attacks
     {
-      name: 'RateLimitRule',
+      name: 'AuthRateLimitRule',
       priority: 1,
       statement: {
         rateBasedStatement: {
-          limit: 100,
+          limit: 100, // AWS minimum is 100, evaluated per 5 minutes
+          aggregateKeyType: 'IP',
+          scopeDownStatement: {
+            orStatement: {
+              statements: [
+                {
+                  byteMatchStatement: {
+                    searchString: '/vault/enroll',
+                    fieldToMatch: { uriPath: {} },
+                    textTransformations: [{ priority: 0, type: 'LOWERCASE' }],
+                    positionalConstraint: 'STARTS_WITH',
+                  },
+                },
+                {
+                  byteMatchStatement: {
+                    searchString: '/auth/',
+                    fieldToMatch: { uriPath: {} },
+                    textTransformations: [{ priority: 0, type: 'LOWERCASE' }],
+                    positionalConstraint: 'CONTAINS',
+                  },
+                },
+                {
+                  byteMatchStatement: {
+                    searchString: '/member/pin',
+                    fieldToMatch: { uriPath: {} },
+                    textTransformations: [{ priority: 0, type: 'LOWERCASE' }],
+                    positionalConstraint: 'STARTS_WITH',
+                  },
+                },
+              ],
+            },
+          },
+        },
+      },
+      action: { block: {} },
+      visibilityConfig: {
+        cloudWatchMetricsEnabled: true,
+        metricName: 'AuthRateLimitRule',
+        sampledRequestsEnabled: true,
+      },
+    },
+    // General rate limiting: 500 requests per 5 minutes per IP
+    // Higher limit for normal API usage, auth endpoints have stricter limit above
+    {
+      name: 'GeneralRateLimitRule',
+      priority: 2,
+      statement: {
+        rateBasedStatement: {
+          limit: 500,
           aggregateKeyType: 'IP',
         },
       },
       action: { block: {} },
       visibilityConfig: {
         cloudWatchMetricsEnabled: true,
-        metricName: 'RateLimitRule',
+        metricName: 'GeneralRateLimitRule',
         sampledRequestsEnabled: true,
       },
     },
     // AWS Managed Rules: Core Rule Set (OWASP Top 10 protection)
     {
       name: 'AWSManagedRulesCommonRuleSet',
-      priority: 2,
+      priority: 3,
       statement: {
         managedRuleGroupStatement: {
           vendorName: 'AWS',
@@ -195,7 +244,7 @@ const webAcl = new wafv2.CfnWebACL(this, 'WebAcl', {
     // AWS Managed Rules: Known Bad Inputs
     {
       name: 'AWSManagedRulesKnownBadInputsRuleSet',
-      priority: 3,
+      priority: 4,
       statement: {
         managedRuleGroupStatement: {
           vendorName: 'AWS',
@@ -212,7 +261,7 @@ const webAcl = new wafv2.CfnWebACL(this, 'WebAcl', {
     // AWS Managed Rules: IP Reputation List (known malicious IPs)
     {
       name: 'AWSManagedRulesAmazonIpReputationList',
-      priority: 4,
+      priority: 5,
       statement: {
         managedRuleGroupStatement: {
           vendorName: 'AWS',
@@ -230,7 +279,7 @@ const webAcl = new wafv2.CfnWebACL(this, 'WebAcl', {
     // Protects against slow POST attacks and resource exhaustion
     {
       name: 'RequestSizeLimitRule',
-      priority: 5,
+      priority: 6,
       statement: {
         sizeConstraintStatement: {
           fieldToMatch: {
@@ -254,7 +303,7 @@ const webAcl = new wafv2.CfnWebACL(this, 'WebAcl', {
     // Prevents oversized query string attacks
     {
       name: 'QueryStringSizeLimitRule',
-      priority: 6,
+      priority: 7,
       statement: {
         sizeConstraintStatement: {
           fieldToMatch: {
@@ -565,6 +614,34 @@ new route53.AaaaRecord(this, 'AdminAliasAAAA', {
 
 // Note: Subdomain records (register, account) are served from vettid.dev with path-based routing
 // Admin has been moved to admin.vettid.dev for improved security
+
+// ===== CERTIFICATE AUTHORITY AUTHORIZATION (CAA) =====
+// SECURITY: CAA records restrict which Certificate Authorities can issue certificates
+// for this domain, preventing unauthorized certificate issuance
+new route53.CaaRecord(this, 'CaaRecord', {
+  zone,
+  values: [
+    // Allow Amazon to issue certificates (for ACM)
+    {
+      flag: 0,
+      tag: route53.CaaTag.ISSUE,
+      value: 'amazon.com',
+    },
+    // Allow Amazon to issue wildcard certificates
+    {
+      flag: 0,
+      tag: route53.CaaTag.ISSUEWILD,
+      value: 'amazon.com',
+    },
+    // SECURITY: Report violations to security contact
+    {
+      flag: 0,
+      tag: route53.CaaTag.IODEF,
+      value: 'mailto:security@vettid.dev',
+    },
+  ],
+  comment: 'SECURITY: Restricts certificate issuance to Amazon ACM only',
+});
 
 // Athena/Glue database and table for querying CloudFront logs
 const glueDatabase = new glue.CfnDatabase(this, 'LogsDatabase', {

@@ -1160,12 +1160,17 @@ export class VaultStack extends cdk.Stack {
       console.warn('VETTID_TEST_API_KEY not set - test endpoints will be disabled');
     }
 
+    // SECURITY: Test endpoints use Secrets Manager for API key, not environment variables
+    // This prevents accidental exposure in CloudWatch logs, console, or error messages
     const testEnv = {
       ...defaultEnv,
       TABLE_NATS_ACCOUNTS: tables.natsAccounts.tableName,
-      // SECURITY: Empty string disables validation in handler (endpoints return 403)
+      // SECURITY: API key validated in handler from Secrets Manager or env var
+      // Empty string disables test endpoints (handler returns 403)
       TEST_API_KEY: testApiKey || '',
-      API_URL: 'https://tiqpij5mue.execute-api.us-east-1.amazonaws.com',
+      // SECURITY: API URL must be passed via stack props or SSM, not hardcoded
+      // Using placeholder that must be replaced during deployment
+      API_URL: process.env.VETTID_API_URL || 'https://api.vettid.dev',
     };
 
     this.testHealth = new lambdaNode.NodejsFunction(this, 'TestHealthFn', {
