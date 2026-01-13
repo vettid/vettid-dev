@@ -15,6 +15,17 @@ const ddb = new DynamoDBClient({});
 
 const TABLE_ENROLLMENT_SESSIONS = process.env.TABLE_ENROLLMENT_SESSIONS!;
 const TABLE_NATS_ACCOUNTS = process.env.TABLE_NATS_ACCOUNTS!;
+const DEEP_LINK_BASE_URL = 'https://vettid.dev/enroll';
+
+/**
+ * Generate a deep link URL for enrollment.
+ * The QR data is base64 URL-safe encoded and passed as a query parameter.
+ */
+function generateDeepLinkUrl(qrData: object): string {
+  const jsonString = JSON.stringify(qrData);
+  const base64Encoded = Buffer.from(jsonString, 'utf-8').toString('base64url');
+  return `${DEEP_LINK_BASE_URL}?data=${base64Encoded}`;
+}
 
 /**
  * POST /vault/enroll/session
@@ -77,17 +88,19 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     // Return existing session if still valid
     if (existingSession.Items && existingSession.Items.length > 0) {
       const session = unmarshall(existingSession.Items[0]);
+      const qrData = {
+        type: 'vettid_enrollment',
+        version: 1,
+        api_url: process.env.API_URL || 'https://api.vettid.dev',
+        session_token: session.session_token,
+        user_guid: userGuid,
+      };
       return ok({
         session_id: session.session_id,
         session_token: session.session_token,
         expires_at: session.expires_at,
-        qr_data: {
-          type: 'vettid_enrollment',
-          version: 1,
-          api_url: process.env.API_URL || 'https://api.vettid.dev',
-          session_token: session.session_token,
-          user_guid: userGuid,
-        },
+        qr_data: qrData,
+        deep_link_url: generateDeepLinkUrl(qrData),
       }, origin);
     }
 
@@ -124,17 +137,20 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       initiated_from: 'web',
     }, requestId);
 
+    const qrData = {
+      type: 'vettid_enrollment',
+      version: 1,
+      api_url: process.env.API_URL || 'https://api.vettid.dev',
+      session_token: sessionToken,
+      user_guid: userGuid,
+    };
+
     return ok({
       session_id: sessionId,
       session_token: sessionToken,
       expires_at: new Date(expiresAtMs).toISOString(),
-      qr_data: {
-        type: 'vettid_enrollment',
-        version: 1,
-        api_url: process.env.API_URL || 'https://api.vettid.dev',
-        session_token: sessionToken,
-        user_guid: userGuid,
-      },
+      qr_data: qrData,
+      deep_link_url: generateDeepLinkUrl(qrData),
     }, origin);
 
   } catch (error: any) {

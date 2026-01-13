@@ -5149,6 +5149,7 @@ function showManualEnrollmentModal() {
 function showEnrollmentModal(session) {
   // Generate QR code data as JSON string
   const qrData = JSON.stringify(session.qr_data);
+  const deepLinkUrl = session.deep_link_url || '';
 
   const modal = document.createElement('div');
   modal.id = 'enrollmentModal';
@@ -5160,11 +5161,23 @@ function showEnrollmentModal(session) {
         Scan this QR code with the VettID app on your mobile device to complete enrollment.
       </p>
 
-      <div id="enrollmentQRContainer" style="background:#fff;padding:20px;border-radius:8px;display:inline-block;margin-bottom:20px;">
+      <div id="enrollmentQRContainer" style="background:#fff;padding:20px;border-radius:8px;display:inline-block;margin-bottom:16px;">
         <div id="enrollmentQRCode" style="width:200px;height:200px;display:flex;align-items:center;justify-content:center;">
           <div style="color:#000;">Loading QR code...</div>
         </div>
       </div>
+
+      ${deepLinkUrl ? `
+      <div style="margin-bottom:20px;">
+        <p style="color:var(--gray);font-size:0.85rem;margin-bottom:8px;">Or tap the link on your mobile device:</p>
+        <a href="${deepLinkUrl}" target="_blank" style="display:inline-block;padding:12px 20px;background:var(--accent);color:#000;text-decoration:none;border-radius:6px;font-weight:600;font-size:0.9rem;">
+          Open in VettID App
+        </a>
+        <button id="copyEnrollLink" style="margin-left:8px;padding:12px 16px;background:#333;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:0.9rem;" title="Copy link">
+          Copy Link
+        </button>
+      </div>
+      ` : ''}
 
       <div id="enrollmentStatus" style="margin-bottom:20px;">
         <div style="display:flex;align-items:center;justify-content:center;gap:12px;padding:16px;background:#050505;border-radius:8px;border:1px solid #333;">
@@ -5194,6 +5207,28 @@ function showEnrollmentModal(session) {
 
   document.body.appendChild(modal);
   modal.onclick = (e) => { if (e.target === modal) closeEnrollmentModal(); };
+
+  // Add copy link handler
+  const copyBtn = document.getElementById('copyEnrollLink');
+  if (copyBtn && deepLinkUrl) {
+    copyBtn.onclick = async () => {
+      try {
+        await navigator.clipboard.writeText(deepLinkUrl);
+        copyBtn.textContent = 'Copied!';
+        setTimeout(() => { copyBtn.textContent = 'Copy Link'; }, 2000);
+      } catch (err) {
+        // Fallback for older browsers
+        const textArea = document.createElement('textarea');
+        textArea.value = deepLinkUrl;
+        document.body.appendChild(textArea);
+        textArea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textArea);
+        copyBtn.textContent = 'Copied!';
+        setTimeout(() => { copyBtn.textContent = 'Copy Link'; }, 2000);
+      }
+    };
+  }
 
   // Generate QR code
   generateQRCode(qrData);
