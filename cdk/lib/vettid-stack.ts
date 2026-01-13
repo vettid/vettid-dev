@@ -327,6 +327,8 @@ const webAcl = new wafv2.CfnWebACL(this, 'WebAcl', {
     // ===== API GATEWAY (created early so security headers can reference endpoint) =====
 
     // HTTP API with CORS configuration
+    // SECURITY: allowCredentials enables httpOnly cookie-based authentication
+    // This is required for the token-exchange endpoint to set cookies on mobile browsers
     this.httpApi = new apigw.HttpApi(this, 'Api', {
       corsPreflight: {
         allowMethods: [apigw.CorsHttpMethod.GET, apigw.CorsHttpMethod.POST, apigw.CorsHttpMethod.PUT, apigw.CorsHttpMethod.DELETE, apigw.CorsHttpMethod.OPTIONS],
@@ -338,6 +340,7 @@ const webAcl = new wafv2.CfnWebACL(this, 'WebAcl', {
           'https://register.vettid.dev'
         ],
         allowHeaders: ['Authorization', 'Content-Type', 'X-Amz-Date', 'X-Api-Key', 'X-Amz-Security-Token'],
+        allowCredentials: true,  // Required for httpOnly cookie authentication on mobile
       },
     });
 
