@@ -76,18 +76,19 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       }, origin);
     }
 
-    // Check for pending enrollment sessions
+    // Check for pending enrollment sessions (exclude expired ones)
     const sessionResult = await ddb.send(new QueryCommand({
       TableName: TABLE_ENROLLMENT_SESSIONS,
       IndexName: 'user-index',
       KeyConditionExpression: 'user_guid = :guid',
-      FilterExpression: '#s IN (:web_initiated, :authenticated, :started)',
+      FilterExpression: '#s IN (:web_initiated, :authenticated, :started) AND expires_at > :now',
       ExpressionAttributeNames: { '#s': 'status' },
       ExpressionAttributeValues: marshall({
         ':guid': userGuid,
         ':web_initiated': 'WEB_INITIATED',
         ':authenticated': 'AUTHENTICATED',
         ':started': 'STARTED',
+        ':now': Date.now(),
       }),
       Limit: 1,
       ScanIndexForward: false, // Most recent first
