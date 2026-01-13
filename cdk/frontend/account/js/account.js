@@ -2404,6 +2404,11 @@ function switchToTab(tabName, subTabName) {
     loadAllProposals();
     loadVotingHistory();
   }
+
+  // Load vault status if switching to deploy-vault tab
+  if (tabName === 'deploy-vault' && signedIn()) {
+    startVaultStatusPolling();
+  }
 }
 
 function navigateToStep(tabName, cardId, subTabName) {
