@@ -16,16 +16,35 @@
  */
 
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
-import { DynamoDBClient, QueryCommand, GetItemCommand, UpdateItemCommand } from '@aws-sdk/client-dynamodb';
+import { DynamoDBClient, QueryCommand, GetItemCommand, UpdateItemCommand, PutItemCommand } from '@aws-sdk/client-dynamodb';
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import { unmarshall, marshall } from '@aws-sdk/util-dynamodb';
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 
 const ddb = new DynamoDBClient({});
 const secretsClient = new SecretsManagerClient({});
 
 const TABLE_NATS_ACCOUNTS = process.env.TABLE_NATS_ACCOUNTS!;
+const TABLE_AUDIT = process.env.TABLE_AUDIT!;
 const NATS_OPERATOR_SECRET_ARN = process.env.NATS_OPERATOR_SECRET_ARN || 'vettid/nats/operator-key';
+
+// SECURITY: Async audit logging to avoid blocking the request path
+// We write audit logs for security-relevant events but don't await them
+async function auditSecurityEvent(event: Record<string, unknown>): Promise<void> {
+  try {
+    await ddb.send(new PutItemCommand({
+      TableName: TABLE_AUDIT,
+      Item: marshall({
+        id: `audit_${randomUUID()}`,
+        timestamp: new Date().toISOString(),
+        ...event,
+      }),
+    }));
+  } catch (err) {
+    // Log but don't fail the request
+    console.error('Failed to write security audit:', err);
+  }
+}
 
 // SECURITY: Rate limiting configuration
 // Account public keys are 56 characters, base32 encoded
@@ -147,6 +166,12 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     const sourceIp = event.requestContext.http?.sourceIp || 'unknown';
     if (!checkRateLimit(sourceIp)) {
       console.warn(`SECURITY: Rate limit exceeded for IP ${sourceIp}`);
+      // SECURITY: Audit rate limit violations (fire-and-forget to avoid blocking)
+      auditSecurityEvent({
+        event: 'nats_jwt_rate_limit_exceeded',
+        source_ip: sourceIp,
+        severity: 'warning',
+      });
       return {
         statusCode: 429,
         headers: {
@@ -177,6 +202,13 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       // Return 404 to avoid revealing validation logic
       // (attacker shouldn't know if key format was wrong vs not found)
       console.warn(`SECURITY: Invalid account key format from IP ${sourceIp}: ${accountPublicKey.substring(0, 10)}...`);
+      // SECURITY: Audit invalid key format (potential enumeration attempt)
+      auditSecurityEvent({
+        event: 'nats_jwt_invalid_key_format',
+        source_ip: sourceIp,
+        key_prefix: accountPublicKey.substring(0, 8),
+        severity: 'warning',
+      });
       return {
         statusCode: 404,
         headers: { 'Content-Type': 'text/plain' },
@@ -238,6 +270,14 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     // Check account status
     if (account.status !== 'active') {
       console.log(`Account ${accountPublicKey.substring(0, 10)}... is ${account.status}`);
+      // SECURITY: Audit access to non-active accounts
+      auditSecurityEvent({
+        event: 'nats_jwt_account_not_active',
+        source_ip: sourceIp,
+        account_key_prefix: accountPublicKey.substring(0, 12),
+        account_status: account.status,
+        severity: 'info',
+      });
       return {
         statusCode: 403,
         headers: { 'Content-Type': 'text/plain' },

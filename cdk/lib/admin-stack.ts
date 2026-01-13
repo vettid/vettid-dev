@@ -443,12 +443,16 @@ export class AdminStack extends cdk.Stack {
         TABLE_NATS_TOKENS: tables.natsTokens.tableName,
         NATS_DOMAIN: 'nats.vettid.dev',
         NATS_OPERATOR_SECRET_ARN: natsOperatorSecret.secretArn,
+        // SECURITY: KMS key for envelope decryption of account seeds
+        NATS_SEED_KMS_KEY_ARN: props.infrastructure.natsSeedEncryptionKey.keyArn,
       },
       timeout: cdk.Duration.seconds(30),
     });
 
     // Grant access to NATS operator secret
     natsOperatorSecret.grantRead(generateNatsControlToken);
+    // SECURITY: Grant KMS decrypt for account seeds
+    props.infrastructure.natsSeedEncryptionKey.grantDecrypt(generateNatsControlToken);
 
     // ===== MEMBERSHIP MANAGEMENT =====
 

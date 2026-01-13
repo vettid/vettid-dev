@@ -374,11 +374,15 @@ export class VaultStack extends cdk.Stack {
       environment: {
         TABLE_NATS_ACCOUNTS: tables.natsAccounts.tableName,
         NATS_OPERATOR_SECRET_ARN: natsOperatorSecret.secretArn,
+        // SECURITY: Audit table for logging security events (rate limit violations, enumeration attempts)
+        TABLE_AUDIT: tables.audit.tableName,
       },
       timeout: cdk.Duration.seconds(10),
     });
     // Grant permission to read system account JWT from Secrets Manager
     natsOperatorSecret.grantRead(this.natsLookupAccountJwt);
+    // Grant permission to write security audit logs
+    tables.audit.grantWriteData(this.natsLookupAccountJwt);
 
     // ===== VAULT STATUS (ENCLAVE-BASED) =====
 

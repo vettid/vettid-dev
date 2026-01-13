@@ -18,6 +18,7 @@
 
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { DynamoDBClient, GetItemCommand, PutItemCommand } from '@aws-sdk/client-dynamodb';
+import { KMSClient, DecryptCommand } from '@aws-sdk/client-kms';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import { randomUUID } from 'crypto';
 import {
@@ -37,10 +38,13 @@ import {
 import { generateUserCredentials, formatCredsFile } from '../../common/nats-jwt';
 
 const ddb = new DynamoDBClient({});
+const kmsClient = new KMSClient({});
 
 const TABLE_NATS_ACCOUNTS = process.env.TABLE_NATS_ACCOUNTS!;
 const TABLE_NATS_TOKENS = process.env.TABLE_NATS_TOKENS!;
 const NATS_DOMAIN = process.env.NATS_DOMAIN || 'nats.vettid.dev';
+// SECURITY: KMS key for envelope decryption of account seeds
+const NATS_SEED_KMS_KEY_ARN = process.env.NATS_SEED_KMS_KEY_ARN!;
 
 // Control tokens are short-lived for security
 const CONTROL_TOKEN_VALIDITY_MINUTES = 60; // 1 hour
@@ -118,10 +122,46 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     const ownerSpace = account.owner_space_id;
     const messageSpace = account.message_space_id || `MessageSpace.${body.user_guid}`;
     const controlTopic = `${ownerSpace}.control`;
-    const accountSeed = account.account_seed;
 
-    if (!accountSeed) {
+    // SECURITY: Decrypt the account seed using KMS
+    // The seed is envelope-encrypted with context binding to prevent copy attacks
+    const encryptedSeed = account.account_seed_encrypted || account.account_seed; // Support migration
+
+    if (!encryptedSeed) {
       return internalError('NATS account missing signing key. Please recreate account.', origin);
+    }
+
+    let accountSeed: string;
+
+    // Check if this is an encrypted seed (base64 encoded ciphertext) or legacy plaintext
+    // Legacy seeds start with 'SA' (NATS nkey account seed prefix)
+    if (encryptedSeed.startsWith('SA')) {
+      // SECURITY WARNING: Legacy unencrypted seed - should be migrated
+      console.warn(`SECURITY: Legacy unencrypted seed for user ${body.user_guid} - migration needed`);
+      accountSeed = encryptedSeed;
+    } else {
+      // Decrypt the seed using KMS
+      try {
+        const decryptResult = await kmsClient.send(new DecryptCommand({
+          KeyId: NATS_SEED_KMS_KEY_ARN,
+          CiphertextBlob: Buffer.from(encryptedSeed, 'base64'),
+          EncryptionContext: {
+            // SECURITY: Must match the context used during encryption
+            user_guid: body.user_guid,
+            purpose: 'nats_account_seed',
+          },
+        }));
+
+        if (!decryptResult.Plaintext) {
+          console.error('KMS decryption failed - no plaintext returned');
+          return internalError('Failed to access account credentials', origin);
+        }
+
+        accountSeed = Buffer.from(decryptResult.Plaintext).toString('utf-8');
+      } catch (kmsError: any) {
+        console.error('KMS decryption error:', kmsError.message);
+        return internalError('Failed to access account credentials', origin);
+      }
     }
 
     const publishPerms = [controlTopic];
