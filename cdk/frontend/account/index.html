@@ -436,14 +436,13 @@
       </div>
       <button class="tab" data-tab="subscription" style="display:none;">Subscription</button>
       <button class="tab" data-tab="voting" style="display:none;">Voting<span id="votingBadge" class="sidebar-badge pulse" style="display:none;"></span></button>
-      <button class="tab tab-parent" id="vaultParent" data-tab="deploy-vault" style="display:none;">
-        <span class="tab-text">Vault Services</span>
-        <span class="tab-chevron">&#9656;</span>
-      </button>
-      <div class="tab-children" id="vaultChildren">
+      <!-- Vault Services - simplified to single tab (no sub-navigation) -->
+      <button class="tab" id="vaultParent" data-tab="deploy-vault" style="display:none;">Vault Services</button>
+      <!-- Hidden sub-tabs for backwards compatibility -->
+      <div class="tab-children" id="vaultChildren" style="display:none;">
         <button class="tab tab-child" data-tab="deploy-vault" data-sub-tab="deploy">My Vault</button>
-        <button class="tab tab-child" data-tab="deploy-vault" data-sub-tab="byov">Bring Your Own Vault</button>
-        <button class="tab tab-child" data-tab="deploy-vault" data-sub-tab="credential-backup">Credential Backup</button>
+        <button class="tab tab-child" data-tab="deploy-vault" data-sub-tab="byov" style="display:none;">Bring Your Own Vault</button>
+        <button class="tab tab-child" data-tab="deploy-vault" data-sub-tab="credential-backup" style="display:none;">Credential Backup</button>
       </div>
     </div>
   </div>
@@ -795,9 +794,54 @@
         </div>
       </div>
     </div>
+
+    <!-- Credential Backup Card (integrated into vault view) -->
+    <div class="card" id="credentialBackupCard" style="margin-top:20px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+        <h3 style="margin:0;">Credential Backup</h3>
+        <button data-action="loadCredentialBackupStatus" class="btn" style="padding:6px 12px;font-size:0.85rem;background:#333;" title="Refresh">↻ Refresh</button>
+      </div>
+
+      <!-- Backup Toggle -->
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:16px;background:#050505;border-radius:8px;border:1px solid var(--border);margin-bottom:16px;">
+        <div>
+          <p style="margin:0;color:var(--text);font-weight:600;">Automatic Backups</p>
+          <p style="margin:4px 0 0 0;color:var(--gray);font-size:0.85rem;">Encrypted credentials backed up automatically</p>
+        </div>
+        <label class="toggle-switch">
+          <input type="checkbox" id="credentialBackupEnabledInline">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+
+      <!-- Backup Status Grid -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;">
+        <div style="padding:12px;background:#050505;border-radius:6px;border:1px solid var(--border);">
+          <p style="margin:0;color:var(--gray);font-size:0.75rem;text-transform:uppercase;">Status</p>
+          <p id="backupStatusValueInline" style="margin:6px 0 0 0;color:var(--text);font-weight:600;">--</p>
+        </div>
+        <div style="padding:12px;background:#050505;border-radius:6px;border:1px solid var(--border);">
+          <p style="margin:0;color:var(--gray);font-size:0.75rem;text-transform:uppercase;">Last Backup</p>
+          <p id="lastBackupValueInline" style="margin:6px 0 0 0;color:var(--text);font-weight:600;">--</p>
+        </div>
+      </div>
+
+      <!-- Recovery Options -->
+      <div style="padding:16px;background:#050505;border-radius:8px;border:1px solid var(--border);">
+        <p style="margin:0 0 12px 0;color:var(--gray);font-size:0.85rem;">Need to restore your credentials?</p>
+        <div style="display:flex;gap:12px;flex-wrap:wrap;">
+          <button data-action="requestTransfer" class="btn" style="padding:8px 16px;background:linear-gradient(135deg,#10b981 0%,#059669 100%);font-size:0.85rem;">
+            Transfer to New Device
+          </button>
+          <button data-action="requestRecovery" class="btn" style="padding:8px 16px;background:linear-gradient(135deg,#f59e0b 0%,#d97706 100%);color:#000;font-size:0.85rem;">
+            Recover Lost Credentials
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 
-  <!-- Bring Your Own Vault Sub-tab -->
+  <!-- Bring Your Own Vault Sub-tab (hidden) -->
   <div id="vault-byov" class="sub-tab-content">
     <!-- BYOV Status Card -->
     <div class="card" id="byovStatusCard">

@@ -4024,6 +4024,12 @@ function renderCredentialBackupStatus(status) {
       createBtn.textContent = 'Update Encrypted Backup';
     }
 
+    // Update inline backup status in vault deploy view
+    const inlineStatus = document.getElementById('backupStatusValueInline');
+    const inlineLastBackup = document.getElementById('lastBackupValueInline');
+    if (inlineStatus) inlineStatus.textContent = 'Active';
+    if (inlineLastBackup) inlineLastBackup.textContent = updatedDate;
+
   } else {
     statusContent.innerHTML = `
       <div style="display:flex;align-items:center;gap:12px;padding:16px;background:rgba(255,193,37,0.1);border:1px solid var(--accent);border-radius:8px;">
@@ -4040,6 +4046,12 @@ function renderCredentialBackupStatus(status) {
         </div>
       </div>
     `;
+
+    // Update inline backup status in vault deploy view
+    const inlineStatus = document.getElementById('backupStatusValueInline');
+    const inlineLastBackup = document.getElementById('lastBackupValueInline');
+    if (inlineStatus) inlineStatus.textContent = 'Not configured';
+    if (inlineLastBackup) inlineLastBackup.textContent = 'Never';
   }
 }
 
@@ -4384,7 +4396,7 @@ function initCredentialBackupTab() {
  */
 async function loadBackupSettings() {
   const toggle = document.getElementById('credentialBackupEnabled');
-  if (!toggle) return;
+  const inlineToggle = document.getElementById('credentialBackupEnabledInline');
 
   try {
     const token = idToken();
@@ -4397,8 +4409,10 @@ async function loadBackupSettings() {
 
     if (res.ok) {
       const settings = await res.json();
-      toggle.checked = settings.enabled || false;
-      updateBackupCardsState(settings.enabled || false);
+      const enabled = settings.enabled || false;
+      if (toggle) toggle.checked = enabled;
+      if (inlineToggle) inlineToggle.checked = enabled;
+      updateBackupCardsState(enabled);
     } else {
       // If no settings exist, assume disabled
       updateBackupCardsState(false);
@@ -4408,11 +4422,23 @@ async function loadBackupSettings() {
     updateBackupCardsState(false);
   }
 
-  // Add change handler for toggle
-  toggle.addEventListener('change', async () => {
-    await updateBackupSettings(toggle.checked);
-    updateBackupCardsState(toggle.checked);
-  });
+  // Add change handler for original toggle
+  if (toggle) {
+    toggle.addEventListener('change', async () => {
+      await updateBackupSettings(toggle.checked);
+      if (inlineToggle) inlineToggle.checked = toggle.checked;
+      updateBackupCardsState(toggle.checked);
+    });
+  }
+
+  // Add change handler for inline toggle (syncs with original)
+  if (inlineToggle) {
+    inlineToggle.addEventListener('change', async () => {
+      await updateBackupSettings(inlineToggle.checked);
+      if (toggle) toggle.checked = inlineToggle.checked;
+      updateBackupCardsState(inlineToggle.checked);
+    });
+  }
 }
 
 /**
@@ -5085,9 +5111,9 @@ function showEnrollmentModal(session) {
 
   const modal = document.createElement('div');
   modal.id = 'enrollmentModal';
-  modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.9);display:flex;align-items:center;justify-content:center;z-index:9999;';
+  modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.9);display:flex;align-items:flex-start;justify-content:center;z-index:9999;overflow-y:auto;padding:20px 0;';
   modal.innerHTML = `
-    <div style="background:#0a0a0a;border:1px solid var(--accent);border-radius:12px;padding:32px;max-width:480px;width:90%;text-align:center;">
+    <div style="background:#0a0a0a;border:1px solid var(--accent);border-radius:12px;padding:32px;max-width:480px;width:90%;text-align:center;margin:auto 0;">
       <h3 style="margin:0 0 8px 0;color:var(--accent);">Enroll Your Mobile Device</h3>
       <p style="color:var(--gray);margin-bottom:24px;font-size:0.95rem;">
         Scan this QR code with the VettID app on your mobile device to complete enrollment.
@@ -5324,6 +5350,9 @@ async function closeEnrollmentModal() {
 function startVaultStatusPolling() {
   stopVaultStatusPolling();
   loadVaultStatus();
+  // Also load backup settings for the integrated credential backup card
+  loadBackupSettings();
+  loadCredentialBackupStatus();
   vaultStatusInterval = setInterval(loadVaultStatus, 30000); // Poll every 30s
 }
 
