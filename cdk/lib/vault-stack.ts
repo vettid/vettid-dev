@@ -187,7 +187,7 @@ export class VaultStack extends cdk.Stack {
     const enclaveConfigEnv = {
       // Internal NATS endpoint for vault-to-NATS communication via VPC peering (plain TCP)
       NATS_INTERNAL_ENDPOINT: 'nats.internal.vettid.dev:4222',
-      BACKEND_API_URL: 'https://tiqpij5mue.execute-api.us-east-1.amazonaws.com',
+      BACKEND_API_URL: 'https://api.vettid.dev',
     };
 
     // NATS operator secret for signing JWTs (used by enrollFinalize and NATS functions)
@@ -231,7 +231,7 @@ export class VaultStack extends cdk.Stack {
       environment: {
         ...defaultEnv,
         TABLE_NATS_ACCOUNTS: tables.natsAccounts.tableName,
-        API_URL: 'https://tiqpij5mue.execute-api.us-east-1.amazonaws.com',
+        API_URL: 'https://api.vettid.dev',
       },
       timeout: cdk.Duration.seconds(30),
     });

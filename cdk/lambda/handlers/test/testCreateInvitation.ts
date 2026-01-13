@@ -50,7 +50,7 @@ const ddb = new DynamoDBClient({});
 const TEST_API_KEY = process.env.TEST_API_KEY;
 const TABLE_INVITES = process.env.TABLE_INVITES!;
 const TABLE_ENROLLMENT_SESSIONS = process.env.TABLE_ENROLLMENT_SESSIONS!;
-const API_URL = process.env.API_URL || 'https://tiqpij5mue.execute-api.us-east-1.amazonaws.com';
+const API_URL = process.env.API_URL || 'https://api.vettid.dev';
 
 // Test user prefix to identify test data
 const TEST_USER_PREFIX = 'test_android_';

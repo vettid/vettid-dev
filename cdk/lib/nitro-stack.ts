@@ -387,14 +387,9 @@ export class NitroStack extends cdk.Stack {
       },
     }));
 
-    // SECURITY: Create the PCR0 parameter with initial value
-    // This ensures the parameter exists before any build attempts
-    const pcr0Parameter = new ssm.StringParameter(this, 'Pcr0Parameter', {
-      parameterName: '/vettid/enclave/pcr/pcr0',
-      stringValue: 'INITIAL_VALUE_REPLACE_DURING_AMI_BUILD',
-      description: 'SECURITY CRITICAL: PCR0 hash of enclave code - controls KMS decrypt access',
-      tier: ssm.ParameterTier.STANDARD,
-    });
+    // NOTE: PCR0 parameter at /vettid/enclave/pcr/pcr0 is managed outside CDK
+    // It's created during initial setup and updated by Packer during AMI builds
+    // CDK reads the current value (line ~117) but doesn't manage the parameter lifecycle
 
     // Add resource policy to restrict modifications to Packer role only
     // This prevents other principals from modifying the critical PCR0 value

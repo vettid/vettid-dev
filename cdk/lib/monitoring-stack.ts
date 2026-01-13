@@ -246,7 +246,7 @@ export class MonitoringStack extends cdk.Stack {
    */
   private addApiGatewayMonitoring(): void {
     // Get API ID from props or use default (from stack outputs)
-    const apiId = this.props.httpApi?.apiId || this.props.apiGatewayApiId || 'tiqpij5mue';
+    const apiId = this.props.httpApi?.apiId || this.props.apiGatewayApiId || 'o1re2lghkj';
 
     this.dashboard.addWidgets(
       new cloudwatch.TextWidget({
