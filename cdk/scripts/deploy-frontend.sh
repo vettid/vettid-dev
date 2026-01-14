@@ -21,7 +21,8 @@ echo "================================"
 echo -e "${YELLOW}Fetching CDK stack outputs...${NC}"
 STACK_NAME="VettIDStack"
 
-API_URL=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='OutApiUrl'].OutputValue" --output text)
+# Use custom domain for API (required for httpOnly cookie to work across subdomains)
+API_URL="https://api.vettid.dev"
 REGION=$(aws configure get region || echo "us-east-1")
 ADMIN_USER_POOL_ID=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='OutAdminUserPoolId'].OutputValue" --output text)
 MEMBER_USER_POOL_ID=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='OutMemberUserPoolId'].OutputValue" --output text)
@@ -33,9 +34,9 @@ S3_BUCKET=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --quer
 DISTRIBUTION_ID=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='OutDistributionId'].OutputValue" --output text)
 ADMIN_DISTRIBUTION_ID=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='OutAdminDistributionId'].OutputValue" --output text)
 
-# Validate required values
-if [[ -z "$API_URL" || "$API_URL" == "None" ]]; then
-    echo -e "${RED}Error: Could not get API URL from stack outputs${NC}"
+# Validate required values (API_URL is now hardcoded to custom domain)
+if [[ -z "$API_URL" ]]; then
+    echo -e "${RED}Error: API URL not set${NC}"
     exit 1
 fi
 
