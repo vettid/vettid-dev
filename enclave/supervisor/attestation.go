@@ -253,8 +253,9 @@ func VerifyAttestation(attestation *Attestation, expectedPCRs map[int][]byte) er
 	}
 
 	// 3. Validate timestamp (freshness check)
-	now := uint64(time.Now().Unix())
-	docAge := now - attDoc.Timestamp
+	// NOTE: Nitro attestation document timestamp is in milliseconds since epoch
+	now := uint64(time.Now().UnixMilli())
+	docAge := (now - attDoc.Timestamp) / 1000 // Convert to seconds for comparison
 	if docAge > maxAttestationAgeSeconds {
 		log.Error().
 			Uint64("doc_timestamp", attDoc.Timestamp).
