@@ -147,6 +147,29 @@ const adminOrigin = origins.S3BucketOrigin.withOriginAccessControl(siteBucket, {
   originPath: '/admin',
 });
 
+// API Gateway origin for same-origin API proxy (avoids cross-origin issues on privacy browsers)
+const apiOrigin = new origins.HttpOrigin('api.vettid.dev', {
+  protocolPolicy: cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
+});
+
+// CloudFront Function to strip /api prefix from request URI
+const apiProxyFn = new cloudfront.Function(this, 'ApiProxyFn', {
+  code: cloudfront.FunctionCode.fromInline(`
+function handler(event) {
+  var request = event.request;
+  // Strip /api prefix from URI (e.g., /api/account/... -> /account/...)
+  if (request.uri.startsWith('/api')) {
+    request.uri = request.uri.substring(4) || '/';
+  }
+  return request;
+}
+  `),
+});
+
+// Origin request policy to forward all headers to API Gateway (including Authorization)
+// Using ALL_VIEWER policy which forwards all headers from the viewer request
+const apiOriginRequestPolicy = cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER;
+
 // WAF Web ACL for CloudFront protection against scanning and probing
 // IMPORTANT: Must be created in us-east-1 (CLOUDFRONT scope)
 const webAcl = new wafv2.CfnWebACL(this, 'WebAcl', {
@@ -560,6 +583,17 @@ const rootDist = new cloudfront.Distribution(this, 'RootDist', {
       functionAssociations: [
         { eventType: cloudfront.FunctionEventType.VIEWER_REQUEST, function: htmlRewriteFn },
         { eventType: cloudfront.FunctionEventType.VIEWER_RESPONSE, function: securityHeadersFn }
+      ],
+    },
+    // API proxy - routes /api/* to api.vettid.dev (same-origin for privacy browsers)
+    '/api/*': {
+      origin: apiOrigin,
+      cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
+      originRequestPolicy: apiOriginRequestPolicy,
+      allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
+      viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.HTTPS_ONLY,
+      functionAssociations: [
+        { eventType: cloudfront.FunctionEventType.VIEWER_REQUEST, function: apiProxyFn },
       ],
     },
   },
