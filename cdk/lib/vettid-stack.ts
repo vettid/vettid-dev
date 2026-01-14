@@ -545,6 +545,15 @@ const rootDist = new cloudfront.Distribution(this, 'RootDist', {
   additionalBehaviors: {
     // Enrollment deep link handler needs query strings forwarded
     // The ?data= parameter contains the enrollment session token
+    // Note: Need both patterns - '/enroll' for exact match and '/enroll/*' for subpaths
+    '/enroll': {
+      origin: siteOrigin,
+      cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
+      functionAssociations: [
+        { eventType: cloudfront.FunctionEventType.VIEWER_REQUEST, function: htmlRewriteFn },
+        { eventType: cloudfront.FunctionEventType.VIEWER_RESPONSE, function: securityHeadersFn }
+      ],
+    },
     '/enroll/*': {
       origin: siteOrigin,
       cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
