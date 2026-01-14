@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Open in VettID App</title>
+  <link rel="icon" type="image/x-icon" href="/assets/favicon.ico">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #0a0a0a 0%, #1a1a2e 100%);
+      color: #fff;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .container {
+      text-align: center;
+      max-width: 400px;
+    }
+    .logo {
+      width: 80px;
+      height: 80px;
+      margin-bottom: 24px;
+      border-radius: 16px;
+    }
+    h1 {
+      font-size: 24px;
+      margin-bottom: 16px;
+      color: #fff;
+    }
+    p {
+      color: #888;
+      margin-bottom: 24px;
+      line-height: 1.6;
+    }
+    .btn {
+      display: inline-block;
+      background: #3b82f6;
+      color: #fff;
+      padding: 14px 28px;
+      border-radius: 8px;
+      text-decoration: none;
+      font-weight: 600;
+      margin: 8px;
+      transition: background 0.2s;
+    }
+    .btn:hover {
+      background: #2563eb;
+    }
+    .btn-secondary {
+      background: #333;
+    }
+    .btn-secondary:hover {
+      background: #444;
+    }
+    .divider {
+      margin: 24px 0;
+      color: #444;
+      font-size: 14px;
+    }
+    .help {
+      margin-top: 32px;
+      font-size: 14px;
+      color: #666;
+    }
+    .help a {
+      color: #3b82f6;
+      text-decoration: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <img src="/assets/logo.jpg" alt="VettID" class="logo">
+    <h1>Open in VettID App</h1>
+    <p>This enrollment link needs to be opened in the VettID mobile app.</p>
+
+    <a href="vettid://enroll" class="btn" id="openApp">Open VettID App</a>
+
+    <div class="divider">— or —</div>
+
+    <a href="https://play.google.com/store/apps/details?id=com.vettid.app" class="btn btn-secondary">Get it on Google Play</a>
+    <a href="https://apps.apple.com/app/vettid/id6740043740" class="btn btn-secondary">Download on App Store</a>
+
+    <p class="help">
+      Already have the app? <a href="#" id="retry">Try opening again</a>
+    </p>
+  </div>
+
+  <script>
+    // Pass the data parameter to the app via custom scheme
+    const params = new URLSearchParams(window.location.search);
+    const data = params.get('data');
+
+    if (data) {
+      const appUrl = 'vettid://enroll?data=' + encodeURIComponent(data);
+      document.getElementById('openApp').href = appUrl;
+
+      // Try to open app automatically
+      setTimeout(() => {
+        window.location.href = appUrl;
+      }, 500);
+
+      document.getElementById('retry').onclick = (e) => {
+        e.preventDefault();
+        window.location.href = appUrl;
+      };
+    }
+  </script>
+</body>
+</html>
