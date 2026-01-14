@@ -13,8 +13,9 @@ const userPool = new AmazonCognitoIdentity.CognitoUserPool(poolData);
 // Store tokens securely:
 // - Refresh token: stored as httpOnly cookie (protected from XSS, set by backend)
 // - ID/Access tokens: stored in sessionStorage (cleared on tab close, more secure than localStorage)
-// - Never store refresh token in JavaScript-accessible storage
+// - Fallback: If cross-origin cookie fails (privacy browsers like Vanadium), store all tokens locally
 async function saveTokens(idToken, accessToken, refreshToken) {
+  // Try secure token exchange first (sets httpOnly cookie for refresh token)
   try {
     const response = await fetch(API_URL + '/auth/token-exchange', {
       method: 'POST',
@@ -27,39 +28,51 @@ async function saveTokens(idToken, accessToken, refreshToken) {
       })
     });
 
-    if (!response.ok) {
-      console.error('[AUTH] Token exchange failed:', response.status);
-      return false;
+    if (response.ok) {
+      const data = await response.json();
+      if (data.success && data.id_token && data.access_token) {
+        // Backend set httpOnly cookie for refresh token
+        // Store short-lived tokens in sessionStorage
+        sessionStorage.setItem('vettid_tokens', JSON.stringify({
+          id_token: data.id_token,
+          access_token: data.access_token,
+          expires_at: Date.now() + (data.expires_in * 1000)
+        }));
+        localStorage.setItem('tokens', JSON.stringify({
+          id_token: data.id_token,
+          access_token: data.access_token
+        }));
+        console.log('[AUTH] Token exchange successful');
+        return true;
+      }
     }
-
-    // Backend sets refresh_token as httpOnly cookie
-    // Response body contains id_token and access_token for frontend use
-    const data = await response.json();
-
-    if (!data.success || !data.id_token || !data.access_token) {
-      console.error('[AUTH] Invalid token exchange response');
-      return false;
-    }
-
-    // Store short-lived tokens in sessionStorage (more secure than localStorage)
-    // sessionStorage is cleared when the tab is closed
-    // On page refresh within the same tab, these tokens persist
-    sessionStorage.setItem('vettid_tokens', JSON.stringify({
-      id_token: data.id_token,
-      access_token: data.access_token,
-      expires_at: Date.now() + (data.expires_in * 1000)
-    }));
-
-    // Also keep in localStorage for backward compatibility during transition
-    // TODO: Remove this after confirming sessionStorage approach works
-    localStorage.setItem('tokens', JSON.stringify({
-      id_token: data.id_token,
-      access_token: data.access_token
-    }));
-
-    return true;
+    console.warn('[AUTH] Token exchange failed, using fallback storage');
   } catch (error) {
-    console.error('[AUTH] Token exchange error:', error);
+    console.warn('[AUTH] Token exchange error, using fallback storage:', error.message);
+  }
+
+  // Fallback: Store tokens directly in localStorage (for privacy browsers that block cross-origin cookies)
+  // Less secure but ensures authentication works
+  try {
+    // Parse token to get expiration
+    const parts = idToken.split('.');
+    const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')));
+    const expiresAt = payload.exp * 1000;
+
+    sessionStorage.setItem('vettid_tokens', JSON.stringify({
+      id_token: idToken,
+      access_token: accessToken,
+      expires_at: expiresAt
+    }));
+    localStorage.setItem('tokens', JSON.stringify({
+      id_token: idToken,
+      access_token: accessToken,
+      refresh_token: refreshToken // Store refresh token in localStorage as fallback
+    }));
+    console.log('[AUTH] Fallback token storage successful');
+    return true;
+  } catch (fallbackError) {
+    console.error('[AUTH] Fallback storage failed:', fallbackError);
     return false;
   }
 }
