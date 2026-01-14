@@ -47,6 +47,7 @@ export class VaultStack extends cdk.Stack {
   public readonly authenticateEnrollment!: lambdaNode.NodejsFunction;
   public readonly enrollUpdateStatus!: lambdaNode.NodejsFunction;
   public readonly getEnrollmentStatus!: lambdaNode.NodejsFunction;
+  public readonly enrollNatsBootstrap!: lambdaNode.NodejsFunction;
   // Legacy auth handlers removed - vault-manager handles auth via NATS
 
   // Device attestation handlers (Phase 2)
@@ -291,6 +292,36 @@ export class VaultStack extends cdk.Stack {
       },
       timeout: cdk.Duration.seconds(30),
     });
+
+    // NATS bootstrap for enrollment (provides NATS credentials after authentication)
+    // This bridges the gap between authentication and NATS connection during enrollment
+    this.enrollNatsBootstrap = new lambdaNode.NodejsFunction(this, 'EnrollNatsBootstrapFn', {
+      entry: 'lambda/handlers/vault/enrollNatsBootstrap.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+        TABLE_NATS_ACCOUNTS: tables.natsAccounts.tableName,
+        TABLE_NATS_TOKENS: tables.natsTokens.tableName,
+        TABLE_AUDIT: tables.audit.tableName,
+        NATS_DOMAIN: 'nats.vettid.dev',
+        NATS_OPERATOR_SECRET_ARN: natsOperatorSecretRef.secretArn,
+        NATS_SEED_KMS_KEY_ARN: props.infrastructure.natsSeedEncryptionKey.keyArn,
+        ENROLLMENT_JWT_SECRET_ARN: props.infrastructure.enrollmentJwtSecretArn,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    // Grant permissions for enrollNatsBootstrap
+    tables.enrollmentSessions.grantReadData(this.enrollNatsBootstrap);
+    tables.natsAccounts.grantReadWriteData(this.enrollNatsBootstrap);
+    tables.natsTokens.grantWriteData(this.enrollNatsBootstrap);
+    tables.audit.grantWriteData(this.enrollNatsBootstrap);
+    natsOperatorSecretRef.grantRead(this.enrollNatsBootstrap);
+    props.infrastructure.natsSeedEncryptionKey.grantEncryptDecrypt(this.enrollNatsBootstrap);
+    this.enrollNatsBootstrap.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['secretsmanager:GetSecretValue'],
+      resources: [props.infrastructure.enrollmentJwtSecretArn],
+    }));
 
     // Note: Enrollment authorizer Lambda is defined in InfrastructureStack
     // to avoid cyclic dependencies between VettIDStack and VaultStack
@@ -1273,6 +1304,10 @@ export class VaultStack extends cdk.Stack {
       integration: new integrations.HttpLambdaIntegration('AuthenticateEnrollmentInt', this.authenticateEnrollment),
       // No authorizer - this is a public endpoint
     });
+
+    // Mobile enrollment - NATS bootstrap provides credentials after authentication
+    // This bridges the gap between authentication and NATS connection
+    this.route('EnrollNatsBootstrap', httpApi, '/vault/enroll/nats-bootstrap', apigw.HttpMethod.POST, this.enrollNatsBootstrap, enrollmentLambdaAuthorizer);
 
     // Mobile enrollment - enrollFinalize now handles complete enrollment via vault-manager
     // Legacy enrollStart/enrollSetPassword removed - vault-manager handles key generation
