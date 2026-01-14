@@ -542,6 +542,18 @@ const rootDist = new cloudfront.Distribution(this, 'RootDist', {
       { eventType: cloudfront.FunctionEventType.VIEWER_RESPONSE, function: securityHeadersFn }
     ],
   },
+  additionalBehaviors: {
+    // Enrollment deep link handler needs query strings forwarded
+    // The ?data= parameter contains the enrollment session token
+    '/enroll/*': {
+      origin: siteOrigin,
+      cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
+      functionAssociations: [
+        { eventType: cloudfront.FunctionEventType.VIEWER_REQUEST, function: htmlRewriteFn },
+        { eventType: cloudfront.FunctionEventType.VIEWER_RESPONSE, function: securityHeadersFn }
+      ],
+    },
+  },
   enableLogging: true,
   logBucket: logBucket,
   logFilePrefix: 'cloudfront-logs/root/',
