@@ -24,6 +24,14 @@ export const handler: DefineAuthChallengeTriggerHandler = async (event) => {
 
   const { request } = event;
 
+  // Log session details when we have a session (helps debug auth failures)
+  if (request.session && request.session.length > 0) {
+    console.log('DefineAuthChallenge session details: challengeName=%s, challengeResult=%s',
+      request.session[0].challengeName,
+      request.session[0].challengeResult
+    );
+  }
+
   // If user doesn't exist, fail auth
   if (!event.request.userNotFound) {
     // First step: send custom challenge (magic link)

@@ -207,6 +207,7 @@ export const handler: VerifyAuthChallengeResponseTriggerHandler = async (event) 
     }
 
     event.response.answerCorrect = true;
+    console.log('VerifyAuthChallenge: token verified successfully, setting answerCorrect=true');
 
     // Delete the token so it can't be reused
     await ddb.send(new DeleteItemCommand({

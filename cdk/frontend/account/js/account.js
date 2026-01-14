@@ -12,59 +12,100 @@ function getElement(id) {
   return DOMCache[id];
 }
 
-// ---- Token storage ----
+// ---- Token storage (Secure approach) ----
+// Tokens are stored in sessionStorage (cleared on tab close)
+// Refresh token is stored as httpOnly cookie (XSS-protected)
+// On page load, we try sessionStorage first, then call /auth/session
+
 function loadTokens() {
-  try { return JSON.parse(localStorage.getItem('tokens') || 'null'); } catch { return null; }
+  try {
+    // Try sessionStorage first (new secure approach)
+    const sessionTokens = sessionStorage.getItem('vettid_tokens');
+    if (sessionTokens) {
+      const parsed = JSON.parse(sessionTokens);
+      // Check if tokens are expired (with 1 minute buffer)
+      if (parsed.expires_at && parsed.expires_at > Date.now() + 60000) {
+        return parsed;
+      }
+    }
+    // Fall back to localStorage for backward compatibility
+    return JSON.parse(localStorage.getItem('tokens') || 'null');
+  } catch { return null; }
 }
+
 function saveTokens(tokens) {
-  localStorage.setItem('tokens', JSON.stringify(tokens));
+  // Save to sessionStorage (primary)
+  sessionStorage.setItem('vettid_tokens', JSON.stringify({
+    id_token: tokens.id_token,
+    access_token: tokens.access_token,
+    expires_at: tokens.expires_at || (Date.now() + 3600000) // 1 hour default
+  }));
+  // Also save to localStorage for backward compatibility
+  localStorage.setItem('tokens', JSON.stringify({
+    id_token: tokens.id_token,
+    access_token: tokens.access_token
+  }));
 }
-function clearTokens() { localStorage.removeItem('tokens'); localStorage.removeItem('authEmail'); }
+
+function clearTokens() {
+  localStorage.removeItem('tokens');
+  localStorage.removeItem('authEmail');
+  sessionStorage.removeItem('vettid_tokens');
+}
+
 function idToken() { return (loadTokens() || {}).id_token; }
 function signedIn() { return !!idToken(); }
 
-// Refresh tokens using Cognito OAuth endpoint
+// Refresh tokens using httpOnly cookie via /auth/session endpoint
+// This is more secure than storing refresh token in localStorage
 async function refreshTokens() {
-  const tokens = loadTokens();
-  if (!tokens || !tokens.refresh_token) {
-    return false;
-  }
-
-  const cognitoDomain = window.VettIDConfig.member.cognitoDomain;
-  const clientId = window.VettIDConfig.member.clientId;
-
   try {
-    const response = await fetch(`${cognitoDomain}/oauth2/token`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded'
-      },
-      body: new URLSearchParams({
-        grant_type: 'refresh_token',
-        client_id: clientId,
-        refresh_token: tokens.refresh_token
-      })
+    const response = await fetch(`${API_URL}/auth/session`, {
+      method: 'GET',
+      credentials: 'include' // Send httpOnly cookie
     });
 
     if (!response.ok) {
-      console.error('[AUTH] Token refresh failed:', response.status);
+      console.error('[AUTH] Session refresh failed:', response.status);
       return false;
     }
 
     const data = await response.json();
 
-    // Update stored tokens (refresh_token stays the same)
+    if (!data.authenticated || !data.id_token || !data.access_token) {
+      console.log('[AUTH] Not authenticated or missing tokens');
+      return false;
+    }
+
+    // Save the fresh tokens
     saveTokens({
       id_token: data.id_token,
       access_token: data.access_token,
-      refresh_token: tokens.refresh_token // Keep existing refresh token
+      expires_at: Date.now() + (data.expires_in * 1000)
     });
 
     return true;
   } catch (error) {
-    console.error('[AUTH] Token refresh error:', error);
+    console.error('[AUTH] Session refresh error:', error);
     return false;
   }
+}
+
+// Check session on page load - if no valid tokens, try to restore from httpOnly cookie
+async function checkSession() {
+  const tokens = loadTokens();
+  if (tokens && tokens.id_token) {
+    // Check if tokens are expired
+    if (tokens.expires_at && tokens.expires_at < Date.now() + 60000) {
+      console.log('[AUTH] Tokens expired, refreshing...');
+      return await refreshTokens();
+    }
+    return true;
+  }
+
+  // No tokens in storage, try to get from httpOnly cookie
+  console.log('[AUTH] No tokens found, checking session...');
+  return await refreshTokens();
 }
 
 // ---- Toast Notifications ----
@@ -549,8 +590,12 @@ function stopTokenExpiryCheck() {
 }
 
 // ---- Auth check ----
-function checkAuth() {
-  if (!signedIn()) {
+// Async version that checks session cookie if no tokens in storage
+async function checkAuthAsync() {
+  // First try to get tokens from storage or refresh from httpOnly cookie
+  const hasSession = await checkSession();
+
+  if (!hasSession || !signedIn()) {
     // Redirect to signin page
     window.location.href = '/signin';
     return false;
@@ -559,11 +604,24 @@ function checkAuth() {
   // Check if token is expired
   const token = idToken();
   if (isTokenExpired(token)) {
-    clearTokens();
+    // Try to refresh before giving up
+    const refreshed = await refreshTokens();
+    if (!refreshed) {
+      clearTokens();
+      window.location.href = '/signin';
+      return false;
+    }
+  }
+
+  return true;
+}
+
+// Synchronous version for backward compatibility (used by some UI checks)
+function checkAuth() {
+  if (!signedIn()) {
     window.location.href = '/signin';
     return false;
   }
-
   return true;
 }
 
@@ -5455,8 +5513,14 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 });
 
-// Initialize
-if (checkAuth()) {
+// Initialize - use async auth check to restore session from httpOnly cookie if needed
+(async () => {
+  // Check auth asynchronously - this will restore tokens from httpOnly cookie if needed
+  const isAuthenticated = await checkAuthAsync();
+  if (!isAuthenticated) {
+    return; // Redirect already happened
+  }
+
   // Start periodic token expiry checking
   startTokenExpiryCheck();
 
@@ -5499,20 +5563,17 @@ if (checkAuth()) {
   // PIN verification is handled during Cognito auth flow (magic link + PIN)
   // No need to verify again on account page load - this was causing double PIN prompts
   // The sessionStorage 'pinVerified' flag set during auth is sufficient
-  // Wrap in async IIFE for proper top-level await support in non-module scripts
-  (async () => {
-    try {
-      await runAppInitialization();
-    } catch (error) {
-      console.error('Error during app initialization:', error);
-      // Show a user-friendly error message
-      const container = document.getElementById('gettingStartedSteps');
-      if (container) {
-        container.innerHTML = '<div style="color:#ef4444;padding:20px;background:#1a1a1a;border-radius:8px;border:2px solid #ef4444;">Error loading your account. Please try refreshing the page.</div>';
-      }
+  try {
+    await runAppInitialization();
+  } catch (error) {
+    console.error('Error during app initialization:', error);
+    // Show a user-friendly error message
+    const container = document.getElementById('gettingStartedSteps');
+    if (container) {
+      container.innerHTML = '<div style="color:#ef4444;padding:20px;background:#1a1a1a;border-radius:8px;border:2px solid #ef4444;">Error loading your account. Please try refreshing the page.</div>';
     }
-  })();
-}
+  }
+})();
 
 // Sidebar toggle
 document.getElementById('sidebarToggle').onclick=()=>{

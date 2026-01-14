@@ -1,12 +1,18 @@
-import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
+import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 
 /**
- * Token Exchange Handler
+ * Token Exchange Handler (Secure Version)
  *
- * Receives JWT tokens from frontend after Cognito PKCE authentication
- * and sets them as httpOnly cookies for secure storage.
+ * Receives JWT tokens from frontend after Cognito authentication.
  *
- * This eliminates localStorage token storage vulnerability to XSS attacks.
+ * Security model:
+ * - Refresh token: Stored as httpOnly cookie (protected from XSS)
+ * - ID/Access tokens: Returned in response body for frontend to store in memory
+ *
+ * This approach:
+ * - Protects the long-lived refresh token from XSS attacks
+ * - Allows frontend to use short-lived tokens for API calls
+ * - On page refresh, frontend calls /auth/session to get new tokens using httpOnly cookie
  */
 
 interface TokenPayload {
@@ -27,9 +33,9 @@ function parseJwtPayload(token: string): Record<string, unknown> | null {
   }
 }
 
-export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
+export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   // CORS headers
-  const origin = event.headers.origin || event.headers.Origin || '';
+  const origin = event.headers.origin || '';
   const allowedOrigins = [
     'https://vettid.dev',
     'https://account.vettid.dev',
@@ -41,16 +47,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
   const corsHeaders = {
     'Access-Control-Allow-Origin': corsOrigin,
     'Access-Control-Allow-Credentials': 'true',
-    'Access-Control-Allow-Headers': 'Content-Type',
-    'Access-Control-Allow-Methods': 'POST, OPTIONS'
   };
 
-  // Handle preflight
-  if (event.httpMethod === 'OPTIONS') {
-    return { statusCode: 204, headers: corsHeaders, body: '' };
-  }
-
-  if (event.httpMethod !== 'POST') {
+  // HTTP API v2 uses requestContext.http.method instead of httpMethod
+  const method = event.requestContext.http.method;
+  if (method !== 'POST') {
     return {
       statusCode: 405,
       headers: corsHeaders,
@@ -98,41 +99,35 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       };
     }
 
-    // Calculate max age (token expiry minus current time, with buffer)
+    // Calculate max age for short-lived tokens
     const maxAge = exp - now - 60; // 1 minute buffer
 
-    // Cookie options for security
-    // HttpOnly: Not accessible via JavaScript
-    // Secure: Only sent over HTTPS
-    // SameSite=Strict: Not sent in cross-site requests (CSRF protection)
-    // Path=/: Available for all paths
-    // Domain: Set to .vettid.dev for cross-subdomain access
-    const cookieOptions = `HttpOnly; Secure; SameSite=Strict; Path=/; Domain=.vettid.dev; Max-Age=${maxAge}`;
+    // Only set refresh token as httpOnly cookie (most sensitive, long-lived)
+    // ID and access tokens are returned in response body for frontend memory storage
+    const cookies: string[] = [];
 
-    // Set cookies via Set-Cookie headers
-    const cookies = [
-      `vettid_id_token=${tokens.id_token}; ${cookieOptions}`,
-      `vettid_access_token=${tokens.access_token}; ${cookieOptions}`
-    ];
-
-    // Refresh token has longer expiry (typically 30 days)
     if (tokens.refresh_token) {
       const refreshMaxAge = 30 * 24 * 60 * 60; // 30 days
-      cookies.push(`vettid_refresh_token=${tokens.refresh_token}; HttpOnly; Secure; SameSite=Strict; Path=/; Domain=.vettid.dev; Max-Age=${refreshMaxAge}`);
+      // HttpOnly: Not accessible via JavaScript (XSS protection)
+      // Secure: Only sent over HTTPS
+      // SameSite=Lax: Sent with top-level navigations (needed for redirect flows)
+      // Domain: Set to .vettid.dev for cross-subdomain access
+      cookies.push(`vettid_refresh_token=${tokens.refresh_token}; HttpOnly; Secure; SameSite=Lax; Path=/; Domain=.vettid.dev; Max-Age=${refreshMaxAge}`);
     }
 
+    // Return ID and access tokens in response body
+    // Frontend stores these in memory (sessionStorage as fallback for page refresh)
     return {
       statusCode: 200,
       headers: {
         ...corsHeaders,
         'Content-Type': 'application/json'
       },
-      multiValueHeaders: {
-        'Set-Cookie': cookies
-      },
+      cookies: cookies,
       body: JSON.stringify({
         success: true,
-        message: 'Tokens stored securely',
+        id_token: tokens.id_token,
+        access_token: tokens.access_token,
         expires_in: maxAge
       })
     };

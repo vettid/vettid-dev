@@ -956,6 +956,18 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       description: 'Clear JWT tokens from httpOnly cookies',
     });
 
+    // Session - exchanges refresh token from httpOnly cookie for fresh tokens
+    const session = new lambdaNode.NodejsFunction(this, 'SessionFn', {
+      entry: 'lambda/handlers/member/session.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        MEMBER_CLIENT_ID: memberAppClient.userPoolClientId,
+      },
+      memorySize: 128,
+      timeout: cdk.Duration.seconds(10),
+      description: 'Exchange httpOnly refresh token cookie for fresh tokens',
+    });
+
     // Cookie-based Lambda Authorizer for member routes
     const cookieAuthorizer = new lambdaNode.NodejsFunction(this, 'CookieAuthorizerFn', {
       entry: 'lambda/handlers/auth/cookieAuthorizer.ts',
@@ -1166,17 +1178,27 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
     });
 
     // Token exchange - stores JWT tokens in httpOnly cookies (public, no auth)
+    // Note: Don't include OPTIONS - let API Gateway's corsPreflight handle it
     this.httpApi.addRoutes({
       path: '/auth/token-exchange',
-      methods: [apigw.HttpMethod.POST, apigw.HttpMethod.OPTIONS],
+      methods: [apigw.HttpMethod.POST],
       integration: new integrations.HttpLambdaIntegration('TokenExchangeInt', tokenExchange),
     });
 
     // Token clear - clears httpOnly cookies for logout (public, no auth)
+    // Note: Don't include OPTIONS - let API Gateway's corsPreflight handle it
     this.httpApi.addRoutes({
       path: '/auth/token-clear',
-      methods: [apigw.HttpMethod.POST, apigw.HttpMethod.OPTIONS],
+      methods: [apigw.HttpMethod.POST],
       integration: new integrations.HttpLambdaIntegration('TokenClearInt', tokenClear),
+    });
+
+    // Session - exchanges refresh token from httpOnly cookie for fresh tokens (public, no auth)
+    // Used on page load to restore authentication from httpOnly cookie
+    this.httpApi.addRoutes({
+      path: '/auth/session',
+      methods: [apigw.HttpMethod.GET, apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('SessionInt', session),
     });
 
     this.httpApi.addRoutes({

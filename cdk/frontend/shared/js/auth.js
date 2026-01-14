@@ -10,14 +10,16 @@ const API_URL = window.VettIDConfig.apiUrl;
 const poolData = { UserPoolId: USER_POOL_ID, ClientId: CLIENT_ID };
 const userPool = new AmazonCognitoIdentity.CognitoUserPool(poolData);
 
-// Store tokens in httpOnly cookies via backend API
-// This protects tokens from XSS attacks - they're never accessible to JavaScript
+// Store tokens securely:
+// - Refresh token: stored as httpOnly cookie (protected from XSS, set by backend)
+// - ID/Access tokens: stored in sessionStorage (cleared on tab close, more secure than localStorage)
+// - Never store refresh token in JavaScript-accessible storage
 async function saveTokens(idToken, accessToken, refreshToken) {
   try {
     const response = await fetch(API_URL + '/auth/token-exchange', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      credentials: 'include', // Include cookies in request/response
+      credentials: 'include', // Required for httpOnly cookie to be set
       body: JSON.stringify({
         id_token: idToken,
         access_token: accessToken,
@@ -30,8 +32,31 @@ async function saveTokens(idToken, accessToken, refreshToken) {
       return false;
     }
 
-    // Clear any legacy localStorage tokens
-    localStorage.removeItem('tokens');
+    // Backend sets refresh_token as httpOnly cookie
+    // Response body contains id_token and access_token for frontend use
+    const data = await response.json();
+
+    if (!data.success || !data.id_token || !data.access_token) {
+      console.error('[AUTH] Invalid token exchange response');
+      return false;
+    }
+
+    // Store short-lived tokens in sessionStorage (more secure than localStorage)
+    // sessionStorage is cleared when the tab is closed
+    // On page refresh within the same tab, these tokens persist
+    sessionStorage.setItem('vettid_tokens', JSON.stringify({
+      id_token: data.id_token,
+      access_token: data.access_token,
+      expires_at: Date.now() + (data.expires_in * 1000)
+    }));
+
+    // Also keep in localStorage for backward compatibility during transition
+    // TODO: Remove this after confirming sessionStorage approach works
+    localStorage.setItem('tokens', JSON.stringify({
+      id_token: data.id_token,
+      access_token: data.access_token
+    }));
+
     return true;
   } catch (error) {
     console.error('[AUTH] Token exchange error:', error);
