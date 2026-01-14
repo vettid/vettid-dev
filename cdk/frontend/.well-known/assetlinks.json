@@ -1,0 +1,10 @@
+[{
+  "relation": ["delegate_permission/common.handle_all_urls"],
+  "target": {
+    "namespace": "android_app",
+    "package_name": "com.vettid.app",
+    "sha256_cert_fingerprints": [
+      "2E:5A:AF:DE:4A:44:69:2C:E2:E4:69:74:A8:7E:A2:2C:EE:7C:0E:FA:57:71:8C:E7:CE:1E:A1:8D:06:5A:09:8F"
+    ]
+  }
+}]
