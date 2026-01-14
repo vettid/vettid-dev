@@ -76,10 +76,11 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     }
 
     const body = parseJsonBody(event);
-    const currentPin = body.currentPin;
-    const newPin = body.newPin;
+    // Sanitize PINs: strip all non-digit characters for consistency across browsers
+    const currentPin = typeof body.currentPin === 'string' ? body.currentPin.replace(/\D/g, '') : '';
+    const newPin = typeof body.newPin === 'string' ? body.newPin.replace(/\D/g, '') : '';
 
-    if (!currentPin || typeof currentPin !== 'string') {
+    if (!currentPin) {
       return badRequest("Current PIN is required");
     }
 
@@ -87,7 +88,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       return badRequest("Current PIN must be 4-6 digits");
     }
 
-    if (!newPin || typeof newPin !== 'string') {
+    if (!newPin) {
       return badRequest("New PIN is required");
     }
 

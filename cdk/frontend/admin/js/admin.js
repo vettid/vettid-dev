@@ -751,6 +751,23 @@ function b64urlDecode(str){str=str.replace(/-/g,'+').replace(/_/g,'/');const pad
  * All protected API endpoints validate the JWT signature and claims on the backend. */
 function parseJwt(idt){try{const [h,p,s]=idt.split('.');return{header:JSON.parse(b64urlDecode(h)),payload:JSON.parse(b64urlDecode(p)),signature:s};}catch{return{header:{},payload:{},signature:''};}}
 function tokenIsExpired(){const idt=idToken();if(!idt)return true;try{const{payload}=parseJwt(idt);const expiryTime=payload.exp*1000;const now=Date.now();return expiryTime<(now+60000);}catch{return true;}}
+
+// Periodic token expiry check - redirects to login if session expired
+let tokenExpiryInterval=null;
+function startTokenExpiryCheck(){
+  if(tokenExpiryInterval)return;
+  tokenExpiryInterval=setInterval(()=>{
+    if(signedIn()&&tokenIsExpired()){
+      clearTokens();
+      showToast('Session expired. Redirecting to login...','warning');
+      setTimeout(()=>{location.href=logoutUrl();},2000);
+    }
+  },30000); // Check every 30 seconds
+}
+function stopTokenExpiryCheck(){
+  if(tokenExpiryInterval){clearInterval(tokenExpiryInterval);tokenExpiryInterval=null;}
+}
+
 /* NOTE: isAdmin() check is for UI/UX only. API Gateway enforces authorization server-side. */
 function isAdmin(){if(!signedIn())return false;const{payload}=parseJwt(idToken());const groups=payload['cognito:groups']||[];return Array.isArray(groups)&&groups.includes('admin');}
 function getAdminType(){if(!signedIn())return null;const{payload}=parseJwt(idToken());return payload['custom:admin_type']||'admin';}
@@ -1422,6 +1439,8 @@ function updatePagination(list,items){const state=paginationState[list];const st
 function searchFilter(item,query,fields){if(!query)return true;const q=query.toLowerCase();return fields.some(f=>(item[f]||'').toLowerCase().includes(q));}
 
 handleRedirect();renderAuth();
+// Start periodic token expiry check if signed in
+if(signedIn()){startTokenExpiryCheck();}
 // Mark users tab as loaded and load it on page load (default active tab)
 if(signedIn()&&isAdmin()){tabsLoaded.users=true;loadUsers();}
 let invitesData=[];

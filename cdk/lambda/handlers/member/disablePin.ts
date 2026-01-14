@@ -76,9 +76,10 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
     // Parse request body to get current PIN
     const body = parseJsonBody(event);
-    const currentPin = body.currentPin;
+    // Sanitize PIN: strip all non-digit characters for consistency across browsers
+    const currentPin = typeof body.currentPin === 'string' ? body.currentPin.replace(/\D/g, '') : '';
 
-    if (!currentPin || typeof currentPin !== 'string') {
+    if (!currentPin) {
       return badRequest("Current PIN is required");
     }
 

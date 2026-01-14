@@ -100,7 +100,9 @@ export const handler: VerifyAuthChallengeResponseTriggerHandler = async (event) 
   // Parse challenge answer - could be "token" or "token:pin"
   const parts = challengeAnswer.split(':');
   const token = parts[0];
-  const providedPin = parts.length > 1 ? parts[1] : null;
+  // Sanitize PIN: strip all non-digit characters for consistency across browsers
+  const rawPin = parts.length > 1 ? parts[1] : null;
+  const providedPin = rawPin ? rawPin.replace(/\D/g, '') : null;
 
   try {
     // First, check if user has PIN enabled

@@ -47,9 +47,10 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     }
 
     const body = parseJsonBody(event);
-    const pin = body.pin;
+    // Sanitize PIN: strip all non-digit characters for consistency across browsers
+    const pin = typeof body.pin === 'string' ? body.pin.replace(/\D/g, '') : '';
 
-    if (!pin || typeof pin !== 'string') {
+    if (!pin) {
       return badRequest("PIN is required");
     }
 

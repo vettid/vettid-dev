@@ -204,7 +204,9 @@ async function validateMagicLink() {
 
         // Handle PIN submission
         document.getElementById('submitPinBtn').onclick = () => {
-          const pin = document.getElementById('pinInput').value.trim();
+          // Sanitize PIN: strip all non-digit characters (handles invisible chars, whitespace, etc.)
+          const rawPin = document.getElementById('pinInput').value;
+          const pin = rawPin.replace(/\D/g, '');
 
           // If PIN is required, validate it's entered
           if (pinRequired && !pin) {
