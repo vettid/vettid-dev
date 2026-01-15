@@ -13,6 +13,7 @@ import (
 // ParentProcess bridges the enclave to external services
 type ParentProcess struct {
 	config        *Config
+	enclaveID     string // Unique identifier for this enclave instance
 	natsClient    *NATSClient
 	s3Client      *S3Client
 	vsockClient   *VsockClient
@@ -32,6 +33,19 @@ func NewParentProcess(cfg *Config) (*ParentProcess, error) {
 // Run starts the parent process and blocks until context is cancelled
 func (p *ParentProcess) Run(ctx context.Context) error {
 	log.Info().Msg("Parent process starting")
+
+	// Generate or use configured enclave ID
+	// This unique identifier is used for Control.enclave.{id}.* topic subscriptions
+	if p.config.EnclaveID != "" {
+		p.enclaveID = p.config.EnclaveID
+	} else {
+		var err error
+		p.enclaveID, err = GenerateEnclaveID(p.config.DevMode)
+		if err != nil {
+			return fmt.Errorf("failed to generate enclave ID: %w", err)
+		}
+	}
+	log.Info().Str("enclave_id", p.enclaveID).Msg("Enclave identity established")
 
 	// Start health server first so we can track connection states
 	p.healthSrv = NewHealthServer(p.config.Health.Port)
@@ -147,9 +161,13 @@ func (p *ParentProcess) routeNATSToEnclave(ctx context.Context) error {
 	// Subscribe to vault-related topics
 	// Namespace patterns:
 	//   OwnerSpace.{guid}.forVault.> - Messages from mobile apps (includes call signaling)
-	//   OwnerSpace.{guid}.control    - Control commands from admin
 	//   OwnerSpace.{guid}.eventTypes - Event type queries
 	//   MessageSpace.{guid}.forOwner.> - Connection messages
+	//
+	// Control topic patterns (multi-tenant architecture):
+	//   Control.global.>                    - Commands for ALL enclaves (handler updates, health checks)
+	//   Control.enclave.{enclave_id}.>      - Commands for THIS specific enclave
+	//   Control.user.{guid}.>               - User-specific commands (dynamically routed)
 	//
 	// Call signaling flows through OwnerSpace so the vault can:
 	//   - Verify caller identity
@@ -164,11 +182,25 @@ func (p *ParentProcess) routeNATSToEnclave(ctx context.Context) error {
 	}
 	log.Debug().Str("subject", "OwnerSpace.*.forVault.>").Msg("Subscribed to NATS")
 
-	// Subscribe to control commands
-	if err := p.natsClient.Subscribe("OwnerSpace.*.control", msgChan); err != nil {
-		return fmt.Errorf("failed to subscribe to OwnerSpace.*.control: %w", err)
+	// === Multi-tenant Control Topic Architecture ===
+	// Subscribe to global control commands (all enclaves)
+	if err := p.natsClient.Subscribe("Control.global.>", msgChan); err != nil {
+		return fmt.Errorf("failed to subscribe to Control.global.>: %w", err)
 	}
-	log.Debug().Str("subject", "OwnerSpace.*.control").Msg("Subscribed to NATS")
+	log.Debug().Str("subject", "Control.global.>").Msg("Subscribed to NATS (global control)")
+
+	// Subscribe to enclave-specific control commands (this enclave only)
+	enclaveControlSubject := fmt.Sprintf("Control.enclave.%s.>", p.enclaveID)
+	if err := p.natsClient.Subscribe(enclaveControlSubject, msgChan); err != nil {
+		return fmt.Errorf("failed to subscribe to %s: %w", enclaveControlSubject, err)
+	}
+	log.Debug().Str("subject", enclaveControlSubject).Msg("Subscribed to NATS (enclave-specific control)")
+
+	// Subscribe to user-specific control commands (for dynamic routing)
+	if err := p.natsClient.Subscribe("Control.user.>", msgChan); err != nil {
+		return fmt.Errorf("failed to subscribe to Control.user.>: %w", err)
+	}
+	log.Debug().Str("subject", "Control.user.>").Msg("Subscribed to NATS (user control routing)")
 
 	// Subscribe to event type queries
 	if err := p.natsClient.Subscribe("OwnerSpace.*.eventTypes", msgChan); err != nil {
@@ -188,7 +220,9 @@ func (p *ParentProcess) routeNATSToEnclave(ctx context.Context) error {
 	}
 	log.Debug().Str("subject", "enclave.>").Msg("Subscribed to NATS")
 
-	log.Info().Msg("Subscribed to OwnerSpace, MessageSpace, and enclave topics")
+	log.Info().
+		Str("enclave_id", p.enclaveID).
+		Msg("Subscribed to OwnerSpace, MessageSpace, Control, and enclave topics")
 
 	for {
 		select {

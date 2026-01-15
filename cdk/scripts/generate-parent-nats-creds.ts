@@ -125,6 +125,12 @@ async function generateParentCredentials(): Promise<{ creds: string; expiresAt: 
 
   // Parent process needs broad permissions to handle all vault traffic
   // It acts as a bridge between NATS and the enclave
+  //
+  // MULTI-TENANT CONTROL ARCHITECTURE:
+  // - Control.global.> : Commands for ALL enclaves (handler updates, health checks)
+  // - Control.enclave.> : Commands for specific enclaves (parent subscribes to Control.enclave.{id}.>)
+  // - Control.user.> : User-specific commands (dynamically routed by parent)
+  // - OwnerSpace.*.control : DEPRECATED - kept for backward compatibility
   const claims: NatsUserClaims = {
     jti,
     iat: now,
@@ -152,8 +158,13 @@ async function generateParentCredentials(): Promise<{ creds: string; expiresAt: 
         allow: [
           // Subscribe to messages from apps (includes call signaling)
           'OwnerSpace.*.forVault.>',
-          // Subscribe to control commands
-          'OwnerSpace.*.control',
+          // === Multi-tenant Control Topic Architecture ===
+          // Global control commands (all enclaves)
+          'Control.global.>',
+          // Enclave-specific control (parent subscribes to Control.enclave.{its_id}.>)
+          'Control.enclave.>',
+          // User-specific control commands (for dynamic routing)
+          'Control.user.>',
           // Subscribe to event type queries
           'OwnerSpace.*.eventTypes',
           // Subscribe to MessageSpace for connections

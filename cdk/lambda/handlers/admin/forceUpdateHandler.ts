@@ -16,7 +16,7 @@ const NATS_URL = process.env.NATS_URL || 'nats://localhost:4222';
  *
  * This endpoint:
  * 1. Verifies the submission is in 'deployed' status
- * 2. Publishes a Control.handlers.reload message to NATS
+ * 2. Publishes a Control.global.handlers.reload message to NATS
  * 3. Records the force update in audit log
  *
  * Note: NATS publishing is done via HTTP API since Lambda cannot use raw TCP NATS
@@ -76,7 +76,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         submission_id: submissionId,
         handler_id: submission.handler_id,
         version: submission.version,
-        nats_subject: 'Control.handlers.reload',
+        nats_subject: 'Control.global.handlers.reload',
         message: reloadMessage,
         triggered_by: adminEmail
       }
@@ -91,7 +91,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       submission_id: submissionId,
       handler_id: submission.handler_id,
       version: submission.version,
-      nats_subject: 'Control.handlers.reload',
+      nats_subject: 'Control.global.handlers.reload',
       message: reloadMessage,
       status: 'queued',
       message_text: 'Handler reload message queued for delivery to enclaves'

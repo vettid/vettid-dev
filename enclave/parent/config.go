@@ -12,6 +12,11 @@ type Config struct {
 	// DevMode enables development mode (TCP instead of vsock)
 	DevMode bool `yaml:"dev_mode"`
 
+	// EnclaveID is a unique identifier for this enclave instance
+	// Format: "{region}-{instance_id}-{timestamp}" or custom value
+	// Used for Control.enclave.{id}.* topic subscriptions
+	EnclaveID string `yaml:"enclave_id"`
+
 	// NATS configuration
 	NATS NATSConfig `yaml:"nats"`
 

@@ -357,15 +357,17 @@ export async function generateUserCredentials(
     ];
     subAllow = [
       `${ownerSpace}.forVault.>`,
-      `${ownerSpace}.control`,
       `${ownerSpace}.eventTypes`,
       `${messageSpace}.forOwner.>`,
       `${messageSpace}.call.>`,        // Vault-to-vault call signaling (inbound)
       'Broadcast.>',                    // Allow subscribing to admin broadcasts
     ];
   } else {
-    // Control: publish to control topic only
-    pubAllow = [`${ownerSpace}.control`];
+    // Control: publish to Control.* namespace
+    pubAllow = [
+      'Control.global.>',              // Global commands (handler reload, health checks)
+      `Control.user.${ownerSpace.replace('OwnerSpace.', '')}.>`,  // User-specific commands
+    ];
     subAllow = [];
   }
 

@@ -64,12 +64,10 @@ OwnerSpace.{member_guid}/
 ├── forApp.>          # Vault → App: Responses to app
 ├── eventTypes        # Vault → App: Handler definitions (read-only)
 ├── forServices.>     # Vault → Backend: Health/status messages
-├── control           # ⚠️ DEPRECATED - See Control Architecture section
 └── call.>            # Vault ↔ Vault: Call signaling
 ```
 
-> **⚠️ DEPRECATION NOTICE:** The `OwnerSpace.{member_guid}.control` topic is deprecated.
-> In the multi-tenant architecture, use the `Control.*` namespace instead.
+> **NOTE:** Control commands use the `Control.*` namespace.
 > See [Control Architecture (Multi-Tenant)](#control-architecture-multi-tenant) for details.
 
 ### MessageSpace Namespace
@@ -147,7 +145,7 @@ MessageSpace.{member_guid}/
     ],
     "sub": [
       "OwnerSpace.{member_guid}.forVault.>",
-      "OwnerSpace.{member_guid}.control",
+      "OwnerSpace.{member_guid}.eventTypes",
       "MessageSpace.{member_guid}.forOwner.>",
       "MessageSpace.{member_guid}.call.>",
       "Broadcast.>"
@@ -164,12 +162,15 @@ MessageSpace.{member_guid}/
 ```json
 {
   "permissions": {
-    "pub": ["OwnerSpace.*.control"]
+    "pub": [
+      "Control.global.>",
+      "Control.user.{member_guid}.>"
+    ]
   }
 }
 ```
 
-**Purpose:** Send control commands to any vault (backup, shutdown, health check, etc.)
+**Purpose:** Send control commands to enclaves (backup, shutdown, health check, etc.)
 
 ### Connection Token Permissions
 
@@ -293,11 +294,11 @@ All control commands SHOULD include:
 
 | Component | Status |
 |-----------|--------|
-| Global control topics | 🟡 Partially implemented |
-| Enclave-specific topics | 🔴 Not implemented |
-| User-specific routing | 🔴 Not implemented |
+| Global control topics | 🟢 Implemented |
+| Enclave-specific topics | 🟢 Implemented |
+| User-specific routing | 🟢 Implemented |
 | Signed commands | 🔴 Not implemented |
-| Idempotency cache | 🔴 Not implemented |
+| Idempotency cache | 🟢 Implemented (via replay prevention) |
 
 ---
 
@@ -639,14 +640,15 @@ All sensitive payloads use **X25519 + XChaCha20-Poly1305**:
 
 | Control | Status | Priority |
 |---------|--------|----------|
-| NATS message replay prevention | 🔴 Not Implemented | Critical |
-| Token revocation workflow | 🔴 Not Implemented | Critical |
-| Parent credential rotation | 🔴 Not Implemented | High |
+| NATS message replay prevention | 🟢 Implemented | Critical |
+| Token revocation workflow | 🟢 Implemented | Critical |
+| Parent credential rotation | 🟢 Implemented (30-day lifetime) | High |
+| Multi-tenant control topics | 🟢 Implemented | High |
 | Bootstrap attestation binding | 🔴 Not Implemented | High |
 | Signed control commands | 🔴 Not Implemented | Medium |
 | Device attestation binding | 🔴 Not Implemented | Medium |
-| Legacy seed migration | 🟡 Partial | Medium |
-| Rate limiting on NATS bootstrap | 🔴 Not Implemented | Low |
+| Legacy seed migration | 🟢 Complete (removed) | Medium |
+| Rate limiting on NATS bootstrap | 🟢 Implemented | Low |
 
 ### Credential Lifecycle Best Practices
 
@@ -656,7 +658,7 @@ All sensitive payloads use **X25519 + XChaCha20-Poly1305**:
 |-----------------|---------|-------------|-----------|
 | App credentials | 24 hours | 24 hours | ✅ Appropriate |
 | Vault credentials | 24 hours | 24 hours | ✅ Appropriate |
-| Parent credentials | 1 year | 30 days | ⚠️ Too long |
+| Parent credentials | 30 days | 30 days | ✅ Appropriate |
 | Bootstrap credentials | 1 hour | 1 hour | ✅ Appropriate |
 | Control credentials | 1 hour | 1 hour | ✅ Appropriate |
 
@@ -767,18 +769,6 @@ All security-sensitive NATS operations MUST be logged:
 | `drain` | Enclave | `Control.enclave.{id}.drain` | Drain connections from enclave |
 | `backup.request` | User | `Control.user.{guid}.backup.request` | Backup user data |
 | `key.rotate` | User | `Control.user.{guid}.key.rotate` | Rotate user encryption keys |
-
-### Legacy Control Commands (DEPRECATED)
-
-> ⚠️ The following patterns are deprecated and should not be used in new code.
-
-| Command | Legacy Topic | New Topic |
-|---------|--------------|-----------|
-| `prepare_backup` | `OwnerSpace.{guid}.control` | `Control.user.{guid}.backup.prepare` |
-| `execute_backup` | `OwnerSpace.{guid}.control` | `Control.user.{guid}.backup.execute` |
-| `update_handler` | `Control.handlers.reload` | `Control.global.handlers.reload` |
-| `health_check` | `OwnerSpace.{guid}.control` | `Control.global.health.request` |
-| `shutdown` | `OwnerSpace.{guid}.control` | `Control.global.shutdown` |
 
 ---
 
