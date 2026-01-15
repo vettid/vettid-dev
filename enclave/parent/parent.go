@@ -465,20 +465,31 @@ func (p *ParentProcess) handleHandlerRequest(ctx context.Context, request *Encla
 }
 
 // parseAttestationRequest parses the JSON attestation request to extract the nonce
+// Handles both flat format {"nonce": "..."} and nested format {"payload": {"nonce": "..."}}
 func (p *ParentProcess) parseAttestationRequest(data []byte, msg *EnclaveMessage) error {
-	var req struct {
-		Nonce string `json:"nonce"` // Base64-encoded nonce
+	// Try nested format first (Android sends {"type": "...", "payload": {"nonce": "..."}})
+	var nestedReq struct {
+		Payload struct {
+			Nonce string `json:"nonce"`
+		} `json:"payload"`
+		Nonce string `json:"nonce"` // Also check top-level for flat format
 	}
 
-	if err := json.Unmarshal(data, &req); err != nil {
+	if err := json.Unmarshal(data, &nestedReq); err != nil {
 		return fmt.Errorf("failed to unmarshal attestation request: %w", err)
 	}
 
-	if req.Nonce == "" {
-		return fmt.Errorf("nonce is required in attestation request")
+	// Check nested payload first, then fall back to top-level
+	nonceStr := nestedReq.Payload.Nonce
+	if nonceStr == "" {
+		nonceStr = nestedReq.Nonce
 	}
 
-	nonce, err := base64.StdEncoding.DecodeString(req.Nonce)
+	if nonceStr == "" {
+		return fmt.Errorf("nonce is required in attestation request (checked payload.nonce and nonce)")
+	}
+
+	nonce, err := base64.StdEncoding.DecodeString(nonceStr)
 	if err != nil {
 		return fmt.Errorf("failed to decode nonce: %w", err)
 	}
