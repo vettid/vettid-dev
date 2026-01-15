@@ -25,6 +25,14 @@
     <priority>0.8</priority>
   </url>
 
+  <!-- PCR Verification Page (Public) -->
+  <url>
+    <loc>https://vettid.dev/pcr</loc>
+    <lastmod>2026-01-15</lastmod>
+    <changefreq>daily</changefreq>
+    <priority>0.7</priority>
+  </url>
+
   <!-- Note: Account, admin, and auth pages are excluded as they require authentication -->
 
 </urlset>

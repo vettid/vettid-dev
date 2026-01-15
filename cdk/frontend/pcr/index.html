@@ -1,0 +1,928 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1" name="viewport"/>
+<title>PCR Verification - VettID</title>
+<meta name="description" content="Verify VettID enclave PCR values. Compare the values shown in your app against our official published values."/>
+<link rel="icon" type="image/jpeg" href="/assets/favicon.ico"/>
+<link rel="stylesheet" href="/assets/fonts.css">
+<style>
+  :root {
+    --accent: #ffc125;
+    --accent-hover: #ffd940;
+    --accent-dark: #a68319;
+    --accent-muted: rgba(255, 193, 37, 0.15);
+    --bg-dark: #0a0908;
+    --bg-pure: #000;
+    --bg-card: #12110f;
+    --bg-elevated: #1a1816;
+    --text: #f5f5f4;
+    --text-muted: #a8a29e;
+    --text-subtle: #78716c;
+    --border-accent: rgba(255, 193, 37, 0.2);
+    --success: #22c55e;
+    --success-muted: rgba(34, 197, 94, 0.15);
+    --warning: #f59e0b;
+    --warning-muted: rgba(245, 158, 11, 0.15);
+    --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+    --duration-normal: 200ms;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg-dark);
+    color: var(--text);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    min-height: 100vh;
+  }
+
+  body::before {
+    content: '';
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    opacity: 0.025;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+    z-index: -1;
+  }
+
+  h1, h2, h3, h4 {
+    font-family: 'Plus Jakarta Sans', -apple-system, sans-serif;
+  }
+
+  /* Header */
+  header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 16px 32px;
+    background: rgba(0,0,0,0.9);
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 100;
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid rgba(255,193,37,0.1);
+  }
+
+  .header-logo {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    text-decoration: none;
+  }
+
+  .header-logo img {
+    height: 40px;
+    width: 40px;
+    border-radius: 8px;
+  }
+
+  .header-logo span {
+    font-size: 1.4rem;
+    font-weight: 700;
+    color: var(--accent);
+    letter-spacing: 2px;
+  }
+
+  /* Main content */
+  main {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 100px 24px 60px;
+  }
+
+  .page-header {
+    text-align: center;
+    margin-bottom: 48px;
+  }
+
+  .page-header h1 {
+    font-size: 2.5rem;
+    font-weight: 700;
+    margin-bottom: 16px;
+    background: linear-gradient(135deg, var(--text) 0%, var(--text-muted) 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .page-header p {
+    color: var(--text-muted);
+    font-size: 1.1rem;
+    max-width: 600px;
+    margin: 0 auto;
+  }
+
+  /* Status indicator */
+  .status-bar {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    padding: 16px 24px;
+    background: var(--bg-card);
+    border-radius: 12px;
+    margin-bottom: 32px;
+    border: 1px solid var(--border-accent);
+  }
+
+  .status-dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--success);
+    animation: pulse 2s infinite;
+  }
+
+  .status-dot.loading {
+    background: var(--warning);
+  }
+
+  .status-dot.error {
+    background: #ef4444;
+    animation: none;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+
+  .status-text {
+    font-weight: 500;
+  }
+
+  /* PCR Card */
+  .pcr-card {
+    background: var(--bg-card);
+    border-radius: 16px;
+    padding: 32px;
+    margin-bottom: 24px;
+    border: 1px solid var(--border-accent);
+    position: relative;
+    overflow: hidden;
+  }
+
+  .pcr-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 4px;
+    background: linear-gradient(90deg, var(--accent) 0%, var(--accent-dark) 100%);
+  }
+
+  .pcr-card.previous::before {
+    background: linear-gradient(90deg, var(--text-subtle) 0%, var(--text-subtle) 100%);
+  }
+
+  .pcr-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 24px;
+    flex-wrap: wrap;
+    gap: 16px;
+  }
+
+  .pcr-card-title {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .pcr-card-title h2 {
+    font-size: 1.3rem;
+    font-weight: 600;
+  }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  .badge-current {
+    background: var(--success-muted);
+    color: var(--success);
+  }
+
+  .badge-previous {
+    background: var(--warning-muted);
+    color: var(--warning);
+  }
+
+  .pcr-meta {
+    text-align: right;
+    color: var(--text-muted);
+    font-size: 0.9rem;
+  }
+
+  .pcr-meta strong {
+    color: var(--text);
+  }
+
+  /* PCR Values */
+  .pcr-values {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .pcr-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 16px;
+  }
+
+  .pcr-label {
+    flex-shrink: 0;
+    width: 60px;
+    padding: 8px 0;
+    font-weight: 600;
+    color: var(--accent);
+    font-family: 'Plus Jakarta Sans', sans-serif;
+  }
+
+  .pcr-value {
+    flex: 1;
+    position: relative;
+  }
+
+  .pcr-value code {
+    display: block;
+    padding: 12px 16px;
+    background: var(--bg-elevated);
+    border-radius: 8px;
+    font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+    font-size: 0.85rem;
+    word-break: break-all;
+    color: var(--text);
+    border: 1px solid rgba(255,255,255,0.05);
+    cursor: pointer;
+    transition: background var(--duration-normal);
+  }
+
+  .pcr-value code:hover {
+    background: var(--bg-dark);
+  }
+
+  .pcr-value .copy-hint {
+    position: absolute;
+    right: 12px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 0.75rem;
+    color: var(--text-subtle);
+    opacity: 0;
+    transition: opacity var(--duration-normal);
+  }
+
+  .pcr-value:hover .copy-hint {
+    opacity: 1;
+  }
+
+  .pcr-value.copied code {
+    background: var(--success-muted);
+  }
+
+  .pcr-value.copied .copy-hint {
+    opacity: 1;
+    color: var(--success);
+  }
+
+  /* Info sections */
+  .info-section {
+    background: var(--bg-card);
+    border-radius: 16px;
+    padding: 32px;
+    margin-bottom: 24px;
+    border: 1px solid var(--border-accent);
+  }
+
+  .info-section h3 {
+    font-size: 1.2rem;
+    margin-bottom: 16px;
+    color: var(--accent);
+  }
+
+  .info-section p {
+    color: var(--text-muted);
+    margin-bottom: 12px;
+  }
+
+  .info-section ul {
+    color: var(--text-muted);
+    margin-left: 24px;
+    margin-bottom: 16px;
+  }
+
+  .info-section li {
+    margin-bottom: 8px;
+  }
+
+  .info-section strong {
+    color: var(--text);
+  }
+
+  .info-section code {
+    background: var(--bg-elevated);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: 'SF Mono', monospace;
+    font-size: 0.9em;
+  }
+
+  .info-section a {
+    color: var(--accent);
+    text-decoration: none;
+  }
+
+  .info-section a:hover {
+    text-decoration: underline;
+  }
+
+  /* Steps */
+  .verify-steps {
+    counter-reset: step;
+  }
+
+  .verify-step {
+    display: flex;
+    gap: 16px;
+    margin-bottom: 20px;
+    align-items: flex-start;
+  }
+
+  .step-number {
+    flex-shrink: 0;
+    width: 32px;
+    height: 32px;
+    background: var(--accent);
+    color: #000;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 0.9rem;
+  }
+
+  .verify-step-content {
+    padding-top: 4px;
+  }
+
+  .verify-step-content h4 {
+    font-size: 1rem;
+    margin-bottom: 4px;
+    color: var(--text);
+  }
+
+  .verify-step-content p {
+    color: var(--text-muted);
+    font-size: 0.95rem;
+    margin: 0;
+  }
+
+  /* QR Code section */
+  .qr-section {
+    text-align: center;
+    padding: 24px;
+    background: var(--bg-elevated);
+    border-radius: 12px;
+    margin-top: 24px;
+  }
+
+  .qr-section h4 {
+    margin-bottom: 16px;
+    font-size: 1rem;
+  }
+
+  #qr-code {
+    background: white;
+    padding: 16px;
+    border-radius: 12px;
+    display: inline-block;
+  }
+
+  #qr-code canvas {
+    display: block;
+  }
+
+  .qr-hint {
+    margin-top: 12px;
+    font-size: 0.85rem;
+    color: var(--text-subtle);
+  }
+
+  /* Footer */
+  footer {
+    text-align: center;
+    padding: 32px 24px;
+    color: var(--text-subtle);
+    font-size: 0.9rem;
+    border-top: 1px solid var(--border-accent);
+    margin-top: 48px;
+  }
+
+  footer a {
+    color: var(--accent);
+    text-decoration: none;
+  }
+
+  footer a:hover {
+    text-decoration: underline;
+  }
+
+  /* Loading state */
+  .skeleton {
+    background: linear-gradient(90deg, var(--bg-elevated) 25%, var(--bg-card) 50%, var(--bg-elevated) 75%);
+    background-size: 200% 100%;
+    animation: shimmer 1.5s infinite;
+    border-radius: 8px;
+    height: 48px;
+  }
+
+  @keyframes shimmer {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+  }
+
+  /* Error state */
+  .error-message {
+    background: rgba(239, 68, 68, 0.1);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    color: #fca5a5;
+    padding: 16px 24px;
+    border-radius: 12px;
+    text-align: center;
+  }
+
+  /* Responsive */
+  @media (max-width: 640px) {
+    header {
+      padding: 12px 16px;
+    }
+
+    .header-logo span {
+      font-size: 1.2rem;
+    }
+
+    main {
+      padding: 80px 16px 40px;
+    }
+
+    .page-header h1 {
+      font-size: 1.8rem;
+    }
+
+    .pcr-card {
+      padding: 20px;
+    }
+
+    .pcr-row {
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .pcr-label {
+      width: auto;
+      padding: 0;
+    }
+
+    .pcr-value code {
+      font-size: 0.75rem;
+      padding: 10px 12px;
+    }
+
+    .pcr-card-header {
+      flex-direction: column;
+    }
+
+    .pcr-meta {
+      text-align: left;
+    }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <a href="/" class="header-logo">
+    <img src="/assets/vettid-logo.png" alt="VettID Logo">
+    <span>VETTID</span>
+  </a>
+</header>
+
+<main>
+  <div class="page-header">
+    <h1>Enclave PCR Verification</h1>
+    <p>Compare the PCR values shown in your VettID app against our official published values. If they match, you're communicating with an authentic VettID enclave.</p>
+  </div>
+
+  <div class="status-bar" id="status-bar">
+    <div class="status-dot loading" id="status-dot"></div>
+    <span class="status-text" id="status-text">Loading PCR values...</span>
+  </div>
+
+  <div id="pcr-container">
+    <!-- Current PCRs -->
+    <div class="pcr-card" id="current-pcr-card">
+      <div class="pcr-card-header">
+        <div class="pcr-card-title">
+          <h2>Current PCR Values</h2>
+          <span class="badge badge-current">Active</span>
+        </div>
+        <div class="pcr-meta" id="current-meta">
+          <div>Version: <strong id="current-version">--</strong></div>
+          <div>Updated: <strong id="current-updated">--</strong></div>
+        </div>
+      </div>
+      <div class="pcr-values" id="current-pcr-values">
+        <div class="pcr-row">
+          <div class="pcr-label">PCR0</div>
+          <div class="pcr-value"><div class="skeleton"></div></div>
+        </div>
+        <div class="pcr-row">
+          <div class="pcr-label">PCR1</div>
+          <div class="pcr-value"><div class="skeleton"></div></div>
+        </div>
+        <div class="pcr-row">
+          <div class="pcr-label">PCR2</div>
+          <div class="pcr-value"><div class="skeleton"></div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Previous PCRs (shown during transitions) -->
+    <div class="pcr-card previous" id="previous-pcr-card" style="display: none;">
+      <div class="pcr-card-header">
+        <div class="pcr-card-title">
+          <h2>Previous PCR Values</h2>
+          <span class="badge badge-previous">Transition</span>
+        </div>
+        <div class="pcr-meta" id="previous-meta">
+          <div>Version: <strong id="previous-version">--</strong></div>
+          <div>Valid until: <strong id="previous-valid-until">--</strong></div>
+        </div>
+      </div>
+      <div class="pcr-values" id="previous-pcr-values"></div>
+    </div>
+  </div>
+
+  <!-- What are PCRs -->
+  <div class="info-section">
+    <h3>What are PCR values?</h3>
+    <p>
+      PCRs (Platform Configuration Registers) are cryptographic measurements generated by AWS Nitro Enclaves.
+      They uniquely identify the exact code running inside the enclave.
+    </p>
+    <ul>
+      <li><strong>PCR0</strong> - Hash of the enclave image (changes with any code update)</li>
+      <li><strong>PCR1</strong> - Hash of the Linux kernel and bootstrap</li>
+      <li><strong>PCR2</strong> - Hash of the application code</li>
+    </ul>
+    <p>
+      These values are generated by AWS hardware and cannot be faked. If the PCRs in your app match
+      the values shown here, you can be confident you're communicating with authentic VettID infrastructure.
+    </p>
+  </div>
+
+  <!-- How to verify -->
+  <div class="info-section">
+    <h3>How to verify</h3>
+    <div class="verify-steps">
+      <div class="verify-step">
+        <div class="step-number">1</div>
+        <div class="verify-step-content">
+          <h4>Open the VettID app</h4>
+          <p>Go to Settings > Security > Enclave Verification</p>
+        </div>
+      </div>
+      <div class="verify-step">
+        <div class="step-number">2</div>
+        <div class="verify-step-content">
+          <h4>View the PCR values</h4>
+          <p>The app displays the PCR0 value from the last attestation</p>
+        </div>
+      </div>
+      <div class="verify-step">
+        <div class="step-number">3</div>
+        <div class="verify-step-content">
+          <h4>Compare with this page</h4>
+          <p>The PCR0 value should match one of the values shown above (current or previous during updates)</p>
+        </div>
+      </div>
+      <div class="verify-step">
+        <div class="step-number">4</div>
+        <div class="verify-step-content">
+          <h4>If they don't match</h4>
+          <p>Do not proceed. Contact support@vettid.dev immediately.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="qr-section">
+      <h4>Scan to open this page on your phone</h4>
+      <div id="qr-code"></div>
+      <p class="qr-hint">Or visit vettid.dev/pcr</p>
+    </div>
+  </div>
+
+  <!-- Technical details -->
+  <div class="info-section">
+    <h3>Technical Details</h3>
+    <p>
+      PCR values are fetched from our signed manifest at <code>/attestation/pcr-manifest</code>.
+      The manifest is signed with VettID's ECDSA P-256 key, and the signature is verified by your app
+      before trusting the values.
+    </p>
+    <p>
+      During enclave updates, both current and previous PCR values are valid for a transition period
+      (typically 48 hours). This ensures uninterrupted service during rolling deployments.
+    </p>
+    <p>
+      For developers: See our <a href="https://github.com/mesmerverse/vettid-dev/blob/main/docs/PCR-HANDLING-GUIDE.md">PCR Handling Guide</a>
+      for complete technical documentation.
+    </p>
+  </div>
+</main>
+
+<footer>
+  <p>
+    <a href="/">VettID</a> &middot;
+    <a href="/account">My Account</a> &middot;
+    <a href="mailto:support@vettid.dev">Support</a>
+  </p>
+  <p style="margin-top: 8px;">Last refreshed: <span id="last-refresh">--</span></p>
+</footer>
+
+<!-- QR Code library -->
+<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+
+<script>
+(function() {
+  'use strict';
+
+  // PCR manifest endpoint - served from CloudFront
+  const PCR_ENDPOINT = 'https://pcr-manifest.vettid.dev/pcr-manifest.json';
+
+  // DOM elements
+  const statusDot = document.getElementById('status-dot');
+  const statusText = document.getElementById('status-text');
+  const currentPcrValues = document.getElementById('current-pcr-values');
+  const currentVersion = document.getElementById('current-version');
+  const currentUpdated = document.getElementById('current-updated');
+  const previousPcrCard = document.getElementById('previous-pcr-card');
+  const previousPcrValues = document.getElementById('previous-pcr-values');
+  const previousVersion = document.getElementById('previous-version');
+  const previousValidUntil = document.getElementById('previous-valid-until');
+  const lastRefresh = document.getElementById('last-refresh');
+
+  // Validate PCR value format (96 hex characters)
+  function isValidPcr(value) {
+    return typeof value === 'string' && /^[a-fA-F0-9]{96}$/.test(value);
+  }
+
+  // Format date for display
+  function formatDate(dateString) {
+    if (!dateString) return '--';
+    try {
+      const date = new Date(dateString);
+      if (isNaN(date.getTime())) return '--';
+      return date.toLocaleString('en-US', {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        timeZoneName: 'short'
+      });
+    } catch (e) {
+      return '--';
+    }
+  }
+
+  // Create PCR row using safe DOM methods
+  function createPcrRow(label, value) {
+    // Validate the value
+    if (!isValidPcr(value)) {
+      value = 'Invalid PCR value';
+    }
+
+    const row = document.createElement('div');
+    row.className = 'pcr-row';
+
+    const labelDiv = document.createElement('div');
+    labelDiv.className = 'pcr-label';
+    labelDiv.textContent = label;
+
+    const valueDiv = document.createElement('div');
+    valueDiv.className = 'pcr-value';
+
+    const code = document.createElement('code');
+    code.textContent = value;
+
+    const copyHint = document.createElement('span');
+    copyHint.className = 'copy-hint';
+    copyHint.textContent = 'Click to copy';
+
+    valueDiv.appendChild(code);
+    valueDiv.appendChild(copyHint);
+
+    // Add click to copy (only if valid PCR)
+    if (isValidPcr(value)) {
+      valueDiv.addEventListener('click', async function() {
+        try {
+          await navigator.clipboard.writeText(value);
+          valueDiv.classList.add('copied');
+          copyHint.textContent = 'Copied!';
+          setTimeout(function() {
+            valueDiv.classList.remove('copied');
+            copyHint.textContent = 'Click to copy';
+          }, 2000);
+        } catch (err) {
+          console.error('Failed to copy:', err);
+        }
+      });
+    }
+
+    row.appendChild(labelDiv);
+    row.appendChild(valueDiv);
+
+    return row;
+  }
+
+  // Clear and render PCR values using safe DOM methods
+  function renderPcrs(pcrSets) {
+    if (!Array.isArray(pcrSets)) {
+      throw new Error('Invalid PCR data format');
+    }
+
+    // Find current and previous
+    const current = pcrSets.find(function(p) { return p.is_current; });
+    const previous = pcrSets.find(function(p) { return !p.is_current && p.valid_until; });
+
+    if (!current) {
+      throw new Error('No current PCR set found');
+    }
+
+    // Clear and render current PCRs
+    while (currentPcrValues.firstChild) {
+      currentPcrValues.removeChild(currentPcrValues.firstChild);
+    }
+    currentPcrValues.appendChild(createPcrRow('PCR0', current.pcr0));
+    currentPcrValues.appendChild(createPcrRow('PCR1', current.pcr1));
+    currentPcrValues.appendChild(createPcrRow('PCR2', current.pcr2));
+    currentVersion.textContent = String(current.id || '--');
+    currentUpdated.textContent = formatDate(current.valid_from);
+
+    // Render previous PCRs if in transition
+    if (previous) {
+      previousPcrCard.style.display = 'block';
+      while (previousPcrValues.firstChild) {
+        previousPcrValues.removeChild(previousPcrValues.firstChild);
+      }
+      previousPcrValues.appendChild(createPcrRow('PCR0', previous.pcr0));
+      previousPcrValues.appendChild(createPcrRow('PCR1', previous.pcr1));
+      previousPcrValues.appendChild(createPcrRow('PCR2', previous.pcr2));
+      previousVersion.textContent = String(previous.id || '--');
+      previousValidUntil.textContent = formatDate(previous.valid_until);
+    } else {
+      previousPcrCard.style.display = 'none';
+    }
+  }
+
+  // Show error state using safe DOM methods
+  function showError(message) {
+    while (currentPcrValues.firstChild) {
+      currentPcrValues.removeChild(currentPcrValues.firstChild);
+    }
+
+    const errorDiv = document.createElement('div');
+    errorDiv.className = 'error-message';
+
+    const mainText = document.createElement('span');
+    mainText.textContent = 'Unable to fetch PCR values. Please try again later.';
+
+    const br = document.createElement('br');
+
+    const smallText = document.createElement('small');
+    smallText.textContent = message;
+
+    errorDiv.appendChild(mainText);
+    errorDiv.appendChild(br);
+    errorDiv.appendChild(smallText);
+
+    currentPcrValues.appendChild(errorDiv);
+  }
+
+  // Update status
+  function setStatus(status, message) {
+    statusDot.className = 'status-dot ' + status;
+    statusText.textContent = message;
+  }
+
+  // Fetch PCRs
+  async function fetchPcrs() {
+    try {
+      setStatus('loading', 'Fetching PCR values...');
+
+      const response = await fetch(PCR_ENDPOINT, {
+        headers: {
+          'Accept': 'application/json'
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error('HTTP ' + response.status + ': ' + response.statusText);
+      }
+
+      const data = await response.json();
+
+      if (!data.pcr_sets || data.pcr_sets.length === 0) {
+        throw new Error('No PCR sets in response');
+      }
+
+      renderPcrs(data.pcr_sets);
+      setStatus('', 'PCR values verified and up to date');
+      lastRefresh.textContent = new Date().toLocaleTimeString();
+
+    } catch (error) {
+      console.error('Failed to fetch PCRs:', error);
+      setStatus('error', 'Failed to load PCR values');
+      showError(error.message);
+    }
+  }
+
+  // Generate QR code
+  function generateQrCode() {
+    var qrContainer = document.getElementById('qr-code');
+    if (typeof QRCode !== 'undefined') {
+      QRCode.toCanvas(document.createElement('canvas'), 'https://vettid.dev/pcr', {
+        width: 150,
+        margin: 0,
+        color: {
+          dark: '#000000',
+          light: '#ffffff'
+        }
+      }, function(error, canvas) {
+        if (error) {
+          console.error('QR code error:', error);
+          var errorText = document.createElement('p');
+          errorText.style.color = 'var(--text-subtle)';
+          errorText.textContent = 'QR code unavailable';
+          while (qrContainer.firstChild) {
+            qrContainer.removeChild(qrContainer.firstChild);
+          }
+          qrContainer.appendChild(errorText);
+        } else {
+          while (qrContainer.firstChild) {
+            qrContainer.removeChild(qrContainer.firstChild);
+          }
+          qrContainer.appendChild(canvas);
+        }
+      });
+    }
+  }
+
+  // Initialize
+  function init() {
+    fetchPcrs();
+    generateQrCode();
+
+    // Auto-refresh every 5 minutes
+    setInterval(fetchPcrs, 5 * 60 * 1000);
+  }
+
+  // Run on DOM ready
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+})();
+</script>
+
+</body>
+</html>

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"golang.org/x/crypto/argon2"
+	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/crypto/hkdf"
 )
@@ -22,6 +23,15 @@ const (
 	Argon2idMemory  = 262144 // 256 MB
 	Argon2idThreads = 4
 	Argon2idKeyLen  = 32
+)
+
+// ECIES parameters (matching Android CryptoManager)
+// These MUST match the mobile app's HKDF parameters exactly
+const (
+	// HKDF salt - cross-platform constant for key derivation
+	ECIESHKDFSalt = "VettID-HKDF-Salt-v1"
+	// HKDF info/context - used for enclave PIN/data encryption
+	ECIESHKDFInfo = "enclave-encryption-v1"
 )
 
 // generateIdentityKeypair generates an Ed25519 keypair for vault identity
@@ -99,10 +109,12 @@ func currentTimestamp() int64 {
 	return time.Now().Unix()
 }
 
-// --- ECIES Encryption/Decryption (X25519 + AES-GCM) ---
+// --- ECIES Encryption/Decryption (X25519 + ChaCha20-Poly1305) ---
+// Parameters match Android CryptoManager.encryptToPublicKey()
 
 // decryptWithECIES decrypts data using the vault's ECIES private key
 // Format: ephemeral_pubkey (32) || nonce (12) || encrypted_data
+// Uses ChaCha20-Poly1305 with HKDF key derivation matching Android
 // SECURITY: Zeroizes all intermediate key material after use
 func decryptWithECIES(privateKey []byte, ciphertext []byte) ([]byte, error) {
 	if len(ciphertext) < 32+12 {
@@ -121,28 +133,24 @@ func decryptWithECIES(privateKey []byte, ciphertext []byte) ([]byte, error) {
 	// SECURITY: Zero shared secret after use
 	defer zeroBytes(sharedSecret)
 
-	// Derive AES key using HKDF-SHA256
-	info := append([]byte("vettid-ecies-encryption"), ephemeralPubKey...)
-	hkdfReader := hkdf.New(sha256.New, sharedSecret, nil, info)
-	aesKey := make([]byte, 32)
-	if _, err := io.ReadFull(hkdfReader, aesKey); err != nil {
+	// Derive encryption key using HKDF-SHA256 with Android-compatible parameters
+	// Salt: "VettID-HKDF-Salt-v1" (cross-platform constant)
+	// Info: "enclave-encryption-v1" (context for this encryption type)
+	hkdfReader := hkdf.New(sha256.New, sharedSecret, []byte(ECIESHKDFSalt), []byte(ECIESHKDFInfo))
+	encKey := make([]byte, 32)
+	if _, err := io.ReadFull(hkdfReader, encKey); err != nil {
 		return nil, fmt.Errorf("key derivation failed: %w", err)
 	}
-	// SECURITY: Zero AES key after use
-	defer zeroBytes(aesKey)
+	// SECURITY: Zero encryption key after use
+	defer zeroBytes(encKey)
 
-	// Decrypt using AES-256-GCM
-	block, err := aes.NewCipher(aesKey)
+	// Decrypt using ChaCha20-Poly1305 (matching Android's chaChaEncrypt)
+	aead, err := chacha20poly1305.New(encKey)
 	if err != nil {
 		return nil, fmt.Errorf("cipher creation failed: %w", err)
 	}
 
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, fmt.Errorf("GCM creation failed: %w", err)
-	}
-
-	plaintext, err := gcm.Open(nil, nonce, encrypted, nil)
+	plaintext, err := aead.Open(nil, nonce, encrypted, nil)
 	if err != nil {
 		return nil, fmt.Errorf("decryption failed: %w", err)
 	}
@@ -152,6 +160,7 @@ func decryptWithECIES(privateKey []byte, ciphertext []byte) ([]byte, error) {
 
 // encryptWithECIES encrypts data using a recipient's ECIES public key
 // Returns: ephemeral_pubkey (32) || nonce (12) || encrypted_data
+// Uses ChaCha20-Poly1305 with HKDF key derivation matching Android
 // SECURITY: Zeroizes all intermediate key material after use
 func encryptWithECIES(recipientPubKey []byte, plaintext []byte) ([]byte, error) {
 	// Generate ephemeral keypair
@@ -175,33 +184,29 @@ func encryptWithECIES(recipientPubKey []byte, plaintext []byte) ([]byte, error) 
 	// SECURITY: Zero shared secret after use
 	defer zeroBytes(sharedSecret)
 
-	// Derive AES key using HKDF-SHA256
-	info := append([]byte("vettid-ecies-encryption"), ephemeralPublic...)
-	hkdfReader := hkdf.New(sha256.New, sharedSecret, nil, info)
-	aesKey := make([]byte, 32)
-	if _, err := io.ReadFull(hkdfReader, aesKey); err != nil {
+	// Derive encryption key using HKDF-SHA256 with Android-compatible parameters
+	// Salt: "VettID-HKDF-Salt-v1" (cross-platform constant)
+	// Info: "enclave-encryption-v1" (context for this encryption type)
+	hkdfReader := hkdf.New(sha256.New, sharedSecret, []byte(ECIESHKDFSalt), []byte(ECIESHKDFInfo))
+	encKey := make([]byte, 32)
+	if _, err := io.ReadFull(hkdfReader, encKey); err != nil {
 		return nil, fmt.Errorf("key derivation failed: %w", err)
 	}
-	// SECURITY: Zero AES key after use
-	defer zeroBytes(aesKey)
+	// SECURITY: Zero encryption key after use
+	defer zeroBytes(encKey)
 
-	// Encrypt using AES-256-GCM
-	block, err := aes.NewCipher(aesKey)
+	// Encrypt using ChaCha20-Poly1305 (matching Android's chaChaEncrypt)
+	aead, err := chacha20poly1305.New(encKey)
 	if err != nil {
 		return nil, fmt.Errorf("cipher creation failed: %w", err)
 	}
 
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, fmt.Errorf("GCM creation failed: %w", err)
-	}
-
-	nonce := make([]byte, gcm.NonceSize())
+	nonce := make([]byte, aead.NonceSize())
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, fmt.Errorf("failed to generate nonce: %w", err)
 	}
 
-	ciphertext := gcm.Seal(nil, nonce, plaintext, nil)
+	ciphertext := aead.Seal(nil, nonce, plaintext, nil)
 
 	// Format: ephemeral_pubkey || nonce || ciphertext
 	result := make([]byte, 0, 32+len(nonce)+len(ciphertext))
