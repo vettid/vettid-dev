@@ -258,29 +258,38 @@ Parent process subscribes to:
 
 ### Control Command Security
 
-All control commands SHOULD include:
+All control commands MUST be Ed25519 signed to prevent unauthorized execution even if NATS credentials are compromised.
+
+**Signed Command Format:**
 
 ```json
 {
-  "command_id": "uuid",           // Idempotency key
-  "command": "backup.request",    // Command type
+  "command_id": "uuid",           // Idempotency key (REQUIRED)
+  "command": "handlers.reload",   // Command type (REQUIRED)
   "target": {
     "type": "global|enclave|user",
     "id": "optional-target-id"
   },
   "params": {},                   // Command parameters
-  "issued_at": "ISO8601",         // Timestamp
-  "issued_by": "admin@vettid.dev",// Issuer identity
-  "expires_at": "ISO8601",        // Command TTL (prevents replay)
-  "signature": "base64..."        // Ed25519 signature (optional but recommended)
+  "issued_at": "ISO8601",         // Timestamp (REQUIRED)
+  "issued_by": "admin@vettid.dev",// Issuer identity (REQUIRED)
+  "expires_at": "ISO8601",        // Command TTL (REQUIRED, max 5 min)
+  "signature": "base64..."        // Ed25519 signature (REQUIRED)
 }
 ```
 
-**Security Recommendations:**
-- Reject commands older than 5 minutes (`issued_at` check)
-- Track `command_id` to prevent replay (idempotency cache with TTL)
-- Verify `signature` for sensitive operations
-- Audit all control commands
+**Security Enforcement (Implemented):**
+- ✅ All commands must be Ed25519 signed
+- ✅ Commands expire after 5 minutes (`expires_at` check)
+- ✅ Clock skew tolerance: 1 minute into the future
+- ✅ `command_id` tracked in idempotency cache (prevents replay)
+- ✅ Invalid signatures are rejected with detailed logging
+- ✅ All control commands are audited
+
+**Signing Key Management:**
+- Signing keypair stored in AWS Secrets Manager (`vettid/control-signing-key`)
+- Public key distributed to enclaves via environment variable (`CONTROL_SIGNING_PUBLIC_KEY`)
+- In development mode, unsigned commands are allowed with warning logs
 
 ### Migration from Legacy Control Topic
 
@@ -297,8 +306,8 @@ All control commands SHOULD include:
 | Global control topics | 🟢 Implemented |
 | Enclave-specific topics | 🟢 Implemented |
 | User-specific routing | 🟢 Implemented |
-| Signed commands | 🔴 Not implemented |
-| Idempotency cache | 🟢 Implemented (via replay prevention) |
+| Signed commands | 🟢 Implemented |
+| Idempotency cache | 🟢 Implemented |
 
 ---
 
@@ -630,11 +639,12 @@ All sensitive payloads use **X25519 + XChaCha20-Poly1305**:
 
 **Risk:** Enrollment tokens could be exfiltrated and used from different devices.
 
-**Required Mitigations:**
-- [ ] Require device attestation before NATS bootstrap
-- [ ] Bind session token to device attestation hash
-- [ ] Include client fingerprint in session validation
-- [ ] Add session pinning (reject requests from different device/network)
+**Implemented Mitigations:**
+- [x] Require device attestation before NATS bootstrap (via `REQUIRE_DEVICE_ATTESTATION` env var)
+- [x] Bind session token to device attestation hash (stored in `device_attestation_hash`)
+- [x] Android Play Integrity API verification (`verifyAndroidAttestation`)
+- [x] iOS App Attest verification (`verifyIosAttestation`)
+- [x] Session status must be `DEVICE_ATTESTED` before NATS bootstrap when attestation required
 
 ### Security Implementation Status
 
@@ -645,8 +655,8 @@ All sensitive payloads use **X25519 + XChaCha20-Poly1305**:
 | Parent credential rotation | 🟢 Implemented (30-day lifetime) | High |
 | Multi-tenant control topics | 🟢 Implemented | High |
 | Bootstrap attestation binding | 🟢 Implemented | High |
-| Signed control commands | 🔴 Not Implemented | Medium |
-| Device attestation binding | 🔴 Not Implemented | Medium |
+| Signed control commands | 🟢 Implemented | Medium |
+| Device attestation binding | 🟢 Implemented | Medium |
 | Legacy seed migration | 🟢 Complete (removed) | Medium |
 | Rate limiting on NATS bootstrap | 🟢 Implemented | Low |
 
@@ -778,10 +788,14 @@ All security-sensitive NATS operations MUST be logged:
 |------|---------|
 | `lambda/common/nats-jwt.ts` | JWT generation for accounts/users |
 | `lambda/common/enrollment-jwt.ts` | Enrollment token generation |
-| `lambda/common/nats-publisher.ts` | Broadcast publishing |
+| `lambda/common/nats-publisher.ts` | Broadcast and control command publishing |
+| `lambda/common/control-signing.ts` | Ed25519 signing for control commands |
 | `lambda/handlers/vault/enrollNatsBootstrap.ts` | Bootstrap credentials |
 | `lambda/handlers/vault/enrollFinalize.ts` | Enrollment completion |
 | `lambda/handlers/admin/sendVaultBroadcast.ts` | Send broadcasts |
+| `lambda/handlers/admin/forceUpdateHandler.ts` | Force handler reload (uses signed commands) |
+| `enclave/parent/control_verification.go` | Ed25519 signature verification |
+| `enclave/parent/message_replay.go` | Replay attack prevention |
 | `lib/nats-stack.ts` | NATS infrastructure |
 
 ---

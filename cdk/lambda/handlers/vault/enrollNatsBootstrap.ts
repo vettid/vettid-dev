@@ -51,6 +51,10 @@ const TABLE_NATS_TOKENS = process.env.TABLE_NATS_TOKENS!;
 const NATS_DOMAIN = process.env.NATS_DOMAIN || 'nats.vettid.dev';
 const NATS_SEED_KMS_KEY_ARN = process.env.NATS_SEED_KMS_KEY_ARN!;
 
+// SECURITY: Require device attestation before NATS bootstrap
+// Set to 'true' in production to enforce hardware-backed attestation
+const REQUIRE_DEVICE_ATTESTATION = process.env.REQUIRE_DEVICE_ATTESTATION === 'true';
+
 // Token validity for enrollment bootstrap (24 hours)
 const ENROLLMENT_TOKEN_VALIDITY_MINUTES = 60 * 24;
 
@@ -138,9 +142,9 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       return forbidden('Session does not belong to this user', origin);
     }
 
-    // SECURITY: Only allow NATS bootstrap when session is in AUTHENTICATED state
+    // SECURITY: Only allow NATS bootstrap when session is in correct state
     // This prevents replay attacks and ensures proper flow
-    const allowedStates = ['AUTHENTICATED', 'NATS_CONNECTED'];
+    const allowedStates = ['AUTHENTICATED', 'DEVICE_ATTESTED', 'NATS_CONNECTED'];
     if (!allowedStates.includes(session.status)) {
       await putAudit({
         type: 'enrollment_nats_bootstrap_failed',
@@ -156,6 +160,19 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
         return conflict('Enrollment already completed', origin);
       }
       return conflict(`Invalid session state for NATS bootstrap: ${session.status}`, origin);
+    }
+
+    // SECURITY: If device attestation is required, verify it was completed
+    if (REQUIRE_DEVICE_ATTESTATION) {
+      if (!session.device_attestation_verified) {
+        await putAudit({
+          type: 'enrollment_nats_bootstrap_failed',
+          reason: 'device_attestation_required',
+          session_id: sessionId,
+          user_guid: userGuid,
+        }, requestId);
+        return conflict('Device attestation required before NATS bootstrap. Call /vault/enroll/device-attestation first.', origin);
+      }
     }
 
     // Check session expiry

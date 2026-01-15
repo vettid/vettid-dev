@@ -265,3 +265,67 @@ export async function publishVaultBroadcast(
 
   return publishToNats(subject, payload);
 }
+
+/**
+ * Publish a signed control command to NATS
+ *
+ * SECURITY: All control commands are signed with Ed25519 to prevent
+ * unauthorized execution if backend credentials are compromised.
+ *
+ * @param command - Command type (e.g., 'handlers.reload', 'health.request')
+ * @param target - Target specifier (global, enclave, or user)
+ * @param params - Command parameters
+ * @param issuedBy - Admin email or system identifier
+ */
+export async function publishSignedControlCommand(
+  command: string,
+  target: { type: 'global' | 'enclave' | 'user'; id?: string },
+  params: Record<string, any>,
+  issuedBy: string
+): Promise<{ success: boolean; command_id?: string; error?: string }> {
+  // Import signing module
+  const { signControlCommand } = await import('./control-signing');
+
+  try {
+    // Sign the command
+    const signedCommand = await signControlCommand({
+      command,
+      target,
+      params,
+      issued_by: issuedBy,
+    });
+
+    // Determine NATS subject based on target
+    let subject: string;
+    switch (target.type) {
+      case 'global':
+        subject = `Control.global.${command}`;
+        break;
+      case 'enclave':
+        if (!target.id) {
+          return { success: false, error: 'enclave target requires id' };
+        }
+        subject = `Control.enclave.${target.id}.${command}`;
+        break;
+      case 'user':
+        if (!target.id) {
+          return { success: false, error: 'user target requires id' };
+        }
+        subject = `Control.user.${target.id}.${command}`;
+        break;
+      default:
+        return { success: false, error: `Unknown target type: ${target.type}` };
+    }
+
+    // Publish signed command
+    const result = await publishToNats(subject, signedCommand);
+
+    if (result.success) {
+      return { success: true, command_id: signedCommand.command_id };
+    }
+    return result;
+  } catch (error: any) {
+    console.error('Failed to publish signed control command:', error);
+    return { success: false, error: error.message };
+  }
+}

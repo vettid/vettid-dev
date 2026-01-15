@@ -240,6 +240,12 @@ func (p *ParentProcess) routeNATSToEnclave(ctx context.Context) error {
 
 // forwardToEnclave forwards a NATS message to the enclave
 func (p *ParentProcess) forwardToEnclave(ctx context.Context, msg *NATSMessage) error {
+	// SECURITY: For Control.* subjects, verify signed commands
+	// This prevents unauthorized execution even if NATS credentials are compromised
+	if IsControlSubject(msg.Subject) {
+		return p.handleControlCommand(ctx, msg)
+	}
+
 	// SECURITY: Check for replay attacks before processing
 	// This prevents attackers from capturing and re-sending messages
 	if allowed, reason := CheckMessageReplay(msg.Subject, msg.Data); !allowed {
@@ -1081,6 +1087,138 @@ func (p *ParentProcess) updateHealthStatus() {
 	enclaveConnected := p.vsockClient != nil && p.vsockClient.IsConnected()
 
 	p.healthSrv.UpdateStatus(natsConnected, enclaveConnected)
+}
+
+// handleControlCommand processes signed control commands from Control.* subjects
+// SECURITY: All control commands must be Ed25519 signed and pass verification
+func (p *ParentProcess) handleControlCommand(ctx context.Context, msg *NATSMessage) error {
+	// Verify the signed control command
+	cmd, valid, reason := VerifyControlCommand(msg.Data)
+	if !valid {
+		log.Warn().
+			Str("subject", msg.Subject).
+			Str("reason", reason).
+			Msg("SECURITY: Control command rejected")
+
+		// Send error response if there's a reply address
+		if msg.Reply != "" {
+			errorResponse := map[string]interface{}{
+				"error":   "command_rejected",
+				"message": "Control command failed security validation: " + reason,
+			}
+			if responseData, err := json.Marshal(errorResponse); err == nil {
+				if err := p.natsClient.Publish(msg.Reply, responseData); err != nil {
+					log.Error().Err(err).Str("reply", msg.Reply).Msg("Failed to publish error reply")
+				}
+			}
+		}
+		return fmt.Errorf("control command rejected: %s", reason)
+	}
+
+	// Route command to appropriate handler based on command type
+	switch cmd.Command {
+	case "handlers.reload":
+		return p.handleHandlerReloadCommand(ctx, msg, cmd)
+	case "health.request":
+		return p.handleHealthRequestCommand(ctx, msg, cmd)
+	default:
+		log.Warn().
+			Str("command", cmd.Command).
+			Str("command_id", cmd.CommandID).
+			Msg("Unknown control command - forwarding to enclave")
+		// Forward unknown commands to enclave for handling
+		return p.forwardControlToEnclave(ctx, msg, cmd)
+	}
+}
+
+// handleHandlerReloadCommand handles handler reload control commands
+func (p *ParentProcess) handleHandlerReloadCommand(ctx context.Context, msg *NATSMessage, cmd *SignedControlCommand) error {
+	// Extract handler parameters
+	handlerID, _ := cmd.Params["handler_id"].(string)
+	version, _ := cmd.Params["version"].(string)
+
+	if handlerID == "" {
+		log.Warn().
+			Str("command_id", cmd.CommandID).
+			Msg("Handler reload command missing handler_id")
+		return fmt.Errorf("handler_id is required")
+	}
+
+	log.Info().
+		Str("command_id", cmd.CommandID).
+		Str("handler_id", handlerID).
+		Str("version", version).
+		Str("issued_by", cmd.IssuedBy).
+		Msg("Processing handler reload command")
+
+	// Invalidate handler cache to force reload on next request
+	if p.handlerLoader != nil {
+		p.handlerLoader.InvalidateCache(handlerID)
+	}
+
+	// Send success response
+	if msg.Reply != "" {
+		response := map[string]interface{}{
+			"status":     "success",
+			"command_id": cmd.CommandID,
+			"handler_id": handlerID,
+			"message":    "Handler cache invalidated, will reload on next request",
+		}
+		if responseData, err := json.Marshal(response); err == nil {
+			if err := p.natsClient.Publish(msg.Reply, responseData); err != nil {
+				log.Error().Err(err).Str("reply", msg.Reply).Msg("Failed to publish success reply")
+			}
+		}
+	}
+
+	return nil
+}
+
+// handleHealthRequestCommand handles health check control commands
+func (p *ParentProcess) handleHealthRequestCommand(ctx context.Context, msg *NATSMessage, cmd *SignedControlCommand) error {
+	log.Debug().
+		Str("command_id", cmd.CommandID).
+		Str("issued_by", cmd.IssuedBy).
+		Msg("Processing health request command")
+
+	// Get health status
+	status := p.getHealthStatus()
+
+	// Send response
+	if msg.Reply != "" {
+		if err := p.natsClient.Publish(msg.Reply, status); err != nil {
+			log.Error().Err(err).Str("reply", msg.Reply).Msg("Failed to publish health response")
+		}
+	}
+
+	return nil
+}
+
+// forwardControlToEnclave forwards a control command to the enclave
+func (p *ParentProcess) forwardControlToEnclave(ctx context.Context, msg *NATSMessage, cmd *SignedControlCommand) error {
+	// Create enclave message for control command
+	enclaveMsg := &EnclaveMessage{
+		Type:    EnclaveMessageTypeVaultOp,
+		Subject: msg.Subject,
+		Payload: msg.Data,
+		ReplyTo: msg.Reply,
+	}
+
+	// Send to enclave
+	response, err := p.sendWithHandlerSupport(ctx, enclaveMsg)
+	if err != nil {
+		return err
+	}
+
+	// Send response back
+	if response != nil && msg.Reply != "" {
+		responseData := p.formatEnclaveResponse(response)
+		if err := p.natsClient.Publish(msg.Reply, responseData); err != nil {
+			log.Error().Err(err).Str("reply", msg.Reply).Msg("Failed to publish control command reply")
+		}
+	}
+
+	return nil
 }
 
 // extractOwnerSpace extracts the user GUID from a NATS subject

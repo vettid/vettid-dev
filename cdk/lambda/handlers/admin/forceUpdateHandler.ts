@@ -2,11 +2,11 @@ import { APIGatewayProxyHandlerV2 } from "aws-lambda";
 import { ok, badRequest, notFound, internalError, requireAdminGroup, putAudit, getAdminEmail } from "../../common/util";
 import { DynamoDBClient, GetItemCommand } from "@aws-sdk/client-dynamodb";
 import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
+import { publishSignedControlCommand } from "../../common/nats-publisher";
 
 const ddb = new DynamoDBClient({});
 
 const TABLE_HANDLER_SUBMISSIONS = process.env.TABLE_HANDLER_SUBMISSIONS!;
-const NATS_URL = process.env.NATS_URL || 'nats://localhost:4222';
 
 /**
  * Force all enclaves to reload a handler
@@ -58,43 +58,60 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     }
 
     // Build the reload message payload
-    const reloadMessage = {
-      type: 'handler_reload',
+    const reloadParams = {
       handler_id: submission.handler_id,
       version: submission.version,
       s3_key: submission.deployed_s3_key,
       wasm_hash: submission.wasm_hash,
-      triggered_by: adminEmail,
-      triggered_at: new Date().toISOString()
     };
 
-    // Log the force update (actual NATS publishing would be via SSM send-command to a NATS bridge)
-    // For now, we'll record the intent and the message
+    // SECURITY: Publish signed control command to NATS
+    // All control commands are Ed25519-signed to prevent unauthorized execution
+    // even if NATS credentials are compromised
+    const result = await publishSignedControlCommand(
+      'handlers.reload',
+      { type: 'global' },
+      reloadParams,
+      adminEmail || 'system'
+    );
+
+    if (!result.success) {
+      console.error('Failed to publish control command:', result.error);
+
+      await putAudit({
+        type: 'admin_handler_force_update_failed',
+        details: {
+          submission_id: submissionId,
+          handler_id: submission.handler_id,
+          error: result.error,
+          triggered_by: adminEmail
+        }
+      });
+
+      return internalError('Failed to send reload command to enclaves');
+    }
+
+    // Log successful force update
     await putAudit({
       type: 'admin_handler_force_update',
       details: {
         submission_id: submissionId,
         handler_id: submission.handler_id,
         version: submission.version,
+        command_id: result.command_id,
         nats_subject: 'Control.global.handlers.reload',
-        message: reloadMessage,
         triggered_by: adminEmail
       }
     });
-
-    // In a production setup, you would:
-    // 1. Use SSM send-command to a bastion/bridge instance that can publish to NATS
-    // 2. Or use an SQS queue that triggers a Lambda in the VPC that can reach NATS
-    // 3. Or use NATS JetStream HTTP API if available
 
     return ok({
       submission_id: submissionId,
       handler_id: submission.handler_id,
       version: submission.version,
+      command_id: result.command_id,
       nats_subject: 'Control.global.handlers.reload',
-      message: reloadMessage,
-      status: 'queued',
-      message_text: 'Handler reload message queued for delivery to enclaves'
+      status: 'sent',
+      message_text: 'Signed handler reload command sent to all enclaves'
     });
   } catch (error) {
     console.error('Error forcing handler update:', error);
