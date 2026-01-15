@@ -84,6 +84,7 @@ export class AdminStack extends cdk.Stack {
   public readonly removeNotification!: lambdaNode.NodejsFunction;
   public readonly getAuditLog!: lambdaNode.NodejsFunction;
   public readonly generateNatsControlToken!: lambdaNode.NodejsFunction;
+  public readonly natsRevokeToken!: lambdaNode.NodejsFunction;
 
   // Handler registry admin functions
   public readonly uploadHandler!: lambdaNode.NodejsFunction;
@@ -453,6 +454,27 @@ export class AdminStack extends cdk.Stack {
     natsOperatorSecret.grantRead(generateNatsControlToken);
     // SECURITY: Grant KMS decrypt for account seeds
     props.infrastructure.natsSeedEncryptionKey.grantDecrypt(generateNatsControlToken);
+
+    // NATS Token Revocation - allows admins to revoke user NATS tokens
+    const natsRevokeToken = new lambdaNode.NodejsFunction(this, 'NatsRevokeTokenFn', {
+      entry: 'lambda/handlers/admin/natsRevokeToken.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+        TABLE_NATS_ACCOUNTS: tables.natsAccounts.tableName,
+        TABLE_NATS_TOKENS: tables.natsTokens.tableName,
+        NATS_OPERATOR_SECRET_ARN: natsOperatorSecret.secretArn,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    // Grant access to NATS tables and operator secret
+    tables.natsAccounts.grantReadWriteData(natsRevokeToken);
+    tables.natsTokens.grantReadWriteData(natsRevokeToken);
+    tables.audit.grantReadWriteData(natsRevokeToken);
+    natsOperatorSecret.grantRead(natsRevokeToken);
+
+    this.natsRevokeToken = natsRevokeToken;
 
     // ===== MEMBERSHIP MANAGEMENT =====
 
@@ -1552,6 +1574,7 @@ export class AdminStack extends cdk.Stack {
 
     // NATS Control - Admin-only endpoint for issuing control tokens
     this.route('GenerateNatsControlToken', httpApi, '/admin/nats/control-token', apigw.HttpMethod.POST, this.generateNatsControlToken, adminAuthorizer);
+    this.route('NatsRevokeToken', httpApi, '/admin/nats/revoke-token', apigw.HttpMethod.POST, this.natsRevokeToken, adminAuthorizer);
 
     // Handler Registry Admin - Admin-only endpoints for managing handler registry
     this.route('ListRegistryHandlers', httpApi, '/admin/registry/handlers', apigw.HttpMethod.GET, this.listRegistryHandlers, adminAuthorizer);
