@@ -110,8 +110,11 @@ async function generateParentCredentials(): Promise<{ creds: string; expiresAt: 
   const accountKeyPair = nkeys.fromSeed(new TextEncoder().encode(secrets.backend_account_seed));
 
   const now = Math.floor(Date.now() / 1000);
-  // Long-lived credentials: 1 year (parent instances don't change frequently)
-  const expiresAt = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000);
+  // SECURITY: Reduced credential lifetime from 1 year to 30 days
+  // Parent credentials should be rotated regularly via automated process
+  // See issue #128 for implementing automated rotation
+  const CREDENTIAL_LIFETIME_DAYS = 30;
+  const expiresAt = new Date(Date.now() + CREDENTIAL_LIFETIME_DAYS * 24 * 60 * 60 * 1000);
   const exp = Math.floor(expiresAt.getTime() / 1000);
 
   const jti = createHash('sha256')

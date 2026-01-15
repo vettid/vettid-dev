@@ -31,10 +31,13 @@ import {
   notFound,
   conflict,
   internalError,
+  tooManyRequests,
   getRequestId,
   putAudit,
   nowIso,
   addMinutesIso,
+  checkRateLimit,
+  hashIdentifier,
 } from '../../common/util';
 import { verifyEnrollmentToken, extractTokenFromHeader } from '../../common/enrollment-jwt';
 import { generateAccountCredentials, generateUserCredentials, formatCredsFile } from '../../common/nats-jwt';
@@ -50,6 +53,10 @@ const NATS_SEED_KMS_KEY_ARN = process.env.NATS_SEED_KMS_KEY_ARN!;
 
 // Token validity for enrollment bootstrap (24 hours)
 const ENROLLMENT_TOKEN_VALIDITY_MINUTES = 60 * 24;
+
+// Rate limiting: 3 bootstrap attempts per session per 15 minutes
+const RATE_LIMIT_MAX_REQUESTS = 3;
+const RATE_LIMIT_WINDOW_MINUTES = 15;
 
 interface NatsBootstrapResponse {
   nats_endpoint: string;
@@ -89,6 +96,18 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     const userGuid = payload.sub;
     const deviceId = payload.device_id;
     const deviceType = payload.device_type;
+
+    // SECURITY: Rate limiting per session (prevents credential stuffing)
+    const sessionHash = hashIdentifier(sessionId);
+    const isAllowed = await checkRateLimit(sessionHash, 'nats_bootstrap', RATE_LIMIT_MAX_REQUESTS, RATE_LIMIT_WINDOW_MINUTES);
+    if (!isAllowed) {
+      await putAudit({
+        type: 'enrollment_nats_bootstrap_rate_limited',
+        session_id: sessionId,
+        user_guid: userGuid,
+      }, requestId);
+      return tooManyRequests('Too many bootstrap attempts. Please try again later.', origin);
+    }
 
     // SECURITY: Verify session exists and is in AUTHENTICATED state
     const sessionResult = await ddb.send(new GetItemCommand({
