@@ -120,6 +120,11 @@ type CryptoKey struct {
 // BootstrapRequest is the request from the mobile app
 type BootstrapRequest struct {
 	BootstrapToken string `json:"bootstrap_token,omitempty"` // Optional validation token
+	// SECURITY: Attestation-bound key exchange fields
+	SessionID      string `json:"session_id,omitempty"`       // Enrollment session ID
+	AppPublicKey   string `json:"app_public_key,omitempty"`   // App's X25519 public key (base64)
+	BindingToken   string `json:"binding_token,omitempty"`    // HMAC token from attestation verification
+	PCRHash        string `json:"pcr_hash,omitempty"`         // PCR hash from attestation (first 24 hex chars)
 }
 
 // BootstrapResponse is returned after successful bootstrap
@@ -131,6 +136,8 @@ type BootstrapResponse struct {
 	Capabilities     []string `json:"capabilities"`
 	RequiresPassword bool     `json:"requires_password"` // App should prompt for password
 	RequiresPIN      bool     `json:"requires_pin"`      // App should prompt for PIN
+	// SECURITY: Attestation binding proof
+	BindingVerified bool `json:"binding_verified,omitempty"` // True if attestation binding was verified
 }
 
 // PasswordSetupRequest is the request from the mobile app for password setup

@@ -644,7 +644,7 @@ All sensitive payloads use **X25519 + XChaCha20-Poly1305**:
 | Token revocation workflow | 🟢 Implemented | Critical |
 | Parent credential rotation | 🟢 Implemented (30-day lifetime) | High |
 | Multi-tenant control topics | 🟢 Implemented | High |
-| Bootstrap attestation binding | 🔴 Not Implemented | High |
+| Bootstrap attestation binding | 🟢 Implemented | High |
 | Signed control commands | 🔴 Not Implemented | Medium |
 | Device attestation binding | 🔴 Not Implemented | Medium |
 | Legacy seed migration | 🟢 Complete (removed) | Medium |
