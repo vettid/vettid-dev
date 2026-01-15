@@ -817,6 +817,16 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       },
       timeout: cdk.Duration.seconds(15), // Allow time for admin notifications
     });
+    const listPublicServices = new lambdaNode.NodejsFunction(this, 'ListPublicServicesFn', {
+      entry: 'lambda/handlers/public/listPublicServices.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+        TABLE_SUPPORTED_SERVICES: tables.supportedServices.tableName,
+      },
+      timeout: cdk.Duration.seconds(10),
+      description: 'Public endpoint to list active supported services for mobile app',
+    });
     const registrationStreamFn = new lambdaNode.NodejsFunction(this, 'RegistrationStreamFn', {
       entry: 'lambda/handlers/streams/registrationStream.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
@@ -1042,6 +1052,7 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
     tables.waitlist.grantReadWriteData(submitWaitlist);
     tables.audit.grantReadWriteData(submitWaitlist); // For rate limiting
     tables.notificationPreferences.grantReadData(submitWaitlist); // For admin notifications
+    tables.supportedServices.grantReadData(listPublicServices); // Public services list
     tables.registrations.grantReadWriteData(cancelAccount);
     tables.subscriptions.grantReadWriteData(cancelAccount);
     tables.registrations.grantReadWriteData(cleanupExpiredAccounts);
@@ -1230,6 +1241,13 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       path: '/waitlist',
       methods: [apigw.HttpMethod.POST],
       integration: new integrations.HttpLambdaIntegration('SubmitWaitlistInt', submitWaitlist),
+    });
+
+    // Add /services route (public - for mobile app)
+    this.httpApi.addRoutes({
+      path: '/services',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('ListPublicServicesInt', listPublicServices),
     });
 
     // Token exchange - stores JWT tokens in httpOnly cookies (public, no auth)

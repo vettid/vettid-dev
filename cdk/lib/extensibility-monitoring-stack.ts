@@ -20,16 +20,14 @@ export interface ExtensibilityMonitoringStackProps extends cdk.StackProps {
  *
  * Contains system extensibility, monitoring, and security functions:
  * - NATS control tokens and token revocation
- * - Handler registry management
+ * - Handler registry management (VettID-managed handlers only)
  * - Supported services management
  * - Vault status and metrics monitoring
- * - Handler marketplace (submissions, approvals)
  * - Vault broadcasts
  * - Security events and recovery/deletion request management
  * - System health and logs
  *
  * Split from AdminStack to stay under CloudFormation's 500 resource limit.
- * ~150 resources (31 Lambda functions + IAM roles + permissions + routes)
  *
  * Depends on: Infrastructure Stack (for tables), Core Stack (for API Gateway)
  */
@@ -39,10 +37,7 @@ export class ExtensibilityMonitoringStack extends cdk.Stack {
   public readonly natsRevokeToken!: lambdaNode.NodejsFunction;
 
   // Handler registry admin functions
-  public readonly uploadHandler!: lambdaNode.NodejsFunction;
-  public readonly signHandler!: lambdaNode.NodejsFunction;
   public readonly revokeHandler!: lambdaNode.NodejsFunction;
-  public readonly deleteHandler!: lambdaNode.NodejsFunction;
   public readonly listRegistryHandlers!: lambdaNode.NodejsFunction;
 
   // Supported services admin functions
@@ -56,14 +51,8 @@ export class ExtensibilityMonitoringStack extends cdk.Stack {
   public readonly getVaultStatus!: lambdaNode.NodejsFunction;
   public readonly getVaultMetrics!: lambdaNode.NodejsFunction;
 
-  // Handler marketplace functions
+  // Handler functions
   public readonly listDeployedHandlers!: lambdaNode.NodejsFunction;
-  public readonly listHandlerSubmissions!: lambdaNode.NodejsFunction;
-  public readonly submitHandler!: lambdaNode.NodejsFunction;
-  public readonly confirmHandlerSubmission!: lambdaNode.NodejsFunction;
-  public readonly approveHandlerSubmission!: lambdaNode.NodejsFunction;
-  public readonly rejectHandlerSubmission!: lambdaNode.NodejsFunction;
-  public readonly forceUpdateHandler!: lambdaNode.NodejsFunction;
 
   // Communications / Vault broadcast functions
   public readonly sendVaultBroadcast!: lambdaNode.NodejsFunction;
@@ -155,29 +144,8 @@ export class ExtensibilityMonitoringStack extends cdk.Stack {
       BUCKET_HANDLERS: handlersBucket.bucketName,
     };
 
-    const uploadHandler = new lambdaNode.NodejsFunction(this, 'UploadHandlerFn', {
-      entry: 'lambda/handlers/admin/uploadHandler.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: handlerEnv,
-      timeout: cdk.Duration.seconds(30),
-    });
-
-    const signHandler = new lambdaNode.NodejsFunction(this, 'SignHandlerFn', {
-      entry: 'lambda/handlers/admin/signHandler.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: handlerEnv,
-      timeout: cdk.Duration.seconds(30),
-    });
-
     const revokeHandler = new lambdaNode.NodejsFunction(this, 'RevokeHandlerFn', {
       entry: 'lambda/handlers/admin/revokeHandler.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: handlerEnv,
-      timeout: cdk.Duration.seconds(30),
-    });
-
-    const deleteHandler = new lambdaNode.NodejsFunction(this, 'DeleteHandlerFn', {
-      entry: 'lambda/handlers/admin/deleteHandler.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
       environment: handlerEnv,
       timeout: cdk.Duration.seconds(30),
@@ -191,21 +159,10 @@ export class ExtensibilityMonitoringStack extends cdk.Stack {
     });
 
     // Handler registry table permissions
-    tables.handlers.grantReadWriteData(uploadHandler);
-    tables.handlers.grantReadWriteData(signHandler);
     tables.handlers.grantReadWriteData(revokeHandler);
-    tables.handlers.grantReadWriteData(deleteHandler);
     tables.handlers.grantReadData(listRegistryHandlers);
 
-    // S3 bucket permissions for handler packages
-    handlersBucket.grantReadWrite(uploadHandler);
-    handlersBucket.grantRead(signHandler);
-    handlersBucket.grantReadWrite(deleteHandler);
-
-    this.uploadHandler = uploadHandler;
-    this.signHandler = signHandler;
     this.revokeHandler = revokeHandler;
-    this.deleteHandler = deleteHandler;
     this.listRegistryHandlers = listRegistryHandlers;
 
     // ===== SUPPORTED SERVICES ADMIN FUNCTIONS =====
@@ -297,13 +254,7 @@ export class ExtensibilityMonitoringStack extends cdk.Stack {
     this.getVaultStatus = getVaultStatus;
     this.getVaultMetrics = getVaultMetrics;
 
-    // ===== HANDLER MARKETPLACE =====
-
-    const marketplaceEnv = {
-      ...defaultEnv,
-      TABLE_HANDLER_SUBMISSIONS: tables.handlerSubmissions.tableName,
-      HANDLER_BUCKET: handlersBucket.bucketName,
-    };
+    // ===== DEPLOYED HANDLERS (VettID-managed only) =====
 
     // List deployed handlers uses the main handlers registry table
     const listDeployedHandlers = new lambdaNode.NodejsFunction(this, 'ListDeployedHandlersFn', {
@@ -316,78 +267,11 @@ export class ExtensibilityMonitoringStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(30),
     });
 
-    const listHandlerSubmissions = new lambdaNode.NodejsFunction(this, 'ListHandlerSubmissionsFn', {
-      entry: 'lambda/handlers/admin/listHandlerSubmissions.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: marketplaceEnv,
-      timeout: cdk.Duration.seconds(30),
-    });
-
-    const submitHandler = new lambdaNode.NodejsFunction(this, 'SubmitHandlerFn', {
-      entry: 'lambda/handlers/admin/submitHandler.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: marketplaceEnv,
-      timeout: cdk.Duration.seconds(30),
-    });
-
-    const confirmHandlerSubmission = new lambdaNode.NodejsFunction(this, 'ConfirmHandlerSubmissionFn', {
-      entry: 'lambda/handlers/admin/confirmHandlerSubmission.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: marketplaceEnv,
-      timeout: cdk.Duration.seconds(30),
-    });
-
-    const approveHandlerSubmission = new lambdaNode.NodejsFunction(this, 'ApproveHandlerSubmissionFn', {
-      entry: 'lambda/handlers/admin/approveHandlerSubmission.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: marketplaceEnv,
-      timeout: cdk.Duration.seconds(30),
-    });
-
-    const rejectHandlerSubmission = new lambdaNode.NodejsFunction(this, 'RejectHandlerSubmissionFn', {
-      entry: 'lambda/handlers/admin/rejectHandlerSubmission.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: marketplaceEnv,
-      timeout: cdk.Duration.seconds(30),
-    });
-
-    const forceUpdateHandler = new lambdaNode.NodejsFunction(this, 'ForceUpdateHandlerFn', {
-      entry: 'lambda/handlers/admin/forceUpdateHandler.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: marketplaceEnv,
-      timeout: cdk.Duration.seconds(30),
-    });
-
-    // Handler marketplace permissions
+    // Handler permissions
     tables.handlers.grantReadData(listDeployedHandlers);
-    tables.handlerSubmissions.grantReadData(listHandlerSubmissions);
-    tables.handlerSubmissions.grantReadWriteData(submitHandler);
-    tables.handlerSubmissions.grantReadWriteData(confirmHandlerSubmission);
-    tables.handlerSubmissions.grantReadWriteData(approveHandlerSubmission);
-    tables.handlerSubmissions.grantReadWriteData(rejectHandlerSubmission);
-    tables.handlerSubmissions.grantReadData(forceUpdateHandler);
     tables.audit.grantReadWriteData(listDeployedHandlers);
-    tables.audit.grantReadWriteData(listHandlerSubmissions);
-    tables.audit.grantReadWriteData(submitHandler);
-    tables.audit.grantReadWriteData(confirmHandlerSubmission);
-    tables.audit.grantReadWriteData(approveHandlerSubmission);
-    tables.audit.grantReadWriteData(rejectHandlerSubmission);
-    tables.audit.grantReadWriteData(forceUpdateHandler);
-
-    // S3 bucket permissions for handler WASM files
-    handlersBucket.grantPut(submitHandler);
-    handlersBucket.grantRead(confirmHandlerSubmission);
-    handlersBucket.grantRead(approveHandlerSubmission);
-    handlersBucket.grantPut(approveHandlerSubmission);
-    handlersBucket.grantDelete(rejectHandlerSubmission);
 
     this.listDeployedHandlers = listDeployedHandlers;
-    this.listHandlerSubmissions = listHandlerSubmissions;
-    this.submitHandler = submitHandler;
-    this.confirmHandlerSubmission = confirmHandlerSubmission;
-    this.approveHandlerSubmission = approveHandlerSubmission;
-    this.rejectHandlerSubmission = rejectHandlerSubmission;
-    this.forceUpdateHandler = forceUpdateHandler;
 
     // ===== COMMUNICATIONS / VAULT BROADCASTS =====
 
@@ -595,12 +479,9 @@ export class ExtensibilityMonitoringStack extends cdk.Stack {
     this.route('GenerateNatsControlToken', httpApi, '/admin/nats/control-token', apigw.HttpMethod.POST, this.generateNatsControlToken, adminAuthorizer);
     this.route('NatsRevokeToken', httpApi, '/admin/nats/revoke-token', apigw.HttpMethod.POST, this.natsRevokeToken, adminAuthorizer);
 
-    // Handler Registry Admin - Admin-only endpoints for managing handler registry
+    // Handler Registry Admin - Admin-only endpoints for managing VettID handler registry
     this.route('ListRegistryHandlers', httpApi, '/admin/registry/handlers', apigw.HttpMethod.GET, this.listRegistryHandlers, adminAuthorizer);
-    this.route('UploadHandler', httpApi, '/admin/registry/handlers', apigw.HttpMethod.POST, this.uploadHandler, adminAuthorizer);
-    this.route('SignHandler', httpApi, '/admin/registry/handlers/sign', apigw.HttpMethod.POST, this.signHandler, adminAuthorizer);
     this.route('RevokeHandler', httpApi, '/admin/registry/handlers/revoke', apigw.HttpMethod.POST, this.revokeHandler, adminAuthorizer);
-    this.route('DeleteHandler', httpApi, '/admin/registry/handlers/delete', apigw.HttpMethod.POST, this.deleteHandler, adminAuthorizer);
 
     // Supported Services Admin - Admin-only endpoints for managing supported services
     this.route('ListServices', httpApi, '/admin/services', apigw.HttpMethod.GET, this.listServices, adminAuthorizer);
@@ -613,14 +494,8 @@ export class ExtensibilityMonitoringStack extends cdk.Stack {
     this.route('GetVaultStatus', httpApi, '/admin/vault-status', apigw.HttpMethod.GET, this.getVaultStatus, adminAuthorizer);
     this.route('GetVaultMetrics', httpApi, '/admin/vault-metrics', apigw.HttpMethod.GET, this.getVaultMetrics, adminAuthorizer);
 
-    // Handler Marketplace - WASM handler submission, review, and deployment
+    // Deployed Handlers - View VettID-managed deployed handlers
     this.route('ListDeployedHandlers', httpApi, '/admin/handlers/deployed', apigw.HttpMethod.GET, this.listDeployedHandlers, adminAuthorizer);
-    this.route('ListHandlerSubmissions', httpApi, '/admin/handlers/submissions', apigw.HttpMethod.GET, this.listHandlerSubmissions, adminAuthorizer);
-    this.route('SubmitHandler', httpApi, '/admin/handlers/submit', apigw.HttpMethod.POST, this.submitHandler, adminAuthorizer);
-    this.route('ConfirmHandlerSubmission', httpApi, '/admin/handlers/submissions/{submission_id}/confirm', apigw.HttpMethod.POST, this.confirmHandlerSubmission, adminAuthorizer);
-    this.route('ApproveHandlerSubmission', httpApi, '/admin/handlers/submissions/{submission_id}/approve', apigw.HttpMethod.POST, this.approveHandlerSubmission, adminAuthorizer);
-    this.route('RejectHandlerSubmission', httpApi, '/admin/handlers/submissions/{submission_id}/reject', apigw.HttpMethod.POST, this.rejectHandlerSubmission, adminAuthorizer);
-    this.route('ForceUpdateHandler', httpApi, '/admin/handlers/submissions/{submission_id}/force-update', apigw.HttpMethod.POST, this.forceUpdateHandler, adminAuthorizer);
 
     // Communications / Vault Broadcasts
     this.route('SendVaultBroadcast', httpApi, '/admin/broadcasts', apigw.HttpMethod.POST, this.sendVaultBroadcast, adminAuthorizer);

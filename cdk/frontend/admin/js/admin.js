@@ -6576,9 +6576,6 @@ document.addEventListener('DOMContentLoaded', function() {
 // ============================================
 
 let deployedHandlers = [];
-let handlerSubmissions = [];
-let currentSubmissionId = null;
-let pendingHandlerUpload = null;
 
 // Format bytes to human readable
 function formatHandlerBytes(bytes) {
@@ -6589,28 +6586,12 @@ function formatHandlerBytes(bytes) {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
 }
 
-// Handler marketplace tab switching
+// Handler tab (just deployed handlers now - VettID-managed only)
 document.querySelectorAll('.handler-tab').forEach(tab => {
   tab.addEventListener('click', () => {
-    // Update active tab styling
-    document.querySelectorAll('.handler-tab').forEach(t => {
-      t.classList.remove('active');
-      t.style.background = '#333';
-    });
     tab.classList.add('active');
     tab.style.background = 'linear-gradient(135deg,#10b981 0%,#059669 100%)';
-
-    // Show correct panel
-    const targetPanel = tab.getAttribute('data-handler-tab');
-    document.querySelectorAll('.handler-panel').forEach(p => p.style.display = 'none');
-    document.getElementById(`${targetPanel}-handlers-panel`).style.display = 'block';
-
-    // Load data for relevant panels
-    if (targetPanel === 'deployed') {
-      loadDeployedHandlers();
-    } else if (targetPanel === 'submissions') {
-      loadHandlerSubmissions();
-    }
+    loadDeployedHandlers();
   });
 });
 
@@ -6642,8 +6623,7 @@ function renderDeployedHandlers() {
   if (deployedHandlers.length === 0) {
     grid.innerHTML = `<div style="grid-column:1/-1;padding:40px;text-align:center;color:var(--gray);">
       <div style="font-size:2rem;margin-bottom:8px;">📦</div>
-      <div>No handlers deployed yet</div>
-      <div style="font-size:0.85rem;opacity:0.7;margin-top:4px;">Submit a handler to get started</div>
+      <div>No VettID handlers deployed yet</div>
     </div>`;
     return;
   }
@@ -6667,234 +6647,26 @@ function renderDeployedHandlers() {
         <p style="margin:0 0 12px 0;color:var(--gray);font-size:0.85rem;line-height:1.4;min-height:40px;">
           ${escapeHtml((h.description || 'No description').substring(0, 100))}${h.description?.length > 100 ? '...' : ''}
         </p>
-        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
-          <div style="display:flex;gap:8px;align-items:center;">
-            <code style="background:var(--bg-card);padding:4px 8px;border-radius:4px;font-size:0.8rem;color:var(--accent);">v${escapeHtml(h.version || '1.0.0')}</code>
-            ${h.category ? `<span style="background:#222;padding:4px 8px;border-radius:4px;font-size:0.75rem;color:var(--gray);">${escapeHtml(h.category)}</span>` : ''}
-          </div>
-          <button class="btn" data-force-update="${escapeHtml(h.handler_id)}" style="padding:6px 12px;font-size:0.8rem;background:#333;">
-            🔄 Force Update
-          </button>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <code style="background:var(--bg-card);padding:4px 8px;border-radius:4px;font-size:0.8rem;color:var(--accent);">v${escapeHtml(h.version || '1.0.0')}</code>
+          ${h.category ? `<span style="background:#222;padding:4px 8px;border-radius:4px;font-size:0.75rem;color:var(--gray);">${escapeHtml(h.category)}</span>` : ''}
         </div>
         ${h.install_count > 0 ? `<div style="margin-top:8px;font-size:0.75rem;color:var(--gray);">📥 ${h.install_count} installs</div>` : ''}
       </div>
     `;
   }).join('');
-
-  // Event delegation for force update buttons
-  grid.querySelectorAll('[data-force-update]').forEach(btn => {
-    btn.addEventListener('click', () => forceUpdateHandler(btn.dataset.forceUpdate));
-  });
 }
 
-// Load handler submissions
-async function loadHandlerSubmissions() {
-  if (!isAdmin()) return;
-
-  const tbody = document.getElementById('submissionsQueueBody');
-  tbody.innerHTML = '<tr><td colspan="6" style="padding:40px;text-align:center;color:var(--gray);">Loading submissions...</td></tr>';
-
-  try {
-    const response = await api('/admin/handlers/submissions');
-    handlerSubmissions = response.submissions || [];
-    renderHandlerSubmissions();
-  } catch (err) {
-    console.error('Error loading handler submissions:', err);
-    tbody.innerHTML = `<tr><td colspan="6" style="padding:40px;text-align:center;color:#ef4444;">Error: ${escapeHtml(err.message)}</td></tr>`;
-    showToast('Failed to load submissions', 'error');
-  }
-}
-
-// Render submissions queue
-function renderHandlerSubmissions() {
-  const tbody = document.getElementById('submissionsQueueBody');
-  const countEl = document.getElementById('pendingSubmissionsCount');
-
-  const pendingCount = handlerSubmissions.filter(s => s.status === 'pending').length;
-  if (countEl) countEl.textContent = pendingCount;
-
-  if (handlerSubmissions.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="6" style="padding:40px;text-align:center;color:var(--gray);">No submissions in queue</td></tr>';
-    return;
-  }
-
-  tbody.innerHTML = handlerSubmissions.map(s => {
-    const statusColors = {
-      pending: 'background:#f59e0b;color:#000;',
-      approved: 'background:#10b981;color:#fff;',
-      rejected: 'background:#ef4444;color:#fff;',
-      uploaded: 'background:#3b82f6;color:#fff;'
-    };
-    const statusStyle = statusColors[s.status] || 'background:#6b7280;color:#fff;';
-
-    return `
-      <tr style="border-bottom:1px solid var(--border);">
-        <td style="padding:12px 8px;">
-          <div style="font-weight:600;color:var(--text);">${escapeHtml(s.name || s.handler_id)}</div>
-          <div style="font-size:0.8rem;color:var(--gray);font-family:monospace;">${escapeHtml(s.handler_id)}</div>
-        </td>
-        <td style="padding:12px 8px;"><code style="background:var(--bg-card);padding:2px 6px;border-radius:4px;font-size:0.85rem;">${escapeHtml(s.version || '—')}</code></td>
-        <td style="padding:12px 8px;color:var(--text);">${escapeHtml(s.submitter_email || '—')}</td>
-        <td style="padding:12px 8px;color:var(--gray);">${s.submitted_at ? new Date(s.submitted_at).toLocaleString() : '—'}</td>
-        <td style="padding:12px 8px;"><span style="padding:4px 10px;border-radius:4px;font-size:0.75rem;font-weight:700;text-transform:uppercase;${statusStyle}">${escapeHtml(s.status)}</span></td>
-        <td style="padding:12px 8px;text-align:right;">
-          ${s.status === 'pending' || s.status === 'uploaded' ? `
-            <button class="btn" data-approve-submission="${escapeHtml(s.submission_id)}" style="padding:6px 12px;font-size:0.8rem;background:linear-gradient(135deg,#10b981 0%,#059669 100%);margin-right:4px;">Approve</button>
-            <button class="btn" data-reject-submission="${escapeHtml(s.submission_id)}" style="padding:6px 12px;font-size:0.8rem;background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);">Reject</button>
-          ` : '—'}
-        </td>
-      </tr>
-    `;
-  }).join('');
-
-  // Event delegation for approve/reject buttons
-  tbody.querySelectorAll('[data-approve-submission]').forEach(btn => {
-    btn.addEventListener('click', () => approveSubmission(btn.dataset.approveSubmission));
-  });
-  tbody.querySelectorAll('[data-reject-submission]').forEach(btn => {
-    btn.addEventListener('click', () => rejectSubmission(btn.dataset.rejectSubmission));
-  });
-}
-
-// Load handlers (combined function for both panels)
+// Load handlers (VettID-managed only, simplified since no submission workflow)
 async function loadHandlers() {
-  if (!isAdmin()) return;
-  await Promise.all([loadDeployedHandlers(), loadHandlerSubmissions()]);
+  return loadDeployedHandlers();
 }
 
-// Approve handler submission
-async function approveSubmission(submissionId) {
-  if (!confirm('Approve this handler? It will be signed and deployed to all enclaves.')) return;
-
-  try {
-    await api(`/admin/handlers/submissions/${submissionId}/approve`, {
-      method: 'POST'
-    });
-    showToast('Handler approved and deployed!', 'success');
-    loadHandlers();
-  } catch (err) {
-    console.error('Error approving submission:', err);
-    showToast('Failed to approve: ' + err.message, 'error');
-  }
-}
-
-// Reject handler submission
-async function rejectSubmission(submissionId) {
-  const reason = prompt('Rejection reason (optional):');
-  if (reason === null) return; // User cancelled
-
-  try {
-    await api(`/admin/handlers/submissions/${submissionId}/reject`, {
-      method: 'POST',
-      body: JSON.stringify({ reason: reason || 'Rejected by admin' })
-    });
-    showToast('Handler submission rejected', 'success');
-    loadHandlerSubmissions();
-  } catch (err) {
-    console.error('Error rejecting submission:', err);
-    showToast('Failed to reject: ' + err.message, 'error');
-  }
-}
-
-// Force update handler on all enclaves
-async function forceUpdateHandler(submissionId) {
-  if (!confirm('Force update this handler on all enclaves? This will trigger a reload.')) return;
-
-  try {
-    await api(`/admin/handlers/submissions/${submissionId}/force-update`, {
-      method: 'POST'
-    });
-    showToast('Handler update triggered!', 'success');
-  } catch (err) {
-    console.error('Error forcing update:', err);
-    showToast('Failed to force update: ' + err.message, 'error');
-  }
-}
-
-// Submit new handler
-async function submitNewHandler() {
-  const handlerId = document.getElementById('submitHandlerId')?.value.trim();
-  const name = document.getElementById('submitHandlerName')?.value.trim();
-  const version = document.getElementById('submitHandlerVersion')?.value.trim();
-  const description = document.getElementById('submitHandlerDescription')?.value.trim();
-  const fileInput = document.getElementById('submitHandlerFile');
-  const file = fileInput?.files[0];
-
-  // Validation
-  if (!handlerId || !name || !version) {
-    showToast('Handler ID, name, and version are required', 'error');
-    return;
-  }
-  if (!/^[a-z0-9-]+$/.test(handlerId)) {
-    showToast('Handler ID must be lowercase letters, numbers, and hyphens only', 'error');
-    return;
-  }
-  if (!/^\d+\.\d+\.\d+$/.test(version)) {
-    showToast('Version must be in semantic format (X.Y.Z)', 'error');
-    return;
-  }
-  if (!file) {
-    showToast('Please select a WASM file', 'error');
-    return;
-  }
-
-  const btn = document.getElementById('submitHandlerBtn');
-  const originalText = btn.innerHTML;
-
-  try {
-    btn.disabled = true;
-    btn.innerHTML = '<span style="display:inline-block;animation:spin 1s linear infinite;">⟳</span> Submitting...';
-
-    // Step 1: Create submission and get presigned URL
-    const response = await api('/admin/handlers/submit', {
-      method: 'POST',
-      body: JSON.stringify({ handler_id: handlerId, name, version, description })
-    });
-
-    const uploadUrl = response.upload_url;
-    const submissionId = response.submission_id;
-
-    if (!uploadUrl) throw new Error('No upload URL returned');
-
-    // Step 2: Upload WASM file
-    btn.innerHTML = '<span style="display:inline-block;animation:spin 1s linear infinite;">⟳</span> Uploading WASM...';
-
-    await fetch(uploadUrl, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/wasm' },
-      body: file
-    });
-
-    showToast('Handler submitted for review!', 'success');
-
-    // Clear form
-    document.getElementById('submitHandlerId').value = '';
-    document.getElementById('submitHandlerName').value = '';
-    document.getElementById('submitHandlerVersion').value = '1.0.0';
-    document.getElementById('submitHandlerDescription').value = '';
-    fileInput.value = '';
-
-    // Switch to submissions tab
-    document.querySelector('[data-handler-tab="submissions"]')?.click();
-
-  } catch (err) {
-    console.error('Error submitting handler:', err);
-    showToast('Failed to submit handler: ' + err.message, 'error');
-  } finally {
-    btn.disabled = false;
-    btn.innerHTML = originalText;
-  }
-}
-
-// Event listeners for handler marketplace
+// Event listeners for handler management
 document.addEventListener('DOMContentLoaded', function() {
   // Refresh handlers button
   const refreshBtn = document.getElementById('refreshHandlersBtn');
-  if (refreshBtn) refreshBtn.onclick = loadHandlers;
-
-  // Submit handler button
-  const submitBtn = document.getElementById('submitHandlerBtn');
-  if (submitBtn) submitBtn.onclick = submitNewHandler;
+  if (refreshBtn) refreshBtn.onclick = loadDeployedHandlers;
 });
 
 // ========================================
@@ -7351,7 +7123,6 @@ document.addEventListener('click', (e) => {
     'closeCreateSubscriptionTypeModal': closeCreateSubscriptionTypeModal,
     'closeCreateTermsModal': closeCreateTermsModal,
     'closeCsvImportModal': closeCsvImportModal,
-    'closeDeleteHandlerModal': closeDeleteHandlerModal,
     'closeDeleteServiceModal': closeDeleteServiceModal,
     'closeGenericConfirmModal': () => closeGenericConfirmModal(false),
     'closeHandlerDetailsModal': closeHandlerDetailsModal,
@@ -7361,7 +7132,6 @@ document.addEventListener('click', (e) => {
     'closeSelectNotificationAdminModal': closeSelectNotificationAdminModal,
     'closeServiceDetailsModal': closeServiceDetailsModal,
     'closeServiceModal': closeServiceModal,
-    'closeUploadHandlerModal': closeUploadHandlerModal,
     'handleChangeAdminType': handleChangeAdminType,
     'handleDeleteAdmin': handleDeleteAdmin,
     'handleResetAdminPassword': handleResetAdminPassword,

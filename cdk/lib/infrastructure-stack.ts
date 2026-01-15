@@ -60,8 +60,6 @@ export class InfrastructureStack extends cdk.Stack {
     supportedServices: dynamodb.Table;
     // Dynamic Handler Loading
     handlerManifest: dynamodb.Table;
-    // Admin Portal: Handler Marketplace
-    handlerSubmissions: dynamodb.Table;
     // Admin Portal: Communications
     vaultBroadcasts: dynamodb.Table;
   };
@@ -651,48 +649,6 @@ export class InfrastructureStack extends cdk.Stack {
       encryptionKey: dynamoDbEncryptionKey,
     });
 
-    // ===== ADMIN PORTAL: HANDLER MARKETPLACE =====
-
-    // Handler Submissions table - tracks handler submission workflow for curated marketplace
-    // Schema:
-    //   submission_id (PK): UUID for the submission
-    //   handler_id: target handler ID (e.g., "messaging.telegram")
-    //   name: human-readable handler name
-    //   version: submitted version (semver)
-    //   description: handler description
-    //   submitter_email: email of the submitter
-    //   status: "pending" | "reviewing" | "approved" | "rejected" | "deployed"
-    //   s3_key: S3 key for the uploaded WASM file
-    //   wasm_hash: SHA-256 hash of the WASM file
-    //   submitted_at: ISO timestamp
-    //   reviewed_by: admin email who reviewed
-    //   reviewed_at: ISO timestamp
-    //   rejection_reason: if rejected, the reason
-    const handlerSubmissions = new dynamodb.Table(this, 'HandlerSubmissions', {
-      partitionKey: { name: 'submission_id', type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-      pointInTimeRecovery: true,
-      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
-      encryptionKey: dynamoDbEncryptionKey,
-    });
-
-    // GSI for listing submissions by status (pending, approved, rejected)
-    handlerSubmissions.addGlobalSecondaryIndex({
-      indexName: 'status-index',
-      partitionKey: { name: 'status', type: dynamodb.AttributeType.STRING },
-      sortKey: { name: 'submitted_at', type: dynamodb.AttributeType.STRING },
-      projectionType: dynamodb.ProjectionType.ALL,
-    });
-
-    // GSI for listing submissions by handler_id
-    handlerSubmissions.addGlobalSecondaryIndex({
-      indexName: 'handler-index',
-      partitionKey: { name: 'handler_id', type: dynamodb.AttributeType.STRING },
-      sortKey: { name: 'submitted_at', type: dynamodb.AttributeType.STRING },
-      projectionType: dynamodb.ProjectionType.ALL,
-    });
-
     // ===== ADMIN PORTAL: COMMUNICATIONS =====
 
     // Vault Broadcasts table - stores broadcast history for NATS vault messaging
@@ -813,8 +769,6 @@ export class InfrastructureStack extends cdk.Stack {
       supportedServices,
       // Dynamic Handler Loading
       handlerManifest,
-      // Admin Portal: Handler Marketplace
-      handlerSubmissions,
       // Admin Portal: Communications
       vaultBroadcasts,
     };

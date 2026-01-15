@@ -1169,20 +1169,6 @@
               </svg>
               Deployed Handlers <span id="deployedHandlersCount" style="background:rgba(255,255,255,0.2);border-radius:10px;padding:2px 8px;margin-left:6px;font-size:0.75rem;">0</span>
             </button>
-            <button class="btn handler-tab" data-handler-tab="submissions" style="background:#333;padding:10px 20px;">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle;margin-right:6px;">
-                <circle cx="12" cy="12" r="10"></circle>
-                <polyline points="12 6 12 12 16 14"></polyline>
-              </svg>
-              Submissions Queue <span id="pendingSubmissionsCount" style="background:rgba(255,255,255,0.2);border-radius:10px;padding:2px 8px;margin-left:6px;font-size:0.75rem;">0</span>
-            </button>
-            <button class="btn handler-tab" data-handler-tab="submit" style="background:#333;padding:10px 20px;">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle;margin-right:6px;">
-                <line x1="12" y1="5" x2="12" y2="19"></line>
-                <line x1="5" y1="12" x2="19" y2="12"></line>
-              </svg>
-              Submit Handler
-            </button>
           </div>
 
           <!-- Deployed Handlers Panel -->
@@ -1190,75 +1176,6 @@
             <p class="muted" style="margin-bottom:16px;">Pre-compiled, VettID-signed WASM handlers running in Nitro enclaves.</p>
             <div id="deployedHandlersGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px;">
               <div style="grid-column:1/-1;padding:40px;text-align:center;color:var(--gray);">Loading deployed handlers...</div>
-            </div>
-          </div>
-
-          <!-- Submissions Queue Panel -->
-          <div id="submissions-handlers-panel" class="handler-panel" style="display:none;">
-            <p class="muted" style="margin-bottom:16px;">Handler submissions pending review and approval.</p>
-            <div id="submissionsQueueContainer">
-              <table style="width:100%;border-collapse:collapse;">
-                <thead>
-                  <tr style="border-bottom:1px solid var(--border);">
-                    <th style="text-align:left;padding:12px 8px;color:var(--gray);font-size:0.8rem;font-weight:600;">Handler</th>
-                    <th style="text-align:left;padding:12px 8px;color:var(--gray);font-size:0.8rem;font-weight:600;">Version</th>
-                    <th style="text-align:left;padding:12px 8px;color:var(--gray);font-size:0.8rem;font-weight:600;">Submitter</th>
-                    <th style="text-align:left;padding:12px 8px;color:var(--gray);font-size:0.8rem;font-weight:600;">Submitted</th>
-                    <th style="text-align:left;padding:12px 8px;color:var(--gray);font-size:0.8rem;font-weight:600;">Status</th>
-                    <th style="text-align:right;padding:12px 8px;color:var(--gray);font-size:0.8rem;font-weight:600;">Actions</th>
-                  </tr>
-                </thead>
-                <tbody id="submissionsQueueBody">
-                  <tr><td colspan="6" style="padding:40px;text-align:center;color:var(--gray);">Loading submissions...</td></tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          <!-- Submit Handler Panel -->
-          <div id="submit-handlers-panel" class="handler-panel" style="display:none;">
-            <p class="muted" style="margin-bottom:20px;">Submit a new handler for review. All handlers must be pre-compiled WASM and will be signed by VettID before deployment.</p>
-            <div style="padding:20px;background:#050505;border-radius:8px;border:1px solid var(--border);max-width:600px;">
-              <div style="display:grid;gap:16px;">
-                <div>
-                  <label style="display:block;margin-bottom:8px;color:var(--text);font-weight:600;">Handler ID</label>
-                  <input type="text" id="submitHandlerId" placeholder="e.g., signal-messenger" pattern="[a-z0-9-]+"
-                    style="width:100%;padding:12px;background:var(--bg-card);border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;">
-                  <p style="margin:4px 0 0 0;color:var(--gray);font-size:0.8rem;">Lowercase letters, numbers, and hyphens only</p>
-                </div>
-                <div>
-                  <label style="display:block;margin-bottom:8px;color:var(--text);font-weight:600;">Display Name</label>
-                  <input type="text" id="submitHandlerName" placeholder="e.g., Signal Messenger"
-                    style="width:100%;padding:12px;background:var(--bg-card);border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;">
-                </div>
-                <div>
-                  <label style="display:block;margin-bottom:8px;color:var(--text);font-weight:600;">Version</label>
-                  <input type="text" id="submitHandlerVersion" placeholder="e.g., 1.0.0" pattern="[0-9]+\.[0-9]+\.[0-9]+"
-                    style="width:100%;padding:12px;background:var(--bg-card);border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;">
-                  <p style="margin:4px 0 0 0;color:var(--gray);font-size:0.8rem;">Semantic versioning (major.minor.patch)</p>
-                </div>
-                <div>
-                  <label style="display:block;margin-bottom:8px;color:var(--text);font-weight:600;">Description</label>
-                  <textarea id="submitHandlerDescription" placeholder="Brief description of what this handler does..." rows="3"
-                    style="width:100%;padding:12px;background:var(--bg-card);border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;resize:vertical;"></textarea>
-                </div>
-                <div>
-                  <label style="display:block;margin-bottom:8px;color:var(--text);font-weight:600;">WASM File</label>
-                  <input type="file" id="submitHandlerFile" accept=".wasm"
-                    style="width:100%;padding:12px;background:var(--bg-card);border:2px solid #222;border-radius:6px;color:var(--text);font-size:1rem;">
-                  <p style="margin:4px 0 0 0;color:var(--gray);font-size:0.8rem;">Pre-compiled WebAssembly binary (.wasm)</p>
-                </div>
-                <div style="margin-top:8px;">
-                  <button id="submitHandlerBtn" class="btn" style="padding:12px 24px;background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);font-weight:600;">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle;margin-right:6px;">
-                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                      <polyline points="17 8 12 3 7 8"></polyline>
-                      <line x1="12" y1="3" x2="12" y2="15"></line>
-                    </svg>
-                    Submit for Review
-                  </button>
-                </div>
-              </div>
             </div>
           </div>
         </div>
@@ -1803,7 +1720,8 @@
 
 <script src="/shared/config.js"></script>
 <script src="/vendor/flatpickr/flatpickr.min.js"></script>
-<script src="/js/admin.js"></script>
+<!-- Modular admin portal JavaScript (ES6 modules) -->
+<script type="module" src="/js/modules/main.js"></script>
 
 <!-- Select Notification Admin Modal -->
 <div id="selectNotificationAdminModal" class="modal-overlay">
@@ -2263,168 +2181,6 @@
   </div>
 </div>
 
-<!-- Upload Handler Modal -->
-<div id="uploadHandlerModal" class="modal-overlay">
-  <div class="modal" style="max-width:600px;max-height:90vh;overflow-y:auto;">
-    <div class="modal-header">
-      <h3 class="modal-title">Upload Handler</h3>
-      <button class="modal-close" data-action="closeUploadHandlerModal">&times;</button>
-    </div>
-    <div class="modal-body">
-      <p style="margin-bottom:16px;color:var(--gray);font-size:0.9rem;">
-        Upload a new handler or add a new version to an existing handler.
-      </p>
-
-      <!-- Handler ID -->
-      <div style="margin-bottom:16px;">
-        <label for="handlerIdInput" style="display:block;margin-bottom:6px;font-size:0.9rem;font-weight:600;">
-          Handler ID <span style="color:#ef4444;">*</span>
-        </label>
-        <input type="text" id="handlerIdInput" placeholder="e.g., signal-encryption" style="width:100%;" />
-        <div style="font-size:0.75rem;color:var(--gray);margin-top:4px;">Lowercase letters, numbers, and hyphens only</div>
-      </div>
-
-      <!-- Handler Name -->
-      <div style="margin-bottom:16px;">
-        <label for="handlerNameInput" style="display:block;margin-bottom:6px;font-size:0.9rem;font-weight:600;">
-          Display Name <span style="color:#ef4444;">*</span>
-        </label>
-        <input type="text" id="handlerNameInput" placeholder="e.g., Signal Encryption" style="width:100%;" />
-      </div>
-
-      <!-- Version -->
-      <div style="margin-bottom:16px;">
-        <label for="handlerVersionInput" style="display:block;margin-bottom:6px;font-size:0.9rem;font-weight:600;">
-          Version <span style="color:#ef4444;">*</span>
-        </label>
-        <input type="text" id="handlerVersionInput" placeholder="e.g., 1.0.0" style="width:100%;" />
-        <div style="font-size:0.75rem;color:var(--gray);margin-top:4px;">Semantic versioning (X.Y.Z)</div>
-      </div>
-
-      <!-- Category -->
-      <div style="margin-bottom:16px;">
-        <label for="handlerCategoryInput" style="display:block;margin-bottom:6px;font-size:0.9rem;font-weight:600;">
-          Category <span style="color:#ef4444;">*</span>
-        </label>
-        <select id="handlerCategoryInput" style="width:100%;">
-          <option value="">Select category...</option>
-          <option value="messaging">Messaging</option>
-          <option value="connections">Connections</option>
-          <option value="profile">Profile</option>
-          <option value="social">Social</option>
-          <option value="productivity">Productivity</option>
-          <option value="utilities">Utilities</option>
-          <option value="finance">Finance</option>
-          <option value="health">Health</option>
-          <option value="other">Other</option>
-        </select>
-      </div>
-
-      <!-- Publisher -->
-      <div style="margin-bottom:16px;">
-        <label for="handlerPublisherInput" style="display:block;margin-bottom:6px;font-size:0.9rem;font-weight:600;">
-          Publisher <span style="color:#ef4444;">*</span>
-        </label>
-        <input type="text" id="handlerPublisherInput" placeholder="e.g., VettID Team" style="width:100%;" />
-      </div>
-
-      <!-- Description -->
-      <div style="margin-bottom:16px;">
-        <label for="handlerDescriptionInput" style="display:block;margin-bottom:6px;font-size:0.9rem;font-weight:600;">
-          Description <span style="color:#ef4444;">*</span>
-        </label>
-        <textarea id="handlerDescriptionInput" placeholder="Describe what this handler does..." style="width:100%;min-height:80px;resize:vertical;"></textarea>
-      </div>
-
-      <!-- Icon Selection -->
-      <div style="margin-bottom:16px;">
-        <label style="display:block;margin-bottom:6px;font-size:0.9rem;font-weight:600;">
-          Icon <span style="color:var(--gray);font-weight:400;">(optional)</span>
-        </label>
-        <div style="position:relative;">
-          <button type="button" id="iconPickerBtn" data-action="toggleIconPicker" style="display:flex;align-items:center;gap:10px;width:100%;padding:10px 12px;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;cursor:pointer;color:var(--text);text-align:left;">
-            <span id="iconPickerPreview" style="font-size:1.5rem;width:32px;text-align:center;">📦</span>
-            <span id="iconPickerText" style="flex:1;color:var(--gray);">Select an icon...</span>
-            <span style="color:var(--gray);">▼</span>
-          </button>
-          <!-- Icon Picker Dropdown -->
-          <div id="iconPickerDropdown" style="display:none;position:absolute;top:100%;left:0;right:0;margin-top:4px;background:var(--bg-card);border:1px solid var(--accent);border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,0.4);z-index:100;max-height:300px;overflow-y:auto;">
-            <div style="padding:12px;border-bottom:1px solid var(--border);">
-              <div style="font-size:0.85rem;font-weight:600;margin-bottom:8px;color:var(--accent);">Preset Icons</div>
-              <div style="display:grid;grid-template-columns:repeat(8,1fr);gap:6px;">
-                <button type="button" data-action="selectPresetIcon" data-icon-id="gear" data-icon-emoji="⚙️" style="padding:8px;border-radius:4px;border:none;background:var(--bg-input);cursor:pointer;font-size:1.2rem;" title="Settings">⚙️</button>
-                <button type="button" data-action="selectPresetIcon" data-icon-id="code" data-icon-emoji="💻" style="padding:8px;border-radius:4px;border:none;background:var(--bg-input);cursor:pointer;font-size:1.2rem;" title="Code">💻</button>
-                <button type="button" data-action="selectPresetIcon" data-icon-id="lock" data-icon-emoji="🔒" style="padding:8px;border-radius:4px;border:none;background:var(--bg-input);cursor:pointer;font-size:1.2rem;" title="Security">🔒</button>
-                <button type="button" data-action="selectPresetIcon" data-icon-id="key" data-icon-emoji="🔑" style="padding:8px;border-radius:4px;border:none;background:var(--bg-input);cursor:pointer;font-size:1.2rem;" title="Key">🔑</button>
-                <button type="button" data-action="selectPresetIcon" data-icon-id="shield" data-icon-emoji="🛡️" style="padding:8px;border-radius:4px;border:none;background:var(--bg-input);cursor:pointer;font-size:1.2rem;" title="Shield">🛡️</button>
-                <button type="button" data-action="selectPresetIcon" data-icon-id="bolt" data-icon-emoji="⚡" style="padding:8px;border-radius:4px;border:none;background:var(--bg-input);cursor:pointer;font-size:1.2rem;" title="Lightning">⚡</button>
-                <button type="button" data-action="selectPresetIcon" data-icon-id="cloud" data-icon-emoji="☁️" style="padding:8px;border-radius:4px;border:none;background:var(--bg-input);cursor:pointer;font-size:1.2rem;" title="Cloud">☁️</button>
-                <button type="button" data-action="selectPresetIcon" data-icon-id="database" data-icon-emoji="🗄️" style="padding:8px;border-radius:4px;border:none;background:var(--bg-input);cursor:pointer;font-size:1.2rem;" title="Database">🗄️</button>
-                <button type="button" data-action="selectPresetIcon" data-icon-id="link" data-icon-emoji="🔗" style="padding:8px;border-radius:4px;border:none;background:var(--bg-input);cursor:pointer;font-size:1.2rem;" title="Link">🔗</button>
-                <button type="button" data-action="selectPresetIcon" data-icon-id="bell" data-icon-emoji="🔔" style="padding:8px;border-radius:4px;border:none;background:var(--bg-input);cursor:pointer;font-size:1.2rem;" title="Notification">🔔</button>
-                <button type="button" data-action="selectPresetIcon" data-icon-id="mail" data-icon-emoji="📧" style="padding:8px;border-radius:4px;border:none;background:var(--bg-input);cursor:pointer;font-size:1.2rem;" title="Mail">📧</button>
-                <button type="button" data-action="selectPresetIcon" data-icon-id="chart" data-icon-emoji="📊" style="padding:8px;border-radius:4px;border:none;background:var(--bg-input);cursor:pointer;font-size:1.2rem;" title="Analytics">📊</button>
-                <button type="button" data-action="selectPresetIcon" data-icon-id="folder" data-icon-emoji="📁" style="padding:8px;border-radius:4px;border:none;background:var(--bg-input);cursor:pointer;font-size:1.2rem;" title="Folder">📁</button>
-                <button type="button" data-action="selectPresetIcon" data-icon-id="globe" data-icon-emoji="🌐" style="padding:8px;border-radius:4px;border:none;background:var(--bg-input);cursor:pointer;font-size:1.2rem;" title="Web">🌐</button>
-                <button type="button" data-action="selectPresetIcon" data-icon-id="robot" data-icon-emoji="🤖" style="padding:8px;border-radius:4px;border:none;background:var(--bg-input);cursor:pointer;font-size:1.2rem;" title="Automation">🤖</button>
-                <button type="button" data-action="selectPresetIcon" data-icon-id="puzzle" data-icon-emoji="🧩" style="padding:8px;border-radius:4px;border:none;background:var(--bg-input);cursor:pointer;font-size:1.2rem;" title="Plugin">🧩</button>
-              </div>
-            </div>
-            <div style="padding:12px;">
-              <div style="font-size:0.85rem;font-weight:600;margin-bottom:8px;color:var(--accent);">Custom URL</div>
-              <div style="display:flex;gap:8px;">
-                <input type="url" id="handlerIconInput" placeholder="https://example.com/icon.png" style="flex:1;" />
-                <button type="button" data-action="applyCustomIconUrl" class="btn" style="padding:8px 16px;font-size:0.85rem;">Apply</button>
-              </div>
-              <p style="margin:4px 0 0;font-size:0.75rem;color:var(--gray);">Enter a direct URL to an image</p>
-            </div>
-            <div style="padding:8px 12px;border-top:1px solid var(--border);">
-              <button type="button" data-action="clearIconSelection" style="width:100%;padding:8px;background:none;border:none;color:var(--gray);cursor:pointer;font-size:0.85rem;">Clear selection</button>
-            </div>
-          </div>
-        </div>
-        <input type="hidden" id="selectedPresetIcon" value="" />
-        <input type="hidden" id="selectedIconEmoji" value="" />
-      </div>
-
-      <!-- Changelog (optional) -->
-      <div style="margin-bottom:16px;">
-        <label for="handlerChangelogInput" style="display:block;margin-bottom:6px;font-size:0.9rem;font-weight:600;">
-          Changelog <span style="color:var(--gray);font-weight:400;">(optional)</span>
-        </label>
-        <textarea id="handlerChangelogInput" placeholder="What's new in this version..." style="width:100%;min-height:60px;resize:vertical;"></textarea>
-      </div>
-
-      <!-- Upload Result -->
-      <div id="uploadHandlerResult" style="display:none;margin-bottom:16px;padding:16px;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;">
-        <h4 style="margin:0 0 12px 0;color:var(--accent);font-size:0.95rem;">Handler Created - Upload WASM</h4>
-        <p style="font-size:0.85rem;color:var(--gray);margin-bottom:12px;">
-          Now upload your WASM file to complete the handler registration.
-        </p>
-        <input type="file" id="wasmFileInput" accept=".wasm" style="margin-bottom:12px;width:100%;" />
-        <button id="uploadWasmBtn" class="btn" style="width:100%;background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);" disabled>Upload WASM File</button>
-        <div id="wasmUploadProgress" style="display:none;margin-top:12px;">
-          <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
-            <span style="font-size:0.85rem;color:var(--gray);">Uploading...</span>
-            <span id="wasmUploadPercent" style="font-size:0.85rem;font-weight:600;">0%</span>
-          </div>
-          <div style="background:var(--bg-tertiary);border-radius:4px;height:6px;overflow:hidden;">
-            <div id="wasmUploadBar" style="background:linear-gradient(135deg,#10b981 0%,#059669 100%);height:100%;width:0%;transition:width 0.3s ease;"></div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Actions -->
-      <div style="display:flex;gap:12px;">
-        <button id="createHandlerBtn" class="btn" style="flex:1;background:linear-gradient(135deg,#10b981 0%,#059669 100%);">Create Handler</button>
-        <button data-action="closeUploadHandlerModal" class="btn" style="flex:1;background:var(--bg-button-secondary);">Cancel</button>
-      </div>
-
-      <div id="uploadHandlerMsg" style="margin-top:12px;text-align:center;"></div>
-    </div>
-  </div>
-</div>
-
 <!-- Handler Details Modal -->
 <div id="handlerDetailsModal" class="modal-overlay">
   <div class="modal" style="max-width:700px;max-height:90vh;overflow-y:auto;">
@@ -2547,47 +2303,6 @@
       </div>
 
       <div id="revokeHandlerMsg" style="margin-top:12px;text-align:center;"></div>
-    </div>
-  </div>
-</div>
-
-<!-- Delete Handler Modal -->
-<div id="deleteHandlerModal" class="modal-overlay">
-  <div class="modal" style="max-width:500px;">
-    <div class="modal-header">
-      <h3 class="modal-title" style="color:#ef4444;">Delete Handler</h3>
-      <button class="modal-close" data-action="closeDeleteHandlerModal">&times;</button>
-    </div>
-    <div class="modal-body">
-      <div style="background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);border-radius:8px;padding:16px;margin-bottom:16px;">
-        <div style="display:flex;align-items:flex-start;gap:12px;">
-          <span style="font-size:1.5rem;">&#9888;</span>
-          <div>
-            <div style="font-weight:600;color:#ef4444;margin-bottom:4px;">Warning: This action is irreversible</div>
-            <div style="font-size:0.9rem;color:var(--gray);">
-              Deleting a handler will permanently remove it from the registry, including all versions and WASM packages. This cannot be undone.
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <p style="margin-bottom:16px;color:var(--text-primary);">
-        Are you sure you want to permanently delete <strong id="deleteHandlerName" style="color:#ef4444;"></strong>?
-      </p>
-
-      <div style="margin-bottom:16px;">
-        <label for="deleteHandlerConfirmInput" style="display:block;margin-bottom:6px;font-size:0.9rem;font-weight:600;">
-          Type the handler name to confirm <span style="color:#ef4444;">*</span>
-        </label>
-        <input type="text" id="deleteHandlerConfirmInput" placeholder="Enter handler name to confirm" style="width:100%;">
-      </div>
-
-      <div style="display:flex;gap:12px;">
-        <button id="confirmDeleteHandlerBtn" class="btn" style="flex:1;background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);" disabled>Delete Permanently</button>
-        <button data-action="closeDeleteHandlerModal" class="btn" style="flex:1;background:var(--bg-button-secondary);">Cancel</button>
-      </div>
-
-      <div id="deleteHandlerMsg" style="margin-top:12px;text-align:center;"></div>
     </div>
   </div>
 </div>
