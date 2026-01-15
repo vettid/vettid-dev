@@ -569,6 +569,39 @@ ASG_NAME=$(aws autoscaling describe-auto-scaling-groups \
 
 if [ -n "$ASG_NAME" ] && [ "$ASG_NAME" != "None" ]; then
     log_info "Found ASG: $ASG_NAME"
+
+    # Get launch template from ASG
+    LAUNCH_TEMPLATE_ID=$(aws autoscaling describe-auto-scaling-groups \
+        --auto-scaling-group-names "$ASG_NAME" \
+        --query 'AutoScalingGroups[0].LaunchTemplate.LaunchTemplateId' \
+        --output text \
+        --region "$REGION")
+
+    if [ -n "$LAUNCH_TEMPLATE_ID" ] && [ "$LAUNCH_TEMPLATE_ID" != "None" ]; then
+        log_info "Updating launch template $LAUNCH_TEMPLATE_ID with new AMI..."
+
+        # Create new launch template version with new AMI
+        NEW_LT_VERSION=$(aws ec2 create-launch-template-version \
+            --launch-template-id "$LAUNCH_TEMPLATE_ID" \
+            --source-version '$Latest' \
+            --launch-template-data "{\"ImageId\":\"$NEW_AMI_ID\"}" \
+            --query 'LaunchTemplateVersion.VersionNumber' \
+            --output text \
+            --region "$REGION")
+
+        log_info "Created launch template version $NEW_LT_VERSION with AMI $NEW_AMI_ID"
+
+        # Ensure ASG uses $Latest (idempotent)
+        aws autoscaling update-auto-scaling-group \
+            --auto-scaling-group-name "$ASG_NAME" \
+            --launch-template "LaunchTemplateId=$LAUNCH_TEMPLATE_ID,Version=\$Latest" \
+            --region "$REGION"
+
+        log_info "ASG configured to use \$Latest launch template version"
+    else
+        log_warn "No launch template found for ASG. Skipping launch template update."
+    fi
+
     log_info "Starting instance refresh..."
 
     aws autoscaling start-instance-refresh \
