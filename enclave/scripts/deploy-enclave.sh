@@ -304,7 +304,8 @@ echo "Vsock secret fetched (length: $(wc -c < vsock-secret.hex) bytes)"
 
 # Build Docker image (secret file is in build context)
 echo "=== Building Docker image ==="
-docker build -f Dockerfile.enclave -t vettid-enclave:latest .
+docker build -q -f Dockerfile.enclave -t vettid-enclave:latest . > /dev/null
+echo "Docker image built successfully"
 
 # SECURITY: Remove secret from build context after Docker build
 rm -f vsock-secret.hex
@@ -335,7 +336,7 @@ aws ssm put-parameter --name "/vettid/enclave/pcr/pcr2" --value "$PCR2" --type S
 # Also update legacy parameter path that parent process reads for attestation verification
 # Parent expects /vettid/enclave/pcr0 (without /pcr/ prefix)
 aws ssm put-parameter --name "/vettid/enclave/pcr0" --value "$PCR0" --type String --overwrite --region "$REGION"
-log_info "Updated /vettid/enclave/pcr0 for parent attestation verification"
+echo "Updated /vettid/enclave/pcr0 for parent attestation verification"
 
 # Store combined PCR values for /vault/pcrs/current API endpoint
 VERSION="$(date +%Y-%m-%d)-v1"
@@ -350,10 +351,15 @@ echo "Updated /vettid/enclave/pcr/current with version $VERSION"
 # Install EIF to standard location
 mkdir -p /opt/vettid/enclave
 cp vettid-vault-enclave.eif /opt/vettid/enclave/
+echo "EIF installed to /opt/vettid/enclave/"
 
 # Install parent binary
-cd /opt/vettid/build/parent
-go build -o /usr/local/bin/vettid-parent .
+echo "=== Building parent binary ==="
+cd /opt/vettid/build
+ls -la parent/ | head -10
+echo "Building from $(pwd) using go.mod:"
+head -3 go.mod
+go build -v -o /usr/local/bin/vettid-parent ./parent
 
 # Create systemd services
 cat > /etc/systemd/system/vettid-enclave.service << 'SVCEOF'
