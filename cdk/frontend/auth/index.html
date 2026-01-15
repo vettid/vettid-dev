@@ -10,10 +10,25 @@
 <style>
     body {
       min-height: 100vh;
+      min-height: 100dvh; /* Dynamic viewport height - adjusts for mobile keyboard */
       display: flex;
       align-items: center;
       justify-content: center;
       background: linear-gradient(135deg, #000 0%, #0a0a0a 50%, #1a1a1a 100%);
+    }
+    /* Mobile: align to top when keyboard is shown (viewport becomes short) */
+    @media (max-height: 500px) {
+      body {
+        align-items: flex-start;
+        padding-top: 20px;
+      }
+    }
+    /* Also handle mobile in landscape or when keyboard is open */
+    @media (max-width: 768px) {
+      body {
+        align-items: flex-start;
+        padding-top: max(20px, env(safe-area-inset-top));
+      }
     }
     .auth-container {
       max-width: 480px;

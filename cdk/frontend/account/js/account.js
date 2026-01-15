@@ -2880,7 +2880,11 @@ function renderVaultStatusContent(status) {
           <div style="width:40px;height:40px;border:3px solid #f59e0b;border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 16px;"></div>
           <div style="font-size:1.2rem;font-weight:600;color:#f59e0b;margin-bottom:8px;">Enrollment In Progress</div>
           <p class="muted" style="margin-bottom:8px;">Complete the enrollment process on your mobile device.</p>
-          <p class="muted" style="font-size:0.85rem;">Session started: ${status.started_at ? new Date(status.started_at).toLocaleString() : 'Unknown'}</p>
+          <p class="muted" style="font-size:0.85rem;margin-bottom:16px;">Session started: ${status.started_at ? new Date(status.started_at).toLocaleString() : 'Unknown'}</p>
+          <button data-action="cancelEnrollment" class="btn" style="padding:8px 16px;background:#333;color:#f59e0b;border:1px solid #f59e0b;font-size:0.9rem;">
+            Cancel Enrollment
+          </button>
+          <p class="muted" style="font-size:0.75rem;margin-top:8px;">Cancel to start over if the mobile enrollment failed.</p>
         </div>
       `;
       break;
@@ -5150,6 +5154,99 @@ async function startEnrollment() {
   }
 }
 
+function cancelEnrollment() {
+  // Show custom confirmation modal instead of native confirm()
+  showCancelEnrollmentModal();
+}
+
+function showCancelEnrollmentModal() {
+  // Remove any existing modal
+  const existing = document.getElementById('cancelEnrollmentModal');
+  if (existing) existing.remove();
+
+  const modal = document.createElement('div');
+  modal.id = 'cancelEnrollmentModal';
+  modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;z-index:9999;padding:20px;box-sizing:border-box;';
+  modal.innerHTML = `
+    <div style="background:#111;border:1px solid #f59e0b;border-radius:12px;padding:24px;max-width:340px;width:100%;text-align:center;">
+      <div style="font-size:2.5rem;margin-bottom:12px;">⚠️</div>
+      <h3 style="margin:0 0 12px 0;color:#f59e0b;font-size:1.2rem;">Cancel Enrollment?</h3>
+      <p style="color:#a0a0a0;margin-bottom:20px;font-size:0.9rem;line-height:1.5;">
+        This will reset your enrollment progress. You can start fresh enrollment afterwards.
+      </p>
+      <div style="display:flex;gap:12px;flex-direction:column;">
+        <button id="confirmCancelEnrollmentBtn" style="padding:12px 20px;background:linear-gradient(135deg,#f59e0b 0%,#d97706 100%);color:#000;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:1rem;">
+          Yes, Cancel Enrollment
+        </button>
+        <button id="closeCancelEnrollmentModalBtn" style="padding:12px 20px;background:#222;color:#a0a0a0;border:1px solid #333;border-radius:8px;font-weight:500;cursor:pointer;font-size:0.95rem;">
+          Go Back
+        </button>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(modal);
+
+  // Close on backdrop click
+  modal.addEventListener('click', (e) => {
+    if (e.target === modal) closeCancelEnrollmentModal();
+  });
+
+  document.getElementById('closeCancelEnrollmentModalBtn').addEventListener('click', closeCancelEnrollmentModal);
+  document.getElementById('confirmCancelEnrollmentBtn').addEventListener('click', performCancelEnrollment);
+}
+
+function closeCancelEnrollmentModal() {
+  const modal = document.getElementById('cancelEnrollmentModal');
+  if (modal) modal.remove();
+}
+
+async function performCancelEnrollment() {
+  const confirmBtn = document.getElementById('confirmCancelEnrollmentBtn');
+  if (confirmBtn) {
+    confirmBtn.disabled = true;
+    confirmBtn.textContent = 'Cancelling...';
+  }
+
+  try {
+    const token = idToken();
+    if (!token) throw new Error('No authentication token');
+
+    const res = await fetch(API_URL + '/vault/enroll/cancel', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    // Handle 404 as success (already cancelled/nothing to cancel)
+    if (res.status === 404) {
+      closeCancelEnrollmentModal();
+      showToast('Enrollment already cancelled', 'success');
+      await loadVaultStatus();
+      return;
+    }
+
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => ({}));
+      throw new Error(errorData.message || 'Failed to cancel enrollment');
+    }
+
+    const result = await res.json();
+    closeCancelEnrollmentModal();
+    showToast(result.message || 'Enrollment cancelled', 'success');
+
+    // Refresh vault status to show enrollment option again
+    await loadVaultStatus();
+
+  } catch (error) {
+    console.error('Error cancelling enrollment:', error);
+    closeCancelEnrollmentModal();
+    showToast('Failed to cancel enrollment: ' + error.message, 'error');
+  }
+}
+
 function showManualEnrollmentModal() {
   const modal = document.createElement('div');
   modal.id = 'enrollmentModal';
@@ -5630,6 +5727,7 @@ document.addEventListener('click', (e) => {
     'refreshRecoveryQR': refreshRecoveryQR,
     // Vault management actions
     'startEnrollment': startEnrollment,
+    'cancelEnrollment': cancelEnrollment,
     'provisionVault': provisionVault,
     'startVault': startVault,
     // Modal close actions
