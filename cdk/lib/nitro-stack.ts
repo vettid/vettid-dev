@@ -843,6 +843,16 @@ export class NitroStack extends cdk.Stack {
       enforceSSL: true,
       versioned: true, // Keep history of manifest changes
       removalPolicy: cdk.RemovalPolicy.RETAIN,
+      // CORS configuration for cross-origin access from vettid.dev
+      cors: [
+        {
+          allowedOrigins: ['https://vettid.dev', 'https://www.vettid.dev'],
+          allowedMethods: [s3.HttpMethods.GET, s3.HttpMethods.HEAD],
+          allowedHeaders: ['*'],
+          exposedHeaders: ['ETag'],
+          maxAge: 3600,
+        },
+      ],
     });
 
     // CloudFront Origin Access Identity for S3
@@ -867,6 +877,7 @@ export class NitroStack extends cdk.Stack {
     });
 
     // CloudFront distribution for PCR manifest (global, cached)
+    // NOTE: CORS is configured via S3 bucket CORS rules and CloudFront forwards Origin header
     const pcrManifestDistribution = new cdk.aws_cloudfront.CloudFrontWebDistribution(this, 'PcrManifestDistribution', {
       comment: 'VettID PCR Manifest Distribution',
       originConfigs: [
@@ -885,6 +896,11 @@ export class NitroStack extends cdk.Stack {
               minTtl: cdk.Duration.minutes(1),
               compress: true,
               viewerProtocolPolicy: cdk.aws_cloudfront.ViewerProtocolPolicy.HTTPS_ONLY,
+              // Forward Origin header for CORS support
+              forwardedValues: {
+                queryString: false,
+                headers: ['Origin', 'Access-Control-Request-Headers', 'Access-Control-Request-Method'],
+              },
             },
           ],
         },

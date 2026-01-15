@@ -509,7 +509,7 @@ function handler(event) {
   // Allow resources from vettid.dev and all subdomains for cross-subdomain asset loading
   // Specific API endpoint injected at synthesis time (no wildcard - security best practice)
   headers['content-security-policy'] = {
-    value: "default-src 'self'; script-src 'self' https://vettid.dev https://*.vettid.dev; style-src 'self' 'unsafe-inline' https://vettid.dev https://*.vettid.dev; img-src 'self' data: https://vettid.dev https://*.vettid.dev; font-src 'self' https://vettid.dev https://*.vettid.dev; connect-src 'self' ${this.httpApi.apiEndpoint} https://*.amazoncognito.com https://cognito-idp.us-east-1.amazonaws.com; frame-ancestors 'none'; form-action 'self' https://*.amazoncognito.com; base-uri 'self'; object-src 'none'; upgrade-insecure-requests;"
+    value: "default-src 'self'; script-src 'self' https://vettid.dev https://*.vettid.dev; style-src 'self' 'unsafe-inline' https://vettid.dev https://*.vettid.dev; img-src 'self' data: https://vettid.dev https://*.vettid.dev; font-src 'self' https://vettid.dev https://*.vettid.dev; connect-src 'self' https://vettid.dev https://*.vettid.dev ${this.httpApi.apiEndpoint} https://*.amazoncognito.com https://cognito-idp.us-east-1.amazonaws.com; frame-ancestors 'none'; form-action 'self' https://*.amazoncognito.com; base-uri 'self'; object-src 'none'; upgrade-insecure-requests;"
   };
 
   // Prevent clickjacking
