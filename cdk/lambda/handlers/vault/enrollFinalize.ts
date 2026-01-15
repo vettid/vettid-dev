@@ -13,7 +13,7 @@ import {
   hashIdentifier,
   tooManyRequests,
 } from '../../common/util';
-import { generateBootstrapCredentials, formatCredsFile } from '../../common/nats-jwt';
+// Note: generateBootstrapCredentials removed - app uses credentials from enrollNatsBootstrap
 
 const ddb = new DynamoDBClient({});
 
@@ -173,27 +173,10 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       return conflict(`Cannot finalize enrollment: account status is '${existingAccount.status}'`, origin);
     }
 
-    // Generate temporary bootstrap credentials for initial app connection
-    // These have minimal permissions - just enough to call app.bootstrap
-    // The vault-manager will generate full credentials after bootstrap
-    const accountSeed = existingAccount.account_seed_encrypted || existingAccount.account_seed;
-
-    // Note: If using encrypted seed, we need to decrypt it first
-    // For now, support both encrypted and legacy unencrypted seeds
-    let seedForCredentials = accountSeed;
-    if (accountSeed && !accountSeed.startsWith('SA')) {
-      // This is an encrypted seed - for finalize we don't need to decrypt
-      // because the app already has credentials from nats-bootstrap
-      // We return minimal info here
-    }
-
-    const bootstrapCreds = await generateBootstrapCredentials(
-      userGuid,
-      existingAccount.account_seed || seedForCredentials,
-      ownerSpaceId
-    );
-
-    const bootstrapCredentials = formatCredsFile(bootstrapCreds.jwt, bootstrapCreds.seed);
+    // NOTE: App already has NATS credentials from enrollNatsBootstrap.
+    // Those credentials include permissions for forVault.> and forApp.> topics,
+    // which is sufficient for the bootstrap call.
+    // No separate bootstrap credentials are generated here.
 
     // Mark session as completed
     await ddb.send(new UpdateItemCommand({
@@ -238,19 +221,18 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     return ok({
       status: 'enrolled',
       vault_status: vaultStatus,
-      // Vault bootstrap info - app uses these temporary credentials to call app.bootstrap
+      // Vault bootstrap info - app uses credentials from enrollNatsBootstrap to call app.bootstrap
       // on the vault and receive:
       // 1. Full NATS credentials for vault communication
       // 2. The Protean Credential (created by vault-manager, stored in vault's JetStream)
       // Enclave is immediately available - no EC2 startup delay.
       vault_bootstrap: {
-        credentials: bootstrapCredentials,
+        // NOTE: credentials removed - app uses credentials from enrollNatsBootstrap
         owner_space: ownerSpaceId,
         message_space: messageSpaceId,
         nats_endpoint: `tls://${process.env.NATS_ENDPOINT || 'nats.vettid.dev:443'}`,
         bootstrap_topic: `${ownerSpaceId}.forVault.app.bootstrap`,
         response_topic: `${ownerSpaceId}.forApp.app.bootstrap.>`,
-        credentials_ttl_seconds: 3600,
         estimated_ready_at: new Date().toISOString(),  // Enclave is immediately ready
       },
     }, origin);

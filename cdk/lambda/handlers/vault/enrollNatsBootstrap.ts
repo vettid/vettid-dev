@@ -353,18 +353,19 @@ async function getOrCreateNatsAccount(userGuid: string, requestId: string): Prom
 
 /**
  * Decrypt account seed from KMS
+ *
+ * SECURITY: Only KMS-encrypted seeds are supported. Legacy unencrypted seeds
+ * (starting with 'SA') are no longer accepted - users must re-enroll.
  */
 async function decryptAccountSeed(account: any, userGuid: string): Promise<string> {
-  const encryptedSeed = account.account_seed_encrypted || account.account_seed;
+  const encryptedSeed = account.account_seed_encrypted;
 
   if (!encryptedSeed) {
-    throw new Error('NATS account missing signing key');
-  }
-
-  // Check if legacy unencrypted seed
-  if (encryptedSeed.startsWith('SA')) {
-    console.warn(`SECURITY: Legacy unencrypted seed for user ${userGuid}`);
-    return encryptedSeed;
+    // Legacy unencrypted seeds are no longer supported
+    if (account.account_seed?.startsWith('SA')) {
+      throw new Error('Legacy unencrypted NATS seed detected. User must re-enroll.');
+    }
+    throw new Error('NATS account missing encrypted signing key');
   }
 
   // Decrypt with KMS
