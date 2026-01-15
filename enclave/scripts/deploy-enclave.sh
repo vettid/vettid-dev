@@ -327,10 +327,20 @@ echo "PCR0: $PCR0"
 echo "PCR1: $PCR1"
 echo "PCR2: $PCR2"
 
-# Store PCR values in SSM
+# Store PCR values in SSM (individual parameters)
 aws ssm put-parameter --name "/vettid/enclave/pcr/pcr0" --value "$PCR0" --type String --overwrite --region "$REGION"
 aws ssm put-parameter --name "/vettid/enclave/pcr/pcr1" --value "$PCR1" --type String --overwrite --region "$REGION"
 aws ssm put-parameter --name "/vettid/enclave/pcr/pcr2" --value "$PCR2" --type String --overwrite --region "$REGION"
+
+# Store combined PCR values for /vault/pcrs/current API endpoint
+VERSION="$(date +%Y-%m-%d)-v1"
+PUBLISHED_AT="$(date -Iseconds)"
+PCR_JSON=$(cat <<PCRJSON
+{"PCR0":"$PCR0","PCR1":"$PCR1","PCR2":"$PCR2","version":"$VERSION","published_at":"$PUBLISHED_AT"}
+PCRJSON
+)
+aws ssm put-parameter --name "/vettid/enclave/pcr/current" --value "$PCR_JSON" --type String --overwrite --region "$REGION"
+echo "Updated /vettid/enclave/pcr/current with version $VERSION"
 
 # Install EIF to standard location
 mkdir -p /opt/vettid/enclave
