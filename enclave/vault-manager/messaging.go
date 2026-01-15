@@ -292,6 +292,15 @@ func (h *MessagingHandler) HandleIncomingMessage(ctx context.Context, data []byt
 		return fmt.Errorf("invalid message format: %w", err)
 	}
 
+	// SECURITY: Replay attack prevention - check if message already processed
+	eventID := fmt.Sprintf("msg:%s", peerMsg.MessageID)
+	if alreadyProcessed, err := h.storage.IsEventProcessed(eventID); err == nil && alreadyProcessed {
+		log.Info().
+			Str("message_id", peerMsg.MessageID).
+			Msg("Duplicate message detected - ignoring replay")
+		return nil
+	}
+
 	log.Debug().
 		Str("message_id", peerMsg.MessageID).
 		Str("connection_id", peerMsg.ConnectionID).
@@ -322,6 +331,11 @@ func (h *MessagingHandler) HandleIncomingMessage(ctx context.Context, data []byt
 		log.Error().Err(err).Str("message_id", peerMsg.MessageID).Msg("Failed to store incoming message")
 	}
 
+	// SECURITY: Mark event as processed to prevent replay
+	if err := h.storage.MarkEventProcessed(eventID, "incoming_message"); err != nil {
+		log.Warn().Err(err).Str("message_id", peerMsg.MessageID).Msg("Failed to mark message as processed")
+	}
+
 	// Notify app about new message
 	if err := h.publisher.PublishToApp(ctx, "new-message", data); err != nil {
 		log.Warn().Err(err).Msg("Failed to notify app of new message")
@@ -335,6 +349,15 @@ func (h *MessagingHandler) HandleIncomingReadReceipt(ctx context.Context, data [
 	var receipt PeerReadReceipt
 	if err := json.Unmarshal(data, &receipt); err != nil {
 		return fmt.Errorf("invalid read receipt format: %w", err)
+	}
+
+	// SECURITY: Replay attack prevention - use message_id as receipt identifier
+	eventID := fmt.Sprintf("receipt:%s:%s", receipt.ConnectionID, receipt.MessageID)
+	if alreadyProcessed, err := h.storage.IsEventProcessed(eventID); err == nil && alreadyProcessed {
+		log.Info().
+			Str("message_id", receipt.MessageID).
+			Msg("Duplicate read receipt detected - ignoring replay")
+		return nil
 	}
 
 	log.Debug().
@@ -354,6 +377,11 @@ func (h *MessagingHandler) HandleIncomingReadReceipt(ctx context.Context, data [
 			newData, _ := json.Marshal(record)
 			h.storage.Put(storageKey, newData)
 		}
+	}
+
+	// SECURITY: Mark event as processed to prevent replay
+	if err := h.storage.MarkEventProcessed(eventID, "read_receipt"); err != nil {
+		log.Warn().Err(err).Str("message_id", receipt.MessageID).Msg("Failed to mark receipt as processed")
 	}
 
 	// Notify app about read receipt

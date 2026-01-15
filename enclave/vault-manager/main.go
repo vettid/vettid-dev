@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -164,11 +165,22 @@ func (vm *VaultManager) Run(ctx context.Context) error {
 	// Pass sealerResponseCh so sealer responses can be routed directly, bypassing the main loop
 	go vm.receiveMessages(ctx, msgChan, sealerResponseCh)
 
+	// SECURITY: Periodic cleanup of expired replay prevention events (every hour)
+	cleanupTicker := time.NewTicker(1 * time.Hour)
+	defer cleanupTicker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
 			log.Info().Msg("Vault manager shutting down")
 			return nil
+		case <-cleanupTicker.C:
+			// SECURITY: Clean up expired replay prevention events
+			if deleted, err := vm.storage.CleanupExpiredEvents(); err != nil {
+				log.Warn().Err(err).Msg("Failed to cleanup expired events")
+			} else if deleted > 0 {
+				log.Debug().Int64("deleted", deleted).Msg("Cleaned up expired replay prevention events")
+			}
 		case msg := <-msgChan:
 			// Note: Sealer responses are now routed directly in receiveMessages()
 			// to avoid a deadlock when HandleMessage blocks waiting for sealer responses.

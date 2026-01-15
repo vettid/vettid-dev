@@ -90,6 +90,34 @@ func (s *EncryptedStorage) Close() error {
 	return nil
 }
 
+// ===============================
+// Replay Attack Prevention
+// ===============================
+
+// IsEventProcessed checks if an event has already been processed (replay detection)
+func (s *EncryptedStorage) IsEventProcessed(eventID string) (bool, error) {
+	if s.sqlite == nil {
+		return false, ErrStorageNotInitialized
+	}
+	return s.sqlite.IsEventProcessed(eventID)
+}
+
+// MarkEventProcessed marks an event as processed to prevent replay
+func (s *EncryptedStorage) MarkEventProcessed(eventID, eventType string) error {
+	if s.sqlite == nil {
+		return ErrStorageNotInitialized
+	}
+	return s.sqlite.MarkEventProcessed(eventID, eventType)
+}
+
+// CleanupExpiredEvents removes processed events older than TTL
+func (s *EncryptedStorage) CleanupExpiredEvents() (int64, error) {
+	if s.sqlite == nil {
+		return 0, ErrStorageNotInitialized
+	}
+	return s.sqlite.CleanupExpiredEvents()
+}
+
 // Errors
 var (
 	ErrStorageNotInitialized = &StorageError{Message: "storage not initialized - unseal credential first"}

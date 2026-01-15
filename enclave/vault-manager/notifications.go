@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -73,6 +74,7 @@ type RevocationNotification struct {
 
 // IncomingProfileUpdateNotification is received from peers
 type IncomingProfileUpdateNotification struct {
+	EventID      string            `json:"event_id,omitempty"` // For replay prevention
 	ConnectionID string            `json:"connection_id"`
 	Fields       map[string]string `json:"fields"`
 	UpdatedAt    string            `json:"updated_at"`
@@ -80,6 +82,7 @@ type IncomingProfileUpdateNotification struct {
 
 // IncomingRevocationNotification is received from peers
 type IncomingRevocationNotification struct {
+	EventID      string `json:"event_id,omitempty"` // For replay prevention
 	ConnectionID string `json:"connection_id"`
 	RevokedAt    string `json:"revoked_at"`
 	Reason       string `json:"reason,omitempty"`
@@ -264,10 +267,28 @@ func (h *NotificationsHandler) HandleIncomingProfileUpdate(ctx context.Context, 
 		return err
 	}
 
+	// SECURITY: Replay attack prevention
+	// Use event_id if provided, otherwise fall back to connection_id+updated_at
+	eventID := update.EventID
+	if eventID == "" {
+		eventID = fmt.Sprintf("profile:%s:%s", update.ConnectionID, update.UpdatedAt)
+	}
+	if alreadyProcessed, err := h.storage.IsEventProcessed(eventID); err == nil && alreadyProcessed {
+		log.Info().
+			Str("connection_id", update.ConnectionID).
+			Msg("Duplicate profile update detected - ignoring replay")
+		return nil
+	}
+
 	log.Debug().
 		Str("connection_id", update.ConnectionID).
 		Int("fields", len(update.Fields)).
 		Msg("Received profile update from peer")
+
+	// SECURITY: Mark event as processed to prevent replay
+	if err := h.storage.MarkEventProcessed(eventID, "profile_update"); err != nil {
+		log.Warn().Err(err).Str("connection_id", update.ConnectionID).Msg("Failed to mark update as processed")
+	}
 
 	// Notify app
 	if err := h.publisher.PublishToApp(ctx, "profile-update", data); err != nil {
@@ -284,6 +305,19 @@ func (h *NotificationsHandler) HandleIncomingRevocation(ctx context.Context, dat
 		return err
 	}
 
+	// SECURITY: Replay attack prevention
+	// Use event_id if provided, otherwise fall back to connection_id+revoked_at
+	eventID := revocation.EventID
+	if eventID == "" {
+		eventID = fmt.Sprintf("revoke:%s:%s", revocation.ConnectionID, revocation.RevokedAt)
+	}
+	if alreadyProcessed, err := h.storage.IsEventProcessed(eventID); err == nil && alreadyProcessed {
+		log.Info().
+			Str("connection_id", revocation.ConnectionID).
+			Msg("Duplicate revocation notice detected - ignoring replay")
+		return nil
+	}
+
 	log.Info().
 		Str("connection_id", revocation.ConnectionID).
 		Str("revoked_at", revocation.RevokedAt).
@@ -298,6 +332,11 @@ func (h *NotificationsHandler) HandleIncomingRevocation(ctx context.Context, dat
 			newData, _ := json.Marshal(conn)
 			h.storage.Put("connections/"+revocation.ConnectionID, newData)
 		}
+	}
+
+	// SECURITY: Mark event as processed to prevent replay
+	if err := h.storage.MarkEventProcessed(eventID, "revocation"); err != nil {
+		log.Warn().Err(err).Str("connection_id", revocation.ConnectionID).Msg("Failed to mark revocation as processed")
 	}
 
 	// Notify app

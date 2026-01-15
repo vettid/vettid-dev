@@ -134,6 +134,16 @@ func (s *SQLiteStorage) initSchema() error {
 		value TEXT NOT NULL,
 		updated_at INTEGER NOT NULL
 	);
+
+	-- Processed events table for replay attack prevention
+	-- Tracks event_ids that have been processed to prevent duplicate processing
+	-- TTL-based cleanup removes entries older than 24 hours
+	CREATE TABLE IF NOT EXISTS processed_events (
+		event_id TEXT PRIMARY KEY,
+		event_type TEXT NOT NULL,
+		processed_at INTEGER NOT NULL
+	);
+	CREATE INDEX IF NOT EXISTS idx_processed_events_cleanup ON processed_events(processed_at);
 	`
 
 	if _, err := s.db.Exec(schema); err != nil {
@@ -715,7 +725,7 @@ func (s *SQLiteStorage) GetRollbackCounter() int64 {
 func (s *SQLiteStorage) exportData() ([]byte, error) {
 	export := make(map[string]interface{})
 
-	// Export each table
+	// Export each table (excluding processed_events which is ephemeral)
 	tables := []string{"cek_keypairs", "transport_keys", "ledger_entries", "handler_state", "_metadata"}
 	for _, table := range tables {
 		rows, err := s.db.Query(fmt.Sprintf("SELECT * FROM %s", table))
@@ -827,6 +837,96 @@ func boolToInt(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// ===============================
+// Replay Attack Prevention
+// ===============================
+// These methods track processed event IDs to prevent replay attacks.
+// Events are stored with a 24-hour TTL and cleaned up periodically.
+
+const (
+	// ReplayTTLSeconds is the time window for replay detection (24 hours)
+	ReplayTTLSeconds = 86400
+	// MaxEventAge is the maximum age of events to accept (5 minutes)
+	MaxEventAge = 300
+)
+
+// IsEventProcessed checks if an event has already been processed
+// Returns true if the event was already processed (replay detected)
+func (s *SQLiteStorage) IsEventProcessed(eventID string) (bool, error) {
+	if eventID == "" {
+		return false, nil // Empty event IDs are not tracked
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var count int
+	err := s.db.QueryRow(`
+		SELECT COUNT(*) FROM processed_events WHERE event_id = ?
+	`, eventID).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("failed to check processed event: %w", err)
+	}
+
+	return count > 0, nil
+}
+
+// MarkEventProcessed marks an event as processed to prevent replay
+func (s *SQLiteStorage) MarkEventProcessed(eventID, eventType string) error {
+	if eventID == "" {
+		return nil // Don't track empty event IDs
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.Exec(`
+		INSERT OR IGNORE INTO processed_events (event_id, event_type, processed_at)
+		VALUES (?, ?, ?)
+	`, eventID, eventType, time.Now().Unix())
+	if err != nil {
+		return fmt.Errorf("failed to mark event processed: %w", err)
+	}
+
+	return nil
+}
+
+// CleanupExpiredEvents removes processed events older than TTL
+// Should be called periodically (e.g., hourly) to prevent unbounded growth
+func (s *SQLiteStorage) CleanupExpiredEvents() (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	cutoff := time.Now().Unix() - ReplayTTLSeconds
+	result, err := s.db.Exec(`
+		DELETE FROM processed_events WHERE processed_at < ?
+	`, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("failed to cleanup expired events: %w", err)
+	}
+
+	deleted, _ := result.RowsAffected()
+	return deleted, nil
+}
+
+// CheckEventFreshness validates that an event timestamp is recent enough
+// Returns error if the event is too old (possible replay attack)
+func CheckEventFreshness(eventTimestamp int64) error {
+	now := time.Now().Unix()
+	age := now - eventTimestamp
+
+	if age < 0 {
+		// Future timestamp - clock skew or manipulation
+		return fmt.Errorf("event timestamp is in the future")
+	}
+
+	if age > MaxEventAge {
+		return fmt.Errorf("event is too old: %d seconds (max %d)", age, MaxEventAge)
+	}
+
+	return nil
 }
 
 // Close closes the database connection

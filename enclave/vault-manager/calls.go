@@ -184,28 +184,81 @@ func (ch *CallHandler) UnblockCaller(ctx context.Context, callerID string) error
 
 // HandleCallEvent processes an incoming call event
 func (ch *CallHandler) HandleCallEvent(ctx context.Context, event *CallEvent) error {
+	// SECURITY: Replay attack prevention
+	// Use EventID if provided, otherwise fall back to call_id+event_type+timestamp
+	eventID := event.EventID
+	if eventID == "" {
+		eventID = fmt.Sprintf("call:%s:%s:%d", event.CallID, event.EventType, event.Timestamp)
+	}
+	if alreadyProcessed, err := ch.storage.IsEventProcessed(eventID); err == nil && alreadyProcessed {
+		log.Info().
+			Str("event_id", eventID).
+			Str("call_id", event.CallID).
+			Msg("Duplicate call event detected - ignoring replay")
+		return nil
+	}
+
+	// SECURITY: Check event freshness (reject events older than 5 minutes)
+	if event.Timestamp > 0 {
+		if err := checkEventFreshness(event.Timestamp); err != nil {
+			log.Warn().
+				Str("call_id", event.CallID).
+				Int64("timestamp", event.Timestamp).
+				Err(err).
+				Msg("Call event failed freshness check - possible replay attack")
+			return fmt.Errorf("event failed freshness check: %w", err)
+		}
+	}
+
 	log.Debug().
 		Str("event_type", string(event.EventType)).
 		Str("call_id", event.CallID).
 		Str("caller_id", event.CallerID).
 		Msg("Processing call event")
 
+	var err error
 	switch event.EventType {
 	case CallEventInitiate:
-		return ch.handleCallInitiate(ctx, event)
+		err = ch.handleCallInitiate(ctx, event)
 	case CallEventOffer, CallEventAnswer, CallEventCandidate:
-		return ch.handleCallSignaling(ctx, event)
+		err = ch.handleCallSignaling(ctx, event)
 	case CallEventAccept:
-		return ch.handleCallAccept(ctx, event)
+		err = ch.handleCallAccept(ctx, event)
 	case CallEventReject:
-		return ch.handleCallReject(ctx, event)
+		err = ch.handleCallReject(ctx, event)
 	case CallEventCancel:
-		return ch.handleCallCancel(ctx, event)
+		err = ch.handleCallCancel(ctx, event)
 	case CallEventEnd:
-		return ch.handleCallEnd(ctx, event)
+		err = ch.handleCallEnd(ctx, event)
 	default:
 		return fmt.Errorf("unknown call event type: %s", event.EventType)
 	}
+
+	if err != nil {
+		return err
+	}
+
+	// SECURITY: Mark event as processed to prevent replay
+	if markErr := ch.storage.MarkEventProcessed(eventID, string(event.EventType)); markErr != nil {
+		log.Warn().Err(markErr).Str("event_id", eventID).Msg("Failed to mark call event as processed")
+	}
+
+	return nil
+}
+
+// checkEventFreshness validates that an event timestamp is recent enough
+func checkEventFreshness(eventTimestamp int64) error {
+	const maxEventAge int64 = 300 // 5 minutes
+	now := time.Now().Unix()
+	age := now - eventTimestamp
+
+	if age < 0 {
+		return fmt.Errorf("event timestamp is in the future")
+	}
+	if age > maxEventAge {
+		return fmt.Errorf("event is too old: %d seconds (max %d)", age, maxEventAge)
+	}
+	return nil
 }
 
 // handleCallInitiate processes an incoming call request
