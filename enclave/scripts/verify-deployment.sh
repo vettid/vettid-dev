@@ -59,16 +59,30 @@ else
     log_warn "SSM /vettid/enclave/pcr/pcr0 not found (optional)"
 fi
 
-# 2. Check individual SSM params match combined param
+# 2. Check legacy PCR0 param (used by parent process for attestation verification)
+SSM_LEGACY_PCR0=$(aws ssm get-parameter --name "/vettid/enclave/pcr0" --query 'Parameter.Value' --output text --region "$REGION" 2>/dev/null || echo "")
+if [ -n "$SSM_LEGACY_PCR0" ]; then
+    if [ -n "$SSM_CURRENT_PCR0" ] && [ "$SSM_LEGACY_PCR0" != "$SSM_CURRENT_PCR0" ]; then
+        log_error "CRITICAL: Legacy /vettid/enclave/pcr0 does not match /current"
+        log_error "  Legacy (parent reads): ${SSM_LEGACY_PCR0:0:20}..."
+        log_error "  Current:               ${SSM_CURRENT_PCR0:0:20}..."
+        log_error "  This will cause parent crash loop!"
+        ERRORS=$((ERRORS + 1))
+    else
+        log_ok "SSM /vettid/enclave/pcr0 (legacy) matches current"
+    fi
+else
+    log_warn "SSM /vettid/enclave/pcr0 (legacy) not found - parent may fail"
+fi
+
+# 3. Check individual SSM params match combined param (optional)
 if [ -n "$SSM_PCR0" ] && [ -n "$SSM_CURRENT_PCR0" ]; then
     if [ "$SSM_PCR0" != "$SSM_CURRENT_PCR0" ]; then
-        log_warn "SSM PCR0 mismatch: individual param differs from /current"
-        log_warn "  Individual: ${SSM_PCR0:0:20}..."
-        log_warn "  Combined:   ${SSM_CURRENT_PCR0:0:20}..."
+        log_warn "SSM /pcr/pcr0 differs from /current (informational only)"
     fi
 fi
 
-# 3. Check API endpoint
+# 4. Check API endpoint
 echo ""
 echo "Checking API endpoint..."
 API_RESPONSE=$(curl -s "$API_URL/vault/pcrs/current" 2>/dev/null || echo "")
