@@ -40,37 +40,17 @@ func NewPINHandler(ownerSpace string, state *VaultState, bootstrap *BootstrapHan
 func (h *PINHandler) HandlePINSetup(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	log.Info().Str("owner_space", h.ownerSpace).Msg("PIN setup requested")
 
-	var req PINSetupRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
-		return h.errorResponse(msg.GetID(), "invalid request format")
+	// Decrypt PIN using attestation key (mobile enrollment flow)
+	// Format: {"type": "pin.setup", "payload": {"encrypted_pin": "...", "ephemeral_public_key": "...", "nonce": "..."}}
+	if len(msg.AttestationPrivateKey) == 0 {
+		log.Error().Str("owner_space", h.ownerSpace).Msg("No attestation key for PIN setup")
+		return h.errorResponse(msg.GetID(), "attestation key required - did attestation complete?")
 	}
 
-	// Validate UTK
-	ltk, found := h.bootstrap.GetLTKForUTK(req.UTKID)
-	if !found {
-		return h.errorResponse(msg.GetID(), "invalid UTK")
-	}
-
-	// Decode encrypted payload
-	encryptedPayload, err := base64.StdEncoding.DecodeString(req.EncryptedPayload)
-	if err != nil {
-		return h.errorResponse(msg.GetID(), "invalid payload encoding")
-	}
-
-	// Decrypt payload using LTK (ECIES decryption)
-	h.state.mu.RLock()
-	eciesPrivateKey := h.state.eciesPrivateKey
-	h.state.mu.RUnlock()
-
-	if eciesPrivateKey == nil {
-		return h.errorResponse(msg.GetID(), "vault not bootstrapped")
-	}
-
-	// The payload is encrypted with ECIES using our public key
-	payloadBytes, err := decryptWithECIES(eciesPrivateKey, encryptedPayload)
+	payloadBytes, err := h.decryptMobileFormat(msg)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to decrypt PIN payload")
-		return h.errorResponse(msg.GetID(), "decryption failed")
+		return h.errorResponse(msg.GetID(), "decryption failed: "+err.Error())
 	}
 	defer zeroBytes(payloadBytes) // SECURITY: Clear plaintext after use
 
@@ -89,9 +69,7 @@ func (h *PINHandler) HandlePINSetup(ctx context.Context, msg *IncomingMessage) (
 		return h.errorResponse(msg.GetID(), "PIN must contain only digits")
 	}
 
-	// Mark UTK as used (one-time use for transport encryption)
-	h.bootstrap.MarkUTKUsed(req.UTKID)
-	_ = ltk // LTK could be used for additional key agreement if needed
+	// Note: UTK marking is now handled in decryptUTKFormat if that flow was used
 
 	// Request sealed material from supervisor (KMS-bound operation)
 	sealedMaterial, err := h.sealerProxy.GenerateSealedMaterial()
@@ -455,3 +433,65 @@ func (h *PINHandler) errorResponse(requestID string, errMsg string) (*OutgoingMe
 		Error:     errMsg,
 	}, nil
 }
+
+// decryptMobileFormat handles the mobile app's attestation-based PIN encryption
+// Mobile format: {"type": "pin.setup", "payload": {"encrypted_pin": "...", "ephemeral_public_key": "...", "nonce": "..."}}
+func (h *PINHandler) decryptMobileFormat(msg *IncomingMessage) ([]byte, error) {
+	// Parse the outer envelope
+	var envelope struct {
+		Type    string `json:"type"`
+		Payload struct {
+			EncryptedPIN       string `json:"encrypted_pin"`
+			EphemeralPublicKey string `json:"ephemeral_public_key"`
+			Nonce              string `json:"nonce"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal(msg.Payload, &envelope); err != nil {
+		return nil, fmt.Errorf("invalid mobile payload format: %w", err)
+	}
+
+	log.Debug().
+		Str("owner_space", h.ownerSpace).
+		Str("type", envelope.Type).
+		Int("encrypted_pin_len", len(envelope.Payload.EncryptedPIN)).
+		Int("ephemeral_key_len", len(envelope.Payload.EphemeralPublicKey)).
+		Int("nonce_len", len(envelope.Payload.Nonce)).
+		Msg("Decrypting mobile PIN format")
+
+	// Decode components
+	ephemeralPub, err := base64.StdEncoding.DecodeString(envelope.Payload.EphemeralPublicKey)
+	if err != nil {
+		return nil, fmt.Errorf("invalid ephemeral public key encoding: %w", err)
+	}
+	if len(ephemeralPub) != 32 {
+		return nil, fmt.Errorf("invalid ephemeral public key length: %d", len(ephemeralPub))
+	}
+
+	nonce, err := base64.StdEncoding.DecodeString(envelope.Payload.Nonce)
+	if err != nil {
+		return nil, fmt.Errorf("invalid nonce encoding: %w", err)
+	}
+	if len(nonce) != 12 {
+		return nil, fmt.Errorf("invalid nonce length: %d", len(nonce))
+	}
+
+	ciphertext, err := base64.StdEncoding.DecodeString(envelope.Payload.EncryptedPIN)
+	if err != nil {
+		return nil, fmt.Errorf("invalid encrypted PIN encoding: %w", err)
+	}
+
+	// Reconstruct ECIES format: [32-byte ephemeral pubkey][12-byte nonce][ciphertext]
+	encrypted := make([]byte, 0, 32+12+len(ciphertext))
+	encrypted = append(encrypted, ephemeralPub...)
+	encrypted = append(encrypted, nonce...)
+	encrypted = append(encrypted, ciphertext...)
+
+	// Decrypt using the attestation private key
+	plaintext, err := decryptWithECIES(msg.AttestationPrivateKey, encrypted)
+	if err != nil {
+		return nil, fmt.Errorf("ECIES decryption failed: %w", err)
+	}
+
+	return plaintext, nil
+}
+

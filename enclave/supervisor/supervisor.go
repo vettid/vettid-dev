@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -326,6 +327,23 @@ func (s *Supervisor) handleVaultOp(ctx context.Context, msg *Message) (*Message,
 		return nil, fmt.Errorf("owner_space required for vault operation")
 	}
 
+	// For PIN operations, include the attestation private key
+	// The mobile app encrypts PIN with the attestation public key
+	if isPinOperation(msg.Subject) {
+		attestationKey := s.getAttestationKey(ownerSpace)
+		if attestationKey != nil {
+			msg.AttestationPrivateKey = attestationKey
+			log.Debug().
+				Str("owner_space", ownerSpace).
+				Int("key_len", len(attestationKey)).
+				Msg("Including attestation key for PIN operation")
+		} else {
+			log.Warn().
+				Str("owner_space", ownerSpace).
+				Msg("No attestation key found for PIN operation")
+		}
+	}
+
 	// Get or create vault for this owner
 	vault, err := s.vaults.GetOrCreate(ctx, ownerSpace)
 	if err != nil {
@@ -334,6 +352,12 @@ func (s *Supervisor) handleVaultOp(ctx context.Context, msg *Message) (*Message,
 
 	// Forward message to vault
 	return vault.ProcessMessage(ctx, msg)
+}
+
+// isPinOperation checks if a NATS subject is a PIN operation
+func isPinOperation(subject string) bool {
+	// Match: forVault.pin, forVault.pin-setup, forVault.pin-unlock, forVault.pin-change
+	return strings.Contains(subject, "forVault.pin")
 }
 
 // handleAttestationRequest generates an attestation document

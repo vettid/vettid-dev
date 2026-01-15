@@ -121,6 +121,10 @@ type Message struct {
 	Ciphertext    []byte `json:"ciphertext,omitempty"`
 	CiphertextDEK []byte `json:"ciphertext_dek,omitempty"`
 
+	// Attestation private key (for PIN decryption - passed to vault-manager)
+	// SECURITY: Only included for PIN operations, cleared after use
+	AttestationPrivateKey []byte `json:"attestation_private_key,omitempty"`
+
 	// Error
 	Error string `json:"error,omitempty"`
 

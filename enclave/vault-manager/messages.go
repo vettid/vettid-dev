@@ -35,6 +35,10 @@ type IncomingMessage struct {
 	ReplyTo    string          `json:"reply_to,omitempty"`
 	Payload    json.RawMessage `json:"payload,omitempty"`
 
+	// Attestation private key for PIN decryption
+	// SECURITY: Only included for PIN operations, supervisor provides this
+	AttestationPrivateKey []byte `json:"attestation_private_key,omitempty"`
+
 	// Legacy field for backward compatibility
 	ID string `json:"id,omitempty"` // Fallback if RequestID not set
 }
@@ -239,6 +243,9 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 		return mh.handleAppOperation(ctx, msg, parts[opIndex+1:])
 	case "bootstrap":
 		return mh.handleBootstrap(ctx, msg)
+	case "pin":
+		// Route based on payload type for mobile apps using forVault.pin subject
+		return mh.handlePinOperation(ctx, msg)
 	case "pin-setup":
 		return mh.pinHandler.HandlePINSetup(ctx, msg)
 	case "pin-unlock":
@@ -277,6 +284,34 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 		return mh.handleIncomingReadReceipt(ctx, msg)
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown operation: %s", operation))
+	}
+}
+
+// handlePinOperation routes PIN operations based on payload type
+// Supports mobile apps that use forVault.pin subject with type in payload
+func (mh *MessageHandler) handlePinOperation(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	// Parse payload to extract the operation type
+	var envelope struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(msg.Payload, &envelope); err != nil {
+		return mh.errorResponse(msg.GetID(), "invalid payload format")
+	}
+
+	log.Debug().
+		Str("owner_space", mh.ownerSpace).
+		Str("pin_operation", envelope.Type).
+		Msg("Routing PIN operation")
+
+	switch envelope.Type {
+	case "pin.setup":
+		return mh.pinHandler.HandlePINSetup(ctx, msg)
+	case "pin.unlock":
+		return mh.pinHandler.HandlePINUnlock(ctx, msg)
+	case "pin.change":
+		return mh.pinHandler.HandlePINChange(ctx, msg)
+	default:
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown PIN operation type: %s", envelope.Type))
 	}
 }
 
