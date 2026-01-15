@@ -75,6 +75,11 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
 
     const natsAccount = unmarshall(natsAccountResult.Item);
 
+    // SECURITY: Only allow operations for active accounts
+    if (natsAccount.status !== 'active') {
+      return badRequest('Vault enrollment not complete. Please complete enrollment first.', origin);
+    }
+
     // Check for existing pending restore request
     const existingRequest = await ddb.send(new QueryCommand({
       TableName: TABLE_CREDENTIAL_RECOVERY_REQUESTS,

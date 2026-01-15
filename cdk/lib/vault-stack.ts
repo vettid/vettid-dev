@@ -243,9 +243,12 @@ export class VaultStack extends cdk.Stack {
       runtime: lambda.Runtime.NODEJS_22_X,
       environment: {
         ...defaultEnv,
+        TABLE_NATS_ACCOUNTS: tables.natsAccounts.tableName,
       },
       timeout: cdk.Duration.seconds(30),
     });
+    // Grant permission to clean up enrolling NATS accounts
+    tables.natsAccounts.grantReadWriteData(this.cancelEnrollmentSession);
 
     // Authenticate enrollment (public endpoint for mobile to exchange session_token for JWT)
     this.authenticateEnrollment = new lambdaNode.NodejsFunction(this, 'AuthenticateEnrollmentFn', {

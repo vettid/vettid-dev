@@ -407,6 +407,8 @@ export class InfrastructureStack extends cdk.Stack {
     // ===== NATS INFRASTRUCTURE TABLES =====
 
     // NATS Accounts table - stores member NATS namespace allocations
+    // TTL enabled for automatic cleanup of incomplete enrollments
+    // (accounts stuck in 'enrolling' status will have enrollment_ttl set)
     const natsAccounts = new dynamodb.Table(this, 'NatsAccounts', {
       partitionKey: { name: 'user_guid', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
@@ -414,6 +416,7 @@ export class InfrastructureStack extends cdk.Stack {
       pointInTimeRecovery: true,
       encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
       encryptionKey: dynamoDbEncryptionKey,
+      timeToLiveAttribute: 'enrollment_ttl',  // Auto-delete incomplete enrollments
     });
 
     // GSI for NATS account JWT lookup by account public key (used by NATS URL resolver)

@@ -213,7 +213,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     }, requestId);
 
     const response: NatsBootstrapResponse = {
-      nats_endpoint: `tls://${NATS_DOMAIN}:4222`,
+      nats_endpoint: `tls://${NATS_DOMAIN}:443`,
       nats_jwt: credentials.jwt,
       nats_seed: credentials.seed,
       nats_creds: formatCredsFile(credentials.jwt, credentials.seed),
@@ -232,8 +232,23 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
   }
 };
 
+// Enrollment TTL: 1 hour for incomplete enrollments to be cleaned up
+const ENROLLMENT_TTL_SECONDS = 60 * 60;
+
 /**
- * Get existing NATS account or create new one
+ * Get existing NATS account or create new one for enrollment.
+ *
+ * SECURITY: New accounts are created with status='enrolling' (not 'active').
+ * This prevents:
+ * - Account page showing "enrolled" before enrollment completes
+ * - Vault operations being allowed before enrollment completes
+ * - Leaked enrollment credentials being usable for real operations
+ *
+ * The account transitions to 'active' only in enrollFinalize after
+ * the full enrollment flow completes successfully.
+ *
+ * Accounts stuck in 'enrolling' status have a TTL and will be automatically
+ * deleted after 1 hour.
  */
 async function getOrCreateNatsAccount(userGuid: string, requestId: string): Promise<any> {
   // Check if account exists
@@ -244,13 +259,24 @@ async function getOrCreateNatsAccount(userGuid: string, requestId: string): Prom
 
   if (existingAccount.Item) {
     const account = unmarshall(existingAccount.Item);
-    if (account.status !== 'active') {
-      throw new Error('NATS account exists but is not active');
+
+    // If account is active, user is already enrolled
+    if (account.status === 'active') {
+      return account;
     }
-    return account;
+
+    // If account is in 'enrolling' status, allow re-enrollment
+    // This handles the case where a previous enrollment attempt failed
+    if (account.status === 'enrolling') {
+      console.log(`Re-using existing enrolling account for user ${userGuid}`);
+      return account;
+    }
+
+    // Any other status is an error
+    throw new Error(`NATS account exists with unexpected status: ${account.status}`);
   }
 
-  // Create new account
+  // Create new account with 'enrolling' status
   const ownerSpaceId = `OwnerSpace.${userGuid}`;
   const messageSpaceId = `MessageSpace.${userGuid}`;
 
@@ -273,6 +299,9 @@ async function getOrCreateNatsAccount(userGuid: string, requestId: string): Prom
   const encryptedSeedBase64 = Buffer.from(encryptResult.CiphertextBlob).toString('base64');
   const now = nowIso();
 
+  // TTL for automatic cleanup of incomplete enrollments (1 hour from now)
+  const enrollmentTtl = Math.floor(Date.now() / 1000) + ENROLLMENT_TTL_SECONDS;
+
   const accountRecord = {
     user_guid: userGuid,
     owner_space_id: ownerSpaceId,
@@ -280,7 +309,8 @@ async function getOrCreateNatsAccount(userGuid: string, requestId: string): Prom
     account_public_key: accountCredentials.publicKey,
     account_seed_encrypted: encryptedSeedBase64,
     account_jwt: accountCredentials.accountJwt,
-    status: 'active',
+    status: 'enrolling',  // SECURITY: Not 'active' until enrollment completes
+    enrollment_ttl: enrollmentTtl,  // Auto-delete if enrollment doesn't complete
     created_at: now,
     updated_at: now,
   };
@@ -296,6 +326,7 @@ async function getOrCreateNatsAccount(userGuid: string, requestId: string): Prom
     user_guid: userGuid,
     owner_space_id: ownerSpaceId,
     message_space_id: messageSpaceId,
+    status: 'enrolling',
   }, requestId);
 
   return accountRecord;

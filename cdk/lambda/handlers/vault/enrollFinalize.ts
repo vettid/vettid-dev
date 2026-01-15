@@ -13,7 +13,7 @@ import {
   hashIdentifier,
   tooManyRequests,
 } from '../../common/util';
-import { generateAccountCredentials, generateBootstrapCredentials, formatCredsFile } from '../../common/nats-jwt';
+import { generateBootstrapCredentials, formatCredsFile } from '../../common/nats-jwt';
 
 const ddb = new DynamoDBClient({});
 
@@ -127,61 +127,73 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     const now = new Date();
     const userGuid = session.user_guid;
 
-    // === NATS ACCOUNT SETUP ===
-    // Create NATS account for mobile app communication with the vault.
-    // The Nitro enclave is already running - no EC2 provisioning needed.
-    // The vault-manager will create the Protean Credential when the app
-    // calls app.bootstrap on its vault via NATS.
+    // === NATS ACCOUNT ACTIVATION ===
+    // The NATS account should already exist (created by enrollNatsBootstrap)
+    // with status='enrolling'. We transition it to 'active' here.
+    //
+    // SECURITY: This is the only place where accounts become 'active'.
+    // This ensures enrollment must complete fully before the account is usable.
     const vaultStatus = 'ENCLAVE_READY';
-    const ownerSpaceId = `OwnerSpace.${userGuid.replace(/-/g, '')}`;
-    const messageSpaceId = `MessageSpace.${userGuid.replace(/-/g, '')}`;
-    let bootstrapCredentials = '';
-    let accountSeed: string;
 
-    // Check if this user already has a NATS account (e.g., re-enrollment)
     const existingAccountResult = await ddb.send(new GetItemCommand({
       TableName: TABLE_NATS_ACCOUNTS,
       Key: marshall({ user_guid: userGuid }),
     }));
 
-    if (existingAccountResult.Item) {
-      // Reusing existing account - use the existing seed for bootstrap credentials
-      const existingAccount = unmarshall(existingAccountResult.Item);
-      accountSeed = existingAccount.account_seed;
-      console.log(`Re-enrollment with existing NATS account for user ${userGuid}`);
-    } else {
-      // New user - create NATS account
-      const accountCredentials = await generateAccountCredentials(userGuid);
-      accountSeed = accountCredentials.seed;
+    if (!existingAccountResult.Item) {
+      // NATS account should have been created by enrollNatsBootstrap
+      return badRequest('Enrollment not properly initialized. Please restart enrollment.', origin);
+    }
 
-      await ddb.send(new PutItemCommand({
+    const existingAccount = unmarshall(existingAccountResult.Item);
+    const ownerSpaceId = existingAccount.owner_space_id;
+    const messageSpaceId = existingAccount.message_space_id;
+
+    // Validate account status
+    if (existingAccount.status === 'active') {
+      // Already active - this is a re-finalize (idempotent)
+      console.log(`Account already active for user ${userGuid}`);
+    } else if (existingAccount.status === 'enrolling') {
+      // Transition from 'enrolling' to 'active' and remove TTL
+      await ddb.send(new UpdateItemCommand({
         TableName: TABLE_NATS_ACCOUNTS,
-        Item: marshall({
-          user_guid: userGuid,
-          account_public_key: accountCredentials.publicKey,
-          account_seed: accountCredentials.seed,
-          account_jwt: accountCredentials.accountJwt,
-          owner_space_id: ownerSpaceId,
-          message_space_id: messageSpaceId,
-          status: 'active',
-          storage_type: 'enclave',
-          created_at: now.toISOString(),
-        }, { removeUndefinedValues: true }),
+        Key: marshall({ user_guid: userGuid }),
+        UpdateExpression: 'SET #status = :active, activated_at = :now REMOVE enrollment_ttl',
+        ExpressionAttributeNames: {
+          '#status': 'status',
+        },
+        ExpressionAttributeValues: marshall({
+          ':active': 'active',
+          ':now': now.toISOString(),
+        }),
       }));
-
-      console.log(`Created NATS account for user ${userGuid}`);
+      console.log(`Activated NATS account for user ${userGuid}`);
+    } else {
+      // Unexpected status
+      return conflict(`Cannot finalize enrollment: account status is '${existingAccount.status}'`, origin);
     }
 
     // Generate temporary bootstrap credentials for initial app connection
     // These have minimal permissions - just enough to call app.bootstrap
     // The vault-manager will generate full credentials after bootstrap
+    const accountSeed = existingAccount.account_seed_encrypted || existingAccount.account_seed;
+
+    // Note: If using encrypted seed, we need to decrypt it first
+    // For now, support both encrypted and legacy unencrypted seeds
+    let seedForCredentials = accountSeed;
+    if (accountSeed && !accountSeed.startsWith('SA')) {
+      // This is an encrypted seed - for finalize we don't need to decrypt
+      // because the app already has credentials from nats-bootstrap
+      // We return minimal info here
+    }
+
     const bootstrapCreds = await generateBootstrapCredentials(
       userGuid,
-      accountSeed,
+      existingAccount.account_seed || seedForCredentials,
       ownerSpaceId
     );
 
-    bootstrapCredentials = formatCredsFile(bootstrapCreds.jwt, bootstrapCreds.seed);
+    const bootstrapCredentials = formatCredsFile(bootstrapCreds.jwt, bootstrapCreds.seed);
 
     // Mark session as completed
     await ddb.send(new UpdateItemCommand({

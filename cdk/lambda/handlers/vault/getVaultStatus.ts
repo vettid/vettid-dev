@@ -61,7 +61,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     }
 
     // Check NATS accounts table - if account exists but no vault instance,
-    // user is enrolled but hasn't initialized the vault yet
+    // check the account status to determine enrollment state
     const natsResult = await ddb.send(new GetItemCommand({
       TableName: TABLE_NATS_ACCOUNTS,
       Key: marshall({ user_guid: userGuid }),
@@ -69,11 +69,29 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
 
     if (natsResult.Item) {
       const natsAccount = unmarshall(natsResult.Item);
-      return ok({
-        status: 'enrolled',
-        enrolled_at: natsAccount.created_at,
-        storage_type: natsAccount.storage_type || 'enclave',
-      }, origin);
+
+      // SECURITY: Only return 'enrolled' if account status is 'active'
+      // Accounts with status='enrolling' are still in the enrollment process
+      if (natsAccount.status === 'active') {
+        return ok({
+          status: 'enrolled',
+          enrolled_at: natsAccount.activated_at || natsAccount.created_at,
+          storage_type: natsAccount.storage_type || 'enclave',
+        }, origin);
+      }
+
+      // Account exists but enrollment not complete
+      if (natsAccount.status === 'enrolling') {
+        return ok({
+          status: 'pending',
+          started_at: natsAccount.created_at,
+          session_status: 'NATS_ACCOUNT_CREATED',
+          message: 'Enrollment in progress - complete setup in mobile app',
+        }, origin);
+      }
+
+      // Unknown/unexpected status - treat as not enrolled
+      console.warn(`Unexpected NATS account status: ${natsAccount.status} for user ${userGuid}`);
     }
 
     // Check for pending enrollment sessions (exclude expired ones)
