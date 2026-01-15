@@ -24,7 +24,7 @@
 
 import { SecretsManagerClient, PutSecretValueCommand, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import * as nkeys from 'nkeys.js';
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 
 const REGION = process.env.AWS_REGION || 'us-east-1';
 const OPERATOR_SECRET_ID = 'vettid/nats/operator-key';
@@ -55,7 +55,7 @@ function createOperatorJwt(
 ): string {
   const now = Math.floor(Date.now() / 1000);
   const jti = createHash('sha256')
-    .update(`${operatorPublicKey}:${now}`)
+    .update(`${operatorPublicKey}:${now}:${randomUUID()}`)
     .digest('hex')
     .substring(0, 22);
 
@@ -91,7 +91,7 @@ function createSystemAccountJwt(
 ): string {
   const now = Math.floor(Date.now() / 1000);
   const jti = createHash('sha256')
-    .update(`${systemAccountPublicKey}:${now}`)
+    .update(`${systemAccountPublicKey}:${now}:${randomUUID()}`)
     .digest('hex')
     .substring(0, 22);
 
@@ -142,7 +142,7 @@ function createBackendAccountJwt(
 ): string {
   const now = Math.floor(Date.now() / 1000);
   const jti = createHash('sha256')
-    .update(`${backendAccountPublicKey}:${now}`)
+    .update(`${backendAccountPublicKey}:${now}:${randomUUID()}`)
     .digest('hex')
     .substring(0, 22);
 

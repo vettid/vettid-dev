@@ -20,7 +20,7 @@
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import { SSMClient, PutParameterCommand, GetParameterCommand } from '@aws-sdk/client-ssm';
 import * as nkeys from 'nkeys.js';
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 
 const OPERATOR_SECRET_ID = 'vettid/nats/operator-key';
 const PARENT_CREDS_PARAM = '/vettid/nitro/parent-nats-creds';
@@ -117,8 +117,9 @@ async function generateParentCredentials(): Promise<{ creds: string; expiresAt: 
   const expiresAt = new Date(Date.now() + CREDENTIAL_LIFETIME_DAYS * 24 * 60 * 60 * 1000);
   const exp = Math.floor(expiresAt.getTime() / 1000);
 
+  // SECURITY: JTI includes randomness to prevent collisions
   const jti = createHash('sha256')
-    .update(`parent-${publicKey}:${now}`)
+    .update(`parent-${publicKey}:${now}:${randomUUID()}`)
     .digest('hex')
     .substring(0, 22);
 

@@ -13,7 +13,7 @@
 
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import * as nkeys from 'nkeys.js';
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -106,8 +106,9 @@ async function generateTestAppCredentials(): Promise<string> {
   // Short-lived for testing: 1 day
   const exp = now + 86400;
 
+  // SECURITY: JTI includes randomness to prevent collisions
   const jti = createHash('sha256')
-    .update(`test-app-${publicKey}:${now}`)
+    .update(`test-app-${publicKey}:${now}:${randomUUID()}`)
     .digest('hex')
     .substring(0, 22);
 

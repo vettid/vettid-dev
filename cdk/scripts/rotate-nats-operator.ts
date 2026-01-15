@@ -42,7 +42,7 @@ import {
 } from '@aws-sdk/client-dynamodb';
 import { unmarshall, marshall } from '@aws-sdk/util-dynamodb';
 import * as nkeys from 'nkeys.js';
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 
 const REGION = process.env.AWS_REGION || 'us-east-1';
 const OPERATOR_SECRET_ID = 'vettid/nats/operator-key';
@@ -84,7 +84,7 @@ function createOperatorJwt(
   systemAccountPublicKey: string
 ): string {
   const now = Math.floor(Date.now() / 1000);
-  const jti = createHash('sha256').update(`${operatorPublicKey}:${now}`).digest('hex').substring(0, 22);
+  const jti = createHash('sha256').update(`${operatorPublicKey}:${now}:${randomUUID()}`).digest('hex').substring(0, 22);
 
   const claims = {
     jti,
@@ -112,7 +112,7 @@ function createSystemAccountJwt(
   systemAccountPublicKey: string
 ): string {
   const now = Math.floor(Date.now() / 1000);
-  const jti = createHash('sha256').update(`${systemAccountPublicKey}:${now}`).digest('hex').substring(0, 22);
+  const jti = createHash('sha256').update(`${systemAccountPublicKey}:${now}:${randomUUID()}`).digest('hex').substring(0, 22);
 
   const claims = {
     jti,
@@ -143,7 +143,7 @@ function createBackendAccountJwt(
   backendAccountPublicKey: string
 ): string {
   const now = Math.floor(Date.now() / 1000);
-  const jti = createHash('sha256').update(`${backendAccountPublicKey}:${now}`).digest('hex').substring(0, 22);
+  const jti = createHash('sha256').update(`${backendAccountPublicKey}:${now}:${randomUUID()}`).digest('hex').substring(0, 22);
 
   const claims = {
     jti,
@@ -179,7 +179,7 @@ function createAccountJwt(
   revocations?: { [key: string]: number }
 ): string {
   const now = Math.floor(Date.now() / 1000);
-  const jti = createHash('sha256').update(`${accountPublicKey}:${now}`).digest('hex').substring(0, 22);
+  const jti = createHash('sha256').update(`${accountPublicKey}:${now}:${randomUUID()}`).digest('hex').substring(0, 22);
 
   const claims: any = {
     jti,

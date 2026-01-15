@@ -11,7 +11,7 @@
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import { connect, NatsConnection, StringCodec, credsAuthenticator } from 'nats';
 import * as nkeys from 'nkeys.js';
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 
 const OPERATOR_SECRET_ID = process.env.NATS_OPERATOR_SECRET_ARN || 'vettid/nats/operator-key';
 const NATS_DOMAIN = process.env.NATS_DOMAIN || 'nats.vettid.dev';
@@ -143,8 +143,9 @@ async function getSystemCredentials(): Promise<SystemCredentials> {
   const nowSec = Math.floor(Date.now() / 1000);
   const exp = nowSec + 3600; // 1 hour expiry
 
+  // SECURITY: JTI includes randomness to prevent collisions
   const jti = createHash('sha256')
-    .update(`${userPublicKey}:${nowSec}`)
+    .update(`${userPublicKey}:${nowSec}:${randomUUID()}`)
     .digest('hex')
     .substring(0, 22);
 

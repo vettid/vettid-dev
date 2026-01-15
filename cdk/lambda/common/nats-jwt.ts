@@ -12,7 +12,7 @@
 
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import * as nkeys from 'nkeys.js';
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 
 const OPERATOR_SECRET_ID = process.env.NATS_OPERATOR_SECRET_ARN || 'vettid/nats/operator-key';
 
@@ -198,8 +198,9 @@ export async function createAccountJwt(
   const operatorKeyPair = nkeys.fromSeed(new TextEncoder().encode(operatorKeys.operatorSeed));
 
   const now = Math.floor(Date.now() / 1000);
+  // SECURITY: JTI includes randomness to prevent collisions (same key + same second = different JTI)
   const jti = createHash('sha256')
-    .update(`${accountPublicKey}:${now}`)
+    .update(`${accountPublicKey}:${now}:${randomUUID()}`)
     .digest('hex')
     .substring(0, 22);
 
@@ -260,8 +261,9 @@ export async function createUserJwt(
   const nowSeconds = Math.floor(now / 1000);
   const exp = Math.floor(expiresAt.getTime() / 1000);
 
+  // SECURITY: JTI includes randomness to prevent collisions (same key + same second = different JTI)
   const jti = createHash('sha256')
-    .update(`${userPublicKey}:${nowSeconds}`)
+    .update(`${userPublicKey}:${nowSeconds}:${randomUUID()}`)
     .digest('hex')
     .substring(0, 22);
 
