@@ -1346,7 +1346,7 @@ async function loadMembershipStatus() {
     const membershipCard = document.getElementById('membershipCard');
     statusSpan.textContent = 'Error loading status';
     statusSpan.style.color = '#f44336';
-    detailsP.innerHTML = '<span class="muted" style="font-size:0.85rem;">Unable to load membership status. Please try refreshing the page. Error: ' + (err.message || 'Unknown error') + '</span>';
+    detailsP.innerHTML = '<span class="muted" style="font-size:0.85rem;">Unable to load membership status. Please try refreshing the page. Error: ' + escapeHtml(err.message || 'Unknown error') + '</span>';
 
     // Try to load terms anyway in case that works
     const termsSection = document.getElementById('membershipTermsSection');
@@ -1461,7 +1461,7 @@ async function createSubscription(subscription_type_id) {
       msgEl.style.display = 'block';
       msgEl.style.background = '#3d0a0a';
       msgEl.style.border = '1px solid #f44336';
-      msgEl.innerHTML = '<strong>Error</strong><br/>' + (data.message || 'Failed to create subscription');
+      msgEl.innerHTML = '<strong>Error</strong><br/>' + escapeHtml(data.message || 'Failed to create subscription');
       msgEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
       return;
     }
@@ -1471,7 +1471,7 @@ async function createSubscription(subscription_type_id) {
     msgEl.style.border = '1px solid #4caf50';
 
     const expiresDate = new Date(data.subscription.expires_at).toLocaleDateString();
-    msgEl.innerHTML = '<strong>Subscription Activated!</strong><br/>' + data.message + ' (Expires: ' + expiresDate + ')';
+    msgEl.innerHTML = '<strong>Subscription Activated!</strong><br/>' + escapeHtml(data.message) + ' (Expires: ' + escapeHtml(expiresDate) + ')';
     msgEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 
     // Check if this was the user's first subscription
@@ -1851,8 +1851,8 @@ async function renderProposals(filter) {
 
       return `
         <div style="background:#0a0a0a;border:1px solid #333;border-radius:8px;padding:12px;">
-          ${proposal.proposal_number ? `<div style="margin-bottom:4px;"><span style="font-family:monospace;font-size:0.7rem;color:#6b7280;background:#1f2937;padding:2px 6px;border-radius:4px;">${proposal.proposal_number}</span></div>` : ''}
-          <h4 style="margin:0 0 6px 0;font-weight:700;font-size:0.95rem;">${proposal.proposal_title || 'Untitled Proposal'}</h4>
+          ${proposal.proposal_number ? `<div style="margin-bottom:4px;"><span style="font-family:monospace;font-size:0.7rem;color:#6b7280;background:#1f2937;padding:2px 6px;border-radius:4px;">${escapeHtml(proposal.proposal_number)}</span></div>` : ''}
+          <h4 style="margin:0 0 6px 0;font-weight:700;font-size:0.95rem;">${escapeHtml(proposal.proposal_title) || 'Untitled Proposal'}</h4>
           <div style="margin-bottom:8px;">
             <span style="display:inline-block;background:linear-gradient(135deg,#10b981 0%,#059669 100%);color:#fff;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;">Active</span>
           </div>
@@ -1860,7 +1860,7 @@ async function renderProposals(filter) {
             <span style="font-size:0.85rem;color:var(--accent);font-weight:600;">Closes in ${timeRemaining}</span>
           </div>
           <button data-action="toggleProposalText" data-target="proposal-text-${proposalId}" class="btn" style="width:100%;padding:8px 12px;font-size:0.8rem;background:linear-gradient(135deg,#ffd93d 0%,#ffc125 100%);color:#000;font-weight:600;margin-bottom:8px;">View Proposal</button>
-          <div id="proposal-text-${proposalId}" style="display:none;padding:10px;background:#050505;border-left:3px solid var(--accent);border-radius:4px;margin-bottom:8px;line-height:1.6;font-size:0.85rem;">${proposal.proposal_text}</div>
+          <div id="proposal-text-${proposalId}" style="display:none;padding:10px;background:#050505;border-left:3px solid var(--accent);border-radius:4px;margin-bottom:8px;line-height:1.6;font-size:0.85rem;white-space:pre-wrap;">${escapeHtml(proposal.proposal_text)}</div>
           ${hasVoted ? `
             <div style="margin-bottom:8px;padding:10px;background:#050505;border-left:3px solid ${userVote && userVote.vote ? (userVote.vote.toLowerCase() === 'yes' ? '#10b981' : userVote.vote.toLowerCase() === 'no' ? '#ef4444' : '#6b7280') : '#4caf50'};border-radius:4px;">
               <div style="display:flex;justify-content:space-between;align-items:center;">
@@ -2011,8 +2011,8 @@ async function renderCompletedProposals(proposals) {
 
     return `
       <div id="completed-${proposalId}" style="background:#0a0a0a;border:1px solid #333;border-radius:8px;padding:16px;display:flex;flex-direction:column;position:relative;min-height:280px;">
-        ${proposal.proposal_number ? `<div style="margin-bottom:4px;"><span style="font-family:monospace;font-size:0.7rem;color:#6b7280;background:#1f2937;padding:2px 6px;border-radius:4px;">${proposal.proposal_number}</span></div>` : ''}
-        <h4 style="margin:0 0 12px 0;font-weight:700;font-size:1rem;line-height:1.4;">${proposal.proposal_title || 'Untitled Proposal'}</h4>
+        ${proposal.proposal_number ? `<div style="margin-bottom:4px;"><span style="font-family:monospace;font-size:0.7rem;color:#6b7280;background:#1f2937;padding:2px 6px;border-radius:4px;">${escapeHtml(proposal.proposal_number)}</span></div>` : ''}
+        <h4 style="margin:0 0 12px 0;font-weight:700;font-size:1rem;line-height:1.4;">${escapeHtml(proposal.proposal_title) || 'Untitled Proposal'}</h4>
 
         <!-- Pass/Fail Badge -->
         <div id="result-badge-${proposalId}" style="margin-bottom:12px;height:24px;">
@@ -2293,13 +2293,13 @@ async function viewProposalResults(proposalId) {
 
     const htmlContent = `
       <div style="margin-bottom:20px;">
-        <h4 style="margin:0 0 12px 0;color:var(--accent);font-size:1.1rem;">${data.proposal.proposal_title || 'Untitled'}</h4>
-        <p style="color:var(--gray);margin-bottom:16px;line-height:1.6;">${data.proposal.proposal_text}</p>
+        <h4 style="margin:0 0 12px 0;color:var(--accent);font-size:1.1rem;">${escapeHtml(data.proposal.proposal_title) || 'Untitled'}</h4>
+        <p style="color:var(--gray);margin-bottom:16px;line-height:1.6;white-space:pre-wrap;">${escapeHtml(data.proposal.proposal_text)}</p>
 
         <div style="display:flex;gap:20px;margin-bottom:20px;flex-wrap:wrap;">
           <div>
             <span style="color:var(--gray);font-size:0.9rem;">Status:</span>
-            <span style="color:var(--text);margin-left:8px;font-weight:600;">${data.proposal.status}</span>
+            <span style="color:var(--text);margin-left:8px;font-weight:600;">${escapeHtml(data.proposal.status)}</span>
           </div>
           <div>
             <span style="color:var(--gray);font-size:0.9rem;">Closed:</span>
@@ -2840,7 +2840,7 @@ async function loadVaultStatus() {
       <div style="padding:24px;background:#1a0a0a;border-radius:4px;border:1px solid #ef4444;text-align:center;">
         <div style="font-size:2rem;margin-bottom:12px;">⚠</div>
         <div style="color:#ef4444;font-weight:600;margin-bottom:8px;">Error Loading Status</div>
-        <p class="muted" style="margin:0;">${error.message}</p>
+        <p class="muted" style="margin:0;">${escapeHtml(error.message)}</p>
         <button data-action="loadVaultStatus" class="btn" style="margin-top:16px;padding:8px 16px;background:#333;">Try Again</button>
       </div>
     `;
@@ -3488,7 +3488,7 @@ async function loadByovStatus() {
       <div style="padding:24px;background:#1a0a0a;border-radius:4px;border:1px solid #ef4444;text-align:center;">
         <div style="font-size:2rem;margin-bottom:12px;">⚠</div>
         <div style="color:#ef4444;font-weight:600;margin-bottom:8px;">Error Loading Status</div>
-        <p class="muted" style="margin:0;">${error.message}</p>
+        <p class="muted" style="margin:0;">${escapeHtml(error.message)}</p>
         <button data-action="loadByovStatus" class="btn" style="margin-top:16px;padding:8px 16px;background:#333;">Try Again</button>
       </div>
     `;
@@ -4064,7 +4064,7 @@ async function loadCredentialBackupStatus() {
     statusContent.innerHTML = `
       <div style="padding:20px;background:rgba(244,67,54,0.1);border:1px solid #f44336;border-radius:8px;text-align:center;">
         <p style="margin:0;color:#f44336;">Failed to load backup status</p>
-        <p style="margin:8px 0 0 0;color:var(--gray);font-size:0.85rem;">${error.message}</p>
+        <p style="margin:8px 0 0 0;color:var(--gray);font-size:0.85rem;">${escapeHtml(error.message)}</p>
       </div>
     `;
   }

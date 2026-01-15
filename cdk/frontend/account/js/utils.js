@@ -277,8 +277,8 @@ async function loadSubscriptionTypes() {
           ${isPopular ? '<div style="position:absolute;top:-12px;left:20px;background:var(--accent);color:#000;padding:4px 12px;border-radius:12px;font-size:0.7rem;font-weight:700;text-transform:uppercase;">Popular</div>' : ''}
 
           <div style="flex:1;">
-            <h4 style="margin:0 0 4px;color:${isPopular ? 'var(--accent)' : 'var(--text)'};font-size:1.2rem;">${st.name}</h4>
-            <p style="color:var(--gray);font-size:0.85rem;margin:0 0 8px;">${st.description}</p>
+            <h4 style="margin:0 0 4px;color:${isPopular ? 'var(--accent)' : 'var(--text)'};font-size:1.2rem;">${escapeHtml(st.name)}</h4>
+            <p style="color:var(--gray);font-size:0.85rem;margin:0 0 8px;">${escapeHtml(st.description)}</p>
             ${st.is_one_time_offer ? '<span style="display:inline-block;background:#fbbf24;color:#000;padding:3px 10px;border-radius:8px;font-size:0.7rem;font-weight:700;text-transform:uppercase;">One-Time Offer</span>' : ''}
           </div>
 
