@@ -280,6 +280,17 @@ func (p *ParentProcess) forwardToEnclave(ctx context.Context, msg *NATSMessage) 
 			ReplyTo:    msg.Reply,
 		}
 
+		// For attestation requests from mobile apps, parse the JSON payload to extract nonce
+		if msgType == EnclaveMessageTypeAttestationRequest {
+			if err := p.parseAttestationRequest(msg.Data, enclaveMsg); err != nil {
+				log.Warn().Err(err).Msg("Failed to parse attestation request, using raw payload")
+			}
+			log.Debug().
+				Str("owner_space", ownerSpace).
+				Int("nonce_len", len(enclaveMsg.Nonce)).
+				Msg("Parsed mobile attestation request")
+		}
+
 		// For credential operations, parse the JSON payload
 		if msgType == EnclaveMessageTypeCredentialCreate || msgType == EnclaveMessageTypeCredentialUnseal {
 			if err := p.parseCredentialRequestFromPayload(msg.Data, enclaveMsg); err != nil {
@@ -294,11 +305,30 @@ func (p *ParentProcess) forwardToEnclave(ctx context.Context, msg *NATSMessage) 
 		return err
 	}
 
-	// If there's a reply address, send response back via NATS
-	if msg.Reply != "" && response != nil {
+	// Send response back via NATS
+	if response != nil {
 		responseData := p.formatEnclaveResponse(response)
-		if err := p.natsClient.Publish(msg.Reply, responseData); err != nil {
-			log.Error().Err(err).Str("reply", msg.Reply).Msg("Failed to publish reply")
+
+		// If there's a reply address (NATS request/reply pattern), use it
+		if msg.Reply != "" {
+			if err := p.natsClient.Publish(msg.Reply, responseData); err != nil {
+				log.Error().Err(err).Str("reply", msg.Reply).Msg("Failed to publish reply")
+			}
+		}
+
+		// Also publish to app response subject for mobile apps using pub/sub pattern
+		// OwnerSpace.<guid>.forVault.<op> -> OwnerSpace.<guid>.app.<op>.response
+		if enclaveMsg.OwnerSpace != "" {
+			appResponseSubject := buildAppResponseSubject(msg.Subject, enclaveMsg.OwnerSpace)
+			if appResponseSubject != "" {
+				log.Debug().
+					Str("subject", appResponseSubject).
+					Int("response_len", len(responseData)).
+					Msg("Publishing response to app subject")
+				if err := p.natsClient.Publish(appResponseSubject, responseData); err != nil {
+					log.Error().Err(err).Str("subject", appResponseSubject).Msg("Failed to publish to app response subject")
+				}
+			}
 		}
 	}
 
@@ -700,6 +730,12 @@ func isEnclaveSubject(subject string) bool {
 // mapSubjectToMessageType maps NATS subjects to enclave message types
 // This handles OwnerSpace.*.forVault.* patterns
 func mapSubjectToMessageType(subject string) EnclaveMessageType {
+	// Check for attestation request from mobile apps
+	// OwnerSpace.{guid}.forVault.attestation
+	if hasSubjectSuffix(subject, ".attestation") {
+		return EnclaveMessageTypeAttestationRequest
+	}
+
 	// Check for credential operations in OwnerSpace pattern
 	// OwnerSpace.{guid}.forVault.credential.create
 	// OwnerSpace.{guid}.forVault.credential.unseal
@@ -720,6 +756,36 @@ func hasSubjectSuffix(subject, suffix string) bool {
 		return false
 	}
 	return subject[len(subject)-len(suffix):] == suffix
+}
+
+// buildAppResponseSubject converts a forVault subject to an app response subject
+// OwnerSpace.<guid>.forVault.<op> -> OwnerSpace.<guid>.app.<op>.response
+// This allows mobile apps using pub/sub pattern to receive responses
+// Note: ownerSpace parameter is just the GUID (from extractOwnerSpace)
+func buildAppResponseSubject(subject, ownerSpace string) string {
+	// Find ".forVault." in the subject
+	forVaultIdx := -1
+	searchStr := ".forVault."
+	for i := 0; i <= len(subject)-len(searchStr); i++ {
+		if subject[i:i+len(searchStr)] == searchStr {
+			forVaultIdx = i
+			break
+		}
+	}
+
+	if forVaultIdx == -1 {
+		return "" // Not a forVault subject
+	}
+
+	// Extract the operation part after ".forVault."
+	opPart := subject[forVaultIdx+len(searchStr):]
+	if opPart == "" {
+		return ""
+	}
+
+	// Build: OwnerSpace.<guid>.app.<op>.response
+	// ownerSpace is just the GUID, so we need to prepend "OwnerSpace."
+	return "OwnerSpace." + ownerSpace + ".app." + opPart + ".response"
 }
 
 // mapEnclaveSubjectToType maps enclave.* subjects to message types
