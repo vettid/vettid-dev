@@ -132,8 +132,9 @@ type Message struct {
 
 // Attestation holds a Nitro attestation document
 type Attestation struct {
-	Document  []byte `json:"document"`  // CBOR-encoded attestation document
-	PublicKey []byte `json:"public_key"` // Enclave's ephemeral public key
+	Document   []byte `json:"document"`    // CBOR-encoded attestation document
+	PublicKey  []byte `json:"public_key"`  // Enclave's ephemeral X25519 public key (32 bytes)
+	PrivateKey []byte `json:"-"`           // X25519 private key (never serialized, kept in supervisor)
 }
 
 // CredentialRequest is the request to create a new credential

@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"crypto/ecdsa"
-	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/sha512"
@@ -21,6 +20,7 @@ import (
 	"github.com/hf/nsm"
 	"github.com/hf/nsm/request"
 	"github.com/rs/zerolog/log"
+	"golang.org/x/crypto/curve25519"
 )
 
 // SECURITY: Maximum age for attestation documents (5 minutes)
@@ -85,22 +85,26 @@ func generateNitroAttestation(nonce []byte) (*Attestation, error) {
 	}
 	defer sess.Close()
 
-	// Generate an ephemeral ECDSA key pair for the session
-	// This public key will be embedded in the attestation document
-	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate session key: %w", err)
+	// Generate an ephemeral X25519 key pair for PIN encryption
+	// X25519 is required for ECIES encryption (32-byte public key)
+	// SECURITY: The private key must be kept in the supervisor for PIN decryption
+	privateKey := make([]byte, 32)
+	if _, err := rand.Read(privateKey); err != nil {
+		return nil, fmt.Errorf("failed to generate X25519 private key: %w", err)
 	}
 
-	// Marshal the public key
-	pubKeyBytes := elliptic.Marshal(elliptic.P256(), privateKey.PublicKey.X, privateKey.PublicKey.Y)
+	// Derive X25519 public key (32 bytes)
+	publicKey, err := curve25519.X25519(privateKey, curve25519.Basepoint)
+	if err != nil {
+		return nil, fmt.Errorf("failed to derive X25519 public key: %w", err)
+	}
 
 	// Request attestation from NSM
-	// The nonce is included to ensure freshness
-	// The public key is included so clients can encrypt session data to it
+	// The nonce is included to ensure freshness (prevents replay attacks)
+	// The public key is included so clients can encrypt PIN to it
 	res, err := sess.Send(&request.Attestation{
 		Nonce:     nonce,
-		PublicKey: pubKeyBytes,
+		PublicKey: publicKey,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get attestation from NSM: %w", err)
@@ -113,25 +117,30 @@ func generateNitroAttestation(nonce []byte) (*Attestation, error) {
 
 	log.Debug().
 		Int("doc_len", len(res.Attestation.Document)).
-		Int("pubkey_len", len(pubKeyBytes)).
-		Msg("Generated Nitro attestation document")
+		Int("pubkey_len", len(publicKey)).
+		Msg("Generated Nitro attestation document with X25519 key")
 
 	return &Attestation{
-		Document:  res.Attestation.Document,
-		PublicKey: pubKeyBytes,
+		Document:   res.Attestation.Document,
+		PublicKey:  publicKey,
+		PrivateKey: privateKey,
 	}, nil
 }
 
 // generateMockAttestation generates a mock attestation for development
 func generateMockAttestation(nonce []byte) (*Attestation, error) {
-	// Generate ephemeral key pair for session encryption
-	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate key pair: %w", err)
+	// Generate ephemeral X25519 key pair for PIN encryption (same as production)
+	// SECURITY: Using X25519 to match what Android/iOS expect for ECIES encryption
+	privateKey := make([]byte, 32)
+	if _, err := rand.Read(privateKey); err != nil {
+		return nil, fmt.Errorf("failed to generate X25519 private key: %w", err)
 	}
 
-	// Encode public key
-	pubKeyBytes := elliptic.Marshal(elliptic.P256(), privateKey.PublicKey.X, privateKey.PublicKey.Y)
+	// Derive X25519 public key (32 bytes)
+	publicKey, err := curve25519.X25519(privateKey, curve25519.Basepoint)
+	if err != nil {
+		return nil, fmt.Errorf("failed to derive X25519 public key: %w", err)
+	}
 
 	// Create mock attestation document
 	// In reality, this would be a CBOR-encoded COSE Sign1 structure
@@ -144,7 +153,7 @@ func generateMockAttestation(nonce []byte) (*Attestation, error) {
 			1: base64.StdEncoding.EncodeToString(mockPCR(1)),
 			2: base64.StdEncoding.EncodeToString(mockPCR(2)),
 		},
-		PublicKey: base64.StdEncoding.EncodeToString(pubKeyBytes),
+		PublicKey: base64.StdEncoding.EncodeToString(publicKey),
 	}
 
 	// In production, this would be signed by AWS Nitro
@@ -152,8 +161,9 @@ func generateMockAttestation(nonce []byte) (*Attestation, error) {
 	docBytes := serializeMockDoc(mockDoc)
 
 	return &Attestation{
-		Document:  docBytes,
-		PublicKey: pubKeyBytes,
+		Document:   docBytes,
+		PublicKey:  publicKey,
+		PrivateKey: privateKey,
 	}, nil
 }
 

@@ -10,6 +10,13 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+// AttestationKeyEntry stores an X25519 private key for PIN decryption
+// SECURITY: Keys are ephemeral and expire after attestation validity period
+type AttestationKeyEntry struct {
+	PrivateKey []byte    // X25519 private key (32 bytes)
+	ExpiresAt  time.Time // When this key expires
+}
+
 // Supervisor manages vault-manager processes inside the Nitro Enclave.
 // It receives messages from the parent process via vsock and routes them
 // to the appropriate vault-manager process.
@@ -24,6 +31,12 @@ type Supervisor struct {
 	// Active connection to parent (for sending vault-initiated messages)
 	parentConn   Connection
 	parentConnMu sync.RWMutex
+
+	// Attestation private keys for PIN decryption
+	// SECURITY: Keys are ephemeral X25519 keys, one per attestation request
+	// They are used to decrypt PINs encrypted by clients using the attestation public key
+	attestationKeys   map[string]*AttestationKeyEntry
+	attestationKeysMu sync.RWMutex
 
 	mu sync.RWMutex
 }
@@ -44,10 +57,11 @@ func NewSupervisor(cfg *Config) (*Supervisor, error) {
 	sealer := NewNitroSealer(nil)
 
 	s := &Supervisor{
-		config:        cfg,
-		memoryManager: memMgr,
-		handlerCache:  handlerCache,
-		sealer:        sealer,
+		config:          cfg,
+		memoryManager:   memMgr,
+		handlerCache:    handlerCache,
+		sealer:          sealer,
+		attestationKeys: make(map[string]*AttestationKeyEntry),
 	}
 
 	// Create vault manager with reference to supervisor for outbound messages
@@ -323,18 +337,86 @@ func (s *Supervisor) handleVaultOp(ctx context.Context, msg *Message) (*Message,
 }
 
 // handleAttestationRequest generates an attestation document
+// SECURITY: Stores the ephemeral X25519 private key for later PIN decryption
 func (s *Supervisor) handleAttestationRequest(ctx context.Context, msg *Message) (*Message, error) {
-	// In a real Nitro enclave, this would call the Nitro attestation API
-	// For now, return a placeholder
+	// Generate attestation with ephemeral X25519 keypair
 	attestation, err := GenerateAttestation(msg.Nonce)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate attestation: %w", err)
 	}
 
+	// Store the private key for later PIN decryption
+	// SECURITY: Key is stored per owner_space and expires with attestation validity
+	if msg.OwnerSpace != "" && len(attestation.PrivateKey) > 0 {
+		s.storeAttestationKey(msg.OwnerSpace, attestation.PrivateKey)
+		log.Debug().
+			Str("owner_space", msg.OwnerSpace).
+			Int("pubkey_len", len(attestation.PublicKey)).
+			Msg("Stored attestation private key for PIN decryption")
+	}
+
+	// Clear private key from response (never sent outside enclave)
+	// Note: The Attestation struct has json:"-" on PrivateKey, but we clear it anyway
+	responsAttestation := &Attestation{
+		Document:  attestation.Document,
+		PublicKey: attestation.PublicKey,
+		// PrivateKey intentionally not copied
+	}
+
 	return &Message{
 		Type:        MessageTypeAttestationResponse,
-		Attestation: attestation,
+		Attestation: responsAttestation,
 	}, nil
+}
+
+// storeAttestationKey stores an X25519 private key for later PIN decryption
+// SECURITY: Keys expire after maxAttestationAgeSeconds (5 minutes)
+func (s *Supervisor) storeAttestationKey(ownerSpace string, privateKey []byte) {
+	s.attestationKeysMu.Lock()
+	defer s.attestationKeysMu.Unlock()
+
+	// Store with expiry time
+	s.attestationKeys[ownerSpace] = &AttestationKeyEntry{
+		PrivateKey: privateKey,
+		ExpiresAt:  time.Now().Add(time.Duration(maxAttestationAgeSeconds) * time.Second),
+	}
+
+	// Cleanup expired keys (opportunistic)
+	s.cleanupExpiredKeysLocked()
+}
+
+// getAttestationKey retrieves the X25519 private key for PIN decryption
+// Returns nil if no key exists or if it has expired
+func (s *Supervisor) getAttestationKey(ownerSpace string) []byte {
+	s.attestationKeysMu.RLock()
+	defer s.attestationKeysMu.RUnlock()
+
+	entry, exists := s.attestationKeys[ownerSpace]
+	if !exists {
+		return nil
+	}
+
+	// Check expiry
+	if time.Now().After(entry.ExpiresAt) {
+		return nil
+	}
+
+	return entry.PrivateKey
+}
+
+// cleanupExpiredKeysLocked removes expired attestation keys
+// MUST be called with attestationKeysMu held
+func (s *Supervisor) cleanupExpiredKeysLocked() {
+	now := time.Now()
+	for ownerSpace, entry := range s.attestationKeys {
+		if now.After(entry.ExpiresAt) {
+			// SECURITY: Zero the key before removal
+			for i := range entry.PrivateKey {
+				entry.PrivateKey[i] = 0
+			}
+			delete(s.attestationKeys, ownerSpace)
+		}
+	}
 }
 
 // handleHealthCheck returns supervisor health status
