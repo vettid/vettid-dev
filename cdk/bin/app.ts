@@ -3,7 +3,9 @@ import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
 import { InfrastructureStack } from '../lib/infrastructure-stack';
 import { VettIdStack } from '../lib/vettid-stack';
-import { AdminStack } from '../lib/admin-stack';
+import { AdminManagementStack } from '../lib/admin-management-stack';
+import { BusinessGovernanceStack } from '../lib/business-governance-stack';
+import { ExtensibilityMonitoringStack } from '../lib/extensibility-monitoring-stack';
 import { VaultStack } from '../lib/vault-stack';
 import { NatsStack } from '../lib/nats-stack';
 // LedgerStack removed - legacy Protean Credential System replaced by vault-manager JetStream
@@ -34,9 +36,26 @@ const nitro = new NitroStack(app, 'VettID-Nitro', {
   infrastructure, // For dynamic handler loading (DynamoDB manifest, S3 handlers)
 });
 
-// 3. Deploy admin stack (admin Lambda functions + API routes)
-// Routes are added in AdminStack to stay under CloudFormation's 500 resource limit
-const admin = new AdminStack(app, 'VettID-Admin', {
+// 3. Deploy admin stacks (admin Lambda functions + API routes)
+// Split into 3 stacks to stay under CloudFormation's 500 resource limit:
+// - AdminManagementStack: User/admin lifecycle, registration, invites (~155 resources)
+// - BusinessGovernanceStack: Memberships, proposals, subscriptions (~111 resources)
+// - ExtensibilityMonitoringStack: NATS, handlers, services, security (~150 resources)
+const adminManagement = new AdminManagementStack(app, 'VettID-AdminManagement', {
+  env,
+  infrastructure,
+  httpApi: core.httpApi,
+  adminAuthorizer: core.adminAuthorizer,
+});
+
+const businessGovernance = new BusinessGovernanceStack(app, 'VettID-BusinessGovernance', {
+  env,
+  infrastructure,
+  httpApi: core.httpApi,
+  adminAuthorizer: core.adminAuthorizer,
+});
+
+const extensibilityMonitoring = new ExtensibilityMonitoringStack(app, 'VettID-ExtensibilityMonitoring', {
   env,
   infrastructure,
   httpApi: core.httpApi,
