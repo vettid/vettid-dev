@@ -731,7 +731,8 @@ function setupSignOut() {
 }
 
 function setupLoginButton() {
-  const loginBtn = document.getElementById('loginBtn');
+  // Support both 'signin' (HTML) and 'loginBtn' (legacy) IDs
+  const loginBtn = document.getElementById('signin') || document.getElementById('loginBtn');
   if (loginBtn) {
     loginBtn.onclick = redirectToLogin;
   }

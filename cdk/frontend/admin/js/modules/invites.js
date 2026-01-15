@@ -521,9 +521,27 @@ export function renderInvitesCards(invites) {
 // Modal Helper
 // ============================================
 
+export function openCreateInviteModal() {
+  const modal = document.getElementById('createInviteModal');
+  if (modal) {
+    // Reset form fields
+    const maxUsesEl = document.getElementById('inviteMaxUses');
+    const expiresEl = document.getElementById('inviteExpires');
+    const sendToEl = document.getElementById('inviteSendTo');
+    if (maxUsesEl) maxUsesEl.value = '1';
+    if (expiresEl) expiresEl.value = '';
+    if (sendToEl) sendToEl.value = '';
+    modal.classList.add('active');
+  }
+}
+
 export function closeCreateInviteModal() {
   const modal = document.getElementById('createInviteModal');
   if (modal) modal.classList.remove('active');
   const msgEl = document.getElementById('inviteMsg');
   if (msgEl) msgEl.textContent = '';
+}
+
+export function setupInviteEventHandlers() {
+  // Event handlers are set up via event delegation in main.js
 }

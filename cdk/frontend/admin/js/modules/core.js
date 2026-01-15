@@ -610,3 +610,221 @@ export function showEmptyState(containerId, text, subtext = '') {
   tr.appendChild(td);
   container.replaceChildren(tr);
 }
+
+/**
+ * Show grid-style loading skeleton for card layouts
+ */
+export function showGridLoadingSkeleton(containerId, count = 3) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+
+  const fragment = document.createDocumentFragment();
+  for (let i = 0; i < count; i++) {
+    const card = document.createElement('div');
+    card.style.cssText = 'padding:20px;background:var(--bg-card);border-radius:8px;border:1px solid var(--border);';
+
+    const line1 = document.createElement('div');
+    line1.className = 'skeleton';
+    line1.style.cssText = 'height:24px;margin-bottom:12px;border-radius:4px;width:60%;';
+
+    const line2 = document.createElement('div');
+    line2.className = 'skeleton';
+    line2.style.cssText = 'height:16px;margin-bottom:8px;border-radius:4px;width:80%;';
+
+    const line3 = document.createElement('div');
+    line3.className = 'skeleton';
+    line3.style.cssText = 'height:16px;margin-bottom:8px;border-radius:4px;width:70%;';
+
+    const line4 = document.createElement('div');
+    line4.className = 'skeleton';
+    line4.style.cssText = 'height:36px;margin-top:16px;border-radius:4px;width:100%;';
+
+    card.appendChild(line1);
+    card.appendChild(line2);
+    card.appendChild(line3);
+    card.appendChild(line4);
+    fragment.appendChild(card);
+  }
+  container.replaceChildren(fragment);
+}
+
+// ============================================
+// Super Admin Check
+// ============================================
+
+export function isSuperAdmin() {
+  return !!store.isSuperAdmin;
+}
+
+// ============================================
+// View Toggle (Table/Card)
+// ============================================
+
+export function toggleView(tabName) {
+  const newView = store.views[tabName] === 'table' ? 'card' : 'table';
+  store.views[tabName] = newView;
+  saveViewPreferences();
+  applyView(tabName, newView);
+}
+
+export function applyView(tabName, view) {
+  const tableContainer = document.getElementById(tabName + 'TableContainer');
+  const cardContainer = document.getElementById(tabName + 'CardContainer');
+  const viewToggle = document.getElementById(tabName + 'ViewToggle');
+
+  if (tableContainer && cardContainer) {
+    if (view === 'card') {
+      tableContainer.style.display = 'none';
+      cardContainer.classList.add('active');
+      if (viewToggle) viewToggle.textContent = 'Table View';
+    } else {
+      tableContainer.style.display = 'block';
+      cardContainer.classList.remove('active');
+      if (viewToggle) viewToggle.textContent = 'Card View';
+    }
+  }
+}
+
+// ============================================
+// Action Dropdown
+// ============================================
+
+export function toggleActionDropdown(btn) {
+  const menu = btn.nextElementSibling;
+  // Close all other dropdowns first
+  document.querySelectorAll('.action-dropdown-menu.active').forEach(m => {
+    if (m !== menu) {
+      m.classList.remove('active');
+      m.style.cssText = '';
+    }
+  });
+
+  // Use fixed positioning to escape any overflow:hidden containers
+  const btnRect = btn.getBoundingClientRect();
+  const menuHeight = 120;
+  const spaceBelow = window.innerHeight - btnRect.bottom;
+
+  menu.style.position = 'fixed';
+  menu.style.right = (window.innerWidth - btnRect.right) + 'px';
+
+  if (spaceBelow < menuHeight && btnRect.top > menuHeight) {
+    menu.style.bottom = (window.innerHeight - btnRect.top + 4) + 'px';
+    menu.style.top = 'auto';
+  } else {
+    menu.style.top = (btnRect.bottom + 4) + 'px';
+    menu.style.bottom = 'auto';
+  }
+
+  menu.classList.toggle('active');
+}
+
+// ============================================
+// Generic Confirmation Modal
+// ============================================
+
+let confirmResolve = null;
+
+export function openGenericConfirmModal(title, message, confirmText = 'Confirm', cancelText = 'Cancel', isDanger = false) {
+  return new Promise((resolve) => {
+    confirmResolve = resolve;
+
+    const titleEl = document.getElementById('genericConfirmTitle');
+    const messageEl = document.getElementById('genericConfirmMessage');
+    const confirmBtn = document.getElementById('genericConfirmBtn');
+
+    if (titleEl) titleEl.textContent = title;
+    if (messageEl) messageEl.textContent = message;
+
+    if (confirmBtn) {
+      confirmBtn.textContent = confirmText;
+      if (isDanger) {
+        confirmBtn.style.background = 'linear-gradient(135deg, #dc2626 0%, #991b1b 100%)';
+      } else {
+        confirmBtn.style.background = 'linear-gradient(135deg, #10b981 0%, #059669 100%)';
+      }
+      confirmBtn.onclick = () => closeGenericConfirmModal(true);
+    }
+
+    const modal = document.getElementById('genericConfirmModal');
+    if (modal) modal.classList.add('active');
+  });
+}
+
+export function closeGenericConfirmModal(confirmed) {
+  const modal = document.getElementById('genericConfirmModal');
+  if (modal) modal.classList.remove('active');
+  if (confirmResolve) {
+    confirmResolve(confirmed);
+    confirmResolve = null;
+  }
+}
+
+// ============================================
+// Password Change Functions
+// ============================================
+
+export function clearPasswordFields() {
+  const currentPw = document.getElementById('currentPassword');
+  const newPw = document.getElementById('newPassword');
+  const confirmPw = document.getElementById('confirmPassword');
+  const strengthFill = document.getElementById('passwordStrengthFill');
+  const strengthText = document.getElementById('passwordStrengthText');
+  const matchIndicator = document.getElementById('passwordMatchIndicator');
+
+  if (currentPw) currentPw.value = '';
+  if (newPw) newPw.value = '';
+  if (confirmPw) confirmPw.value = '';
+  if (strengthFill) strengthFill.style.width = '0%';
+  if (strengthText) strengthText.textContent = '';
+  if (matchIndicator) matchIndicator.textContent = '';
+}
+
+export async function submitPasswordChange() {
+  const currentPw = document.getElementById('currentPassword');
+  const newPw = document.getElementById('newPassword');
+  const confirmPw = document.getElementById('confirmPassword');
+  const submitBtn = document.getElementById('submitPasswordChange');
+
+  if (!currentPw || !newPw || !confirmPw) {
+    showToast('Password fields not found', 'error');
+    return;
+  }
+
+  if (newPw.value !== confirmPw.value) {
+    showToast('Passwords do not match', 'error');
+    return;
+  }
+
+  if (newPw.value.length < 8) {
+    showToast('Password must be at least 8 characters', 'error');
+    return;
+  }
+
+  try {
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Changing...';
+    }
+
+    await api('/admin/change-password', {
+      method: 'POST',
+      body: JSON.stringify({
+        currentPassword: currentPw.value,
+        newPassword: newPw.value
+      })
+    });
+
+    showToast('Password changed successfully', 'success');
+    clearPasswordFields();
+
+    const modal = document.getElementById('passwordModal');
+    if (modal) modal.classList.remove('active');
+  } catch (e) {
+    showToast('Failed to change password: ' + (e.message || e), 'error');
+  } finally {
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Change Password';
+    }
+  }
+}

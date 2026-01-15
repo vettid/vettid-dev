@@ -702,3 +702,40 @@ function showFieldError(msgEl, message) {
     msgEl.style.color = '#ef4444';
   }
 }
+
+// ============================================
+// Missing Modal Exports
+// ============================================
+
+export function openCreateTermsModal() {
+  const modal = document.getElementById('createTermsModal');
+  if (modal) {
+    const textArea = document.getElementById('termsText');
+    if (textArea) textArea.value = '';
+    modal.classList.add('active');
+  }
+}
+
+export function openConfirmTermsModal() {
+  const modal = document.getElementById('confirmTermsModal');
+  if (modal) modal.classList.add('active');
+}
+
+export function openCreateSubscriptionTypeModal() {
+  const modal = document.getElementById('createSubscriptionTypeModal');
+  if (modal) {
+    const nameEl = document.getElementById('subscriptionTypeName');
+    const descEl = document.getElementById('subscriptionTypeDescription');
+    const priceEl = document.getElementById('subscriptionTypePrice');
+    const durationEl = document.getElementById('subscriptionTypeDuration');
+    if (nameEl) nameEl.value = '';
+    if (descEl) descEl.value = '';
+    if (priceEl) priceEl.value = '';
+    if (durationEl) durationEl.value = '30';
+    modal.classList.add('active');
+  }
+}
+
+export function setupMembershipEventHandlers() {
+  // Event handlers are set up via event delegation in main.js
+}

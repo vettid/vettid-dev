@@ -77,7 +77,7 @@ export async function loadAdmins(resetPage = true) {
   }
 }
 
-function renderAdmins(filtered, tbody) {
+export function renderAdmins(filtered, tbody) {
   // Check for empty state
   if (filtered.length === 0) {
     tbody.replaceChildren();
@@ -904,4 +904,65 @@ export function renderAdminsCards(admins) {
     card.append(header, body);
     cardContainer.appendChild(card);
   });
+}
+
+// ============================================
+// Missing Modal Functions (Stubs)
+// ============================================
+
+export function openAddAdminModal() {
+  const modal = document.getElementById('addAdminModal');
+  if (modal) modal.classList.add('active');
+}
+
+export function openChangeAdminTypeModal(email, currentType) {
+  const modal = document.getElementById('changeAdminTypeModal');
+  if (modal) {
+    const emailEl = document.getElementById('changeTypeAdminEmail');
+    const selectEl = document.getElementById('newAdminType');
+    if (emailEl) emailEl.value = email;
+    if (selectEl) selectEl.value = currentType;
+    modal.classList.add('active');
+  }
+}
+
+export function closeChangeAdminTypeModal() {
+  const modal = document.getElementById('changeAdminTypeModal');
+  if (modal) modal.classList.remove('active');
+}
+
+export async function handleChangeAdminType() {
+  const email = document.getElementById('changeTypeAdminEmail')?.value;
+  const newType = document.getElementById('newAdminType')?.value;
+  if (!email || !newType) return;
+
+  try {
+    await api('/admin/admins/' + encodeURIComponent(email) + '/type', {
+      method: 'PUT',
+      body: JSON.stringify({ admin_type: newType })
+    });
+    showToast('Admin type updated', 'success');
+    closeChangeAdminTypeModal();
+    loadAdmins();
+  } catch (e) {
+    showToast('Failed to update admin type: ' + (e.message || e), 'error');
+  }
+}
+
+export async function handleDeleteAdmin() {
+  const email = currentManageAdmin;
+  if (!email) return;
+
+  try {
+    await api('/admin/admins/' + encodeURIComponent(email), { method: 'DELETE' });
+    showToast('Admin deleted', 'success');
+    closeManageAccessModal();
+    loadAdmins();
+  } catch (e) {
+    showToast('Failed to delete admin: ' + (e.message || e), 'error');
+  }
+}
+
+export function setupAdminsEventHandlers() {
+  // Event handlers are set up via event delegation in main.js
 }

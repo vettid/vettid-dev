@@ -694,3 +694,32 @@ function showFieldError(msgEl, message) {
     msgEl.style.color = '#ef4444';
   }
 }
+
+// ============================================
+// Missing Modal Exports
+// ============================================
+
+export function openCreateProposalModal() {
+  const modal = document.getElementById('createProposalModal');
+  if (modal) {
+    const titleEl = document.getElementById('proposalTitle');
+    const textEl = document.getElementById('proposalText');
+    const typeEl = document.getElementById('proposalType');
+    const quorumEl = document.getElementById('proposalQuorumType');
+    const startEl = document.getElementById('proposalStartDate');
+    const endEl = document.getElementById('proposalEndDate');
+
+    if (titleEl) titleEl.value = '';
+    if (textEl) textEl.value = '';
+    if (typeEl) typeEl.value = 'binding';
+    if (quorumEl) quorumEl.value = 'majority';
+    if (startEl) startEl.value = '';
+    if (endEl) endEl.value = '';
+
+    modal.classList.add('active');
+  }
+}
+
+export function setupProposalEventHandlers() {
+  // Event handlers are set up via event delegation in main.js
+}

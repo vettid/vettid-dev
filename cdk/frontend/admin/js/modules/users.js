@@ -280,7 +280,7 @@ function applyUserFilters() {
   });
 }
 
-function renderUsers(filtered, tbody) {
+export function renderUsers(filtered, tbody) {
   const showingInvited = userFilters.quickFilter === 'invited';
 
   // Apply sorting
@@ -840,4 +840,67 @@ export function renderUsersCards(users, isInvited = false) {
     }
     cardContainer.appendChild(card);
   });
+}
+
+// ============================================
+// Email Modal Functions
+// ============================================
+
+let selectedEmailRecipients = [];
+
+export function openComposeEmailModal() {
+  const modal = document.getElementById('composeEmailModal');
+  const selectedUsers = document.querySelectorAll('input[name="user-select"]:checked');
+  selectedEmailRecipients = Array.from(selectedUsers).map(cb => cb.value);
+
+  if (selectedEmailRecipients.length === 0) {
+    showToast('Please select at least one user', 'warning');
+    return;
+  }
+
+  const recipientCount = document.getElementById('emailRecipientCount');
+  if (recipientCount) {
+    recipientCount.textContent = selectedEmailRecipients.length + ' recipient(s)';
+  }
+
+  if (modal) modal.classList.add('active');
+}
+
+export function closeComposeEmailModal() {
+  const modal = document.getElementById('composeEmailModal');
+  if (modal) modal.classList.remove('active');
+
+  const subject = document.getElementById('emailSubject');
+  const body = document.getElementById('emailBody');
+  if (subject) subject.value = '';
+  if (body) body.value = '';
+}
+
+export async function sendEmail() {
+  const subject = document.getElementById('emailSubject')?.value;
+  const body = document.getElementById('emailBody')?.value;
+
+  if (!subject || !body) {
+    showToast('Please fill in subject and body', 'warning');
+    return;
+  }
+
+  try {
+    await api('/admin/users/email', {
+      method: 'POST',
+      body: JSON.stringify({
+        recipients: selectedEmailRecipients,
+        subject,
+        body
+      })
+    });
+    showToast('Email sent successfully', 'success');
+    closeComposeEmailModal();
+  } catch (e) {
+    showToast('Failed to send email: ' + (e.message || e), 'error');
+  }
+}
+
+export function setupUserBulkActions() {
+  // Event handlers are set up via event delegation in main.js
 }
