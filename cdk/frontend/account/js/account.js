@@ -5166,9 +5166,9 @@ function showCancelEnrollmentModal() {
 
   const modal = document.createElement('div');
   modal.id = 'cancelEnrollmentModal';
-  modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;z-index:9999;padding:20px;box-sizing:border-box;';
+  modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;z-index:9999;box-sizing:border-box;overflow:auto;';
   modal.innerHTML = `
-    <div style="background:#111;border:1px solid #f59e0b;border-radius:12px;padding:24px;max-width:340px;width:100%;text-align:center;">
+    <div style="background:#111;border:1px solid #f59e0b;border-radius:12px;padding:24px;max-width:340px;width:calc(100% - 32px);margin:16px;text-align:center;box-sizing:border-box;">
       <div style="font-size:2.5rem;margin-bottom:12px;">⚠️</div>
       <h3 style="margin:0 0 12px 0;color:#f59e0b;font-size:1.2rem;">Cancel Enrollment?</h3>
       <p style="color:#a0a0a0;margin-bottom:20px;font-size:0.9rem;line-height:1.5;">
@@ -5308,17 +5308,17 @@ function showEnrollmentModal(session) {
 
   const modal = document.createElement('div');
   modal.id = 'enrollmentModal';
-  modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.9);display:flex;align-items:flex-start;justify-content:center;z-index:9999;overflow-y:auto;padding:20px 0;';
+  modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.9);display:flex;align-items:center;justify-content:center;z-index:9999;overflow-y:auto;box-sizing:border-box;';
   modal.innerHTML = `
-    <div style="background:#0a0a0a;border:1px solid var(--accent);border-radius:12px;padding:32px;max-width:480px;width:90%;text-align:center;margin:auto 0;">
+    <div style="background:#0a0a0a;border:1px solid var(--accent);border-radius:12px;padding:24px;max-width:420px;width:calc(100% - 32px);margin:16px;text-align:center;box-sizing:border-box;">
       <h3 style="margin:0 0 8px 0;color:var(--accent);">Enroll Your Mobile Device</h3>
       <p style="color:var(--gray);margin-bottom:24px;font-size:0.95rem;">
         Scan this QR code with the VettID app on your mobile device to complete enrollment.
       </p>
 
-      <div id="enrollmentQRContainer" style="background:#fff;padding:20px;border-radius:8px;display:inline-block;margin-bottom:16px;">
-        <div id="enrollmentQRCode" style="width:200px;height:200px;display:flex;align-items:center;justify-content:center;">
-          <div style="color:#000;">Loading QR code...</div>
+      <div id="enrollmentQRContainer" style="background:#fff;padding:8px;border-radius:6px;display:inline-block;margin-bottom:16px;">
+        <div id="enrollmentQRCode" style="width:180px;height:180px;display:flex;align-items:center;justify-content:center;">
+          <div style="color:#000;font-size:0.85rem;">Loading...</div>
         </div>
       </div>
 
