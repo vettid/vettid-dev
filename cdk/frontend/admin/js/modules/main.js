@@ -16,6 +16,7 @@ import {
   showToast,
   signedIn,
   signOut,
+  saveTokens,
   idToken,
   accessToken,
   isAdmin,
@@ -293,12 +294,8 @@ async function exchangeCodeForTokens(code) {
 
     const tokens = await res.json();
 
-    // Store tokens
-    localStorage.setItem('id_token', tokens.id_token);
-    localStorage.setItem('access_token', tokens.access_token);
-    if (tokens.refresh_token) {
-      localStorage.setItem('refresh_token', tokens.refresh_token);
-    }
+    // Store tokens using core.js saveTokens for consistency
+    saveTokens(tokens);
 
     // Clean up
     sessionStorage.removeItem('pkce_code_verifier');
