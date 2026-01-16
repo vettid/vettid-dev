@@ -50,6 +50,8 @@ export async function loadInvites(resetPage = true) {
   if (resetPage) store.pagination.invites.page = 0;
 
   const tbody = document.querySelector('#invitesTable tbody');
+  if (!tbody) return; // Table not in DOM yet
+
   showLoadingSkeleton('invitesTable');
 
   try {
@@ -59,13 +61,16 @@ export async function loadInvites(resetPage = true) {
     }
     renderInvites();
   } catch (e) {
-    const tr = document.createElement('tr');
-    const td = document.createElement('td');
-    td.colSpan = 9;
-    td.className = 'muted';
-    td.textContent = 'Error: ' + (e.message || String(e));
-    tr.appendChild(td);
-    tbody.replaceChildren(tr);
+    console.error('Error loading invites:', e);
+    if (tbody) {
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.colSpan = 9;
+      td.className = 'muted';
+      td.textContent = 'Error: ' + (e.message || String(e));
+      tr.appendChild(td);
+      tbody.replaceChildren(tr);
+    }
   }
 }
 
@@ -75,6 +80,8 @@ export async function loadInvites(resetPage = true) {
 
 export function renderInvites() {
   const tbody = document.querySelector('#invitesTable tbody');
+  if (!tbody) return;
+
   tbody.replaceChildren();
   const now = Date.now();
 

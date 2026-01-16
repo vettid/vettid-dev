@@ -523,6 +523,8 @@ export async function loadAllSubscriptions(resetPage = true) {
   if (resetPage) store.pagination.subscriptions.page = 0;
 
   const tbody = document.querySelector('#subscriptionsTable tbody');
+  if (!tbody) return; // Table not in DOM yet
+
   showLoadingSkeleton('subscriptionsTable');
 
   try {
@@ -532,13 +534,16 @@ export async function loadAllSubscriptions(resetPage = true) {
     }
     renderSubscriptions();
   } catch (e) {
-    const tr = document.createElement('tr');
-    const td = document.createElement('td');
-    td.colSpan = 7;
-    td.className = 'muted';
-    td.textContent = 'Error: ' + (e.message || String(e));
-    tr.appendChild(td);
-    tbody.replaceChildren(tr);
+    console.error('Error loading subscriptions:', e);
+    if (tbody) {
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.colSpan = 7;
+      td.className = 'muted';
+      td.textContent = 'Error: ' + (e.message || String(e));
+      tr.appendChild(td);
+      tbody.replaceChildren(tr);
+    }
   }
 }
 

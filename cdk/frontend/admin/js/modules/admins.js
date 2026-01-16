@@ -41,6 +41,8 @@ export async function loadAdmins(resetPage = true) {
   if (resetPage) store.pagination.admins.page = 0;
 
   const tbody = document.querySelector('#adminsTable tbody');
+  if (!tbody) return; // Table not in DOM yet
+
   showLoadingSkeleton('adminsTable');
 
   try {
@@ -66,14 +68,17 @@ export async function loadAdmins(resetPage = true) {
 
     renderAdmins(filtered, tbody);
   } catch (e) {
+    console.error('Error loading admins:', e);
     showToast('Failed to load admins: ' + (e.message || e), 'error');
-    const tr = document.createElement('tr');
-    const td = document.createElement('td');
-    td.colSpan = 8;
-    td.className = 'muted';
-    td.textContent = e.message || String(e);
-    tr.appendChild(td);
-    tbody.replaceChildren(tr);
+    if (tbody) {
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.colSpan = 8;
+      td.className = 'muted';
+      td.textContent = e.message || String(e);
+      tr.appendChild(td);
+      tbody.replaceChildren(tr);
+    }
   }
 }
 
