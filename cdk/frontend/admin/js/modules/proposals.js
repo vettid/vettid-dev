@@ -408,11 +408,20 @@ async function createClosedTile(p) {
   catBadge.style.cssText = `display:inline-block;background:${categoryColor};color:#fff;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;text-transform:capitalize;`;
   catBadge.textContent = category;
   badgesDiv.appendChild(catBadge);
+
+  // Show "Results Published" badge if merkle_root exists
+  if (p.results_published_at) {
+    const publishedBadge = document.createElement('span');
+    publishedBadge.style.cssText = 'display:inline-block;background:linear-gradient(135deg,#8b5cf6 0%,#7c3aed 100%);color:#fff;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;';
+    publishedBadge.textContent = 'Verified';
+    publishedBadge.title = 'Results published with Merkle proof';
+    badgesDiv.appendChild(publishedBadge);
+  }
   tile.appendChild(badgesDiv);
 
   // Dates
   const datesDiv = document.createElement('div');
-  datesDiv.style.cssText = 'margin-bottom:8px;font-size:0.8rem;color:var(--gray);flex-grow:1;';
+  datesDiv.style.cssText = 'margin-bottom:8px;font-size:0.8rem;color:var(--gray);';
   const openedDiv = document.createElement('div');
   openedDiv.style.marginBottom = '4px';
   openedDiv.textContent = 'Opened: ' + opensDate;
@@ -420,6 +429,68 @@ async function createClosedTile(p) {
   closedDiv.textContent = 'Closed: ' + closesDate;
   datesDiv.append(openedDiv, closedDiv);
   tile.appendChild(datesDiv);
+
+  // Merkle root display (if results published)
+  if (p.merkle_root) {
+    const merkleDiv = document.createElement('div');
+    merkleDiv.style.cssText = 'margin-bottom:8px;padding:8px;background:var(--bg-tertiary);border-radius:6px;border-left:3px solid #8b5cf6;';
+
+    const merkleLabel = document.createElement('div');
+    merkleLabel.style.cssText = 'font-size:0.7rem;color:var(--gray);margin-bottom:4px;';
+    merkleLabel.textContent = 'Merkle Root:';
+
+    const merkleHash = document.createElement('div');
+    merkleHash.style.cssText = 'font-family:monospace;font-size:0.65rem;color:#8b5cf6;word-break:break-all;';
+    merkleHash.textContent = p.merkle_root;
+    merkleHash.title = 'Click to copy';
+    merkleHash.style.cursor = 'pointer';
+    merkleHash.onclick = () => {
+      navigator.clipboard.writeText(p.merkle_root);
+      showToast('Merkle root copied to clipboard', 'success');
+    };
+
+    merkleDiv.append(merkleLabel, merkleHash);
+    tile.appendChild(merkleDiv);
+  }
+
+  // Spacer for consistent button positioning
+  const spacer = document.createElement('div');
+  spacer.style.flexGrow = '1';
+  tile.appendChild(spacer);
+
+  // Publish Results button (if not yet published)
+  if (!p.results_published_at) {
+    const publishBtn = document.createElement('button');
+    publishBtn.className = 'btn';
+    publishBtn.style.cssText = 'width:100%;padding:8px 12px;font-size:0.8rem;background:linear-gradient(135deg,#8b5cf6 0%,#7c3aed 100%);font-weight:600;margin-bottom:8px;';
+    publishBtn.textContent = 'Publish Results';
+    publishBtn.dataset.publishProposal = p.proposal_id;
+    publishBtn.onclick = async () => {
+      publishBtn.disabled = true;
+      publishBtn.textContent = 'Publishing...';
+      try {
+        await publishVoteResults(p.proposal_id);
+        showToast('Results published successfully!', 'success');
+        await loadAllProposalsAdmin(); // Refresh to show updated tile
+      } catch (e) {
+        showToast('Failed to publish results: ' + (e.message || e), 'error');
+        publishBtn.disabled = false;
+        publishBtn.textContent = 'Publish Results';
+      }
+    };
+    tile.appendChild(publishBtn);
+  }
+
+  // View Public Votes link (if results published)
+  if (p.results_published_at) {
+    const publicLink = document.createElement('a');
+    publicLink.style.cssText = 'display:block;width:100%;padding:8px 12px;font-size:0.8rem;background:var(--bg-tertiary);border:1px solid #8b5cf6;color:#8b5cf6;font-weight:600;margin-bottom:8px;text-align:center;border-radius:6px;text-decoration:none;';
+    publicLink.textContent = 'View Public Vote List';
+    publicLink.href = `${config.apiUrl}/votes/${p.proposal_id}/published`;
+    publicLink.target = '_blank';
+    publicLink.rel = 'noopener noreferrer';
+    tile.appendChild(publicLink);
+  }
 
   // View Analytics button
   const analyticsBtn = document.createElement('button');
@@ -544,6 +615,37 @@ export async function loadProposalAnalytics(proposalId, status) {
     if (noBar) noBar.style.width = `${noPercent}%`;
     if (abstainBar) abstainBar.style.width = `${abstainPercent}%`;
 
+    // Handle Merkle verification section for closed proposals
+    const merkleSection = document.getElementById('analyticsMerkleSection');
+    if (status === 'closed') {
+      // Try to fetch published vote data for Merkle information
+      try {
+        const publishedRes = await fetch(`${config.apiUrl}/votes/${proposalId}/published`);
+        if (publishedRes.ok) {
+          const publishedData = await publishedRes.json();
+          if (publishedData.merkle_root) {
+            // Show Merkle section
+            if (merkleSection) {
+              merkleSection.style.display = 'block';
+            } else {
+              // Create Merkle section if it doesn't exist
+              createMerkleSection(proposalId, publishedData);
+            }
+            updateMerkleSection(proposalId, publishedData);
+          } else if (merkleSection) {
+            merkleSection.style.display = 'none';
+          }
+        } else if (merkleSection) {
+          merkleSection.style.display = 'none';
+        }
+      } catch (err) {
+        console.log('Published vote data not available yet:', err);
+        if (merkleSection) merkleSection.style.display = 'none';
+      }
+    } else if (merkleSection) {
+      merkleSection.style.display = 'none';
+    }
+
     const msgEl = document.getElementById('analyticsMsg');
     if (msgEl) msgEl.textContent = '';
 
@@ -557,10 +659,122 @@ export async function loadProposalAnalytics(proposalId, status) {
   }
 }
 
+function createMerkleSection(proposalId, publishedData) {
+  const modal = document.getElementById('proposalAnalyticsModal');
+  if (!modal) return;
+
+  const content = modal.querySelector('.modal-content');
+  if (!content) return;
+
+  const section = document.createElement('div');
+  section.id = 'analyticsMerkleSection';
+  section.style.cssText = 'margin-top:16px;padding:16px;background:var(--bg-tertiary);border-radius:8px;border-left:3px solid #8b5cf6;';
+
+  // Insert before the close button
+  const closeBtn = content.querySelector('[data-close-modal]');
+  if (closeBtn) {
+    content.insertBefore(section, closeBtn);
+  } else {
+    content.appendChild(section);
+  }
+}
+
+function updateMerkleSection(proposalId, publishedData) {
+  const section = document.getElementById('analyticsMerkleSection');
+  if (!section) return;
+
+  section.replaceChildren();
+
+  // Header
+  const header = document.createElement('div');
+  header.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:12px;';
+
+  const verifiedIcon = document.createElement('span');
+  verifiedIcon.style.cssText = 'color:#8b5cf6;font-size:1.2rem;';
+  verifiedIcon.textContent = '\u2713';
+
+  const title = document.createElement('span');
+  title.style.cssText = 'font-weight:600;color:#8b5cf6;';
+  title.textContent = 'Cryptographically Verified Results';
+
+  header.append(verifiedIcon, title);
+  section.appendChild(header);
+
+  // Description
+  const desc = document.createElement('p');
+  desc.style.cssText = 'font-size:0.8rem;color:var(--gray);margin-bottom:12px;';
+  desc.textContent = 'Votes are signed by member vaults and published to a public bulletin board. Anyone can verify the results using the Merkle root hash.';
+  section.appendChild(desc);
+
+  // Merkle root
+  const merkleRow = document.createElement('div');
+  merkleRow.style.cssText = 'margin-bottom:12px;';
+
+  const merkleLabel = document.createElement('div');
+  merkleLabel.style.cssText = 'font-size:0.75rem;color:var(--gray);margin-bottom:4px;';
+  merkleLabel.textContent = 'Merkle Root:';
+
+  const merkleHash = document.createElement('div');
+  merkleHash.style.cssText = 'font-family:monospace;font-size:0.7rem;color:#8b5cf6;word-break:break-all;cursor:pointer;padding:8px;background:var(--bg-card);border-radius:4px;';
+  merkleHash.textContent = publishedData.merkle_root;
+  merkleHash.title = 'Click to copy';
+  merkleHash.onclick = () => {
+    navigator.clipboard.writeText(publishedData.merkle_root);
+    showToast('Merkle root copied to clipboard', 'success');
+  };
+
+  merkleRow.append(merkleLabel, merkleHash);
+  section.appendChild(merkleRow);
+
+  // Published timestamp
+  if (publishedData.results_published_at) {
+    const publishedRow = document.createElement('div');
+    publishedRow.style.cssText = 'font-size:0.75rem;color:var(--gray);margin-bottom:12px;';
+    publishedRow.textContent = 'Published: ' + new Date(publishedData.results_published_at).toLocaleString();
+    section.appendChild(publishedRow);
+  }
+
+  // Vault votes count
+  if (publishedData.vault_votes !== undefined) {
+    const vaultRow = document.createElement('div');
+    vaultRow.style.cssText = 'font-size:0.8rem;margin-bottom:12px;';
+    const vaultBadge = document.createElement('span');
+    vaultBadge.style.cssText = 'background:#8b5cf6;color:#fff;padding:4px 8px;border-radius:4px;font-size:0.7rem;';
+    vaultBadge.textContent = `${publishedData.vault_votes} vault-signed votes`;
+    vaultRow.appendChild(vaultBadge);
+    section.appendChild(vaultRow);
+  }
+
+  // View public vote list button
+  const linkRow = document.createElement('div');
+  linkRow.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;';
+
+  const publicLink = document.createElement('a');
+  publicLink.style.cssText = 'display:inline-block;padding:8px 16px;font-size:0.8rem;background:var(--bg-card);border:1px solid #8b5cf6;color:#8b5cf6;font-weight:600;border-radius:6px;text-decoration:none;';
+  publicLink.textContent = 'View Public Vote List';
+  publicLink.href = `${config.apiUrl}/votes/${proposalId}/published?include_votes=true`;
+  publicLink.target = '_blank';
+  publicLink.rel = 'noopener noreferrer';
+
+  linkRow.appendChild(publicLink);
+  section.appendChild(linkRow);
+}
+
 export function closeProposalAnalyticsModal() {
   const modal = document.getElementById('proposalAnalyticsModal');
   if (modal) modal.classList.remove('active');
   currentProposalAnalytics = null;
+}
+
+// ============================================
+// Publish Vote Results
+// ============================================
+
+export async function publishVoteResults(proposalId) {
+  const response = await api(`/admin/proposals/${proposalId}/publish-results`, {
+    method: 'POST'
+  });
+  return response;
 }
 
 // ============================================
@@ -740,5 +954,17 @@ export function setupProposalEventHandlers() {
 
   if (pendingVotesBtn) {
     pendingVotesBtn.onclick = () => setProposalFilter('upcoming');
+  }
+
+  // Create proposal button (opens modal)
+  const toggleProposalForm = document.getElementById('toggleProposalForm');
+  if (toggleProposalForm) {
+    toggleProposalForm.onclick = () => openCreateProposalModal();
+  }
+
+  // Create proposal submit button
+  const createProposalBtn = document.getElementById('createProposalBtn');
+  if (createProposalBtn) {
+    createProposalBtn.onclick = () => createProposal();
   }
 }

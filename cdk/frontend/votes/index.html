@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Published Vote Results - VettID</title>
+<meta name="description" content="Transparent, verifiable voting results with cryptographic proofs from the VettID cooperative.">
+<link rel="icon" type="image/x-icon" href="/assets/favicon.ico">
+<link rel="stylesheet" href="/assets/fonts.css">
+<link rel="stylesheet" href="/votes/votes.css">
+</head>
+<body>
+
+<!-- Fixed Header -->
+<header class="site-header">
+  <a href="/" class="header-logo">
+    <img src="/assets/logo.jpg" alt="VettID Logo">
+    <span>VETTID</span>
+  </a>
+  <nav class="header-nav">
+    <a href="/pcr" class="nav-link">PCR Verification</a>
+  </nav>
+</header>
+
+<main class="container">
+  <div class="page-header">
+    <h1>Published Votes</h1>
+    <p>Transparent, verifiable voting results with cryptographic proofs</p>
+  </div>
+
+  <!-- List View -->
+  <div id="listView" class="list-view">
+    <div id="loadingState" class="loading">
+      <div class="spinner"></div>
+      <p>Loading published votes...</p>
+    </div>
+    <div id="errorState" class="error-msg" style="display:none;"></div>
+    <div id="emptyState" class="empty-state" style="display:none;">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+      </svg>
+      <h3>No Published Votes Yet</h3>
+      <p>Check back later for completed proposal votes.</p>
+    </div>
+    <div id="proposalList" class="proposal-list" style="display:none;"></div>
+  </div>
+
+  <!-- Detail View -->
+  <div id="detailView" class="detail-view">
+    <button id="backBtn" class="back-btn">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M19 12H5M12 19l-7-7 7-7"/>
+      </svg>
+      Back to List
+    </button>
+    <div id="detailContent"></div>
+  </div>
+</main>
+
+<footer class="site-footer">
+  <p>
+    <a href="/">VettID</a> &middot;
+    <a href="/pcr">PCR Verification</a> &middot;
+    <a href="mailto:support@vettid.dev">Support</a>
+  </p>
+  <p class="copyright">&copy; 2026 VettID Cooperative. All rights reserved.</p>
+</footer>
+
+<script src="/shared/config.js"></script>
+<script src="/votes/votes.js"></script>
+</body>
+</html>

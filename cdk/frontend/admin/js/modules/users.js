@@ -133,8 +133,9 @@ export async function loadUsers(resetPage = true) {
   if (!isAdmin()) return;
   if (resetPage) pagination.page = 0;
 
-  const tbody = document.querySelector('#usersTable tbody');
-  if (!tbody) return; // Table not in DOM yet
+  // Check if table exists before proceeding
+  const table = document.getElementById('usersTable');
+  if (!table) return; // Table not in DOM yet
 
   showLoadingSkeleton('usersTable');
 
@@ -182,12 +183,18 @@ export async function loadUsers(resetPage = true) {
       );
     }
 
+    // Query tbody fresh after showLoadingSkeleton (which may have replaced the original tbody)
+    const tbody = document.querySelector('#usersTable tbody');
+    if (!tbody) return;
+
     // Filter and render
     const filtered = applyUserFilters();
     renderUsers(filtered, tbody);
 
   } catch (e) {
     console.error('Error loading users:', e);
+    // Query tbody fresh for error display
+    const tbody = document.querySelector('#usersTable tbody');
     if (tbody) {
       const errMsg = document.createElement('tr');
       const td = document.createElement('td');
@@ -994,5 +1001,11 @@ export function setupUserEventHandlers() {
       pagination.search = e.target.value;
       debouncedLoadUsers();
     };
+  }
+
+  // Open compose email modal button
+  const openComposeEmailBtn = document.getElementById('openComposeEmailBtn');
+  if (openComposeEmailBtn) {
+    openComposeEmailBtn.onclick = () => openComposeEmailModal();
   }
 }

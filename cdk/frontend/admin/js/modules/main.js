@@ -155,6 +155,20 @@ import {
 } from './services.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Modal Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+function openModal(modalId) {
+  const modal = document.getElementById(modalId);
+  if (modal) modal.classList.add('active');
+}
+
+function closeModal(modalId) {
+  const modal = document.getElementById(modalId);
+  if (modal) modal.classList.remove('active');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Expose Functions Globally for Inline Handlers (temporary compatibility)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -394,8 +408,15 @@ function showLoggedInUI() {
 }
 
 function loadInitialData() {
-  // Load default tab data (users)
-  loadUsers();
+  // Load data for the currently active tab
+  const activeTab = document.querySelector('.tab.active:not(.tab-child)');
+  const activeTarget = activeTab?.getAttribute('data-tab');
+  if (activeTarget) {
+    loadTabData(activeTarget);
+  } else {
+    // Fallback to waitlist (default tab)
+    loadWaitlist();
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -575,6 +596,9 @@ function loadTabData(target) {
     case 'subscriptions':
       loadAllSubscriptions();
       break;
+    case 'waitlist':
+      loadWaitlist();
+      break;
   }
 }
 
@@ -610,6 +634,18 @@ function setupEventDelegation() {
       'handleResetAdminPassword': handleResetAdminPassword,
       'handleToggleAdminStatus': handleToggleAdminStatus,
       'openChangeAdminTypeModal': openChangeAdminTypeModal,
+      'admin-manage': () => {
+        const email = target.dataset.email;
+        const name = target.dataset.name;
+        const enabled = target.dataset.enabled === 'true';
+        const adminType = target.dataset.adminType;
+        if (email) openManageAccessModal(email, name, enabled, adminType);
+      },
+      'admin-activity': () => {
+        const email = target.dataset.email;
+        const name = target.dataset.name;
+        if (email) openActivityLogModal(email, name);
+      },
 
       // Users
       'closeComposeEmailModal': closeComposeEmailModal,
@@ -621,6 +657,10 @@ function setupEventDelegation() {
       'closeConfirmTermsModal': closeConfirmTermsModal,
       'closeCreateSubscriptionTypeModal': closeCreateSubscriptionTypeModal,
       'closeCreateTermsModal': closeCreateTermsModal,
+      'view-terms': () => {
+        const versionId = target.dataset.versionId;
+        if (versionId) viewTerms(versionId, target);
+      },
 
       // Proposals
       'closeCreateProposalModal': closeCreateProposalModal,
@@ -808,9 +848,126 @@ document.addEventListener('DOMContentLoaded', () => {
   setupHandlersEventHandlers();
   setupWaitlistEventHandlers();
 
+  // Setup refresh buttons
+  setupRefreshButtons();
+
   // Initialize authentication
   initAuth();
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Refresh Button Handlers
+// ─────────────────────────────────────────────────────────────────────────────
+
+function setupRefreshButtons() {
+  // Users refresh
+  const refreshUsers = document.getElementById('refreshUsers');
+  if (refreshUsers) {
+    refreshUsers.onclick = () => {
+      store.users = []; // Clear cache to force refetch
+      loadUsers(true);
+    };
+  }
+
+  // Invites refresh
+  const refreshInvites = document.getElementById('refreshInvites');
+  if (refreshInvites) {
+    refreshInvites.onclick = () => {
+      store.invites = []; // Clear cache to force refetch
+      loadInvites(true);
+    };
+  }
+
+  // Admins refresh
+  const refreshAdmins = document.getElementById('refreshAdmins');
+  if (refreshAdmins) {
+    refreshAdmins.onclick = () => {
+      store.admins = []; // Clear cache to force refetch
+      store.pendingAdmins = [];
+      loadAdmins(true);
+      loadPendingAdmins();
+    };
+  }
+
+  // Subscriptions refresh
+  const refreshSubscriptions = document.getElementById('refreshSubscriptions');
+  if (refreshSubscriptions) {
+    refreshSubscriptions.onclick = () => {
+      store.subscriptions = []; // Clear cache to force refetch
+      loadAllSubscriptions(true);
+    };
+  }
+
+  // Subscription Types refresh
+  const refreshSubTypes = document.getElementById('refreshSubTypes');
+  if (refreshSubTypes) {
+    refreshSubTypes.onclick = () => {
+      store.subscriptionTypes = []; // Clear cache to force refetch
+      loadSubscriptionTypes();
+    };
+  }
+
+  // Waitlist refresh
+  const refreshWaitlist = document.getElementById('refreshWaitlist');
+  if (refreshWaitlist) {
+    refreshWaitlist.onclick = () => loadWaitlist(true);
+  }
+
+  // Services refresh
+  const refreshServices = document.getElementById('refreshServices');
+  if (refreshServices) {
+    refreshServices.onclick = () => {
+      store.services = []; // Clear cache to force refetch
+      loadServices(true);
+    };
+  }
+
+  // Admin form buttons
+  const toggleAdminForm = document.getElementById('toggleAdminForm');
+  if (toggleAdminForm) {
+    toggleAdminForm.onclick = () => openAddAdminModal();
+  }
+
+  const addAdminBtn = document.getElementById('addAdminBtn');
+  if (addAdminBtn) {
+    addAdminBtn.onclick = () => addAdmin();
+  }
+
+  // Invite form buttons
+  const toggleInviteForm = document.getElementById('toggleInviteForm');
+  if (toggleInviteForm) {
+    toggleInviteForm.onclick = () => openCreateInviteModal();
+  }
+
+  const createInviteBtn = document.getElementById('createInviteBtn');
+  if (createInviteBtn) {
+    createInviteBtn.onclick = () => createInvite();
+  }
+
+  // Generic confirm button
+  const genericConfirmBtn = document.getElementById('genericConfirmBtn');
+  if (genericConfirmBtn) {
+    genericConfirmBtn.onclick = () => closeGenericConfirmModal(true);
+  }
+
+  // Refresh analytics button
+  const refreshAnalyticsBtn = document.getElementById('refreshAnalyticsBtn');
+  if (refreshAnalyticsBtn) {
+    refreshAnalyticsBtn.onclick = () => loadSystemHealth();
+  }
+
+  // Refresh vault metrics button
+  const refreshVaultMetricsBtn = document.getElementById('refreshVaultMetricsBtn');
+  if (refreshVaultMetricsBtn) {
+    refreshVaultMetricsBtn.onclick = () => loadVaultMetrics();
+  }
+
+  // Batch import button
+  const batchImportBtn = document.getElementById('batchImportBtn');
+  if (batchImportBtn) {
+    batchImportBtn.onclick = () => openCsvImportModal();
+  }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Waitlist Event Handlers
@@ -871,9 +1028,150 @@ function setupWaitlistEventHandlers() {
   const selectAll = document.getElementById('selectAllWaitlist');
   if (selectAll) {
     selectAll.onchange = () => {
-      document.querySelectorAll('.waitlist-checkbox').forEach(cb => {
+      document.querySelectorAll('.waitlist-checkbox:not([disabled])').forEach(cb => {
         cb.checked = selectAll.checked;
       });
+      updateWaitlistSelectedCount();
+    };
+  }
+
+  // Individual checkbox changes
+  document.addEventListener('change', e => {
+    if (e.target.classList.contains('waitlist-checkbox')) {
+      updateWaitlistSelectedCount();
+    }
+  });
+
+  // Waitlist action buttons
+  setupWaitlistActionButtons();
+}
+
+function updateWaitlistSelectedCount() {
+  const checkboxes = document.querySelectorAll('.waitlist-checkbox:checked');
+  const count = checkboxes.length;
+  const countText = count > 0 ? `${count} selected` : '';
+
+  const countEl = document.getElementById('selectedWaitlistCount');
+  if (countEl) countEl.textContent = countText;
+
+  const sendBtn = document.getElementById('sendInvitesBtn');
+  const rejectBtn = document.getElementById('rejectWaitlistBtn');
+  const deleteBtn = document.getElementById('deleteWaitlistBtn');
+
+  if (sendBtn) sendBtn.disabled = count === 0;
+  if (rejectBtn) rejectBtn.disabled = count === 0;
+  if (deleteBtn) deleteBtn.disabled = count === 0;
+}
+
+let pendingInviteWaitlistIds = [];
+
+function setupWaitlistActionButtons() {
+  // Send invites button - opens modal
+  const sendBtn = document.getElementById('sendInvitesBtn');
+  if (sendBtn) {
+    sendBtn.onclick = () => {
+      const checkboxes = document.querySelectorAll('.waitlist-checkbox:checked');
+      if (checkboxes.length === 0) {
+        showToast('Please select at least one waitlist entry', 'warning');
+        return;
+      }
+      pendingInviteWaitlistIds = Array.from(checkboxes).map(cb => cb.dataset.email);
+      const countDisplay = document.getElementById('inviteCountDisplay');
+      if (countDisplay) countDisplay.textContent = pendingInviteWaitlistIds.length;
+      openModal('customMessageModal');
+    };
+  }
+
+  // Confirm send invites
+  const confirmBtn = document.getElementById('confirmSendInvites');
+  if (confirmBtn) {
+    confirmBtn.onclick = async () => {
+      if (pendingInviteWaitlistIds.length === 0) return;
+
+      const customMessage = document.getElementById('customMessageText')?.value || '';
+      closeModal('customMessageModal');
+
+      try {
+        const res = await api('/admin/waitlist/invite', {
+          method: 'POST',
+          body: JSON.stringify({ emails: pendingInviteWaitlistIds, custom_message: customMessage })
+        });
+
+        showToast(`Sent ${res.sent || pendingInviteWaitlistIds.length} invite(s)`, 'success');
+        pendingInviteWaitlistIds = [];
+        loadWaitlist(false);
+      } catch (err) {
+        showToast(err.message || 'Failed to send invites', 'error');
+      }
+    };
+  }
+
+  // Cancel send invites
+  const cancelBtn = document.getElementById('cancelSendInvites');
+  if (cancelBtn) {
+    cancelBtn.onclick = () => {
+      pendingInviteWaitlistIds = [];
+      closeModal('customMessageModal');
+    };
+  }
+
+  // Close button (X) on modal
+  const closeBtn = document.getElementById('closeCustomMessageModal');
+  if (closeBtn) {
+    closeBtn.onclick = () => {
+      pendingInviteWaitlistIds = [];
+      closeModal('customMessageModal');
+    };
+  }
+
+  // Reject waitlist button
+  const rejectBtn = document.getElementById('rejectWaitlistBtn');
+  if (rejectBtn) {
+    rejectBtn.onclick = async () => {
+      const checkboxes = document.querySelectorAll('.waitlist-checkbox:checked');
+      if (checkboxes.length === 0) return;
+
+      const emails = Array.from(checkboxes).map(cb => cb.dataset.email);
+      const reason = prompt('Enter rejection reason (optional):') || '';
+
+      try {
+        await api('/admin/waitlist/reject', {
+          method: 'POST',
+          body: JSON.stringify({ emails, reason })
+        });
+
+        showToast(`Rejected ${emails.length} entr${emails.length === 1 ? 'y' : 'ies'}`, 'success');
+        loadWaitlist(false);
+      } catch (err) {
+        showToast(err.message || 'Failed to reject entries', 'error');
+      }
+    };
+  }
+
+  // Delete waitlist button
+  const deleteBtn = document.getElementById('deleteWaitlistBtn');
+  if (deleteBtn) {
+    deleteBtn.onclick = async () => {
+      const checkboxes = document.querySelectorAll('.waitlist-checkbox:checked');
+      if (checkboxes.length === 0) return;
+
+      const emails = Array.from(checkboxes).map(cb => cb.dataset.email);
+
+      if (!confirm(`Delete ${emails.length} waitlist entr${emails.length === 1 ? 'y' : 'ies'}? This cannot be undone.`)) {
+        return;
+      }
+
+      try {
+        await api('/admin/waitlist/delete', {
+          method: 'POST',
+          body: JSON.stringify({ emails })
+        });
+
+        showToast(`Deleted ${emails.length} entr${emails.length === 1 ? 'y' : 'ies'}`, 'success');
+        loadWaitlist(false);
+      } catch (err) {
+        showToast(err.message || 'Failed to delete entries', 'error');
+      }
     };
   }
 }
@@ -882,8 +1180,9 @@ async function loadWaitlist(resetPage = true) {
   if (!isAdmin()) return;
   if (resetPage) waitlistPaginationState.currentPage = 1;
 
-  const tbody = document.querySelector('#waitlistTable tbody');
-  if (!tbody) return;
+  // Check if table exists before proceeding
+  const table = document.getElementById('waitlistTable');
+  if (!table) return;
 
   showLoadingSkeleton('waitlistTable');
 
@@ -892,13 +1191,17 @@ async function loadWaitlist(resetPage = true) {
     waitlistData = data.waitlist || [];
     renderWaitlist();
   } catch (e) {
-    const tr = document.createElement('tr');
-    const td = document.createElement('td');
-    td.colSpan = 5;
-    td.className = 'muted';
-    td.textContent = 'Error: ' + (e.message || String(e));
-    tr.appendChild(td);
-    tbody.replaceChildren(tr);
+    // Query tbody fresh for error display
+    const tbody = document.querySelector('#waitlistTable tbody');
+    if (tbody) {
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.colSpan = 5;
+      td.className = 'muted';
+      td.textContent = 'Error: ' + (e.message || String(e));
+      tr.appendChild(td);
+      tbody.replaceChildren(tr);
+    }
   }
 }
 

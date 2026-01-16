@@ -985,6 +985,57 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       runtime: lambda.Runtime.NODEJS_22_X,
       environment: defaultEnv,
     });
+
+    // Vault-based voting: receive vault-signed votes from mobile apps
+    const publishedVotesBucket = props.infrastructure.publishedVotesBucket;
+    const receiveSignedVote = new lambdaNode.NodejsFunction(this, 'ReceiveSignedVoteFn', {
+      entry: 'lambda/handlers/member/receiveSignedVote.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+        TABLE_VOTES: tables.votes.tableName,
+        TABLE_PROPOSALS: tables.proposals.tableName,
+      },
+      timeout: cdk.Duration.seconds(30),
+      description: 'Receive and verify vault-signed votes',
+    });
+
+    // Get Merkle proof for individual vote verification
+    const getVoteMerkleProof = new lambdaNode.NodejsFunction(this, 'GetVoteMerkleProofFn', {
+      entry: 'lambda/handlers/member/getVoteMerkleProof.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+        PUBLISHED_VOTES_BUCKET: publishedVotesBucket.bucketName,
+        TABLE_PROPOSALS: tables.proposals.tableName,
+      },
+      timeout: cdk.Duration.seconds(30),
+      description: 'Get Merkle proof for vote verification',
+    });
+
+    // Public endpoint for published vote results (no auth required)
+    const getPublishedVotes = new lambdaNode.NodejsFunction(this, 'GetPublishedVotesFn', {
+      entry: 'lambda/handlers/public/getPublishedVotes.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        PUBLISHED_VOTES_BUCKET: publishedVotesBucket.bucketName,
+        TABLE_PROPOSALS: tables.proposals.tableName,
+      },
+      timeout: cdk.Duration.seconds(30),
+      description: 'Public endpoint for published vote results',
+    });
+
+    // Public endpoint for listing all published proposals (no auth required)
+    const listPublishedProposals = new lambdaNode.NodejsFunction(this, 'ListPublishedProposalsFn', {
+      entry: 'lambda/handlers/public/listPublishedProposals.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        TABLE_PROPOSALS: tables.proposals.tableName,
+      },
+      timeout: cdk.Duration.seconds(30),
+      description: 'Public endpoint for listing published proposals',
+    });
+
     const closeExpiredProposals = new lambdaNode.NodejsFunction(this, 'CloseExpiredProposalsFn', {
       entry: 'lambda/handlers/scheduled/closeExpiredProposals.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
@@ -1118,6 +1169,17 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
     tables.proposals.grantReadData(getAllProposals);
     tables.votes.grantReadData(getMemberProposalVoteCounts);
     tables.proposals.grantReadData(getMemberProposalVoteCounts);
+
+    // Vault-based voting grants
+    tables.votes.grantReadWriteData(receiveSignedVote);
+    tables.proposals.grantReadData(receiveSignedVote);
+    tables.audit.grantReadWriteData(receiveSignedVote);
+    tables.proposals.grantReadData(getVoteMerkleProof);
+    publishedVotesBucket.grantRead(getVoteMerkleProof);
+    tables.proposals.grantReadData(getPublishedVotes);
+    publishedVotesBucket.grantRead(getPublishedVotes);
+    tables.proposals.grantReadData(listPublishedProposals);
+
     tables.proposals.grantReadWriteData(closeExpiredProposals); // Scheduled job to close expired proposals
     tables.votes.grantReadData(closeExpiredProposals); // Read votes for quorum calculation
     tables.subscriptions.grantReadData(closeExpiredProposals); // Count eligible voters for quorum
@@ -1426,6 +1488,32 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       methods: [apigw.HttpMethod.GET],
       integration: new integrations.HttpLambdaIntegration('GetMemberProposalVoteCountsInt', getMemberProposalVoteCounts),
       authorizer: this.memberAuthorizer,
+    });
+
+    // Vault-based voting routes
+    this.httpApi.addRoutes({
+      path: '/member/votes/signed',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('ReceiveSignedVoteInt', receiveSignedVote),
+      authorizer: this.memberAuthorizer,
+    });
+    this.httpApi.addRoutes({
+      path: '/member/votes/{proposal_id}/proof',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('GetVoteMerkleProofInt', getVoteMerkleProof),
+      authorizer: this.memberAuthorizer,
+    });
+    // Public endpoint for listing all published proposals (no authorizer)
+    this.httpApi.addRoutes({
+      path: '/votes',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('ListPublishedProposalsInt', listPublishedProposals),
+    });
+    // Public endpoint for published vote results (no authorizer)
+    this.httpApi.addRoutes({
+      path: '/votes/{proposal_id}/published',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('GetPublishedVotesInt', getPublishedVotes),
     });
 
     // NOTE: Profile handlers moved to VaultStack. Connection/messaging are vault-to-vault via NATS.

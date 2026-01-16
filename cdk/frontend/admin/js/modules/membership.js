@@ -301,10 +301,10 @@ let subscriptionTypesFilter = 'all';
 export async function loadSubscriptionTypes() {
   if (!isAdmin()) return;
 
-  const container = document.getElementById('subscriptionTypesContainer');
+  const container = document.getElementById('subscriptionTypesList');
   if (!container) return;
 
-  showGridLoadingSkeleton('subscriptionTypesContainer', 3);
+  showGridLoadingSkeleton('subscriptionTypesList', 3);
 
   try {
     const data = await api('/admin/subscription-types');
@@ -327,7 +327,7 @@ export async function loadSubscriptionTypes() {
 }
 
 export function renderSubscriptionTypes() {
-  const container = document.getElementById('subscriptionTypesContainer');
+  const container = document.getElementById('subscriptionTypesList');
   if (!container) return;
 
   const types = store.subscriptionTypes || [];
@@ -522,8 +522,9 @@ export async function loadAllSubscriptions(resetPage = true) {
   if (!isAdmin()) return;
   if (resetPage) store.pagination.subscriptions.page = 0;
 
-  const tbody = document.querySelector('#subscriptionsTable tbody');
-  if (!tbody) return; // Table not in DOM yet
+  // Check if table exists before proceeding
+  const table = document.getElementById('subscriptionsTable');
+  if (!table) return; // Table not in DOM yet
 
   showLoadingSkeleton('subscriptionsTable');
 
@@ -535,6 +536,8 @@ export async function loadAllSubscriptions(resetPage = true) {
     renderSubscriptions();
   } catch (e) {
     console.error('Error loading subscriptions:', e);
+    // Query tbody fresh for error display
+    const tbody = document.querySelector('#subscriptionsTable tbody');
     if (tbody) {
       const tr = document.createElement('tr');
       const td = document.createElement('td');
@@ -729,14 +732,31 @@ export function openConfirmTermsModal() {
 export function openCreateSubscriptionTypeModal() {
   const modal = document.getElementById('createSubscriptionTypeModal');
   if (modal) {
-    const nameEl = document.getElementById('subscriptionTypeName');
-    const descEl = document.getElementById('subscriptionTypeDescription');
-    const priceEl = document.getElementById('subscriptionTypePrice');
-    const durationEl = document.getElementById('subscriptionTypeDuration');
+    // Reset all form fields using correct IDs from HTML
+    const nameEl = document.getElementById('subTypeName');
+    const descEl = document.getElementById('subTypeDescription');
+    const termValueEl = document.getElementById('subTermValue');
+    const termUnitEl = document.getElementById('subTermUnit');
+    const freeEl = document.getElementById('subTypeFree');
+    const currencyEl = document.getElementById('subTypeCurrency');
+    const priceEl = document.getElementById('subTypePrice');
+    const oneTimeEl = document.getElementById('subTypeOneTime');
+    const enabledEl = document.getElementById('subTypeEnabled');
+    const pricingFields = document.getElementById('pricingFields');
+    const msgEl = document.getElementById('subscriptionTypeMsg');
+
     if (nameEl) nameEl.value = '';
     if (descEl) descEl.value = '';
-    if (priceEl) priceEl.value = '';
-    if (durationEl) durationEl.value = '30';
+    if (termValueEl) termValueEl.value = '1';
+    if (termUnitEl) termUnitEl.value = 'months';
+    if (freeEl) freeEl.checked = false;
+    if (currencyEl) { currencyEl.value = 'USD'; currencyEl.disabled = false; }
+    if (priceEl) { priceEl.value = ''; priceEl.disabled = false; }
+    if (oneTimeEl) oneTimeEl.checked = false;
+    if (enabledEl) enabledEl.checked = true;
+    if (pricingFields) pricingFields.style.opacity = '1';
+    if (msgEl) msgEl.textContent = '';
+
     modal.classList.add('active');
   }
 }
@@ -807,5 +827,35 @@ export function setupMembershipEventHandlers() {
       store.pagination.subscriptions.search = e.target.value;
       renderSubscriptions();
     };
+  }
+
+  // Create subscription type button
+  const toggleSubscriptionTypeForm = document.getElementById('toggleSubscriptionTypeForm');
+  if (toggleSubscriptionTypeForm) {
+    toggleSubscriptionTypeForm.onclick = () => openCreateSubscriptionTypeModal();
+  }
+
+  // Create subscription type submit button
+  const createSubscriptionTypeBtn = document.getElementById('createSubscriptionTypeBtn');
+  if (createSubscriptionTypeBtn) {
+    createSubscriptionTypeBtn.onclick = () => createSubscriptionType();
+  }
+
+  // Create terms button (opens modal)
+  const toggleTermsForm = document.getElementById('toggleTermsForm');
+  if (toggleTermsForm) {
+    toggleTermsForm.onclick = () => openCreateTermsModal();
+  }
+
+  // Create terms submit button (opens confirmation)
+  const createTermsBtn = document.getElementById('createTermsBtn');
+  if (createTermsBtn) {
+    createTermsBtn.onclick = () => openConfirmTermsModal();
+  }
+
+  // Confirm create terms button (submits)
+  const confirmCreateTermsBtn = document.getElementById('confirmCreateTermsBtn');
+  if (confirmCreateTermsBtn) {
+    confirmCreateTermsBtn.onclick = () => createMembershipTerms();
   }
 }
