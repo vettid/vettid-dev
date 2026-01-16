@@ -49,8 +49,9 @@ export async function loadInvites(resetPage = true) {
   if (!isAdmin()) return;
   if (resetPage) store.pagination.invites.page = 0;
 
-  const tbody = document.querySelector('#invitesTable tbody');
-  if (!tbody) return; // Table not in DOM yet
+  // Check if table exists before proceeding
+  const table = document.getElementById('invitesTable');
+  if (!table) return; // Table not in DOM yet
 
   showLoadingSkeleton('invitesTable');
 
@@ -62,6 +63,8 @@ export async function loadInvites(resetPage = true) {
     renderInvites();
   } catch (e) {
     console.error('Error loading invites:', e);
+    // Query tbody fresh for error display
+    const tbody = document.querySelector('#invitesTable tbody');
     if (tbody) {
       const tr = document.createElement('tr');
       const td = document.createElement('td');

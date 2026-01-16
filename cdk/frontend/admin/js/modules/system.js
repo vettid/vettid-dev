@@ -200,7 +200,7 @@ function updateNitroHealth(nitro) {
 export async function loadSystemLogs() {
   try {
     const sourceFilter = document.getElementById('logSourceFilter')?.value || 'all';
-    const logsContainer = document.getElementById('systemLogsContent');
+    const logsContainer = document.getElementById('systemLogsContainer');
     if (!logsContainer) return;
 
     logsContainer.textContent = 'Loading logs...';
@@ -250,7 +250,7 @@ export async function loadSystemLogs() {
     });
   } catch (e) {
     console.error('Error loading system logs:', e);
-    const logsContainer = document.getElementById('systemLogsContent');
+    const logsContainer = document.getElementById('systemLogsContainer');
     if (logsContainer) logsContainer.textContent = 'Error loading logs: ' + (e.message || e);
   }
 }

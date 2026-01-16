@@ -273,7 +273,11 @@ export async function exchange(code) {
 
 export async function refresh() {
   const r = refreshToken();
-  if (!r) return;
+  if (!r) {
+    // No refresh token - redirect to login
+    beginLogin();
+    return;
+  }
 
   const body = new URLSearchParams();
   body.set('grant_type', 'refresh_token');
@@ -291,7 +295,9 @@ export async function refresh() {
     if (!t.refresh_token) t.refresh_token = r;
     saveTokens(t);
   } else {
+    // Refresh failed - clear tokens and redirect to login
     clearTokens();
+    beginLogin();
   }
 }
 
@@ -578,7 +584,18 @@ export function showLoadingSkeleton(containerId) {
   td.appendChild(spinner);
   td.appendChild(document.createTextNode(' Loading...'));
   tr.appendChild(td);
-  container.replaceChildren(tr);
+
+  // If container is a table, only replace tbody content to preserve thead
+  if (container.tagName === 'TABLE') {
+    let tbody = container.querySelector('tbody');
+    if (!tbody) {
+      tbody = document.createElement('tbody');
+      container.appendChild(tbody);
+    }
+    tbody.replaceChildren(tr);
+  } else {
+    container.replaceChildren(tr);
+  }
 }
 
 export function showEmptyState(containerId, text, subtext = '') {
@@ -608,7 +625,18 @@ export function showEmptyState(containerId, text, subtext = '') {
   }
 
   tr.appendChild(td);
-  container.replaceChildren(tr);
+
+  // If container is a table, only replace tbody content to preserve thead
+  if (container.tagName === 'TABLE') {
+    let tbody = container.querySelector('tbody');
+    if (!tbody) {
+      tbody = document.createElement('tbody');
+      container.appendChild(tbody);
+    }
+    tbody.replaceChildren(tr);
+  } else {
+    container.replaceChildren(tr);
+  }
 }
 
 /**

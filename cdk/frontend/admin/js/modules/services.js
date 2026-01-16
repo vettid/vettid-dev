@@ -244,14 +244,25 @@ export function openServiceModal(editing = false) {
   isEditingService = editing;
   const modal = document.getElementById('serviceModal');
   const title = document.getElementById('serviceModalTitle');
-  const form = document.getElementById('serviceForm');
 
   title.textContent = editing ? 'Edit Service' : 'Add New Service';
 
   if (!editing) {
-    form.reset();
-    currentServiceId = null;
+    // Manually reset all form inputs (no form element exists)
+    document.getElementById('serviceIdInput').value = '';
     document.getElementById('serviceIdInput').disabled = false;
+    document.getElementById('serviceNameInput').value = '';
+    document.getElementById('serviceDescriptionInput').value = '';
+    document.getElementById('serviceTypeInput').value = '';
+    document.getElementById('serviceStatusInput').value = 'active';
+    document.getElementById('serviceWebsiteInput').value = '';
+    document.getElementById('serviceConnectInput').value = '';
+    document.getElementById('serviceLogoInput').value = '';
+    document.getElementById('serviceDocsInput').value = '';
+    document.getElementById('serviceSortOrderInput').value = '100';
+    document.getElementById('serviceFeaturedInput').checked = false;
+    document.getElementById('serviceRequiredDataInput').value = '';
+    currentServiceId = null;
   }
 
   modal.classList.add('active');
@@ -267,14 +278,16 @@ export function openEditServiceModal(serviceId) {
   document.getElementById('serviceIdInput').value = service.service_id;
   document.getElementById('serviceIdInput').disabled = true;
   document.getElementById('serviceNameInput').value = service.name || '';
-  document.getElementById('serviceDescInput').value = service.description || '';
-  document.getElementById('serviceTypeSelect').value = service.service_type || 'other';
-  document.getElementById('serviceStatusSelect').value = service.status || 'active';
-  document.getElementById('serviceIconInput').value = service.icon_url || '';
+  document.getElementById('serviceDescriptionInput').value = service.description || '';
+  document.getElementById('serviceTypeInput').value = service.service_type || 'other';
+  document.getElementById('serviceStatusInput').value = service.status || 'active';
+  document.getElementById('serviceLogoInput').value = service.logo_url || '';
   document.getElementById('serviceWebsiteInput').value = service.website_url || '';
   document.getElementById('serviceConnectInput').value = service.connect_url || '';
-  document.getElementById('serviceOrderInput').value = service.sort_order || 100;
-  document.getElementById('serviceDataKeysInput').value = (service.required_user_data || []).join(', ');
+  document.getElementById('serviceDocsInput').value = service.docs_url || '';
+  document.getElementById('serviceSortOrderInput').value = service.sort_order || 100;
+  document.getElementById('serviceFeaturedInput').checked = service.featured || false;
+  document.getElementById('serviceRequiredDataInput').value = (service.required_user_data || []).join(', ');
 
   document.getElementById('serviceModalTitle').textContent = 'Edit Service';
   document.getElementById('serviceModal').classList.add('active');
@@ -289,14 +302,16 @@ export function closeServiceModal() {
 export async function saveService() {
   const serviceId = document.getElementById('serviceIdInput').value.trim();
   const name = document.getElementById('serviceNameInput').value.trim();
-  const description = document.getElementById('serviceDescInput').value.trim();
-  const serviceType = document.getElementById('serviceTypeSelect').value;
-  const status = document.getElementById('serviceStatusSelect').value;
-  const iconUrl = document.getElementById('serviceIconInput').value.trim();
+  const description = document.getElementById('serviceDescriptionInput').value.trim();
+  const serviceType = document.getElementById('serviceTypeInput').value;
+  const status = document.getElementById('serviceStatusInput').value;
+  const logoUrl = document.getElementById('serviceLogoInput').value.trim();
   const websiteUrl = document.getElementById('serviceWebsiteInput').value.trim();
   const connectUrl = document.getElementById('serviceConnectInput').value.trim();
-  const sortOrder = parseInt(document.getElementById('serviceOrderInput').value) || 100;
-  const dataKeysStr = document.getElementById('serviceDataKeysInput').value.trim();
+  const docsUrl = document.getElementById('serviceDocsInput').value.trim();
+  const sortOrder = parseInt(document.getElementById('serviceSortOrderInput').value) || 100;
+  const featured = document.getElementById('serviceFeaturedInput').checked;
+  const dataKeysStr = document.getElementById('serviceRequiredDataInput').value.trim();
   const requiredUserData = dataKeysStr ? dataKeysStr.split(',').map(s => s.trim()).filter(s => s) : [];
 
   if (!serviceId || !name) {
@@ -310,10 +325,12 @@ export async function saveService() {
     description,
     service_type: serviceType,
     status,
-    icon_url: iconUrl || undefined,
+    logo_url: logoUrl || undefined,
     website_url: websiteUrl || undefined,
     connect_url: connectUrl || undefined,
+    docs_url: docsUrl || undefined,
     sort_order: sortOrder,
+    featured,
     required_user_data: requiredUserData.length > 0 ? requiredUserData : undefined
   };
 

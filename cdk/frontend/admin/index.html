@@ -138,7 +138,7 @@
     .waitlist-filter.active{opacity:1 !important;box-shadow:0 4px 12px rgba(255,193,37,0.4) !important;transform:scale(1.02);border:2px solid var(--accent) !important;}
     .modal-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.8);z-index:10000;display:none;align-items:center;justify-content:center;}
     .modal-overlay.active{display:flex;}
-    .modal{background:var(--bg-card);border:2px solid var(--accent);border-radius:8px;padding:24px;max-width:500px;width:90%;box-shadow:0 8px 32px rgba(0,0,0,0.6);}
+    .modal{background:var(--bg-card);border:2px solid var(--accent);border-radius:8px;padding:24px;max-width:500px;width:90%;max-height:90vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,0.6);}
     .modal-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;border-bottom:1px solid var(--border);padding-bottom:12px;}
     .modal-title{font-size:1.2rem;font-weight:700;color:var(--accent);}
     .modal-close{background:none;border:none;color:var(--gray);font-size:1.5rem;cursor:pointer;padding:0;width:32px;height:32px;display:flex;align-items:center;justify-content:center;transition:color 0.2s;}
@@ -2560,7 +2560,7 @@
                 <th style="text-align:left;padding:8px;border-bottom:1px solid var(--border);">Email</th>
               </tr>
             </thead>
-            <tbody></tbody>
+            <tbody id="csvPreviewBody"></tbody>
           </table>
         </div>
         <div id="csvValidationMsg" style="margin-top:8px;font-size:0.85rem;"></div>

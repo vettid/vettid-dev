@@ -125,7 +125,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       }
     });
 
-    return ok(limitedLogs);
+    return ok({ logs: limitedLogs });
   } catch (error) {
     console.error('Error fetching system logs:', error);
 

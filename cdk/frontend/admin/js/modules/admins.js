@@ -40,8 +40,9 @@ export async function loadAdmins(resetPage = true) {
   if (!isAdmin()) return;
   if (resetPage) store.pagination.admins.page = 0;
 
-  const tbody = document.querySelector('#adminsTable tbody');
-  if (!tbody) return; // Table not in DOM yet
+  // Check if table exists before proceeding
+  const table = document.getElementById('adminsTable');
+  if (!table) return; // Table not in DOM yet
 
   showLoadingSkeleton('adminsTable');
 
@@ -66,10 +67,14 @@ export async function loadAdmins(resetPage = true) {
       return searchFilter(a, store.pagination.admins.search, ['name', 'email', 'given_name', 'family_name']);
     });
 
-    renderAdmins(filtered, tbody);
+    // Query tbody fresh after showLoadingSkeleton
+    const tbody = document.querySelector('#adminsTable tbody');
+    if (tbody) renderAdmins(filtered, tbody);
   } catch (e) {
     console.error('Error loading admins:', e);
     showToast('Failed to load admins: ' + (e.message || e), 'error');
+    // Query tbody fresh for error display
+    const tbody = document.querySelector('#adminsTable tbody');
     if (tbody) {
       const tr = document.createElement('tr');
       const td = document.createElement('td');
