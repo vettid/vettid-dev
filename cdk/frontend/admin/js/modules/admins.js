@@ -964,5 +964,34 @@ export async function handleDeleteAdmin() {
 }
 
 export function setupAdminsEventHandlers() {
-  // Event handlers are set up via event delegation in main.js
+  // Quick filter buttons for Admins tab
+  const activeBtn = document.getElementById('quickFilterActiveAdmins');
+  const disabledBtn = document.getElementById('quickFilterDisabledAdmins');
+
+  if (activeBtn) {
+    activeBtn.onclick = () => setAdminQuickFilter('active');
+  }
+
+  if (disabledBtn) {
+    disabledBtn.onclick = () => setAdminQuickFilter('disabled');
+  }
+
+  // Select all checkbox
+  const selectAll = document.getElementById('selectAllAdmins');
+  if (selectAll) {
+    selectAll.onchange = () => {
+      document.querySelectorAll('.admin-checkbox').forEach(cb => {
+        cb.checked = selectAll.checked;
+      });
+    };
+  }
+
+  // Search input
+  const searchInput = document.getElementById('adminsSearch');
+  if (searchInput) {
+    searchInput.oninput = (e) => {
+      store.pagination.admins.search = e.target.value;
+      loadAdmins(false);
+    };
+  }
 }

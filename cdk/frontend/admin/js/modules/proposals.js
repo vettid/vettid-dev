@@ -721,5 +721,24 @@ export function openCreateProposalModal() {
 }
 
 export function setupProposalEventHandlers() {
-  // Event handlers are set up via event delegation in main.js
+  // Proposal filter buttons - Vote Management tab
+  const filterBtns = document.querySelectorAll('.proposal-filter');
+  filterBtns.forEach(btn => {
+    btn.onclick = () => {
+      const filter = btn.dataset.filter;
+      if (filter) setProposalFilter(filter);
+    };
+  });
+
+  // Also set up by ID in case data-filter approach doesn't work
+  const activeVotesBtn = document.getElementById('filterActiveVotes');
+  const pendingVotesBtn = document.getElementById('filterPendingVotes');
+
+  if (activeVotesBtn) {
+    activeVotesBtn.onclick = () => setProposalFilter('active');
+  }
+
+  if (pendingVotesBtn) {
+    pendingVotesBtn.onclick = () => setProposalFilter('upcoming');
+  }
 }

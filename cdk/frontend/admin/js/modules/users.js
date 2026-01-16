@@ -904,3 +904,90 @@ export async function sendEmail() {
 export function setupUserBulkActions() {
   // Event handlers are set up via event delegation in main.js
 }
+
+// ============================================
+// User Filter Event Handlers
+// ============================================
+
+export function setupUserEventHandlers() {
+  // Quick filter buttons for User Management tab
+  const actionBtn = document.getElementById('quickFilterAction');
+  const registeredBtn = document.getElementById('quickFilterRegistered');
+  const disabledBtn = document.getElementById('quickFilterDisabled');
+  const invitedBtn = document.getElementById('quickFilterInvited');
+
+  if (actionBtn) {
+    actionBtn.onclick = () => {
+      userFilters.quickFilter = 'action';
+      document.querySelectorAll('#users .btn').forEach(btn => {
+        if (btn.id && btn.id.startsWith('quickFilter')) btn.classList.remove('filter-active');
+      });
+      actionBtn.classList.add('filter-active');
+      pagination.page = 0;
+      loadUsers(false);
+    };
+  }
+
+  if (registeredBtn) {
+    registeredBtn.onclick = () => {
+      userFilters.quickFilter = 'registered';
+      document.querySelectorAll('#users .btn').forEach(btn => {
+        if (btn.id && btn.id.startsWith('quickFilter')) btn.classList.remove('filter-active');
+      });
+      registeredBtn.classList.add('filter-active');
+      pagination.page = 0;
+      loadUsers(false);
+    };
+  }
+
+  if (disabledBtn) {
+    disabledBtn.onclick = () => {
+      userFilters.quickFilter = 'disabled';
+      document.querySelectorAll('#users .btn').forEach(btn => {
+        if (btn.id && btn.id.startsWith('quickFilter')) btn.classList.remove('filter-active');
+      });
+      disabledBtn.classList.add('filter-active');
+      pagination.page = 0;
+      loadUsers(false);
+    };
+  }
+
+  if (invitedBtn) {
+    invitedBtn.onclick = () => {
+      userFilters.quickFilter = 'invited';
+      document.querySelectorAll('#users .btn').forEach(btn => {
+        if (btn.id && btn.id.startsWith('quickFilter')) btn.classList.remove('filter-active');
+      });
+      invitedBtn.classList.add('filter-active');
+      pagination.page = 0;
+      loadUsers(false);
+    };
+  }
+
+  // Select all checkbox
+  const selectAll = document.getElementById('selectAllUsers');
+  if (selectAll) {
+    selectAll.onchange = () => {
+      document.querySelectorAll('.user-checkbox').forEach(cb => {
+        cb.checked = selectAll.checked;
+      });
+      updateUsersSelectedCount();
+    };
+  }
+
+  // User checkbox change handler (delegated)
+  document.addEventListener('change', (e) => {
+    if (e.target.classList.contains('user-checkbox')) {
+      updateUsersSelectedCount();
+    }
+  });
+
+  // Search input
+  const searchInput = document.getElementById('usersSearch');
+  if (searchInput) {
+    searchInput.oninput = (e) => {
+      pagination.search = e.target.value;
+      debouncedLoadUsers();
+    };
+  }
+}

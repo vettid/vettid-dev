@@ -43,6 +43,7 @@ import {
   renderUsersCards,
   userFilters,
   setupUserBulkActions,
+  setupUserEventHandlers,
   bulkApproveRegistrations,
   bulkRejectRegistrations,
   bulkDisableUsers,
@@ -787,16 +788,201 @@ document.addEventListener('DOMContentLoaded', () => {
   setupEventDelegation();
 
   // Setup module-specific event handlers
+  setupUserEventHandlers();
   setupInviteEventHandlers();
   setupAdminsEventHandlers();
   setupMembershipEventHandlers();
   setupProposalEventHandlers();
   setupServicesEventHandlers();
   setupHandlersEventHandlers();
+  setupWaitlistEventHandlers();
 
   // Initialize authentication
   initAuth();
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Waitlist Event Handlers
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Waitlist state
+let waitlistQuickFilter = 'pending';
+let waitlistData = [];
+let waitlistPaginationState = { currentPage: 1, perPage: 10, search: '' };
+
+function setupWaitlistEventHandlers() {
+  // Waitlist filter buttons
+  const pendingBtn = document.getElementById('quickFilterPending');
+  const invitedBtn = document.getElementById('waitlistFilterInvited');
+  const rejectedBtn = document.getElementById('quickFilterRejected');
+
+  if (pendingBtn) {
+    pendingBtn.onclick = () => {
+      waitlistQuickFilter = 'pending';
+      document.querySelectorAll('.waitlist-filter').forEach(btn => btn.classList.remove('active'));
+      pendingBtn.classList.add('active');
+      waitlistPaginationState.currentPage = 1;
+      renderWaitlist();
+    };
+  }
+
+  if (invitedBtn) {
+    invitedBtn.onclick = () => {
+      waitlistQuickFilter = 'invited';
+      document.querySelectorAll('.waitlist-filter').forEach(btn => btn.classList.remove('active'));
+      invitedBtn.classList.add('active');
+      waitlistPaginationState.currentPage = 1;
+      renderWaitlist();
+    };
+  }
+
+  if (rejectedBtn) {
+    rejectedBtn.onclick = () => {
+      waitlistQuickFilter = 'rejected';
+      document.querySelectorAll('.waitlist-filter').forEach(btn => btn.classList.remove('active'));
+      rejectedBtn.classList.add('active');
+      waitlistPaginationState.currentPage = 1;
+      renderWaitlist();
+    };
+  }
+
+  // Waitlist search
+  const searchInput = document.getElementById('waitlistSearch');
+  if (searchInput) {
+    searchInput.oninput = (e) => {
+      waitlistPaginationState.search = e.target.value;
+      waitlistPaginationState.currentPage = 1;
+      renderWaitlist();
+    };
+  }
+
+  // Select all waitlist checkbox
+  const selectAll = document.getElementById('selectAllWaitlist');
+  if (selectAll) {
+    selectAll.onchange = () => {
+      document.querySelectorAll('.waitlist-checkbox').forEach(cb => {
+        cb.checked = selectAll.checked;
+      });
+    };
+  }
+}
+
+async function loadWaitlist(resetPage = true) {
+  if (!isAdmin()) return;
+  if (resetPage) waitlistPaginationState.currentPage = 1;
+
+  const tbody = document.querySelector('#waitlistTable tbody');
+  if (!tbody) return;
+
+  showLoadingSkeleton('waitlistTable');
+
+  try {
+    const data = await api('/admin/waitlist');
+    waitlistData = data.waitlist || [];
+    renderWaitlist();
+  } catch (e) {
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.colSpan = 5;
+    td.className = 'muted';
+    td.textContent = 'Error: ' + (e.message || String(e));
+    tr.appendChild(td);
+    tbody.replaceChildren(tr);
+  }
+}
+
+function renderWaitlist() {
+  const tbody = document.querySelector('#waitlistTable tbody');
+  if (!tbody) return;
+
+  tbody.replaceChildren();
+
+  // Apply filters
+  let filtered = waitlistData.filter(w => {
+    // Quick filter
+    if (waitlistQuickFilter === 'pending' && w.status !== 'pending' && w.status) return false;
+    if (waitlistQuickFilter === 'invited' && w.status !== 'invited') return false;
+    if (waitlistQuickFilter === 'rejected' && w.status !== 'rejected') return false;
+
+    // Search filter
+    const search = waitlistPaginationState.search.toLowerCase();
+    if (search) {
+      const searchable = [w.first_name, w.last_name, w.email].filter(Boolean).join(' ').toLowerCase();
+      if (!searchable.includes(search)) return false;
+    }
+    return true;
+  });
+
+  // Update counts
+  const pendingCount = waitlistData.filter(w => !w.status || w.status === 'pending').length;
+  const invitedCount = waitlistData.filter(w => w.status === 'invited').length;
+  const rejectedCount = waitlistData.filter(w => w.status === 'rejected').length;
+
+  const countEls = {
+    pending: document.getElementById('pendingWaitlistCount'),
+    invited: document.getElementById('invitedWaitlistCount'),
+    rejected: document.getElementById('rejectedWaitlistCount')
+  };
+  if (countEls.pending) countEls.pending.textContent = pendingCount;
+  if (countEls.invited) countEls.invited.textContent = invitedCount;
+  if (countEls.rejected) countEls.rejected.textContent = rejectedCount;
+
+  if (filtered.length === 0) {
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.colSpan = 5;
+    td.style.cssText = 'text-align:center;padding:40px;';
+    td.textContent = 'No waitlist entries found';
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+    return;
+  }
+
+  // Paginate
+  const start = (waitlistPaginationState.currentPage - 1) * waitlistPaginationState.perPage;
+  const page = filtered.slice(start, start + waitlistPaginationState.perPage);
+
+  page.forEach(w => {
+    const tr = document.createElement('tr');
+    const name = `${w.first_name || ''} ${w.last_name || ''}`.trim();
+
+    // Checkbox
+    const td1 = document.createElement('td');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.className = 'waitlist-checkbox';
+    cb.dataset.email = w.email;
+    td1.appendChild(cb);
+
+    // Name
+    const td2 = document.createElement('td');
+    td2.textContent = name || '—';
+
+    // Email
+    const td3 = document.createElement('td');
+    td3.textContent = w.email;
+
+    // Status badge
+    const td4 = document.createElement('td');
+    const badge = document.createElement('span');
+    badge.style.cssText = 'display:inline-block;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;color:#fff;';
+    const status = w.status || 'pending';
+    const colors = { pending: '#3b82f6', invited: '#10b981', rejected: '#ef4444' };
+    badge.style.background = colors[status] || '#6b7280';
+    badge.textContent = status.charAt(0).toUpperCase() + status.slice(1);
+    td4.appendChild(badge);
+
+    // Date
+    const td5 = document.createElement('td');
+    td5.textContent = w.created_at ? new Date(w.created_at).toLocaleDateString() : '—';
+
+    tr.append(td1, td2, td3, td4, td5);
+    tbody.appendChild(tr);
+  });
+}
+
+// Expose waitlist functions globally
+window.loadWaitlist = loadWaitlist;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Export for Testing (optional)

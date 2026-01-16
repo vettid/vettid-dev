@@ -543,5 +543,53 @@ export function closeCreateInviteModal() {
 }
 
 export function setupInviteEventHandlers() {
-  // Event handlers are set up via event delegation in main.js
+  // Quick filter buttons for Invites tab
+  const activeBtn = document.getElementById('quickFilterActiveInvites');
+  const expiringBtn = document.getElementById('quickFilterExpiringSoonInvites');
+  const usedBtn = document.getElementById('quickFilterUsedInvites');
+
+  if (activeBtn) {
+    activeBtn.onclick = () => setInviteQuickFilter('active');
+  }
+
+  if (expiringBtn) {
+    expiringBtn.onclick = () => setInviteQuickFilter('expiring');
+  }
+
+  if (usedBtn) {
+    usedBtn.onclick = () => setInviteQuickFilter('used');
+  }
+
+  // Select all checkbox
+  const selectAll = document.getElementById('selectAllInvites');
+  if (selectAll) {
+    selectAll.onchange = () => {
+      document.querySelectorAll('.invites-checkbox').forEach(cb => {
+        cb.checked = selectAll.checked;
+      });
+      updateInvitesSelectedCount();
+    };
+  }
+
+  // Invite checkbox change handler (delegated)
+  document.addEventListener('change', (e) => {
+    if (e.target.classList.contains('invites-checkbox')) {
+      updateInvitesSelectedCount();
+    }
+  });
+
+  // Search input
+  const searchInput = document.getElementById('invitesSearch');
+  if (searchInput) {
+    searchInput.oninput = (e) => {
+      store.pagination.invites.search = e.target.value;
+      debouncedRenderInvites();
+    };
+  }
+
+  // Refresh button
+  const refreshBtn = document.getElementById('refreshInvites');
+  if (refreshBtn) {
+    refreshBtn.onclick = () => loadInvites();
+  }
 }

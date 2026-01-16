@@ -737,5 +737,70 @@ export function openCreateSubscriptionTypeModal() {
 }
 
 export function setupMembershipEventHandlers() {
-  // Event handlers are set up via event delegation in main.js
+  // Subscription quick filter buttons
+  const allSubsBtn = document.getElementById('quickFilterAllSubs');
+  const paidSubsBtn = document.getElementById('quickFilterPaidSubs');
+  const freeSubsBtn = document.getElementById('quickFilterFreeSubs');
+
+  if (allSubsBtn) {
+    allSubsBtn.onclick = () => {
+      store.filters.subscriptions = 'all';
+      document.querySelectorAll('#subscriptions .btn').forEach(btn => btn.classList.remove('filter-active'));
+      allSubsBtn.classList.add('filter-active');
+      store.pagination.subscriptions.page = 0;
+      renderSubscriptions();
+    };
+  }
+
+  if (paidSubsBtn) {
+    paidSubsBtn.onclick = () => {
+      store.filters.subscriptions = 'paid';
+      document.querySelectorAll('#subscriptions .btn').forEach(btn => btn.classList.remove('filter-active'));
+      paidSubsBtn.classList.add('filter-active');
+      store.pagination.subscriptions.page = 0;
+      renderSubscriptions();
+    };
+  }
+
+  if (freeSubsBtn) {
+    freeSubsBtn.onclick = () => {
+      store.filters.subscriptions = 'free';
+      document.querySelectorAll('#subscriptions .btn').forEach(btn => btn.classList.remove('filter-active'));
+      freeSubsBtn.classList.add('filter-active');
+      store.pagination.subscriptions.page = 0;
+      renderSubscriptions();
+    };
+  }
+
+  // Subscription types filter buttons
+  const filterAllTypes = document.getElementById('filterAllTypes');
+  const filterEnabledTypes = document.getElementById('filterEnabledTypes');
+
+  if (filterAllTypes) {
+    filterAllTypes.onclick = () => filterSubscriptionTypes('all');
+  }
+
+  if (filterEnabledTypes) {
+    filterEnabledTypes.onclick = () => filterSubscriptionTypes('enabled');
+  }
+
+  // Select all subscriptions checkbox
+  const selectAll = document.getElementById('selectAllSubscriptions');
+  if (selectAll) {
+    selectAll.onchange = () => {
+      document.querySelectorAll('.subscription-checkbox').forEach(cb => {
+        cb.checked = selectAll.checked;
+      });
+      updateSubscriptionsSelectedCount();
+    };
+  }
+
+  // Search input
+  const searchInput = document.getElementById('subscriptionsSearch');
+  if (searchInput) {
+    searchInput.oninput = (e) => {
+      store.pagination.subscriptions.search = e.target.value;
+      renderSubscriptions();
+    };
+  }
 }
