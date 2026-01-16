@@ -350,13 +350,29 @@ async function generateCodeChallenge(verifier) {
 }
 
 function showLoginUI() {
-  document.getElementById('loginSection').style.display = 'flex';
-  document.getElementById('appContainer').style.display = 'none';
+  // Show sign-in button, hide logged-in UI
+  const signinBtn = document.getElementById('signin');
+  const userDropdown = document.getElementById('userDropdownContainer');
+  if (signinBtn) signinBtn.style.display = 'inline-block';
+  if (userDropdown) userDropdown.style.display = 'none';
+
+  // Hide admin content when not logged in
+  document.querySelectorAll('.admin-only').forEach(el => {
+    el.style.display = 'none';
+  });
 }
 
 function showLoggedInUI() {
-  document.getElementById('loginSection').style.display = 'none';
-  document.getElementById('appContainer').style.display = 'flex';
+  // Hide sign-in button, show logged-in UI
+  const signinBtn = document.getElementById('signin');
+  const userDropdown = document.getElementById('userDropdownContainer');
+  if (signinBtn) signinBtn.style.display = 'none';
+  if (userDropdown) userDropdown.style.display = 'flex';
+
+  // Show admin content when logged in
+  document.querySelectorAll('.admin-only').forEach(el => {
+    el.style.display = 'flex';
+  });
 
   // Display user info
   const token = idToken();

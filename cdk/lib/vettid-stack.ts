@@ -68,12 +68,25 @@ export class VettIdStack extends cdk.Stack {
     });
 
     // Main site bucket (CloudFront origin)
+    // CORS configured for cross-subdomain font/asset loading
     const siteBucket = new s3.Bucket(this, 'SiteBucket', {
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       versioned: true,
       encryption: s3.BucketEncryption.S3_MANAGED,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       autoDeleteObjects: true,
+      cors: [{
+        allowedOrigins: [
+          'https://vettid.dev',
+          'https://www.vettid.dev',
+          'https://admin.vettid.dev',
+          'https://account.vettid.dev',
+          'https://register.vettid.dev',
+        ],
+        allowedMethods: [s3.HttpMethods.GET, s3.HttpMethods.HEAD],
+        allowedHeaders: ['*'],
+        maxAge: 86400,
+      }],
     });
 
     // S3 buckets imported from infrastructure
@@ -560,6 +573,8 @@ const rootDist = new cloudfront.Distribution(this, 'RootDist', {
   defaultBehavior: {
     origin: siteOrigin,
     cachePolicy: corsAwareCachePolicy,
+    // Forward Origin header to S3 for CORS support (fonts, cross-subdomain requests)
+    originRequestPolicy: cloudfront.OriginRequestPolicy.CORS_S3_ORIGIN,
     functionAssociations: [
       { eventType: cloudfront.FunctionEventType.VIEWER_REQUEST, function: htmlRewriteFn },
       { eventType: cloudfront.FunctionEventType.VIEWER_RESPONSE, function: securityHeadersFn }

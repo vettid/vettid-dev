@@ -48,6 +48,7 @@ export class InfrastructureStack extends cdk.Stack {
     vaultInstances: dynamodb.Table;
     handlers: dynamodb.Table;
     handlerInstallations: dynamodb.Table;
+    handlerSubmissions: dynamodb.Table;
     // Phase 7: Profiles
     profiles: dynamodb.Table;
     // Phase 8: Backup System
@@ -600,6 +601,35 @@ export class InfrastructureStack extends cdk.Stack {
       projectionType: dynamodb.ProjectionType.ALL,
     });
 
+    // ===== HANDLER SUBMISSIONS =====
+
+    // Handler Submissions table - tracks WASM handler submissions for review
+    // Note: This table is maintained for backward compatibility with deployed stacks
+    const handlerSubmissions = new dynamodb.Table(this, 'HandlerSubmissions', {
+      partitionKey: { name: 'submission_id', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: dynamoDbEncryptionKey,
+    });
+
+    // GSI for listing submissions by handler
+    handlerSubmissions.addGlobalSecondaryIndex({
+      indexName: 'handler-index',
+      partitionKey: { name: 'handler_id', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'submitted_at', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // GSI for filtering by status
+    handlerSubmissions.addGlobalSecondaryIndex({
+      indexName: 'status-index',
+      partitionKey: { name: 'status', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'submitted_at', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
     // ===== SUPPORTED SERVICES REGISTRY =====
 
     // Supported Services table - stores third-party service integrations
@@ -757,6 +787,7 @@ export class InfrastructureStack extends cdk.Stack {
       vaultInstances,
       handlers,
       handlerInstallations,
+      handlerSubmissions,
       // Phase 7: Profiles
       profiles,
       // Phase 8: Backup System
