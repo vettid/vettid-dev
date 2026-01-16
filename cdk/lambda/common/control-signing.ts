@@ -1,39 +1,53 @@
 /**
- * Control Command Signing Utility
+ * Control Command Signing Module
  *
- * SECURITY: All control commands must be signed to prevent unauthorized execution
- * if backend credentials are compromised.
+ * Provides Ed25519 signing for control commands to ensure:
+ * 1. Authenticity - Commands are from authorized admin services
+ * 2. Integrity - Commands haven't been tampered with
+ * 3. Non-repudiation - Signed commands can be audited
+ * 4. Replay prevention - Commands expire and have idempotency keys
  *
- * Signature covers: command_id, command, target, params, issued_at, issued_by, expires_at
- * Algorithm: Ed25519 (same as NATS JWTs)
+ * Key Management:
+ * - Private key stored in AWS Secrets Manager
+ * - Public key distributed to enclave parent processes
+ * - Keys should be rotated periodically (see docs/CONTROL-COMMAND-SIGNING.md)
  */
 
-import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
-import { createHash, randomUUID, sign, verify, generateKeyPairSync } from 'crypto';
+import * as crypto from 'crypto';
+import {
+  SecretsManagerClient,
+  GetSecretValueCommand,
+} from '@aws-sdk/client-secrets-manager';
+import { DynamoDBClient, PutItemCommand, GetItemCommand } from '@aws-sdk/client-dynamodb';
+import { marshall } from '@aws-sdk/util-dynamodb';
+import { randomUUID } from 'crypto';
 
-const secretsClient = new SecretsManagerClient({});
+const secretsManager = new SecretsManagerClient({});
+const ddb = new DynamoDBClient({});
 
-// Cache the signing key for Lambda reuse
-let cachedSigningKey: { privateKey: Buffer; publicKey: Buffer } | null = null;
-let cacheTime = 0;
+// Environment variables
+const CONTROL_SIGNING_KEY_SECRET = process.env.CONTROL_SIGNING_KEY_SECRET || 'vettid/control-signing-key';
+const TABLE_COMMAND_IDEMPOTENCY = process.env.TABLE_COMMAND_IDEMPOTENCY;
+
+// Command expiry (5 minutes)
+const COMMAND_TTL_SECONDS = 300;
+
+// Cache the private key in memory (Lambda warm start optimization)
+let cachedPrivateKey: crypto.KeyObject | null = null;
+let cacheTimestamp = 0;
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
-const CONTROL_SIGNING_SECRET_ID = process.env.CONTROL_SIGNING_SECRET_ARN || 'vettid/control-signing-key';
-
-// Command expiration time (5 minutes)
-const COMMAND_TTL_MS = 5 * 60 * 1000;
+/**
+ * Target types for control commands
+ */
+export type CommandTargetType = 'global' | 'enclave' | 'user';
 
 /**
- * Control command target types
+ * Target specification for a control command
  */
-export type ControlTargetType = 'global' | 'enclave' | 'user';
-
-/**
- * Control command target
- */
-export interface ControlTarget {
-  type: ControlTargetType;
-  id?: string;  // Required for 'enclave' and 'user' types
+export interface CommandTarget {
+  type: CommandTargetType;
+  id?: string; // Required for 'enclave' and 'user' targets
 }
 
 /**
@@ -42,160 +56,74 @@ export interface ControlTarget {
 export interface SignedControlCommand {
   command_id: string;
   command: string;
-  target: ControlTarget;
-  params: Record<string, any>;
+  target: CommandTarget;
+  params: Record<string, unknown>;
   issued_at: string;
   issued_by: string;
   expires_at: string;
-  signature: string;
+  signature: string; // Base64-encoded Ed25519 signature
 }
 
 /**
- * Unsigned control command (before signing)
+ * Unsigned command (before signing)
  */
 export interface UnsignedControlCommand {
   command: string;
-  target: ControlTarget;
-  params?: Record<string, any>;
+  target: CommandTarget;
+  params: Record<string, unknown>;
   issued_by: string;
 }
 
 /**
- * Get or generate signing keys
- *
- * In production, keys are stored in Secrets Manager.
- * In development, generates ephemeral keys.
+ * Retrieves the Ed25519 private key from Secrets Manager
+ * Uses in-memory caching to reduce API calls
  */
-async function getSigningKeys(): Promise<{ privateKey: Buffer; publicKey: Buffer }> {
+async function getPrivateKey(): Promise<crypto.KeyObject> {
   const now = Date.now();
 
-  // Return cached keys if still valid
-  if (cachedSigningKey && (now - cacheTime) < CACHE_TTL_MS) {
-    return cachedSigningKey;
+  // Return cached key if still valid
+  if (cachedPrivateKey && now - cacheTimestamp < CACHE_TTL_MS) {
+    return cachedPrivateKey;
   }
 
   try {
-    // Try to get keys from Secrets Manager
-    const response = await secretsClient.send(new GetSecretValueCommand({
-      SecretId: CONTROL_SIGNING_SECRET_ID,
-    }));
+    const response = await secretsManager.send(
+      new GetSecretValueCommand({
+        SecretId: CONTROL_SIGNING_KEY_SECRET,
+      })
+    );
 
-    if (response.SecretString) {
-      const secret = JSON.parse(response.SecretString);
-
-      if (secret.private_key && secret.public_key) {
-        cachedSigningKey = {
-          privateKey: Buffer.from(secret.private_key, 'base64'),
-          publicKey: Buffer.from(secret.public_key, 'base64'),
-        };
-        cacheTime = now;
-        return cachedSigningKey;
-      }
+    if (!response.SecretString) {
+      throw new Error('Control signing key secret is empty');
     }
-  } catch (error: any) {
-    // In development, fall through to generate ephemeral keys
-    if (process.env.NODE_ENV === 'production') {
-      throw new Error(`Failed to get control signing keys: ${error.message}`);
+
+    const secret = JSON.parse(response.SecretString);
+
+    if (!secret.private_key) {
+      throw new Error('Control signing key secret missing private_key field');
     }
-    console.warn('Control signing secret not found, using development keys');
+
+    // Import the PEM-encoded private key
+    cachedPrivateKey = crypto.createPrivateKey({
+      key: secret.private_key,
+      format: 'pem',
+    });
+
+    cacheTimestamp = now;
+
+    return cachedPrivateKey;
+  } catch (error) {
+    console.error('Failed to retrieve control signing key:', error);
+    throw new Error('Control signing key unavailable');
   }
-
-  // Development mode: generate ephemeral keys
-  // WARNING: These keys change on each Lambda cold start!
-  const { privateKey, publicKey } = generateKeyPairSync('ed25519');
-  cachedSigningKey = {
-    privateKey: privateKey.export({ type: 'pkcs8', format: 'der' }) as Buffer,
-    publicKey: publicKey.export({ type: 'spki', format: 'der' }) as Buffer,
-  };
-  cacheTime = now;
-
-  console.warn('Using ephemeral control signing keys (development mode)');
-  return cachedSigningKey;
 }
 
 /**
- * Create the canonical payload for signing
- *
- * SECURITY: Order of fields matters for consistent signatures
+ * Creates the canonical payload string for signing
+ * Order matters - must match verification in enclave
  */
-function createSigningPayload(cmd: Omit<SignedControlCommand, 'signature'>): string {
-  return JSON.stringify({
-    command_id: cmd.command_id,
-    command: cmd.command,
-    target: cmd.target,
-    params: cmd.params,
-    issued_at: cmd.issued_at,
-    issued_by: cmd.issued_by,
-    expires_at: cmd.expires_at,
-  });
-}
-
-/**
- * Sign a control command
- *
- * @param command - The unsigned command to sign
- * @returns Signed control command with all fields populated
- */
-export async function signControlCommand(command: UnsignedControlCommand): Promise<SignedControlCommand> {
-  const keys = await getSigningKeys();
-
-  const now = new Date();
-  const expiresAt = new Date(now.getTime() + COMMAND_TTL_MS);
-
-  const unsignedCmd: Omit<SignedControlCommand, 'signature'> = {
-    command_id: randomUUID(),
-    command: command.command,
-    target: command.target,
-    params: command.params || {},
-    issued_at: now.toISOString(),
-    issued_by: command.issued_by,
-    expires_at: expiresAt.toISOString(),
-  };
-
-  // Create canonical payload and sign
-  const payload = createSigningPayload(unsignedCmd);
-  const signature = sign(null, Buffer.from(payload), {
-    key: keys.privateKey,
-    format: 'der',
-    type: 'pkcs8',
-  });
-
-  return {
-    ...unsignedCmd,
-    signature: signature.toString('base64'),
-  };
-}
-
-/**
- * Verify a signed control command
- *
- * SECURITY: Verifies signature, timestamp freshness, and expiration
- *
- * @param command - The signed command to verify
- * @returns true if valid, throws on invalid
- */
-export async function verifyControlCommand(command: SignedControlCommand): Promise<boolean> {
-  const keys = await getSigningKeys();
-
-  // 1. Check expiration
-  const expiresAt = new Date(command.expires_at);
-  if (expiresAt.getTime() < Date.now()) {
-    throw new Error('Control command has expired');
-  }
-
-  // 2. Check freshness (issued within last 5 minutes)
-  const issuedAt = new Date(command.issued_at);
-  const age = Date.now() - issuedAt.getTime();
-  if (age > COMMAND_TTL_MS) {
-    throw new Error('Control command is too old');
-  }
-  if (age < -60000) {
-    // Allow 1 minute clock skew into the future
-    throw new Error('Control command issued in the future');
-  }
-
-  // 3. Verify signature
-  const payload = createSigningPayload({
+function createSigningPayload(command: Omit<SignedControlCommand, 'signature'>): string {
+  const payload = {
     command_id: command.command_id,
     command: command.command,
     target: command.target,
@@ -203,82 +131,169 @@ export async function verifyControlCommand(command: SignedControlCommand): Promi
     issued_at: command.issued_at,
     issued_by: command.issued_by,
     expires_at: command.expires_at,
-  });
+  };
 
-  const isValid = verify(
-    null,
-    Buffer.from(payload),
-    { key: keys.publicKey, format: 'der', type: 'spki' },
-    Buffer.from(command.signature, 'base64')
-  );
-
-  if (!isValid) {
-    throw new Error('Invalid control command signature');
-  }
-
-  return true;
+  // Use sorted keys for deterministic serialization
+  return JSON.stringify(payload, Object.keys(payload).sort());
 }
 
 /**
- * Get the public key for distribution to enclaves
+ * Signs a control command with Ed25519
  *
- * This should be called during deployment to get the public key
- * that enclaves need for verification.
+ * @param command - The unsigned command to sign
+ * @returns Signed command with signature and metadata
  */
-export async function getControlSigningPublicKey(): Promise<string> {
-  const keys = await getSigningKeys();
-  return keys.publicKey.toString('base64');
-}
+export async function signControlCommand(
+  command: UnsignedControlCommand
+): Promise<SignedControlCommand> {
+  const privateKey = await getPrivateKey();
 
-/**
- * Generate a new signing keypair and store in Secrets Manager
- *
- * This is a one-time operation to initialize the signing keys.
- * Should be run via a script, not during normal operation.
- */
-export async function initializeControlSigningKeys(): Promise<{ publicKey: string }> {
-  const { privateKey, publicKey } = generateKeyPairSync('ed25519');
+  const commandId = `cmd-${randomUUID()}`;
+  const issuedAt = new Date().toISOString();
+  const expiresAt = new Date(Date.now() + COMMAND_TTL_SECONDS * 1000).toISOString();
 
-  const privateKeyDer = privateKey.export({ type: 'pkcs8', format: 'der' }) as Buffer;
-  const publicKeyDer = publicKey.export({ type: 'spki', format: 'der' }) as Buffer;
+  const unsignedCommand: Omit<SignedControlCommand, 'signature'> = {
+    command_id: commandId,
+    command: command.command,
+    target: command.target,
+    params: command.params,
+    issued_at: issuedAt,
+    issued_by: command.issued_by,
+    expires_at: expiresAt,
+  };
 
-  // Store in Secrets Manager
-  const { SecretsManagerClient, CreateSecretCommand, UpdateSecretCommand } = await import('@aws-sdk/client-secrets-manager');
-  const client = new SecretsManagerClient({});
-
-  const secretValue = JSON.stringify({
-    private_key: privateKeyDer.toString('base64'),
-    public_key: publicKeyDer.toString('base64'),
-    created_at: new Date().toISOString(),
-  });
-
-  try {
-    await client.send(new CreateSecretCommand({
-      Name: CONTROL_SIGNING_SECRET_ID,
-      Description: 'Ed25519 keypair for signing control commands',
-      SecretString: secretValue,
-      Tags: [
-        { Key: 'Application', Value: 'vettid' },
-        { Key: 'Component', Value: 'control-signing' },
-      ],
-    }));
-  } catch (error: any) {
-    if (error.name === 'ResourceExistsException') {
-      // Update existing secret
-      await client.send(new UpdateSecretCommand({
-        SecretId: CONTROL_SIGNING_SECRET_ID,
-        SecretString: secretValue,
-      }));
-    } else {
-      throw error;
-    }
-  }
-
-  // Invalidate cache
-  cachedSigningKey = null;
-  cacheTime = 0;
+  const payload = createSigningPayload(unsignedCommand);
+  const signature = crypto.sign(null, Buffer.from(payload), privateKey);
 
   return {
-    publicKey: publicKeyDer.toString('base64'),
+    ...unsignedCommand,
+    signature: signature.toString('base64'),
+  };
+}
+
+/**
+ * Verifies a signed control command (for testing/debugging)
+ * In production, verification happens in the enclave parent process
+ *
+ * @param command - The signed command to verify
+ * @param publicKeyPem - PEM-encoded Ed25519 public key
+ * @returns true if signature is valid
+ */
+export function verifyControlCommand(
+  command: SignedControlCommand,
+  publicKeyPem: string
+): boolean {
+  try {
+    const publicKey = crypto.createPublicKey({
+      key: publicKeyPem,
+      format: 'pem',
+    });
+
+    const { signature, ...unsignedCommand } = command;
+    const payload = createSigningPayload(unsignedCommand);
+
+    return crypto.verify(
+      null,
+      Buffer.from(payload),
+      publicKey,
+      Buffer.from(signature, 'base64')
+    );
+  } catch (error) {
+    console.error('Signature verification failed:', error);
+    return false;
+  }
+}
+
+/**
+ * Checks if a command has expired
+ */
+export function isCommandExpired(command: SignedControlCommand): boolean {
+  const expiresAt = new Date(command.expires_at).getTime();
+  return Date.now() > expiresAt;
+}
+
+/**
+ * Checks if a command ID has already been processed (idempotency)
+ * Stores processed command IDs in DynamoDB with TTL
+ *
+ * @param commandId - The command ID to check
+ * @returns true if command was already processed
+ */
+export async function isCommandProcessed(commandId: string): Promise<boolean> {
+  if (!TABLE_COMMAND_IDEMPOTENCY) {
+    console.warn('TABLE_COMMAND_IDEMPOTENCY not set, skipping idempotency check');
+    return false;
+  }
+
+  try {
+    const result = await ddb.send(
+      new GetItemCommand({
+        TableName: TABLE_COMMAND_IDEMPOTENCY,
+        Key: marshall({ command_id: commandId }),
+      })
+    );
+
+    return !!result.Item;
+  } catch (error) {
+    console.error('Error checking command idempotency:', error);
+    // Fail open to avoid blocking commands on DDB issues
+    return false;
+  }
+}
+
+/**
+ * Marks a command as processed for idempotency
+ *
+ * @param commandId - The command ID to mark
+ * @param command - The command name (for audit)
+ * @param issuedBy - Who issued the command
+ */
+export async function markCommandProcessed(
+  commandId: string,
+  command: string,
+  issuedBy: string
+): Promise<void> {
+  if (!TABLE_COMMAND_IDEMPOTENCY) {
+    console.warn('TABLE_COMMAND_IDEMPOTENCY not set, skipping idempotency record');
+    return;
+  }
+
+  try {
+    // TTL: 24 hours from now (commands expire in 5 min, but keep record longer for audit)
+    const ttl = Math.floor(Date.now() / 1000) + 86400;
+
+    await ddb.send(
+      new PutItemCommand({
+        TableName: TABLE_COMMAND_IDEMPOTENCY,
+        Item: marshall({
+          command_id: commandId,
+          command,
+          issued_by: issuedBy,
+          processed_at: new Date().toISOString(),
+          ttl,
+        }),
+      })
+    );
+  } catch (error) {
+    console.error('Error recording command idempotency:', error);
+    // Don't fail the command if we can't record idempotency
+  }
+}
+
+/**
+ * Helper to generate a new Ed25519 keypair for initial setup
+ * Run this once to generate keys, then store in Secrets Manager
+ *
+ * Usage:
+ * const { publicKey, privateKey } = generateSigningKeyPair();
+ * // Store privateKey in Secrets Manager
+ * // Distribute publicKey to enclave instances
+ */
+export function generateSigningKeyPair(): { publicKey: string; privateKey: string } {
+  const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
+
+  return {
+    publicKey: publicKey.export({ type: 'spki', format: 'pem' }) as string,
+    privateKey: privateKey.export({ type: 'pkcs8', format: 'pem' }) as string,
   };
 }

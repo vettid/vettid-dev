@@ -63,6 +63,8 @@ export class InfrastructureStack extends cdk.Stack {
     handlerManifest: dynamodb.Table;
     // Admin Portal: Communications
     vaultBroadcasts: dynamodb.Table;
+    // Control Command Signing
+    commandIdempotency: dynamodb.Table;
   };
 
   // S3 Buckets
@@ -94,6 +96,9 @@ export class InfrastructureStack extends cdk.Stack {
 
   // Handler signing key secret ARN (for dynamic handler loading)
   public readonly handlerSigningKeySecretArn!: string;
+
+  // Control command signing key secret ARN (for signed control commands)
+  public readonly controlSigningKeySecretArn!: string;
 
   // NATS seed encryption key (for application-level envelope encryption of account seeds)
   public readonly natsSeedEncryptionKey!: kms.Key;
@@ -736,6 +741,24 @@ export class InfrastructureStack extends cdk.Stack {
       projectionType: dynamodb.ProjectionType.ALL,
     });
 
+    // ===== CONTROL COMMAND SIGNING =====
+    // Command idempotency table - tracks processed command IDs to prevent replay attacks
+    // Records are automatically deleted after 24 hours via TTL
+    // Schema:
+    //   command_id: unique command identifier (PK)
+    //   command: command name
+    //   issued_by: admin email
+    //   processed_at: ISO timestamp
+    //   ttl: Unix timestamp for TTL deletion
+    const commandIdempotency = new dynamodb.Table(this, 'CommandIdempotency', {
+      partitionKey: { name: 'command_id', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      timeToLiveAttribute: 'ttl',
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: dynamoDbEncryptionKey,
+    });
+
     // ===== S3 BUCKETS =====
 
     // S3 bucket for membership terms PDFs (shared by VettIDStack and AdminStack)
@@ -849,6 +872,8 @@ export class InfrastructureStack extends cdk.Stack {
       handlerManifest,
       // Admin Portal: Communications
       vaultBroadcasts,
+      // Control Command Signing
+      commandIdempotency,
     };
 
     this.termsBucket = termsBucket;
@@ -1207,6 +1232,34 @@ export class InfrastructureStack extends cdk.Stack {
 
     // Export the secret ARN
     this.handlerSigningKeySecretArn = handlerSigningKeySecret.secretArn;
+
+    // ===== CONTROL COMMAND SIGNING KEY =====
+    // Ed25519 keypair for signing control commands sent to enclave parent processes
+    // Provides authenticity, integrity, and replay prevention for admin operations
+    // SECURITY: Secret is created empty - keypair MUST be generated and stored manually:
+    //   node -e "const {generateSigningKeyPair}=require('./dist/lambda/common/control-signing');console.log(JSON.stringify(generateSigningKeyPair()))" | \
+    //     aws secretsmanager put-secret-value --secret-id vettid/control-signing-key --secret-string file:///dev/stdin
+    // Or use OpenSSL:
+    //   openssl genpkey -algorithm ed25519 -out private.pem
+    //   openssl pkey -in private.pem -pubout -out public.pem
+    //   aws secretsmanager put-secret-value --secret-id vettid/control-signing-key \
+    //     --secret-string "$(jq -n --arg priv "$(cat private.pem)" --arg pub "$(cat public.pem)" \
+    //       '{private_key: $priv, public_key: $pub}')"
+    const controlSigningKeySecret = new secretsmanager.Secret(this, 'ControlSigningKeySecret', {
+      secretName: 'vettid/control-signing-key',
+      description: 'Ed25519 keypair for signing control commands - REQUIRES MANUAL INITIALIZATION',
+      generateSecretString: {
+        secretStringTemplate: JSON.stringify({
+          status: 'UNINITIALIZED',
+          instructions: 'Generate Ed25519 keypair and store using: openssl genpkey -algorithm ed25519 -out private.pem && aws secretsmanager put-secret-value --secret-id vettid/control-signing-key --secret-string "$(jq -n --rawfile priv private.pem --rawfile pub <(openssl pkey -in private.pem -pubout) \'{private_key: $priv, public_key: $pub}\')"',
+        }),
+        generateStringKey: 'initialization_token',
+        excludePunctuation: true,
+      },
+    });
+
+    // Export the secret ARN
+    this.controlSigningKeySecretArn = controlSigningKeySecret.secretArn;
 
     // ===== CI/CD ROLE FOR HANDLER DEPLOYMENT =====
     // This role is assumed by GitHub Actions to deploy WASM handlers

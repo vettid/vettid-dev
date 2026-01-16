@@ -389,7 +389,7 @@ Type=simple
 ExecStart=/usr/local/bin/vettid-parent --config /etc/vettid/parent.yaml
 Restart=always
 RestartSec=5
-Environment=AWS_REGION=us-east-1
+EnvironmentFile=/etc/vettid/parent.env
 
 [Install]
 WantedBy=multi-user.target
@@ -397,6 +397,11 @@ SVCEOF
 
 # Create config directory and parent configuration
 mkdir -p /etc/vettid
+
+# Create environment file for parent process
+cat > /etc/vettid/parent.env << 'ENVEOF'
+AWS_REGION=us-east-1
+ENVEOF
 
 cat > /etc/vettid/parent.yaml << 'CONFIGEOF'
 # VettID Parent Process Configuration
@@ -445,6 +450,16 @@ KMS_ARN=$(aws ssm get-parameter --name /vettid/nitro/sealing-key-arn --region $R
 if [ -n "$KMS_ARN" ]; then
     sed -i "s|sealing_key_arn: \"\"|sealing_key_arn: \"$KMS_ARN\"|" /etc/vettid/parent.yaml
     echo "KMS sealing key ARN configured: $KMS_ARN"
+fi
+
+# Fetch control signing public key for Ed25519 signature verification
+# SECURITY: This key is used to verify signed control commands from admin Lambdas
+CONTROL_SIGNING_KEY=$(aws ssm get-parameter --name /vettid/control-signing-public-key --region $REGION --query Parameter.Value --output text 2>/dev/null || echo "")
+if [ -n "$CONTROL_SIGNING_KEY" ]; then
+    echo "CONTROL_SIGNING_PUBLIC_KEY=$CONTROL_SIGNING_KEY" >> /etc/vettid/parent.env
+    echo "Control signing public key configured"
+else
+    echo "WARNING: Control signing public key not found - control commands will only work in dev mode"
 fi
 
 # Reload systemd and enable services for boot

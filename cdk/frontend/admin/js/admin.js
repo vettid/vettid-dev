@@ -5821,8 +5821,8 @@ document.getElementById('deleteWaitlistBtn').onclick = async () => {
 
   try {
     const token = idToken();
-    const res = await fetch(`${API_URL}/admin/waitlist/delete`, {
-      method: 'POST',
+    const res = await fetch(`${API_URL}/admin/waitlist`, {
+      method: 'DELETE',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${token}`

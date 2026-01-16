@@ -898,7 +898,7 @@ export async function sendEmail() {
   }
 
   try {
-    await api('/admin/users/email', {
+    await api('/admin/send-bulk-email', {
       method: 'POST',
       body: JSON.stringify({
         recipients: selectedEmailRecipients,

@@ -1075,7 +1075,7 @@ function setupWaitlistActionButtons() {
         showToast('Please select at least one waitlist entry', 'warning');
         return;
       }
-      pendingInviteWaitlistIds = Array.from(checkboxes).map(cb => cb.dataset.email);
+      pendingInviteWaitlistIds = Array.from(checkboxes).map(cb => cb.dataset.waitlistId);
       const countDisplay = document.getElementById('inviteCountDisplay');
       if (countDisplay) countDisplay.textContent = pendingInviteWaitlistIds.length;
       openModal('customMessageModal');
@@ -1092,9 +1092,9 @@ function setupWaitlistActionButtons() {
       closeModal('customMessageModal');
 
       try {
-        const res = await api('/admin/waitlist/invite', {
+        const res = await api('/admin/waitlist/send-invites', {
           method: 'POST',
-          body: JSON.stringify({ emails: pendingInviteWaitlistIds, custom_message: customMessage })
+          body: JSON.stringify({ waitlist_ids: pendingInviteWaitlistIds, custom_message: customMessage })
         });
 
         showToast(`Sent ${res.sent || pendingInviteWaitlistIds.length} invite(s)`, 'success');
@@ -1124,27 +1124,12 @@ function setupWaitlistActionButtons() {
     };
   }
 
-  // Reject waitlist button
+  // Reject waitlist button - Note: No backend endpoint exists for reject
+  // Use delete instead to remove unwanted entries
   const rejectBtn = document.getElementById('rejectWaitlistBtn');
   if (rejectBtn) {
-    rejectBtn.onclick = async () => {
-      const checkboxes = document.querySelectorAll('.waitlist-checkbox:checked');
-      if (checkboxes.length === 0) return;
-
-      const emails = Array.from(checkboxes).map(cb => cb.dataset.email);
-      const reason = prompt('Enter rejection reason (optional):') || '';
-
-      try {
-        await api('/admin/waitlist/reject', {
-          method: 'POST',
-          body: JSON.stringify({ emails, reason })
-        });
-
-        showToast(`Rejected ${emails.length} entr${emails.length === 1 ? 'y' : 'ies'}`, 'success');
-        loadWaitlist(false);
-      } catch (err) {
-        showToast(err.message || 'Failed to reject entries', 'error');
-      }
+    rejectBtn.onclick = () => {
+      showToast('Reject functionality not implemented. Use Delete to remove entries.', 'warning');
     };
   }
 
@@ -1155,19 +1140,19 @@ function setupWaitlistActionButtons() {
       const checkboxes = document.querySelectorAll('.waitlist-checkbox:checked');
       if (checkboxes.length === 0) return;
 
-      const emails = Array.from(checkboxes).map(cb => cb.dataset.email);
+      const waitlistIds = Array.from(checkboxes).map(cb => cb.dataset.waitlistId);
 
-      if (!confirm(`Delete ${emails.length} waitlist entr${emails.length === 1 ? 'y' : 'ies'}? This cannot be undone.`)) {
+      if (!confirm(`Delete ${waitlistIds.length} waitlist entr${waitlistIds.length === 1 ? 'y' : 'ies'}? This cannot be undone.`)) {
         return;
       }
 
       try {
-        await api('/admin/waitlist/delete', {
-          method: 'POST',
-          body: JSON.stringify({ emails })
+        await api('/admin/waitlist', {
+          method: 'DELETE',
+          body: JSON.stringify({ waitlist_ids: waitlistIds })
         });
 
-        showToast(`Deleted ${emails.length} entr${emails.length === 1 ? 'y' : 'ies'}`, 'success');
+        showToast(`Deleted ${waitlistIds.length} entr${waitlistIds.length === 1 ? 'y' : 'ies'}`, 'success');
         loadWaitlist(false);
       } catch (err) {
         showToast(err.message || 'Failed to delete entries', 'error');
@@ -1266,6 +1251,7 @@ function renderWaitlist() {
     cb.type = 'checkbox';
     cb.className = 'waitlist-checkbox';
     cb.dataset.email = w.email;
+    cb.dataset.waitlistId = w.waitlist_id;
     td1.appendChild(cb);
 
     // Name

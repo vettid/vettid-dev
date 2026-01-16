@@ -58,6 +58,7 @@ export class BusinessGovernanceStack extends cdk.Stack {
   public readonly listWaitlist!: lambdaNode.NodejsFunction;
   public readonly sendWaitlistInvites!: lambdaNode.NodejsFunction;
   public readonly deleteWaitlistEntries!: lambdaNode.NodejsFunction;
+  public readonly addWaitlistEntry!: lambdaNode.NodejsFunction;
 
   // Email Management
   public readonly sendBulkEmail!: lambdaNode.NodejsFunction;
@@ -368,28 +369,43 @@ export class BusinessGovernanceStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(30),
     });
 
+    const addWaitlistEntry = new lambdaNode.NodejsFunction(this, 'AddWaitlistEntryFn', {
+      entry: 'lambda/handlers/admin/addWaitlistEntry.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: defaultEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
     // Grant permissions
     tables.waitlist.grantReadData(listWaitlist);
     tables.waitlist.grantReadWriteData(sendWaitlistInvites);
     tables.registrations.grantReadWriteData(sendWaitlistInvites);
     tables.invites.grantReadWriteData(sendWaitlistInvites);
     tables.waitlist.grantReadWriteData(deleteWaitlistEntries);
+    tables.waitlist.grantReadWriteData(addWaitlistEntry);
     tables.audit.grantReadWriteData(sendWaitlistInvites);
     tables.audit.grantReadWriteData(deleteWaitlistEntries);
+    tables.audit.grantReadWriteData(addWaitlistEntry);
 
     // SES and Cognito permissions for waitlist invites
     sendWaitlistInvites.addToRolePolicy(new iam.PolicyStatement({
       actions: ['ses:SendEmail', 'ses:SendTemplatedEmail'],
       resources: ['*'],
     }));
+    // SES verification permissions (for sandbox mode)
     sendWaitlistInvites.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['cognito-idp:AdminCreateUser', 'cognito-idp:AdminAddUserToGroup'],
+      actions: ['ses:GetIdentityVerificationAttributes', 'ses:VerifyEmailIdentity'],
+      resources: ['*'], // These SES actions don't support resource-level permissions
+    }));
+    sendWaitlistInvites.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['cognito-idp:AdminCreateUser', 'cognito-idp:AdminAddUserToGroup', 'cognito-idp:AdminGetUser'],
       resources: [memberUserPool.userPoolArn],
     }));
 
     this.listWaitlist = listWaitlist;
     this.sendWaitlistInvites = sendWaitlistInvites;
     this.deleteWaitlistEntries = deleteWaitlistEntries;
+    this.addWaitlistEntry = addWaitlistEntry;
 
     // ===== EMAIL MANAGEMENT =====
 
@@ -491,6 +507,7 @@ export class BusinessGovernanceStack extends cdk.Stack {
 
     // Waitlist Management
     this.route('ListWaitlist', httpApi, '/admin/waitlist', apigw.HttpMethod.GET, this.listWaitlist, adminAuthorizer);
+    this.route('AddWaitlistEntry', httpApi, '/admin/waitlist', apigw.HttpMethod.POST, this.addWaitlistEntry, adminAuthorizer);
     this.route('SendWaitlistInvites', httpApi, '/admin/waitlist/send-invites', apigw.HttpMethod.POST, this.sendWaitlistInvites, adminAuthorizer);
     this.route('DeleteWaitlistEntries', httpApi, '/admin/waitlist', apigw.HttpMethod.DELETE, this.deleteWaitlistEntries, adminAuthorizer);
 

@@ -329,7 +329,7 @@ export async function loadRecoveryRequests() {
 
     container.textContent = 'Loading...';
 
-    const data = await api('/admin/recovery-requests');
+    const data = await api('/admin/credential-recovery-requests');
     const requests = data.requests || [];
 
     if (requests.length === 0) {
@@ -369,19 +369,13 @@ export async function loadRecoveryRequests() {
         const actionsDiv = document.createElement('div');
         actionsDiv.style.cssText = 'display:flex;gap:8px;';
 
-        const approveBtn = document.createElement('button');
-        approveBtn.className = 'btn btn-sm';
-        approveBtn.style.background = 'linear-gradient(135deg,#10b981 0%,#059669 100%)';
-        approveBtn.textContent = 'Approve';
-        approveBtn.onclick = () => handleRecoveryRequest(req.request_id, 'approve');
+        const cancelBtn = document.createElement('button');
+        cancelBtn.className = 'btn btn-sm';
+        cancelBtn.style.background = 'linear-gradient(135deg,#ef4444 0%,#dc2626 100%)';
+        cancelBtn.textContent = 'Cancel Request';
+        cancelBtn.onclick = () => handleRecoveryRequest(req.recovery_id || req.request_id, 'cancel');
 
-        const denyBtn = document.createElement('button');
-        denyBtn.className = 'btn btn-sm';
-        denyBtn.style.background = 'linear-gradient(135deg,#ef4444 0%,#dc2626 100%)';
-        denyBtn.textContent = 'Deny';
-        denyBtn.onclick = () => handleRecoveryRequest(req.request_id, 'deny');
-
-        actionsDiv.append(approveBtn, denyBtn);
+        actionsDiv.append(cancelBtn);
         reqEl.appendChild(actionsDiv);
       }
 
@@ -396,8 +390,9 @@ export async function loadRecoveryRequests() {
 
 async function handleRecoveryRequest(requestId, action) {
   try {
-    await api(`/admin/recovery-requests/${requestId}/${action}`, { method: 'POST' });
-    showToast(`Recovery request ${action}d successfully`, 'success');
+    // Backend only supports cancel action
+    await api(`/admin/credential-recovery-requests/${requestId}/cancel`, { method: 'POST' });
+    showToast('Recovery request cancelled successfully', 'success');
     await loadRecoveryRequests();
   } catch (e) {
     showToast('Error: ' + (e.message || e), 'error');
@@ -415,7 +410,7 @@ export async function loadDeletionRequests() {
 
     container.textContent = 'Loading...';
 
-    const data = await api('/admin/deletion-requests');
+    const data = await api('/admin/vault-deletion-requests');
     const requests = data.requests || [];
 
     if (requests.length === 0) {
@@ -458,8 +453,8 @@ export async function loadDeletionRequests() {
         const processBtn = document.createElement('button');
         processBtn.className = 'btn btn-sm';
         processBtn.style.background = 'linear-gradient(135deg,#ef4444 0%,#dc2626 100%)';
-        processBtn.textContent = 'Process Deletion';
-        processBtn.onclick = () => processDeletionRequest(req.request_id);
+        processBtn.textContent = 'Cancel Request';
+        processBtn.onclick = () => cancelDeletionRequest(req.request_id);
 
         actionsDiv.appendChild(processBtn);
         reqEl.appendChild(actionsDiv);
@@ -474,14 +469,14 @@ export async function loadDeletionRequests() {
   }
 }
 
-async function processDeletionRequest(requestId) {
-  if (!confirm('Are you sure you want to process this deletion request? This action cannot be undone.')) {
+async function cancelDeletionRequest(requestId) {
+  if (!confirm('Are you sure you want to cancel this deletion request?')) {
     return;
   }
 
   try {
-    await api(`/admin/deletion-requests/${requestId}/process`, { method: 'POST' });
-    showToast('Deletion request processed successfully', 'success');
+    await api(`/admin/vault-deletion-requests/${requestId}/cancel`, { method: 'POST' });
+    showToast('Deletion request cancelled successfully', 'success');
     await loadDeletionRequests();
   } catch (e) {
     showToast('Error: ' + (e.message || e), 'error');
