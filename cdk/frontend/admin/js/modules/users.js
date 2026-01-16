@@ -134,6 +134,8 @@ export async function loadUsers(resetPage = true) {
   if (resetPage) pagination.page = 0;
 
   const tbody = document.querySelector('#usersTable tbody');
+  if (!tbody) return; // Table not in DOM yet
+
   showLoadingSkeleton('usersTable');
 
   try {
@@ -185,13 +187,16 @@ export async function loadUsers(resetPage = true) {
     renderUsers(filtered, tbody);
 
   } catch (e) {
-    const errMsg = document.createElement('tr');
-    const td = document.createElement('td');
-    td.colSpan = 4;
-    td.className = 'muted';
-    td.textContent = 'Error: ' + (e.message || String(e));
-    errMsg.appendChild(td);
-    tbody.replaceChildren(errMsg);
+    console.error('Error loading users:', e);
+    if (tbody) {
+      const errMsg = document.createElement('tr');
+      const td = document.createElement('td');
+      td.colSpan = 4;
+      td.className = 'muted';
+      td.textContent = 'Error: ' + (e.message || String(e));
+      errMsg.appendChild(td);
+      tbody.replaceChildren(errMsg);
+    }
   }
 }
 
