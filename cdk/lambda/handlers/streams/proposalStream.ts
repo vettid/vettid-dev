@@ -3,6 +3,7 @@ import { DynamoDBClient, ScanCommand, GetItemCommand, PutItemCommand } from '@aw
 import { SESClient, SendTemplatedEmailCommand } from '@aws-sdk/client-ses';
 import { unmarshall, marshall } from '@aws-sdk/util-dynamodb';
 import { createHash, randomUUID } from 'crypto';
+import { publishVoteResults } from '../../common/publishResults';
 
 /**
  * Hash identifier for safe logging (no PII in logs)
@@ -36,6 +37,9 @@ const ses = new SESClient({});
 const TABLE_SUBSCRIPTIONS = process.env.TABLE_SUBSCRIPTIONS!;
 const TABLE_AUDIT = process.env.TABLE_AUDIT!;
 const TABLE_REGISTRATIONS = process.env.TABLE_REGISTRATIONS!;
+const TABLE_PROPOSALS = process.env.TABLE_PROPOSALS!;
+const TABLE_VOTES = process.env.TABLE_VOTES!;
+const PUBLISHED_VOTES_BUCKET = process.env.PUBLISHED_VOTES_BUCKET!;
 const SES_FROM = process.env.SES_FROM || 'no-reply@vettid.dev';
 
 interface ProposalRecord {
@@ -117,10 +121,20 @@ async function processRecord(record: DynamoDBRecord): Promise<void> {
     }
 
     const proposal = unmarshall(newImage as any) as ProposalRecord;
+    const oldProposal = oldImage ? unmarshall(oldImage as any) as ProposalRecord : null;
+
+    // Check if proposal just became closed (status changed to 'closed')
+    const isNowClosed = proposal.status === 'closed';
+    const wasClosed = oldProposal?.status === 'closed';
+
+    if (eventName === 'MODIFY' && isNowClosed && !wasClosed) {
+      console.log(`Proposal ${proposal.proposal_id} just closed, auto-publishing results`);
+      await autoPublishResults(proposal);
+    }
 
     // Check if proposal is now active and open for voting
     const isNowActive = proposal.status === 'active';
-    const wasActive = oldImage ? (unmarshall(oldImage as any) as ProposalRecord).status === 'active' : false;
+    const wasActive = oldProposal?.status === 'active';
 
     // Only send notifications if:
     // 1. This is a new proposal (INSERT) that is active
@@ -150,6 +164,49 @@ async function processRecord(record: DynamoDBRecord): Promise<void> {
 
     console.log(`Sending notifications for proposal: ${proposal.proposal_title}`);
     await sendNotifications(proposal);
+  }
+}
+
+/**
+ * Auto-publish vote results when a proposal closes
+ */
+async function autoPublishResults(proposal: ProposalRecord): Promise<void> {
+  try {
+    const result = await publishVoteResults(
+      proposal.proposal_id,
+      TABLE_PROPOSALS,
+      TABLE_VOTES,
+      PUBLISHED_VOTES_BUCKET,
+      'auto:proposal_closed'
+    );
+
+    if (result.success) {
+      console.log(`Auto-published results for proposal ${proposal.proposal_id}: merkle_root=${result.merkle_root}`);
+
+      // Log to audit table
+      await ddb.send(new PutItemCommand({
+        TableName: TABLE_AUDIT,
+        Item: marshall({
+          id: `auto_publish_${randomUUID()}`,
+          type: 'proposal_results_auto_published',
+          proposal_id: proposal.proposal_id,
+          proposal_title: proposal.proposal_title,
+          merkle_root: result.merkle_root,
+          vote_counts: result.vote_counts,
+          published_at: result.published_at,
+          triggered_by: 'proposal_stream',
+          created_at: new Date().toISOString(),
+        }),
+      }));
+    } else if (result.already_published) {
+      console.log(`Results already published for proposal ${proposal.proposal_id}, skipping`);
+    } else {
+      console.error(`Failed to auto-publish results for ${proposal.proposal_id}: ${result.error}`);
+    }
+  } catch (error) {
+    console.error(`Error auto-publishing results for ${proposal.proposal_id}:`, error);
+    // Don't throw - we don't want to fail the stream processing for this
+    // The admin can still manually publish if auto-publish fails
   }
 }
 

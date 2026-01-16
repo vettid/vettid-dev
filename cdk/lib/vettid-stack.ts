@@ -854,8 +854,11 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
         ...defaultEnv,
         TABLE_SUBSCRIPTIONS: tables.subscriptions.tableName,
         TABLE_REGISTRATIONS: tables.registrations.tableName,
+        TABLE_PROPOSALS: tables.proposals.tableName,
+        TABLE_VOTES: tables.votes.tableName,
+        PUBLISHED_VOTES_BUCKET: props.infrastructure.publishedVotesBucket.bucketName,
       },
-      timeout: cdk.Duration.seconds(60), // Allow time to send multiple emails
+      timeout: cdk.Duration.seconds(90), // Allow time to send emails AND publish results
     });
     const cancelAccount = new lambdaNode.NodejsFunction(this, 'CancelAccountFn', {
       entry: 'lambda/handlers/member/cancelAccount.ts',
@@ -1135,7 +1138,10 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
     tables.proposals.grantStreamRead(proposalStreamFn); // Read proposal stream events
     tables.subscriptions.grantReadData(proposalStreamFn); // Query active subscriptions
     tables.registrations.grantReadData(proposalStreamFn); // Get user emails
-    tables.audit.grantReadData(proposalStreamFn); // Check email preferences
+    tables.audit.grantReadWriteData(proposalStreamFn); // Check email prefs + write auto-publish audit
+    tables.proposals.grantReadWriteData(proposalStreamFn); // Update merkle_root on auto-publish
+    tables.votes.grantReadData(proposalStreamFn); // Read votes for auto-publish
+    props.infrastructure.publishedVotesBucket.grantReadWrite(proposalStreamFn); // Write results to S3 on auto-publish
     tables.audit.grantReadWriteData(submitRegistration);
     tables.audit.grantReadWriteData(registrationStreamFn);
     tables.audit.grantReadWriteData(cancelAccount);
