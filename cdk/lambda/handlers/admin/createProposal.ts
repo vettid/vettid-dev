@@ -1,5 +1,6 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { DynamoDBClient, PutItemCommand, UpdateItemCommand } from '@aws-sdk/client-dynamodb';
+import { KMSClient, SignCommand, GetPublicKeyCommand } from '@aws-sdk/client-kms';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import {
   ok,
@@ -10,11 +11,13 @@ import {
   putAudit,
   requireAdminGroup
 } from '../../common/util';
-import { randomUUID } from 'crypto';
+import { randomUUID, createHash } from 'crypto';
 
 const ddb = new DynamoDBClient({});
+const kms = new KMSClient({});
 const TABLE_PROPOSALS = process.env.TABLE_PROPOSALS!;
 const TABLE_AUDIT = process.env.TABLE_AUDIT!;
+const VOTING_KEY_ID = process.env.VOTING_KEY_ID!;
 
 /**
  * Get the next proposal number atomically
@@ -33,6 +36,54 @@ async function getNextProposalNumber(): Promise<string> {
   const updated = result.Attributes ? unmarshall(result.Attributes) : { count: 1 };
   const nextNumber = updated.count || 1;
   return `P${String(nextNumber).padStart(7, '0')}`;
+}
+
+/**
+ * Create a canonical signing payload for a proposal
+ * Format: proposal_id|proposal_title|opens_at|closes_at
+ * This payload is signed by VettID's KMS key to prove proposal authenticity
+ */
+function createSigningPayload(
+  proposalId: string,
+  proposalTitle: string | undefined,
+  opensAt: string,
+  closesAt: string
+): string {
+  // Use empty string for title if not provided (consistent with verification)
+  const title = proposalTitle || '';
+  return `${proposalId}|${title}|${opensAt}|${closesAt}`;
+}
+
+/**
+ * Sign a proposal using KMS ECDSA-SHA256
+ * Returns the signature as base64 and the signing payload
+ */
+async function signProposal(
+  proposalId: string,
+  proposalTitle: string | undefined,
+  opensAt: string,
+  closesAt: string
+): Promise<{ signature: string; signingPayload: string }> {
+  const signingPayload = createSigningPayload(proposalId, proposalTitle, opensAt, closesAt);
+
+  // Hash the payload with SHA-256 (KMS ECDSA_SHA_256 expects pre-hashed message)
+  const messageHash = createHash('sha256').update(signingPayload).digest();
+
+  // Sign with KMS
+  const signResult = await kms.send(new SignCommand({
+    KeyId: VOTING_KEY_ID,
+    Message: messageHash,
+    MessageType: 'DIGEST',
+    SigningAlgorithm: 'ECDSA_SHA_256',
+  }));
+
+  if (!signResult.Signature) {
+    throw new Error('KMS signing failed: no signature returned');
+  }
+
+  // Return signature as base64
+  const signature = Buffer.from(signResult.Signature).toString('base64');
+  return { signature, signingPayload };
 }
 
 /**
@@ -132,18 +183,35 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
 
     // Create proposal record
     const proposalId = randomUUID();
+    const opensAtIso = opensDate.toISOString();
+    const closesAtIso = closesDate.toISOString();
+
+    // Sign the proposal with VettID's KMS key for authenticity
+    // This signature proves the proposal was created by VettID (not forged)
+    // Vaults verify this signature before allowing users to vote
+    const { signature: kmsSignature, signingPayload } = await signProposal(
+      proposalId,
+      proposal_title,
+      opensAtIso,
+      closesAtIso
+    );
+
     const proposal: any = {
       proposal_id: proposalId,
       proposal_number: proposalNumber,
       proposal_text: proposal_text,
-      opens_at: opensDate.toISOString(),
-      closes_at: closesDate.toISOString(),
+      opens_at: opensAtIso,
+      closes_at: closesAtIso,
       status: status,
       created_by: email,
       created_at: now.toISOString(),
       quorum_type: effectiveQuorumType,
       quorum_value: effectiveQuorumValue,
       category: effectiveCategory,
+      // Vault-based voting fields
+      kms_signature: kmsSignature,
+      kms_key_id: VOTING_KEY_ID,
+      signing_payload: signingPayload,
     };
 
     // Add optional title if provided
@@ -163,11 +231,12 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       proposal_id: proposalId,
       proposal_number: proposalNumber,
       proposal_text: proposal_text,
-      opens_at: opensDate.toISOString(),
-      closes_at: closesDate.toISOString(),
+      opens_at: opensAtIso,
+      closes_at: closesAtIso,
       quorum_type: effectiveQuorumType,
       quorum_value: effectiveQuorumValue,
       category: effectiveCategory,
+      kms_signed: true,
     };
     if (proposal_title) {
       auditEntry.proposal_title = proposal_title;
@@ -180,6 +249,8 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
         proposal_id: proposalId,
         proposal_number: proposalNumber,
         status: status,
+        kms_signature: kmsSignature,
+        kms_key_id: VOTING_KEY_ID,
       },
     });
   } catch (error: any) {

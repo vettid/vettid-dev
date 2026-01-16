@@ -43,6 +43,7 @@ export class BusinessGovernanceStack extends cdk.Stack {
   public readonly listProposals!: lambdaNode.NodejsFunction;
   public readonly suspendProposal!: lambdaNode.NodejsFunction;
   public readonly getProposalVoteCounts!: lambdaNode.NodejsFunction;
+  public readonly publishVoteResults!: lambdaNode.NodejsFunction;
 
   // Subscription Management
   public readonly listSubscriptions!: lambdaNode.NodejsFunction;
@@ -195,10 +196,15 @@ export class BusinessGovernanceStack extends cdk.Stack {
 
     // ===== PROPOSAL MANAGEMENT =====
 
+    const votingKey = props.infrastructure.votingKey;
+
     const createProposal = new lambdaNode.NodejsFunction(this, 'CreateProposalFn', {
       entry: 'lambda/handlers/admin/createProposal.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
-      environment: defaultEnv,
+      environment: {
+        ...defaultEnv,
+        VOTING_KEY_ID: votingKey.keyId,
+      },
       timeout: cdk.Duration.seconds(30),
     });
 
@@ -223,6 +229,18 @@ export class BusinessGovernanceStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(30),
     });
 
+    // Publish vote results to S3 with Merkle tree
+    const publishedVotesBucket = props.infrastructure.publishedVotesBucket;
+    const publishVoteResults = new lambdaNode.NodejsFunction(this, 'PublishVoteResultsFn', {
+      entry: 'lambda/handlers/admin/publishVoteResults.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+        PUBLISHED_VOTES_BUCKET: publishedVotesBucket.bucketName,
+      },
+      timeout: cdk.Duration.seconds(60), // Allow time for processing large vote lists
+    });
+
     // Grant permissions
     tables.proposals.grantReadWriteData(createProposal);
     tables.proposals.grantReadData(listProposals);
@@ -232,10 +250,20 @@ export class BusinessGovernanceStack extends cdk.Stack {
     tables.audit.grantReadWriteData(createProposal);
     tables.audit.grantReadWriteData(suspendProposal);
 
+    // Grant KMS sign permission to createProposal for proposal signing
+    votingKey.grant(createProposal, 'kms:Sign');
+
+    // publishVoteResults needs to read proposals/votes and write to S3
+    tables.proposals.grantReadWriteData(publishVoteResults);
+    tables.votes.grantReadData(publishVoteResults);
+    tables.audit.grantReadWriteData(publishVoteResults);
+    publishedVotesBucket.grantReadWrite(publishVoteResults);
+
     this.createProposal = createProposal;
     this.listProposals = listProposals;
     this.suspendProposal = suspendProposal;
     this.getProposalVoteCounts = getProposalVoteCounts;
+    this.publishVoteResults = publishVoteResults;
 
     // ===== SUBSCRIPTION MANAGEMENT =====
 
@@ -450,6 +478,7 @@ export class BusinessGovernanceStack extends cdk.Stack {
     this.route('ListProposals', httpApi, '/admin/proposals', apigw.HttpMethod.GET, this.listProposals, adminAuthorizer);
     this.route('SuspendProposal', httpApi, '/admin/proposals/{id}/suspend', apigw.HttpMethod.POST, this.suspendProposal, adminAuthorizer);
     this.route('GetProposalVoteCounts', httpApi, '/admin/proposals/{proposal_id}/vote-counts', apigw.HttpMethod.GET, this.getProposalVoteCounts, adminAuthorizer);
+    this.route('PublishVoteResults', httpApi, '/admin/proposals/{proposal_id}/publish-results', apigw.HttpMethod.POST, this.publishVoteResults, adminAuthorizer);
 
     // Subscription Management
     this.route('ListSubscriptions', httpApi, '/admin/subscriptions', apigw.HttpMethod.GET, this.listSubscriptions, adminAuthorizer);

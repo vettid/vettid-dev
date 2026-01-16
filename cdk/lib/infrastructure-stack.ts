@@ -69,6 +69,7 @@ export class InfrastructureStack extends cdk.Stack {
   public readonly termsBucket!: s3.Bucket;
   public readonly handlersBucket!: s3.Bucket;
   public readonly backupBucket!: s3.Bucket;
+  public readonly publishedVotesBucket!: s3.Bucket;
 
   // Cognito resources
   public readonly memberUserPool!: cognito.UserPool;
@@ -96,6 +97,9 @@ export class InfrastructureStack extends cdk.Stack {
 
   // NATS seed encryption key (for application-level envelope encryption of account seeds)
   public readonly natsSeedEncryptionKey!: kms.Key;
+
+  // Voting KMS key (for proposal signing with ECDSA-SHA256)
+  public readonly votingKey!: kms.Key;
 
   // Shared utilities Lambda layer
   public readonly sharedUtilsLayer!: lambda.LayerVersion;
@@ -130,6 +134,21 @@ export class InfrastructureStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.RETAIN, // Retain to prevent credential loss
     });
     this.natsSeedEncryptionKey = natsSeedEncryptionKey;
+
+    // ===== KMS KEY FOR VOTING/PROPOSAL SIGNING =====
+    // SECURITY: Asymmetric ECC key for ECDSA-SHA256 proposal signing
+    // - Proposals are signed by VettID to prove authenticity
+    // - Mobile apps and vaults verify proposal signatures before voting
+    // - The public key can be exported for client-side verification
+    // - The private key never leaves KMS (hardware security module)
+    const votingKey = new kms.Key(this, 'VotingKey', {
+      alias: 'vettid-voting',
+      description: 'Asymmetric ECC key for proposal signing (ECDSA-SHA256)',
+      keySpec: kms.KeySpec.ECC_NIST_P256,
+      keyUsage: kms.KeyUsage.SIGN_VERIFY,
+      removalPolicy: cdk.RemovalPolicy.RETAIN, // Retain to verify historical proposals
+    });
+    this.votingKey = votingKey;
 
     // ===== DYNAMODB TABLES =====
 
@@ -763,6 +782,34 @@ export class InfrastructureStack extends cdk.Stack {
       ],
     });
 
+    // S3 bucket for published vote results (anonymized vote lists + Merkle trees)
+    // Purpose: Transparent, auditable voting results without revealing voter identities
+    // Structure:
+    //   {proposal_id}/votes.json - Anonymized vote list [{voting_public_key, vote, vote_signature}]
+    //   {proposal_id}/merkle.json - Merkle tree root and structure for verification
+    const publishedVotesBucket = new s3.Bucket(this, 'PublishedVotesBucket', {
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      versioned: true,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: true,
+      lifecycleRules: [
+        {
+          // Clean up incomplete multipart uploads after 7 days
+          abortIncompleteMultipartUploadAfter: cdk.Duration.days(7),
+        },
+        {
+          // Archive to Glacier after 1 year for compliance/audit purposes
+          transitions: [
+            {
+              storageClass: s3.StorageClass.GLACIER,
+              transitionAfter: cdk.Duration.days(365),
+            },
+          ],
+        },
+      ],
+    });
+
     // ===== ASSIGN TO PUBLIC PROPERTIES =====
 
     this.tables = {
@@ -807,6 +854,7 @@ export class InfrastructureStack extends cdk.Stack {
     this.termsBucket = termsBucket;
     this.handlersBucket = handlersBucket;
     this.backupBucket = backupBucket;
+    this.publishedVotesBucket = publishedVotesBucket;
 
     // ===== AUTH LAMBDA FUNCTIONS =====
 

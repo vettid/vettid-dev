@@ -84,6 +84,9 @@ type MessageHandler struct {
 	bootstrapHandler *BootstrapHandler
 	pinHandler       *PINHandler
 	sealerProxy      *SealerProxy
+
+	// Voting handler for vault-signed votes
+	voteHandler *VoteHandler
 }
 
 // VsockPublisher implements CallPublisher using vsock to parent
@@ -152,6 +155,9 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 	// Create PIN handler - handles PIN setup/unlock/change using the sealer proxy
 	pinHandler := NewPINHandler(ownerSpace, vaultState, bootstrapHandler, sealerProxy)
 
+	// Create vote handler for vault-signed voting
+	voteHandler := NewVoteHandler(ownerSpace, vaultState)
+
 	return &MessageHandler{
 		ownerSpace:           ownerSpace,
 		storage:              storage,
@@ -169,6 +175,9 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 		bootstrapHandler: bootstrapHandler,
 		pinHandler:       pinHandler,
 		sealerProxy:      sealerProxy,
+
+		// Voting
+		voteHandler: voteHandler,
 	}
 }
 
@@ -282,6 +291,9 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 	case "read-receipt":
 		// Incoming read receipt from peer vault
 		return mh.handleIncomingReadReceipt(ctx, msg)
+	case "vote":
+		// Vault-signed voting operation
+		return mh.handleVoteOperation(ctx, msg, parts[opIndex+1:])
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown operation: %s", operation))
 	}
@@ -532,6 +544,22 @@ func (mh *MessageHandler) handleNotificationOperation(ctx context.Context, msg *
 		return mh.notificationsHandler.HandleRevokeNotify(msg)
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown notification operation: %s", opType))
+	}
+}
+
+// handleVoteOperation routes voting-related operations
+func (mh *MessageHandler) handleVoteOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
+	if len(opParts) < 2 {
+		return mh.errorResponse(msg.GetID(), "missing vote operation type")
+	}
+
+	opType := opParts[1]
+
+	switch opType {
+	case "cast":
+		return mh.voteHandler.HandleCastVote(ctx, msg)
+	default:
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown vote operation: %s", opType))
 	}
 }
 
