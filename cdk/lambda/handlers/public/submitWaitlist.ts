@@ -85,6 +85,84 @@ function badRequest(message: string, origin?: string): APIGatewayProxyResultV2 {
   return jsonResponse(400, { message }, origin);
 }
 
+async function sendWelcomeEmail(firstName: string, email: string): Promise<void> {
+  try {
+    await ses.send(
+      new SendEmailCommand({
+        Source: SES_FROM,
+        Destination: {
+          ToAddresses: [email],
+        },
+        Message: {
+          Subject: {
+            Data: 'Welcome to the VettID Waitlist!',
+            Charset: 'UTF-8',
+          },
+          Body: {
+            Html: {
+              Data: `
+                <!DOCTYPE html>
+                <html>
+                <head>
+                  <meta charset="UTF-8">
+                  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                </head>
+                <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+                  <div style="background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); padding: 30px; border-radius: 12px 12px 0 0; text-align: center;">
+                    <h1 style="color: #ffc125; margin: 0; font-size: 28px;">Welcome to VettID!</h1>
+                  </div>
+                  <div style="background: #f8f9fa; padding: 30px; border-radius: 0 0 12px 12px; border: 1px solid #e9ecef; border-top: none;">
+                    <p style="font-size: 16px; margin-top: 0;">Hi ${escapeHtml(firstName)},</p>
+                    <p style="font-size: 16px;">Thank you for joining the VettID waitlist! We're excited to have you on board.</p>
+                    <p style="font-size: 16px;">VettID is building the future of verified digital identity. As a waitlist member, you'll be among the first to know when we launch and may receive early access to our platform.</p>
+                    <div style="background: #fff; border-left: 4px solid #ffc125; padding: 15px 20px; margin: 20px 0; border-radius: 0 8px 8px 0;">
+                      <p style="margin: 0; font-size: 14px; color: #666;"><strong>What happens next?</strong></p>
+                      <ul style="margin: 10px 0 0 0; padding-left: 20px; color: #666; font-size: 14px;">
+                        <li>We'll notify you when invites become available</li>
+                        <li>Early waitlist members get priority access</li>
+                        <li>Stay tuned for updates and announcements</li>
+                      </ul>
+                    </div>
+                    <p style="font-size: 16px; margin-bottom: 0;">Best regards,<br><strong>The VettID Team</strong></p>
+                  </div>
+                  <div style="text-align: center; padding: 20px; color: #999; font-size: 12px;">
+                    <p style="margin: 0;">© ${new Date().getFullYear()} VettID. All rights reserved.</p>
+                    <p style="margin: 5px 0 0 0;">You received this email because you joined the VettID waitlist.</p>
+                  </div>
+                </body>
+                </html>
+              `,
+              Charset: 'UTF-8',
+            },
+            Text: {
+              Data: `Hi ${firstName},
+
+Thank you for joining the VettID waitlist! We're excited to have you on board.
+
+VettID is building the future of verified digital identity. As a waitlist member, you'll be among the first to know when we launch and may receive early access to our platform.
+
+What happens next?
+- We'll notify you when invites become available
+- Early waitlist members get priority access
+- Stay tuned for updates and announcements
+
+Best regards,
+The VettID Team
+
+© ${new Date().getFullYear()} VettID. All rights reserved.
+You received this email because you joined the VettID waitlist.`,
+              Charset: 'UTF-8',
+            },
+          },
+        },
+      })
+    );
+  } catch (error) {
+    console.error('Failed to send welcome email:', error);
+    // Don't fail the request if welcome email fails
+  }
+}
+
 async function sendAdminNotifications(firstName: string, lastName: string, email: string): Promise<void> {
   try {
     // Query admin emails subscribed to waitlist notifications
@@ -232,6 +310,9 @@ export const handler = async (
 
   // Send admin notifications
   await sendAdminNotifications(first, last, email);
+
+  // Send welcome email to user (may fail in SES sandbox mode if recipient not verified)
+  await sendWelcomeEmail(first, email);
 
   // If email consent is given, trigger SES email verification
   let sesVerificationSent = false;
