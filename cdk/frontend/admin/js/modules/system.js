@@ -502,11 +502,16 @@ export async function loadVaultMetrics() {
     const metricsGrid = document.createElement('div');
     metricsGrid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:16px;';
 
+    // Extract metrics from nested response structure
+    const keyMetrics = data.key_metrics || {};
+    const outcomes = data.enrollment_outcomes_30d || {};
+    const statusDist = data.vault_status_distribution || {};
+
     const metrics = [
-      { label: 'Total Vaults', value: data.total_vaults || 0 },
-      { label: 'Active Vaults', value: data.active_vaults || 0 },
-      { label: 'Enrollments Today', value: data.enrollments_today || 0 },
-      { label: 'Auth Success Rate', value: (data.auth_success_rate || 0) + '%' }
+      { label: 'Total Enrolled', value: keyMetrics.total_enrolled || 0 },
+      { label: 'Active Vaults', value: keyMetrics.active_vaults || statusDist.active || 0 },
+      { label: 'Pending Enrollments', value: keyMetrics.pending_enrollments || outcomes.pending || 0 },
+      { label: 'Enrollment Rate', value: (keyMetrics.enrollment_rate_percent || 0) + '%' }
     ];
 
     metrics.forEach(metric => {

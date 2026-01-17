@@ -37,6 +37,7 @@ export class BusinessGovernanceStack extends cdk.Stack {
   public readonly getCurrentMembershipTerms!: lambdaNode.NodejsFunction;
   public readonly listMembershipTerms!: lambdaNode.NodejsFunction;
   public readonly getTermsDownloadUrl!: lambdaNode.NodejsFunction;
+  public readonly regenerateTermsPdf!: lambdaNode.NodejsFunction;
 
   // Proposal Management
   public readonly createProposal!: lambdaNode.NodejsFunction;
@@ -174,6 +175,35 @@ export class BusinessGovernanceStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(30),
     });
 
+    const regenerateTermsPdf = new lambdaNode.NodejsFunction(this, 'RegenerateTermsPdfFn', {
+      entry: 'lambda/handlers/admin/regenerateTermsPdf.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+        TERMS_BUCKET: termsBucket.bucketName,
+      },
+      timeout: cdk.Duration.seconds(60),
+      bundling: {
+        nodeModules: ['pdfkit'],
+        commandHooks: {
+          beforeBundling(inputDir: string, outputDir: string): string[] {
+            return [];
+          },
+          afterBundling(inputDir: string, outputDir: string): string[] {
+            return [
+              `mkdir -p ${outputDir}/assets`,
+              `cp ${inputDir}/lambda/assets/logo.jpg ${outputDir}/assets/logo.jpg`,
+              `mkdir -p ${outputDir}/data`,
+              `cp -r ${inputDir}/node_modules/pdfkit/js/data/* ${outputDir}/data/`
+            ];
+          },
+          beforeInstall() {
+            return [];
+          },
+        },
+      },
+    });
+
     // Grant permissions
     tables.membershipTerms.grantReadWriteData(listMembershipRequests);
     tables.registrations.grantReadData(listMembershipRequests);
@@ -183,14 +213,17 @@ export class BusinessGovernanceStack extends cdk.Stack {
     tables.membershipTerms.grantReadData(getCurrentMembershipTerms);
     tables.membershipTerms.grantReadData(listMembershipTerms);
     tables.membershipTerms.grantReadData(getTermsDownloadUrl);
+    tables.membershipTerms.grantReadWriteData(regenerateTermsPdf);
     tables.audit.grantReadWriteData(approveMembership);
     tables.audit.grantReadWriteData(denyMembership);
     tables.audit.grantReadWriteData(createMembershipTerms);
+    tables.audit.grantReadWriteData(regenerateTermsPdf);
 
     // S3 permissions for terms bucket
     termsBucket.grantReadWrite(createMembershipTerms);
     termsBucket.grantRead(getCurrentMembershipTerms);
     termsBucket.grantRead(getTermsDownloadUrl);
+    termsBucket.grantReadWrite(regenerateTermsPdf);
 
     this.listMembershipRequests = listMembershipRequests;
     this.approveMembership = approveMembership;
@@ -199,6 +232,7 @@ export class BusinessGovernanceStack extends cdk.Stack {
     this.getCurrentMembershipTerms = getCurrentMembershipTerms;
     this.listMembershipTerms = listMembershipTerms;
     this.getTermsDownloadUrl = getTermsDownloadUrl;
+    this.regenerateTermsPdf = regenerateTermsPdf;
 
     // ===== PROPOSAL MANAGEMENT =====
 
@@ -519,6 +553,7 @@ export class BusinessGovernanceStack extends cdk.Stack {
     this.route('GetCurrentMembershipTerms', httpApi, '/admin/membership-terms/current', apigw.HttpMethod.GET, this.getCurrentMembershipTerms, adminAuthorizer);
     this.route('ListMembershipTerms', httpApi, '/admin/membership-terms', apigw.HttpMethod.GET, this.listMembershipTerms, adminAuthorizer);
     this.route('GetTermsDownloadUrl', httpApi, '/admin/membership-terms/{version_id}/download', apigw.HttpMethod.GET, this.getTermsDownloadUrl, adminAuthorizer);
+    this.route('RegenerateTermsPdf', httpApi, '/admin/membership-terms/{version_id}/regenerate-pdf', apigw.HttpMethod.POST, this.regenerateTermsPdf, adminAuthorizer);
 
     // Proposal Management
     this.route('CreateProposal', httpApi, '/admin/proposals', apigw.HttpMethod.POST, this.createProposal, adminAuthorizer);

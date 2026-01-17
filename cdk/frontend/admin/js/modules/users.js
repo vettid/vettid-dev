@@ -859,20 +859,42 @@ export function renderUsersCards(users, isInvited = false) {
 // ============================================
 
 let selectedEmailRecipients = [];
+let emailMode = 'group'; // 'group' for Communications tab, 'individual' for User Management
 
-export function openComposeEmailModal() {
+export function openComposeEmailModal(useSelectedUsers = false) {
   const modal = document.getElementById('composeEmailModal');
-  const selectedUsers = document.querySelectorAll('input[name="user-select"]:checked');
-  selectedEmailRecipients = Array.from(selectedUsers).map(cb => cb.value);
+  const recipientTypeSelect = document.getElementById('emailRecipientType');
 
-  if (selectedEmailRecipients.length === 0) {
-    showToast('Please select at least one user', 'warning');
-    return;
-  }
+  if (useSelectedUsers) {
+    // Called from User Management with pre-selected users
+    emailMode = 'individual';
+    const selectedUsers = document.querySelectorAll('input[name="user-select"]:checked');
+    selectedEmailRecipients = Array.from(selectedUsers).map(cb => cb.value);
 
-  const recipientCount = document.getElementById('emailRecipientCount');
-  if (recipientCount) {
-    recipientCount.textContent = selectedEmailRecipients.length + ' recipient(s)';
+    if (selectedEmailRecipients.length === 0) {
+      showToast('Please select at least one user', 'warning');
+      return;
+    }
+
+    // Hide recipient type selector when using individual selection
+    if (recipientTypeSelect) {
+      recipientTypeSelect.parentElement.style.display = 'none';
+    }
+
+    const recipientCount = document.getElementById('emailRecipientCount');
+    if (recipientCount) {
+      recipientCount.textContent = selectedEmailRecipients.length + ' recipient(s)';
+    }
+  } else {
+    // Called from Communications tab - use group selection
+    emailMode = 'group';
+    selectedEmailRecipients = [];
+
+    // Show recipient type selector
+    if (recipientTypeSelect) {
+      recipientTypeSelect.parentElement.style.display = 'block';
+      recipientTypeSelect.value = '';
+    }
   }
 
   if (modal) modal.classList.add('active');
@@ -884,27 +906,53 @@ export function closeComposeEmailModal() {
 
   const subject = document.getElementById('emailSubject');
   const body = document.getElementById('emailBody');
+  const recipientType = document.getElementById('emailRecipientType');
+
   if (subject) subject.value = '';
   if (body) body.value = '';
+  if (recipientType) recipientType.value = '';
+
+  // Reset state
+  emailMode = 'group';
+  selectedEmailRecipients = [];
 }
 
 export async function sendEmail() {
-  const subject = document.getElementById('emailSubject')?.value;
-  const body = document.getElementById('emailBody')?.value;
+  const subject = document.getElementById('emailSubject')?.value?.trim();
+  const body = document.getElementById('emailBody')?.value?.trim();
+  const recipientType = document.getElementById('emailRecipientType')?.value;
 
   if (!subject || !body) {
     showToast('Please fill in subject and body', 'warning');
     return;
   }
 
+  // Validate recipients based on mode
+  if (emailMode === 'group') {
+    if (!recipientType) {
+      showToast('Please select a recipient group', 'warning');
+      return;
+    }
+  } else if (selectedEmailRecipients.length === 0) {
+    showToast('No recipients selected', 'warning');
+    return;
+  }
+
   try {
+    const payload = {
+      subject,
+      body
+    };
+
+    if (emailMode === 'group') {
+      payload.recipient_group = recipientType;
+    } else {
+      payload.recipients = selectedEmailRecipients;
+    }
+
     await api('/admin/send-bulk-email', {
       method: 'POST',
-      body: JSON.stringify({
-        recipients: selectedEmailRecipients,
-        subject,
-        body
-      })
+      body: JSON.stringify(payload)
     });
     showToast('Email sent successfully', 'success');
     closeComposeEmailModal();

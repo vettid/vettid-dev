@@ -1,8 +1,8 @@
 (function() {
   'use strict';
 
-  // Bitcoin address - replace 'PLACEHOLDER' with actual address
-  var BTC_ADDRESS = 'PLACEHOLDER';
+  // Bitcoin address
+  var BTC_ADDRESS = 'bc1ql57f29nxg7wyqdsggx4904q92akcgftvqh6tqu';
 
   var placeholder = document.getElementById('placeholder');
   var qrContainer = document.getElementById('qr-container');

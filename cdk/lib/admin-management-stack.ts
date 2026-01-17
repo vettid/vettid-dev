@@ -383,9 +383,14 @@ export class AdminManagementStack extends cdk.Stack {
     // Pending admins table for invite flow
     tables.pendingAdmins.grantReadWriteData(inviteAdmin);
 
-    // SES permissions for admin invitations
+    // SES permissions for admin invitations (including email verification)
     inviteAdmin.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['ses:SendEmail', 'ses:SendTemplatedEmail'],
+      actions: [
+        'ses:SendEmail',
+        'ses:SendTemplatedEmail',
+        'ses:VerifyEmailIdentity',
+        'ses:GetIdentityVerificationAttributes'
+      ],
       resources: ['*'],
     }));
 

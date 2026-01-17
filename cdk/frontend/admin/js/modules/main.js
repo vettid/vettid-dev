@@ -87,12 +87,14 @@ import {
   activatePendingAdmin,
   bulkDisableAdmins,
   bulkEnableAdmins,
-  setupAdminsEventHandlers
+  setupAdminsEventHandlers,
+  setShowConfirm
 } from './admins.js';
 
 import {
   loadCurrentTerms,
   viewTerms,
+  regenerateTermsPdf,
   createMembershipTerms,
   openCreateTermsModal,
   closeCreateTermsModal,
@@ -153,6 +155,16 @@ import {
   setServiceSearchTerm,
   setupServicesEventHandlers
 } from './services.js';
+
+import {
+  loadHelpRequests,
+  renderHelpRequests,
+  openHelpDetailModal,
+  closeHelpDetailModal,
+  saveHelpRequest,
+  setHelpQuickFilter,
+  setupHelpRequestsEventHandlers
+} from './help-requests.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Modal Helpers
@@ -254,6 +266,12 @@ window.toggleServiceStatus = toggleServiceStatus;
 window.openDeleteServiceModal = openDeleteServiceModal;
 window.closeDeleteServiceModal = closeDeleteServiceModal;
 window.deleteService = deleteService;
+
+// Help Requests
+window.loadHelpRequests = loadHelpRequests;
+window.openHelpDetailModal = openHelpDetailModal;
+window.closeHelpDetailModal = closeHelpDetailModal;
+window.saveHelpRequest = saveHelpRequest;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Authentication & Initialization
@@ -599,6 +617,9 @@ function loadTabData(target) {
     case 'waitlist':
       loadWaitlist();
       break;
+    case 'help-requests':
+      loadHelpRequests();
+      break;
   }
 }
 
@@ -661,6 +682,10 @@ function setupEventDelegation() {
         const versionId = target.dataset.versionId;
         if (versionId) viewTerms(versionId, target);
       },
+      'regenerate-terms-pdf': () => {
+        const versionId = target.dataset.versionId;
+        if (versionId) regenerateTermsPdf(versionId, target);
+      },
 
       // Proposals
       'closeCreateProposalModal': closeCreateProposalModal,
@@ -689,6 +714,13 @@ function setupEventDelegation() {
       },
       'toggle-service-dropdown': () => {
         toggleServiceDropdown(target, e);
+      },
+      'toggle-subscription-type': () => {
+        const typeId = target.dataset.typeId;
+        // Handle boolean, string 'true'/'TRUE', or any truthy value
+        const isEnabledStr = String(target.dataset.isEnabled).toLowerCase();
+        const isEnabled = isEnabledStr === 'true';
+        if (typeId) toggleSubscriptionType(typeId, isEnabled);
       },
 
       // CSV Import
@@ -815,6 +847,46 @@ function setupIdleTracking() {
   });
 }
 
+function setupCommunicationsTabSwitching() {
+  // Communications sub-tab switching (Email Broadcast / Vault Broadcast / History)
+  document.querySelectorAll('.comm-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      // Update active tab styling
+      document.querySelectorAll('.comm-tab').forEach(t => {
+        t.classList.remove('active');
+        t.style.background = '#333';
+      });
+      tab.classList.add('active');
+      tab.style.background = 'linear-gradient(135deg,#3b82f6 0%,#2563eb 100%)';
+
+      // Show correct panel
+      const targetPanel = tab.getAttribute('data-comm-tab');
+      document.querySelectorAll('.comm-panel').forEach(p => p.style.display = 'none');
+      const panel = document.getElementById(`${targetPanel}-panel`);
+      if (panel) panel.style.display = 'block';
+
+      // Load data for history panel if needed
+      if (targetPanel === 'broadcast-history' && typeof loadBroadcastHistory === 'function') {
+        loadBroadcastHistory();
+      }
+    });
+  });
+
+  // Broadcast type description updates
+  const broadcastType = document.getElementById('broadcastType');
+  if (broadcastType) {
+    const descriptions = {
+      system_announcement: 'Maintenance notices, new features, terms updates',
+      security_alert: 'Security incidents, password resets, suspicious activity',
+      admin_message: 'Custom messages from administrators'
+    };
+    broadcastType.onchange = () => {
+      const descEl = document.getElementById('broadcastTypeDesc');
+      if (descEl) descEl.textContent = descriptions[broadcastType.value] || '';
+    };
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // DOMContentLoaded - Initialize Everything
 // ─────────────────────────────────────────────────────────────────────────────
@@ -838,6 +910,9 @@ document.addEventListener('DOMContentLoaded', () => {
   // Setup event delegation
   setupEventDelegation();
 
+  // Wire up showConfirm for modular admin code (uses openGenericConfirmModal from core.js)
+  setShowConfirm(openGenericConfirmModal);
+
   // Setup module-specific event handlers
   setupUserEventHandlers();
   setupInviteEventHandlers();
@@ -847,6 +922,8 @@ document.addEventListener('DOMContentLoaded', () => {
   setupServicesEventHandlers();
   setupHandlersEventHandlers();
   setupWaitlistEventHandlers();
+  setupHelpRequestsEventHandlers();
+  setupCommunicationsTabSwitching();
 
   // Setup refresh buttons
   setupRefreshButtons();

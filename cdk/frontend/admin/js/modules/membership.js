@@ -174,16 +174,25 @@ function createCurrentTermsCard(current, createdDate) {
 
   infoBox.append(createdRow, byRow);
 
-  // View button
+  // Buttons
   const btnWrapper = document.createElement('div');
-  btnWrapper.style.marginTop = 'auto';
+  btnWrapper.style.cssText = 'margin-top:auto;display:flex;flex-direction:column;gap:8px;';
+
   const viewBtn = document.createElement('button');
   viewBtn.className = 'btn';
   viewBtn.style.cssText = 'display:block;width:100%;box-sizing:border-box;text-align:center;background:linear-gradient(135deg,#ffd93d 0%,#ffc125 100%);color:#000;padding:8px 12px;font-size:0.8rem;font-weight:600;border-radius:12px;border:none;cursor:pointer;';
-  viewBtn.textContent = 'View Terms';
+  viewBtn.textContent = 'View Terms PDF';
   viewBtn.dataset.action = 'view-terms';
   viewBtn.dataset.versionId = current.version_id;
-  btnWrapper.appendChild(viewBtn);
+
+  const regenerateBtn = document.createElement('button');
+  regenerateBtn.className = 'btn';
+  regenerateBtn.style.cssText = 'display:block;width:100%;box-sizing:border-box;text-align:center;background:linear-gradient(135deg,#6b7280 0%,#4b5563 100%);color:#fff;padding:8px 12px;font-size:0.8rem;font-weight:600;border-radius:12px;border:none;cursor:pointer;';
+  regenerateBtn.textContent = 'Regenerate PDF';
+  regenerateBtn.dataset.action = 'regenerate-terms-pdf';
+  regenerateBtn.dataset.versionId = current.version_id;
+
+  btnWrapper.append(viewBtn, regenerateBtn);
 
   card.append(badgeDiv, title, infoBox, btnWrapper);
   return card;
@@ -227,6 +236,34 @@ export async function viewTerms(versionId, btn) {
     window.open(data.download_url, '_blank');
   } catch (e) {
     showToast('Failed to load terms: ' + (e.message || e), 'error');
+  } finally {
+    btn.textContent = originalText;
+    btn.disabled = false;
+  }
+}
+
+export async function regenerateTermsPdf(versionId, btn) {
+  const originalText = btn.textContent;
+  btn.textContent = 'Regenerating...';
+  btn.disabled = true;
+
+  try {
+    await refresh();
+    const res = await fetch(config.apiUrl + '/admin/membership-terms/' + encodeURIComponent(versionId) + '/regenerate-pdf', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + idToken(),
+        'Content-Type': 'application/json'
+      }
+    });
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.message || 'Failed to regenerate PDF');
+    }
+    const data = await res.json();
+    showToast('PDF regenerated successfully! The download will now show the updated terms.', 'success');
+  } catch (e) {
+    showToast('Failed to regenerate PDF: ' + (e.message || e), 'error');
   } finally {
     btn.textContent = originalText;
     btn.disabled = false;
@@ -292,7 +329,7 @@ export function closeConfirmTermsModal() {
 // Subscription Types State
 // ============================================
 
-let subscriptionTypesFilter = 'all';
+let subscriptionTypesFilter = 'enabled';
 
 // ============================================
 // Subscription Types Functions
@@ -333,7 +370,8 @@ export function renderSubscriptionTypes() {
   const types = store.subscriptionTypes || [];
   let filtered = types;
   if (subscriptionTypesFilter === 'enabled') {
-    filtered = types.filter(t => t.is_enabled);
+    // Handle both boolean and string 'true'/'false' values
+    filtered = types.filter(t => t.is_enabled === true || t.is_enabled === 'true');
   }
 
   container.replaceChildren();
@@ -359,6 +397,9 @@ export function renderSubscriptionTypes() {
 }
 
 function createSubscriptionTypeCard(type) {
+  // Normalize is_enabled to handle both boolean and string values
+  const typeIsEnabled = type.is_enabled === true || type.is_enabled === 'true';
+
   const card = document.createElement('div');
   card.style.cssText = 'background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:16px;';
 
@@ -374,7 +415,7 @@ function createSubscriptionTypeCard(type) {
 
   const statusBadge = document.createElement('span');
   statusBadge.style.cssText = 'display:inline-block;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;';
-  if (type.is_enabled) {
+  if (typeIsEnabled) {
     statusBadge.style.background = 'linear-gradient(135deg,#10b981 0%,#059669 100%)';
     statusBadge.style.color = '#fff';
     statusBadge.textContent = 'Enabled';
@@ -401,7 +442,10 @@ function createSubscriptionTypeCard(type) {
   termLabel.textContent = 'Term';
   const termValue = document.createElement('div');
   termValue.style.fontWeight = '600';
-  termValue.textContent = `${type.term_value} ${type.term_unit}${type.term_value > 1 ? 's' : ''}`;
+  // Handle pluralization - don't add 's' if unit already ends with 's'
+  const unit = type.term_unit || 'month';
+  const pluralUnit = type.term_value > 1 && !unit.endsWith('s') ? unit + 's' : unit;
+  termValue.textContent = `${type.term_value} ${pluralUnit}`;
   termDiv.append(termLabel, termValue);
 
   // Price
@@ -420,13 +464,13 @@ function createSubscriptionTypeCard(type) {
   const toggleBtn = document.createElement('button');
   toggleBtn.className = 'btn';
   toggleBtn.style.cssText = 'width:100%;';
-  toggleBtn.textContent = type.is_enabled ? 'Disable' : 'Enable';
-  toggleBtn.style.background = type.is_enabled
+  toggleBtn.textContent = typeIsEnabled ? 'Disable' : 'Enable';
+  toggleBtn.style.background = typeIsEnabled
     ? 'linear-gradient(135deg,#ef4444 0%,#dc2626 100%)'
     : 'linear-gradient(135deg,#10b981 0%,#059669 100%)';
   toggleBtn.dataset.action = 'toggle-subscription-type';
-  toggleBtn.dataset.typeId = type.type_id;
-  toggleBtn.dataset.isEnabled = type.is_enabled;
+  toggleBtn.dataset.typeId = type.subscription_type_id;
+  toggleBtn.dataset.isEnabled = typeIsEnabled ? 'true' : 'false';
 
   card.append(header, desc, details, toggleBtn);
   return card;
@@ -497,13 +541,23 @@ export async function createSubscriptionType() {
 
 export function filterSubscriptionTypes(filter) {
   subscriptionTypesFilter = filter;
-  document.querySelectorAll('#subscription-types .btn').forEach(btn => {
-    if (btn.id && (btn.id === 'filterEnabledTypes' || btn.id === 'filterAllTypes')) {
-      btn.classList.remove('filter-active');
+  // Update button styles - remove active from both, add to selected
+  const enabledBtn = document.getElementById('filterEnabledTypes');
+  const allBtn = document.getElementById('filterAllTypes');
+
+  if (enabledBtn && allBtn) {
+    if (filter === 'enabled') {
+      enabledBtn.classList.add('active');
+      enabledBtn.style.background = 'linear-gradient(135deg,#10b981 0%,#059669 100%)';
+      allBtn.classList.remove('active');
+      allBtn.style.background = 'linear-gradient(135deg,#6b7280 0%,#4b5563 100%)';
+    } else {
+      allBtn.classList.add('active');
+      allBtn.style.background = 'linear-gradient(135deg,#3b82f6 0%,#2563eb 100%)';
+      enabledBtn.classList.remove('active');
+      enabledBtn.style.background = 'linear-gradient(135deg,#6b7280 0%,#4b5563 100%)';
     }
-  });
-  const activeBtn = document.getElementById(filter === 'enabled' ? 'filterEnabledTypes' : 'filterAllTypes');
-  if (activeBtn) activeBtn.classList.add('filter-active');
+  }
   renderSubscriptionTypes();
 }
 

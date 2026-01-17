@@ -287,6 +287,68 @@
       font-size: 0.95rem;
     }
 
+    /* Alternative Donations Section */
+    .alt-donation-section {
+      margin-top: 32px;
+      padding: 24px;
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      text-align: center;
+    }
+
+    .alt-donation-section h2 {
+      color: var(--accent);
+      font-size: 1.1rem;
+      margin-bottom: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .alt-donation-section p {
+      color: var(--text-muted);
+      font-size: 0.95rem;
+      margin-bottom: 16px;
+    }
+
+    .email-contact {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      padding: 16px;
+      background: var(--bg-elevated);
+      border: 1px solid rgba(255,193,37,0.2);
+      border-radius: 8px;
+      margin-bottom: 12px;
+    }
+
+    .email-icon {
+      width: 24px;
+      height: 24px;
+      color: var(--accent);
+      flex-shrink: 0;
+    }
+
+    .email-contact a {
+      color: var(--accent);
+      text-decoration: none;
+      font-size: 1.1rem;
+      font-weight: 600;
+      transition: color var(--duration-normal);
+    }
+
+    .email-contact a:hover {
+      color: var(--accent-hover);
+      text-decoration: underline;
+    }
+
+    .email-note {
+      color: var(--text-subtle) !important;
+      font-size: 0.85rem !important;
+      margin-bottom: 0 !important;
+    }
+
     /* Disclaimer */
     .disclaimer {
       margin-top: 32px;
@@ -401,6 +463,20 @@
       <div id="placeholder" class="placeholder-msg">
         Bitcoin address coming soon. Check back shortly!
       </div>
+    </div>
+
+    <!-- Alternative Donations Section -->
+    <div class="alt-donation-section">
+      <h2>Other Ways to Donate</h2>
+      <p>Want to donate via bank transfer, check, other cryptocurrency, or alternative methods? We're happy to work with you.</p>
+      <div class="email-contact">
+        <svg class="email-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="2" y="4" width="20" height="16" rx="2"/>
+          <path d="M22 6L12 13 2 6"/>
+        </svg>
+        <a href="mailto:donations@vettid.org">donations@vettid.org</a>
+      </div>
+      <p class="email-note">Email us and we'll coordinate the donation method that works best for you.</p>
     </div>
 
     <div class="disclaimer">

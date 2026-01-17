@@ -60,20 +60,25 @@ function signedIn() { return !!idToken(); }
 // This is more secure than storing refresh token in localStorage
 async function refreshTokens() {
   try {
+    console.log('[AUTH] Attempting token refresh via', `${API_URL}/auth/session`);
     const response = await fetch(`${API_URL}/auth/session`, {
       method: 'GET',
       credentials: 'include' // Send httpOnly cookie
     });
 
+    console.log('[AUTH] Session response status:', response.status);
+
     if (!response.ok) {
-      console.error('[AUTH] Session refresh failed:', response.status);
+      const errorText = await response.text();
+      console.error('[AUTH] Session refresh failed:', response.status, errorText);
       return false;
     }
 
     const data = await response.json();
+    console.log('[AUTH] Session response data:', { authenticated: data.authenticated, hasIdToken: !!data.id_token, hasAccessToken: !!data.access_token });
 
     if (!data.authenticated || !data.id_token || !data.access_token) {
-      console.log('[AUTH] Not authenticated or missing tokens');
+      console.log('[AUTH] Not authenticated or missing tokens:', data.message || 'No message');
       return false;
     }
 
@@ -84,6 +89,7 @@ async function refreshTokens() {
       expires_at: Date.now() + (data.expires_in * 1000)
     });
 
+    console.log('[AUTH] Token refresh successful');
     return true;
   } catch (error) {
     console.error('[AUTH] Session refresh error:', error);
@@ -2595,7 +2601,6 @@ async function checkStepCompletion() {
     membershipPending: false,
     hasSubscription: false,
     vaultDeployed: false,
-    hasVoted: false,
     backupsConfigured: false
   };
 
@@ -2620,58 +2625,23 @@ async function checkStepCompletion() {
       steps.hasSubscription = true;
     }
 
-    // Fetch vault status and voting history in parallel (these aren't cached yet)
-    const [vaultResult, votesResult] = await Promise.allSettled([
-      // Vault status - use cached if available
-      vaultStatusData !== null ? Promise.resolve(vaultStatusData) : (async () => {
-        try {
-          const vaultRes = await fetch(API_URL + '/vault/status', {
-            method: 'GET',
-            headers: { 'Authorization': 'Bearer ' + token }
-          });
-          if (vaultRes.ok) {
-            const data = await vaultRes.json();
-            vaultStatusData = data; // Cache it
-            return data;
-          }
-          return null;
-        } catch (e) {
-          console.error('Error checking vault status:', e);
-          return null;
+    // Fetch vault status (use cached if available)
+    if (vaultStatusData !== null) {
+      steps.vaultDeployed = vaultStatusData.status === 'active';
+    } else {
+      try {
+        const vaultRes = await fetch(API_URL + '/vault/status', {
+          method: 'GET',
+          headers: { 'Authorization': 'Bearer ' + token }
+        });
+        if (vaultRes.ok) {
+          const data = await vaultRes.json();
+          vaultStatusData = data; // Cache it
+          steps.vaultDeployed = data.status === 'active';
         }
-      })(),
-      // Voting history - use cached if available
-      votingHistoryData !== null ? Promise.resolve(votingHistoryData) : (async () => {
-        try {
-          const votesRes = await fetch(API_URL + '/votes/history', {
-            method: 'GET',
-            headers: { 'Authorization': 'Bearer ' + token }
-          });
-          if (votesRes.status === 400 || votesRes.status === 404) {
-            const data = { votes: [] };
-            votingHistoryData = data; // Cache it
-            return data;
-          } else if (votesRes.ok) {
-            const data = await votesRes.json();
-            votingHistoryData = data; // Cache it
-            return data;
-          }
-          return null;
-        } catch (e) {
-          console.error('Error checking voting history:', e);
-          return null;
-        }
-      })()
-    ]);
-
-    // Process vault result
-    if (vaultResult.status === 'fulfilled' && vaultResult.value) {
-      steps.vaultDeployed = vaultResult.value.status === 'active';
-    }
-
-    // Process votes result
-    if (votesResult.status === 'fulfilled' && votesResult.value) {
-      steps.hasVoted = votesResult.value.votes && votesResult.value.votes.length > 0;
+      } catch (e) {
+        console.error('Error checking vault status:', e);
+      }
     }
   }
 
@@ -2684,7 +2654,6 @@ async function populateGettingStartedSteps() {
   const groups = payload['cognito:groups'] || [];
   const isMember = groups.includes('member');
   const hasSubscription = subscriptionStatus && subscriptionStatus.is_active;
-  const hasPaidSubscription = isPaidSubscriber();
 
   const stepsData = [
     {
@@ -2732,16 +2701,6 @@ async function populateGettingStartedSteps() {
     },
     {
       number: 5,
-      title: 'Vote on Proposals',
-      description: 'Review open proposals related to the operation of VettID and cast your vote as a paying member.',
-      completed: steps.hasVoted,
-      accessible: hasPaidSubscription,
-      tab: 'voting',
-      cardId: null,
-      note: hasPaidSubscription ? null : 'Upgrade to a paid subscription to unlock'
-    },
-    {
-      number: 6,
       title: 'Enable Credential Backups',
       description: 'Securely backup your vault credentials for recovery if your device is lost.',
       completed: steps.backupsConfigured,
@@ -5644,12 +5603,34 @@ document.addEventListener('DOMContentLoaded', () => {
     // populateGettingStartedSteps now uses cached data - no additional API calls needed
     await populateGettingStartedSteps();
 
-    // Show Getting Started tab unless user has clicked "Got it" button
-    // This is independent of membership status - getting started has multiple steps
-    const complete = await isGettingStartedComplete();
-    if (complete) {
+    // Determine default tab based on step completion and user preference
+    // Logic:
+    // 1. If all essential steps (PIN, membership, subscription, vault) complete -> vault
+    // 2. Else if user clicked "Got It" AND is at least a member -> vault (respect their choice)
+    // 3. Otherwise -> getting started
+    const steps = await checkStepCompletion();
+    const { payload } = parseJwt(idToken());
+    const groups = payload['cognito:groups'] || [];
+    const isMember = groups.includes('member');
+
+    const essentialStepsComplete = steps.pinEnabled && steps.isMember && steps.hasSubscription && steps.vaultDeployed;
+    const preferenceComplete = await isGettingStartedComplete();
+
+    if (essentialStepsComplete) {
+      // All essential steps done - auto-complete and go to vault
+      if (!preferenceComplete) {
+        await markGettingStartedComplete();
+      }
+      switchToTab('deploy-vault');
+    } else if (preferenceComplete && isMember) {
+      // User clicked "Got It" AND is at least a member - respect their choice
       switchToTab('deploy-vault');
     } else {
+      // Show getting started - either never clicked "Got It" or preference set prematurely
+      if (preferenceComplete && !isMember) {
+        // Reset preference if it was set but user hasn't even become a member yet
+        await clearGettingStartedComplete();
+      }
       switchToTab('getting-started');
     }
   };

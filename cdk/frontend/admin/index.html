@@ -501,7 +501,7 @@
             <button class="tab tab-child" data-tab="subscriptions" data-sub-tab="subscription-analytics">Subscription Analytics</button>
           </div>
           <button class="tab" data-tab="invites">Invites</button>
-          <button class="tab" data-tab="help-requests">Help Requests</button>
+          <button class="tab" data-tab="help-requests">Help Offers</button>
           <button class="tab tab-parent" id="voteManagementParent" data-tab="vote-management">
             <span class="tab-text">Vote Management</span>
             <span class="tab-chevron">▸</span>
@@ -776,10 +776,10 @@
         </div>
       </div>
 
-      <!-- Help Requests Tab -->
+      <!-- Help Offers Tab -->
       <div id="help-requests" class="tab-content card">
-        <h3 style="margin-top:0;">Volunteer Help Requests</h3>
-        <p class="muted" style="margin-bottom:20px;">Manage incoming volunteer help requests from people who want to contribute to VettID.</p>
+        <h3 style="margin-top:0;">Volunteer Help Offers</h3>
+        <p class="muted" style="margin-bottom:20px;">Manage incoming volunteer help offers from people who want to contribute to VettID.</p>
 
         <!-- Quick Filter Badges -->
         <div style="display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap;">
@@ -806,11 +806,20 @@
           </label>
         </div>
 
-        <!-- Help Requests Table (desktop) -->
+        <!-- Bulk Action Bar -->
+        <div id="helpBulkBar" class="bulk-action-bar" style="display:none;background:var(--bg-tertiary);padding:12px 16px;border-radius:8px;margin-bottom:16px;align-items:center;gap:12px;flex-wrap:wrap;">
+          <span id="helpBulkCount" style="font-weight:600;color:var(--accent);"></span>
+          <button id="helpBulkContacted" class="btn" style="padding:6px 14px;font-size:0.85rem;background:linear-gradient(135deg,#f59e0b 0%,#d97706 100%);">Mark Contacted</button>
+          <button id="helpBulkInProgress" class="btn" style="padding:6px 14px;font-size:0.85rem;background:linear-gradient(135deg,#10b981 0%,#059669 100%);">Mark In Progress</button>
+          <button id="helpBulkArchive" class="btn" style="padding:6px 14px;font-size:0.85rem;background:linear-gradient(135deg,#6b7280 0%,#4b5563 100%);">Archive</button>
+        </div>
+
+        <!-- Help Offers Table (desktop) -->
         <div id="helpRequestsTableContainer" class="list-view">
           <table id="helpRequestsTable">
             <thead>
               <tr>
+                <th style="width:40px;"><input type="checkbox" id="selectAllHelp" title="Select all" /></th>
                 <th>Name</th>
                 <th>Email</th>
                 <th>Phone</th>
@@ -824,7 +833,7 @@
           </table>
         </div>
 
-        <!-- Help Requests Cards (mobile) -->
+        <!-- Help Offers Cards (mobile) -->
         <div id="helpRequestsCardContainer" class="card-grid"></div>
 
         <!-- Pagination -->
@@ -836,11 +845,11 @@
         </div>
       </div>
 
-      <!-- Help Request Detail Modal -->
+      <!-- Help Offer Detail Modal -->
       <div id="helpDetailModal" class="modal-overlay">
         <div class="modal" style="max-width:600px;">
           <div class="modal-header">
-            <h3 class="modal-title">Help Request Details</h3>
+            <h3 class="modal-title">Help Offer Details</h3>
             <button class="modal-close" id="closeHelpDetailModal">&times;</button>
           </div>
           <div class="modal-body">
@@ -867,6 +876,10 @@
             <div style="margin-bottom:16px;">
               <label style="display:block;margin-bottom:4px;font-weight:600;color:var(--accent);">Message</label>
               <div id="helpDetailMessage" style="background:var(--bg-input);padding:12px;border-radius:6px;white-space:pre-wrap;max-height:200px;overflow-y:auto;"></div>
+            </div>
+            <div style="margin-bottom:16px;">
+              <label style="display:block;margin-bottom:4px;font-weight:600;color:var(--accent);">Submitted</label>
+              <p id="helpDetailSubmitted" style="margin:0;color:var(--gray);"></p>
             </div>
             <div style="margin-bottom:16px;">
               <label style="display:block;margin-bottom:4px;font-weight:600;color:var(--accent);">Status</label>
@@ -1002,6 +1015,18 @@
             </div>
 
             <button id="addVoteNotification" class="btn" style="background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);padding:8px 16px;font-size:0.9rem;">Add Admin</button>
+          </div>
+
+          <!-- Help Offer Notifications -->
+          <div style="padding:20px;background:var(--bg-input);border-radius:8px;border:1px solid var(--border);margin-bottom:20px;">
+            <h4 style="margin:0 0 8px 0;color:var(--accent);font-size:1.1rem;">Help Offer Notifications</h4>
+            <p style="margin:0 0 16px 0;color:var(--gray);font-size:0.9rem;">Notified when someone submits a volunteer help offer</p>
+
+            <div id="help_offerNotificationsList" style="margin-bottom:12px;">
+              <!-- Assigned admins will be listed here -->
+            </div>
+
+            <button id="addHelpOfferNotification" class="btn" style="background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);padding:8px 16px;font-size:0.9rem;">Add Admin</button>
           </div>
 
           <!-- System Health Notifications -->

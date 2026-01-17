@@ -920,18 +920,50 @@ export function openCreateProposalModal() {
     const textEl = document.getElementById('proposalText');
     const typeEl = document.getElementById('proposalType');
     const quorumEl = document.getElementById('proposalQuorumType');
-    const startEl = document.getElementById('proposalStartDate');
-    const endEl = document.getElementById('proposalEndDate');
+    const openEl = document.getElementById('proposalOpenDate');
+    const closeEl = document.getElementById('proposalCloseDate');
 
     if (titleEl) titleEl.value = '';
     if (textEl) textEl.value = '';
     if (typeEl) typeEl.value = 'binding';
     if (quorumEl) quorumEl.value = 'majority';
-    if (startEl) startEl.value = '';
-    if (endEl) endEl.value = '';
+    if (openEl) openEl.value = '';
+    if (closeEl) closeEl.value = '';
+
+    // Initialize flatpickr date pickers if not already done
+    initProposalDatePickers();
 
     modal.classList.add('active');
   }
+}
+
+// Initialize flatpickr for proposal date fields
+let proposalDatePickersInitialized = false;
+function initProposalDatePickers() {
+  if (proposalDatePickersInitialized) return;
+  if (typeof flatpickr === 'undefined') return;
+
+  const baseConfig = {
+    theme: 'dark',
+    disableMobile: true,
+    enableTime: true,
+    dateFormat: 'Y-m-d H:i',
+    time_24hr: true,
+    minDate: 'today'
+  };
+
+  const openEl = document.getElementById('proposalOpenDate');
+  const closeEl = document.getElementById('proposalCloseDate');
+
+  if (openEl && !openEl._flatpickr) {
+    flatpickr(openEl, baseConfig);
+  }
+
+  if (closeEl && !closeEl._flatpickr) {
+    flatpickr(closeEl, baseConfig);
+  }
+
+  proposalDatePickersInitialized = true;
 }
 
 export function setupProposalEventHandlers() {

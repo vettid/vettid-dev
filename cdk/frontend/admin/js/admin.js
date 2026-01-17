@@ -3008,6 +3008,7 @@ document.getElementById('createProposalBtn').onclick=createProposal;
 document.getElementById('addWaitlistNotification').onclick=()=>openAddNotificationModal('waitlist');
 document.getElementById('addUserNotification').onclick=()=>openAddNotificationModal('user');
 document.getElementById('addVoteNotification').onclick=()=>openAddNotificationModal('vote');
+document.getElementById('addHelpOfferNotification').onclick=()=>openAddNotificationModal('help_offer');
 document.getElementById('addSystemHealthNotification').onclick=()=>openAddNotificationModal('system_health');
 
 // Proposal quorum type change handler (CSP-compliant - no inline handlers)
@@ -4662,6 +4663,7 @@ const NOTIFICATION_TYPES = {
   'waitlist': 'Waitlist',
   'user': 'User',
   'vote': 'Vote',
+  'help_offer': 'Help Offer',
   'system_health': 'System Health'
 };
 
@@ -4795,6 +4797,7 @@ function loadAllNotifications() {
   loadNotifications('waitlist');
   loadNotifications('user');
   loadNotifications('vote');
+  loadNotifications('help_offer');
   loadNotifications('system_health');
 }
 
