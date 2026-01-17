@@ -89,7 +89,16 @@
       "artifact_id": "us-east-1:ami-054eac79ae2ec958a",
       "packer_run_uuid": "acbd9d00-0ae3-336b-9630-d5a51c8929e7",
       "custom_data": null
+    },
+    {
+      "name": "nitro-enclave",
+      "builder_type": "amazon-ebs",
+      "build_time": 1768691766,
+      "files": null,
+      "artifact_id": "us-east-1:ami-011f94e5813b63540",
+      "packer_run_uuid": "f92765f7-9d7c-4dab-d4b3-55fac932e817",
+      "custom_data": null
     }
   ],
-  "last_run_uuid": "acbd9d00-0ae3-336b-9630-d5a51c8929e7"
+  "last_run_uuid": "f92765f7-9d7c-4dab-d4b3-55fac932e817"
 }
