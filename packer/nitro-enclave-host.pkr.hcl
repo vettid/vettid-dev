@@ -165,8 +165,13 @@ build {
       "sudo mv /tmp/parent /usr/local/bin/vettid-parent",
       "sudo chmod +x /usr/local/bin/vettid-parent",
 
-      "echo '=== Building enclave Docker image ==='",
+      "echo '=== Fetching vsock shared secret from Secrets Manager ==='",
       "cd /tmp/enclave",
+      "aws secretsmanager get-secret-value --secret-id vettid/vsock-shared-secret --region ${var.aws_region} --query SecretString --output text > vsock-secret.hex",
+      "chmod 400 vsock-secret.hex",
+      "echo 'Vsock secret fetched successfully'",
+
+      "echo '=== Building enclave Docker image ==='",
       "sudo docker build -f Dockerfile.enclave -t vettid-enclave:latest .",
 
       "echo '=== Building Enclave Image File (EIF) ==='",
