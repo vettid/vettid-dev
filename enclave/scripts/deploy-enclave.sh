@@ -571,9 +571,37 @@ aws ssm put-parameter \
 
 log_info "SSM parameter updated: $AMI_SSM_PARAM = $NEW_AMI_ID"
 
-# Get PCR0 value for verification
-PCR0_VALUE=$(aws ssm get-parameter --name "$PCR0_SSM_PARAM" --query 'Parameter.Value' --output text --region "$REGION")
+# Get PCR values for verification and manifest publishing
+PCR0_VALUE=$(aws ssm get-parameter --name "/vettid/enclave/pcr/pcr0" --query 'Parameter.Value' --output text --region "$REGION")
+PCR1_VALUE=$(aws ssm get-parameter --name "/vettid/enclave/pcr/pcr1" --query 'Parameter.Value' --output text --region "$REGION")
+PCR2_VALUE=$(aws ssm get-parameter --name "/vettid/enclave/pcr/pcr2" --query 'Parameter.Value' --output text --region "$REGION")
+VERSION_ID=$(aws ssm get-parameter --name "/vettid/enclave/pcr/current" --query 'Parameter.Value' --output text --region "$REGION" | jq -r '.version')
 log_info "PCR0 value: $PCR0_VALUE"
+
+# Publish PCR values to the public manifest (for mobile apps and PCR verification page)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CDK_DIR="$(dirname "$SCRIPT_DIR")/../cdk"
+
+if [ -f "$CDK_DIR/scripts/publish-pcr-set.ts" ]; then
+    log_info "Publishing PCR values to public manifest..."
+    cd "$CDK_DIR"
+    npx tsx scripts/publish-pcr-set.ts \
+        --pcr0 "$PCR0_VALUE" \
+        --pcr1 "$PCR1_VALUE" \
+        --pcr2 "$PCR2_VALUE" \
+        --id "$VERSION_ID" \
+        --description "Production enclave $VERSION_ID" \
+        --current 2>&1 | while read line; do log_info "  $line"; done
+
+    if [ ${PIPESTATUS[0]} -eq 0 ]; then
+        log_info "PCR manifest published successfully"
+    else
+        log_warn "Failed to publish PCR manifest - PCR page may show old values"
+    fi
+    cd - > /dev/null
+else
+    log_warn "publish-pcr-set.ts not found - skipping manifest update"
+fi
 
 # Find and refresh the ASG
 log_info "Looking for enclave ASG..."
@@ -635,5 +663,6 @@ log_info "PCR0: $PCR0_VALUE"
 log_info ""
 log_info "Next steps:"
 log_info "1. Verify instance refresh completes: aws autoscaling describe-instance-refreshes --auto-scaling-group-name $ASG_NAME"
-log_info "2. Test enclave functionality"
-log_info "3. Update KMS key policy if PCR0 changed (redeploy CDK)"
+log_info "2. Run verification: ./verify-deployment.sh"
+log_info "3. Verify PCR manifest updated: curl -s https://pcr-manifest.vettid.dev/pcr-manifest.json | jq '.pcr_sets[] | select(.is_current)'"
+log_info "4. Update KMS key policy if PCR0 changed (redeploy CDK)"

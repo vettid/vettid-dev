@@ -39,6 +39,7 @@
     "@aws-cdk/cloud-assembly-schema": "48.20.0",
     "@aws-sdk/client-auto-scaling": "^3.958.0",
     "@aws-sdk/client-cloudformation": "^3.964.0",
+    "@aws-sdk/client-cloudfront": "^3.971.0",
     "@aws-sdk/client-cloudwatch": "^3.958.0",
     "@aws-sdk/client-cloudwatch-logs": "^3.958.0",
     "@aws-sdk/client-cognito-identity-provider": "^3.958.0",

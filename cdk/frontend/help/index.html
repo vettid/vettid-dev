@@ -1,0 +1,443 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Help VettID - Volunteer</title>
+  <link rel="icon" type="image/jpeg" href="/assets/favicon.ico" />
+  <link rel="stylesheet" href="/assets/fonts.css" />
+  <link rel="stylesheet" href="/shared/nav.css" />
+  <style>
+    :root {
+      --bg-dark: #0a0908;
+      --bg-card: #12110f;
+      --bg-input: #0d0c0a;
+      --border: #2a2622;
+      --border-accent: rgba(255, 193, 37, 0.2);
+      --accent: #ffc125;
+      --accent-hover: #ffd940;
+      --text: #f5f5f4;
+      --text-muted: #a8a29e;
+      --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+      --duration-normal: 200ms;
+      --duration-slow: 300ms;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      background: var(--bg-dark);
+      color: var(--text);
+      line-height: 1.6;
+    }
+
+    /* Noise texture */
+    body::before {
+      content: '';
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      opacity: 0.025;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+      z-index: -1;
+    }
+
+    h1, h2, h3 {
+      font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    }
+
+    /* Header */
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 16px 32px;
+      background: rgba(0,0,0,0.9);
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 100;
+      backdrop-filter: blur(10px);
+      border-bottom: 1px solid rgba(255,193,37,0.1);
+    }
+
+    .header-logo {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      text-decoration: none;
+    }
+
+    .header-logo img {
+      height: 40px;
+      width: 40px;
+      border-radius: 8px;
+    }
+
+    .header-logo span {
+      font-size: 1.4rem;
+      font-weight: 700;
+      color: var(--accent);
+      letter-spacing: 2px;
+    }
+
+    /* Main content */
+    .wrap {
+      min-height: 100svh;
+      display: grid;
+      place-items: center;
+      padding: 100px 24px 40px;
+    }
+
+    .card {
+      border: 1px solid var(--border-accent);
+      padding: 40px;
+      max-width: 640px;
+      width: 100%;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+      border-radius: 12px;
+      background: var(--bg-card);
+    }
+
+    h1 {
+      margin: 0 0 8px 0;
+      letter-spacing: 1.5px;
+      font-weight: 700;
+      font-size: 2rem;
+      background: linear-gradient(135deg, #fff 0%, var(--accent) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .subtitle {
+      color: var(--text-muted);
+      margin-bottom: 32px;
+      font-size: 1rem;
+      line-height: 1.6;
+    }
+
+    /* Focus visible for accessibility */
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    :focus:not(:focus-visible) { outline: none; }
+
+    label {
+      display: block;
+      margin: 1.25rem 0 0.4rem;
+      color: var(--accent);
+      text-transform: uppercase;
+      font-size: 0.8rem;
+      letter-spacing: 0.5px;
+      font-weight: 600;
+    }
+
+    label.required::after {
+      content: ' *';
+      color: #f87171;
+    }
+
+    input, textarea {
+      width: 100%;
+      padding: 0.85rem;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--bg-input);
+      color: var(--text);
+      font-size: 1rem;
+      font-family: inherit;
+      box-sizing: border-box;
+      transition: border var(--duration-normal) var(--ease-out-expo), box-shadow var(--duration-normal) var(--ease-out-expo);
+    }
+
+    input:focus, textarea:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(255,193,37,0.15);
+    }
+
+    textarea {
+      min-height: 120px;
+      resize: vertical;
+    }
+
+    /* Honeypot field - hidden from humans */
+    .website-field {
+      position: absolute;
+      left: -9999px;
+      opacity: 0;
+      height: 0;
+      overflow: hidden;
+    }
+
+    /* Checkbox group for help types */
+    .checkbox-group {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+      gap: 12px;
+      margin-top: 12px;
+    }
+
+    .checkbox-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 16px;
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all var(--duration-normal) var(--ease-out-expo);
+    }
+
+    .checkbox-item:hover {
+      border-color: rgba(255,193,37,0.3);
+      background: rgba(255,193,37,0.05);
+    }
+
+    .checkbox-item.selected {
+      border-color: var(--accent);
+      background: rgba(255,193,37,0.1);
+    }
+
+    .checkbox-item input[type="checkbox"] {
+      width: 18px;
+      height: 18px;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+
+    .checkbox-item span {
+      color: var(--text);
+      font-size: 0.9rem;
+      font-weight: 500;
+    }
+
+    button[type="submit"] {
+      margin-top: 2rem;
+      width: 100%;
+      padding: 1rem;
+      background: linear-gradient(135deg, var(--accent-hover) 0%, var(--accent) 100%);
+      color: #000;
+      border: none;
+      border-radius: 8px;
+      font-weight: 700;
+      cursor: pointer;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      box-shadow: 0 4px 16px rgba(255,193,37,0.4);
+      transition: transform var(--duration-normal) var(--ease-out-expo), box-shadow var(--duration-normal) var(--ease-out-expo);
+      font-size: 0.95rem;
+      font-family: inherit;
+    }
+
+    button[type="submit"]:hover {
+      transform: translateY(-2px) scale(1.02);
+      box-shadow: 0 8px 24px rgba(255,193,37,0.5);
+    }
+
+    button[type="submit"]:active {
+      transform: translateY(0) scale(0.98);
+    }
+
+    button[type="submit"]:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    /* Message display */
+    .msg {
+      margin-top: 1.5rem;
+      padding: 14px;
+      border-radius: 8px;
+      border-left: 3px solid var(--accent);
+      background: var(--bg-input);
+      display: none;
+    }
+
+    .msg.success {
+      border-left-color: #22c55e;
+    }
+
+    .msg.error {
+      border-left-color: #f87171;
+    }
+
+    .msg.visible {
+      display: block;
+    }
+
+    /* Section divider */
+    .section-divider {
+      border: none;
+      border-top: 1px solid var(--border);
+      margin: 24px 0 16px;
+    }
+
+    /* Back link */
+    .back-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 0.9rem;
+      margin-bottom: 24px;
+      transition: color var(--duration-normal);
+    }
+
+    .back-link:hover {
+      color: var(--accent);
+    }
+
+    .back-link svg {
+      width: 16px;
+      height: 16px;
+    }
+
+    /* Optional badge */
+    .optional-badge {
+      font-size: 0.7rem;
+      font-weight: 400;
+      color: var(--text-muted);
+      text-transform: none;
+      margin-left: 6px;
+    }
+
+    @media (max-width: 600px) {
+      header {
+        padding: 10px 16px;
+      }
+      .header-logo span { display: none; }
+      .header-logo img {
+        height: 32px;
+        width: 32px;
+      }
+      .wrap {
+        padding: 80px 16px 24px;
+      }
+      .card {
+        padding: 24px;
+      }
+      .checkbox-group {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+
+<!-- Header -->
+<header>
+  <a href="/" class="header-logo">
+    <img src="/assets/logo.jpg" alt="VettID">
+    <span>VETTID</span>
+  </a>
+  <button class="nav-toggle" aria-label="Toggle menu" aria-expanded="false">
+    <span></span>
+    <span></span>
+    <span></span>
+  </button>
+</header>
+<!-- Navigation Menu (outside header to avoid backdrop-filter containing block) -->
+<div class="nav-menu" id="navMenu" style="display:none;position:fixed;top:0;right:0;width:280px;height:100%;background:#1a1816;padding:80px 20px 40px;z-index:1005;flex-direction:column;gap:8px;">
+  <a href="/" style="display:block;color:#d4d4d4;text-decoration:none;padding:12px 16px;font-size:1rem;">Home</a>
+  <a href="/help" style="display:block;color:#d4d4d4;text-decoration:none;padding:12px 16px;font-size:1rem;">Help Us</a>
+  <a href="/donate" style="display:block;color:#d4d4d4;text-decoration:none;padding:12px 16px;font-size:1rem;">Donate</a>
+  <a href="/pcr" style="display:block;color:#d4d4d4;text-decoration:none;padding:12px 16px;font-size:1rem;">PCR</a>
+  <a href="/votes" style="display:block;color:#d4d4d4;text-decoration:none;padding:12px 16px;font-size:1rem;">Votes</a>
+  <a href="/signin" style="display:block;color:#d4d4d4;text-decoration:none;padding:12px 16px;font-size:1rem;">Sign In</a>
+  <a href="/register" style="display:block;background:#ffc125;color:#000;text-decoration:none;padding:12px 16px;font-size:1rem;text-align:center;margin-top:16px;border-radius:6px;">Register</a>
+</div>
+<div class="nav-overlay" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);z-index:1000;"></div>
+
+<div class="wrap">
+  <div class="card">
+    <h1>I Want to Help!</h1>
+    <p class="subtitle">VettID is a member-owned cooperative built by volunteers who believe in privacy and digital freedom. Whether you can offer legal expertise, development skills, or simply want to spread the word, we'd love to hear from you.</p>
+
+    <form id="helpForm">
+      <!-- Honeypot field - hidden from users, visible to bots -->
+      <div class="website-field" aria-hidden="true">
+        <label for="website">Website</label>
+        <input type="text" id="website" name="website" tabindex="-1" autocomplete="off" />
+      </div>
+
+      <label for="name" class="required">Name</label>
+      <input id="name" type="text" autocomplete="name" required maxlength="100" />
+
+      <label for="email" class="required">Email</label>
+      <input id="email" type="email" autocomplete="email" required maxlength="254" />
+
+      <label for="phone" class="required">Phone Number</label>
+      <input id="phone" type="tel" autocomplete="tel" required placeholder="+1 (555) 123-4567" />
+
+      <label for="linkedin">LinkedIn Profile URL <span class="optional-badge">(optional)</span></label>
+      <input id="linkedin" type="url" autocomplete="url" placeholder="https://linkedin.com/in/yourprofile" />
+
+      <hr class="section-divider" />
+
+      <label class="required">How would you like to help?</label>
+      <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 8px;">Select all that apply</p>
+
+      <div class="checkbox-group">
+        <label class="checkbox-item">
+          <input type="checkbox" name="help_types" value="legal" />
+          <span>Legal</span>
+        </label>
+        <label class="checkbox-item">
+          <input type="checkbox" name="help_types" value="developer" />
+          <span>Developer</span>
+        </label>
+        <label class="checkbox-item">
+          <input type="checkbox" name="help_types" value="beta_tester" />
+          <span>Beta Tester</span>
+        </label>
+        <label class="checkbox-item">
+          <input type="checkbox" name="help_types" value="donation" />
+          <span>Donation/Funding</span>
+        </label>
+        <label class="checkbox-item">
+          <input type="checkbox" name="help_types" value="marketing" />
+          <span>Marketing/PR</span>
+        </label>
+        <label class="checkbox-item">
+          <input type="checkbox" name="help_types" value="design" />
+          <span>Design/UX</span>
+        </label>
+        <label class="checkbox-item">
+          <input type="checkbox" name="help_types" value="community" />
+          <span>Community/Advocacy</span>
+        </label>
+        <label class="checkbox-item">
+          <input type="checkbox" name="help_types" value="other" />
+          <span>Other</span>
+        </label>
+      </div>
+
+      <hr class="section-divider" />
+
+      <label for="message" class="required">How can you help?</label>
+      <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 8px;">Tell us about your experience and how you'd like to contribute</p>
+      <textarea id="message" required minlength="10" maxlength="2000" placeholder="Share your background, availability, and any specific skills or ideas you'd like to contribute..."></textarea>
+
+      <button type="submit" id="submitBtn">Submit</button>
+    </form>
+
+    <div class="msg" id="msg"></div>
+  </div>
+</div>
+
+<script src="/shared/config.js"></script>
+<script src="/help/js/help.js"></script>
+<script src="/shared/js/nav.js"></script>
+
+</body>
+</html>

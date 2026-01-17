@@ -1,0 +1,127 @@
+/* Shared Navigation Styles */
+
+/* Hamburger button - always visible */
+.nav-toggle {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  width: 44px;
+  height: 44px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 8px;
+  z-index: 1010;
+  position: relative;
+}
+
+.nav-toggle span {
+  display: block;
+  width: 24px;
+  height: 3px;
+  background: #ffc125;
+  border-radius: 2px;
+  transition: transform 0.3s ease, opacity 0.3s ease;
+}
+
+.nav-toggle span:nth-child(1) {
+  margin-bottom: 5px;
+}
+
+.nav-toggle span:nth-child(3) {
+  margin-top: 5px;
+}
+
+/* Hamburger animation when open */
+.nav-toggle.active span:nth-child(1) {
+  transform: rotate(45deg) translate(5px, 6px);
+}
+
+.nav-toggle.active span:nth-child(2) {
+  opacity: 0;
+}
+
+.nav-toggle.active span:nth-child(3) {
+  transform: rotate(-45deg) translate(5px, -6px);
+}
+
+/* Navigation menu - hidden by default */
+.nav-menu {
+  display: none;
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: 280px;
+  height: 100%;
+  background-color: #1a1816;
+  padding: 80px 20px 40px;
+  z-index: 1005;
+  box-shadow: -4px 0 20px rgba(0, 0, 0, 0.5);
+  border-left: 1px solid rgba(255, 193, 37, 0.2);
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+}
+
+/* Show menu when open */
+.nav-menu.open {
+  display: flex;
+}
+
+/* Menu links */
+.nav-menu a {
+  display: block;
+  color: #d4d4d4;
+  text-decoration: none;
+  padding: 12px 16px;
+  font-size: 1rem;
+  font-weight: 500;
+  border-radius: 6px;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+.nav-menu a:hover {
+  background-color: rgba(255, 255, 255, 0.1);
+  color: #ffffff;
+}
+
+.nav-menu a.active {
+  color: #ffc125;
+  background-color: rgba(255, 193, 37, 0.1);
+}
+
+/* Register button in menu */
+.nav-menu .nav-register {
+  background-color: #ffc125;
+  color: #000000;
+  font-weight: 600;
+  text-align: center;
+  margin-top: 16px;
+}
+
+.nav-menu .nav-register:hover {
+  background-color: #ffd940;
+  color: #000000;
+}
+
+/* Overlay */
+.nav-overlay {
+  display: none;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.7);
+  z-index: 1000;
+}
+
+.nav-overlay.visible {
+  display: block;
+}
+
+/* Hide old header buttons */
+.header-buttons {
+  display: none;
+}

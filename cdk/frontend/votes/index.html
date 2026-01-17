@@ -7,6 +7,7 @@
 <meta name="description" content="Transparent, verifiable voting results with cryptographic proofs from the VettID cooperative.">
 <link rel="icon" type="image/x-icon" href="/assets/favicon.ico">
 <link rel="stylesheet" href="/assets/fonts.css">
+<link rel="stylesheet" href="/shared/nav.css">
 <link rel="stylesheet" href="/votes/votes.css">
 </head>
 <body>
@@ -17,10 +18,23 @@
     <img src="/assets/logo.jpg" alt="VettID Logo">
     <span>VETTID</span>
   </a>
-  <nav class="header-nav">
-    <a href="/pcr" class="nav-link">PCR Verification</a>
-  </nav>
+  <button class="nav-toggle" aria-label="Toggle menu" aria-expanded="false">
+    <span></span>
+    <span></span>
+    <span></span>
+  </button>
 </header>
+<!-- Navigation Menu (outside header to avoid backdrop-filter containing block) -->
+<div class="nav-menu" id="navMenu" style="display:none;position:fixed;top:0;right:0;width:280px;height:100%;background:#1a1816;padding:80px 20px 40px;z-index:1005;flex-direction:column;gap:8px;">
+  <a href="/" style="display:block;color:#d4d4d4;text-decoration:none;padding:12px 16px;font-size:1rem;">Home</a>
+  <a href="/help" style="display:block;color:#d4d4d4;text-decoration:none;padding:12px 16px;font-size:1rem;">Help Us</a>
+  <a href="/donate" style="display:block;color:#d4d4d4;text-decoration:none;padding:12px 16px;font-size:1rem;">Donate</a>
+  <a href="/pcr" style="display:block;color:#d4d4d4;text-decoration:none;padding:12px 16px;font-size:1rem;">PCR</a>
+  <a href="/votes" style="display:block;color:#d4d4d4;text-decoration:none;padding:12px 16px;font-size:1rem;">Votes</a>
+  <a href="/signin" style="display:block;color:#d4d4d4;text-decoration:none;padding:12px 16px;font-size:1rem;">Sign In</a>
+  <a href="/register" style="display:block;background:#ffc125;color:#000;text-decoration:none;padding:12px 16px;font-size:1rem;text-align:center;margin-top:16px;border-radius:6px;">Register</a>
+</div>
+<div class="nav-overlay" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);z-index:1000;"></div>
 
 <main class="container">
   <div class="page-header">
@@ -68,5 +82,6 @@
 
 <script src="/shared/config.js"></script>
 <script src="/votes/votes.js"></script>
+<script src="/shared/js/nav.js"></script>
 </body>
 </html>

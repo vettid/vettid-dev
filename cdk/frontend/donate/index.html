@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Donate - Support VettID</title>
+  <meta name="description" content="Support VettID's mission with a Bitcoin donation. All proceeds go directly to hosting and development costs." />
+  <link rel="icon" type="image/jpeg" href="/assets/favicon.ico" />
+  <link rel="stylesheet" href="/assets/fonts.css" />
+  <link rel="stylesheet" href="/shared/nav.css" />
+  <style>
+    :root {
+      --bg-dark: #0a0908;
+      --bg-card: #12110f;
+      --bg-input: #0d0c0a;
+      --bg-elevated: #1a1816;
+      --border: #2a2622;
+      --border-accent: rgba(255, 193, 37, 0.2);
+      --accent: #ffc125;
+      --accent-hover: #ffd940;
+      --text: #f5f5f4;
+      --text-muted: #a8a29e;
+      --text-subtle: #78716c;
+      --success: #22c55e;
+      --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+      --duration-normal: 200ms;
+      --duration-slow: 300ms;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      background: var(--bg-dark);
+      color: var(--text);
+      line-height: 1.6;
+    }
+
+    /* Noise texture */
+    body::before {
+      content: '';
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      opacity: 0.025;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+      z-index: -1;
+    }
+
+    h1, h2, h3 {
+      font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    }
+
+    /* Header */
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 16px 32px;
+      background: rgba(0,0,0,0.9);
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 100;
+      backdrop-filter: blur(10px);
+      border-bottom: 1px solid rgba(255,193,37,0.1);
+    }
+
+    .header-logo {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      text-decoration: none;
+    }
+
+    .header-logo img {
+      height: 40px;
+      width: 40px;
+      border-radius: 8px;
+    }
+
+    .header-logo span {
+      font-size: 1.4rem;
+      font-weight: 700;
+      color: var(--accent);
+      letter-spacing: 2px;
+    }
+
+    /* Main content */
+    .wrap {
+      min-height: 100svh;
+      display: grid;
+      place-items: center;
+      padding: 100px 24px 40px;
+    }
+
+    .card {
+      border: 1px solid var(--border-accent);
+      padding: 40px;
+      max-width: 640px;
+      width: 100%;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+      border-radius: 12px;
+      background: var(--bg-card);
+    }
+
+    /* Focus visible for accessibility */
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    :focus:not(:focus-visible) { outline: none; }
+
+    h1 {
+      margin: 0 0 8px 0;
+      letter-spacing: 1.5px;
+      font-weight: 700;
+      font-size: 2rem;
+      background: linear-gradient(135deg, #fff 0%, var(--accent) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .subtitle {
+      color: var(--text-muted);
+      margin-bottom: 32px;
+      font-size: 1rem;
+      line-height: 1.6;
+    }
+
+    /* Bitcoin icon */
+    .btc-icon {
+      display: flex;
+      justify-content: center;
+      margin-bottom: 24px;
+    }
+
+    .btc-icon svg {
+      width: 80px;
+      height: 80px;
+      color: var(--accent);
+    }
+
+    /* Back link */
+    .back-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 0.9rem;
+      margin-bottom: 24px;
+      transition: color var(--duration-normal);
+    }
+
+    .back-link:hover {
+      color: var(--accent);
+    }
+
+    .back-link svg {
+      width: 16px;
+      height: 16px;
+    }
+
+    /* Info section */
+    .info-section {
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 24px;
+    }
+
+    .info-section h3 {
+      color: var(--accent);
+      font-size: 1rem;
+      margin-bottom: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .info-section ul {
+      color: var(--text-muted);
+      margin-left: 20px;
+      font-size: 0.95rem;
+    }
+
+    .info-section li {
+      margin-bottom: 8px;
+    }
+
+    .info-section li strong {
+      color: var(--text);
+    }
+
+    /* BTC Address section */
+    .btc-section {
+      text-align: center;
+      margin-top: 32px;
+    }
+
+    .btc-section h2 {
+      color: var(--accent);
+      font-size: 1.1rem;
+      margin-bottom: 16px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    /* QR Code container */
+    .qr-container {
+      background: white;
+      padding: 16px;
+      border-radius: 12px;
+      display: inline-block;
+      margin-bottom: 20px;
+    }
+
+    #qr-code canvas {
+      display: block;
+    }
+
+    /* Address display */
+    .address-container {
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+      position: relative;
+      cursor: pointer;
+      transition: border-color var(--duration-normal), background var(--duration-normal);
+    }
+
+    .address-container:hover {
+      border-color: rgba(255,193,37,0.4);
+      background: var(--bg-elevated);
+    }
+
+    .address-container.copied {
+      border-color: var(--success);
+      background: rgba(34, 197, 94, 0.1);
+    }
+
+    .address-label {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .address-value {
+      font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+      font-size: 0.9rem;
+      color: var(--text);
+      word-break: break-all;
+      line-height: 1.5;
+    }
+
+    .copy-hint {
+      font-size: 0.75rem;
+      color: var(--text-subtle);
+      margin-top: 8px;
+      transition: color var(--duration-normal);
+    }
+
+    .address-container:hover .copy-hint {
+      color: var(--accent);
+    }
+
+    .address-container.copied .copy-hint {
+      color: var(--success);
+    }
+
+    /* Placeholder message */
+    .placeholder-msg {
+      background: rgba(255,193,37,0.1);
+      border: 1px solid rgba(255,193,37,0.3);
+      border-radius: 8px;
+      padding: 20px;
+      text-align: center;
+      color: var(--accent);
+      font-size: 0.95rem;
+    }
+
+    /* Disclaimer */
+    .disclaimer {
+      margin-top: 32px;
+      padding-top: 24px;
+      border-top: 1px solid var(--border);
+      color: var(--text-subtle);
+      font-size: 0.85rem;
+      text-align: center;
+    }
+
+    /* Footer link */
+    .footer-links {
+      margin-top: 24px;
+      text-align: center;
+    }
+
+    .footer-links a {
+      color: var(--accent);
+      text-decoration: none;
+      font-size: 0.9rem;
+    }
+
+    .footer-links a:hover {
+      text-decoration: underline;
+    }
+
+    @media (max-width: 600px) {
+      header {
+        padding: 10px 16px;
+      }
+      .header-logo span { display: none; }
+      .header-logo img {
+        height: 32px;
+        width: 32px;
+      }
+      .wrap {
+        padding: 80px 16px 24px;
+      }
+      .card {
+        padding: 24px;
+      }
+      .address-value {
+        font-size: 0.8rem;
+      }
+    }
+  </style>
+</head>
+<body>
+
+<!-- Header -->
+<header>
+  <a href="/" class="header-logo">
+    <img src="/assets/logo.jpg" alt="VettID">
+    <span>VETTID</span>
+  </a>
+  <button class="nav-toggle" aria-label="Toggle menu" aria-expanded="false">
+    <span></span>
+    <span></span>
+    <span></span>
+  </button>
+</header>
+<!-- Navigation Menu (outside header to avoid backdrop-filter containing block) -->
+<div class="nav-menu" id="navMenu" style="display:none;position:fixed;top:0;right:0;width:280px;height:100%;background:#1a1816;padding:80px 20px 40px;z-index:1005;flex-direction:column;gap:8px;">
+  <a href="/" style="display:block;color:#d4d4d4;text-decoration:none;padding:12px 16px;font-size:1rem;">Home</a>
+  <a href="/help" style="display:block;color:#d4d4d4;text-decoration:none;padding:12px 16px;font-size:1rem;">Help Us</a>
+  <a href="/donate" style="display:block;color:#d4d4d4;text-decoration:none;padding:12px 16px;font-size:1rem;">Donate</a>
+  <a href="/pcr" style="display:block;color:#d4d4d4;text-decoration:none;padding:12px 16px;font-size:1rem;">PCR</a>
+  <a href="/votes" style="display:block;color:#d4d4d4;text-decoration:none;padding:12px 16px;font-size:1rem;">Votes</a>
+  <a href="/signin" style="display:block;color:#d4d4d4;text-decoration:none;padding:12px 16px;font-size:1rem;">Sign In</a>
+  <a href="/register" style="display:block;background:#ffc125;color:#000;text-decoration:none;padding:12px 16px;font-size:1rem;text-align:center;margin-top:16px;border-radius:6px;">Register</a>
+</div>
+<div class="nav-overlay" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);z-index:1000;"></div>
+
+<div class="wrap">
+  <div class="card">
+    <div class="btc-icon">
+      <!-- Bitcoin logo -->
+      <svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="32" cy="32" r="30" fill="#F7931A"/>
+        <path d="M44.5 28.3c.6-4-2.4-6.2-6.6-7.6l1.4-5.4-3.3-.8-1.3 5.3c-.9-.2-1.8-.4-2.7-.7l1.3-5.3-3.3-.8-1.4 5.4c-.7-.2-1.4-.3-2.1-.5l-4.5-1.1-.9 3.5s2.4.6 2.4.6c1.3.3 1.6 1.2 1.5 1.9l-1.5 6.1c.1 0 .2 0 .3.1-.1 0-.2-.1-.3-.1l-2.1 8.5c-.2.4-.6 1.1-1.6.8 0 0-2.4-.6-2.4-.6l-1.6 3.8 4.3 1.1c.8.2 1.6.4 2.4.6l-1.4 5.5 3.3.8 1.4-5.4c.9.2 1.8.5 2.7.7l-1.4 5.4 3.3.8 1.4-5.5c5.8 1.1 10.1.7 12-4.6 1.5-4.2-.1-6.7-3.1-8.3 2.2-.5 3.9-2 4.3-5zm-7.7 10.8c-1.1 4.2-8.2 1.9-10.5 1.4l1.9-7.5c2.3.6 9.7 1.7 8.6 6.1zm1.1-10.9c-1 3.8-6.9 1.9-8.8 1.4l1.7-6.8c1.9.5 8.1 1.4 7.1 5.4z" fill="white"/>
+      </svg>
+    </div>
+
+    <h1>Support VettID</h1>
+    <p class="subtitle">VettID is a member-owned cooperative committed to protecting digital privacy. Your donation helps cover hosting, development, and infrastructure costs. Every satoshi goes directly to keeping VettID running and improving.</p>
+
+    <div class="info-section">
+      <h3>Where Your Donation Goes</h3>
+      <ul>
+        <li><strong>AWS Infrastructure</strong> - Nitro Enclave instances, DynamoDB, CloudFront, and other cloud services</li>
+        <li><strong>Development</strong> - Ongoing security improvements, new features, and bug fixes</li>
+        <li><strong>Security Audits</strong> - Third-party security reviews to ensure your data stays safe</li>
+        <li><strong>Domain & Certificates</strong> - Keeping vettid.dev and vettid.org secure and accessible</li>
+      </ul>
+    </div>
+
+    <div class="btc-section">
+      <h2>Donate Bitcoin</h2>
+
+      <div id="qr-container" class="qr-container" style="display: none;">
+        <div id="qr-code"></div>
+      </div>
+
+      <div id="address-display" style="display: none;">
+        <div class="address-container" onclick="copyAddress()" id="addressBox">
+          <div class="address-label">Bitcoin Address</div>
+          <div class="address-value" id="btcAddress"></div>
+          <div class="copy-hint" id="copyHint">Click to copy</div>
+        </div>
+      </div>
+
+      <div id="placeholder" class="placeholder-msg">
+        Bitcoin address coming soon. Check back shortly!
+      </div>
+    </div>
+
+    <div class="disclaimer">
+      <p>VettID is a member-owned cooperative. Donations are not tax-deductible. All funds are used exclusively for operational costs.</p>
+    </div>
+
+    <div class="footer-links">
+      <a href="/help">Want to help in other ways?</a>
+    </div>
+  </div>
+</div>
+
+<script src="/shared/vendor/qrcode.min.js"></script>
+<script src="/donate/js/donate.js"></script>
+<script src="/shared/js/nav.js"></script>
+
+</body>
+</html>
