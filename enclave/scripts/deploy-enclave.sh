@@ -121,10 +121,12 @@ systemctl start docker
 systemctl enable docker
 
 # Configure nitro enclaves allocator
+# Optimized for native Go handlers (no WASM overhead)
+# c6a.2xlarge: 8 vCPUs, 16 GB RAM - allocate 12 GB / 6 vCPUs to enclave (max)
 cat > /etc/nitro_enclaves/allocator.yaml << EOF
 ---
-memory_mib: 8192
-cpu_count: 2
+memory_mib: 12288
+cpu_count: 6
 EOF
 
 # Start nitro enclaves allocator

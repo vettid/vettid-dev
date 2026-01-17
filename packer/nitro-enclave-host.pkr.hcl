@@ -36,18 +36,20 @@ variable "ami_name_prefix" {
 }
 
 variable "enclave_memory_mib" {
-  type    = number
-  default = 6144
+  type        = number
+  default     = 12288
+  description = "Memory allocated to the Nitro Enclave (12 GB optimized for native Go handlers)"
 }
 
 variable "enclave_cpu_count" {
-  type    = number
-  default = 2
+  type        = number
+  default     = 6
+  description = "vCPUs allocated to the Nitro Enclave (6 of 8 on c6a.2xlarge, leaving 2 for parent)"
 }
 
 variable "allocator_memory_mib" {
   type        = number
-  default     = 8192
+  default     = 12288
   description = "Memory to reserve for Nitro Enclaves (must be >= enclave_memory_mib)"
 }
 
