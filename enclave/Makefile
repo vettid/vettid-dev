@@ -9,8 +9,9 @@ EIF_FILE := $(ENCLAVE_NAME).eif
 ENCLAVE_CONFIG := enclave.json
 
 # Memory and CPU allocation (must match enclave.json)
-MEMORY_MIB := 6144
-CPU_COUNT := 2
+# Optimized for native Go handlers - 75% of c6a.2xlarge resources
+MEMORY_MIB := 12288
+CPU_COUNT := 6
 
 # Build all components
 all: build-docker build-eif
