@@ -2,7 +2,7 @@
   "name": "vettid-scaffold",
   "version": "0.2.0",
   "private": true,
-  "license": "MIT",
+  "license": "AGPL-3.0-or-later",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "watch": "tsc -w",
