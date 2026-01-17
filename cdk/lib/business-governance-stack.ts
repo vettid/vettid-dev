@@ -60,6 +60,10 @@ export class BusinessGovernanceStack extends cdk.Stack {
   public readonly deleteWaitlistEntries!: lambdaNode.NodejsFunction;
   public readonly addWaitlistEntry!: lambdaNode.NodejsFunction;
 
+  // Help Request Management
+  public readonly listHelpRequests!: lambdaNode.NodejsFunction;
+  public readonly updateHelpRequest!: lambdaNode.NodejsFunction;
+
   // Email Management
   public readonly sendBulkEmail!: lambdaNode.NodejsFunction;
   public readonly listSentEmails!: lambdaNode.NodejsFunction;
@@ -86,6 +90,7 @@ export class BusinessGovernanceStack extends cdk.Stack {
       TABLE_WAITLIST: tables.waitlist.tableName,
       TABLE_SENT_EMAILS: tables.sentEmails.tableName,
       TABLE_INVITES: tables.invites.tableName,
+      TABLE_HELP_REQUESTS: tables.helpRequests.tableName,
       STAGE: 'prod',
       ALLOWED_ORIGINS: 'https://admin.vettid.dev,https://vettid.dev',
     };
@@ -407,6 +412,32 @@ export class BusinessGovernanceStack extends cdk.Stack {
     this.deleteWaitlistEntries = deleteWaitlistEntries;
     this.addWaitlistEntry = addWaitlistEntry;
 
+    // ===== HELP REQUEST MANAGEMENT =====
+
+    const listHelpRequests = new lambdaNode.NodejsFunction(this, 'ListHelpRequestsFn', {
+      entry: 'lambda/handlers/admin/listHelpRequests.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: defaultEnv,
+      timeout: cdk.Duration.seconds(30),
+      description: 'List volunteer help requests with filtering and pagination',
+    });
+
+    const updateHelpRequest = new lambdaNode.NodejsFunction(this, 'UpdateHelpRequestFn', {
+      entry: 'lambda/handlers/admin/updateHelpRequest.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: defaultEnv,
+      timeout: cdk.Duration.seconds(30),
+      description: 'Update help request status and admin notes',
+    });
+
+    // Grant permissions
+    tables.helpRequests.grantReadData(listHelpRequests);
+    tables.helpRequests.grantReadWriteData(updateHelpRequest);
+    tables.audit.grantReadWriteData(updateHelpRequest);
+
+    this.listHelpRequests = listHelpRequests;
+    this.updateHelpRequest = updateHelpRequest;
+
     // ===== EMAIL MANAGEMENT =====
 
     const sendBulkEmail = new lambdaNode.NodejsFunction(this, 'SendBulkEmailFn', {
@@ -510,6 +541,10 @@ export class BusinessGovernanceStack extends cdk.Stack {
     this.route('AddWaitlistEntry', httpApi, '/admin/waitlist', apigw.HttpMethod.POST, this.addWaitlistEntry, adminAuthorizer);
     this.route('SendWaitlistInvites', httpApi, '/admin/waitlist/send-invites', apigw.HttpMethod.POST, this.sendWaitlistInvites, adminAuthorizer);
     this.route('DeleteWaitlistEntries', httpApi, '/admin/waitlist', apigw.HttpMethod.DELETE, this.deleteWaitlistEntries, adminAuthorizer);
+
+    // Help Request Management
+    this.route('ListHelpRequests', httpApi, '/admin/help-requests', apigw.HttpMethod.GET, this.listHelpRequests, adminAuthorizer);
+    this.route('UpdateHelpRequest', httpApi, '/admin/help-requests/{request_id}', apigw.HttpMethod.PATCH, this.updateHelpRequest, adminAuthorizer);
 
     // Email Management
     this.route('SendBulkEmail', httpApi, '/admin/send-bulk-email', apigw.HttpMethod.POST, this.sendBulkEmail, adminAuthorizer);

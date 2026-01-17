@@ -65,6 +65,8 @@ export class InfrastructureStack extends cdk.Stack {
     vaultBroadcasts: dynamodb.Table;
     // Control Command Signing
     commandIdempotency: dynamodb.Table;
+    // Volunteer Help Requests
+    helpRequests: dynamodb.Table;
   };
 
   // S3 Buckets
@@ -759,6 +761,37 @@ export class InfrastructureStack extends cdk.Stack {
       encryptionKey: dynamoDbEncryptionKey,
     });
 
+    // ===== VOLUNTEER HELP REQUESTS =====
+    // Table for storing volunteer/help request submissions from the public /help form
+    // Schema:
+    //   request_id: UUID (PK)
+    //   name: submitter's name
+    //   email: submitter's email
+    //   phone: submitter's phone
+    //   linkedin_url: optional LinkedIn profile URL
+    //   help_types: array of selected help types
+    //   message: personal note/description
+    //   status: 'new' | 'contacted' | 'in_progress' | 'archived'
+    //   admin_notes: notes from admin follow-ups
+    //   created_at: ISO timestamp
+    //   updated_at: ISO timestamp
+    const helpRequests = new dynamodb.Table(this, 'HelpRequests', {
+      partitionKey: { name: 'request_id', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: dynamoDbEncryptionKey,
+    });
+
+    // GSI for querying by status (admin view)
+    helpRequests.addGlobalSecondaryIndex({
+      indexName: 'status-index',
+      partitionKey: { name: 'status', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'created_at', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
     // ===== S3 BUCKETS =====
 
     // S3 bucket for membership terms PDFs (shared by VettIDStack and AdminStack)
@@ -874,6 +907,8 @@ export class InfrastructureStack extends cdk.Stack {
       vaultBroadcasts,
       // Control Command Signing
       commandIdempotency,
+      // Volunteer Help Requests
+      helpRequests,
     };
 
     this.termsBucket = termsBucket;

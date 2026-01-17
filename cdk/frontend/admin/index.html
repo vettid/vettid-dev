@@ -136,6 +136,8 @@
     .subscription-type-filter.active{opacity:1 !important;box-shadow:0 4px 12px rgba(255,193,37,0.4) !important;transform:scale(1.02);border:2px solid var(--accent) !important;}
     .filter-active{opacity:1 !important;box-shadow:0 4px 12px rgba(255,193,37,0.4) !important;transform:scale(1.02);border:2px solid var(--accent) !important;}
     .waitlist-filter.active{opacity:1 !important;box-shadow:0 4px 12px rgba(255,193,37,0.4) !important;transform:scale(1.02);border:2px solid var(--accent) !important;}
+    .help-filter{opacity:0.7;transition:all 0.2s;}
+    .help-filter.active{opacity:1 !important;box-shadow:0 4px 12px rgba(255,193,37,0.4) !important;transform:scale(1.02);border:2px solid var(--accent) !important;}
     .modal-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.8);z-index:10000;display:none;align-items:center;justify-content:center;}
     .modal-overlay.active{display:flex;}
     .modal{background:var(--bg-card);border:2px solid var(--accent);border-radius:8px;padding:24px;max-width:500px;width:90%;max-height:90vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,0.6);}
@@ -499,6 +501,7 @@
             <button class="tab tab-child" data-tab="subscriptions" data-sub-tab="subscription-analytics">Subscription Analytics</button>
           </div>
           <button class="tab" data-tab="invites">Invites</button>
+          <button class="tab" data-tab="help-requests">Help Requests</button>
           <button class="tab tab-parent" id="voteManagementParent" data-tab="vote-management">
             <span class="tab-text">Vote Management</span>
             <span class="tab-chevron">▸</span>
@@ -770,6 +773,118 @@
           <button id="invitesPrev" class="btn">Previous</button>
           <span class="info" id="invitesInfo"></span>
           <button id="invitesNext" class="btn">Next</button>
+        </div>
+      </div>
+
+      <!-- Help Requests Tab -->
+      <div id="help-requests" class="tab-content card">
+        <h3 style="margin-top:0;">Volunteer Help Requests</h3>
+        <p class="muted" style="margin-bottom:20px;">Manage incoming volunteer help requests from people who want to contribute to VettID.</p>
+
+        <!-- Quick Filter Badges -->
+        <div style="display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap;">
+          <button id="helpFilterNew" class="btn help-filter active" style="background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);padding:10px 20px;font-weight:600;">
+            New <span id="newHelpCount" style="background:#1e40af;color:#fff;border-radius:12px;padding:2px 8px;margin-left:8px;font-size:0.75rem;">0</span>
+          </button>
+          <button id="helpFilterContacted" class="btn help-filter" style="background:linear-gradient(135deg,#f59e0b 0%,#d97706 100%);padding:10px 20px;font-weight:600;">
+            Contacted <span id="contactedHelpCount" style="background:#92400e;color:#fff;border-radius:12px;padding:2px 8px;margin-left:8px;font-size:0.75rem;">0</span>
+          </button>
+          <button id="helpFilterInProgress" class="btn help-filter" style="background:linear-gradient(135deg,#10b981 0%,#059669 100%);padding:10px 20px;font-weight:600;">
+            In Progress <span id="inProgressHelpCount" style="background:#065f46;color:#fff;border-radius:12px;padding:2px 8px;margin-left:8px;font-size:0.75rem;">0</span>
+          </button>
+          <button id="helpFilterArchived" class="btn help-filter" style="background:linear-gradient(135deg,#6b7280 0%,#4b5563 100%);padding:10px 20px;font-weight:600;">
+            Archived <span id="archivedHelpCount" style="background:#374151;color:#fff;border-radius:12px;padding:2px 8px;margin-left:8px;font-size:0.75rem;">0</span>
+          </button>
+        </div>
+
+        <!-- Action Buttons -->
+        <div style="margin-bottom:16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+          <button id="refreshHelpRequests" class="btn">Refresh</button>
+          <label style="display:flex;align-items:center;gap:8px;">
+            Search:
+            <input id="helpSearch" type="text" placeholder="Name, email, message..." style="width:250px" />
+          </label>
+        </div>
+
+        <!-- Help Requests Table (desktop) -->
+        <div id="helpRequestsTableContainer" class="list-view">
+          <table id="helpRequestsTable">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Email</th>
+                <th>Phone</th>
+                <th>Help Types</th>
+                <th>Status</th>
+                <th>Submitted</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="helpRequestsBody"></tbody>
+          </table>
+        </div>
+
+        <!-- Help Requests Cards (mobile) -->
+        <div id="helpRequestsCardContainer" class="card-grid"></div>
+
+        <!-- Pagination -->
+        <div class="pagination">
+          <label>Show: <select id="helpPerPage"><option value="10" selected>10</option><option value="25">25</option><option value="50">50</option><option value="100">100</option></select></label>
+          <button id="helpPrev" class="btn">Previous</button>
+          <span class="info" id="helpInfo"></span>
+          <button id="helpNext" class="btn">Next</button>
+        </div>
+      </div>
+
+      <!-- Help Request Detail Modal -->
+      <div id="helpDetailModal" class="modal-overlay">
+        <div class="modal" style="max-width:600px;">
+          <div class="modal-header">
+            <h3 class="modal-title">Help Request Details</h3>
+            <button class="modal-close" id="closeHelpDetailModal">&times;</button>
+          </div>
+          <div class="modal-body">
+            <div style="margin-bottom:16px;">
+              <label style="display:block;margin-bottom:4px;font-weight:600;color:var(--accent);">Name</label>
+              <p id="helpDetailName" style="margin:0;"></p>
+            </div>
+            <div style="margin-bottom:16px;">
+              <label style="display:block;margin-bottom:4px;font-weight:600;color:var(--accent);">Email</label>
+              <p id="helpDetailEmail" style="margin:0;"><a href="" id="helpDetailEmailLink"></a></p>
+            </div>
+            <div style="margin-bottom:16px;">
+              <label style="display:block;margin-bottom:4px;font-weight:600;color:var(--accent);">Phone</label>
+              <p id="helpDetailPhone" style="margin:0;"><a href="" id="helpDetailPhoneLink"></a></p>
+            </div>
+            <div id="helpDetailLinkedInSection" style="margin-bottom:16px;display:none;">
+              <label style="display:block;margin-bottom:4px;font-weight:600;color:var(--accent);">LinkedIn</label>
+              <p id="helpDetailLinkedIn" style="margin:0;"><a href="" id="helpDetailLinkedInLink" target="_blank" rel="noopener noreferrer"></a></p>
+            </div>
+            <div style="margin-bottom:16px;">
+              <label style="display:block;margin-bottom:4px;font-weight:600;color:var(--accent);">Help Types</label>
+              <div id="helpDetailTypes" style="display:flex;flex-wrap:wrap;gap:8px;"></div>
+            </div>
+            <div style="margin-bottom:16px;">
+              <label style="display:block;margin-bottom:4px;font-weight:600;color:var(--accent);">Message</label>
+              <div id="helpDetailMessage" style="background:var(--bg-input);padding:12px;border-radius:6px;white-space:pre-wrap;max-height:200px;overflow-y:auto;"></div>
+            </div>
+            <div style="margin-bottom:16px;">
+              <label style="display:block;margin-bottom:4px;font-weight:600;color:var(--accent);">Status</label>
+              <select id="helpDetailStatus" style="width:100%;">
+                <option value="new">New</option>
+                <option value="contacted">Contacted</option>
+                <option value="in_progress">In Progress</option>
+                <option value="archived">Archived</option>
+              </select>
+            </div>
+            <div style="margin-bottom:16px;">
+              <label style="display:block;margin-bottom:4px;font-weight:600;color:var(--accent);">Admin Notes</label>
+              <textarea id="helpDetailNotes" rows="3" style="width:100%;" placeholder="Add notes about this volunteer..."></textarea>
+            </div>
+            <div style="display:flex;gap:12px;justify-content:flex-end;">
+              <button id="saveHelpRequest" class="btn" style="background:linear-gradient(135deg,#10b981 0%,#059669 100%);">Save Changes</button>
+            </div>
+          </div>
         </div>
       </div>
 

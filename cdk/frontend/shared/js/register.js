@@ -29,6 +29,14 @@ document.querySelectorAll('.tab[data-tab]').forEach(tab => {
   });
 });
 
+// Check for #waitlist hash in URL and switch to waitlist tab
+if (window.location.hash === '#waitlist') {
+  const waitlistTab = document.querySelector('.tab[data-tab="waitlist"]');
+  if (waitlistTab) {
+    switchTab('waitlist', waitlistTab);
+  }
+}
+
 const form = document.getElementById('regForm');
 const msgEl = document.getElementById('msg');
 const firstEl = document.getElementById('first');

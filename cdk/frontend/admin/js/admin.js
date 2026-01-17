@@ -822,7 +822,7 @@ function renderAuth(){
   // Show/hide tabs based on admin type
   if(admin){
     const tabPermissions={
-      'admin':['waitlist','users','subscriptions','invites','vote-management','site-management','admin'],
+      'admin':['waitlist','users','subscriptions','invites','help-requests','vote-management','site-management','admin'],
       'user_admin':['waitlist','users'],
       'subscriber_admin':['subscriptions','invites'],
       'vote_admin':['vote-management']
@@ -2287,6 +2287,7 @@ document.querySelectorAll('.tab').forEach(tab => {
     if (target === 'invites') loadInvites();
     if (target === 'admins') loadAdmins();
     if (target === 'subscriptions') loadAllSubscriptions();
+    if (target === 'help-requests') loadHelpRequests();
 
     // Close sidebar on mobile after selecting tab
     if (window.innerWidth <= 768) {
@@ -7153,4 +7154,426 @@ document.addEventListener('click', (e) => {
     actions[action]();
   }
 });
+
+// ============================================
+// HELP REQUESTS MANAGEMENT
+// ============================================
+
+// Help requests state
+let helpRequests = [];
+let helpQuickFilter = 'new';
+let helpSearchQuery = '';
+let currentHelpRequest = null;
+const helpPagination = { page: 0, perPage: 10 };
+
+// Help type labels for display
+const helpTypeLabels = {
+  'legal': 'Legal',
+  'developer': 'Developer',
+  'beta_tester': 'Beta Tester',
+  'donation': 'Donation/Funding',
+  'marketing': 'Marketing/PR',
+  'design': 'Design/UX',
+  'community': 'Community/Advocacy',
+  'other': 'Other'
+};
+
+// Helper to create a card row with label and value using safe DOM methods
+function createHelpCardRow(label, value) {
+  const row = document.createElement('div');
+  row.className = 'data-card-row';
+  const labelSpan = document.createElement('span');
+  labelSpan.className = 'data-card-label';
+  labelSpan.textContent = label;
+  const valueSpan = document.createElement('span');
+  valueSpan.className = 'data-card-value';
+  valueSpan.textContent = value;
+  row.appendChild(labelSpan);
+  row.appendChild(valueSpan);
+  return row;
+}
+
+// Load help requests from API
+async function loadHelpRequests(resetPage = true) {
+  if (!isAdmin()) return;
+  if (resetPage) helpPagination.page = 0;
+
+  const tbody = document.getElementById('helpRequestsBody');
+  if (!tbody) return;
+
+  // Show loading skeleton
+  showLoadingSkeleton('helpRequestsTable');
+
+  try {
+    // Build query params
+    const params = new URLSearchParams();
+    if (helpQuickFilter) params.set('status', helpQuickFilter);
+
+    const data = await api('/admin/help-requests?' + params.toString());
+    helpRequests = data.help_requests || [];
+
+    // Update status counts
+    updateHelpStatusCounts();
+    renderHelpRequests();
+  } catch (e) {
+    console.error('Error loading help requests:', e);
+    tbody.replaceChildren();
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.colSpan = 7;
+    td.className = 'muted';
+    td.textContent = 'Error: ' + (e.message || String(e));
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+  }
+}
+
+// Update status badge counts
+function updateHelpStatusCounts() {
+  // Count by status - need to load all to get accurate counts
+  api('/admin/help-requests').then(data => {
+    const all = data.help_requests || [];
+    const counts = {
+      'new': 0,
+      'contacted': 0,
+      'in_progress': 0,
+      'archived': 0
+    };
+    all.forEach(r => {
+      if (counts.hasOwnProperty(r.status)) counts[r.status]++;
+    });
+
+    const newCount = document.getElementById('newHelpCount');
+    const contactedCount = document.getElementById('contactedHelpCount');
+    const inProgressCount = document.getElementById('inProgressHelpCount');
+    const archivedCount = document.getElementById('archivedHelpCount');
+
+    if (newCount) newCount.textContent = counts.new;
+    if (contactedCount) contactedCount.textContent = counts.contacted;
+    if (inProgressCount) inProgressCount.textContent = counts.in_progress;
+    if (archivedCount) archivedCount.textContent = counts.archived;
+  }).catch(console.error);
+}
+
+// Render help requests table
+function renderHelpRequests() {
+  const tbody = document.getElementById('helpRequestsBody');
+  const cardContainer = document.getElementById('helpRequestsCardContainer');
+  if (!tbody) return;
+
+  tbody.replaceChildren();
+  if (cardContainer) cardContainer.replaceChildren();
+
+  // Apply search filter
+  let filtered = helpRequests;
+  if (helpSearchQuery) {
+    const q = helpSearchQuery.toLowerCase();
+    filtered = filtered.filter(r =>
+      (r.name || '').toLowerCase().includes(q) ||
+      (r.email || '').toLowerCase().includes(q) ||
+      (r.message || '').toLowerCase().includes(q)
+    );
+  }
+
+  // Apply pagination
+  const start = helpPagination.page * helpPagination.perPage;
+  const end = start + helpPagination.perPage;
+  const paginated = filtered.slice(start, end);
+
+  if (paginated.length === 0) {
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.colSpan = 7;
+    td.className = 'muted';
+    td.style.textAlign = 'center';
+    td.style.padding = '40px';
+    td.textContent = filtered.length === 0 ? 'No help requests found' : 'No matching results';
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+    return;
+  }
+
+  paginated.forEach(request => {
+    // Desktop table row
+    const tr = document.createElement('tr');
+    tr.style.cursor = 'pointer';
+    tr.onclick = () => openHelpDetailModal(request);
+
+    // Name
+    const tdName = document.createElement('td');
+    tdName.textContent = request.name || '-';
+    tr.appendChild(tdName);
+
+    // Email
+    const tdEmail = document.createElement('td');
+    const emailLink = document.createElement('a');
+    emailLink.href = 'mailto:' + encodeURIComponent(request.email);
+    emailLink.textContent = request.email;
+    emailLink.style.color = 'var(--accent)';
+    emailLink.onclick = e => e.stopPropagation();
+    tdEmail.appendChild(emailLink);
+    tr.appendChild(tdEmail);
+
+    // Phone
+    const tdPhone = document.createElement('td');
+    const phoneLink = document.createElement('a');
+    phoneLink.href = 'tel:' + encodeURIComponent(request.phone);
+    phoneLink.textContent = request.phone;
+    phoneLink.style.color = 'var(--accent)';
+    phoneLink.onclick = e => e.stopPropagation();
+    tdPhone.appendChild(phoneLink);
+    tr.appendChild(tdPhone);
+
+    // Help Types
+    const tdTypes = document.createElement('td');
+    const typesContainer = document.createElement('div');
+    typesContainer.style.display = 'flex';
+    typesContainer.style.flexWrap = 'wrap';
+    typesContainer.style.gap = '4px';
+    (request.help_types || []).forEach(type => {
+      const badge = document.createElement('span');
+      badge.textContent = helpTypeLabels[type] || type;
+      badge.style.cssText = 'background:var(--bg-tertiary);color:var(--text);padding:2px 8px;border-radius:4px;font-size:0.75rem;';
+      typesContainer.appendChild(badge);
+    });
+    tdTypes.appendChild(typesContainer);
+    tr.appendChild(tdTypes);
+
+    // Status
+    const tdStatus = document.createElement('td');
+    const statusBadge = document.createElement('span');
+    statusBadge.textContent = (request.status || 'new').replace('_', ' ');
+    const statusColors = {
+      'new': '#3b82f6',
+      'contacted': '#f59e0b',
+      'in_progress': '#10b981',
+      'archived': '#6b7280'
+    };
+    statusBadge.style.cssText = 'background:' + (statusColors[request.status] || '#6b7280') + ';color:#fff;padding:4px 10px;border-radius:4px;font-size:0.75rem;font-weight:600;text-transform:capitalize;';
+    tdStatus.appendChild(statusBadge);
+    tr.appendChild(tdStatus);
+
+    // Submitted date
+    const tdDate = document.createElement('td');
+    const date = parseTimestamp(request.created_at);
+    tdDate.textContent = date ? date.toLocaleDateString() : '-';
+    tr.appendChild(tdDate);
+
+    // Actions
+    const tdActions = document.createElement('td');
+    const viewBtn = document.createElement('button');
+    viewBtn.className = 'btn';
+    viewBtn.style.cssText = 'padding:6px 12px;font-size:0.8rem;';
+    viewBtn.textContent = 'View';
+    viewBtn.onclick = e => {
+      e.stopPropagation();
+      openHelpDetailModal(request);
+    };
+    tdActions.appendChild(viewBtn);
+    tr.appendChild(tdActions);
+
+    tbody.appendChild(tr);
+
+    // Mobile card
+    if (cardContainer) {
+      const card = document.createElement('div');
+      card.className = 'data-card';
+      card.onclick = () => openHelpDetailModal(request);
+
+      const header = document.createElement('div');
+      header.className = 'data-card-header';
+
+      const title = document.createElement('div');
+      title.className = 'data-card-title';
+      title.textContent = request.name || 'Unknown';
+      header.appendChild(title);
+
+      const badge = document.createElement('div');
+      badge.className = 'data-card-badge';
+      badge.textContent = (request.status || 'new').replace('_', ' ');
+      badge.style.background = statusColors[request.status] || '#6b7280';
+      header.appendChild(badge);
+
+      card.appendChild(header);
+
+      const body = document.createElement('div');
+      body.className = 'data-card-body';
+
+      body.appendChild(createHelpCardRow('Email', request.email));
+      body.appendChild(createHelpCardRow('Phone', request.phone));
+      body.appendChild(createHelpCardRow('Help Types', (request.help_types || []).map(t => helpTypeLabels[t] || t).join(', ')));
+      body.appendChild(createHelpCardRow('Submitted', date ? date.toLocaleDateString() : '-'));
+
+      card.appendChild(body);
+      cardContainer.appendChild(card);
+    }
+  });
+
+  // Update pagination info
+  const infoEl = document.getElementById('helpInfo');
+  if (infoEl) {
+    const total = filtered.length;
+    const showing = Math.min(end, total);
+    infoEl.textContent = (start + 1) + '-' + showing + ' of ' + total;
+  }
+
+  // Update pagination buttons
+  const prevBtn = document.getElementById('helpPrev');
+  const nextBtn = document.getElementById('helpNext');
+  if (prevBtn) prevBtn.disabled = helpPagination.page === 0;
+  if (nextBtn) nextBtn.disabled = end >= filtered.length;
+}
+
+// Open help request detail modal
+function openHelpDetailModal(request) {
+  currentHelpRequest = request;
+  const modal = document.getElementById('helpDetailModal');
+  if (!modal) return;
+
+  // Populate modal fields
+  document.getElementById('helpDetailName').textContent = request.name || '-';
+
+  const emailLink = document.getElementById('helpDetailEmailLink');
+  emailLink.href = 'mailto:' + encodeURIComponent(request.email);
+  emailLink.textContent = request.email;
+
+  const phoneLink = document.getElementById('helpDetailPhoneLink');
+  phoneLink.href = 'tel:' + encodeURIComponent(request.phone);
+  phoneLink.textContent = request.phone;
+
+  // LinkedIn section
+  const linkedInSection = document.getElementById('helpDetailLinkedInSection');
+  const linkedInLink = document.getElementById('helpDetailLinkedInLink');
+  if (request.linkedin_url) {
+    linkedInSection.style.display = 'block';
+    linkedInLink.href = request.linkedin_url;
+    linkedInLink.textContent = request.linkedin_url;
+  } else {
+    linkedInSection.style.display = 'none';
+  }
+
+  // Help types badges
+  const typesContainer = document.getElementById('helpDetailTypes');
+  typesContainer.replaceChildren();
+  (request.help_types || []).forEach(type => {
+    const badge = document.createElement('span');
+    badge.textContent = helpTypeLabels[type] || type;
+    badge.style.cssText = 'background:var(--accent);color:#000;padding:4px 12px;border-radius:4px;font-size:0.85rem;font-weight:600;';
+    typesContainer.appendChild(badge);
+  });
+
+  // Message
+  document.getElementById('helpDetailMessage').textContent = request.message || '-';
+
+  // Status dropdown
+  document.getElementById('helpDetailStatus').value = request.status || 'new';
+
+  // Admin notes
+  document.getElementById('helpDetailNotes').value = request.admin_notes || '';
+
+  // Show modal
+  modal.classList.add('active');
+}
+
+// Close help detail modal
+function closeHelpDetailModal() {
+  const modal = document.getElementById('helpDetailModal');
+  if (modal) modal.classList.remove('active');
+  currentHelpRequest = null;
+}
+
+// Save help request changes
+async function saveHelpRequest() {
+  if (!currentHelpRequest) return;
+
+  const status = document.getElementById('helpDetailStatus').value;
+  const adminNotes = document.getElementById('helpDetailNotes').value;
+
+  try {
+    await api('/admin/help-requests/' + currentHelpRequest.request_id, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        status: status,
+        admin_notes: adminNotes || null
+      })
+    });
+
+    showToast('Help request updated successfully', 'success');
+    closeHelpDetailModal();
+    loadHelpRequests(false);
+  } catch (e) {
+    console.error('Error updating help request:', e);
+    showToast('Error: ' + (e.message || 'Failed to update'), 'error');
+  }
+}
+
+// Help request filter button handlers
+document.getElementById('helpFilterNew')?.addEventListener('click', () => {
+  helpQuickFilter = 'new';
+  document.querySelectorAll('.help-filter').forEach(b => b.classList.remove('active'));
+  document.getElementById('helpFilterNew').classList.add('active');
+  loadHelpRequests();
+});
+
+document.getElementById('helpFilterContacted')?.addEventListener('click', () => {
+  helpQuickFilter = 'contacted';
+  document.querySelectorAll('.help-filter').forEach(b => b.classList.remove('active'));
+  document.getElementById('helpFilterContacted').classList.add('active');
+  loadHelpRequests();
+});
+
+document.getElementById('helpFilterInProgress')?.addEventListener('click', () => {
+  helpQuickFilter = 'in_progress';
+  document.querySelectorAll('.help-filter').forEach(b => b.classList.remove('active'));
+  document.getElementById('helpFilterInProgress').classList.add('active');
+  loadHelpRequests();
+});
+
+document.getElementById('helpFilterArchived')?.addEventListener('click', () => {
+  helpQuickFilter = 'archived';
+  document.querySelectorAll('.help-filter').forEach(b => b.classList.remove('active'));
+  document.getElementById('helpFilterArchived').classList.add('active');
+  loadHelpRequests();
+});
+
+// Refresh button
+document.getElementById('refreshHelpRequests')?.addEventListener('click', () => loadHelpRequests());
+
+// Search input
+const helpSearchInput = document.getElementById('helpSearch');
+if (helpSearchInput) {
+  helpSearchInput.addEventListener('input', debounce(() => {
+    helpSearchQuery = helpSearchInput.value.trim();
+    helpPagination.page = 0;
+    renderHelpRequests();
+  }, 300));
+}
+
+// Pagination controls
+document.getElementById('helpPerPage')?.addEventListener('change', (e) => {
+  helpPagination.perPage = parseInt(e.target.value, 10);
+  helpPagination.page = 0;
+  renderHelpRequests();
+});
+
+document.getElementById('helpPrev')?.addEventListener('click', () => {
+  if (helpPagination.page > 0) {
+    helpPagination.page--;
+    renderHelpRequests();
+  }
+});
+
+document.getElementById('helpNext')?.addEventListener('click', () => {
+  helpPagination.page++;
+  renderHelpRequests();
+});
+
+// Modal close handlers
+document.getElementById('closeHelpDetailModal')?.addEventListener('click', closeHelpDetailModal);
+document.getElementById('helpDetailModal')?.addEventListener('click', (e) => {
+  if (e.target.id === 'helpDetailModal') closeHelpDetailModal();
+});
+
+// Save button handler
+document.getElementById('saveHelpRequest')?.addEventListener('click', saveHelpRequest);
 

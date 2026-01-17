@@ -25,6 +25,7 @@
 import { S3Client, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import { KMSClient, SignCommand, GetPublicKeyCommand } from '@aws-sdk/client-kms';
 import { CloudFormationClient, DescribeStacksCommand } from '@aws-sdk/client-cloudformation';
+import { CloudFrontClient, CreateInvalidationCommand } from '@aws-sdk/client-cloudfront';
 import { createHash, randomUUID } from 'crypto';
 import { parseArgs } from 'util';
 
@@ -49,7 +50,7 @@ interface PcrManifest {
 
 const MANIFEST_KEY = 'pcr-manifest.json';
 
-async function getStackOutputs(): Promise<{ bucket: string; keyId: string }> {
+async function getStackOutputs(): Promise<{ bucket: string; keyId: string; distributionId: string }> {
   const cfn = new CloudFormationClient({});
   const response = await cfn.send(new DescribeStacksCommand({
     StackName: 'VettID-Nitro',
@@ -58,12 +59,13 @@ async function getStackOutputs(): Promise<{ bucket: string; keyId: string }> {
   const outputs = response.Stacks?.[0]?.Outputs || [];
   const bucket = outputs.find(o => o.OutputKey === 'PcrManifestBucketName')?.OutputValue;
   const keyId = outputs.find(o => o.OutputKey === 'PcrSigningKeyId')?.OutputValue;
+  const distributionId = outputs.find(o => o.OutputKey === 'PcrManifestDistributionId')?.OutputValue;
 
-  if (!bucket || !keyId) {
-    throw new Error('Could not find PcrManifestBucketName or PcrSigningKeyId in VettID-Nitro stack outputs');
+  if (!bucket || !keyId || !distributionId) {
+    throw new Error('Could not find PcrManifestBucketName, PcrSigningKeyId, or PcrManifestDistributionId in VettID-Nitro stack outputs');
   }
 
-  return { bucket, keyId };
+  return { bucket, keyId, distributionId };
 }
 
 async function signManifest(kms: KMSClient, keyId: string, data: string): Promise<string> {
@@ -102,6 +104,22 @@ function validatePcrValue(value: string, name: string): void {
   }
 }
 
+async function invalidateCloudFrontCache(distributionId: string, paths: string[]): Promise<string> {
+  const cloudfront = new CloudFrontClient({});
+  const response = await cloudfront.send(new CreateInvalidationCommand({
+    DistributionId: distributionId,
+    InvalidationBatch: {
+      CallerReference: `pcr-publish-${Date.now()}`,
+      Paths: {
+        Quantity: paths.length,
+        Items: paths,
+      },
+    },
+  }));
+
+  return response.Invalidation?.Id || 'unknown';
+}
+
 async function main() {
   const { values } = parseArgs({
     options: {
@@ -115,6 +133,8 @@ async function main() {
       'valid-until': { type: 'string' },
       bucket: { type: 'string' },
       'key-id': { type: 'string' },
+      'distribution-id': { type: 'string' },
+      'skip-invalidation': { type: 'boolean', default: false },
       'get-public-key': { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h', default: false },
     },
@@ -136,6 +156,8 @@ Options:
   --valid-until <date> ISO 8601 expiration date (default: null/forever)
   --bucket <name>      S3 bucket (default: from VettID-Nitro stack)
   --key-id <id>        KMS key ID (default: from VettID-Nitro stack)
+  --distribution-id    CloudFront distribution ID (default: from VettID-Nitro stack)
+  --skip-invalidation  Skip CloudFront cache invalidation
   --get-public-key     Just print the public key and exit
   -h, --help           Show this help
 
@@ -154,19 +176,22 @@ Examples:
     process.exit(0);
   }
 
-  // Get bucket and key from environment, args, or stack outputs
+  // Get bucket, key, and distribution ID from environment, args, or stack outputs
   let bucket = values.bucket || process.env.PCR_MANIFEST_BUCKET;
   let keyId = values['key-id'] || process.env.PCR_SIGNING_KEY_ID;
+  let distributionId = values['distribution-id'] || process.env.PCR_MANIFEST_DISTRIBUTION_ID;
 
-  if (!bucket || !keyId) {
+  if (!bucket || !keyId || !distributionId) {
     console.log('Fetching configuration from VettID-Nitro stack outputs...');
     const stackOutputs = await getStackOutputs();
     bucket = bucket || stackOutputs.bucket;
     keyId = keyId || stackOutputs.keyId;
+    distributionId = distributionId || stackOutputs.distributionId;
   }
 
   console.log(`Using bucket: ${bucket}`);
   console.log(`Using key: ${keyId}`);
+  console.log(`Using distribution: ${distributionId}`);
 
   const s3 = new S3Client({});
   const kms = new KMSClient({});
@@ -264,6 +289,15 @@ Examples:
     ContentType: 'application/json',
     CacheControl: 'public, max-age=60',
   }));
+
+  // Invalidate CloudFront cache to ensure immediate availability
+  if (!values['skip-invalidation']) {
+    console.log('Invalidating CloudFront cache...');
+    const invalidationId = await invalidateCloudFrontCache(distributionId, ['/' + MANIFEST_KEY, '/']);
+    console.log(`   CloudFront invalidation created: ${invalidationId}`);
+  } else {
+    console.log('Skipping CloudFront invalidation (--skip-invalidation flag set)');
+  }
 
   console.log('\n✅ PCR manifest published successfully!');
   console.log(`   Version: ${manifest.version}`);

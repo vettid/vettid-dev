@@ -842,6 +842,18 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       timeout: cdk.Duration.seconds(10),
       description: 'Public endpoint to list active supported services for mobile app',
     });
+    const submitHelpRequest = new lambdaNode.NodejsFunction(this, 'SubmitHelpRequestFn', {
+      entry: 'lambda/handlers/public/submitHelpRequest.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+        TABLE_HELP_REQUESTS: tables.helpRequests.tableName,
+        SES_FROM: 'no-reply@vettid.dev',
+        ADMIN_NOTIFICATION_EMAIL: 'admin@vettid.dev',
+      },
+      timeout: cdk.Duration.seconds(15),
+      description: 'Public endpoint to submit volunteer help requests',
+    });
     const registrationStreamFn = new lambdaNode.NodejsFunction(this, 'RegistrationStreamFn', {
       entry: 'lambda/handlers/streams/registrationStream.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
@@ -1122,6 +1134,8 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
     tables.audit.grantReadWriteData(submitWaitlist); // For rate limiting
     tables.notificationPreferences.grantReadData(submitWaitlist); // For admin notifications
     tables.supportedServices.grantReadData(listPublicServices); // Public services list
+    tables.helpRequests.grantReadWriteData(submitHelpRequest); // Help request submissions
+    tables.audit.grantReadWriteData(submitHelpRequest); // For rate limiting
     tables.registrations.grantReadWriteData(cancelAccount);
     tables.subscriptions.grantReadWriteData(cancelAccount);
     tables.registrations.grantReadWriteData(cleanupExpiredAccounts);
@@ -1265,6 +1279,18 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
         },
       }),
     );
+    // SECURITY: SES SendEmail for help request admin notifications
+    submitHelpRequest.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['ses:SendEmail'],
+        resources: [sesIdentityArn],
+        conditions: {
+          'StringLike': {
+            'ses:FromAddress': '*@vettid.dev',
+          },
+        },
+      }),
+    );
     requestMembership.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ['cognito-idp:AdminAddUserToGroup', 'cognito-idp:AdminGetUser'],
@@ -1331,6 +1357,13 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       path: '/services',
       methods: [apigw.HttpMethod.GET],
       integration: new integrations.HttpLambdaIntegration('ListPublicServicesInt', listPublicServices),
+    });
+
+    // Add /help-request route (public - volunteer form submission)
+    this.httpApi.addRoutes({
+      path: '/help-request',
+      methods: [apigw.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('SubmitHelpRequestInt', submitHelpRequest),
     });
 
     // Token exchange - stores JWT tokens in httpOnly cookies (public, no auth)

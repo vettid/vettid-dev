@@ -963,6 +963,11 @@ export class NitroStack extends cdk.Stack {
       description: 'URL for PCR manifest (use in mobile apps)',
     });
 
+    new cdk.CfnOutput(this, 'PcrManifestDistributionId', {
+      value: pcrManifestDistribution.distributionId,
+      description: 'CloudFront distribution ID for PCR manifest (for cache invalidation)',
+    });
+
     new cdk.CfnOutput(this, 'VaultDataBucketName', {
       value: this.vaultDataBucket.bucketName,
       description: 'S3 bucket for encrypted vault data',
