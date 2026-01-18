@@ -1004,4 +1004,10 @@ export function setupProposalEventHandlers() {
   if (createProposalBtn) {
     createProposalBtn.onclick = () => createProposal();
   }
+
+  // Quorum type change handler - show/hide value input
+  const quorumTypeSelect = document.getElementById('proposalQuorumType');
+  if (quorumTypeSelect) {
+    quorumTypeSelect.onchange = () => toggleQuorumValue();
+  }
 }
