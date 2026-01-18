@@ -1,7 +1,7 @@
 # VettID Vault Services - Development Plan
 
-**Version:** 2.0
-**Last Updated:** 2026-01-17
+**Version:** 2.1
+**Last Updated:** 2026-01-18
 **Status:** Active - Updated for Nitro Enclave Architecture
 
 ---
@@ -382,7 +382,6 @@ The enclave is optimized for **native Go handlers** (no WASM runtime overhead), 
 | `vettid-dev` | Backend infrastructure (CDK), Lambda handlers, enclave code (native Go handlers) |
 | `vettid-android` | Android mobile app |
 | `vettid-ios` | iOS mobile app |
-| `vettid-handlers` | User-extensible WASM handlers (future - not currently active) |
 | `vettid.org` | Marketing website |
 | `vettid-test-harness` | End-to-end testing infrastructure |
 
@@ -397,23 +396,44 @@ vettid-dev/
 │   │   ├── admin-management-stack.ts
 │   │   ├── vault-stack.ts
 │   │   ├── nats-stack.ts
-│   │   └── nitro-stack.ts
+│   │   ├── nitro-stack.ts
+│   │   ├── monitoring-stack.ts
+│   │   ├── extensibility-monitoring-stack.ts
+│   │   └── business-governance-stack.ts
 │   ├── lambda/
 │   │   ├── handlers/           # Lambda functions
-│   │   │   ├── vault/          # Enrollment, auth
 │   │   │   ├── admin/          # Admin operations
-│   │   │   └── member/         # Member operations
+│   │   │   ├── attestation/    # Device attestation verification
+│   │   │   ├── auth/           # Authentication challenges
+│   │   │   ├── backup/         # Credential backup/restore
+│   │   │   ├── calls/          # TURN credentials
+│   │   │   ├── connections/    # Connection management
+│   │   │   ├── member/         # Member operations
+│   │   │   ├── nats/           # NATS cluster management
+│   │   │   ├── profile/        # Profile operations
+│   │   │   ├── public/         # Public registration endpoints
+│   │   │   ├── registry/       # Handler registry
+│   │   │   ├── scheduled/      # Scheduled tasks
+│   │   │   ├── streams/        # DynamoDB stream handlers
+│   │   │   └── vault/          # Vault operations
 │   │   └── common/             # Shared utilities
 │   └── docs/                   # CDK documentation
 ├── enclave/
 │   ├── supervisor/             # Enclave supervisor (NSM/KMS, vault lifecycle)
 │   ├── vault-manager/          # Vault-manager process (native Go handlers)
-│   │   ├── vote_handler.go     # Vault-signed voting
+│   │   ├── authenticate.go     # Authentication logic
+│   │   ├── backup.go           # Backup operations
+│   │   ├── bootstrap_handler.go # Initial vault bootstrap
 │   │   ├── calls.go            # E2EE call signaling
+│   │   ├── cek.go              # Credential encryption keys
 │   │   ├── connections.go      # Connection management
+│   │   ├── credential.go       # Credential operations
 │   │   ├── messaging.go        # Encrypted messaging
+│   │   ├── notifications.go    # Push notifications
+│   │   ├── pin_handler.go      # PIN verification
+│   │   ├── profile.go          # Profile management
 │   │   ├── secrets.go          # Secrets storage
-│   │   └── ...                 # Other native handlers
+│   │   └── vote_handler.go     # Vault-signed voting
 │   └── parent/                 # Parent process (NATS, S3, vsock routing)
 └── docs/
     ├── NITRO-ENCLAVE-VAULT-ARCHITECTURE.md
@@ -442,8 +462,7 @@ vettid-dev/
 - **Language**: Go (native handlers compiled into enclave image)
 - **Database**: SQLite (in-memory, DEK-encrypted)
 - **Communication**: vsock (binary MessagePack protocol)
-- **Handlers**: Native Go (VoteHandler, CallHandler, SecretsHandler, MessagingHandler, ConnectionsHandler, ProfileHandler, CredentialHandler, PINHandler, BootstrapHandler)
-- **Future**: WASM infrastructure exists for user-extensible handlers (not currently active)
+- **Handlers**: Native Go (VoteHandler, CallHandler, SecretsHandler, MessagingHandler, ConnectionsHandler, ProfileHandler, CredentialHandler, PINHandler, BootstrapHandler, NotificationsHandler, BackupHandler)
 
 ---
 
@@ -498,7 +517,8 @@ vettid-dev/
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0 | 2025-12-06 | Initial draft (per-user EC2 model) |
-| 2.0 | 2026-01-17 | Complete rewrite for Nitro Enclave architecture. Removed per-user EC2 provisioning, Ledger (RDS), WASM Service Registry. Added multi-tenant enclave, SQLite+S3 storage, updated NATS architecture, vault-based voting phases. Reflects current implementation status. Clarified that core vault operations use **native Go handlers** (VoteHandler, CallHandler, etc.) compiled into enclave image - WASM infrastructure exists but is reserved for future user-extensible handlers. Optimized enclave resource allocation to **12 GB / 6 vCPUs** (75% of c6a.2xlarge) - maximum allocation since parent is I/O-bound and only needs 2 vCPUs (AWS minimum). |
+| 2.0 | 2026-01-17 | Complete rewrite for Nitro Enclave architecture. Removed per-user EC2 provisioning, Ledger (RDS), WASM Service Registry. Added multi-tenant enclave, SQLite+S3 storage, updated NATS architecture, vault-based voting phases. Reflects current implementation status. All vault operations use **native Go handlers** compiled into enclave image. Optimized enclave resource allocation to **12 GB / 6 vCPUs** (75% of c6a.2xlarge) - maximum allocation since parent is I/O-bound and only needs 2 vCPUs (AWS minimum). |
+| 2.1 | 2026-01-18 | Updated repository structure (removed vettid-handlers). Expanded Lambda handler directory listing to reflect actual structure. Updated vault-manager handler file listing. Removed references to user-extensible WASM handlers. |
 
 ---
 

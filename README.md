@@ -64,7 +64,6 @@ VettID is a privacy-first digital identity platform that gives users complete co
 
 - [vettid-android](https://github.com/vettid/vettid-android) - Android app (Kotlin/Jetpack Compose)
 - [vettid-ios](https://github.com/vettid/vettid-ios) - iOS app (Swift/SwiftUI)
-- [vettid-handlers](https://github.com/vettid/vettid-handlers) - WebAssembly handlers for vault
 - [vettid-test-harness](https://github.com/vettid/vettid-test-harness) - E2E test suite
 - [vettid.org](https://github.com/vettid/vettid.org) - Marketing website
 
