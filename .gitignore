@@ -41,6 +41,3 @@ enclave/parent/parent
 enclave/parent/vettid-parent
 enclave/supervisor/supervisor
 enclave/bin/
-
-# Packer manifest (changes with each AMI build)
-packer/manifest.json
