@@ -701,7 +701,7 @@ export function renderSubscriptions() {
     const td7 = document.createElement('td');
     const vaultBadge = document.createElement('span');
     vaultBadge.style.cssText = 'display:inline-block;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;color:#fff;background:linear-gradient(135deg,#6b7280 0%,#4b5563 100%);';
-    vaultBadge.textContent = '—';
+    vaultBadge.textContent = 'No';
     td7.appendChild(vaultBadge);
 
     // 8. Emails badge
