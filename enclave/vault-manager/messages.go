@@ -344,24 +344,49 @@ func (mh *MessageHandler) handleAppOperation(ctx context.Context, msg *IncomingM
 }
 
 // handleCallOperation routes call-related operations
+// Distinguishes between:
+// - App requests: call.start, call.accept, call.reject, call.end, call.signal, call.history
+// - Incoming vault events: call.initiate, call.offer, call.answer, call.candidate, etc.
 func (mh *MessageHandler) handleCallOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
 	if len(opParts) < 2 {
-		return mh.errorResponse(msg.GetID(), "missing call event type")
+		return mh.errorResponse(msg.GetID(), "missing call operation type")
 	}
 
-	eventTypeStr := opParts[1] // e.g., "initiate", "offer", "answer"
+	opType := opParts[1]
 
-	// Parse the call event
+	// App-initiated operations (requests from the mobile app)
+	switch opType {
+	case "start":
+		// App wants to initiate an outgoing call
+		return mh.callHandler.HandleInitiateCall(ctx, msg)
+	case "accept":
+		// App wants to accept an incoming call
+		return mh.callHandler.HandleAcceptCall(ctx, msg)
+	case "reject":
+		// App wants to reject an incoming call
+		return mh.callHandler.HandleRejectCall(ctx, msg)
+	case "end":
+		// App wants to end a call
+		return mh.callHandler.HandleEndCall(ctx, msg)
+	case "signal":
+		// App wants to send WebRTC signaling (offer/answer/candidate)
+		return mh.callHandler.HandleSendSignaling(ctx, msg)
+	case "history":
+		// App wants call history
+		return mh.callHandler.HandleGetCallHistory(ctx, msg)
+	}
+
+	// Incoming events from other vaults (call.initiate, call.offer, etc.)
 	var event CallEvent
 	if err := json.Unmarshal(msg.Payload, &event); err != nil {
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("invalid call event payload: %v", err))
 	}
 
 	// Map string to CallEventType
-	eventType := CallEventType(eventTypeStr)
+	eventType := CallEventType(opType)
 	event.EventType = eventType
 
-	// Handle the call event
+	// Handle the incoming call event
 	if err := mh.callHandler.HandleCallEvent(ctx, &event); err != nil {
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("call handling error: %v", err))
 	}

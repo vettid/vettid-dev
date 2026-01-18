@@ -2,11 +2,16 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"time"
 
 	"github.com/rs/zerolog/log"
+	"golang.org/x/crypto/curve25519"
+	"golang.org/x/crypto/hkdf"
+	"crypto/sha256"
 )
 
 // CallEventType represents the type of call event
@@ -60,12 +65,97 @@ type BlockListEntry struct {
 	ExpiresAt   int64  `json:"expires_at,omitempty"` // 0 = permanent
 }
 
+// --- App Request/Response types ---
+
+// InitiateCallRequest is sent by the app to start an outgoing call
+type InitiateCallRequest struct {
+	ConnectionID string            `json:"connection_id"`
+	Metadata     map[string]string `json:"metadata,omitempty"` // e.g., call type: audio/video
+}
+
+// InitiateCallResponse is returned when a call is initiated
+type InitiateCallResponse struct {
+	CallID        string `json:"call_id"`
+	Status        string `json:"status"`
+	LocalKeyPub   string `json:"local_key_pub"`   // X25519 public key for E2EE (base64)
+	InitiatedAt   string `json:"initiated_at"`
+}
+
+// AcceptCallRequest is sent by the app to accept an incoming call
+type AcceptCallRequest struct {
+	CallID string `json:"call_id"`
+}
+
+// AcceptCallResponse is returned when accepting a call
+type AcceptCallResponse struct {
+	CallID       string `json:"call_id"`
+	Status       string `json:"status"`
+	LocalKeyPub  string `json:"local_key_pub"`  // X25519 public key for E2EE (base64)
+	SharedSecret string `json:"shared_secret"`  // Derived shared secret (base64) - only if peer key available
+	AcceptedAt   string `json:"accepted_at"`
+}
+
+// RejectCallRequest is sent by the app to reject an incoming call
+type RejectCallRequest struct {
+	CallID string `json:"call_id"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// EndCallRequest is sent by the app to end a call
+type EndCallRequest struct {
+	CallID string `json:"call_id"`
+}
+
+// SendSignalingRequest is sent by the app to send WebRTC signaling data
+type SendSignalingRequest struct {
+	CallID      string          `json:"call_id"`
+	SignalType  string          `json:"signal_type"` // "offer", "answer", "candidate"
+	Payload     json.RawMessage `json:"payload"`     // WebRTC SDP or ICE candidate
+	PeerKeyPub  string          `json:"peer_key_pub,omitempty"` // Peer's X25519 public key (base64)
+}
+
+// SendSignalingResponse is returned after sending signaling
+type SendSignalingResponse struct {
+	CallID       string `json:"call_id"`
+	SignalType   string `json:"signal_type"`
+	Sent         bool   `json:"sent"`
+	SharedSecret string `json:"shared_secret,omitempty"` // Derived E2EE key if peer_key_pub provided
+}
+
+// GetCallHistoryRequest is sent by the app to retrieve call history
+type GetCallHistoryRequest struct {
+	Limit  int    `json:"limit,omitempty"`  // Default 50
+	Before int64  `json:"before,omitempty"` // Unix timestamp for pagination
+	Status string `json:"status,omitempty"` // Filter: "all", "missed", "answered"
+}
+
+// GetCallHistoryResponse contains call history
+type GetCallHistoryResponse struct {
+	Calls      []*CallRecord `json:"calls"`
+	HasMore    bool          `json:"has_more"`
+	OldestTime int64         `json:"oldest_time,omitempty"`
+}
+
+// ActiveCall tracks an in-progress call's cryptographic state
+type ActiveCall struct {
+	CallID        string    `json:"call_id"`
+	PeerID        string    `json:"peer_id"`
+	Direction     string    `json:"direction"` // "outgoing" or "incoming"
+	LocalPrivKey  []byte    `json:"-"`         // X25519 private key (never serialized)
+	LocalPubKey   []byte    `json:"local_pub_key"`
+	PeerPubKey    []byte    `json:"peer_pub_key,omitempty"`
+	SharedSecret  []byte    `json:"-"`         // Derived E2EE key (never serialized)
+	Status        string    `json:"status"`
+	StartedAt     time.Time `json:"started_at"`
+}
+
 // CallHandler manages call signaling for a vault
 type CallHandler struct {
-	ownerSpace string
-	storage    *EncryptedStorage
-	blockList  map[string]*BlockListEntry // In-memory cache
-	publisher  CallPublisher              // Interface to publish responses
+	ownerSpace  string
+	storage     *EncryptedStorage
+	blockList   map[string]*BlockListEntry // In-memory cache
+	activeCalls map[string]*ActiveCall     // In-memory active call state
+	publisher   CallPublisher              // Interface to publish responses
 }
 
 // CallPublisher interface for sending call events
@@ -79,10 +169,11 @@ type CallPublisher interface {
 // NewCallHandler creates a new call handler
 func NewCallHandler(ownerSpace string, storage *EncryptedStorage, publisher CallPublisher) *CallHandler {
 	return &CallHandler{
-		ownerSpace: ownerSpace,
-		storage:    storage,
-		blockList:  make(map[string]*BlockListEntry),
-		publisher:  publisher,
+		ownerSpace:  ownerSpace,
+		storage:     storage,
+		blockList:   make(map[string]*BlockListEntry),
+		activeCalls: make(map[string]*ActiveCall),
+		publisher:   publisher,
 	}
 }
 
@@ -180,6 +271,603 @@ func (ch *CallHandler) UnblockCaller(ctx context.Context, callerID string) error
 
 	log.Info().Str("unblocked_id", callerID).Msg("Caller unblocked")
 	return nil
+}
+
+// --- App-initiated call methods ---
+
+// HandleInitiateCall processes a call initiation request from the app
+func (ch *CallHandler) HandleInitiateCall(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req InitiateCallRequest
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		return ch.errorResponse(msg.GetID(), "invalid request format")
+	}
+
+	if req.ConnectionID == "" {
+		return ch.errorResponse(msg.GetID(), "connection_id is required")
+	}
+
+	// Verify connection exists and get peer info
+	connData, err := ch.storage.Get("connections/" + req.ConnectionID)
+	if err != nil {
+		return ch.errorResponse(msg.GetID(), "connection not found")
+	}
+
+	var conn ConnectionRecord
+	if err := json.Unmarshal(connData, &conn); err != nil {
+		return ch.errorResponse(msg.GetID(), "invalid connection data")
+	}
+
+	if conn.Status != "active" {
+		return ch.errorResponse(msg.GetID(), "connection is not active")
+	}
+
+	// Generate call ID and X25519 keypair for E2EE
+	callID := fmt.Sprintf("call-%d", time.Now().UnixNano())
+	localPrivKey, localPubKey, err := generateX25519KeyPair()
+	if err != nil {
+		return ch.errorResponse(msg.GetID(), "failed to generate encryption keys")
+	}
+
+	now := time.Now()
+
+	// Store active call state
+	activeCall := &ActiveCall{
+		CallID:       callID,
+		PeerID:       conn.PeerGUID,
+		Direction:    "outgoing",
+		LocalPrivKey: localPrivKey,
+		LocalPubKey:  localPubKey,
+		Status:       "initiating",
+		StartedAt:    now,
+	}
+	ch.activeCalls[callID] = activeCall
+
+	// Create call record
+	record := &CallRecord{
+		CallID:    callID,
+		CallerID:  ch.ownerSpace,
+		CalleeID:  conn.PeerGUID,
+		Direction: "outgoing",
+		Status:    "initiated",
+		StartedAt: now.Unix(),
+	}
+	if err := ch.storeCallRecord(ctx, record); err != nil {
+		log.Error().Err(err).Msg("Failed to store call record")
+	}
+
+	// Send initiate event to peer vault
+	initiateEvent := &CallEvent{
+		EventID:   generateEventID(),
+		EventType: CallEventInitiate,
+		CallerID:  ch.ownerSpace,
+		CalleeID:  conn.PeerGUID,
+		CallID:    callID,
+		Timestamp: now.Unix(),
+		Metadata:  req.Metadata,
+		Payload:   json.RawMessage(fmt.Sprintf(`{"local_key_pub":"%s"}`, base64.StdEncoding.EncodeToString(localPubKey))),
+	}
+
+	if err := ch.publishCallEventToVault(ctx, conn.PeerGUID, initiateEvent); err != nil {
+		// Clean up on failure
+		delete(ch.activeCalls, callID)
+		return ch.errorResponse(msg.GetID(), "failed to send call request")
+	}
+
+	log.Info().
+		Str("call_id", callID).
+		Str("peer", conn.PeerGUID).
+		Msg("Outgoing call initiated")
+
+	resp := InitiateCallResponse{
+		CallID:      callID,
+		Status:      "initiated",
+		LocalKeyPub: base64.StdEncoding.EncodeToString(localPubKey),
+		InitiatedAt: now.Format(time.RFC3339),
+	}
+	respBytes, _ := json.Marshal(resp)
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// HandleAcceptCall processes a call acceptance from the app
+func (ch *CallHandler) HandleAcceptCall(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req AcceptCallRequest
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		return ch.errorResponse(msg.GetID(), "invalid request format")
+	}
+
+	if req.CallID == "" {
+		return ch.errorResponse(msg.GetID(), "call_id is required")
+	}
+
+	// Get active call state (should have been created when we received the incoming call)
+	activeCall, exists := ch.activeCalls[req.CallID]
+	if !exists {
+		return ch.errorResponse(msg.GetID(), "call not found or already ended")
+	}
+
+	// Generate our X25519 keypair if not already done
+	if activeCall.LocalPrivKey == nil {
+		localPrivKey, localPubKey, err := generateX25519KeyPair()
+		if err != nil {
+			return ch.errorResponse(msg.GetID(), "failed to generate encryption keys")
+		}
+		activeCall.LocalPrivKey = localPrivKey
+		activeCall.LocalPubKey = localPubKey
+	}
+
+	now := time.Now()
+	activeCall.Status = "answered"
+
+	// Derive shared secret if we have peer's public key
+	var sharedSecretB64 string
+	if len(activeCall.PeerPubKey) > 0 {
+		sharedSecret, err := deriveSharedSecret(activeCall.LocalPrivKey, activeCall.PeerPubKey, req.CallID)
+		if err != nil {
+			log.Warn().Err(err).Msg("Failed to derive shared secret")
+		} else {
+			activeCall.SharedSecret = sharedSecret
+			sharedSecretB64 = base64.StdEncoding.EncodeToString(sharedSecret)
+		}
+	}
+
+	// Update call record
+	if err := ch.updateCallRecord(ctx, req.CallID, func(r *CallRecord) {
+		r.Status = "answered"
+		r.AnsweredAt = now.Unix()
+	}); err != nil {
+		log.Error().Err(err).Msg("Failed to update call record")
+	}
+
+	// Send accept event to peer vault
+	acceptEvent := &CallEvent{
+		EventID:   generateEventID(),
+		EventType: CallEventAccept,
+		CallerID:  ch.ownerSpace,
+		CalleeID:  activeCall.PeerID,
+		CallID:    req.CallID,
+		Timestamp: now.Unix(),
+		Payload:   json.RawMessage(fmt.Sprintf(`{"local_key_pub":"%s"}`, base64.StdEncoding.EncodeToString(activeCall.LocalPubKey))),
+	}
+
+	if err := ch.publishCallEventToVault(ctx, activeCall.PeerID, acceptEvent); err != nil {
+		log.Warn().Err(err).Msg("Failed to send accept event to peer")
+	}
+
+	log.Info().Str("call_id", req.CallID).Msg("Call accepted")
+
+	resp := AcceptCallResponse{
+		CallID:       req.CallID,
+		Status:       "answered",
+		LocalKeyPub:  base64.StdEncoding.EncodeToString(activeCall.LocalPubKey),
+		SharedSecret: sharedSecretB64,
+		AcceptedAt:   now.Format(time.RFC3339),
+	}
+	respBytes, _ := json.Marshal(resp)
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// HandleRejectCall processes a call rejection from the app
+func (ch *CallHandler) HandleRejectCall(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req RejectCallRequest
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		return ch.errorResponse(msg.GetID(), "invalid request format")
+	}
+
+	if req.CallID == "" {
+		return ch.errorResponse(msg.GetID(), "call_id is required")
+	}
+
+	activeCall, exists := ch.activeCalls[req.CallID]
+	if !exists {
+		return ch.errorResponse(msg.GetID(), "call not found or already ended")
+	}
+
+	now := time.Now()
+
+	// Update call record
+	if err := ch.updateCallRecord(ctx, req.CallID, func(r *CallRecord) {
+		r.Status = "rejected"
+		r.EndedAt = now.Unix()
+	}); err != nil {
+		log.Error().Err(err).Msg("Failed to update call record")
+	}
+
+	// Send reject event to peer
+	rejectEvent := &CallEvent{
+		EventID:   generateEventID(),
+		EventType: CallEventReject,
+		CallerID:  ch.ownerSpace,
+		CalleeID:  activeCall.PeerID,
+		CallID:    req.CallID,
+		Timestamp: now.Unix(),
+	}
+	ch.publishCallEventToVault(ctx, activeCall.PeerID, rejectEvent)
+
+	// Clean up active call
+	delete(ch.activeCalls, req.CallID)
+
+	log.Info().Str("call_id", req.CallID).Msg("Call rejected")
+
+	resp := map[string]interface{}{
+		"call_id": req.CallID,
+		"status":  "rejected",
+	}
+	respBytes, _ := json.Marshal(resp)
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// HandleEndCall processes a call end request from the app
+func (ch *CallHandler) HandleEndCall(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req EndCallRequest
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		return ch.errorResponse(msg.GetID(), "invalid request format")
+	}
+
+	if req.CallID == "" {
+		return ch.errorResponse(msg.GetID(), "call_id is required")
+	}
+
+	activeCall, exists := ch.activeCalls[req.CallID]
+	if !exists {
+		// Call may have already ended from the other side
+		return ch.successResponse(msg.GetID(), map[string]interface{}{
+			"call_id": req.CallID,
+			"status":  "ended",
+		})
+	}
+
+	now := time.Now()
+
+	// Update call record
+	if err := ch.updateCallRecord(ctx, req.CallID, func(r *CallRecord) {
+		r.EndedAt = now.Unix()
+		if r.AnsweredAt > 0 {
+			r.DurationSecs = int(r.EndedAt - r.AnsweredAt)
+		}
+	}); err != nil {
+		log.Error().Err(err).Msg("Failed to update call record")
+	}
+
+	// Send end event to peer
+	endEvent := &CallEvent{
+		EventID:   generateEventID(),
+		EventType: CallEventEnd,
+		CallerID:  ch.ownerSpace,
+		CalleeID:  activeCall.PeerID,
+		CallID:    req.CallID,
+		Timestamp: now.Unix(),
+	}
+	ch.publishCallEventToVault(ctx, activeCall.PeerID, endEvent)
+
+	// Clean up active call
+	delete(ch.activeCalls, req.CallID)
+
+	log.Info().Str("call_id", req.CallID).Msg("Call ended")
+
+	resp := map[string]interface{}{
+		"call_id": req.CallID,
+		"status":  "ended",
+	}
+	respBytes, _ := json.Marshal(resp)
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// HandleSendSignaling processes WebRTC signaling from the app
+func (ch *CallHandler) HandleSendSignaling(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req SendSignalingRequest
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		return ch.errorResponse(msg.GetID(), "invalid request format")
+	}
+
+	if req.CallID == "" {
+		return ch.errorResponse(msg.GetID(), "call_id is required")
+	}
+	if req.SignalType == "" {
+		return ch.errorResponse(msg.GetID(), "signal_type is required")
+	}
+
+	activeCall, exists := ch.activeCalls[req.CallID]
+	if !exists {
+		return ch.errorResponse(msg.GetID(), "call not found or already ended")
+	}
+
+	// If peer's public key is provided, store it and derive shared secret
+	var sharedSecretB64 string
+	if req.PeerKeyPub != "" {
+		peerPubKey, err := base64.StdEncoding.DecodeString(req.PeerKeyPub)
+		if err == nil && len(peerPubKey) == 32 {
+			activeCall.PeerPubKey = peerPubKey
+
+			// Derive shared secret
+			if activeCall.LocalPrivKey != nil {
+				sharedSecret, err := deriveSharedSecret(activeCall.LocalPrivKey, peerPubKey, req.CallID)
+				if err == nil {
+					activeCall.SharedSecret = sharedSecret
+					sharedSecretB64 = base64.StdEncoding.EncodeToString(sharedSecret)
+				}
+			}
+		}
+	}
+
+	// Map signal type to CallEventType
+	var eventType CallEventType
+	switch req.SignalType {
+	case "offer":
+		eventType = CallEventOffer
+	case "answer":
+		eventType = CallEventAnswer
+	case "candidate":
+		eventType = CallEventCandidate
+	default:
+		return ch.errorResponse(msg.GetID(), "invalid signal_type: must be offer, answer, or candidate")
+	}
+
+	// Send signaling to peer
+	signalingEvent := &CallEvent{
+		EventID:   generateEventID(),
+		EventType: eventType,
+		CallerID:  ch.ownerSpace,
+		CalleeID:  activeCall.PeerID,
+		CallID:    req.CallID,
+		Payload:   req.Payload,
+		Timestamp: time.Now().Unix(),
+	}
+
+	sent := true
+	if err := ch.publishCallEventToVault(ctx, activeCall.PeerID, signalingEvent); err != nil {
+		log.Warn().Err(err).Str("signal_type", req.SignalType).Msg("Failed to send signaling")
+		sent = false
+	}
+
+	log.Debug().
+		Str("call_id", req.CallID).
+		Str("signal_type", req.SignalType).
+		Bool("sent", sent).
+		Msg("Signaling forwarded")
+
+	resp := SendSignalingResponse{
+		CallID:       req.CallID,
+		SignalType:   req.SignalType,
+		Sent:         sent,
+		SharedSecret: sharedSecretB64,
+	}
+	respBytes, _ := json.Marshal(resp)
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// HandleGetCallHistory retrieves call history for the app
+func (ch *CallHandler) HandleGetCallHistory(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req GetCallHistoryRequest
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		// Allow empty payload for defaults
+		req = GetCallHistoryRequest{}
+	}
+
+	limit := req.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	// Get call history from storage
+	// Note: In a production system, you'd use proper indexing
+	calls, hasMore, err := ch.getCallRecords(ctx, limit, req.Before, req.Status)
+	if err != nil {
+		return ch.errorResponse(msg.GetID(), "failed to retrieve call history")
+	}
+
+	var oldestTime int64
+	if len(calls) > 0 {
+		oldestTime = calls[len(calls)-1].StartedAt
+	}
+
+	resp := GetCallHistoryResponse{
+		Calls:      calls,
+		HasMore:    hasMore,
+		OldestTime: oldestTime,
+	}
+	respBytes, _ := json.Marshal(resp)
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// getCallRecords retrieves call records with filtering using an index
+func (ch *CallHandler) getCallRecords(ctx context.Context, limit int, before int64, status string) ([]*CallRecord, bool, error) {
+	// Get call index
+	var callIDs []string
+	indexData, err := ch.storage.Get("calls/_index")
+	if err != nil {
+		// No calls yet
+		return []*CallRecord{}, false, nil
+	}
+	if err := json.Unmarshal(indexData, &callIDs); err != nil {
+		return nil, false, fmt.Errorf("failed to unmarshal call index: %w", err)
+	}
+
+	var records []*CallRecord
+	for _, callID := range callIDs {
+		data, err := ch.storage.Get("calls/" + callID)
+		if err != nil {
+			continue
+		}
+
+		var record CallRecord
+		if err := json.Unmarshal(data, &record); err != nil {
+			continue
+		}
+
+		// Apply filters
+		if before > 0 && record.StartedAt >= before {
+			continue
+		}
+		if status != "" && status != "all" {
+			if status == "missed" && record.Status != "missed" {
+				continue
+			}
+			if status == "answered" && record.Status != "answered" {
+				continue
+			}
+		}
+
+		records = append(records, &record)
+	}
+
+	// Sort by StartedAt descending (most recent first)
+	for i := 0; i < len(records)-1; i++ {
+		for j := i + 1; j < len(records); j++ {
+			if records[j].StartedAt > records[i].StartedAt {
+				records[i], records[j] = records[j], records[i]
+			}
+		}
+	}
+
+	hasMore := len(records) > limit
+	if hasMore {
+		records = records[:limit]
+	}
+
+	return records, hasMore, nil
+}
+
+// addToCallIndex adds a call ID to the call index
+func (ch *CallHandler) addToCallIndex(callID string) {
+	var index []string
+	indexData, err := ch.storage.Get("calls/_index")
+	if err == nil {
+		json.Unmarshal(indexData, &index)
+	}
+
+	// Check if already in index
+	for _, id := range index {
+		if id == callID {
+			return
+		}
+	}
+
+	// Add to front (most recent first)
+	index = append([]string{callID}, index...)
+
+	// Limit index size (keep last 1000 calls)
+	if len(index) > 1000 {
+		index = index[:1000]
+	}
+
+	indexData, _ = json.Marshal(index)
+	ch.storage.Put("calls/_index", indexData)
+}
+
+// --- X25519 Key Exchange Helpers ---
+
+// generateX25519KeyPair generates a new X25519 keypair for E2EE
+func generateX25519KeyPair() (privateKey, publicKey []byte, err error) {
+	privateKey = make([]byte, 32)
+	if _, err := rand.Read(privateKey); err != nil {
+		return nil, nil, fmt.Errorf("failed to generate random bytes: %w", err)
+	}
+
+	// Clamp the private key per X25519 spec
+	privateKey[0] &= 248
+	privateKey[31] &= 127
+	privateKey[31] |= 64
+
+	publicKey, err = curve25519.X25519(privateKey, curve25519.Basepoint)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to compute public key: %w", err)
+	}
+
+	return privateKey, publicKey, nil
+}
+
+// deriveSharedSecret performs X25519 key exchange and HKDF to derive a shared secret
+func deriveSharedSecret(localPrivKey, peerPubKey []byte, callID string) ([]byte, error) {
+	// Perform X25519 key exchange
+	sharedPoint, err := curve25519.X25519(localPrivKey, peerPubKey)
+	if err != nil {
+		return nil, fmt.Errorf("X25519 key exchange failed: %w", err)
+	}
+
+	// Use HKDF to derive the final key
+	// Salt: call ID for domain separation
+	// Info: "vettid-e2ee-call-key" for application binding
+	salt := []byte(callID)
+	info := []byte("vettid-e2ee-call-key")
+
+	hkdfReader := hkdf.New(sha256.New, sharedPoint, salt, info)
+
+	sharedSecret := make([]byte, 32) // 256-bit key
+	if _, err := hkdfReader.Read(sharedSecret); err != nil {
+		return nil, fmt.Errorf("HKDF derivation failed: %w", err)
+	}
+
+	return sharedSecret, nil
+}
+
+// --- Response helpers ---
+
+func (ch *CallHandler) errorResponse(id string, message string) (*OutgoingMessage, error) {
+	resp := map[string]interface{}{
+		"success": false,
+		"error":   message,
+	}
+	respBytes, _ := json.Marshal(resp)
+
+	return &OutgoingMessage{
+		RequestID: id,
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+func (ch *CallHandler) successResponse(id string, data interface{}) (*OutgoingMessage, error) {
+	resp := map[string]interface{}{
+		"success": true,
+	}
+	if data != nil {
+		// Merge data into response
+		if m, ok := data.(map[string]interface{}); ok {
+			for k, v := range m {
+				resp[k] = v
+			}
+		}
+	}
+	respBytes, _ := json.Marshal(resp)
+
+	return &OutgoingMessage{
+		RequestID: id,
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
 }
 
 // HandleCallEvent processes an incoming call event
@@ -297,7 +985,30 @@ func (ch *CallHandler) handleCallInitiate(ctx context.Context, event *CallEvent)
 		return ch.publishCallEventToVault(ctx, event.CallerID, blockedEvent)
 	}
 
-	// 2. Log incoming call to JetStream
+	// 2. Create active call state for later accept/reject
+	activeCall := &ActiveCall{
+		CallID:    event.CallID,
+		PeerID:    event.CallerID,
+		Direction: "incoming",
+		Status:    "ringing",
+		StartedAt: time.Unix(event.Timestamp, 0),
+	}
+
+	// Extract peer's public key from payload if provided
+	if event.Payload != nil {
+		var payload struct {
+			LocalKeyPub string `json:"local_key_pub"`
+		}
+		if json.Unmarshal(event.Payload, &payload) == nil && payload.LocalKeyPub != "" {
+			if peerPubKey, err := base64.StdEncoding.DecodeString(payload.LocalKeyPub); err == nil {
+				activeCall.PeerPubKey = peerPubKey
+			}
+		}
+	}
+
+	ch.activeCalls[event.CallID] = activeCall
+
+	// 3. Log incoming call to storage
 	record := &CallRecord{
 		CallID:    event.CallID,
 		CallerID:  event.CallerID,
@@ -310,7 +1021,7 @@ func (ch *CallHandler) handleCallInitiate(ctx context.Context, event *CallEvent)
 		log.Error().Err(err).Msg("Failed to store call record")
 	}
 
-	// 3. Forward to owner's app
+	// 4. Forward to owner's app
 	log.Info().
 		Str("caller_id", event.CallerID).
 		Str("call_id", event.CallID).
@@ -445,7 +1156,14 @@ func (ch *CallHandler) storeCallRecord(ctx context.Context, record *CallRecord) 
 	}
 
 	key := fmt.Sprintf("calls/%s", record.CallID)
-	return ch.storage.Put(key, data)
+	if err := ch.storage.Put(key, data); err != nil {
+		return err
+	}
+
+	// Add to index
+	ch.addToCallIndex(record.CallID)
+
+	return nil
 }
 
 // updateCallRecord updates an existing call record
