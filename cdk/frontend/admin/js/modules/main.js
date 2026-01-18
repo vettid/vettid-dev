@@ -737,6 +737,27 @@ function setupEventDelegation() {
       actions[action]();
     }
   });
+
+  // Event delegation for proposal tile buttons
+  document.addEventListener('click', (e) => {
+    // Handle "View Proposal" toggle buttons
+    const toggleBtn = e.target.closest('[data-toggle-proposal]');
+    if (toggleBtn) {
+      const proposalId = toggleBtn.getAttribute('data-toggle-proposal');
+      toggleProposalText(proposalId);
+      return;
+    }
+
+    // Handle "View Analytics" buttons
+    const analyticsBtn = e.target.closest('[data-analytics-proposal]');
+    if (analyticsBtn) {
+      const proposalId = analyticsBtn.getAttribute('data-analytics-proposal');
+      const title = analyticsBtn.getAttribute('data-analytics-title') || 'Untitled Proposal';
+      const status = analyticsBtn.getAttribute('data-analytics-status') || 'active';
+      openProposalAnalytics(proposalId, title, status);
+      return;
+    }
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
