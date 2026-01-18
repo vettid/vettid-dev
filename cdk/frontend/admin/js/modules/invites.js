@@ -365,11 +365,9 @@ export async function createInvite() {
 
   try {
     const data = await api('/admin/invites', { method: 'POST', body: JSON.stringify(payload) });
-    let msg = 'Invite code: ' + data.code + ' (max uses ' + data.max_uses;
-    if (data.auto_approve) msg += ' • Auto-approve enabled';
-    if (data.expires_at) msg += ' • Expires ' + new Date(data.expires_at * 1000).toLocaleString();
-    msg += ')';
-    showToast(msg, 'success');
+
+    // Show success with clickable code
+    showInviteCodeSuccess(data);
 
     // Clear form
     document.getElementById('customCode').value = '';
@@ -385,6 +383,108 @@ export async function createInvite() {
       msgEl.style.color = '#ef4444';
     }
   }
+}
+
+// ============================================
+// Invite Code Success Display
+// ============================================
+
+function showInviteCodeSuccess(data) {
+  // Remove any existing success overlay
+  const existing = document.getElementById('inviteCodeSuccessOverlay');
+  if (existing) existing.remove();
+
+  // Create overlay
+  const overlay = document.createElement('div');
+  overlay.id = 'inviteCodeSuccessOverlay';
+  overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.8);display:flex;align-items:center;justify-content:center;z-index:10000;';
+
+  // Create card
+  const card = document.createElement('div');
+  card.style.cssText = 'background:var(--bg-card);border-radius:12px;padding:32px;max-width:400px;width:90%;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,0.5);';
+
+  // Success icon (using text checkmark for safety)
+  const iconDiv = document.createElement('div');
+  iconDiv.style.cssText = 'width:64px;height:64px;background:linear-gradient(135deg,#10b981 0%,#059669 100%);border-radius:50%;margin:0 auto 20px;display:flex;align-items:center;justify-content:center;font-size:32px;color:#fff;';
+  iconDiv.textContent = '\u2713';
+
+  // Title
+  const title = document.createElement('h3');
+  title.style.cssText = 'margin:0 0 8px;font-size:1.25rem;color:var(--text);';
+  title.textContent = 'Invite Created!';
+
+  // Subtitle
+  const subtitle = document.createElement('p');
+  subtitle.style.cssText = 'margin:0 0 20px;color:var(--gray);font-size:0.9rem;';
+  subtitle.textContent = 'Click the code below to copy it to clipboard';
+
+  // Code display (clickable)
+  const codeBox = document.createElement('div');
+  codeBox.style.cssText = 'background:var(--bg-tertiary);border:2px dashed var(--accent);border-radius:8px;padding:16px;margin-bottom:16px;cursor:pointer;transition:all 0.2s ease;';
+  codeBox.onmouseenter = () => { codeBox.style.borderColor = '#ffd93d'; codeBox.style.background = 'var(--bg-input)'; };
+  codeBox.onmouseleave = () => { codeBox.style.borderColor = 'var(--accent)'; codeBox.style.background = 'var(--bg-tertiary)'; };
+
+  const codeText = document.createElement('div');
+  codeText.style.cssText = 'font-family:monospace;font-size:1.5rem;font-weight:700;color:var(--accent);letter-spacing:2px;';
+  codeText.textContent = data.code;
+
+  const clickHint = document.createElement('div');
+  clickHint.style.cssText = 'font-size:0.75rem;color:var(--gray);margin-top:8px;';
+  clickHint.textContent = 'Click to copy';
+
+  codeBox.append(codeText, clickHint);
+
+  // Copy handler
+  codeBox.onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(data.code);
+      clickHint.textContent = 'Copied!';
+      clickHint.style.color = '#10b981';
+      codeBox.style.borderColor = '#10b981';
+      setTimeout(() => {
+        clickHint.textContent = 'Click to copy';
+        clickHint.style.color = 'var(--gray)';
+        codeBox.style.borderColor = 'var(--accent)';
+      }, 2000);
+    } catch (e) {
+      clickHint.textContent = 'Copy failed';
+      clickHint.style.color = '#ef4444';
+    }
+  };
+
+  // Details
+  const details = document.createElement('div');
+  details.style.cssText = 'font-size:0.8rem;color:var(--gray);margin-bottom:20px;';
+  let detailText = 'Max uses: ' + data.max_uses;
+  if (data.auto_approve) detailText += ' \u2022 Auto-approve';
+  if (data.expires_at) detailText += ' \u2022 Expires ' + new Date(data.expires_at * 1000).toLocaleDateString();
+  details.textContent = detailText;
+
+  // Close button
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'btn';
+  closeBtn.style.cssText = 'width:100%;padding:12px;background:linear-gradient(135deg,#7c3aed 0%,#6d28d9 100%);font-weight:600;';
+  closeBtn.textContent = 'Done';
+  closeBtn.onclick = () => overlay.remove();
+
+  // Assemble
+  card.append(iconDiv, title, subtitle, codeBox, details, closeBtn);
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+
+  // Close on overlay click (not card)
+  overlay.onclick = (e) => {
+    if (e.target === overlay) overlay.remove();
+  };
+
+  // Close on Escape
+  const escHandler = (e) => {
+    if (e.key === 'Escape') {
+      overlay.remove();
+      document.removeEventListener('keydown', escHandler);
+    }
+  };
+  document.addEventListener('keydown', escHandler);
 }
 
 // ============================================
