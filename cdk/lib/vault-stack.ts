@@ -110,6 +110,11 @@ export class VaultStack extends cdk.Stack {
   public readonly deleteVaultConfirm!: lambdaNode.NodejsFunction;
   public readonly deleteVaultStatus!: lambdaNode.NodejsFunction;
 
+  // Credential Transfer (device-to-device)
+  public readonly transferRequest!: lambdaNode.NodejsFunction;
+  public readonly transferApprove!: lambdaNode.NodejsFunction;
+  public readonly transferStatus!: lambdaNode.NodejsFunction;
+
   // Credential Restore (transfer and recovery flows)
   public readonly restoreRequest!: lambdaNode.NodejsFunction;
   public readonly restoreApprove!: lambdaNode.NodejsFunction;
@@ -1003,6 +1008,46 @@ export class VaultStack extends cdk.Stack {
     tables.audit.grantWriteData(this.deleteVaultCancel);
     tables.audit.grantWriteData(this.deleteVaultConfirm);
 
+    // ===== CREDENTIAL TRANSFER (device-to-device) =====
+
+    const credentialTransferEnv = {
+      TABLE_CREDENTIAL_TRANSFERS: tables.credentialTransfers.tableName,
+      TABLE_AUDIT: tables.audit.tableName,
+      NATS_OPERATOR_SECRET_ARN: natsOperatorSecretRef.secretArn,
+      NATS_DOMAIN: 'nats.vettid.dev',
+    };
+
+    this.transferRequest = new lambdaNode.NodejsFunction(this, 'TransferRequestFn', {
+      entry: 'lambda/handlers/vault/transferRequest.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: credentialTransferEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    this.transferApprove = new lambdaNode.NodejsFunction(this, 'TransferApproveFn', {
+      entry: 'lambda/handlers/vault/transferApprove.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: credentialTransferEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    this.transferStatus = new lambdaNode.NodejsFunction(this, 'TransferStatusFn', {
+      entry: 'lambda/handlers/vault/transferStatus.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: credentialTransferEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    // Grant permissions for credential transfer functions
+    tables.credentialTransfers.grantReadWriteData(this.transferRequest);
+    tables.credentialTransfers.grantReadWriteData(this.transferApprove);
+    tables.credentialTransfers.grantReadWriteData(this.transferStatus);
+    tables.audit.grantWriteData(this.transferRequest);
+    tables.audit.grantWriteData(this.transferApprove);
+    natsOperatorSecretRef.grantRead(this.transferRequest);
+    natsOperatorSecretRef.grantRead(this.transferApprove);
+    natsOperatorSecretRef.grantRead(this.transferStatus);
+
     // ===== CREDENTIAL RESTORE (transfer and recovery flows) =====
 
     const credentialRestoreEnv = {
@@ -1422,6 +1467,11 @@ export class VaultStack extends cdk.Stack {
     this.route('DeleteVaultCancel', httpApi, '/vault/delete/cancel', apigw.HttpMethod.POST, this.deleteVaultCancel, memberAuthorizer);
     this.route('DeleteVaultConfirm', httpApi, '/vault/delete/confirm', apigw.HttpMethod.POST, this.deleteVaultConfirm, memberAuthorizer);
     this.route('DeleteVaultStatus', httpApi, '/vault/delete/status', apigw.HttpMethod.GET, this.deleteVaultStatus, memberAuthorizer);
+
+    // Credential Transfer Routes (device-to-device transfer with 15-minute expiry)
+    this.route('TransferRequest', httpApi, '/vault/credentials/transfer/request', apigw.HttpMethod.POST, this.transferRequest, memberAuthorizer);
+    this.route('TransferApprove', httpApi, '/vault/credentials/transfer/approve', apigw.HttpMethod.POST, this.transferApprove, memberAuthorizer);
+    this.route('TransferStatus', httpApi, '/vault/credentials/transfer/status', apigw.HttpMethod.GET, this.transferStatus, memberAuthorizer);
 
     // Credential Restore Routes (transfer and recovery flows)
     this.route('RestoreRequest', httpApi, '/vault/credentials/restore/request', apigw.HttpMethod.POST, this.restoreRequest, memberAuthorizer);

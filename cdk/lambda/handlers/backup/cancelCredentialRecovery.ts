@@ -27,6 +27,7 @@ import {
   hashIdentifier,
   getClientIp,
 } from "../../common/util";
+import { publishRecoveryCancelled } from "../../common/nats-publisher";
 
 const ddb = new DynamoDBClient({});
 const ses = new SESClient({});
@@ -175,6 +176,19 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       client_ip_hash: hashIdentifier(clientIp),
       reason: reason || null,
     });
+
+    // Publish NATS event to notify user's connected devices
+    try {
+      await publishRecoveryCancelled(
+        claims.user_guid,
+        recovery_id,
+        'user_cancelled',
+        now
+      );
+    } catch (natsError) {
+      console.error('Failed to publish recovery cancelled event:', natsError);
+      // Don't fail the request if NATS publish fails
+    }
 
     const response: CancelRecoveryResponse = {
       recovery_id,

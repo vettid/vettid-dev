@@ -5,6 +5,7 @@ import { CloudWatchClient, PutMetricDataCommand } from '@aws-sdk/client-cloudwat
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import { createHash, timingSafeEqual } from 'crypto';
 import { recordFailedAttempt, isBlockedByBruteForce, clearFailedAttempts } from '../../common/rateLimit';
+import { checkRecoveryFraud } from '../../common/recovery-fraud-detection';
 
 const ddb = new DynamoDBClient({});
 const cloudwatch = new CloudWatchClient({});
@@ -126,11 +127,13 @@ export const handler: VerifyAuthChallengeResponseTriggerHandler = async (event) 
 
     let pinRequired = false;
     let storedPinHash: string | null = null;
+    let memberGuid: string | null = null;
 
     if (regQuery.Items && regQuery.Items.length > 0) {
       const reg = unmarshall(regQuery.Items[0]) as any;
       pinRequired = reg.pin_enabled === true;
       storedPinHash = reg.pin_hash || null;
+      memberGuid = reg.member_guid || null;
     }
 
     // If PIN is required but not provided, reject
@@ -216,6 +219,21 @@ export const handler: VerifyAuthChallengeResponseTriggerHandler = async (event) 
       TableName: MAGIC_LINK_TABLE,
       Key: marshall({ token }),
     }));
+
+    // SECURITY: Check for recovery fraud on successful authentication
+    // If user has a pending recovery and authenticates successfully, it indicates
+    // they still have access to their credential - auto-cancel suspicious recovery
+    if (memberGuid) {
+      try {
+        const fraudResult = await checkRecoveryFraud(memberGuid);
+        if (fraudResult.fraudDetected) {
+          console.log('SECURITY: Recovery fraud detected during auth, recovery %s cancelled', fraudResult.recoveryId);
+        }
+      } catch (fraudError) {
+        console.error('Recovery fraud check failed:', fraudError);
+        // Don't fail auth if fraud check fails
+      }
+    }
 
   } catch (error) {
     console.error('Error verifying token:', error);

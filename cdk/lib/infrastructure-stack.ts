@@ -56,6 +56,7 @@ export class InfrastructureStack extends cdk.Stack {
     credentialBackups: dynamodb.Table;
     backupSettings: dynamodb.Table;
     credentialRecoveryRequests: dynamodb.Table;
+    credentialTransfers: dynamodb.Table;
     vaultDeletionRequests: dynamodb.Table;
     // Supported Services Registry
     supportedServices: dynamodb.Table;
@@ -608,6 +609,25 @@ export class InfrastructureStack extends cdk.Stack {
       projectionType: dynamodb.ProjectionType.ALL,
     });
 
+    // Credential Transfers table - tracks device-to-device credential transfers
+    const credentialTransfers = new dynamodb.Table(this, 'CredentialTransfers', {
+      partitionKey: { name: 'transfer_id', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      pointInTimeRecovery: true,
+      timeToLiveAttribute: 'ttl',  // Auto-delete expired transfers
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: dynamoDbEncryptionKey,
+    });
+
+    // GSI for finding active transfers by member
+    credentialTransfers.addGlobalSecondaryIndex({
+      indexName: 'member-status-index',
+      partitionKey: { name: 'member_guid', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'status', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
     // Vault Deletion Requests table - tracks 24-hour delayed vault deletion requests
     const vaultDeletionRequests = new dynamodb.Table(this, 'VaultDeletionRequests', {
       partitionKey: { name: 'request_id', type: dynamodb.AttributeType.STRING },
@@ -898,6 +918,7 @@ export class InfrastructureStack extends cdk.Stack {
       credentialBackups,
       backupSettings,
       credentialRecoveryRequests,
+      credentialTransfers,
       vaultDeletionRequests,
       // Supported Services Registry
       supportedServices,

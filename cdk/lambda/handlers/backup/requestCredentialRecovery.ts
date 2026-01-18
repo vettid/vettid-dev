@@ -33,6 +33,7 @@ import {
   hashIdentifier,
   getClientIp,
 } from "../../common/util";
+import { publishRecoveryRequested } from "../../common/nats-publisher";
 
 const ddb = new DynamoDBClient({});
 const ses = new SESClient({});
@@ -171,6 +172,19 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       client_ip_hash: hashIdentifier(clientIp),
       available_at: availableAt.toISOString(),
     });
+
+    // Publish NATS event to notify user's connected devices
+    try {
+      await publishRecoveryRequested(
+        claims.user_guid,
+        recoveryId,
+        now.toISOString(),
+        availableAt.toISOString()
+      );
+    } catch (natsError) {
+      console.error('Failed to publish recovery requested event:', natsError);
+      // Don't fail the request if NATS publish fails
+    }
 
     const response: RequestRecoveryResponse = {
       recovery_id: recoveryId,

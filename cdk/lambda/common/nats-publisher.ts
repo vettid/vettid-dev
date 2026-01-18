@@ -149,7 +149,8 @@ async function getSystemCredentials(): Promise<SystemCredentials> {
     .digest('hex')
     .substring(0, 22);
 
-  // System user permissions - can publish to all Broadcast.* subjects
+  // System user permissions - can publish to Broadcast.*, Control.*, and OwnerSpace.* subjects
+  // OwnerSpace access is needed for publishing security events to users
   const userClaims: NatsUserClaims = {
     jti,
     iat: nowSec,
@@ -158,7 +159,7 @@ async function getSystemCredentials(): Promise<SystemCredentials> {
     sub: userPublicKey,
     name: 'system-broadcast-publisher',
     nats: {
-      pub: { allow: ['Broadcast.>', 'Control.>'] },
+      pub: { allow: ['Broadcast.>', 'Control.>', 'OwnerSpace.>'] },
       sub: { allow: [] },
       subs: 0,
       data: -1,
@@ -328,4 +329,242 @@ export async function publishSignedControlCommand(
     console.error('Failed to publish signed control command:', error);
     return { success: false, error: error.message };
   }
+}
+
+// ============================================================================
+// Security Event Publishing
+// ============================================================================
+
+/**
+ * Standard security event payload structure
+ */
+export interface SecurityEvent {
+  event_id: string;
+  type: string;
+  timestamp: string;
+  payload: Record<string, any>;
+}
+
+/**
+ * Recovery event types
+ */
+export type RecoveryEventType =
+  | 'recovery_requested'
+  | 'recovery_cancelled'
+  | 'recovery_completed';
+
+/**
+ * Transfer event types
+ */
+export type TransferEventType =
+  | 'transfer_requested'
+  | 'transfer_approved'
+  | 'transfer_denied'
+  | 'transfer_completed'
+  | 'transfer_expired';
+
+/**
+ * Security event types
+ */
+export type SecurityAlertType =
+  | 'recovery_fraud_detected';
+
+/**
+ * Publish a security event to a user's OwnerSpace
+ *
+ * Events are published to OwnerSpace.{guid}.forApp.{topic}
+ * where topic is determined by the event type.
+ *
+ * @param userGuid - The user's GUID
+ * @param eventType - The type of event
+ * @param payload - Event-specific payload data
+ * @returns Promise with success status
+ */
+export async function publishUserSecurityEvent(
+  userGuid: string,
+  eventType: RecoveryEventType | TransferEventType | SecurityAlertType,
+  payload: Record<string, any>
+): Promise<{ success: boolean; event_id?: string; error?: string }> {
+  const eventId = randomUUID();
+
+  // Map event type to NATS topic
+  const topicMap: Record<string, string> = {
+    // Recovery events
+    recovery_requested: 'forApp.recovery.requested',
+    recovery_cancelled: 'forApp.recovery.cancelled',
+    recovery_completed: 'forApp.recovery.completed',
+    // Transfer events
+    transfer_requested: 'forApp.transfer.requested',
+    transfer_approved: 'forApp.transfer.approved',
+    transfer_denied: 'forApp.transfer.denied',
+    transfer_completed: 'forApp.transfer.completed',
+    transfer_expired: 'forApp.transfer.expired',
+    // Security alerts
+    recovery_fraud_detected: 'forApp.security.fraud_detected',
+  };
+
+  const topic = topicMap[eventType];
+  if (!topic) {
+    return { success: false, error: `Unknown event type: ${eventType}` };
+  }
+
+  const subject = `OwnerSpace.${userGuid}.${topic}`;
+
+  const event: SecurityEvent = {
+    event_id: eventId,
+    type: eventType,
+    timestamp: new Date().toISOString(),
+    payload,
+  };
+
+  const result = await publishToNats(subject, event);
+
+  if (result.success) {
+    console.log(`Published security event ${eventType} to user ${userGuid.substring(0, 8)}...`);
+    return { success: true, event_id: eventId };
+  }
+
+  return result;
+}
+
+/**
+ * Publish a recovery requested event
+ */
+export async function publishRecoveryRequested(
+  userGuid: string,
+  recoveryId: string,
+  requestedAt: string,
+  availableAt: string
+): Promise<{ success: boolean; event_id?: string; error?: string }> {
+  return publishUserSecurityEvent(userGuid, 'recovery_requested', {
+    recovery_id: recoveryId,
+    requested_at: requestedAt,
+    available_at: availableAt,
+  });
+}
+
+/**
+ * Publish a recovery cancelled event
+ */
+export async function publishRecoveryCancelled(
+  userGuid: string,
+  recoveryId: string,
+  reason: 'user_cancelled' | 'admin_cancelled' | 'credential_used_during_recovery',
+  cancelledAt: string
+): Promise<{ success: boolean; event_id?: string; error?: string }> {
+  return publishUserSecurityEvent(userGuid, 'recovery_cancelled', {
+    recovery_id: recoveryId,
+    reason,
+    cancelled_at: cancelledAt,
+  });
+}
+
+/**
+ * Publish a recovery completed event
+ */
+export async function publishRecoveryCompleted(
+  userGuid: string,
+  recoveryId: string,
+  completedAt: string
+): Promise<{ success: boolean; event_id?: string; error?: string }> {
+  return publishUserSecurityEvent(userGuid, 'recovery_completed', {
+    recovery_id: recoveryId,
+    completed_at: completedAt,
+  });
+}
+
+/**
+ * Publish a recovery fraud detected event
+ */
+export async function publishRecoveryFraudDetected(
+  userGuid: string,
+  recoveryId: string,
+  reason: string,
+  detectedAt: string
+): Promise<{ success: boolean; event_id?: string; error?: string }> {
+  return publishUserSecurityEvent(userGuid, 'recovery_fraud_detected', {
+    recovery_id: recoveryId,
+    reason,
+    detected_at: detectedAt,
+  });
+}
+
+/**
+ * Device info for transfer events
+ */
+export interface DeviceInfo {
+  device_id: string;
+  model?: string;
+  os_version?: string;
+  location?: string;
+}
+
+/**
+ * Publish a transfer requested event
+ */
+export async function publishTransferRequested(
+  userGuid: string,
+  transferId: string,
+  sourceDeviceId: string,
+  targetDeviceInfo: DeviceInfo,
+  expiresAt: string
+): Promise<{ success: boolean; event_id?: string; error?: string }> {
+  return publishUserSecurityEvent(userGuid, 'transfer_requested', {
+    transfer_id: transferId,
+    source_device_id: sourceDeviceId,
+    target_device_info: targetDeviceInfo,
+    expires_at: expiresAt,
+  });
+}
+
+/**
+ * Publish a transfer approved event
+ */
+export async function publishTransferApproved(
+  userGuid: string,
+  transferId: string
+): Promise<{ success: boolean; event_id?: string; error?: string }> {
+  return publishUserSecurityEvent(userGuid, 'transfer_approved', {
+    transfer_id: transferId,
+  });
+}
+
+/**
+ * Publish a transfer denied event
+ */
+export async function publishTransferDenied(
+  userGuid: string,
+  transferId: string,
+  reason?: string
+): Promise<{ success: boolean; event_id?: string; error?: string }> {
+  return publishUserSecurityEvent(userGuid, 'transfer_denied', {
+    transfer_id: transferId,
+    reason: reason || 'user_denied',
+  });
+}
+
+/**
+ * Publish a transfer completed event
+ */
+export async function publishTransferCompleted(
+  userGuid: string,
+  transferId: string,
+  completedAt: string
+): Promise<{ success: boolean; event_id?: string; error?: string }> {
+  return publishUserSecurityEvent(userGuid, 'transfer_completed', {
+    transfer_id: transferId,
+    completed_at: completedAt,
+  });
+}
+
+/**
+ * Publish a transfer expired event
+ */
+export async function publishTransferExpired(
+  userGuid: string,
+  transferId: string
+): Promise<{ success: boolean; event_id?: string; error?: string }> {
+  return publishUserSecurityEvent(userGuid, 'transfer_expired', {
+    transfer_id: transferId,
+  });
 }
