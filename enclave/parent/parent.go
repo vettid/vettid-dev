@@ -313,10 +313,13 @@ func (p *ParentProcess) forwardToEnclave(ctx context.Context, msg *NATSMessage) 
 			if err := p.parseAttestationRequest(msg.Data, enclaveMsg); err != nil {
 				log.Warn().Err(err).Msg("Failed to parse attestation request, using raw payload")
 			}
-			log.Debug().
+			// DEBUG: Log incoming attestation request details for testing
+			log.Info().
 				Str("owner_space", ownerSpace).
+				Str("subject", msg.Subject).
 				Int("nonce_len", len(enclaveMsg.Nonce)).
-				Msg("Parsed mobile attestation request")
+				Int("payload_len", len(msg.Data)).
+				Msg("Received attestation request from mobile app")
 		}
 
 		// For credential operations, parse the JSON payload
@@ -353,6 +356,16 @@ func (p *ParentProcess) forwardToEnclave(ctx context.Context, msg *NATSMessage) 
 		if enclaveMsg.OwnerSpace != "" {
 			appResponseSubject := buildAppResponseSubject(msg.Subject, enclaveMsg.OwnerSpace)
 			if appResponseSubject != "" {
+				// DEBUG: Log the response being published
+				log.Info().
+					Str("msg_type", string(response.Type)).
+					Str("owner_space", enclaveMsg.OwnerSpace).
+					Str("original_subject", msg.Subject).
+					Str("response_subject", appResponseSubject).
+					Int("response_bytes", len(responseData)).
+					Bool("has_attestation", response.Attestation != nil).
+					Msg("Publishing enclave response to mobile app")
+
 				// Publish with retries to handle subscription timing race condition
 				retryDelays := []time.Duration{0, 50 * time.Millisecond, 200 * time.Millisecond, 500 * time.Millisecond}
 				for i, delay := range retryDelays {
@@ -656,11 +669,11 @@ func (p *ParentProcess) formatEnclaveResponse(response *EnclaveMessage) []byte {
 		resp := struct {
 			Attestation string `json:"attestation"`
 			PublicKey   string `json:"public_key"`
-			Timestamp   int64  `json:"timestamp"`
+			Timestamp   string `json:"timestamp"`
 		}{
 			Attestation: base64.StdEncoding.EncodeToString(response.Attestation.Document),
 			PublicKey:   base64.StdEncoding.EncodeToString(response.Attestation.PublicKey),
-			Timestamp:   0, // Will be filled by enclave
+			Timestamp:   time.Now().UTC().Format(time.RFC3339),
 		}
 
 		data, err := json.Marshal(resp)
@@ -668,6 +681,15 @@ func (p *ParentProcess) formatEnclaveResponse(response *EnclaveMessage) []byte {
 			log.Error().Err(err).Msg("Failed to marshal attestation response")
 			return response.Payload
 		}
+
+		// DEBUG: Log attestation response details for testing
+		log.Debug().
+			Str("timestamp", resp.Timestamp).
+			Int("attestation_len", len(resp.Attestation)).
+			Int("public_key_len", len(resp.PublicKey)).
+			Int("response_size", len(data)).
+			Msg("Formatted attestation response for mobile")
+
 		return data
 	}
 
