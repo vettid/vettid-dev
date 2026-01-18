@@ -366,6 +366,8 @@ export class VaultStack extends cdk.Stack {
       environment: {
         ...defaultEnv,
         TABLE_AUDIT: tables.audit.tableName,
+        // Required for enrollment JWT verification
+        ENROLLMENT_JWT_SECRET_ARN: props.infrastructure.enrollmentJwtSecretArn,
         // SECURITY: Secret for HMAC-based attestation binding tokens
         // In production, this should come from Secrets Manager
         DEVICE_ATTESTATION_SECRET: process.env.DEVICE_ATTESTATION_SECRET || 'dev-attestation-secret',
