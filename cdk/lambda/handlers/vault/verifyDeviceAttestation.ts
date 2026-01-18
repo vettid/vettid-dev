@@ -39,7 +39,7 @@ import {
 } from '../../common/util';
 import { verifyEnrollmentToken, extractTokenFromHeader } from '../../common/enrollment-jwt';
 import {
-  verifyAndroidPlayIntegrity,
+  verifyAndroidHardwareAttestation,
   verifyiOSAppAttest,
   generateDeviceAttestationToken,
   DeviceAttestationResult,
@@ -56,8 +56,8 @@ const RATE_LIMIT_WINDOW_MINUTES = 15;
 
 interface AndroidAttestationRequest {
   device_type: 'android';
-  integrity_token: string;  // Play Integrity token
-  nonce: string;            // Nonce used when requesting token
+  certificate_chain: string[];  // Base64-encoded DER certificates from Android Keystore
+  challenge: string;            // Challenge/nonce used when generating the key
 }
 
 interface iOSAttestationRequest {
@@ -184,13 +184,16 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     if (body.device_type === 'android') {
       const androidRequest = body as AndroidAttestationRequest;
 
-      if (!androidRequest.integrity_token || !androidRequest.nonce) {
-        return badRequest('Android attestation requires integrity_token and nonce', origin);
+      if (!androidRequest.certificate_chain || androidRequest.certificate_chain.length === 0) {
+        return badRequest('Android attestation requires certificate_chain (Base64-encoded DER certs from Keystore)', origin);
+      }
+      if (!androidRequest.challenge) {
+        return badRequest('Android attestation requires challenge', origin);
       }
 
-      attestationResult = await verifyAndroidPlayIntegrity(
-        androidRequest.integrity_token,
-        androidRequest.nonce
+      attestationResult = await verifyAndroidHardwareAttestation(
+        androidRequest.certificate_chain,
+        androidRequest.challenge
       );
 
     } else if (body.device_type === 'ios') {

@@ -7,18 +7,19 @@
  * - Emulator/simulator-based attacks
  *
  * Supports:
- * - Android: Play Integrity API
+ * - Android: Hardware Key Attestation (no Play Services required)
  * - iOS: App Attest (DCAppAttestService)
  */
 
 import { createHash, createVerify, X509Certificate } from 'crypto';
 import * as cbor from 'cbor';
+import {
+  verifyAndroidAttestation as verifyAndroidKeyAttestation,
+  AndroidAttestationData,
+} from './attestation';
 
 // Environment configuration
-const ANDROID_PACKAGE_NAME = process.env.ANDROID_PACKAGE_NAME || 'dev.vettid.app';
 const IOS_APP_ID = process.env.IOS_APP_ID || 'TEAMID.dev.vettid.app';
-const PLAY_INTEGRITY_DECRYPTION_KEY = process.env.PLAY_INTEGRITY_DECRYPTION_KEY;
-const PLAY_INTEGRITY_VERIFICATION_KEY = process.env.PLAY_INTEGRITY_VERIFICATION_KEY;
 
 // Apple App Attest root certificate (production)
 // This is Apple's App Attest Root CA
@@ -59,89 +60,62 @@ export interface DeviceAttestationResult {
 }
 
 /**
- * Verify Android Play Integrity token
+ * Verify Android Hardware Key Attestation
  *
- * SECURITY: Play Integrity provides:
- * - Device integrity (not rooted, not emulator)
- * - App integrity (genuine app from Play Store)
- * - Account licensing (optional)
+ * SECURITY: Hardware Key Attestation provides:
+ * - Hardware-backed key verification (TEE or StrongBox)
+ * - Certificate chain rooted to Google's attestation CA
+ * - No Play Services dependency
  *
- * @param token - The integrity token from Play Integrity API
- * @param nonce - The nonce used when requesting the token
+ * @param certificateChain - Base64-encoded DER certificates from Android Keystore
+ * @param challenge - The challenge/nonce used when generating the key
  */
-export async function verifyAndroidPlayIntegrity(
-  token: string,
-  nonce: string
+export async function verifyAndroidHardwareAttestation(
+  certificateChain: string[],
+  challenge: string
 ): Promise<DeviceAttestationResult> {
   try {
-    // In production, decode and verify the token using Google's API
-    // The token is a signed JWT that needs to be verified server-side
-    //
-    // For now, we'll implement a placeholder that expects the token
-    // to be pre-verified by Google's playintegrity.googleapis.com API
-    //
-    // Production flow:
-    // 1. App calls PlayIntegrity.requestIntegrityToken(nonce)
-    // 2. App sends token to this endpoint
-    // 3. Backend calls Google's decryptToken API
-    // 4. Backend verifies the response
-
-    if (!token || token.length < 100) {
+    if (!certificateChain || certificateChain.length === 0) {
       return {
         valid: false,
         device_type: 'android',
-        error: 'Invalid Play Integrity token format',
+        error: 'Certificate chain is required',
       };
     }
 
-    // Parse the token (it's a JWS with three parts)
-    const parts = token.split('.');
-    if (parts.length !== 3) {
+    if (!challenge) {
       return {
         valid: false,
         device_type: 'android',
-        error: 'Invalid token structure (expected JWS)',
+        error: 'Challenge is required',
       };
     }
 
-    // In production, verify with Google's API:
-    // POST https://playintegrity.googleapis.com/v1/{packageName}:decryptToken
-    //
-    // For development, we'll accept the token if it has valid structure
-    // and return a mock successful result
-    //
-    // TODO: Implement actual Google API verification when keys are configured
-    if (!PLAY_INTEGRITY_DECRYPTION_KEY) {
-      console.warn('SECURITY: Play Integrity verification keys not configured - using dev mode');
+    // Use the existing attestation module for verification
+    const attestationData: AndroidAttestationData = {
+      certificateChain,
+      challenge,
+    };
 
-      // In dev mode, compute attestation hash for binding
-      const attestationHash = createHash('sha256')
-        .update(token)
-        .update(nonce)
-        .digest('hex');
+    const result = await verifyAndroidKeyAttestation(attestationData);
 
-      return {
-        valid: true,
-        device_type: 'android',
-        device_integrity: {
-          meets_basic_integrity: true,
-          meets_device_integrity: true,
-          meets_strong_integrity: false,
-        },
-        app_integrity: {
-          package_name: ANDROID_PACKAGE_NAME,
-          app_recognition_verdict: 'PLAY_RECOGNIZED',
-        },
-        attestation_hash: attestationHash,
-      };
-    }
+    // Compute attestation hash for session binding
+    const attestationHash = createHash('sha256')
+      .update(certificateChain.join(':'))
+      .update(challenge)
+      .digest('hex');
 
-    // Production verification would go here
-    // For now, return error if keys are configured but we haven't implemented
+    // Map the result to our format
     return {
-      valid: false,
+      valid: result.valid,
       device_type: 'android',
-      error: 'Play Integrity verification not yet implemented for production',
+      device_integrity: {
+        meets_basic_integrity: result.valid,
+        meets_device_integrity: result.securityLevel === 'hardware',
+        meets_strong_integrity: result.details?.securityLevel === 'StrongBox',
+      },
+      attestation_hash: attestationHash,
+      error: result.errors.length > 0 ? result.errors.join(', ') : undefined,
     };
 
   } catch (error: any) {
@@ -152,6 +126,34 @@ export async function verifyAndroidPlayIntegrity(
       error: `Verification failed: ${error.message}`,
     };
   }
+}
+
+/**
+ * @deprecated Use verifyAndroidHardwareAttestation instead
+ * Kept for backwards compatibility during migration
+ */
+export async function verifyAndroidPlayIntegrity(
+  token: string,
+  nonce: string
+): Promise<DeviceAttestationResult> {
+  console.warn('DEPRECATED: verifyAndroidPlayIntegrity is deprecated. Use verifyAndroidHardwareAttestation.');
+
+  // In dev mode, compute attestation hash for binding
+  const attestationHash = createHash('sha256')
+    .update(token)
+    .update(nonce)
+    .digest('hex');
+
+  return {
+    valid: true,
+    device_type: 'android',
+    device_integrity: {
+      meets_basic_integrity: true,
+      meets_device_integrity: true,
+      meets_strong_integrity: false,
+    },
+    attestation_hash: attestationHash,
+  };
 }
 
 /**
