@@ -2600,8 +2600,7 @@ async function checkStepCompletion() {
     isMember: false,
     membershipPending: false,
     hasSubscription: false,
-    vaultDeployed: false,
-    backupsConfigured: false
+    vaultDeployed: false
   };
 
   if (signedIn()) {
@@ -2643,10 +2642,6 @@ async function checkStepCompletion() {
         console.error('Error checking vault status:', e);
       }
     }
-
-    // Backups are enabled by default when subscription is active
-    // Users can only disable automatic backups via the mobile app
-    steps.backupsConfigured = steps.hasSubscription;
   }
 
   return steps;
@@ -2702,18 +2697,6 @@ async function populateGettingStartedSteps() {
       tab: 'deploy-vault',
       cardId: null,
       note: hasSubscription ? null : 'Complete step 3 to unlock'
-    },
-    {
-      number: 5,
-      title: 'Credential Backups Active',
-      description: 'Your credentials are automatically backed up for security. Manage backup settings in your mobile app.',
-      completed: steps.backupsConfigured,
-      accessible: hasSubscription,
-      tab: 'deploy-vault',
-      subTab: 'credential-backup',
-      cardId: null,
-      note: hasSubscription ? null : 'Complete step 3 to unlock',
-      informational: true  // Step auto-completes, clicking shows status only
     }
   ];
 
@@ -5140,9 +5123,9 @@ function showCancelEnrollmentModal() {
 
   const modal = document.createElement('div');
   modal.id = 'cancelEnrollmentModal';
-  modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;z-index:9999;box-sizing:border-box;overflow:auto;';
+  modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;z-index:9999;padding:16px;box-sizing:border-box;overflow:auto;';
   modal.innerHTML = `
-    <div style="background:#111;border:1px solid #f59e0b;border-radius:12px;padding:24px;max-width:340px;width:calc(100% - 32px);margin:16px;text-align:center;box-sizing:border-box;">
+    <div style="background:#111;border:1px solid #f59e0b;border-radius:12px;padding:24px;max-width:340px;width:100%;text-align:center;box-sizing:border-box;">
       <div style="font-size:2.5rem;margin-bottom:12px;">⚠️</div>
       <h3 style="margin:0 0 12px 0;color:#f59e0b;font-size:1.2rem;">Cancel Enrollment?</h3>
       <p style="color:#a0a0a0;margin-bottom:20px;font-size:0.9rem;line-height:1.5;">
