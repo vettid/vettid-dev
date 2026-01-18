@@ -27,7 +27,6 @@ type ParentSender interface {
 type VaultManager struct {
 	config         *Config
 	memoryManager  *MemoryManager
-	handlerCache   *HandlerCache
 	parentSender   ParentSender
 	sealer         *NitroSealer
 	sealerHandler  *SealerHandler  // For handling sealer requests from vault-manager
@@ -63,7 +62,7 @@ type VaultStats struct {
 }
 
 // NewVaultManager creates a new vault manager
-func NewVaultManager(cfg *Config, memMgr *MemoryManager, cache *HandlerCache, parentSender ParentSender, sealer *NitroSealer) *VaultManager {
+func NewVaultManager(cfg *Config, memMgr *MemoryManager, parentSender ParentSender, sealer *NitroSealer) *VaultManager {
 	// Create sealer handler for proxying KMS operations to vault-manager processes
 	sealerHandler := NewSealerHandler(sealer)
 
@@ -74,7 +73,6 @@ func NewVaultManager(cfg *Config, memMgr *MemoryManager, cache *HandlerCache, pa
 	return &VaultManager{
 		config:         cfg,
 		memoryManager:  memMgr,
-		handlerCache:   cache,
 		parentSender:   parentSender,
 		sealer:         sealer,
 		sealerHandler:  sealerHandler,

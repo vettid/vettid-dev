@@ -25,7 +25,6 @@ type Supervisor struct {
 	config        *Config
 	vaults        *VaultManager
 	memoryManager *MemoryManager
-	handlerCache  *HandlerCache
 	sealer        *NitroSealer
 	vsock         Listener
 
@@ -51,22 +50,18 @@ func NewSupervisor(cfg *Config) (*Supervisor, error) {
 	// Create memory manager
 	memMgr := NewMemoryManager(cfg.MaxMemoryMB, cfg.MaxVaults)
 
-	// Create handler cache for shared WASM handlers
-	handlerCache := NewHandlerCache()
-
 	// Create sealer (connection will be set when parent connects)
 	sealer := NewNitroSealer(nil)
 
 	s := &Supervisor{
 		config:          cfg,
 		memoryManager:   memMgr,
-		handlerCache:    handlerCache,
 		sealer:          sealer,
 		attestationKeys: make(map[string]*AttestationKeyEntry),
 	}
 
 	// Create vault manager with reference to supervisor for outbound messages
-	s.vaults = NewVaultManager(cfg, memMgr, handlerCache, s, sealer)
+	s.vaults = NewVaultManager(cfg, memMgr, s, sealer)
 
 	return s, nil
 }
@@ -125,8 +120,6 @@ func (s *Supervisor) handleConnection(ctx context.Context, rawConn Connection) {
 		s.parentConnMu.Lock()
 		s.parentConn = nil
 		s.parentConnMu.Unlock()
-		// Clear handler fetcher when connection is closed
-		s.handlerCache.SetFetcher(nil)
 		// Clear sealer connection
 		s.sealer.SetConnection(nil)
 	}()
@@ -149,13 +142,7 @@ func (s *Supervisor) handleConnection(ctx context.Context, rawConn Connection) {
 	// Set connection for sealer (for KMS operations)
 	s.sealer.SetConnection(authConn)
 
-	// Set up handler fetcher that uses this connection
-	// This closure captures 'authConn' so handlers can be fetched during message processing
-	s.handlerCache.SetFetcher(func(ctx context.Context, handlerID string) ([]byte, string, error) {
-		return s.fetchHandlerFromParent(authConn, handlerID)
-	})
-
-	log.Debug().Msg("New authenticated connection from parent process, handler fetcher configured")
+	log.Debug().Msg("New authenticated connection from parent process")
 
 	// Read messages in a loop
 	for {
@@ -204,49 +191,6 @@ func (s *Supervisor) SendToParent(msg *Message) error {
 	}
 
 	return conn.WriteMessage(msg)
-}
-
-// fetchHandlerFromParent requests a handler from the parent process
-// This is called during message processing when a handler is needed but not cached
-func (s *Supervisor) fetchHandlerFromParent(conn Connection, handlerID string) ([]byte, string, error) {
-	log.Debug().Str("handler_id", handlerID).Msg("Requesting handler from parent")
-
-	// Send handler_get request
-	request := &Message{
-		Type:      MessageTypeHandlerGet,
-		HandlerID: handlerID,
-	}
-
-	if err := conn.WriteMessage(request); err != nil {
-		return nil, "", fmt.Errorf("failed to send handler request: %w", err)
-	}
-
-	// Read response (we're inside processMessage, so we own the connection read)
-	response, err := conn.ReadMessage()
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to read handler response: %w", err)
-	}
-
-	// Validate response
-	if response.Type == MessageTypeError {
-		return nil, "", fmt.Errorf("parent returned error: %s", response.Error)
-	}
-
-	if response.Type != MessageTypeHandlerResponse {
-		return nil, "", fmt.Errorf("unexpected response type: %s", response.Type)
-	}
-
-	if len(response.Payload) == 0 {
-		return nil, "", fmt.Errorf("parent returned empty handler")
-	}
-
-	log.Info().
-		Str("handler_id", handlerID).
-		Str("version", response.HandlerVersion).
-		Int("size", len(response.Payload)).
-		Msg("Handler received from parent")
-
-	return response.Payload, response.HandlerVersion, nil
 }
 
 // processMessage routes a message to the appropriate handler

@@ -12,15 +12,14 @@ import (
 
 // ParentProcess bridges the enclave to external services
 type ParentProcess struct {
-	config        *Config
-	enclaveID     string // Unique identifier for this enclave instance
-	natsClient    *NATSClient
-	s3Client      *S3Client
-	vsockClient   *VsockClient
-	healthSrv     *HealthServer
-	handlerLoader *HandlerLoader
-	kmsClient     *KMSClient
-	mu            sync.RWMutex
+	config      *Config
+	enclaveID   string // Unique identifier for this enclave instance
+	natsClient  *NATSClient
+	s3Client    *S3Client
+	vsockClient *VsockClient
+	healthSrv   *HealthServer
+	kmsClient   *KMSClient
+	mu          sync.RWMutex
 }
 
 // NewParentProcess creates a new parent process
@@ -72,18 +71,6 @@ func (p *ParentProcess) Run(ctx context.Context) error {
 	p.s3Client = s3Client
 
 	log.Info().Str("bucket", p.config.S3.Bucket).Msg("S3 client initialized")
-
-	// Create handler loader for dynamic WASM handler loading
-	handlerLoader, err := NewHandlerLoader(p.config.Handlers)
-	if err != nil {
-		return fmt.Errorf("failed to create handler loader: %w", err)
-	}
-	p.handlerLoader = handlerLoader
-
-	log.Info().
-		Str("bucket", p.config.Handlers.Bucket).
-		Str("manifest_table", p.config.Handlers.ManifestTable).
-		Msg("Handler loader initialized")
 
 	// Create KMS client for Nitro attestation-based sealing
 	kmsClient, err := NewKMSClient(p.config.KMS)
@@ -406,27 +393,6 @@ func (p *ParentProcess) sendWithHandlerSupport(ctx context.Context, msg *Enclave
 			Int("payload_len", len(response.Payload)).
 			Msg("Received vsock response")
 
-		// Check if this is a handler request
-		if response.Type == EnclaveMessageTypeHandlerGet {
-			log.Debug().
-				Str("handler_id", response.HandlerID).
-				Msg("Enclave requested handler during operation")
-
-			// Fetch and send handler
-			if err := p.handleHandlerRequest(ctx, response); err != nil {
-				log.Error().Err(err).Str("handler_id", response.HandlerID).Msg("Failed to handle handler request")
-				// Send error response to enclave
-				errMsg := &EnclaveMessage{
-					Type:  EnclaveMessageTypeError,
-					Error: err.Error(),
-				}
-				p.vsockClient.writeMu.Lock()
-				p.vsockClient.writeMessage(errMsg)
-				p.vsockClient.writeMu.Unlock()
-			}
-			continue // Wait for next response
-		}
-
 		// Check if this is a KMS encrypt request (enclave needs to seal data)
 		if response.Type == EnclaveMessageTypeKMSEncrypt {
 			log.Debug().
@@ -482,26 +448,6 @@ func (p *ParentProcess) sendWithHandlerSupport(ctx context.Context, msg *Enclave
 		// Got the final response
 		return response, nil
 	}
-}
-
-// handleHandlerRequest fetches a handler from S3 and sends it to the enclave
-func (p *ParentProcess) handleHandlerRequest(ctx context.Context, request *EnclaveMessage) error {
-	wasmBytes, version, err := p.handlerLoader.GetHandler(ctx, request.HandlerID)
-	if err != nil {
-		return err
-	}
-
-	response := &EnclaveMessage{
-		Type:           EnclaveMessageTypeHandlerResponse,
-		HandlerID:      request.HandlerID,
-		HandlerVersion: version,
-		Payload:        wasmBytes,
-	}
-
-	p.vsockClient.writeMu.Lock()
-	defer p.vsockClient.writeMu.Unlock()
-
-	return p.vsockClient.writeMessage(response)
 }
 
 // parseAttestationRequest parses the JSON attestation request to extract the nonce
@@ -905,8 +851,6 @@ func (p *ParentProcess) handleEnclaveRequest(ctx context.Context, msg *EnclaveMe
 		return p.handleNATSPublish(ctx, msg)
 	case EnclaveMessageTypeHealthCheck:
 		return p.handleHealthCheck(ctx, msg)
-	case EnclaveMessageTypeHandlerGet:
-		return p.handleHandlerGet(ctx, msg)
 	case EnclaveMessageTypeKMSEncrypt:
 		return p.handleKMSEncrypt(ctx, msg)
 	case EnclaveMessageTypeKMSDecrypt:
@@ -962,40 +906,6 @@ func (p *ParentProcess) handleHealthCheck(ctx context.Context, msg *EnclaveMessa
 	return &EnclaveMessage{
 		Type:    EnclaveMessageTypeHealthResponse,
 		Payload: status,
-	}, nil
-}
-
-// handleHandlerGet retrieves a WASM handler from S3 with signature verification
-func (p *ParentProcess) handleHandlerGet(ctx context.Context, msg *EnclaveMessage) (*EnclaveMessage, error) {
-	if msg.HandlerID == "" {
-		return nil, fmt.Errorf("handler_id is required")
-	}
-
-	log.Debug().
-		Str("handler_id", msg.HandlerID).
-		Msg("Enclave requested handler")
-
-	// Fetch handler (uses manifest cache + signature verification)
-	wasmBytes, version, err := p.handlerLoader.GetHandler(ctx, msg.HandlerID)
-	if err != nil {
-		log.Error().
-			Err(err).
-			Str("handler_id", msg.HandlerID).
-			Msg("Failed to get handler")
-		return nil, fmt.Errorf("handler get failed: %w", err)
-	}
-
-	log.Info().
-		Str("handler_id", msg.HandlerID).
-		Str("version", version).
-		Int("size", len(wasmBytes)).
-		Msg("Handler retrieved and verified")
-
-	return &EnclaveMessage{
-		Type:           EnclaveMessageTypeHandlerResponse,
-		HandlerID:      msg.HandlerID,
-		HandlerVersion: version,
-		Payload:        wasmBytes,
 	}, nil
 }
 
@@ -1117,8 +1027,6 @@ func (p *ParentProcess) handleControlCommand(ctx context.Context, msg *NATSMessa
 
 	// Route command to appropriate handler based on command type
 	switch cmd.Command {
-	case "handlers.reload":
-		return p.handleHandlerReloadCommand(ctx, msg, cmd)
 	case "health.request":
 		return p.handleHealthRequestCommand(ctx, msg, cmd)
 	default:
@@ -1129,49 +1037,6 @@ func (p *ParentProcess) handleControlCommand(ctx context.Context, msg *NATSMessa
 		// Forward unknown commands to enclave for handling
 		return p.forwardControlToEnclave(ctx, msg, cmd)
 	}
-}
-
-// handleHandlerReloadCommand handles handler reload control commands
-func (p *ParentProcess) handleHandlerReloadCommand(ctx context.Context, msg *NATSMessage, cmd *SignedControlCommand) error {
-	// Extract handler parameters
-	handlerID, _ := cmd.Params["handler_id"].(string)
-	version, _ := cmd.Params["version"].(string)
-
-	if handlerID == "" {
-		log.Warn().
-			Str("command_id", cmd.CommandID).
-			Msg("Handler reload command missing handler_id")
-		return fmt.Errorf("handler_id is required")
-	}
-
-	log.Info().
-		Str("command_id", cmd.CommandID).
-		Str("handler_id", handlerID).
-		Str("version", version).
-		Str("issued_by", cmd.IssuedBy).
-		Msg("Processing handler reload command")
-
-	// Invalidate handler cache to force reload on next request
-	if p.handlerLoader != nil {
-		p.handlerLoader.InvalidateCache(handlerID)
-	}
-
-	// Send success response
-	if msg.Reply != "" {
-		response := map[string]interface{}{
-			"status":     "success",
-			"command_id": cmd.CommandID,
-			"handler_id": handlerID,
-			"message":    "Handler cache invalidated, will reload on next request",
-		}
-		if responseData, err := json.Marshal(response); err == nil {
-			if err := p.natsClient.Publish(msg.Reply, responseData); err != nil {
-				log.Error().Err(err).Str("reply", msg.Reply).Msg("Failed to publish success reply")
-			}
-		}
-	}
-
-	return nil
 }
 
 // handleHealthRequestCommand handles health check control commands
