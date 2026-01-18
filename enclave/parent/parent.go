@@ -357,7 +357,7 @@ func (p *ParentProcess) forwardToEnclave(ctx context.Context, msg *NATSMessage) 
 		}
 
 		// Also publish to app response subject for mobile apps using pub/sub pattern
-		// OwnerSpace.<guid>.forVault.<op> -> OwnerSpace.<guid>.app.<op>.response
+		// OwnerSpace.<guid>.forVault.<op> -> OwnerSpace.<guid>.forApp.<op>.response
 		if enclaveMsg.OwnerSpace != "" {
 			appResponseSubject := buildAppResponseSubject(msg.Subject, enclaveMsg.OwnerSpace)
 			if appResponseSubject != "" {
@@ -809,8 +809,8 @@ func hasSubjectSuffix(subject, suffix string) bool {
 	return subject[len(subject)-len(suffix):] == suffix
 }
 
-// buildAppResponseSubject converts a forVault subject to an app response subject
-// OwnerSpace.<guid>.forVault.<op> -> OwnerSpace.<guid>.app.<op>.response
+// buildAppResponseSubject converts a forVault subject to a forApp response subject
+// OwnerSpace.<guid>.forVault.<op> -> OwnerSpace.<guid>.forApp.<op>.response
 // This allows mobile apps using pub/sub pattern to receive responses
 // Note: ownerSpace parameter is just the GUID (from extractOwnerSpace)
 func buildAppResponseSubject(subject, ownerSpace string) string {
@@ -834,9 +834,9 @@ func buildAppResponseSubject(subject, ownerSpace string) string {
 		return ""
 	}
 
-	// Build: OwnerSpace.<guid>.app.<op>.response
+	// Build: OwnerSpace.<guid>.forApp.<op>.response
 	// ownerSpace is just the GUID, so we need to prepend "OwnerSpace."
-	return "OwnerSpace." + ownerSpace + ".app." + opPart + ".response"
+	return "OwnerSpace." + ownerSpace + ".forApp." + opPart + ".response"
 }
 
 // mapEnclaveSubjectToType maps enclave.* subjects to message types
