@@ -181,6 +181,123 @@ function closeModal(modalId) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Date/Time Picker Initialization (Flatpickr)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function setupDateTimePickers() {
+  // Check if flatpickr is loaded
+  if (typeof flatpickr === 'undefined') {
+    console.warn('Flatpickr not loaded, date pickers will not be available');
+    return;
+  }
+
+  const isDarkTheme = () => document.documentElement.getAttribute('data-theme') !== 'light';
+
+  // Apply theme styles to flatpickr calendar
+  const applyFlatpickrTheme = (instance) => {
+    const cal = instance.calendarContainer;
+    if (!cal) return;
+
+    if (!isDarkTheme()) {
+      // Light theme styles
+      cal.style.setProperty('background', '#ffffff', 'important');
+      cal.style.setProperty('border', '1px solid #d1d5db', 'important');
+      cal.style.setProperty('box-shadow', '0 4px 16px rgba(0,0,0,0.15)', 'important');
+
+      const months = cal.querySelector('.flatpickr-months');
+      if (months) {
+        months.style.setProperty('background', 'linear-gradient(135deg, #d4a012 0%, #b8860b 100%)', 'important');
+        months.style.setProperty('border-bottom', '1px solid #b8860b', 'important');
+        months.style.setProperty('border-radius', '4px 4px 0 0', 'important');
+      }
+
+      cal.querySelectorAll('.flatpickr-month, .flatpickr-current-month, .cur-year').forEach(el => {
+        el.style.setProperty('color', '#000', 'important');
+        el.style.setProperty('background', 'transparent', 'important');
+      });
+
+      cal.querySelectorAll('.flatpickr-day').forEach(el => {
+        el.style.setProperty('color', '#1f2937', 'important');
+      });
+    } else {
+      // Dark theme styles
+      cal.style.setProperty('background', '#1a1a2e', 'important');
+      cal.style.setProperty('border', '1px solid #3b3b5c', 'important');
+      cal.style.setProperty('box-shadow', '0 4px 16px rgba(0,0,0,0.4)', 'important');
+
+      const months = cal.querySelector('.flatpickr-months');
+      if (months) {
+        months.style.setProperty('background', 'linear-gradient(135deg, #d4a012 0%, #b8860b 100%)', 'important');
+        months.style.setProperty('border-bottom', '1px solid #b8860b', 'important');
+        months.style.setProperty('border-radius', '4px 4px 0 0', 'important');
+      }
+
+      cal.querySelectorAll('.flatpickr-month, .flatpickr-current-month, .cur-year').forEach(el => {
+        el.style.setProperty('color', '#000', 'important');
+        el.style.setProperty('background', 'transparent', 'important');
+      });
+
+      const weekdays = cal.querySelector('.flatpickr-weekdays');
+      if (weekdays) {
+        weekdays.style.setProperty('background', '#2a2a3e', 'important');
+      }
+      cal.querySelectorAll('.flatpickr-weekday').forEach(el => {
+        el.style.setProperty('color', '#9ca3af', 'important');
+        el.style.setProperty('background', 'transparent', 'important');
+      });
+
+      cal.querySelectorAll('.flatpickr-day').forEach(el => {
+        el.style.setProperty('color', '#e5e7eb', 'important');
+      });
+    }
+  };
+
+  // Common Flatpickr config
+  const baseConfig = {
+    allowInput: true,
+    animate: true,
+    onReady: function(selectedDates, dateStr, instance) {
+      applyFlatpickrTheme(instance);
+    },
+    onOpen: function(selectedDates, dateStr, instance) {
+      applyFlatpickrTheme(instance);
+    },
+  };
+
+  // DateTime picker for invite expiry
+  if (document.getElementById('expiresAt')) {
+    flatpickr('#expiresAt', {
+      ...baseConfig,
+      enableTime: true,
+      dateFormat: 'Y-m-d H:i',
+      time_24hr: true,
+      minDate: 'today'
+    });
+  }
+
+  // DateTime pickers for proposal dates
+  if (document.getElementById('proposalOpenDate')) {
+    flatpickr('#proposalOpenDate', {
+      ...baseConfig,
+      enableTime: true,
+      dateFormat: 'Y-m-d H:i',
+      time_24hr: true,
+      minDate: 'today'
+    });
+  }
+
+  if (document.getElementById('proposalCloseDate')) {
+    flatpickr('#proposalCloseDate', {
+      ...baseConfig,
+      enableTime: true,
+      dateFormat: 'Y-m-d H:i',
+      time_24hr: true,
+      minDate: 'today'
+    });
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Expose Functions Globally for Inline Handlers (temporary compatibility)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -945,6 +1062,9 @@ document.addEventListener('DOMContentLoaded', () => {
   setupWaitlistEventHandlers();
   setupHelpRequestsEventHandlers();
   setupCommunicationsTabSwitching();
+
+  // Initialize date/time pickers
+  setupDateTimePickers();
 
   // Setup refresh buttons
   setupRefreshButtons();

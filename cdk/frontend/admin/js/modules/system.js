@@ -10,7 +10,8 @@ import {
   showToast,
   isAdmin,
   idToken,
-  config
+  config,
+  escapeHtml
 } from './core.js';
 
 // ============================================
@@ -489,52 +490,103 @@ async function cancelDeletionRequest(requestId) {
 
 export async function loadVaultMetrics() {
   try {
-    const container = document.getElementById('vaultMetricsContent');
-    if (!container) return;
-
-    container.textContent = 'Loading vault metrics...';
-
     const data = await api('/admin/vault-metrics');
 
-    container.replaceChildren();
+    // Update key metrics
+    const metricTotalEnrolled = document.getElementById('metricTotalEnrolled');
+    const metricActiveVaults = document.getElementById('metricActiveVaults');
+    const metricPendingEnrollments = document.getElementById('metricPendingEnrollments');
+    const metricEnrollmentRate = document.getElementById('metricEnrollmentRate');
 
-    // Create metrics cards
-    const metricsGrid = document.createElement('div');
-    metricsGrid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:16px;';
+    if (metricTotalEnrolled) metricTotalEnrolled.textContent = data.key_metrics?.total_enrolled ?? '—';
+    if (metricActiveVaults) metricActiveVaults.textContent = data.key_metrics?.active_vaults ?? '—';
+    if (metricPendingEnrollments) metricPendingEnrollments.textContent = data.key_metrics?.pending_enrollments ?? '—';
+    if (metricEnrollmentRate) metricEnrollmentRate.textContent = `${data.key_metrics?.enrollment_rate_percent ?? '—'}%`;
 
-    // Extract metrics from nested response structure
-    const keyMetrics = data.key_metrics || {};
+    // Update enrollment outcomes
     const outcomes = data.enrollment_outcomes_30d || {};
-    const statusDist = data.vault_status_distribution || {};
+    const totalOutcomes = (outcomes.success || 0) + (outcomes.failed || 0) + (outcomes.abandoned || 0) + (outcomes.pending || 0);
 
-    const metrics = [
-      { label: 'Total Enrolled', value: keyMetrics.total_enrolled || 0 },
-      { label: 'Active Vaults', value: keyMetrics.active_vaults || statusDist.active || 0 },
-      { label: 'Pending Enrollments', value: keyMetrics.pending_enrollments || outcomes.pending || 0 },
-      { label: 'Enrollment Rate', value: (keyMetrics.enrollment_rate_percent || 0) + '%' }
-    ];
+    const outcomeSuccessCount = document.getElementById('outcomeSuccessCount');
+    const outcomeFailedCount = document.getElementById('outcomeFailedCount');
+    const outcomeAbandonedCount = document.getElementById('outcomeAbandonedCount');
+    const outcomePendingCount = document.getElementById('outcomePendingCount');
 
-    metrics.forEach(metric => {
-      const card = document.createElement('div');
-      card.style.cssText = 'background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:16px;text-align:center;';
+    if (outcomeSuccessCount) outcomeSuccessCount.textContent = outcomes.success || 0;
+    if (outcomeFailedCount) outcomeFailedCount.textContent = outcomes.failed || 0;
+    if (outcomeAbandonedCount) outcomeAbandonedCount.textContent = outcomes.abandoned || 0;
+    if (outcomePendingCount) outcomePendingCount.textContent = outcomes.pending || 0;
 
-      const value = document.createElement('div');
-      value.style.cssText = 'font-size:2rem;font-weight:700;color:var(--accent);margin-bottom:4px;';
-      value.textContent = metric.value;
+    // Calculate percentages for progress bars
+    if (totalOutcomes > 0) {
+      const outcomeSuccessBar = document.getElementById('outcomeSuccessBar');
+      const outcomeFailedBar = document.getElementById('outcomeFailedBar');
+      const outcomeAbandonedBar = document.getElementById('outcomeAbandonedBar');
+      const outcomePendingBar = document.getElementById('outcomePendingBar');
 
-      const label = document.createElement('div');
-      label.style.cssText = 'font-size:0.85rem;color:var(--gray);';
-      label.textContent = metric.label;
+      if (outcomeSuccessBar) outcomeSuccessBar.style.width = `${(outcomes.success / totalOutcomes) * 100}%`;
+      if (outcomeFailedBar) outcomeFailedBar.style.width = `${(outcomes.failed / totalOutcomes) * 100}%`;
+      if (outcomeAbandonedBar) outcomeAbandonedBar.style.width = `${(outcomes.abandoned / totalOutcomes) * 100}%`;
+      if (outcomePendingBar) outcomePendingBar.style.width = `${(outcomes.pending / totalOutcomes) * 100}%`;
+    }
 
-      card.append(value, label);
-      metricsGrid.appendChild(card);
-    });
+    // Update vault status distribution (Nitro model - 3 states only)
+    const status = data.vault_status_distribution || {};
+    const statusActiveCount = document.getElementById('statusActiveCount');
+    const statusSuspendedCount = document.getElementById('statusSuspendedCount');
+    const statusDeletedCount = document.getElementById('statusDeletedCount');
 
-    container.appendChild(metricsGrid);
+    if (statusActiveCount) statusActiveCount.textContent = status.active || 0;
+    if (statusSuspendedCount) statusSuspendedCount.textContent = status.suspended || 0;
+    if (statusDeletedCount) statusDeletedCount.textContent = status.deleted || 0;
+
+    // Update recent enrollments table
+    const recentEnrollments = data.recent_enrollments || [];
+    const tbody = document.getElementById('recentEnrollmentsBody');
+
+    if (tbody) {
+      if (recentEnrollments.length === 0) {
+        tbody.replaceChildren();
+        const tr = document.createElement('tr');
+        const td = document.createElement('td');
+        td.colSpan = 3;
+        td.style.cssText = 'padding:20px;text-align:center;color:var(--gray);';
+        td.textContent = 'No recent enrollments.';
+        tr.appendChild(td);
+        tbody.appendChild(tr);
+      } else {
+        tbody.replaceChildren();
+        recentEnrollments.forEach(e => {
+          const tr = document.createElement('tr');
+          tr.style.borderBottom = '1px solid var(--border)';
+
+          const td1 = document.createElement('td');
+          td1.style.cssText = 'padding:12px 8px;color:var(--text);';
+          td1.textContent = e.email || '—';
+
+          const td2 = document.createElement('td');
+          td2.style.cssText = 'padding:12px 8px;color:var(--gray);font-family:monospace;font-size:0.8rem;';
+          td2.textContent = (e.user_guid?.substring(0, 20) || '—') + '...';
+
+          const td3 = document.createElement('td');
+          td3.style.cssText = 'padding:12px 8px;color:var(--gray);';
+          td3.textContent = e.completed_at ? new Date(e.completed_at).toLocaleString() : new Date(e.created_at).toLocaleString();
+
+          tr.append(td1, td2, td3);
+          tbody.appendChild(tr);
+        });
+      }
+    }
+
+    // Update generated timestamp
+    const vaultMetricsGeneratedAt = document.getElementById('vaultMetricsGeneratedAt');
+    if (vaultMetricsGeneratedAt) {
+      vaultMetricsGeneratedAt.textContent = `Last updated: ${data.generated_at ? new Date(data.generated_at).toLocaleString() : '—'}`;
+    }
+
   } catch (e) {
     console.error('Error loading vault metrics:', e);
-    const container = document.getElementById('vaultMetricsContent');
-    if (container) container.textContent = 'Error: ' + (e.message || e);
+    showToast('Error loading vault metrics: ' + (e.message || e), 'error');
   }
 }
 

@@ -164,9 +164,27 @@ export function renderInvites() {
     cb.dataset.status = actualStatus;
     td1.appendChild(cb);
 
-    // Code cell (with highlight)
+    // Code cell (clickable to copy)
     const td2 = document.createElement('td');
+    td2.style.cssText = 'cursor:pointer;font-family:monospace;';
+    td2.title = 'Click to copy';
     td2.textContent = i.code;
+    td2.onclick = async (e) => {
+      e.stopPropagation();
+      try {
+        await navigator.clipboard.writeText(i.code);
+        const original = td2.textContent;
+        td2.textContent = 'Copied!';
+        td2.style.color = '#10b981';
+        setTimeout(() => {
+          td2.textContent = original;
+          td2.style.color = '';
+          if (searchTerm) highlightCell(td2, i.code, searchTerm);
+        }, 1500);
+      } catch (err) {
+        showToast('Failed to copy', 'error');
+      }
+    };
     if (searchTerm) highlightCell(td2, i.code, searchTerm);
 
     // Sent to cell
