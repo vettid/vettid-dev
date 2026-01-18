@@ -918,17 +918,22 @@ export function openCreateProposalModal() {
   if (modal) {
     const titleEl = document.getElementById('proposalTitle');
     const textEl = document.getElementById('proposalText');
-    const typeEl = document.getElementById('proposalType');
+    const categoryEl = document.getElementById('proposalCategory');
     const quorumEl = document.getElementById('proposalQuorumType');
+    const quorumValueEl = document.getElementById('proposalQuorumValue');
     const openEl = document.getElementById('proposalOpenDate');
     const closeEl = document.getElementById('proposalCloseDate');
 
     if (titleEl) titleEl.value = '';
     if (textEl) textEl.value = '';
-    if (typeEl) typeEl.value = 'binding';
-    if (quorumEl) quorumEl.value = 'majority';
+    if (categoryEl) categoryEl.value = 'other';
+    if (quorumEl) quorumEl.value = 'none';
+    if (quorumValueEl) quorumValueEl.value = '';
     if (openEl) openEl.value = '';
     if (closeEl) closeEl.value = '';
+
+    // Reset quorum value input visibility
+    toggleQuorumValue();
 
     // Initialize flatpickr date pickers if not already done
     initProposalDatePickers();
