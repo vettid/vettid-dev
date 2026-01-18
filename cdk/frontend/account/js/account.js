@@ -2643,6 +2643,10 @@ async function checkStepCompletion() {
         console.error('Error checking vault status:', e);
       }
     }
+
+    // Backups are enabled by default when subscription is active
+    // Users can only disable automatic backups via the mobile app
+    steps.backupsConfigured = steps.hasSubscription;
   }
 
   return steps;
@@ -2701,14 +2705,15 @@ async function populateGettingStartedSteps() {
     },
     {
       number: 5,
-      title: 'Enable Credential Backups',
-      description: 'Securely backup your vault credentials for recovery if your device is lost.',
+      title: 'Credential Backups Active',
+      description: 'Your credentials are automatically backed up for security. Manage backup settings in your mobile app.',
       completed: steps.backupsConfigured,
       accessible: hasSubscription,
       tab: 'deploy-vault',
       subTab: 'credential-backup',
       cardId: null,
-      note: hasSubscription ? null : 'Complete step 3 to unlock'
+      note: hasSubscription ? null : 'Complete step 3 to unlock',
+      informational: true  // Step auto-completes, clicking shows status only
     }
   ];
 
@@ -4454,11 +4459,11 @@ function initCredentialBackupTab() {
 // ============================================
 
 /**
- * Load backup settings from API
+ * Load backup settings from API (read-only display - settings managed in mobile app)
  */
 async function loadBackupSettings() {
-  const toggle = document.getElementById('credentialBackupEnabled');
-  const inlineToggle = document.getElementById('credentialBackupEnabledInline');
+  const statusBadge = document.getElementById('backupStatusBadge');
+  const statusBadgeInline = document.getElementById('backupStatusBadgeInline');
 
   try {
     const token = idToken();
@@ -4471,35 +4476,41 @@ async function loadBackupSettings() {
 
     if (res.ok) {
       const settings = await res.json();
-      const enabled = settings.enabled || false;
-      if (toggle) toggle.checked = enabled;
-      if (inlineToggle) inlineToggle.checked = enabled;
+      // Backend returns auto_backup_enabled, defaults to true for new users
+      const enabled = settings.auto_backup_enabled ?? true;
+      updateBackupStatusBadges(enabled);
       updateBackupCardsState(enabled);
     } else {
-      // If no settings exist, assume disabled
-      updateBackupCardsState(false);
+      // If no settings exist, backups are enabled by default
+      updateBackupStatusBadges(true);
+      updateBackupCardsState(true);
     }
   } catch (error) {
     console.error('Error loading backup settings:', error);
-    updateBackupCardsState(false);
+    // Default to enabled since that's the backend default
+    updateBackupStatusBadges(true);
+    updateBackupCardsState(true);
   }
+}
 
-  // Add change handler for original toggle
-  if (toggle) {
-    toggle.addEventListener('change', async () => {
-      await updateBackupSettings(toggle.checked);
-      if (inlineToggle) inlineToggle.checked = toggle.checked;
-      updateBackupCardsState(toggle.checked);
-    });
+/**
+ * Update the status badges to reflect current backup state
+ */
+function updateBackupStatusBadges(enabled) {
+  const statusBadge = document.getElementById('backupStatusBadge');
+  const statusBadgeInline = document.getElementById('backupStatusBadgeInline');
+
+  const enabledStyle = { background: '#4caf50', text: 'ENABLED' };
+  const disabledStyle = { background: '#6b7280', text: 'DISABLED' };
+  const style = enabled ? enabledStyle : disabledStyle;
+
+  if (statusBadge) {
+    statusBadge.textContent = style.text;
+    statusBadge.style.background = style.background;
   }
-
-  // Add change handler for inline toggle (syncs with original)
-  if (inlineToggle) {
-    inlineToggle.addEventListener('change', async () => {
-      await updateBackupSettings(inlineToggle.checked);
-      if (toggle) toggle.checked = inlineToggle.checked;
-      updateBackupCardsState(inlineToggle.checked);
-    });
+  if (statusBadgeInline) {
+    statusBadgeInline.textContent = style.text;
+    statusBadgeInline.style.background = style.background;
   }
 }
 
@@ -4536,7 +4547,10 @@ function updateBackupCardsState(enabled) {
         disabledMsg = document.createElement('div');
         disabledMsg.className = 'backup-disabled-msg';
         disabledMsg.style.cssText = 'padding:12px;background:rgba(107,114,128,0.1);border:1px solid #6b7280;border-radius:6px;margin-bottom:16px;text-align:center;';
-        disabledMsg.innerHTML = '<span style="color:#6b7280;font-size:0.9rem;">Enable automatic backups above to use restore features.</span>';
+        const msgSpan = document.createElement('span');
+        msgSpan.style.cssText = 'color:#6b7280;font-size:0.9rem;';
+        msgSpan.textContent = 'Automatic backups are disabled. Enable them in your VettID mobile app to use restore features.';
+        disabledMsg.appendChild(msgSpan);
         restoreCard.insertBefore(disabledMsg, restoreCard.children[2]);
       }
     } else if (disabledMsg) {
@@ -4546,7 +4560,8 @@ function updateBackupCardsState(enabled) {
 }
 
 /**
- * Update backup settings
+ * Update backup settings (currently unused - settings managed in mobile app)
+ * Kept for potential future admin functionality
  */
 async function updateBackupSettings(enabled) {
   try {

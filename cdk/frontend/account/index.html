@@ -861,17 +861,19 @@
         <button data-action="loadCredentialBackupStatus" class="btn" style="padding:6px 12px;font-size:0.85rem;background:#333;" title="Refresh">↻ Refresh</button>
       </div>
 
-      <!-- Backup Toggle -->
+      <!-- Backup Status (read-only - settings managed in mobile app) -->
       <div style="display:flex;justify-content:space-between;align-items:center;padding:16px;background:#050505;border-radius:8px;border:1px solid var(--border);margin-bottom:16px;">
         <div>
           <p style="margin:0;color:var(--text);font-weight:600;">Automatic Backups</p>
           <p style="margin:4px 0 0 0;color:var(--gray);font-size:0.85rem;">Encrypted credentials backed up automatically</p>
         </div>
-        <label class="toggle-switch">
-          <input type="checkbox" id="credentialBackupEnabledInline">
-          <span class="toggle-slider"></span>
-        </label>
+        <div id="backupStatusBadgeInline" style="padding:6px 12px;background:#4caf50;color:#000;border-radius:16px;font-size:0.75rem;font-weight:700;">
+          ENABLED
+        </div>
       </div>
+      <p style="margin:0 0 16px 0;color:var(--gray);font-size:0.8rem;font-style:italic;">
+        ℹ️ Backup settings can be managed in the VettID mobile app.
+      </p>
 
       <!-- Backup Status Grid -->
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;">
@@ -1058,24 +1060,24 @@
 
   <!-- Credential Backup Sub-tab -->
   <div id="vault-credential-backup" class="sub-tab-content">
-    <!-- Backup Settings Card -->
+    <!-- Backup Settings Card (read-only - settings managed in mobile app) -->
     <div class="card" id="backupSettingsCard">
       <h3 style="margin:0 0 16px 0;">Backup Settings</h3>
       <div style="display:flex;justify-content:space-between;align-items:center;padding:16px;background:#050505;border-radius:8px;border:1px solid var(--border);">
         <div>
           <p style="margin:0;color:var(--text);font-weight:600;">Automatic Credential Backups</p>
-          <p style="margin:4px 0 0 0;color:var(--gray);font-size:0.9rem;">When enabled, your encrypted credentials are backed up automatically.</p>
+          <p style="margin:4px 0 0 0;color:var(--gray);font-size:0.9rem;">Your encrypted credentials are backed up automatically for security.</p>
         </div>
-        <label class="toggle-switch" style="position:relative;display:inline-block;width:52px;height:28px;">
-          <input type="checkbox" id="credentialBackupEnabled" style="opacity:0;width:0;height:0;">
-          <span class="toggle-slider" style="position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:#333;border-radius:28px;transition:0.3s;"></span>
-        </label>
+        <div id="backupStatusBadge" style="padding:6px 12px;background:#4caf50;color:#000;border-radius:16px;font-size:0.75rem;font-weight:700;">
+          ENABLED
+        </div>
       </div>
-      <style>
-        .toggle-switch input:checked + .toggle-slider { background: var(--accent); }
-        .toggle-slider:before { position:absolute;content:'';height:20px;width:20px;left:4px;bottom:4px;background:#fff;border-radius:50%;transition:0.3s; }
-        .toggle-switch input:checked + .toggle-slider:before { transform:translateX(24px); }
-      </style>
+      <div style="margin-top:16px;padding:16px;background:rgba(var(--accent-rgb),0.1);border:1px solid var(--accent);border-radius:8px;">
+        <p style="margin:0;color:var(--text);font-size:0.9rem;">
+          <strong>ℹ️ Mobile App Control</strong><br>
+          <span style="color:var(--gray);">Automatic backups are enabled by default to protect your credentials. To disable automatic backups, use the Settings menu in your VettID mobile app.</span>
+        </p>
+      </div>
     </div>
 
     <!-- Backup Status Card -->
