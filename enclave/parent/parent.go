@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/rs/zerolog/log"
 )
@@ -345,15 +346,27 @@ func (p *ParentProcess) forwardToEnclave(ctx context.Context, msg *NATSMessage) 
 
 		// Also publish to app response subject for mobile apps using pub/sub pattern
 		// OwnerSpace.<guid>.forVault.<op> -> OwnerSpace.<guid>.forApp.<op>.response
+		//
+		// RELIABILITY: Publish multiple times with small delays to handle race condition
+		// where mobile app subscription may not be fully established when first response arrives.
+		// This is a workaround until JetStream is fully implemented for enrollment topics.
 		if enclaveMsg.OwnerSpace != "" {
 			appResponseSubject := buildAppResponseSubject(msg.Subject, enclaveMsg.OwnerSpace)
 			if appResponseSubject != "" {
-				log.Debug().
-					Str("subject", appResponseSubject).
-					Int("response_len", len(responseData)).
-					Msg("Publishing response to app subject")
-				if err := p.natsClient.Publish(appResponseSubject, responseData); err != nil {
-					log.Error().Err(err).Str("subject", appResponseSubject).Msg("Failed to publish to app response subject")
+				// Publish with retries to handle subscription timing race condition
+				retryDelays := []time.Duration{0, 50 * time.Millisecond, 200 * time.Millisecond, 500 * time.Millisecond}
+				for i, delay := range retryDelays {
+					if delay > 0 {
+						time.Sleep(delay)
+					}
+					log.Debug().
+						Str("subject", appResponseSubject).
+						Int("response_len", len(responseData)).
+						Int("attempt", i+1).
+						Msg("Publishing response to app subject")
+					if err := p.natsClient.Publish(appResponseSubject, responseData); err != nil {
+						log.Error().Err(err).Str("subject", appResponseSubject).Int("attempt", i+1).Msg("Failed to publish to app response subject")
+					}
 				}
 			}
 		}
