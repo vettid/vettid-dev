@@ -1021,21 +1021,21 @@ export class VaultStack extends cdk.Stack {
       entry: 'lambda/handlers/vault/transferRequest.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
       environment: credentialTransferEnv,
-      timeout: cdk.Duration.seconds(30),
+      timeout: cdk.Duration.seconds(60), // NATS connection may take time on cold start
     });
 
     this.transferApprove = new lambdaNode.NodejsFunction(this, 'TransferApproveFn', {
       entry: 'lambda/handlers/vault/transferApprove.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
       environment: credentialTransferEnv,
-      timeout: cdk.Duration.seconds(30),
+      timeout: cdk.Duration.seconds(60), // NATS connection may take time on cold start
     });
 
     this.transferStatus = new lambdaNode.NodejsFunction(this, 'TransferStatusFn', {
       entry: 'lambda/handlers/vault/transferStatus.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
       environment: credentialTransferEnv,
-      timeout: cdk.Duration.seconds(30),
+      timeout: cdk.Duration.seconds(60), // NATS connection may take time on cold start
     });
 
     // Grant permissions for credential transfer functions
