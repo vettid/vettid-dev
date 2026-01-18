@@ -129,34 +129,6 @@ export async function verifyAndroidHardwareAttestation(
 }
 
 /**
- * @deprecated Use verifyAndroidHardwareAttestation instead
- * Kept for backwards compatibility during migration
- */
-export async function verifyAndroidPlayIntegrity(
-  token: string,
-  nonce: string
-): Promise<DeviceAttestationResult> {
-  console.warn('DEPRECATED: verifyAndroidPlayIntegrity is deprecated. Use verifyAndroidHardwareAttestation.');
-
-  // In dev mode, compute attestation hash for binding
-  const attestationHash = createHash('sha256')
-    .update(token)
-    .update(nonce)
-    .digest('hex');
-
-  return {
-    valid: true,
-    device_type: 'android',
-    device_integrity: {
-      meets_basic_integrity: true,
-      meets_device_integrity: true,
-      meets_strong_integrity: false,
-    },
-    attestation_hash: attestationHash,
-  };
-}
-
-/**
  * Verify iOS App Attest attestation
  *
  * SECURITY: App Attest provides:
