@@ -300,32 +300,33 @@ The enclave is optimized for **native Go handlers** (no WASM runtime overhead), 
 
 ---
 
-### Phase 5: Vault Features 🟡 IN PROGRESS
+### Phase 5: Vault Features 🟢 90% COMPLETE
 
 **Objective**: Implement vault-based features
 
-#### 5.1 Vault-Based Voting System
+#### 5.1 Vault-Based Voting System ✅ BACKEND COMPLETE
 
-**Status**: Implementation in progress (Issues #50, #16, #136)
+**Status**: Backend complete, mobile UI pending
 
 **Backend Tasks** (vettid-dev):
-- [ ] Create KMS key for proposal signing (`vettid-proposal-signing`)
-- [ ] Update Proposals table schema (add signature fields)
-- [ ] Update Votes table schema (add voting_public_key, signature, vote_hash)
-- [ ] Create `receiveSignedVote.ts` Lambda
-- [ ] Create `publishVoteList.ts` Lambda
-- [ ] Create `getVoteMerkleProof.ts` Lambda
-- [ ] Update `createProposal.ts` with KMS signing
-- [ ] S3 bucket for published vote lists
+- [x] Create KMS key for proposal signing (in `business-governance-stack.ts`)
+- [x] Update Proposals table schema (signature fields added)
+- [x] Update Votes table schema (voting_public_key, signature, vote_hash)
+- [x] Create `receiveSignedVote.ts` Lambda
+- [x] Create `publishVoteResults.ts` Lambda
+- [x] Create `getVoteMerkleProof.ts` Lambda
+- [x] Update `createProposal.ts` with KMS signing
+- [x] S3 bucket for published vote lists (`publishedVotesBucket`)
+- [x] `getPublishedVotes.ts` public endpoint
 
 **Vault-Manager Tasks**:
-- [ ] Add `cast_vote` operation handler
-- [ ] Implement voting keypair derivation (HKDF from identity + proposal_id)
-- [ ] Add subscription verification
-- [ ] Add proposal signature verification
-- [ ] Return vote receipt with nonce
+- [x] Add `cast_vote` operation handler (`HandleCastVote` in `vote_handler.go`)
+- [x] Implement voting keypair derivation (HKDF from identity + proposal_id)
+- [x] Add subscription verification
+- [x] Add proposal signature verification
+- [x] Return vote receipt with nonce
 
-**Mobile App Tasks** (Android #50, iOS #16):
+**Mobile App Tasks** (Android vettid-android#1, iOS vettid-ios#1):
 - [ ] Proposals list screen
 - [ ] VettID signature verification on proposals
 - [ ] Vote casting flow with password challenge
@@ -333,26 +334,45 @@ The enclave is optimized for **native Go handlers** (no WASM runtime overhead), 
 - [ ] "My Votes" screen
 - [ ] Merkle proof verification
 
-#### 5.2 Connections & Messaging
+#### 5.2 Connections & Messaging 🟢 90% COMPLETE
 
-**Status**: Framework in place, handlers needed
+**Status**: Core handlers implemented, E2EE calls pending
 
-**Tasks**:
-- [ ] Connection invitation handler (vault-manager)
-- [ ] Connection acceptance handler
-- [ ] Profile publishing handler
-- [ ] Message send/receive handlers
+**Completed**:
+- [x] Connection invitation handler (`HandleCreateInvite` in `connections.go`)
+- [x] Connection acceptance handler (`HandleStoreCredentials` in `connections.go`)
+- [x] Connection revocation handler (`HandleRevoke` in `connections.go`)
+- [x] Connection list/get handlers
+- [x] Profile handlers (`HandleGet`, `HandleUpdate`, `HandleDelete` in `profile.go`)
+- [x] Message send handler (`HandleSend` in `messaging.go`)
+- [x] Message receive handler (`HandleIncomingMessage` in `messaging.go`)
+- [x] Read receipt handlers
+
+**Pending** (Issue vettid-dev#1):
+- [ ] E2EE call signaling (`CallHandler` - types defined, methods not implemented)
 - [ ] Key exchange for E2EE calls (X25519 + HKDF)
 
-#### 5.3 Credential Backup & Recovery
+#### 5.3 Credential Backup & Recovery 🟢 95% COMPLETE
 
-**Status**: Architecture defined, implementation pending
+**Status**: Backend complete, mobile UI pending
 
-**Tasks**:
-- [ ] `uploadCredentialBackup.ts` Lambda
-- [ ] `downloadCredentialBackup.ts` Lambda
-- [ ] 24-hour time-delay recovery mechanism
-- [ ] Mobile UI for backup/restore
+**Backend Tasks** (vettid-dev):
+- [x] `createCredentialBackup.ts` Lambda
+- [x] `downloadCredentialBackup.ts` Lambda
+- [x] `requestCredentialRecovery.ts` Lambda (time-delay recovery)
+- [x] `getRecoveryStatus.ts` Lambda
+- [x] `downloadRecoveredCredential.ts` Lambda
+- [x] `cancelCredentialRecovery.ts` Lambda
+- [x] Backup settings management (`getBackupSettings.ts`, `updateBackupSettings.ts`)
+
+**Vault-Manager Tasks**:
+- [x] Backup handler (`backup.go`)
+
+**Mobile App Tasks** (Android vettid-android#2, iOS vettid-ios#2, Tracking vettid-dev#2):
+- [ ] Credential backup UI (Android)
+- [ ] Credential backup UI (iOS)
+- [ ] Recovery flow UI (Android)
+- [ ] Recovery flow UI (iOS)
 
 ---
 
@@ -518,7 +538,7 @@ vettid-dev/
 |---------|------|---------|
 | 1.0 | 2025-12-06 | Initial draft (per-user EC2 model) |
 | 2.0 | 2026-01-17 | Complete rewrite for Nitro Enclave architecture. Removed per-user EC2 provisioning, Ledger (RDS), WASM Service Registry. Added multi-tenant enclave, SQLite+S3 storage, updated NATS architecture, vault-based voting phases. Reflects current implementation status. All vault operations use **native Go handlers** compiled into enclave image. Optimized enclave resource allocation to **12 GB / 6 vCPUs** (75% of c6a.2xlarge) - maximum allocation since parent is I/O-bound and only needs 2 vCPUs (AWS minimum). |
-| 2.1 | 2026-01-18 | Updated repository structure (removed vettid-handlers). Expanded Lambda handler directory listing to reflect actual structure. Updated vault-manager handler file listing. Removed references to user-extensible WASM handlers. |
+| 2.1 | 2026-01-18 | Updated repository structure (removed vettid-handlers). Expanded Lambda handler directory listing to reflect actual structure. Updated vault-manager handler file listing. Removed references to user-extensible WASM handlers. Updated Phase 5 to reflect actual implementation status (voting backend complete, connections/messaging 90% complete, backup backend complete). Added issue tracking references for remaining mobile work. |
 
 ---
 
