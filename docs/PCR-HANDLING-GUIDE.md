@@ -99,11 +99,11 @@ PCRs are stored in multiple locations for different purposes:
 
 | Parameter Path | Purpose | Format |
 |----------------|---------|--------|
-| `/vettid/enclave/pcr/pcr0` | Individual PCR0 | Hex string |
+| `/vettid/enclave/pcr/pcr0` | Individual PCR0 (parent reads this) | Hex string |
 | `/vettid/enclave/pcr/pcr1` | Individual PCR1 | Hex string |
 | `/vettid/enclave/pcr/pcr2` | Individual PCR2 | Hex string |
 | `/vettid/enclave/pcr/current` | Combined manifest | JSON (see below) |
-| `/vettid/enclave/pcr0` | Legacy (KMS policy) | Hex string |
+| `/vettid/enclave/pcr0` | **DEPRECATED** - Legacy path, no longer used | Hex string |
 
 **Combined Manifest Format (`/vettid/enclave/pcr/current`):**
 ```json

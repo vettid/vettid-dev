@@ -59,20 +59,20 @@ else
     log_warn "SSM /vettid/enclave/pcr/pcr0 not found (optional)"
 fi
 
-# 2. Check legacy PCR0 param (used by parent process for attestation verification)
-SSM_LEGACY_PCR0=$(aws ssm get-parameter --name "/vettid/enclave/pcr0" --query 'Parameter.Value' --output text --region "$REGION" 2>/dev/null || echo "")
-if [ -n "$SSM_LEGACY_PCR0" ]; then
-    if [ -n "$SSM_CURRENT_PCR0" ] && [ "$SSM_LEGACY_PCR0" != "$SSM_CURRENT_PCR0" ]; then
-        log_error "CRITICAL: Legacy /vettid/enclave/pcr0 does not match /current"
-        log_error "  Legacy (parent reads): ${SSM_LEGACY_PCR0:0:20}..."
-        log_error "  Current:               ${SSM_CURRENT_PCR0:0:20}..."
+# 2. Verify parent's PCR0 param matches /current (critical for attestation)
+if [ -n "$SSM_PCR0" ]; then
+    if [ -n "$SSM_CURRENT_PCR0" ] && [ "$SSM_PCR0" != "$SSM_CURRENT_PCR0" ]; then
+        log_error "CRITICAL: /vettid/enclave/pcr/pcr0 does not match /current"
+        log_error "  Parent reads:  ${SSM_PCR0:0:20}..."
+        log_error "  Current:       ${SSM_CURRENT_PCR0:0:20}..."
         log_error "  This will cause parent crash loop!"
         ERRORS=$((ERRORS + 1))
     else
-        log_ok "SSM /vettid/enclave/pcr0 (legacy) matches current"
+        log_ok "SSM /vettid/enclave/pcr/pcr0 matches current"
     fi
 else
-    log_warn "SSM /vettid/enclave/pcr0 (legacy) not found - parent may fail"
+    log_error "SSM /vettid/enclave/pcr/pcr0 not found - parent will fail!"
+    ERRORS=$((ERRORS + 1))
 fi
 
 # 3. Check individual SSM params match combined param (optional)

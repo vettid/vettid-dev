@@ -335,10 +335,8 @@ aws ssm put-parameter --name "/vettid/enclave/pcr/pcr0" --value "$PCR0" --type S
 aws ssm put-parameter --name "/vettid/enclave/pcr/pcr1" --value "$PCR1" --type String --overwrite --region "$REGION"
 aws ssm put-parameter --name "/vettid/enclave/pcr/pcr2" --value "$PCR2" --type String --overwrite --region "$REGION"
 
-# Also update legacy parameter path that parent process reads for attestation verification
-# Parent expects /vettid/enclave/pcr0 (without /pcr/ prefix)
-aws ssm put-parameter --name "/vettid/enclave/pcr0" --value "$PCR0" --type String --overwrite --region "$REGION"
-echo "Updated /vettid/enclave/pcr0 for parent attestation verification"
+# NOTE: Parent now reads from /vettid/enclave/pcr/pcr0 (consistent with above)
+# Legacy /vettid/enclave/pcr0 path is deprecated
 
 # Store combined PCR values for /vault/pcrs/current API endpoint
 VERSION="$(date +%Y-%m-%d)-v1"

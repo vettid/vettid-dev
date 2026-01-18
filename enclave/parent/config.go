@@ -137,7 +137,7 @@ func DefaultConfig() *Config {
 		Enclave: EnclaveConfig{
 			CID:              16, // Default enclave CID
 			Port:             5000,
-			PCR0SSMParameter: "/vettid/enclave/pcr0", // Default SSM parameter for PCR0
+			PCR0SSMParameter: "/vettid/enclave/pcr/pcr0", // Default SSM parameter for PCR0
 		},
 		Health: HealthConfig{
 			Port:     8080,
