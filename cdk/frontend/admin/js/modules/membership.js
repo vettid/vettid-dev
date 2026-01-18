@@ -595,7 +595,7 @@ export async function loadAllSubscriptions(resetPage = true) {
     if (tbody) {
       const tr = document.createElement('tr');
       const td = document.createElement('td');
-      td.colSpan = 7;
+      td.colSpan = 10;
       td.className = 'muted';
       td.textContent = 'Error: ' + (e.message || String(e));
       tr.appendChild(td);
@@ -609,36 +609,41 @@ export function renderSubscriptions() {
   if (!tbody) return;
 
   tbody.replaceChildren();
+  const now = new Date();
 
   // Apply quick filter
   let filtered = store.subscriptions.filter(s => {
     const quickFilter = store.filters.subscriptions || 'all';
+    const expiresDate = s.expires_at ? new Date(s.expires_at) : null;
+    const daysLeft = expiresDate ? Math.ceil((expiresDate - now) / (1000 * 60 * 60 * 24)) : null;
+
     if (quickFilter === 'active' && s.status !== 'active') return false;
     if (quickFilter === 'expiring') {
       if (s.status !== 'active') return false;
-      const expires = s.expires_at ? new Date(s.expires_at) : null;
-      if (!expires) return false;
-      const daysLeft = Math.ceil((expires - Date.now()) / (1000 * 60 * 60 * 24));
-      if (daysLeft > 30) return false;
+      if (!daysLeft || daysLeft > 30) return false;
     }
     if (quickFilter === 'expired' && s.status !== 'expired') return false;
 
     // Search filter
     const search = store.pagination.subscriptions.search?.toLowerCase() || '';
     if (search) {
+      const name = `${s.first_name || ''} ${s.last_name || ''}`.trim();
       const matchesEmail = (s.email || '').toLowerCase().includes(search);
-      const matchesName = (s.user_name || '').toLowerCase().includes(search);
-      const matchesPlan = (s.subscription_type_name || '').toLowerCase().includes(search);
+      const matchesName = name.toLowerCase().includes(search);
+      const matchesPlan = (s.plan || '').toLowerCase().includes(search);
       if (!matchesEmail && !matchesName && !matchesPlan) return false;
     }
 
     return true;
   });
 
+  // Update filter badge counts
+  updateSubscriptionFilterCounts();
+
   if (filtered.length === 0) {
     const tr = document.createElement('tr');
     const td = document.createElement('td');
-    td.colSpan = 7;
+    td.colSpan = 10;
     td.style.cssText = 'text-align:center;padding:40px;';
     td.textContent = 'No subscriptions found';
     tr.appendChild(td);
@@ -650,70 +655,120 @@ export function renderSubscriptions() {
 
   page.forEach(s => {
     const tr = document.createElement('tr');
+    const expiresDate = s.expires_at ? new Date(s.expires_at) : null;
+    const daysLeft = expiresDate ? Math.ceil((expiresDate - now) / (1000 * 60 * 60 * 24)) : null;
+    const name = `${s.first_name || ''} ${s.last_name || ''}`.trim() || '—';
 
-    // Checkbox
+    // 1. Checkbox
     const td1 = document.createElement('td');
     const cb = document.createElement('input');
     cb.type = 'checkbox';
     cb.className = 'subscription-checkbox';
-    cb.dataset.id = s.subscription_id;
+    cb.dataset.guid = s.user_guid || '';
     cb.dataset.status = s.status;
     td1.appendChild(cb);
 
-    // User
+    // 2. Name
     const td2 = document.createElement('td');
-    td2.textContent = s.user_name || s.email || '—';
+    td2.textContent = name;
 
-    // Plan
+    // 3. Email
     const td3 = document.createElement('td');
-    td3.textContent = s.subscription_type_name || s.plan || '—';
+    td3.textContent = s.email || '—';
 
-    // Status
+    // 4. Plan
     const td4 = document.createElement('td');
-    const statusBadge = document.createElement('span');
-    statusBadge.style.cssText = 'display:inline-block;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;';
-    const statusColors = { active: '#10b981', expired: '#ef4444', cancelled: '#f59e0b' };
-    statusBadge.style.background = statusColors[s.status] || '#6b7280';
-    statusBadge.style.color = '#fff';
-    statusBadge.textContent = s.status || 'Unknown';
-    td4.appendChild(statusBadge);
+    td4.textContent = s.plan || '—';
 
-    // Start Date
+    // 5. Status badge
     const td5 = document.createElement('td');
-    td5.textContent = s.started_at ? new Date(s.started_at).toLocaleDateString() : '—';
+    const statusBadge = document.createElement('span');
+    statusBadge.style.cssText = 'display:inline-block;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;color:#fff;';
+    const statusColors = { active: 'linear-gradient(135deg,#a855f7 0%,#7c3aed 100%)', expired: 'linear-gradient(135deg,#6b7280 0%,#4b5563 100%)', cancelled: 'linear-gradient(135deg,#f97316 0%,#ea580c 100%)' };
+    statusBadge.style.background = statusColors[s.status] || 'linear-gradient(135deg,#6b7280 0%,#4b5563 100%)';
+    statusBadge.textContent = (s.status || 'Unknown').charAt(0).toUpperCase() + (s.status || 'unknown').slice(1);
+    td5.appendChild(statusBadge);
 
-    // Expiry Date
+    // 6. PIN badge
     const td6 = document.createElement('td');
-    td6.textContent = s.expires_at ? new Date(s.expires_at).toLocaleDateString() : '—';
+    const pinBadge = document.createElement('span');
+    pinBadge.style.cssText = 'display:inline-block;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;color:#fff;';
+    pinBadge.style.background = s.pin_enabled ? 'linear-gradient(135deg,#10b981 0%,#059669 100%)' : 'linear-gradient(135deg,#6b7280 0%,#4b5563 100%)';
+    pinBadge.textContent = s.pin_enabled ? 'Yes' : 'No';
+    td6.appendChild(pinBadge);
 
-    // Actions
+    // 7. Vault badge (placeholder - would need vault status API)
     const td7 = document.createElement('td');
-    const actionsDiv = document.createElement('div');
-    actionsDiv.style.cssText = 'display:flex;gap:4px;';
+    const vaultBadge = document.createElement('span');
+    vaultBadge.style.cssText = 'display:inline-block;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;color:#fff;background:linear-gradient(135deg,#6b7280 0%,#4b5563 100%);';
+    vaultBadge.textContent = '—';
+    td7.appendChild(vaultBadge);
 
-    if (s.status === 'active') {
-      const extendBtn = document.createElement('button');
-      extendBtn.className = 'btn btn-sm';
-      extendBtn.style.background = 'linear-gradient(135deg,#3b82f6 0%,#2563eb 100%)';
-      extendBtn.textContent = 'Extend';
-      extendBtn.onclick = () => extendSubscription(s.subscription_id);
-      actionsDiv.appendChild(extendBtn);
-    } else if (s.status === 'expired') {
-      const reactivateBtn = document.createElement('button');
-      reactivateBtn.className = 'btn btn-sm';
-      reactivateBtn.style.background = 'linear-gradient(135deg,#10b981 0%,#059669 100%)';
-      reactivateBtn.textContent = 'Reactivate';
-      reactivateBtn.onclick = () => reactivateSubscription(s.subscription_id);
-      actionsDiv.appendChild(reactivateBtn);
+    // 8. Emails badge
+    const td8 = document.createElement('td');
+    const emailBadge = document.createElement('span');
+    emailBadge.style.cssText = 'display:inline-block;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;color:#fff;';
+    emailBadge.style.background = s.system_emails_enabled ? 'linear-gradient(135deg,#10b981 0%,#059669 100%)' : 'linear-gradient(135deg,#6b7280 0%,#4b5563 100%)';
+    emailBadge.textContent = s.system_emails_enabled ? 'On' : 'Off';
+    td8.appendChild(emailBadge);
+
+    // 9. Expires date
+    const td9 = document.createElement('td');
+    td9.textContent = expiresDate ? expiresDate.toLocaleString() : '—';
+
+    // 10. Days left badge
+    const td10 = document.createElement('td');
+    if (s.status === 'active' && daysLeft !== null) {
+      const daysLeftBadge = document.createElement('span');
+      daysLeftBadge.style.cssText = 'display:inline-block;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;';
+      if (daysLeft < 7) {
+        daysLeftBadge.style.background = 'linear-gradient(135deg,#ef4444 0%,#dc2626 100%)';
+        daysLeftBadge.style.color = '#fff';
+      } else if (daysLeft <= 30) {
+        daysLeftBadge.style.background = 'linear-gradient(135deg,#f59e0b 0%,#d97706 100%)';
+        daysLeftBadge.style.color = '#000';
+      } else {
+        daysLeftBadge.style.background = 'linear-gradient(135deg,#10b981 0%,#059669 100%)';
+        daysLeftBadge.style.color = '#fff';
+      }
+      daysLeftBadge.textContent = `${daysLeft}d`;
+      td10.appendChild(daysLeftBadge);
+    } else {
+      td10.textContent = '—';
+      td10.style.color = '#6b7280';
     }
-    td7.appendChild(actionsDiv);
 
-    tr.append(td1, td2, td3, td4, td5, td6, td7);
+    tr.append(td1, td2, td3, td4, td5, td6, td7, td8, td9, td10);
     tbody.appendChild(tr);
   });
 
   // Attach checkbox handlers
   tbody.querySelectorAll('.subscription-checkbox').forEach(cb => cb.onchange = updateSubscriptionsSelectedCount);
+}
+
+/**
+ * Update the filter badge counts (All, Paid, Free)
+ */
+function updateSubscriptionFilterCounts() {
+  let paidCount = 0;
+  let freeCount = 0;
+
+  store.subscriptions.forEach(s => {
+    const amount = s.amount || 0;
+    if (amount > 0) {
+      paidCount++;
+    } else {
+      freeCount++;
+    }
+  });
+
+  const allEl = document.getElementById('allSubsCount');
+  const paidEl = document.getElementById('paidSubsCount');
+  const freeEl = document.getElementById('freeSubsCount');
+
+  if (allEl) allEl.textContent = store.subscriptions.length;
+  if (paidEl) paidEl.textContent = paidCount;
+  if (freeEl) freeEl.textContent = freeCount;
 }
 
 export function updateSubscriptionsSelectedCount() {

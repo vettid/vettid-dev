@@ -58,7 +58,8 @@ export async function loadInvites(resetPage = true) {
   try {
     if (resetPage || store.invites.length === 0) {
       const data = await api('/admin/invites');
-      store.invites = data.invites || data || [];
+      // Backend returns { items, count, limit } - extract items array
+      store.invites = data.items || data.invites || (Array.isArray(data) ? data : []);
     }
     renderInvites();
   } catch (e) {

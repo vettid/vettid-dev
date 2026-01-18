@@ -367,7 +367,7 @@ const webAcl = new wafv2.CfnWebACL(this, 'WebAcl', {
     // This is required for the token-exchange endpoint to set cookies on mobile browsers
     this.httpApi = new apigw.HttpApi(this, 'Api', {
       corsPreflight: {
-        allowMethods: [apigw.CorsHttpMethod.GET, apigw.CorsHttpMethod.POST, apigw.CorsHttpMethod.PUT, apigw.CorsHttpMethod.DELETE, apigw.CorsHttpMethod.OPTIONS],
+        allowMethods: [apigw.CorsHttpMethod.GET, apigw.CorsHttpMethod.POST, apigw.CorsHttpMethod.PUT, apigw.CorsHttpMethod.PATCH, apigw.CorsHttpMethod.DELETE, apigw.CorsHttpMethod.OPTIONS],
         allowOrigins: [
           'https://vettid.dev',
           'https://www.vettid.dev',

@@ -5,6 +5,7 @@
   const msgEl = document.getElementById('msg');
   const submitBtn = document.getElementById('submitBtn');
   const checkboxItems = document.querySelectorAll('.checkbox-item');
+  const phoneInput = document.getElementById('phone');
 
   // Toggle selected class on checkbox items
   checkboxItems.forEach(item => {
@@ -13,6 +14,62 @@
       item.classList.toggle('selected', checkbox.checked);
     });
   });
+
+  /**
+   * Format phone number as user types
+   * Supports US format: +1 (XXX) XXX-XXXX
+   * Supports international: preserves + prefix and formats digits
+   */
+  function formatPhoneNumber(value) {
+    // Remove all non-digit characters except +
+    const hasPlus = value.startsWith('+');
+    const digits = value.replace(/\D/g, '');
+
+    if (digits.length === 0) return hasPlus ? '+' : '';
+
+    // US/Canada number (10 or 11 digits starting with 1)
+    if (digits.length <= 11 && (digits.length === 10 || (digits.length === 11 && digits.startsWith('1')))) {
+      const normalizedDigits = digits.length === 11 ? digits : '1' + digits;
+      const country = normalizedDigits.slice(0, 1);
+      const area = normalizedDigits.slice(1, 4);
+      const prefix = normalizedDigits.slice(4, 7);
+      const line = normalizedDigits.slice(7, 11);
+
+      if (normalizedDigits.length <= 1) return '+' + country;
+      if (normalizedDigits.length <= 4) return '+' + country + ' (' + area;
+      if (normalizedDigits.length <= 7) return '+' + country + ' (' + area + ') ' + prefix;
+      return '+' + country + ' (' + area + ') ' + prefix + '-' + line;
+    }
+
+    // International number - just format with + and spaces every 3-4 digits
+    if (hasPlus || digits.length > 10) {
+      return '+' + digits.replace(/(\d{1,3})(?=\d)/g, '$1 ').trim();
+    }
+
+    // Partial US number being entered (less than 10 digits, no +)
+    if (digits.length <= 3) return '(' + digits;
+    if (digits.length <= 6) return '(' + digits.slice(0, 3) + ') ' + digits.slice(3);
+    return '(' + digits.slice(0, 3) + ') ' + digits.slice(3, 6) + '-' + digits.slice(6, 10);
+  }
+
+  // Format phone as user types
+  if (phoneInput) {
+    phoneInput.addEventListener('input', (e) => {
+      const cursorPos = e.target.selectionStart;
+      const oldLength = e.target.value.length;
+      const formatted = formatPhoneNumber(e.target.value);
+      e.target.value = formatted;
+      // Adjust cursor position after formatting
+      const newLength = formatted.length;
+      const diff = newLength - oldLength;
+      e.target.setSelectionRange(cursorPos + diff, cursorPos + diff);
+    });
+
+    // Ensure proper format on blur
+    phoneInput.addEventListener('blur', () => {
+      phoneInput.value = formatPhoneNumber(phoneInput.value);
+    });
+  }
 
   function showMessage(text, type) {
     msgEl.textContent = text;
