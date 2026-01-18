@@ -53,6 +53,7 @@ export class VaultStack extends cdk.Stack {
   // Device attestation handlers (Phase 2)
   public readonly verifyAndroidAttestation!: lambdaNode.NodejsFunction;
   public readonly verifyIosAttestation!: lambdaNode.NodejsFunction;
+  public readonly verifyDeviceAttestation!: lambdaNode.NodejsFunction;  // Unified handler for enrollment flow
 
   // NATS account management functions
   public readonly natsCreateAccount!: lambdaNode.NodejsFunction;
@@ -356,6 +357,22 @@ export class VaultStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(30),
     });
 
+    // Unified device attestation handler (for QR code enrollment flow)
+    // SECURITY: Verifies Play Integrity (Android) or App Attest (iOS) and binds
+    // attestation hash to session, preventing enrollment token exfiltration
+    this.verifyDeviceAttestation = new lambdaNode.NodejsFunction(this, 'VerifyDeviceAttestationFn', {
+      entry: 'lambda/handlers/vault/verifyDeviceAttestation.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+        TABLE_AUDIT: tables.audit.tableName,
+        // SECURITY: Secret for HMAC-based attestation binding tokens
+        // In production, this should come from Secrets Manager
+        DEVICE_ATTESTATION_SECRET: process.env.DEVICE_ATTESTATION_SECRET || 'dev-attestation-secret',
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
     // ===== VAULT AUTHENTICATION =====
     // Legacy actionRequest and authExecute removed - vault-manager handles auth via NATS
 
@@ -570,6 +587,15 @@ export class VaultStack extends cdk.Stack {
     tables.enrollmentSessions.grantReadWriteData(this.verifyIosAttestation);
     tables.audit.grantReadWriteData(this.verifyAndroidAttestation);
     tables.audit.grantReadWriteData(this.verifyIosAttestation);
+
+    // Unified device attestation handler permissions (QR code enrollment flow)
+    tables.enrollmentSessions.grantReadWriteData(this.verifyDeviceAttestation);
+    tables.audit.grantReadWriteData(this.verifyDeviceAttestation);
+    // Grant access to enrollment JWT verification secret
+    this.verifyDeviceAttestation.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['secretsmanager:GetSecretValue'],
+      resources: [props.infrastructure.enrollmentJwtSecretArn],
+    }));
 
     // Grant Cognito permissions for enrollment finalization
     this.enrollFinalize.addToRolePolicy(new iam.PolicyStatement({
@@ -1375,6 +1401,9 @@ export class VaultStack extends cdk.Stack {
     // Device Attestation (Phase 2) - also uses enrollment JWT
     this.route('VerifyAndroidAttestation', httpApi, '/vault/enroll/attestation/android', apigw.HttpMethod.POST, this.verifyAndroidAttestation, enrollmentLambdaAuthorizer);
     this.route('VerifyIosAttestation', httpApi, '/vault/enroll/attestation/ios', apigw.HttpMethod.POST, this.verifyIosAttestation, enrollmentLambdaAuthorizer);
+    // Unified device attestation endpoint (recommended for QR code enrollment flow)
+    // SECURITY: Binds attestation hash to session for anti-exfiltration
+    this.route('VerifyDeviceAttestation', httpApi, '/vault/enroll/device-attestation', apigw.HttpMethod.POST, this.verifyDeviceAttestation, enrollmentLambdaAuthorizer);
 
     // Legacy vault auth endpoints removed - auth now via NATS to vault-manager
 

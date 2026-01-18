@@ -21,6 +21,10 @@ const TABLE_ENROLLMENT_SESSIONS = process.env.TABLE_ENROLLMENT_SESSIONS!;
 const TABLE_INVITES = process.env.TABLE_INVITES!;
 const TABLE_NATS_ACCOUNTS = process.env.TABLE_NATS_ACCOUNTS!;
 
+// SECURITY: Require device attestation before finalization
+// Set to 'true' in production to enforce hardware-backed attestation
+const REQUIRE_DEVICE_ATTESTATION = process.env.REQUIRE_DEVICE_ATTESTATION === 'true';
+
 // Rate limiting: 3 finalize attempts per session per 15 minutes
 const RATE_LIMIT_MAX_REQUESTS = 3;
 const RATE_LIMIT_WINDOW_MINUTES = 15;
@@ -109,6 +113,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       const stateMessages: Record<string, string> = {
         'WEB_INITIATED': 'Mobile app has not scanned the QR code yet',
         'AUTHENTICATED': 'App connected but enrollment not started',
+        'DEVICE_ATTESTED': 'Device attested but enrollment not started',
         'NATS_CONNECTED': 'Waiting for enclave attestation verification',
         'ATTESTATION_VERIFIED': 'Waiting for PIN setup',
         'PIN_SET': 'Waiting for credential password setup',
@@ -117,6 +122,29 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       };
       const message = stateMessages[session.status] || `Invalid session status: ${session.status}`;
       return conflict(message, origin);
+    }
+
+    // SECURITY: Verify device attestation was completed (if required)
+    // This prevents enrollment token exfiltration - even if an attacker steals
+    // the enrollment JWT, they cannot complete enrollment without passing
+    // device attestation from the same device
+    if (REQUIRE_DEVICE_ATTESTATION) {
+      if (!session.device_attestation_verified) {
+        await putAudit({
+          type: 'enrollment_finalize_failed',
+          reason: 'device_attestation_required',
+          session_id: sessionId,
+          user_guid: session.user_guid,
+        }, requestId);
+        return conflict('Device attestation required. Call /vault/enroll/device-attestation first.', origin);
+      }
+
+      // Log the attestation binding for audit trail
+      console.log('Enrollment finalize with attestation binding:', {
+        session_id: sessionId,
+        attestation_hash: session.device_attestation_hash?.substring(0, 16) + '...',
+        attestation_type: session.device_attestation_type,
+      });
     }
 
     // Check session expiry
