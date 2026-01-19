@@ -788,17 +788,12 @@ func mapSubjectToMessageType(subject string) EnclaveMessageType {
 		return EnclaveMessageTypeAttestationRequest
 	}
 
-	// Check for credential operations in OwnerSpace pattern
-	// OwnerSpace.{guid}.forVault.credential.create
-	// OwnerSpace.{guid}.forVault.credential.unseal
-	if hasSubjectSuffix(subject, "credential.create") {
-		return EnclaveMessageTypeCredentialCreate
-	}
-	if hasSubjectSuffix(subject, "credential.unseal") {
-		return EnclaveMessageTypeCredentialUnseal
-	}
+	// Note: OwnerSpace.*.forVault.credential.create and credential.unseal are
+	// handled as vault_op and routed through vault-manager's normal message handling.
+	// Only enclave.credential.* subjects (legacy Lambda flow) use special handling.
+	// Mobile apps use forVault.credential.create which goes to proteanCredentialHandler.
 
-	// Default to vault operation
+	// Default to vault operation - includes credential.create/unseal for mobile apps
 	return EnclaveMessageTypeVaultOp
 }
 
