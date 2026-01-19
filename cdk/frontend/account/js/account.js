@@ -60,25 +60,17 @@ function signedIn() { return !!idToken(); }
 // This is more secure than storing refresh token in localStorage
 async function refreshTokens() {
   try {
-    console.log('[AUTH] Attempting token refresh via', `${API_URL}/auth/session`);
     const response = await fetch(`${API_URL}/auth/session`, {
       method: 'GET',
       credentials: 'include' // Send httpOnly cookie
     });
 
-    console.log('[AUTH] Session response status:', response.status);
-
     if (!response.ok) {
-      const errorText = await response.text();
-      console.error('[AUTH] Session refresh failed:', response.status, errorText);
       return false;
     }
 
     const data = await response.json();
-    console.log('[AUTH] Session response data:', { authenticated: data.authenticated, hasIdToken: !!data.id_token, hasAccessToken: !!data.access_token });
-
     if (!data.authenticated || !data.id_token || !data.access_token) {
-      console.log('[AUTH] Not authenticated or missing tokens:', data.message || 'No message');
       return false;
     }
 
@@ -89,7 +81,6 @@ async function refreshTokens() {
       expires_at: Date.now() + (data.expires_in * 1000)
     });
 
-    console.log('[AUTH] Token refresh successful');
     return true;
   } catch (error) {
     console.error('[AUTH] Session refresh error:', error);
@@ -103,14 +94,12 @@ async function checkSession() {
   if (tokens && tokens.id_token) {
     // Check if tokens are expired
     if (tokens.expires_at && tokens.expires_at < Date.now() + 60000) {
-      console.log('[AUTH] Tokens expired, refreshing...');
       return await refreshTokens();
     }
     return true;
   }
 
   // No tokens in storage, try to get from httpOnly cookie
-  console.log('[AUTH] No tokens found, checking session...');
   return await refreshTokens();
 }
 
