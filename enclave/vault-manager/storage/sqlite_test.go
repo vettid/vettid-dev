@@ -3,6 +3,7 @@ package storage
 import (
 	"crypto/rand"
 	"testing"
+	"time"
 )
 
 func TestNewSQLiteStorage(t *testing.T) {
@@ -498,4 +499,491 @@ func bytesEqual(a, b []byte) bool {
 		}
 	}
 	return true
+}
+
+// ================================
+// Event System Tests
+// ================================
+
+func TestEventOperations(t *testing.T) {
+	dek := make([]byte, 32)
+	rand.Read(dek)
+
+	storage, err := NewSQLiteStorage("test-owner", dek)
+	if err != nil {
+		t.Fatalf("Failed to create storage: %v", err)
+	}
+	defer storage.Close()
+
+	// Store an event
+	event := &EventRecord{
+		EventID:        "evt-1",
+		EventType:      "call.incoming",
+		SourceType:     "call",
+		SourceID:       "call-123",
+		Payload:        []byte(`{"title":"Incoming call","message":"From Alice"}`),
+		FeedStatus:     "active",
+		ActionType:     "accept_decline",
+		Priority:       1,
+		CreatedAt:      1705680000,
+		SyncSequence:   1,
+		RetentionClass: "standard",
+	}
+
+	err = storage.StoreEvent(event)
+	if err != nil {
+		t.Fatalf("Failed to store event: %v", err)
+	}
+
+	// Get the event
+	retrieved, err := storage.GetEvent("evt-1")
+	if err != nil {
+		t.Fatalf("Failed to get event: %v", err)
+	}
+	if retrieved == nil {
+		t.Fatal("Expected event, got nil")
+	}
+	if retrieved.EventID != "evt-1" {
+		t.Errorf("Expected event ID 'evt-1', got '%s'", retrieved.EventID)
+	}
+	if retrieved.EventType != "call.incoming" {
+		t.Errorf("Expected event type 'call.incoming', got '%s'", retrieved.EventType)
+	}
+	if retrieved.FeedStatus != "active" {
+		t.Errorf("Expected feed status 'active', got '%s'", retrieved.FeedStatus)
+	}
+	if retrieved.Priority != 1 {
+		t.Errorf("Expected priority 1, got %d", retrieved.Priority)
+	}
+
+	// Verify payload was decrypted correctly
+	if !bytesEqual(retrieved.Payload, event.Payload) {
+		t.Error("Payload mismatch after decryption")
+	}
+}
+
+func TestEventNotFound(t *testing.T) {
+	dek := make([]byte, 32)
+	rand.Read(dek)
+
+	storage, err := NewSQLiteStorage("test-owner", dek)
+	if err != nil {
+		t.Fatalf("Failed to create storage: %v", err)
+	}
+	defer storage.Close()
+
+	// Get non-existent event
+	event, err := storage.GetEvent("non-existent")
+	if err != nil {
+		t.Fatalf("Failed to get non-existent event: %v", err)
+	}
+	if event != nil {
+		t.Error("Expected nil for non-existent event")
+	}
+}
+
+func TestListFeedEvents(t *testing.T) {
+	dek := make([]byte, 32)
+	rand.Read(dek)
+
+	storage, err := NewSQLiteStorage("test-owner", dek)
+	if err != nil {
+		t.Fatalf("Failed to create storage: %v", err)
+	}
+	defer storage.Close()
+
+	// Store multiple events with different statuses
+	events := []struct {
+		id       string
+		status   string
+		priority int
+	}{
+		{"evt-1", "active", 2},   // Urgent
+		{"evt-2", "active", 0},   // Normal
+		{"evt-3", "read", 1},     // High
+		{"evt-4", "hidden", 0},   // Should not appear in feed
+		{"evt-5", "archived", 0}, // Should not appear by default
+	}
+
+	for i, e := range events {
+		event := &EventRecord{
+			EventID:        e.id,
+			EventType:      "test.event",
+			Payload:        []byte(`{}`),
+			FeedStatus:     e.status,
+			Priority:       e.priority,
+			CreatedAt:      int64(1705680000 + i),
+			SyncSequence:   int64(i + 1),
+			RetentionClass: "standard",
+		}
+		if err := storage.StoreEvent(event); err != nil {
+			t.Fatalf("Failed to store event %s: %v", e.id, err)
+		}
+	}
+
+	// List active and read events (default)
+	feedEvents, total, err := storage.ListFeedEvents([]string{"active", "read"}, 10, 0)
+	if err != nil {
+		t.Fatalf("Failed to list feed events: %v", err)
+	}
+	if total != 3 {
+		t.Errorf("Expected total 3, got %d", total)
+	}
+	if len(feedEvents) != 3 {
+		t.Errorf("Expected 3 events, got %d", len(feedEvents))
+	}
+
+	// Verify ordering by priority (descending)
+	if feedEvents[0].EventID != "evt-1" {
+		t.Errorf("Expected first event to be evt-1 (highest priority), got %s", feedEvents[0].EventID)
+	}
+	if feedEvents[1].EventID != "evt-3" {
+		t.Errorf("Expected second event to be evt-3 (priority 1), got %s", feedEvents[1].EventID)
+	}
+
+	// List only archived
+	archivedEvents, total, err := storage.ListFeedEvents([]string{"archived"}, 10, 0)
+	if err != nil {
+		t.Fatalf("Failed to list archived events: %v", err)
+	}
+	if total != 1 {
+		t.Errorf("Expected total 1 archived, got %d", total)
+	}
+	if len(archivedEvents) != 1 {
+		t.Errorf("Expected 1 archived event, got %d", len(archivedEvents))
+	}
+}
+
+func TestQueryAuditEvents(t *testing.T) {
+	dek := make([]byte, 32)
+	rand.Read(dek)
+
+	storage, err := NewSQLiteStorage("test-owner", dek)
+	if err != nil {
+		t.Fatalf("Failed to create storage: %v", err)
+	}
+	defer storage.Close()
+
+	// Store events of different types with specific timestamps
+	// evt-1: call.incoming at 1705680000
+	// evt-2: call.outgoing at 1705681000
+	// evt-3: message.received at 1705682000
+	// evt-4: call.incoming at 1705683000
+	eventTypes := []string{"call.incoming", "call.outgoing", "message.received", "call.incoming"}
+	for i, et := range eventTypes {
+		event := &EventRecord{
+			EventID:        "evt-" + string(rune('1'+i)),
+			EventType:      et,
+			Payload:        []byte(`{}`),
+			FeedStatus:     "hidden",
+			CreatedAt:      int64(1705680000 + i*1000),
+			SyncSequence:   int64(i + 1),
+			RetentionClass: "standard",
+		}
+		if err := storage.StoreEvent(event); err != nil {
+			t.Fatalf("Failed to store event: %v", err)
+		}
+	}
+
+	// Query by event type
+	events, total, err := storage.QueryAuditEvents([]string{"call.incoming"}, 0, 0, "", 100, 0)
+	if err != nil {
+		t.Fatalf("Failed to query audit events: %v", err)
+	}
+	if total != 2 {
+		t.Errorf("Expected 2 call.incoming events, got %d", total)
+	}
+	if len(events) != 2 {
+		t.Errorf("Expected 2 events in result, got %d", len(events))
+	}
+
+	// Query by time range (should include evt-2 at 1705681000 and evt-3 at 1705682000)
+	events, total, err = storage.QueryAuditEvents(nil, 1705680500, 1705682500, "", 100, 0)
+	if err != nil {
+		t.Fatalf("Failed to query audit events by time: %v", err)
+	}
+	if total != 2 {
+		t.Errorf("Expected 2 events in time range, got %d", total)
+	}
+
+	// Query all
+	events, total, err = storage.QueryAuditEvents(nil, 0, 0, "", 100, 0)
+	if err != nil {
+		t.Fatalf("Failed to query all audit events: %v", err)
+	}
+	if total != 4 {
+		t.Errorf("Expected 4 total events, got %d", total)
+	}
+}
+
+func TestEventStatusUpdates(t *testing.T) {
+	dek := make([]byte, 32)
+	rand.Read(dek)
+
+	storage, err := NewSQLiteStorage("test-owner", dek)
+	if err != nil {
+		t.Fatalf("Failed to create storage: %v", err)
+	}
+	defer storage.Close()
+
+	// Store an event
+	event := &EventRecord{
+		EventID:        "evt-status",
+		EventType:      "test.event",
+		Payload:        []byte(`{}`),
+		FeedStatus:     "active",
+		CreatedAt:      1705680000,
+		SyncSequence:   1,
+		RetentionClass: "standard",
+	}
+	if err := storage.StoreEvent(event); err != nil {
+		t.Fatalf("Failed to store event: %v", err)
+	}
+
+	// Update to read
+	err = storage.UpdateEventStatus("evt-status", "read", 1705680100)
+	if err != nil {
+		t.Fatalf("Failed to update event status to read: %v", err)
+	}
+
+	// Verify
+	retrieved, _ := storage.GetEvent("evt-status")
+	if retrieved.FeedStatus != "read" {
+		t.Errorf("Expected status 'read', got '%s'", retrieved.FeedStatus)
+	}
+	if retrieved.ReadAt == nil || *retrieved.ReadAt != 1705680100 {
+		t.Error("ReadAt not set correctly")
+	}
+
+	// Update to archived
+	err = storage.UpdateEventStatus("evt-status", "archived", 1705680200)
+	if err != nil {
+		t.Fatalf("Failed to update event status to archived: %v", err)
+	}
+
+	// Verify
+	retrieved, _ = storage.GetEvent("evt-status")
+	if retrieved.FeedStatus != "archived" {
+		t.Errorf("Expected status 'archived', got '%s'", retrieved.FeedStatus)
+	}
+	if retrieved.ArchivedAt == nil || *retrieved.ArchivedAt != 1705680200 {
+		t.Error("ArchivedAt not set correctly")
+	}
+}
+
+func TestEventActioned(t *testing.T) {
+	dek := make([]byte, 32)
+	rand.Read(dek)
+
+	storage, err := NewSQLiteStorage("test-owner", dek)
+	if err != nil {
+		t.Fatalf("Failed to create storage: %v", err)
+	}
+	defer storage.Close()
+
+	// Store an event
+	event := &EventRecord{
+		EventID:        "evt-action",
+		EventType:      "call.incoming",
+		Payload:        []byte(`{}`),
+		FeedStatus:     "active",
+		ActionType:     "accept_decline",
+		CreatedAt:      1705680000,
+		SyncSequence:   1,
+		RetentionClass: "standard",
+	}
+	if err := storage.StoreEvent(event); err != nil {
+		t.Fatalf("Failed to store event: %v", err)
+	}
+
+	// Mark as actioned
+	err = storage.UpdateEventActioned("evt-action", 1705680100)
+	if err != nil {
+		t.Fatalf("Failed to mark event actioned: %v", err)
+	}
+
+	// Verify
+	retrieved, _ := storage.GetEvent("evt-action")
+	if retrieved.ActionedAt == nil || *retrieved.ActionedAt != 1705680100 {
+		t.Error("ActionedAt not set correctly")
+	}
+}
+
+func TestSyncSequence(t *testing.T) {
+	dek := make([]byte, 32)
+	rand.Read(dek)
+
+	storage, err := NewSQLiteStorage("test-owner", dek)
+	if err != nil {
+		t.Fatalf("Failed to create storage: %v", err)
+	}
+	defer storage.Close()
+
+	// Get initial sequence
+	seq, err := storage.GetSyncSequence()
+	if err != nil {
+		t.Fatalf("Failed to get sync sequence: %v", err)
+	}
+	if seq != 0 {
+		t.Errorf("Expected initial sequence 0, got %d", seq)
+	}
+
+	// Increment
+	newSeq, err := storage.IncrementSyncSequence()
+	if err != nil {
+		t.Fatalf("Failed to increment sync sequence: %v", err)
+	}
+	if newSeq != 1 {
+		t.Errorf("Expected new sequence 1, got %d", newSeq)
+	}
+
+	// Increment again
+	newSeq, err = storage.IncrementSyncSequence()
+	if err != nil {
+		t.Fatalf("Failed to increment sync sequence: %v", err)
+	}
+	if newSeq != 2 {
+		t.Errorf("Expected new sequence 2, got %d", newSeq)
+	}
+
+	// Verify persisted
+	seq, _ = storage.GetSyncSequence()
+	if seq != 2 {
+		t.Errorf("Expected persisted sequence 2, got %d", seq)
+	}
+}
+
+func TestGetEventsSince(t *testing.T) {
+	dek := make([]byte, 32)
+	rand.Read(dek)
+
+	storage, err := NewSQLiteStorage("test-owner", dek)
+	if err != nil {
+		t.Fatalf("Failed to create storage: %v", err)
+	}
+	defer storage.Close()
+
+	// Store events with increasing sync sequences
+	for i := 1; i <= 5; i++ {
+		event := &EventRecord{
+			EventID:        "evt-" + string(rune('0'+i)),
+			EventType:      "test.event",
+			Payload:        []byte(`{}`),
+			FeedStatus:     "active",
+			CreatedAt:      int64(1705680000 + i),
+			SyncSequence:   int64(i),
+			RetentionClass: "standard",
+		}
+		if err := storage.StoreEvent(event); err != nil {
+			t.Fatalf("Failed to store event: %v", err)
+		}
+	}
+
+	// Get events since sequence 2
+	events, err := storage.GetEventsSince(2, 10)
+	if err != nil {
+		t.Fatalf("Failed to get events since: %v", err)
+	}
+	if len(events) != 3 {
+		t.Errorf("Expected 3 events (seq 3,4,5), got %d", len(events))
+	}
+
+	// Verify ordering by sequence ascending
+	if events[0].SyncSequence != 3 {
+		t.Errorf("Expected first event sequence 3, got %d", events[0].SyncSequence)
+	}
+	if events[2].SyncSequence != 5 {
+		t.Errorf("Expected last event sequence 5, got %d", events[2].SyncSequence)
+	}
+
+	// Test limit
+	events, err = storage.GetEventsSince(0, 2)
+	if err != nil {
+		t.Fatalf("Failed to get events with limit: %v", err)
+	}
+	if len(events) != 2 {
+		t.Errorf("Expected 2 events (limited), got %d", len(events))
+	}
+}
+
+func TestEventCleanup(t *testing.T) {
+	dek := make([]byte, 32)
+	rand.Read(dek)
+
+	storage, err := NewSQLiteStorage("test-owner", dek)
+	if err != nil {
+		t.Fatalf("Failed to create storage: %v", err)
+	}
+	defer storage.Close()
+
+	// Use current time since CleanupEvents uses time.Now() internally
+	now := currentTimeUnix()
+
+	// Store events with different retention classes and statuses
+	events := []struct {
+		id         string
+		status     string
+		retention  string
+		createdAt  int64
+		shouldKeep bool
+	}{
+		// Deleted events older than 7 days - should be removed
+		{"evt-deleted-old", "deleted", "standard", now - 8*24*3600, false},
+		// Deleted events newer than 7 days - should keep
+		{"evt-deleted-new", "deleted", "standard", now - 1*24*3600, true},
+		// Ephemeral events older than 24 hours - should be removed
+		{"evt-ephemeral-old", "hidden", "ephemeral", now - 25*3600, false},
+		// Ephemeral events newer than 24 hours - should keep
+		{"evt-ephemeral-new", "hidden", "ephemeral", now - 12*3600, true},
+		// Hidden events older than audit retention (90 days) - should be removed
+		{"evt-hidden-old", "hidden", "standard", now - 91*24*3600, false},
+		// Hidden events newer than audit retention - should keep
+		{"evt-hidden-new", "hidden", "standard", now - 30*24*3600, true},
+		// Permanent events should never be deleted regardless of age
+		{"evt-permanent", "hidden", "permanent", now - 365*24*3600, true},
+		// Active events - should not be deleted
+		{"evt-active", "active", "standard", now - 60*24*3600, true},
+	}
+
+	for i, e := range events {
+		event := &EventRecord{
+			EventID:        e.id,
+			EventType:      "test.event",
+			Payload:        []byte(`{}`),
+			FeedStatus:     e.status,
+			CreatedAt:      e.createdAt,
+			SyncSequence:   int64(i + 1),
+			RetentionClass: e.retention,
+		}
+		if err := storage.StoreEvent(event); err != nil {
+			t.Fatalf("Failed to store event %s: %v", e.id, err)
+		}
+	}
+
+	// Run cleanup
+	deleted, err := storage.CleanupEvents(30, 90, false)
+	if err != nil {
+		t.Fatalf("Failed to cleanup events: %v", err)
+	}
+
+	// Should have deleted 3 events
+	if deleted != 3 {
+		t.Errorf("Expected 3 events deleted, got %d", deleted)
+	}
+
+	// Verify correct events remain
+	for _, e := range events {
+		event, _ := storage.GetEvent(e.id)
+		if e.shouldKeep && event == nil {
+			t.Errorf("Event %s should have been kept but was deleted", e.id)
+		}
+		if !e.shouldKeep && event != nil {
+			t.Errorf("Event %s should have been deleted but was kept", e.id)
+		}
+	}
+}
+
+// currentTimeUnix returns the current Unix timestamp
+func currentTimeUnix() int64 {
+	return time.Now().Unix()
 }
