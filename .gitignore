@@ -41,3 +41,6 @@ enclave/parent/parent
 enclave/parent/vettid-parent
 enclave/supervisor/supervisor
 enclave/bin/
+
+# Local secrets
+enclave/vsock-secret.hex
