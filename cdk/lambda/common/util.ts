@@ -226,16 +226,46 @@ export function generateSecureId(prefix?: string, length: number = 16): string {
 
 /**
  * Audit logging with secure ID generation and request correlation
+ * Automatically extracts actor_email for admin activity tracking from common field names
  */
 export async function putAudit(entry: Record<string, any>, requestId?: string): Promise<void> {
   entry.id = generateSecureId('AUDIT');
   const now = new Date();
   entry.ts = now.toISOString();
-  // Add numeric timestamp for GSI sorting (email-timestamp-index)
+  // Add numeric timestamp for GSI sorting (email-timestamp-index, actor-email-index)
   entry.createdAtTimestamp = now.getTime();
   if (requestId) {
     entry.request_id = requestId;
   }
+
+  // Auto-populate actor_email for admin activity tracking (actor-email-index GSI)
+  // Extract from common admin action fields if actor_email not explicitly set
+  if (!entry.actor_email) {
+    const actorFields = [
+      'approved_by', 'rejected_by', 'deleted_by', 'created_by', 'updated_by',
+      'disabled_by', 'enabled_by', 'admin_email', 'sent_by', 'revoked_by',
+      'cancelled_by', 'invited_by', 'added_by', 'removed_by', 'reset_by',
+      'expired_by', 'denied_by', 'regenerated_by', 'attempted_by', 'caller_email',
+      'requested_by', 'performed_by', 'triggered_by', 'initiated_by'
+    ];
+    for (const field of actorFields) {
+      if (entry[field] && typeof entry[field] === 'string' && entry[field].includes('@')) {
+        entry.actor_email = entry[field];
+        break;
+      }
+    }
+    // Also check nested 'details' object for actor fields
+    if (!entry.actor_email && entry.details && typeof entry.details === 'object') {
+      for (const field of actorFields) {
+        const value = (entry.details as Record<string, any>)[field];
+        if (value && typeof value === 'string' && value.includes('@')) {
+          entry.actor_email = value;
+          break;
+        }
+      }
+    }
+  }
+
   try {
     await ddb.send(new PutItemCommand({ TableName: TABLES.audit, Item: marshall(entry) }));
   } catch (error) {

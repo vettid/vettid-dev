@@ -335,17 +335,37 @@ export async function generateUserCredentials(
   let subAllow: string[];
 
   // SECURITY: Explicit deny rules to prevent cross-namespace access and system topic abuse
+  // Note: $JS.> is selectively allowed for JetStream consumer operations (see below)
   const systemDenyPatterns = [
     '$SYS.>',           // System topics
-    '$JS.>',            // JetStream internal topics
     '_INBOX.>',         // Internal inbox topics
     'Broadcast.>',      // Admin broadcast topics (only admins should publish)
   ];
 
+  // JetStream deny patterns - block admin operations but allow consumer operations on ENROLLMENT stream
+  const jetStreamDenyPatterns = [
+    '$JS.API.STREAM.CREATE.>',    // No creating streams
+    '$JS.API.STREAM.DELETE.>',    // No deleting streams
+    '$JS.API.STREAM.UPDATE.>',    // No updating streams
+    '$JS.API.STREAM.PURGE.>',     // No purging streams
+    '$JS.API.CONSUMER.DELETE.>',  // No deleting consumers (ephemeral auto-delete)
+  ];
+
   if (clientType === 'app') {
     // Mobile app: publish to vault, subscribe from vault
-    pubAllow = [`${ownerSpace}.forVault.>`];
-    subAllow = [`${ownerSpace}.forApp.>`, `${ownerSpace}.eventTypes`];
+    // Allow JetStream consumer operations on ENROLLMENT stream for guaranteed delivery
+    pubAllow = [
+      `${ownerSpace}.forVault.>`,
+      '$JS.API.CONSUMER.CREATE.ENROLLMENT',           // Create ephemeral consumers
+      '$JS.API.CONSUMER.MSG.NEXT.ENROLLMENT.>',       // Fetch messages from consumers
+    ];
+    subAllow = [
+      `${ownerSpace}.forApp.>`,
+      `${ownerSpace}.eventTypes`,
+      '$JS.API.CONSUMER.CREATE.ENROLLMENT',           // Receive consumer create response
+      '$JS.API.CONSUMER.MSG.NEXT.ENROLLMENT.>',       // Receive fetched messages
+      '$JS.API.STREAM.INFO.ENROLLMENT',               // Get stream info (for consumer setup)
+    ];
   } else if (clientType === 'vault') {
     // Vault instance: publish to app, services, connections, and call signaling; subscribe from app, control, and calls
     pubAllow = [
@@ -373,14 +393,24 @@ export async function generateUserCredentials(
 
   const userName = `${clientType}-${userGuid.substring(0, 8)}`;
 
+  // SECURITY: Build deny patterns based on client type
+  // Apps get JetStream consumer access (with restricted admin operations)
+  // Vaults and control clients don't need JetStream access
+  const pubDeny = clientType === 'app'
+    ? [...systemDenyPatterns, ...jetStreamDenyPatterns]
+    : [...systemDenyPatterns, '$JS.>'];
+  const subDeny = clientType === 'app'
+    ? [...systemDenyPatterns.filter(p => p !== 'Broadcast.>'), ...jetStreamDenyPatterns]
+    : [...systemDenyPatterns.filter(p => p !== 'Broadcast.>'), '$JS.>'];
+
   const jwt = await createUserJwt(
     userName,
     publicKey,
     accountSeed,
     {
       // SECURITY: Explicit allow and deny lists for defense-in-depth
-      pub: { allow: pubAllow, deny: systemDenyPatterns },
-      sub: { allow: subAllow, deny: systemDenyPatterns.filter(p => p !== 'Broadcast.>') }, // Vaults can subscribe to broadcasts
+      pub: { allow: pubAllow, deny: pubDeny },
+      sub: { allow: subAllow, deny: subDeny }, // Vaults can subscribe to broadcasts
     },
     expiresAt
   );
