@@ -101,12 +101,23 @@ type UnsealedCredential struct {
 	IdentityPrivateKey []byte      `json:"identity_private_key"` // Ed25519 private key
 	IdentityPublicKey  []byte      `json:"identity_public_key"`  // Ed25519 public key
 	VaultMasterSecret  []byte      `json:"vault_master_secret"`  // Master secret for key derivation
-	AuthHash           []byte      `json:"auth_hash"`            // Argon2id hash of password
-	AuthSalt           []byte      `json:"auth_salt"`            // Salt for Argon2id
-	AuthType           string      `json:"auth_type"`            // "password" or "pin"
-	CryptoKeys         []CryptoKey `json:"crypto_keys"`          // Additional keys (secp256k1, etc.)
-	CreatedAt          int64       `json:"created_at"`
-	Version            int         `json:"version"`
+
+	// PasswordHash is the credential password in PHC string format:
+	// $argon2id$v=19$m=65536,t=3,p=4$<base64-salt>$<base64-hash>
+	// This self-describing format includes all parameters for verification.
+	// Used for credential operations (signing, key derivation, etc.)
+	PasswordHash string `json:"password_hash,omitempty"`
+
+	// AuthHash and AuthSalt are used for PIN-based vault unlock operations.
+	// These are set during PIN setup and used for PIN verification.
+	// NOTE: For credential password, use PasswordHash (PHC format) instead.
+	AuthHash []byte `json:"auth_hash,omitempty"` // Argon2id hash of PIN
+	AuthSalt []byte `json:"auth_salt,omitempty"` // Salt for PIN Argon2id
+
+	AuthType   string      `json:"auth_type"` // "password" or "pin"
+	CryptoKeys []CryptoKey `json:"crypto_keys"` // Additional keys (secp256k1, etc.)
+	CreatedAt  int64       `json:"created_at"`
+	Version    int         `json:"version"`
 }
 
 // CryptoKey represents a cryptographic key stored in the credential
@@ -200,10 +211,12 @@ type CredentialCreateRequest struct {
 }
 
 // CredentialCreatePayload is the decrypted content of EncryptedPayload
-// Contains the Argon2id-hashed credential password (hashed by app)
+// Contains the Argon2id-hashed credential password in PHC string format
 type CredentialCreatePayload struct {
-	PasswordHash []byte `json:"password_hash"` // Argon2id hash from app
-	PasswordSalt []byte `json:"password_salt"` // Salt used by app
+	// PasswordHash is the Argon2id hash in PHC format:
+	// $argon2id$v=19$m=65536,t=3,p=4$<base64-salt>$<base64-hash>
+	// This self-describing format includes all parameters needed for verification
+	PasswordHash string `json:"password_hash"`
 }
 
 // CredentialCreateResponse is returned after Protean Credential creation
@@ -313,6 +326,10 @@ func (uc *UnsealedCredential) SecureErase() {
 	zeroBytes(uc.VaultMasterSecret)
 	zeroBytes(uc.AuthHash)
 	zeroBytes(uc.AuthSalt)
+
+	// Zero the password hash string (PHC format)
+	// While Go strings are immutable, we clear the field for defense in depth
+	uc.PasswordHash = ""
 
 	// Zero all crypto keys
 	for i := range uc.CryptoKeys {

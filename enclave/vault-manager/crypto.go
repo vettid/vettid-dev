@@ -7,8 +7,11 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
 	"fmt"
 	"io"
+	"strconv"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/argon2"
@@ -18,21 +21,36 @@ import (
 )
 
 // Argon2id parameters (matching mobile apps)
+// OWASP recommended minimum: t=3, m=65536 (64MB), p=4
+// 64MB chosen for device compatibility (works on 2GB RAM phones)
 const (
 	Argon2idTime    = 3
-	Argon2idMemory  = 262144 // 256 MB
+	Argon2idMemory  = 65536 // 64 MB (OWASP recommended minimum)
 	Argon2idThreads = 4
 	Argon2idKeyLen  = 32
 )
 
-// ECIES parameters (matching Android CryptoManager)
-// These MUST match the mobile app's HKDF parameters exactly
+// Domain constants for X25519 encryption (per architecture doc Section 5.5)
+// Domain separation prevents key confusion attacks between different encryption contexts
+// Each domain produces different derived keys even with the same shared secret
 const (
-	// HKDF salt - cross-platform constant for key derivation
+	// DomainCEK is used for CEK encrypting Protean Credential
+	DomainCEK = "vettid-cek-v1"
+	// DomainUTK is used for UTK encrypting password/challenge payloads
+	DomainUTK = "vettid-utk-v1"
+	// DomainPIN is used for attestation-bound PIN encryption
+	DomainPIN = "vettid-pin-v1"
+)
+
+// Legacy ECIES constants for backward compatibility
+// DEPRECATED: Use domain-specific encryption functions instead
+const (
 	ECIESHKDFSalt = "VettID-HKDF-Salt-v1"
-	// HKDF info/context - used for enclave PIN/data encryption
 	ECIESHKDFInfo = "enclave-encryption-v1"
 )
+
+// XChaCha20-Poly1305 nonce size (24 bytes vs 12 for standard ChaCha20)
+const XChaCha20NonceSize = 24
 
 // generateIdentityKeypair generates an Ed25519 keypair for vault identity
 func generateIdentityKeypair() (privateKey, publicKey []byte, err error) {
@@ -274,16 +292,152 @@ func decryptWithDEK(dek []byte, ciphertext []byte) ([]byte, error) {
 	return plaintext, nil
 }
 
+// --- XChaCha20-Poly1305 Domain-Separated Encryption ---
+// These functions use domain separation for HKDF and XChaCha20-Poly1305 for encryption
+// Format: ephemeral_pubkey (32) || nonce (24) || ciphertext
+
+// encryptWithDomain encrypts data using XChaCha20-Poly1305 with domain-separated HKDF
+// Returns: ephemeral_pubkey (32) || nonce (24) || ciphertext
+// SECURITY: Zeroizes all intermediate key material after use
+func encryptWithDomain(recipientPubKey []byte, plaintext []byte, domain string) ([]byte, error) {
+	// Generate ephemeral keypair
+	ephemeralPrivate := make([]byte, 32)
+	if _, err := rand.Read(ephemeralPrivate); err != nil {
+		return nil, fmt.Errorf("failed to generate ephemeral key: %w", err)
+	}
+	// SECURITY: Zero ephemeral private key after use
+	defer zeroBytes(ephemeralPrivate)
+
+	ephemeralPublic, err := curve25519.X25519(ephemeralPrivate, curve25519.Basepoint)
+	if err != nil {
+		return nil, fmt.Errorf("failed to derive ephemeral public key: %w", err)
+	}
+
+	// X25519 key exchange
+	sharedSecret, err := curve25519.X25519(ephemeralPrivate, recipientPubKey)
+	if err != nil {
+		return nil, fmt.Errorf("key exchange failed: %w", err)
+	}
+	// SECURITY: Zero shared secret after use
+	defer zeroBytes(sharedSecret)
+
+	// Derive encryption key using HKDF-SHA256 with domain separation
+	// Salt: domain string (e.g., "vettid-cek-v1")
+	// Info: nil (domain in salt provides sufficient separation)
+	hkdfReader := hkdf.New(sha256.New, sharedSecret, []byte(domain), nil)
+	encKey := make([]byte, chacha20poly1305.KeySize)
+	if _, err := io.ReadFull(hkdfReader, encKey); err != nil {
+		return nil, fmt.Errorf("key derivation failed: %w", err)
+	}
+	// SECURITY: Zero encryption key after use
+	defer zeroBytes(encKey)
+
+	// Encrypt using XChaCha20-Poly1305 (24-byte nonce)
+	aead, err := chacha20poly1305.NewX(encKey)
+	if err != nil {
+		return nil, fmt.Errorf("cipher creation failed: %w", err)
+	}
+
+	nonce := make([]byte, chacha20poly1305.NonceSizeX)
+	if _, err := rand.Read(nonce); err != nil {
+		return nil, fmt.Errorf("failed to generate nonce: %w", err)
+	}
+
+	ciphertext := aead.Seal(nil, nonce, plaintext, nil)
+
+	// Format: ephemeral_pubkey (32) || nonce (24) || ciphertext
+	result := make([]byte, 0, 32+chacha20poly1305.NonceSizeX+len(ciphertext))
+	result = append(result, ephemeralPublic...)
+	result = append(result, nonce...)
+	result = append(result, ciphertext...)
+
+	return result, nil
+}
+
+// decryptWithDomain decrypts data using XChaCha20-Poly1305 with domain-separated HKDF
+// Format: ephemeral_pubkey (32) || nonce (24) || ciphertext
+// SECURITY: Zeroizes all intermediate key material after use
+func decryptWithDomain(privateKey []byte, ciphertext []byte, domain string) ([]byte, error) {
+	minLen := 32 + chacha20poly1305.NonceSizeX
+	if len(ciphertext) < minLen {
+		return nil, fmt.Errorf("ciphertext too short: need at least %d bytes, got %d", minLen, len(ciphertext))
+	}
+
+	ephemeralPubKey := ciphertext[:32]
+	nonce := ciphertext[32 : 32+chacha20poly1305.NonceSizeX]
+	encrypted := ciphertext[32+chacha20poly1305.NonceSizeX:]
+
+	// X25519 key exchange
+	sharedSecret, err := curve25519.X25519(privateKey, ephemeralPubKey)
+	if err != nil {
+		return nil, fmt.Errorf("key exchange failed: %w", err)
+	}
+	// SECURITY: Zero shared secret after use
+	defer zeroBytes(sharedSecret)
+
+	// Derive encryption key using HKDF-SHA256 with domain separation
+	hkdfReader := hkdf.New(sha256.New, sharedSecret, []byte(domain), nil)
+	encKey := make([]byte, chacha20poly1305.KeySize)
+	if _, err := io.ReadFull(hkdfReader, encKey); err != nil {
+		return nil, fmt.Errorf("key derivation failed: %w", err)
+	}
+	// SECURITY: Zero encryption key after use
+	defer zeroBytes(encKey)
+
+	// Decrypt using XChaCha20-Poly1305
+	aead, err := chacha20poly1305.NewX(encKey)
+	if err != nil {
+		return nil, fmt.Errorf("cipher creation failed: %w", err)
+	}
+
+	plaintext, err := aead.Open(nil, nonce, encrypted, nil)
+	if err != nil {
+		return nil, fmt.Errorf("decryption failed: %w", err)
+	}
+
+	return plaintext, nil
+}
+
 // --- CEK Operations ---
 
-// encryptWithCEK encrypts credential data with the CEK using ECIES
+// encryptWithCEK encrypts credential data with the CEK using XChaCha20-Poly1305
+// Uses DomainCEK for HKDF key derivation
 func encryptWithCEK(cekPublicKey []byte, plaintext []byte) ([]byte, error) {
-	return encryptWithECIES(cekPublicKey, plaintext)
+	return encryptWithDomain(cekPublicKey, plaintext, DomainCEK)
 }
 
 // decryptWithCEK decrypts credential data with the CEK private key
+// Uses DomainCEK for HKDF key derivation
 func decryptWithCEK(cekPrivateKey []byte, ciphertext []byte) ([]byte, error) {
-	return decryptWithECIES(cekPrivateKey, ciphertext)
+	return decryptWithDomain(cekPrivateKey, ciphertext, DomainCEK)
+}
+
+// --- UTK Operations ---
+
+// encryptWithUTK encrypts payload data with a UTK using XChaCha20-Poly1305
+// Uses DomainUTK for HKDF key derivation
+func encryptWithUTK(utkPublicKey []byte, plaintext []byte) ([]byte, error) {
+	return encryptWithDomain(utkPublicKey, plaintext, DomainUTK)
+}
+
+// decryptWithUTK decrypts payload data with the corresponding LTK
+// Uses DomainUTK for HKDF key derivation
+func decryptWithUTK(ltkPrivateKey []byte, ciphertext []byte) ([]byte, error) {
+	return decryptWithDomain(ltkPrivateKey, ciphertext, DomainUTK)
+}
+
+// --- PIN Encryption Operations ---
+
+// encryptWithPINDomain encrypts PIN-related data using XChaCha20-Poly1305
+// Uses DomainPIN for HKDF key derivation
+func encryptWithPINDomain(recipientPubKey []byte, plaintext []byte) ([]byte, error) {
+	return encryptWithDomain(recipientPubKey, plaintext, DomainPIN)
+}
+
+// decryptWithPINDomain decrypts PIN-related data
+// Uses DomainPIN for HKDF key derivation
+func decryptWithPINDomain(privateKey []byte, ciphertext []byte) ([]byte, error) {
+	return decryptWithDomain(privateKey, ciphertext, DomainPIN)
 }
 
 // NOTE: generateX25519Keypair is defined in cek.go
@@ -309,4 +463,157 @@ func isAllDigits(b []byte) bool {
 		}
 	}
 	return true
+}
+
+// --- PHC String Format Parsing ---
+// PHC format: $argon2id$v=19$m=65536,t=3,p=4$<base64-salt>$<base64-hash>
+
+// PHCParams holds parsed Argon2id parameters from a PHC string
+type PHCParams struct {
+	Algorithm   string // "argon2id"
+	Version     int    // 19 (0x13)
+	MemoryCost  uint32 // m parameter in KB
+	TimeCost    uint32 // t parameter (iterations)
+	Parallelism uint8  // p parameter (threads)
+	Salt        []byte // Decoded salt
+	Hash        []byte // Decoded hash
+}
+
+// parsePHCString parses an Argon2id PHC string and extracts all parameters
+// Format: $argon2id$v=19$m=65536,t=3,p=4$<base64-salt>$<base64-hash>
+func parsePHCString(phc string) (*PHCParams, error) {
+	if !strings.HasPrefix(phc, "$argon2id$") {
+		return nil, fmt.Errorf("invalid PHC string: must start with $argon2id$")
+	}
+
+	// Split by $ (first element is empty due to leading $)
+	parts := strings.Split(phc, "$")
+	if len(parts) != 6 {
+		return nil, fmt.Errorf("invalid PHC string: expected 6 parts, got %d", len(parts))
+	}
+
+	// parts[0] = ""
+	// parts[1] = "argon2id"
+	// parts[2] = "v=19"
+	// parts[3] = "m=65536,t=3,p=4"
+	// parts[4] = base64 salt
+	// parts[5] = base64 hash
+
+	params := &PHCParams{
+		Algorithm: parts[1],
+	}
+
+	// Parse version
+	if !strings.HasPrefix(parts[2], "v=") {
+		return nil, fmt.Errorf("invalid PHC string: missing version")
+	}
+	version, err := strconv.Atoi(strings.TrimPrefix(parts[2], "v="))
+	if err != nil {
+		return nil, fmt.Errorf("invalid PHC string: invalid version: %w", err)
+	}
+	params.Version = version
+
+	// Parse m, t, p parameters
+	paramParts := strings.Split(parts[3], ",")
+	for _, p := range paramParts {
+		kv := strings.SplitN(p, "=", 2)
+		if len(kv) != 2 {
+			return nil, fmt.Errorf("invalid PHC string: malformed parameter: %s", p)
+		}
+		val, err := strconv.ParseUint(kv[1], 10, 32)
+		if err != nil {
+			return nil, fmt.Errorf("invalid PHC string: invalid parameter value: %s", p)
+		}
+		switch kv[0] {
+		case "m":
+			params.MemoryCost = uint32(val)
+		case "t":
+			params.TimeCost = uint32(val)
+		case "p":
+			params.Parallelism = uint8(val)
+		default:
+			// Ignore unknown parameters for forward compatibility
+		}
+	}
+
+	// Decode salt (base64 without padding, as per PHC spec)
+	salt, err := base64.RawStdEncoding.DecodeString(parts[4])
+	if err != nil {
+		return nil, fmt.Errorf("invalid PHC string: invalid salt encoding: %w", err)
+	}
+	params.Salt = salt
+
+	// Decode hash
+	hash, err := base64.RawStdEncoding.DecodeString(parts[5])
+	if err != nil {
+		return nil, fmt.Errorf("invalid PHC string: invalid hash encoding: %w", err)
+	}
+	params.Hash = hash
+
+	return params, nil
+}
+
+// validatePHCString validates a PHC string meets minimum security requirements
+// Returns nil if valid, error otherwise
+func validatePHCString(phc string) error {
+	params, err := parsePHCString(phc)
+	if err != nil {
+		return err
+	}
+
+	if params.Algorithm != "argon2id" {
+		return fmt.Errorf("invalid algorithm: must use argon2id, got %s", params.Algorithm)
+	}
+
+	// Version 19 (0x13) is the current Argon2 version
+	if params.Version != 19 {
+		return fmt.Errorf("invalid version: expected 19, got %d", params.Version)
+	}
+
+	// Enforce minimum security parameters
+	if params.MemoryCost < 65536 {
+		return fmt.Errorf("memory cost too low: minimum 65536 KB (64 MB), got %d KB", params.MemoryCost)
+	}
+
+	if params.TimeCost < 3 {
+		return fmt.Errorf("time cost too low: minimum 3 iterations, got %d", params.TimeCost)
+	}
+
+	if params.Parallelism < 1 {
+		return fmt.Errorf("parallelism too low: minimum 1, got %d", params.Parallelism)
+	}
+
+	// Validate salt and hash lengths
+	if len(params.Salt) < 16 {
+		return fmt.Errorf("salt too short: minimum 16 bytes, got %d", len(params.Salt))
+	}
+
+	if len(params.Hash) != 32 {
+		return fmt.Errorf("hash length invalid: expected 32 bytes, got %d", len(params.Hash))
+	}
+
+	return nil
+}
+
+// verifyPHCHash verifies a password against a PHC string
+// SECURITY: Uses constant-time comparison to prevent timing attacks
+func verifyPHCHash(password []byte, phc string) (bool, error) {
+	params, err := parsePHCString(phc)
+	if err != nil {
+		return false, err
+	}
+
+	// Recompute hash with same parameters
+	computedHash := argon2.IDKey(
+		password,
+		params.Salt,
+		params.TimeCost,
+		params.MemoryCost,
+		params.Parallelism,
+		uint32(len(params.Hash)),
+	)
+	defer zeroBytes(computedHash) // SECURITY: Zero after comparison
+
+	// Constant-time comparison
+	return constantTimeCompare(computedHash, params.Hash), nil
 }

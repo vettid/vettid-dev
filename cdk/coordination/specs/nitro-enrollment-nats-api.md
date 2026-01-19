@@ -437,11 +437,28 @@ The `encrypted_pin` field contains the ChaCha20-Poly1305 ciphertext of:
 **Encrypted Payload (before encryption):**
 ```json
 {
-  "password_hash": "<base64-argon2id-hash>"
+  "password_hash": "$argon2id$v=19$m=65536,t=3,p=4$<base64-salt>$<base64-hash>"
 }
 ```
 
-The app hashes the credential password with Argon2id before encrypting with UTK.
+The app hashes the credential password with Argon2id and encodes in **PHC (Password Hashing Competition) string format**.
+
+**PHC String Format:**
+- Self-describing format that includes algorithm, version, and all parameters
+- `$argon2id$v=19$m=65536,t=3,p=4$<salt>$<hash>`
+- Salt is encoded in base64 (without padding)
+- Hash is encoded in base64 (without padding)
+
+**Required Argon2id Parameters:**
+- `m` (memory): minimum 65536 (64 MB)
+- `t` (time/iterations): minimum 3
+- `p` (parallelism): minimum 1
+- Key length: 32 bytes
+
+**Encryption:**
+- Use XChaCha20-Poly1305 (24-byte nonce)
+- HKDF domain: `vettid-utk-v1`
+- Format: `ephemeral_pubkey (32) || nonce (24) || ciphertext`
 
 ### Credential Create Response
 
@@ -466,7 +483,7 @@ The app hashes the credential password with Argon2id before encrypting with UTK.
 
 ## Protean Credential Format
 
-The `encrypted_credential` contains the user's Protean Credential, encrypted with the CEK.
+The `encrypted_credential` contains the user's Protean Credential, encrypted with the CEK using XChaCha20-Poly1305 with domain `vettid-cek-v1`.
 
 **Decrypted Structure:**
 ```json
@@ -474,8 +491,7 @@ The `encrypted_credential` contains the user's Protean Credential, encrypted wit
   "identity_private_key": "<base64-Ed25519>",
   "identity_public_key": "<base64-Ed25519>",
   "vault_master_secret": "<base64-32-bytes>",
-  "password_hash": "<base64-argon2id>",
-  "auth_salt": "<base64>",
+  "password_hash": "$argon2id$v=19$m=65536,t=3,p=4$<base64-salt>$<base64-hash>",
   "auth_type": "password",
   "crypto_keys": [],
   "created_at": 1705555555,
@@ -485,13 +501,14 @@ The `encrypted_credential` contains the user's Protean Credential, encrypted wit
 
 | Field | Description |
 |-------|-------------|
-| `identity_private_key` | User's Ed25519 signing key |
-| `identity_public_key` | User's public identity |
+| `identity_private_key` | User's Ed25519 signing key (kept in enclave memory) |
+| `identity_public_key` | User's public identity (shared with contacts) |
 | `vault_master_secret` | Seed for deriving sub-keys |
-| `password_hash` | Argon2id hash of credential password |
-| `auth_salt` | Salt used for password verification |
+| `password_hash` | PHC-format string containing Argon2id hash + salt + params |
 | `auth_type` | Always `"password"` for new credentials |
 | `crypto_keys` | Additional derived keys (populated later) |
+
+**Note:** The `password_hash` uses PHC format which is self-describing - the salt and all parameters are embedded in the string. This ensures the app always uses the correct parameters for verification, even if defaults change in future versions.
 
 ---
 
@@ -576,8 +593,16 @@ ConsumerConfiguration.builder()
 
 ## Changelog
 
+- **2026-01-19**: Security cryptography updates
+  - Changed password_hash to PHC string format (self-describing with embedded params)
+  - Removed separate auth_salt field (salt now in PHC string)
+  - Updated encryption to XChaCha20-Poly1305 (24-byte nonce)
+  - Added HKDF domain separation (vettid-cek-v1, vettid-utk-v1)
+  - Updated Argon2id to 64MB memory (OWASP recommended minimum)
+  - Added detailed encryption format documentation
+
 - **2026-01-18**: Initial specification for Nitro architecture
-- Added complete three-phase enrollment flow (Attestation → PIN → Credential)
-- Documented PIN vs Credential Password distinction
-- Added credential.create message format
-- Documented JetStream consumer requirements
+  - Added complete three-phase enrollment flow (Attestation → PIN → Credential)
+  - Documented PIN vs Credential Password distinction
+  - Added credential.create message format
+  - Documented JetStream consumer requirements

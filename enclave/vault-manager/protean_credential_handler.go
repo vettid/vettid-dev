@@ -83,8 +83,8 @@ func (h *ProteanCredentialHandler) HandleCredentialCreate(ctx context.Context, m
 		return h.errorResponse(msg.GetID(), "invalid payload encoding")
 	}
 
-	// Decrypt using ECIES with LTK as private key
-	payloadBytes, err := decryptWithECIES(ltk, encryptedPayload)
+	// Decrypt using XChaCha20-Poly1305 with UTK domain separation
+	payloadBytes, err := decryptWithUTK(ltk, encryptedPayload)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to decrypt credential payload")
 		return h.errorResponse(msg.GetID(), "decryption failed")
@@ -97,12 +97,14 @@ func (h *ProteanCredentialHandler) HandleCredentialCreate(ctx context.Context, m
 		return h.errorResponse(msg.GetID(), "invalid payload format")
 	}
 
-	// Validate payload - app must have hashed the password with Argon2id
-	if len(payload.PasswordHash) == 0 {
+	// Validate PHC string format and minimum security requirements
+	if payload.PasswordHash == "" {
 		return h.errorResponse(msg.GetID(), "password_hash is required")
 	}
-	if len(payload.PasswordSalt) == 0 {
-		return h.errorResponse(msg.GetID(), "password_salt is required")
+
+	if err := validatePHCString(payload.PasswordHash); err != nil {
+		log.Error().Err(err).Msg("Invalid PHC string format")
+		return h.errorResponse(msg.GetID(), "invalid password hash format")
 	}
 
 	// Mark UTK as used (single-use for security)
@@ -128,8 +130,7 @@ func (h *ProteanCredentialHandler) HandleCredentialCreate(ctx context.Context, m
 		IdentityPrivateKey: identityPrivateKey,
 		IdentityPublicKey:  identityPublicKey,
 		VaultMasterSecret:  masterSecret,
-		AuthHash:           payload.PasswordHash, // App-computed Argon2id hash
-		AuthSalt:           payload.PasswordSalt, // App-provided salt
+		PasswordHash:       payload.PasswordHash, // PHC string format: $argon2id$v=19$m=65536,t=3,p=4$<salt>$<hash>
 		AuthType:           "password",
 		CryptoKeys:         make([]CryptoKey, 0),
 		CreatedAt:          time.Now().Unix(),
