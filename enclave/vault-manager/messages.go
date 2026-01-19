@@ -75,9 +75,10 @@ type MessageHandler struct {
 	profileHandler       *ProfileHandler
 	credentialHandler    *CredentialHandler
 	messagingHandler     *MessagingHandler
-	connectionsHandler   *ConnectionsHandler
-	notificationsHandler *NotificationsHandler
-	publisher            *VsockPublisher
+	connectionsHandler       *ConnectionsHandler
+	notificationsHandler     *NotificationsHandler
+	credentialSecretHandler  *CredentialSecretHandler
+	publisher                *VsockPublisher
 
 	// Cryptographic state and handlers for Phase 4
 	vaultState               *VaultState
@@ -162,6 +163,9 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 	// Create vote handler for vault-signed voting
 	voteHandler := NewVoteHandler(ownerSpace, vaultState)
 
+	// Create credential secret handler for critical secrets
+	credentialSecretHandler := NewCredentialSecretHandler(ownerSpace, storage, vaultState, bootstrapHandler)
+
 	return &MessageHandler{
 		ownerSpace:           ownerSpace,
 		storage:              storage,
@@ -170,9 +174,10 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 		profileHandler:       NewProfileHandler(ownerSpace, storage),
 		credentialHandler:    NewCredentialHandler(ownerSpace, storage),
 		messagingHandler:     NewMessagingHandler(ownerSpace, storage, publisher),
-		connectionsHandler:   NewConnectionsHandler(ownerSpace, storage),
-		notificationsHandler: NewNotificationsHandler(ownerSpace, storage, publisher),
-		publisher:            publisher,
+		connectionsHandler:      NewConnectionsHandler(ownerSpace, storage),
+		notificationsHandler:    NewNotificationsHandler(ownerSpace, storage, publisher),
+		credentialSecretHandler: credentialSecretHandler,
+		publisher:               publisher,
 
 		// Cryptographic components
 		vaultState:               vaultState,
@@ -520,8 +525,34 @@ func (mh *MessageHandler) handleCredentialOperation(ctx context.Context, msg *In
 		// First clear in-memory state, then delete from storage
 		mh.proteanCredentialHandler.ClearCredential()
 		return mh.credentialHandler.HandleDelete(msg)
+	case "secret":
+		// Critical secrets stored within Protean Credential
+		return mh.handleCredentialSecretOperation(ctx, msg, opParts[1:])
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown credential operation: %s", opType))
+	}
+}
+
+// handleCredentialSecretOperation routes credential.secret.* operations
+// These are critical secrets (seed phrases, private keys, etc.) that require password verification
+func (mh *MessageHandler) handleCredentialSecretOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
+	if len(opParts) < 2 {
+		return mh.errorResponse(msg.GetID(), "missing credential.secret operation type")
+	}
+
+	opType := opParts[1]
+
+	switch opType {
+	case "add":
+		return mh.credentialSecretHandler.HandleAdd(msg)
+	case "get":
+		return mh.credentialSecretHandler.HandleGet(msg)
+	case "list":
+		return mh.credentialSecretHandler.HandleList(msg)
+	case "delete":
+		return mh.credentialSecretHandler.HandleDelete(msg)
+	default:
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown credential.secret operation: %s", opType))
 	}
 }
 
@@ -711,4 +742,5 @@ func (mh *MessageHandler) SecureErase() {
 	mh.messagingHandler = nil
 	mh.connectionsHandler = nil
 	mh.notificationsHandler = nil
+	mh.credentialSecretHandler = nil
 }

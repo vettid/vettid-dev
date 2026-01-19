@@ -544,3 +544,111 @@ func (up *UTKPair) SecureErase() {
 	up.UTK = nil
 	up.LTK = nil
 }
+
+// --- Credential Secret Types (for credential.secret.* operations) ---
+// These are critical secrets stored inside the sealed Protean Credential
+
+// SecretCategory defines the type of secret stored
+type SecretCategory string
+
+const (
+	SecretCategorySeedPhrase     SecretCategory = "SEED_PHRASE"
+	SecretCategoryPrivateKey     SecretCategory = "PRIVATE_KEY"
+	SecretCategorySigningKey     SecretCategory = "SIGNING_KEY"
+	SecretCategoryMasterPassword SecretCategory = "MASTER_PASSWORD"
+	SecretCategoryOther          SecretCategory = "OTHER"
+)
+
+// CredentialSecret represents a critical secret stored within the credential
+type CredentialSecret struct {
+	ID                 string         `json:"id"`
+	Name               string         `json:"name"`
+	Category           SecretCategory `json:"category"`
+	Description        string         `json:"description,omitempty"`
+	EncryptedValue     []byte         `json:"encrypted_value"`      // Pre-encrypted by client
+	EphemeralPublicKey []byte         `json:"ephemeral_public_key"` // ECIES ephemeral key
+	Nonce              []byte         `json:"nonce"`                // Encryption nonce
+	CreatedAt          int64          `json:"created_at"`
+	UpdatedAt          int64          `json:"updated_at"`
+}
+
+// SecureErase zeros sensitive data in the secret
+func (cs *CredentialSecret) SecureErase() {
+	if cs == nil {
+		return
+	}
+	zeroBytes(cs.EncryptedValue)
+	zeroBytes(cs.EphemeralPublicKey)
+	zeroBytes(cs.Nonce)
+	cs.EncryptedValue = nil
+	cs.EphemeralPublicKey = nil
+	cs.Nonce = nil
+}
+
+// --- Request/Response types for credential.secret.* operations ---
+
+// CredentialSecretAddRequest is the request for credential.secret.add
+type CredentialSecretAddRequest struct {
+	Name               string `json:"name"`
+	Category           string `json:"category"` // SEED_PHRASE, PRIVATE_KEY, etc.
+	Description        string `json:"description,omitempty"`
+	EncryptedValue     string `json:"encrypted_value"`      // Base64-encoded
+	EphemeralPublicKey string `json:"ephemeral_public_key"` // Base64-encoded
+	Nonce              string `json:"nonce"`                // Base64-encoded
+}
+
+// CredentialSecretAddResponse is the response for credential.secret.add
+type CredentialSecretAddResponse struct {
+	ID        string `json:"id"`
+	CreatedAt string `json:"created_at"` // ISO8601
+}
+
+// CredentialSecretGetRequest is the request for credential.secret.get
+// Requires password verification
+type CredentialSecretGetRequest struct {
+	ID                    string `json:"id"`
+	EncryptedPasswordHash string `json:"encrypted_password_hash"` // Base64-encoded, UTK-encrypted
+	EphemeralPublicKey    string `json:"ephemeral_public_key"`    // Base64-encoded
+	Nonce                 string `json:"nonce"`                   // Base64-encoded
+	KeyID                 string `json:"key_id"`                  // UTK ID used for encryption
+}
+
+// CredentialSecretGetResponse is the response for credential.secret.get
+type CredentialSecretGetResponse struct {
+	ID                 string `json:"id"`
+	Name               string `json:"name"`
+	Category           string `json:"category"`
+	EncryptedValue     string `json:"encrypted_value"`      // Base64-encoded
+	EphemeralPublicKey string `json:"ephemeral_public_key"` // Base64-encoded
+	Nonce              string `json:"nonce"`                // Base64-encoded
+}
+
+// CredentialSecretListResponse is the response for credential.secret.list
+// Returns metadata only, no encrypted values (no password required)
+type CredentialSecretListResponse struct {
+	Secrets []CredentialSecretMetadata `json:"secrets"`
+}
+
+// CredentialSecretMetadata is the metadata for a secret in list response
+type CredentialSecretMetadata struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Category    string `json:"category"`
+	Description string `json:"description,omitempty"`
+	CreatedAt   string `json:"created_at"` // ISO8601
+}
+
+// CredentialSecretDeleteRequest is the request for credential.secret.delete
+// Requires password verification
+type CredentialSecretDeleteRequest struct {
+	ID                    string `json:"id"`
+	EncryptedPasswordHash string `json:"encrypted_password_hash"` // Base64-encoded, UTK-encrypted
+	EphemeralPublicKey    string `json:"ephemeral_public_key"`    // Base64-encoded
+	Nonce                 string `json:"nonce"`                   // Base64-encoded
+	KeyID                 string `json:"key_id"`                  // UTK ID used for encryption
+}
+
+// CredentialSecretDeleteResponse is the response for credential.secret.delete
+type CredentialSecretDeleteResponse struct {
+	Success bool `json:"success"`
+}

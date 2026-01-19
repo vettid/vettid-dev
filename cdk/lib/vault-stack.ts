@@ -82,6 +82,7 @@ export class VaultStack extends cdk.Stack {
   // Phase 7: Profile management (connections and messaging are vault-to-vault via NATS)
   public readonly getProfile!: lambdaNode.NodejsFunction;
   public readonly updateProfile!: lambdaNode.NodejsFunction;
+  public readonly getRegistration!: lambdaNode.NodejsFunction;
 
   // Phase 8: Backup System
   public readonly triggerBackup!: lambdaNode.NodejsFunction;
@@ -783,6 +784,17 @@ export class VaultStack extends cdk.Stack {
     tables.profiles.grantReadWriteData(this.getProfile); // Creates default if missing
     tables.profiles.grantReadWriteData(this.updateProfile);
 
+    // Registration data (read-only for post-enrollment flow)
+    this.getRegistration = new lambdaNode.NodejsFunction(this, 'GetRegistrationFn', {
+      entry: 'lambda/handlers/profile/getRegistration.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        TABLE_REGISTRATIONS: tables.registrations.tableName,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+    tables.registrations.grantReadData(this.getRegistration);
+
     // ===== PHASE 8: BACKUP SYSTEM =====
 
     const backupEnv = {
@@ -1454,6 +1466,7 @@ export class VaultStack extends cdk.Stack {
     // Profile management (connections/messaging are vault-to-vault via NATS)
     this.route('GetProfile', httpApi, '/profile', apigw.HttpMethod.GET, this.getProfile, memberAuthorizer);
     this.route('UpdateProfile', httpApi, '/profile', apigw.HttpMethod.PATCH, this.updateProfile, memberAuthorizer);
+    this.route('GetRegistration', httpApi, '/profile/registration', apigw.HttpMethod.GET, this.getRegistration, memberAuthorizer);
 
     // Backup System Routes
     this.route('TriggerBackup', httpApi, '/vault/backup', apigw.HttpMethod.POST, this.triggerBackup, memberAuthorizer);
