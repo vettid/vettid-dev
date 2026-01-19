@@ -50,6 +50,7 @@ export class ExtensibilityMonitoringStack extends cdk.Stack {
   // Vault management admin functions
   public readonly getVaultStatus!: lambdaNode.NodejsFunction;
   public readonly getVaultMetrics!: lambdaNode.NodejsFunction;
+  public readonly decommissionVault!: lambdaNode.NodejsFunction;
 
   // Handler functions
   public readonly listDeployedHandlers!: lambdaNode.NodejsFunction;
@@ -253,6 +254,34 @@ export class ExtensibilityMonitoringStack extends cdk.Stack {
 
     this.getVaultStatus = getVaultStatus;
     this.getVaultMetrics = getVaultMetrics;
+
+    // Vault Decommission - Complete cleanup of user's vault data
+    const decommissionVault = new lambdaNode.NodejsFunction(this, 'DecommissionVaultFn', {
+      entry: 'lambda/handlers/admin/decommissionVault.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+        TABLE_NATS_ACCOUNTS: tables.natsAccounts.tableName,
+        TABLE_NATS_TOKENS: tables.natsTokens.tableName,
+        TABLE_ENROLLMENT_SESSIONS: tables.enrollmentSessions.tableName,
+        TABLE_CREDENTIAL_BACKUPS: tables.credentialBackups.tableName,
+        TABLE_PROFILES: tables.profiles.tableName,
+        BACKUP_BUCKET: props.infrastructure.backupBucket.bucketName,
+      },
+      timeout: cdk.Duration.seconds(60), // Longer timeout for batch deletions
+    });
+
+    // Grant full read/write to all vault-related tables
+    tables.natsAccounts.grantReadWriteData(decommissionVault);
+    tables.natsTokens.grantReadWriteData(decommissionVault);
+    tables.enrollmentSessions.grantReadWriteData(decommissionVault);
+    tables.credentialBackups.grantReadWriteData(decommissionVault);
+    tables.profiles.grantReadWriteData(decommissionVault);
+    tables.audit.grantReadWriteData(decommissionVault);
+    // S3 permissions for backup cleanup
+    props.infrastructure.backupBucket.grantReadWrite(decommissionVault);
+
+    this.decommissionVault = decommissionVault;
 
     // ===== DEPLOYED HANDLERS (VettID-managed only) =====
 
@@ -493,6 +522,7 @@ export class ExtensibilityMonitoringStack extends cdk.Stack {
     // Vault Management Admin - Admin-only endpoints for vault monitoring
     this.route('GetVaultStatus', httpApi, '/admin/vault-status', apigw.HttpMethod.GET, this.getVaultStatus, adminAuthorizer);
     this.route('GetVaultMetrics', httpApi, '/admin/vault-metrics', apigw.HttpMethod.GET, this.getVaultMetrics, adminAuthorizer);
+    this.route('DecommissionVault', httpApi, '/admin/vault/{user_guid}/decommission', apigw.HttpMethod.DELETE, this.decommissionVault, adminAuthorizer);
 
     // Deployed Handlers - View VettID-managed deployed handlers
     this.route('ListDeployedHandlers', httpApi, '/admin/handlers/deployed', apigw.HttpMethod.GET, this.listDeployedHandlers, adminAuthorizer);

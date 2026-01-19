@@ -1403,6 +1403,44 @@ document.getElementById('bulkDeleteUsers').onclick=async()=>{
   await loadUsers();
 };
 
+// Decommission Vault - removes all vault/NATS data for selected users
+const decommissionBtn = document.getElementById('bulkDecommissionVaults');
+if (decommissionBtn) {
+  decommissionBtn.onclick = async () => {
+    const checkboxes = document.querySelectorAll('.user-checkbox:checked');
+    const items = Array.from(checkboxes).filter(cb => cb.dataset.userGuid);
+    if (items.length === 0) {
+      showToast('No users with vault data selected', 'warning');
+      return;
+    }
+
+    const confirmed = await showConfirm(
+      'Decommission Vaults',
+      `This will completely remove vault data for ${items.length} user(s).\n\nThis includes:\n• NATS accounts and tokens\n• Enrollment sessions\n• Credential backups\n• Profile data\n\nUsers will need to re-enroll to create a new vault.\n\nContinue?`,
+      'Decommission',
+      'Cancel',
+      true
+    );
+    if (!confirmed) return;
+
+    const progressToast = showToast(`Decommissioning 0 of ${items.length}...`, 'info', 0);
+    const results = await Promise.allSettled(items.map((cb, i) =>
+      api(`/admin/vault/${cb.dataset.userGuid}/decommission`, { method: 'DELETE' }).then(() => {
+        progressToast.querySelector('span').textContent = `Decommissioning ${i + 1} of ${items.length}...`;
+      })
+    ));
+    progressToast.remove();
+    const succeeded = results.filter(r => r.status === 'fulfilled').length;
+    const failed = results.filter(r => r.status === 'rejected').length;
+    if (failed > 0) {
+      showToast(`${succeeded} decommissioned, ${failed} failed`, 'warning');
+    } else {
+      showToast(`Decommissioned vaults for ${succeeded} user(s)`, 'success');
+    }
+    await loadUsers();
+  };
+}
+
 // Pagination controls - clear selection on page change
 document.getElementById('usersPerPage').onchange=e=>{
   paginationState.users.perPage=Number(e.target.value);

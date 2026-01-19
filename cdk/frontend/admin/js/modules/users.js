@@ -398,6 +398,7 @@ export function renderUsers(filtered, tbody) {
       cb.dataset.id = u.registration_id;
       cb.dataset.status = u.status;
       cb.dataset.member = u.membership_status || 'none';
+      cb.dataset.userGuid = u.user_guid || '';
       td1.appendChild(cb);
 
       // Name cell
@@ -638,6 +639,29 @@ export async function bulkDeleteUsers(showConfirm) {
   );
 }
 
+export async function bulkDecommissionVaults(showConfirm) {
+  const checkboxes = document.querySelectorAll('.user-checkbox:checked');
+  const items = Array.from(checkboxes).filter(cb => cb.dataset.userGuid);
+  if (items.length === 0) {
+    showToast('No users with vaults selected', 'warning');
+    return;
+  }
+
+  const confirmed = await showConfirm(
+    'Decommission Vaults',
+    `This will completely remove vault data for ${items.length} user(s).\n\nThis includes:\n• NATS accounts and tokens\n• Enrollment sessions\n• Credential backups\n• Profile data\n\nUsers will need to re-enroll to create a new vault.\n\nContinue?`,
+    'Decommission',
+    'Cancel',
+    true
+  );
+  if (!confirmed) return;
+
+  await processBulkAction(items, (cb) =>
+    api(`/admin/vault/${cb.dataset.userGuid}/decommission`, { method: 'DELETE' }),
+    'Vault decommissioned for'
+  );
+}
+
 async function processBulkAction(items, actionFn, actionName) {
   const progressToast = showToast(`Processing 0 of ${items.length}...`, 'info', 0);
   const results = await Promise.allSettled(items.map((cb, i) =>
@@ -793,6 +817,7 @@ export function renderUsersCards(users, isInvited = false) {
       cb.dataset.id = u.registration_id;
       cb.dataset.status = u.status;
       cb.dataset.member = memberStatus;
+      cb.dataset.userGuid = u.user_guid || '';
       cb.dataset.action = 'user-select';
       cb.style.cssText = 'width:18px;height:18px;cursor:pointer;';
       const title = document.createElement('div');

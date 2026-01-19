@@ -129,10 +129,14 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     }
 
     // Check if proposal exists and has published results
+    // Note: 'status' is a DynamoDB reserved keyword
     const proposalResult = await ddb.send(new GetItemCommand({
       TableName: TABLE_PROPOSALS,
       Key: marshall({ proposal_id: proposalId }),
-      ProjectionExpression: 'proposal_id, merkle_root, results_published_at, status',
+      ProjectionExpression: 'proposal_id, merkle_root, results_published_at, #s',
+      ExpressionAttributeNames: {
+        '#s': 'status',
+      },
     }));
 
     if (!proposalResult.Item) {

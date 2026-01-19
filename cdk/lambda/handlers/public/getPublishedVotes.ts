@@ -76,10 +76,14 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     const includeMerkle = event.queryStringParameters?.include_merkle === 'true';
 
     // First, check if the proposal exists and has published results
+    // Note: 'status' is a DynamoDB reserved keyword, so we use ExpressionAttributeNames
     const proposalResult = await ddb.send(new GetItemCommand({
       TableName: TABLE_PROPOSALS,
       Key: marshall({ proposal_id: proposalId }),
-      ProjectionExpression: 'proposal_id, proposal_title, proposal_number, status, merkle_root, results_published_at, vote_counts, opens_at, closes_at',
+      ProjectionExpression: 'proposal_id, proposal_title, proposal_number, #s, merkle_root, results_published_at, vote_counts, opens_at, closes_at',
+      ExpressionAttributeNames: {
+        '#s': 'status',
+      },
     }));
 
     if (!proposalResult.Item) {
