@@ -65,6 +65,10 @@ type VaultState struct {
 	// This is PCR-bound and used with the user's PIN to derive the DEK
 	sealedMaterial []byte
 
+	// DEK (Data Encryption Key) - temporarily stored between PIN setup and credential creation
+	// SECURITY: This is cleared after credential creation or on timeout
+	dek []byte
+
 	// Block list for call filtering
 	blockList map[string]*BlockListEntry
 
@@ -175,10 +179,38 @@ type PINSetupPayload struct {
 }
 
 // PINSetupResponse is returned after PIN setup
+// Returns vault_ready + UTKs for credential creation (Phase 2)
+// Does NOT return the credential - that comes from credential.create (Phase 3)
 type PINSetupResponse struct {
-	Status              string   `json:"status"`
-	EncryptedCredential string   `json:"encrypted_credential"` // DEK-encrypted credential
-	NewUTKs             []string `json:"new_utks"`
+	Status string       `json:"status"` // "vault_ready"
+	UTKs   []UTKPublic  `json:"utks"`   // UTKs for credential creation
+}
+
+// UTKPublic is the public representation of a UTK sent to the app
+type UTKPublic struct {
+	ID        string `json:"id"`
+	PublicKey string `json:"public_key"` // Base64-encoded X25519 public key
+}
+
+// CredentialCreateRequest is the request to create the Protean Credential
+// This is Phase 3 of enrollment, after PIN setup (Phase 2)
+type CredentialCreateRequest struct {
+	UTKID            string `json:"utk_id"`            // UTK used for encryption
+	EncryptedPayload string `json:"encrypted_payload"` // UTK-encrypted password hash
+}
+
+// CredentialCreatePayload is the decrypted content of EncryptedPayload
+// Contains the Argon2id-hashed credential password (hashed by app)
+type CredentialCreatePayload struct {
+	PasswordHash []byte `json:"password_hash"` // Argon2id hash from app
+	PasswordSalt []byte `json:"password_salt"` // Salt used by app
+}
+
+// CredentialCreateResponse is returned after Protean Credential creation
+type CredentialCreateResponse struct {
+	Status              string      `json:"status"`               // "created"
+	EncryptedCredential string      `json:"encrypted_credential"` // CEK-encrypted Protean Credential
+	NewUTKs             []UTKPublic `json:"new_utks"`             // Fresh UTKs for future operations
 }
 
 // PINUnlockRequest is the request to unlock with PIN
@@ -259,6 +291,10 @@ func (vs *VaultState) SecureErase() {
 	// Zero sealed material
 	zeroBytes(vs.sealedMaterial)
 	vs.sealedMaterial = nil
+
+	// Zero DEK
+	zeroBytes(vs.dek)
+	vs.dek = nil
 
 	// Clear block list (no sensitive data)
 	vs.blockList = nil

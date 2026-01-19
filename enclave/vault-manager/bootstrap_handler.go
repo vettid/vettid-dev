@@ -273,7 +273,7 @@ func (h *BootstrapHandler) GenerateMoreUTKs(count int) error {
 	return nil
 }
 
-// GetUnusedUTKs returns the list of unused UTKs
+// GetUnusedUTKs returns the list of unused UTKs as encoded strings
 func (h *BootstrapHandler) GetUnusedUTKs() []string {
 	h.state.mu.RLock()
 	defer h.state.mu.RUnlock()
@@ -286,6 +286,48 @@ func (h *BootstrapHandler) GetUnusedUTKs() []string {
 		}
 	}
 	return utks
+}
+
+// GetUnusedUTKPairs returns the list of unused UTK pairs
+func (h *BootstrapHandler) GetUnusedUTKPairs() []*UTKPair {
+	h.state.mu.RLock()
+	defer h.state.mu.RUnlock()
+
+	pairs := make([]*UTKPair, 0)
+	for _, pair := range h.state.utkPairs {
+		if pair.UsedAt == 0 {
+			pairs = append(pairs, pair)
+		}
+	}
+	return pairs
+}
+
+// GenerateCEKPair generates a new CEK keypair for credential encryption
+func (h *BootstrapHandler) GenerateCEKPair() error {
+	h.state.mu.Lock()
+	defer h.state.mu.Unlock()
+
+	// Generate X25519 keypair
+	var privateKey [32]byte
+	if _, err := rand.Read(privateKey[:]); err != nil {
+		return fmt.Errorf("failed to generate CEK private key: %w", err)
+	}
+
+	var publicKey [32]byte
+	curve25519.ScalarBaseMult(&publicKey, &privateKey)
+
+	h.state.cekPair = &CEKPair{
+		PublicKey:  publicKey[:],
+		PrivateKey: privateKey[:],
+		Version:    1,
+		CreatedAt:  time.Now().Unix(),
+	}
+
+	log.Debug().
+		Str("owner_space", h.ownerSpace).
+		Msg("Generated CEK keypair")
+
+	return nil
 }
 
 // MarkUTKUsed marks a UTK as used

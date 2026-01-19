@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"time"
 
 	"github.com/rs/zerolog/log"
 )
@@ -29,16 +28,18 @@ func NewPINHandler(ownerSpace string, state *VaultState, bootstrap *BootstrapHan
 	}
 }
 
-// HandlePINSetup processes initial PIN setup
+// HandlePINSetup processes initial PIN setup (Phase 2 of enrollment)
 // Flow:
 // 1. Decrypt PIN using ECIES (with app's ephemeral key + our private key)
 // 2. Request sealed material from supervisor (KMS-bound)
 // 3. Derive DEK from PIN + sealed material
-// 4. Generate identity keypair and credential
-// 5. Encrypt credential with DEK
-// 6. Return encrypted credential to app
+// 4. Initialize vault-manager with DEK (SQLite, CEK keypair, UTKs)
+// 5. Return vault_ready + UTKs for credential creation
+//
+// NOTE: This does NOT create the Protean Credential - that happens in credential.create (Phase 3)
+// The PIN is for DEK derivation (vault unlock), credential password is for operation authorization
 func (h *PINHandler) HandlePINSetup(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
-	log.Info().Str("owner_space", h.ownerSpace).Msg("PIN setup requested")
+	log.Info().Str("owner_space", h.ownerSpace).Msg("PIN setup requested (Phase 2)")
 
 	// Decrypt PIN using attestation key (mobile enrollment flow)
 	// Format: {"type": "pin.setup", "payload": {"encrypted_pin": "...", "ephemeral_public_key": "...", "nonce": "..."}}
@@ -69,8 +70,6 @@ func (h *PINHandler) HandlePINSetup(ctx context.Context, msg *IncomingMessage) (
 		return h.errorResponse(msg.GetID(), "PIN must contain only digits")
 	}
 
-	// Note: UTK marking is now handled in decryptUTKFormat if that flow was used
-
 	// Request sealed material from supervisor (KMS-bound operation)
 	sealedMaterial, err := h.sealerProxy.GenerateSealedMaterial()
 	if err != nil {
@@ -83,75 +82,46 @@ func (h *PINHandler) HandlePINSetup(ctx context.Context, msg *IncomingMessage) (
 	dek, err := h.sealerProxy.DeriveDEKFromPIN(sealedMaterial, []byte(payload.PIN))
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to derive DEK")
-		// Include the actual error for debugging
 		return h.errorResponse(msg.GetID(), fmt.Sprintf("key derivation failed: %v", err))
 	}
-	defer zeroBytes(dek) // SECURITY: Clear DEK after use
+	// NOTE: DEK is NOT zeroed here - it's stored for credential.create (Phase 3)
+	// SECURITY: DEK will be cleared after credential creation or on timeout
 
-	// Generate identity keypair for the vault
-	identityPriv, identityPub, err := generateIdentityKeypair()
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to generate identity keypair")
-		return h.errorResponse(msg.GetID(), "keypair generation failed")
-	}
+	// Store sealed material and DEK for credential creation
+	// Make a copy of DEK since we're storing it
+	dekCopy := make([]byte, len(dek))
+	copy(dekCopy, dek)
+	zeroBytes(dek) // Zero the original
 
-	// Generate vault master secret
-	masterSecret, err := generateMasterSecret()
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to generate master secret")
-		return h.errorResponse(msg.GetID(), "secret generation failed")
-	}
-
-	// Generate auth salt and hash the PIN for verification
-	authSalt, err := generateSalt()
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to generate auth salt")
-		return h.errorResponse(msg.GetID(), "salt generation failed")
-	}
-	// SECURITY: payload.PIN is already []byte (SensitiveBytes)
-	authHash := hashAuthInput(payload.PIN, authSalt)
-
-	// Create the credential
 	h.state.mu.Lock()
-	h.state.credential = &UnsealedCredential{
-		IdentityPrivateKey: identityPriv,
-		IdentityPublicKey:  identityPub,
-		VaultMasterSecret:  masterSecret,
-		AuthHash:           authHash,
-		AuthSalt:           authSalt,
-		AuthType:           "pin",
-		CryptoKeys:         []CryptoKey{},
-		CreatedAt:          time.Now().Unix(),
-		Version:            1,
-	}
-
-	// Store sealed material for future unlock operations
 	h.state.sealedMaterial = sealedMaterial
+	h.state.dek = dekCopy // Store DEK copy for credential.create
 	h.state.mu.Unlock()
 
-	// Serialize and encrypt credential with DEK
-	credBytes, err := json.Marshal(h.state.credential)
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to serialize credential")
-		return h.errorResponse(msg.GetID(), "serialization failed")
-	}
-	defer zeroBytes(credBytes)
-
-	encryptedCred, err := encryptWithDEK(dek, credBytes)
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to encrypt credential")
-		return h.errorResponse(msg.GetID(), "encryption failed")
+	// Generate CEK keypair for encrypting the Protean Credential
+	if err := h.bootstrap.GenerateCEKPair(); err != nil {
+		log.Error().Err(err).Msg("Failed to generate CEK keypair")
+		return h.errorResponse(msg.GetID(), "CEK generation failed")
 	}
 
-	// Generate more UTKs for the response
+	// Generate UTKs for credential creation
 	if err := h.bootstrap.GenerateMoreUTKs(5); err != nil {
-		log.Warn().Err(err).Msg("Failed to generate new UTKs")
+		log.Warn().Err(err).Msg("Failed to generate UTKs")
+	}
+
+	// Build response with UTKs in the new format
+	utks := h.bootstrap.GetUnusedUTKPairs()
+	utkPublics := make([]UTKPublic, len(utks))
+	for i, utk := range utks {
+		utkPublics[i] = UTKPublic{
+			ID:        utk.ID,
+			PublicKey: base64.StdEncoding.EncodeToString(utk.UTK),
+		}
 	}
 
 	response := PINSetupResponse{
-		Status:              "pin_set",
-		EncryptedCredential: base64.StdEncoding.EncodeToString(encryptedCred),
-		NewUTKs:             h.bootstrap.GetUnusedUTKs(),
+		Status: "vault_ready",
+		UTKs:   utkPublics,
 	}
 
 	responseBytes, err := json.Marshal(response)
@@ -161,8 +131,8 @@ func (h *PINHandler) HandlePINSetup(ctx context.Context, msg *IncomingMessage) (
 
 	log.Info().
 		Str("owner_space", h.ownerSpace).
-		Str("identity_pub", base64.StdEncoding.EncodeToString(identityPub)[:16]+"...").
-		Msg("PIN setup completed")
+		Int("utk_count", len(utkPublics)).
+		Msg("PIN setup completed - vault ready for credential creation (Phase 3)")
 
 	return &OutgoingMessage{
 		RequestID: msg.GetID(),

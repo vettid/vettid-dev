@@ -80,10 +80,11 @@ type MessageHandler struct {
 	publisher            *VsockPublisher
 
 	// Cryptographic state and handlers for Phase 4
-	vaultState       *VaultState
-	bootstrapHandler *BootstrapHandler
-	pinHandler       *PINHandler
-	sealerProxy      *SealerProxy
+	vaultState               *VaultState
+	bootstrapHandler         *BootstrapHandler
+	pinHandler               *PINHandler
+	proteanCredentialHandler *ProteanCredentialHandler
+	sealerProxy              *SealerProxy
 
 	// Voting handler for vault-signed votes
 	voteHandler *VoteHandler
@@ -155,6 +156,9 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 	// Create PIN handler - handles PIN setup/unlock/change using the sealer proxy
 	pinHandler := NewPINHandler(ownerSpace, vaultState, bootstrapHandler, sealerProxy)
 
+	// Create Protean Credential handler - handles credential creation (Phase 3)
+	proteanCredentialHandler := NewProteanCredentialHandler(ownerSpace, vaultState, bootstrapHandler)
+
 	// Create vote handler for vault-signed voting
 	voteHandler := NewVoteHandler(ownerSpace, vaultState)
 
@@ -171,10 +175,11 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 		publisher:            publisher,
 
 		// Cryptographic components
-		vaultState:       vaultState,
-		bootstrapHandler: bootstrapHandler,
-		pinHandler:       pinHandler,
-		sealerProxy:      sealerProxy,
+		vaultState:               vaultState,
+		bootstrapHandler:         bootstrapHandler,
+		pinHandler:               pinHandler,
+		proteanCredentialHandler: proteanCredentialHandler,
+		sealerProxy:              sealerProxy,
 
 		// Voting
 		voteHandler: voteHandler,
@@ -499,6 +504,9 @@ func (mh *MessageHandler) handleCredentialOperation(ctx context.Context, msg *In
 	opType := opParts[1]
 
 	switch opType {
+	case "create":
+		// Protean Credential creation (Phase 3 of enrollment)
+		return mh.proteanCredentialHandler.HandleCredentialCreate(ctx, msg)
 	case "store":
 		return mh.credentialHandler.HandleStore(msg)
 	case "sync":
@@ -689,6 +697,7 @@ func (mh *MessageHandler) SecureErase() {
 	// Clear handler references (they don't hold sensitive data directly)
 	mh.bootstrapHandler = nil
 	mh.pinHandler = nil
+	mh.proteanCredentialHandler = nil
 	mh.sealerProxy = nil
 	mh.callHandler = nil
 	mh.secretsHandler = nil
