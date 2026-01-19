@@ -524,7 +524,7 @@ func TestEventHandler_ConvenienceMethods(t *testing.T) {
 	}
 
 	// Test LogSecretEvent
-	err = handler.LogSecretEvent(ctx, EventTypeSecretAccessed, "secret-1", "My Password")
+	err = handler.LogSecretEvent(ctx, EventTypeSecretAccessed, "secret-1", "My Password", "MASTER_PASSWORD")
 	if err != nil {
 		t.Fatalf("Failed to log secret event: %v", err)
 	}

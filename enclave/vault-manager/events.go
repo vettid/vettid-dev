@@ -562,15 +562,16 @@ func (h *EventHandler) LogMessageEvent(ctx context.Context, eventType EventType,
 }
 
 // LogSecretEvent logs a secret access event
-func (h *EventHandler) LogSecretEvent(ctx context.Context, eventType EventType, secretID, secretName string) error {
+func (h *EventHandler) LogSecretEvent(ctx context.Context, eventType EventType, secretID, secretName, category string) error {
 	return h.LogEvent(ctx, &Event{
 		EventType:  eventType,
 		SourceType: "secret",
 		SourceID:   secretID,
 		Title:      fmt.Sprintf("Secret: %s", secretName),
 		Metadata: map[string]string{
-			"secret_id":   secretID,
-			"secret_name": secretName,
+			"secret_id":       secretID,
+			"secret_name":     secretName,
+			"secret_category": category,
 		},
 	})
 }

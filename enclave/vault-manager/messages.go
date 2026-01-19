@@ -164,11 +164,12 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 	// Create vote handler for vault-signed voting
 	voteHandler := NewVoteHandler(ownerSpace, vaultState)
 
-	// Create credential secret handler for critical secrets
-	credentialSecretHandler := NewCredentialSecretHandler(ownerSpace, storage, vaultState, bootstrapHandler)
-
 	// Create event handler for unified audit logging and feed
+	// NOTE: Must be created before handlers that depend on it for logging
 	eventHandler := NewEventHandler(ownerSpace, storage, publisher)
+
+	// Create credential secret handler for critical secrets
+	credentialSecretHandler := NewCredentialSecretHandler(ownerSpace, storage, vaultState, bootstrapHandler, eventHandler)
 
 	return &MessageHandler{
 		ownerSpace:           ownerSpace,

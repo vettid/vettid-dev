@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -13,19 +14,21 @@ import (
 // CredentialSecretHandler handles critical secret storage within the Protean Credential.
 // These secrets (seed phrases, private keys, etc.) require password verification for access.
 type CredentialSecretHandler struct {
-	ownerSpace string
-	storage    *EncryptedStorage
-	state      *VaultState
-	bootstrap  *BootstrapHandler
+	ownerSpace   string
+	storage      *EncryptedStorage
+	state        *VaultState
+	bootstrap    *BootstrapHandler
+	eventHandler *EventHandler
 }
 
 // NewCredentialSecretHandler creates a new credential secret handler
-func NewCredentialSecretHandler(ownerSpace string, storage *EncryptedStorage, state *VaultState, bootstrap *BootstrapHandler) *CredentialSecretHandler {
+func NewCredentialSecretHandler(ownerSpace string, storage *EncryptedStorage, state *VaultState, bootstrap *BootstrapHandler, eventHandler *EventHandler) *CredentialSecretHandler {
 	return &CredentialSecretHandler{
-		ownerSpace: ownerSpace,
-		storage:    storage,
-		state:      state,
-		bootstrap:  bootstrap,
+		ownerSpace:   ownerSpace,
+		storage:      storage,
+		state:        state,
+		bootstrap:    bootstrap,
+		eventHandler: eventHandler,
 	}
 }
 
@@ -145,6 +148,15 @@ func (h *CredentialSecretHandler) HandleGet(msg *IncomingMessage) (*OutgoingMess
 	// Verify password
 	if err := h.verifyPassword(req.EncryptedPasswordHash, req.KeyID); err != nil {
 		log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("Password verification failed for secret access")
+
+		// Log security event for failed access attempt
+		h.eventHandler.LogSecurityEvent(
+			context.Background(),
+			EventTypeAuthAttemptFailed,
+			"Secret access denied",
+			fmt.Sprintf("Failed password verification for secret ID: %s", req.ID),
+		)
+
 		return h.errorResponse(msg.GetID(), "Password verification failed")
 	}
 
@@ -174,6 +186,15 @@ func (h *CredentialSecretHandler) HandleGet(msg *IncomingMessage) (*OutgoingMess
 		Str("secret_id", req.ID).
 		Str("owner_space", h.ownerSpace).
 		Msg("Credential secret retrieved (password verified)")
+
+	// Log audit event for secret access (do NOT log the actual secret value)
+	h.eventHandler.LogSecretEvent(
+		context.Background(),
+		EventTypeSecretAccessed,
+		secret.ID,
+		secret.Name,
+		string(secret.Category),
+	)
 
 	return &OutgoingMessage{
 		RequestID: msg.GetID(),
@@ -255,11 +276,31 @@ func (h *CredentialSecretHandler) HandleDelete(msg *IncomingMessage) (*OutgoingM
 	// Verify password
 	if err := h.verifyPassword(req.EncryptedPasswordHash, req.KeyID); err != nil {
 		log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("Password verification failed for secret deletion")
+
+		// Log security event for failed deletion attempt
+		h.eventHandler.LogSecurityEvent(
+			context.Background(),
+			EventTypeAuthAttemptFailed,
+			"Secret deletion denied",
+			fmt.Sprintf("Failed password verification for secret deletion ID: %s", req.ID),
+		)
+
 		return h.errorResponse(msg.GetID(), "Password verification failed")
 	}
 
-	// Delete the secret
+	// Retrieve secret metadata before deletion (for audit logging)
 	storageKey := "credential-secrets/" + req.ID
+	data, err := h.storage.Get(storageKey)
+	if err != nil {
+		return h.errorResponse(msg.GetID(), "Secret not found")
+	}
+
+	var secret CredentialSecret
+	if err := json.Unmarshal(data, &secret); err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to unmarshal secret")
+	}
+
+	// Delete the secret
 	if err := h.storage.Delete(storageKey); err != nil {
 		return h.errorResponse(msg.GetID(), "Failed to delete secret")
 	}
@@ -271,6 +312,15 @@ func (h *CredentialSecretHandler) HandleDelete(msg *IncomingMessage) (*OutgoingM
 		Str("secret_id", req.ID).
 		Str("owner_space", h.ownerSpace).
 		Msg("Credential secret deleted (password verified)")
+
+	// Log audit event for secret deletion
+	h.eventHandler.LogSecretEvent(
+		context.Background(),
+		EventTypeSecretDeleted,
+		secret.ID,
+		secret.Name,
+		string(secret.Category),
+	)
 
 	resp := CredentialSecretDeleteResponse{
 		Success: true,
