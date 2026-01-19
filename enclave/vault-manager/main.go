@@ -177,9 +177,18 @@ func (vm *VaultManager) Run(ctx context.Context) error {
 		case <-cleanupTicker.C:
 			// SECURITY: Clean up expired replay prevention events
 			if deleted, err := vm.storage.CleanupExpiredEvents(); err != nil {
-				log.Warn().Err(err).Msg("Failed to cleanup expired events")
+				log.Warn().Err(err).Msg("Failed to cleanup expired replay prevention events")
 			} else if deleted > 0 {
 				log.Debug().Int64("deleted", deleted).Msg("Cleaned up expired replay prevention events")
+			}
+
+			// Clean up old events based on retention policies
+			if eventHandler := vm.messageHandler.GetEventHandler(); eventHandler != nil {
+				if deleted, err := eventHandler.RunCleanup(ctx); err != nil {
+					log.Warn().Err(err).Msg("Failed to cleanup events")
+				} else if deleted > 0 {
+					log.Info().Int64("deleted", deleted).Msg("Event cleanup completed")
+				}
 			}
 		case msg := <-msgChan:
 			// Note: Sealer responses are now routed directly in receiveMessages()

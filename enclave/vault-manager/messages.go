@@ -78,6 +78,7 @@ type MessageHandler struct {
 	connectionsHandler       *ConnectionsHandler
 	notificationsHandler     *NotificationsHandler
 	credentialSecretHandler  *CredentialSecretHandler
+	eventHandler             *EventHandler
 	publisher                *VsockPublisher
 
 	// Cryptographic state and handlers for Phase 4
@@ -166,10 +167,13 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 	// Create credential secret handler for critical secrets
 	credentialSecretHandler := NewCredentialSecretHandler(ownerSpace, storage, vaultState, bootstrapHandler)
 
+	// Create event handler for unified audit logging and feed
+	eventHandler := NewEventHandler(ownerSpace, storage, publisher)
+
 	return &MessageHandler{
 		ownerSpace:           ownerSpace,
 		storage:              storage,
-		callHandler:          NewCallHandler(ownerSpace, storage, publisher),
+		callHandler:          NewCallHandler(ownerSpace, storage, publisher, eventHandler),
 		secretsHandler:       NewSecretsHandler(ownerSpace, storage),
 		profileHandler:       NewProfileHandler(ownerSpace, storage),
 		credentialHandler:    NewCredentialHandler(ownerSpace, storage),
@@ -177,6 +181,7 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 		connectionsHandler:      NewConnectionsHandler(ownerSpace, storage),
 		notificationsHandler:    NewNotificationsHandler(ownerSpace, storage, publisher),
 		credentialSecretHandler: credentialSecretHandler,
+		eventHandler:            eventHandler,
 		publisher:               publisher,
 
 		// Cryptographic components
@@ -304,6 +309,12 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 	case "vote":
 		// Vault-signed voting operation
 		return mh.handleVoteOperation(ctx, msg, parts[opIndex+1:])
+	case "feed":
+		// Feed operations (unified event feed)
+		return mh.handleFeedOperation(ctx, msg, parts[opIndex+1:])
+	case "audit":
+		// Audit log operations
+		return mh.handleAuditOperation(ctx, msg, parts[opIndex+1:])
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown operation: %s", operation))
 	}
@@ -630,6 +641,258 @@ func (mh *MessageHandler) handleVoteOperation(ctx context.Context, msg *Incoming
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown vote operation: %s", opType))
 	}
+}
+
+// handleFeedOperation routes feed-related operations
+func (mh *MessageHandler) handleFeedOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
+	if len(opParts) < 2 {
+		return mh.errorResponse(msg.GetID(), "missing feed operation type")
+	}
+
+	opType := opParts[1]
+
+	switch opType {
+	case "list":
+		return mh.handleFeedList(ctx, msg)
+	case "get":
+		return mh.handleFeedGet(ctx, msg)
+	case "read":
+		return mh.handleFeedRead(ctx, msg)
+	case "archive":
+		return mh.handleFeedArchive(ctx, msg)
+	case "delete":
+		return mh.handleFeedDelete(ctx, msg)
+	case "action":
+		return mh.handleFeedAction(ctx, msg)
+	case "sync":
+		return mh.handleFeedSync(ctx, msg)
+	case "settings":
+		if len(opParts) < 3 {
+			return mh.errorResponse(msg.GetID(), "missing settings operation")
+		}
+		switch opParts[2] {
+		case "get":
+			return mh.handleFeedSettingsGet(ctx, msg)
+		case "update":
+			return mh.handleFeedSettingsUpdate(ctx, msg)
+		default:
+			return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown settings operation: %s", opParts[2]))
+		}
+	default:
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown feed operation: %s", opType))
+	}
+}
+
+// handleAuditOperation routes audit-related operations
+func (mh *MessageHandler) handleAuditOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
+	if len(opParts) < 2 {
+		return mh.errorResponse(msg.GetID(), "missing audit operation type")
+	}
+
+	opType := opParts[1]
+
+	switch opType {
+	case "query":
+		return mh.handleAuditQuery(ctx, msg)
+	case "export":
+		return mh.handleAuditExport(ctx, msg)
+	default:
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown audit operation: %s", opType))
+	}
+}
+
+// --- Feed Operation Handlers ---
+
+func (mh *MessageHandler) handleFeedList(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req FeedListRequest
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		req = FeedListRequest{} // Use defaults
+	}
+
+	resp, err := mh.eventHandler.ListFeed(ctx, &req)
+	if err != nil {
+		return mh.errorResponse(msg.GetID(), err.Error())
+	}
+
+	respBytes, _ := json.Marshal(resp)
+	return mh.successResponse(msg.GetID(), respBytes)
+}
+
+func (mh *MessageHandler) handleFeedGet(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req struct {
+		EventID string `json:"event_id"`
+	}
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		return mh.errorResponse(msg.GetID(), "invalid request format")
+	}
+
+	if req.EventID == "" {
+		return mh.errorResponse(msg.GetID(), "event_id is required")
+	}
+
+	event, err := mh.eventHandler.GetEvent(ctx, req.EventID)
+	if err != nil {
+		return mh.errorResponse(msg.GetID(), err.Error())
+	}
+	if event == nil {
+		return mh.errorResponse(msg.GetID(), "event not found")
+	}
+
+	respBytes, _ := json.Marshal(event)
+	return mh.successResponse(msg.GetID(), respBytes)
+}
+
+func (mh *MessageHandler) handleFeedRead(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req FeedUpdateStatusRequest
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		return mh.errorResponse(msg.GetID(), "invalid request format")
+	}
+
+	if req.EventID == "" {
+		return mh.errorResponse(msg.GetID(), "event_id is required")
+	}
+
+	if err := mh.eventHandler.MarkRead(ctx, req.EventID); err != nil {
+		return mh.errorResponse(msg.GetID(), err.Error())
+	}
+
+	resp := map[string]interface{}{"success": true, "event_id": req.EventID}
+	respBytes, _ := json.Marshal(resp)
+	return mh.successResponse(msg.GetID(), respBytes)
+}
+
+func (mh *MessageHandler) handleFeedArchive(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req FeedUpdateStatusRequest
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		return mh.errorResponse(msg.GetID(), "invalid request format")
+	}
+
+	if req.EventID == "" {
+		return mh.errorResponse(msg.GetID(), "event_id is required")
+	}
+
+	if err := mh.eventHandler.Archive(ctx, req.EventID); err != nil {
+		return mh.errorResponse(msg.GetID(), err.Error())
+	}
+
+	resp := map[string]interface{}{"success": true, "event_id": req.EventID}
+	respBytes, _ := json.Marshal(resp)
+	return mh.successResponse(msg.GetID(), respBytes)
+}
+
+func (mh *MessageHandler) handleFeedDelete(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req FeedUpdateStatusRequest
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		return mh.errorResponse(msg.GetID(), "invalid request format")
+	}
+
+	if req.EventID == "" {
+		return mh.errorResponse(msg.GetID(), "event_id is required")
+	}
+
+	if err := mh.eventHandler.Delete(ctx, req.EventID); err != nil {
+		return mh.errorResponse(msg.GetID(), err.Error())
+	}
+
+	resp := map[string]interface{}{"success": true, "event_id": req.EventID}
+	respBytes, _ := json.Marshal(resp)
+	return mh.successResponse(msg.GetID(), respBytes)
+}
+
+func (mh *MessageHandler) handleFeedAction(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req FeedActionRequest
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		return mh.errorResponse(msg.GetID(), "invalid request format")
+	}
+
+	if req.EventID == "" {
+		return mh.errorResponse(msg.GetID(), "event_id is required")
+	}
+
+	if err := mh.eventHandler.ExecuteAction(ctx, req.EventID, req.Action); err != nil {
+		return mh.errorResponse(msg.GetID(), err.Error())
+	}
+
+	resp := map[string]interface{}{"success": true, "event_id": req.EventID, "action": req.Action}
+	respBytes, _ := json.Marshal(resp)
+	return mh.successResponse(msg.GetID(), respBytes)
+}
+
+func (mh *MessageHandler) handleFeedSync(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req FeedSyncRequest
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		req = FeedSyncRequest{} // Use defaults
+	}
+
+	resp, err := mh.eventHandler.Sync(ctx, &req)
+	if err != nil {
+		return mh.errorResponse(msg.GetID(), err.Error())
+	}
+
+	respBytes, _ := json.Marshal(resp)
+	return mh.successResponse(msg.GetID(), respBytes)
+}
+
+func (mh *MessageHandler) handleFeedSettingsGet(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	settings := mh.eventHandler.GetSettings()
+	respBytes, _ := json.Marshal(settings)
+	return mh.successResponse(msg.GetID(), respBytes)
+}
+
+func (mh *MessageHandler) handleFeedSettingsUpdate(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	var settings FeedSettings
+	if err := json.Unmarshal(msg.Payload, &settings); err != nil {
+		return mh.errorResponse(msg.GetID(), "invalid settings format")
+	}
+
+	if err := mh.eventHandler.UpdateSettings(&settings); err != nil {
+		return mh.errorResponse(msg.GetID(), err.Error())
+	}
+
+	resp := map[string]interface{}{"success": true}
+	respBytes, _ := json.Marshal(resp)
+	return mh.successResponse(msg.GetID(), respBytes)
+}
+
+// --- Audit Operation Handlers ---
+
+func (mh *MessageHandler) handleAuditQuery(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req AuditQueryRequest
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		req = AuditQueryRequest{} // Use defaults
+	}
+
+	resp, err := mh.eventHandler.QueryAudit(ctx, &req)
+	if err != nil {
+		return mh.errorResponse(msg.GetID(), err.Error())
+	}
+
+	respBytes, _ := json.Marshal(resp)
+	return mh.successResponse(msg.GetID(), respBytes)
+}
+
+func (mh *MessageHandler) handleAuditExport(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req AuditExportRequest
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		return mh.errorResponse(msg.GetID(), "invalid request format")
+	}
+
+	if req.Format == "" {
+		req.Format = "json"
+	}
+
+	resp, err := mh.eventHandler.ExportAudit(ctx, &req)
+	if err != nil {
+		return mh.errorResponse(msg.GetID(), err.Error())
+	}
+
+	respBytes, _ := json.Marshal(resp)
+	return mh.successResponse(msg.GetID(), respBytes)
+}
+
+// GetEventHandler returns the event handler for external access (e.g., cleanup)
+func (mh *MessageHandler) GetEventHandler() *EventHandler {
+	return mh.eventHandler
 }
 
 // Incoming peer message handlers

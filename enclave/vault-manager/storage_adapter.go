@@ -118,6 +118,90 @@ func (s *EncryptedStorage) CleanupExpiredEvents() (int64, error) {
 	return s.sqlite.CleanupExpiredEvents()
 }
 
+// ===============================
+// Unified Event System
+// ===============================
+
+// StoreEvent stores a new event in the events table
+func (s *EncryptedStorage) StoreEvent(event *storage.EventRecord) error {
+	if s.sqlite == nil {
+		return ErrStorageNotInitialized
+	}
+	return s.sqlite.StoreEvent(event)
+}
+
+// GetEventByID retrieves a single event by ID
+func (s *EncryptedStorage) GetEventByID(eventID string) (*storage.EventRecord, error) {
+	if s.sqlite == nil {
+		return nil, ErrStorageNotInitialized
+	}
+	return s.sqlite.GetEvent(eventID)
+}
+
+// ListFeedEvents returns events for the user feed
+func (s *EncryptedStorage) ListFeedEvents(statuses []string, limit, offset int) ([]storage.EventRecord, int, error) {
+	if s.sqlite == nil {
+		return nil, 0, ErrStorageNotInitialized
+	}
+	return s.sqlite.ListFeedEvents(statuses, limit, offset)
+}
+
+// QueryAuditEvents returns events for audit purposes
+func (s *EncryptedStorage) QueryAuditEvents(eventTypes []string, startTime, endTime int64, sourceID string, limit, offset int) ([]storage.EventRecord, int, error) {
+	if s.sqlite == nil {
+		return nil, 0, ErrStorageNotInitialized
+	}
+	return s.sqlite.QueryAuditEvents(eventTypes, startTime, endTime, sourceID, limit, offset)
+}
+
+// GetEventsSince returns events with sync_sequence > lastSeq for sync
+func (s *EncryptedStorage) GetEventsSince(lastSeq int64, limit int) ([]storage.EventRecord, error) {
+	if s.sqlite == nil {
+		return nil, ErrStorageNotInitialized
+	}
+	return s.sqlite.GetEventsSince(lastSeq, limit)
+}
+
+// UpdateEventStatus updates the feed_status and related timestamps
+func (s *EncryptedStorage) UpdateEventStatus(eventID string, newStatus string, timestamp int64) error {
+	if s.sqlite == nil {
+		return ErrStorageNotInitialized
+	}
+	return s.sqlite.UpdateEventStatus(eventID, newStatus, timestamp)
+}
+
+// UpdateEventActioned marks an event as actioned
+func (s *EncryptedStorage) UpdateEventActioned(eventID string, timestamp int64) error {
+	if s.sqlite == nil {
+		return ErrStorageNotInitialized
+	}
+	return s.sqlite.UpdateEventActioned(eventID, timestamp)
+}
+
+// GetSyncSequence returns the current sync sequence number
+func (s *EncryptedStorage) GetSyncSequence() (int64, error) {
+	if s.sqlite == nil {
+		return 0, ErrStorageNotInitialized
+	}
+	return s.sqlite.GetSyncSequence()
+}
+
+// IncrementSyncSequence increments and returns the new sync sequence
+func (s *EncryptedStorage) IncrementSyncSequence() (int64, error) {
+	if s.sqlite == nil {
+		return 0, ErrStorageNotInitialized
+	}
+	return s.sqlite.IncrementSyncSequence()
+}
+
+// CleanupEvents removes old events based on retention policies
+func (s *EncryptedStorage) CleanupEvents(feedRetentionDays, auditRetentionDays int, autoArchive bool) (int64, error) {
+	if s.sqlite == nil {
+		return 0, ErrStorageNotInitialized
+	}
+	return s.sqlite.CleanupEvents(feedRetentionDays, auditRetentionDays, autoArchive)
+}
+
 // Errors
 var (
 	ErrStorageNotInitialized = &StorageError{Message: "storage not initialized - unseal credential first"}

@@ -151,11 +151,12 @@ type ActiveCall struct {
 
 // CallHandler manages call signaling for a vault
 type CallHandler struct {
-	ownerSpace  string
-	storage     *EncryptedStorage
-	blockList   map[string]*BlockListEntry // In-memory cache
-	activeCalls map[string]*ActiveCall     // In-memory active call state
-	publisher   CallPublisher              // Interface to publish responses
+	ownerSpace   string
+	storage      *EncryptedStorage
+	blockList    map[string]*BlockListEntry // In-memory cache
+	activeCalls  map[string]*ActiveCall     // In-memory active call state
+	publisher    CallPublisher              // Interface to publish responses
+	eventHandler *EventHandler              // For audit logging
 }
 
 // CallPublisher interface for sending call events
@@ -167,13 +168,14 @@ type CallPublisher interface {
 }
 
 // NewCallHandler creates a new call handler
-func NewCallHandler(ownerSpace string, storage *EncryptedStorage, publisher CallPublisher) *CallHandler {
+func NewCallHandler(ownerSpace string, storage *EncryptedStorage, publisher CallPublisher, eventHandler *EventHandler) *CallHandler {
 	return &CallHandler{
-		ownerSpace:  ownerSpace,
-		storage:     storage,
-		blockList:   make(map[string]*BlockListEntry),
-		activeCalls: make(map[string]*ActiveCall),
-		publisher:   publisher,
+		ownerSpace:   ownerSpace,
+		storage:      storage,
+		blockList:    make(map[string]*BlockListEntry),
+		activeCalls:  make(map[string]*ActiveCall),
+		publisher:    publisher,
+		eventHandler: eventHandler,
 	}
 }
 
@@ -357,6 +359,13 @@ func (ch *CallHandler) HandleInitiateCall(ctx context.Context, msg *IncomingMess
 		Str("call_id", callID).
 		Str("peer", conn.PeerGUID).
 		Msg("Outgoing call initiated")
+
+	// Log event for audit
+	if ch.eventHandler != nil {
+		ch.eventHandler.LogCallEvent(ctx, EventTypeCallOutgoing, callID, conn.PeerGUID, "Outgoing call", map[string]string{
+			"peer_alias": conn.PeerAlias,
+		})
+	}
 
 	resp := InitiateCallResponse{
 		CallID:      callID,
@@ -973,6 +982,13 @@ func (ch *CallHandler) handleCallInitiate(ctx context.Context, event *CallEvent)
 			log.Error().Err(err).Msg("Failed to store blocked call record")
 		}
 
+		// Log blocked call event for audit
+		if ch.eventHandler != nil {
+			ch.eventHandler.LogCallEvent(ctx, EventTypeCallBlocked, event.CallID, event.CallerID, "Blocked call", map[string]string{
+				"reason": reason,
+			})
+		}
+
 		// Notify caller they are blocked
 		blockedEvent := &CallEvent{
 			EventID:   generateEventID(),
@@ -1021,7 +1037,12 @@ func (ch *CallHandler) handleCallInitiate(ctx context.Context, event *CallEvent)
 		log.Error().Err(err).Msg("Failed to store call record")
 	}
 
-	// 4. Forward to owner's app
+	// 4. Log incoming call event (will appear in feed with accept/decline action)
+	if ch.eventHandler != nil {
+		ch.eventHandler.LogCallEvent(ctx, EventTypeCallIncoming, event.CallID, event.CallerID, "Incoming call", nil)
+	}
+
+	// 5. Forward to owner's app
 	log.Info().
 		Str("caller_id", event.CallerID).
 		Str("call_id", event.CallID).
@@ -1108,6 +1129,11 @@ func (ch *CallHandler) handleCallCancel(ctx context.Context, event *CallEvent) e
 
 	log.Info().Str("call_id", event.CallID).Msg("Call cancelled")
 
+	// Log missed call event (will appear in feed)
+	if ch.eventHandler != nil {
+		ch.eventHandler.LogCallEvent(ctx, EventTypeCallMissed, event.CallID, event.CallerID, "Missed call", nil)
+	}
+
 	eventData, err := json.Marshal(event)
 	if err != nil {
 		return fmt.Errorf("failed to marshal cancel event: %w", err)
@@ -1119,16 +1145,25 @@ func (ch *CallHandler) handleCallCancel(ctx context.Context, event *CallEvent) e
 // handleCallEnd processes call termination
 func (ch *CallHandler) handleCallEnd(ctx context.Context, event *CallEvent) error {
 	// Update call record with duration
+	var durationSecs int
 	if err := ch.updateCallRecord(ctx, event.CallID, func(r *CallRecord) {
 		r.EndedAt = time.Now().Unix()
 		if r.AnsweredAt > 0 {
 			r.DurationSecs = int(r.EndedAt - r.AnsweredAt)
+			durationSecs = r.DurationSecs
 		}
 	}); err != nil {
 		log.Error().Err(err).Msg("Failed to update call record")
 	}
 
 	log.Info().Str("call_id", event.CallID).Msg("Call ended")
+
+	// Log call ended event for audit
+	if ch.eventHandler != nil {
+		ch.eventHandler.LogCallEvent(ctx, EventTypeCallEnded, event.CallID, event.CallerID, "Call ended", map[string]string{
+			"duration_secs": fmt.Sprintf("%d", durationSecs),
+		})
+	}
 
 	eventData, err := json.Marshal(event)
 	if err != nil {

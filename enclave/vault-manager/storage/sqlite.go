@@ -144,6 +144,63 @@ func (s *SQLiteStorage) initSchema() error {
 		processed_at INTEGER NOT NULL
 	);
 	CREATE INDEX IF NOT EXISTS idx_processed_events_cleanup ON processed_events(processed_at);
+
+	-- Unified events table for audit logging and user feed
+	-- This replaces the ledger_entries table with a more comprehensive schema
+	CREATE TABLE IF NOT EXISTS events (
+		event_id TEXT PRIMARY KEY,
+		event_type TEXT NOT NULL,
+		source_type TEXT,
+		source_id TEXT,
+		payload BLOB NOT NULL,           -- Encrypted JSON with title, message, metadata
+
+		-- Feed control (plaintext for efficient queries)
+		feed_status TEXT NOT NULL DEFAULT 'hidden',
+		action_type TEXT DEFAULT '',
+		priority INTEGER DEFAULT 0,
+
+		-- Timestamps
+		created_at INTEGER NOT NULL,
+		read_at INTEGER,
+		actioned_at INTEGER,
+		archived_at INTEGER,
+		expires_at INTEGER,
+
+		-- Sync
+		sync_sequence INTEGER NOT NULL,
+
+		-- Retention
+		retention_class TEXT DEFAULT 'standard'
+	);
+
+	-- Index for feed queries (most common: list active items)
+	CREATE INDEX IF NOT EXISTS idx_events_feed
+		ON events(feed_status, priority DESC, created_at DESC)
+		WHERE feed_status IN ('active', 'read');
+
+	-- Index for archive browsing
+	CREATE INDEX IF NOT EXISTS idx_events_archive
+		ON events(archived_at DESC)
+		WHERE feed_status = 'archived';
+
+	-- Index for audit log queries by type
+	CREATE INDEX IF NOT EXISTS idx_events_audit
+		ON events(event_type, created_at DESC);
+
+	-- Index for sync endpoint
+	CREATE INDEX IF NOT EXISTS idx_events_sync
+		ON events(sync_sequence)
+		WHERE feed_status != 'deleted';
+
+	-- Index for cleanup operations
+	CREATE INDEX IF NOT EXISTS idx_events_cleanup
+		ON events(created_at)
+		WHERE feed_status = 'deleted' OR retention_class = 'ephemeral';
+
+	-- Index for source-based queries
+	CREATE INDEX IF NOT EXISTS idx_events_source
+		ON events(source_type, source_id, created_at DESC)
+		WHERE source_id IS NOT NULL;
 	`
 
 	if _, err := s.db.Exec(schema); err != nil {
@@ -157,6 +214,15 @@ func (s *SQLiteStorage) initSchema() error {
 	`, time.Now().Unix())
 	if err != nil {
 		return fmt.Errorf("failed to initialize metadata: %w", err)
+	}
+
+	// Initialize event sync sequence if not exists
+	_, err = s.db.Exec(`
+		INSERT OR IGNORE INTO _metadata (key, value, updated_at)
+		VALUES ('event_sync_sequence', '0', ?)
+	`, time.Now().Unix())
+	if err != nil {
+		return fmt.Errorf("failed to initialize event sync sequence: %w", err)
 	}
 
 	// Load rollback counter
@@ -934,4 +1000,498 @@ func (s *SQLiteStorage) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.db.Close()
+}
+
+// ===============================
+// Unified Event System Operations
+// ===============================
+// These methods manage the unified events table that serves both
+// audit logging and user feed purposes.
+
+// EventRecord represents an event stored in the database
+type EventRecord struct {
+	EventID        string
+	EventType      string
+	SourceType     string
+	SourceID       string
+	Payload        []byte // Decrypted payload
+	FeedStatus     string
+	ActionType     string
+	Priority       int
+	CreatedAt      int64
+	ReadAt         *int64
+	ActionedAt     *int64
+	ArchivedAt     *int64
+	ExpiresAt      *int64
+	SyncSequence   int64
+	RetentionClass string
+}
+
+// StoreEvent stores a new event in the events table
+func (s *SQLiteStorage) StoreEvent(event *EventRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Encrypt the payload
+	encPayload, err := s.encrypt(event.Payload)
+	if err != nil {
+		return fmt.Errorf("failed to encrypt event payload: %w", err)
+	}
+
+	_, err = s.db.Exec(`
+		INSERT INTO events (
+			event_id, event_type, source_type, source_id, payload,
+			feed_status, action_type, priority,
+			created_at, read_at, actioned_at, archived_at, expires_at,
+			sync_sequence, retention_class
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`,
+		event.EventID, event.EventType, event.SourceType, event.SourceID, encPayload,
+		event.FeedStatus, event.ActionType, event.Priority,
+		event.CreatedAt, event.ReadAt, event.ActionedAt, event.ArchivedAt, event.ExpiresAt,
+		event.SyncSequence, event.RetentionClass,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to store event: %w", err)
+	}
+
+	s.incrementRollbackCounter()
+	return nil
+}
+
+// GetEvent retrieves a single event by ID
+func (s *SQLiteStorage) GetEvent(eventID string) (*EventRecord, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var event EventRecord
+	var encPayload []byte
+	var readAt, actionedAt, archivedAt, expiresAt sql.NullInt64
+
+	err := s.db.QueryRow(`
+		SELECT event_id, event_type, source_type, source_id, payload,
+		       feed_status, action_type, priority,
+		       created_at, read_at, actioned_at, archived_at, expires_at,
+		       sync_sequence, retention_class
+		FROM events
+		WHERE event_id = ?
+	`, eventID).Scan(
+		&event.EventID, &event.EventType, &event.SourceType, &event.SourceID, &encPayload,
+		&event.FeedStatus, &event.ActionType, &event.Priority,
+		&event.CreatedAt, &readAt, &actionedAt, &archivedAt, &expiresAt,
+		&event.SyncSequence, &event.RetentionClass,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get event: %w", err)
+	}
+
+	// Decrypt payload
+	event.Payload, err = s.decrypt(encPayload)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decrypt event payload: %w", err)
+	}
+
+	// Convert nullable fields
+	if readAt.Valid {
+		event.ReadAt = &readAt.Int64
+	}
+	if actionedAt.Valid {
+		event.ActionedAt = &actionedAt.Int64
+	}
+	if archivedAt.Valid {
+		event.ArchivedAt = &archivedAt.Int64
+	}
+	if expiresAt.Valid {
+		event.ExpiresAt = &expiresAt.Int64
+	}
+
+	return &event, nil
+}
+
+// ListFeedEvents returns events for the user feed
+func (s *SQLiteStorage) ListFeedEvents(statuses []string, limit, offset int) ([]EventRecord, int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if len(statuses) == 0 {
+		statuses = []string{"active", "read"}
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	// Build query with status filter
+	placeholders := make([]string, len(statuses))
+	args := make([]interface{}, len(statuses))
+	for i, status := range statuses {
+		placeholders[i] = "?"
+		args[i] = status
+	}
+	statusFilter := "(" + join(placeholders, ",") + ")"
+
+	// Get total count
+	var total int
+	countQuery := fmt.Sprintf(`SELECT COUNT(*) FROM events WHERE feed_status IN %s`, statusFilter)
+	if err := s.db.QueryRow(countQuery, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("failed to count events: %w", err)
+	}
+
+	// Get events
+	query := fmt.Sprintf(`
+		SELECT event_id, event_type, source_type, source_id, payload,
+		       feed_status, action_type, priority,
+		       created_at, read_at, actioned_at, archived_at, expires_at,
+		       sync_sequence, retention_class
+		FROM events
+		WHERE feed_status IN %s
+		ORDER BY priority DESC, created_at DESC
+		LIMIT ? OFFSET ?
+	`, statusFilter)
+	args = append(args, limit, offset)
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to list feed events: %w", err)
+	}
+	defer rows.Close()
+
+	events, err := s.scanEventRows(rows)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	return events, total, nil
+}
+
+// QueryAuditEvents returns events for audit purposes
+func (s *SQLiteStorage) QueryAuditEvents(eventTypes []string, startTime, endTime int64, sourceID string, limit, offset int) ([]EventRecord, int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+
+	// Build dynamic WHERE clause
+	var conditions []string
+	var args []interface{}
+
+	if len(eventTypes) > 0 {
+		placeholders := make([]string, len(eventTypes))
+		for i, et := range eventTypes {
+			placeholders[i] = "?"
+			args = append(args, et)
+		}
+		conditions = append(conditions, fmt.Sprintf("event_type IN (%s)", join(placeholders, ",")))
+	}
+
+	if startTime > 0 {
+		conditions = append(conditions, "created_at >= ?")
+		args = append(args, startTime)
+	}
+
+	if endTime > 0 {
+		conditions = append(conditions, "created_at <= ?")
+		args = append(args, endTime)
+	}
+
+	if sourceID != "" {
+		conditions = append(conditions, "source_id = ?")
+		args = append(args, sourceID)
+	}
+
+	whereClause := ""
+	if len(conditions) > 0 {
+		whereClause = "WHERE " + join(conditions, " AND ")
+	}
+
+	// Get total count
+	var total int
+	countQuery := fmt.Sprintf(`SELECT COUNT(*) FROM events %s`, whereClause)
+	if err := s.db.QueryRow(countQuery, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("failed to count audit events: %w", err)
+	}
+
+	// Get events
+	query := fmt.Sprintf(`
+		SELECT event_id, event_type, source_type, source_id, payload,
+		       feed_status, action_type, priority,
+		       created_at, read_at, actioned_at, archived_at, expires_at,
+		       sync_sequence, retention_class
+		FROM events
+		%s
+		ORDER BY created_at DESC
+		LIMIT ? OFFSET ?
+	`, whereClause)
+	args = append(args, limit, offset)
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to query audit events: %w", err)
+	}
+	defer rows.Close()
+
+	events, err := s.scanEventRows(rows)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	return events, total, nil
+}
+
+// GetEventsSince returns events with sync_sequence > lastSeq for sync
+func (s *SQLiteStorage) GetEventsSince(lastSeq int64, limit int) ([]EventRecord, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if limit <= 0 {
+		limit = 100
+	}
+
+	rows, err := s.db.Query(`
+		SELECT event_id, event_type, source_type, source_id, payload,
+		       feed_status, action_type, priority,
+		       created_at, read_at, actioned_at, archived_at, expires_at,
+		       sync_sequence, retention_class
+		FROM events
+		WHERE sync_sequence > ? AND feed_status != 'deleted'
+		ORDER BY sync_sequence ASC
+		LIMIT ?
+	`, lastSeq, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get events since sequence: %w", err)
+	}
+	defer rows.Close()
+
+	return s.scanEventRows(rows)
+}
+
+// UpdateEventStatus updates the feed_status and related timestamps
+func (s *SQLiteStorage) UpdateEventStatus(eventID string, newStatus string, timestamp int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var query string
+	var args []interface{}
+
+	switch newStatus {
+	case "read":
+		query = `UPDATE events SET feed_status = ?, read_at = ? WHERE event_id = ?`
+		args = []interface{}{newStatus, timestamp, eventID}
+	case "archived":
+		query = `UPDATE events SET feed_status = ?, archived_at = ? WHERE event_id = ?`
+		args = []interface{}{newStatus, timestamp, eventID}
+	case "deleted":
+		query = `UPDATE events SET feed_status = ? WHERE event_id = ?`
+		args = []interface{}{newStatus, eventID}
+	default:
+		query = `UPDATE events SET feed_status = ? WHERE event_id = ?`
+		args = []interface{}{newStatus, eventID}
+	}
+
+	result, err := s.db.Exec(query, args...)
+	if err != nil {
+		return fmt.Errorf("failed to update event status: %w", err)
+	}
+
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("event not found: %s", eventID)
+	}
+
+	s.incrementRollbackCounter()
+	return nil
+}
+
+// UpdateEventActioned marks an event as actioned
+func (s *SQLiteStorage) UpdateEventActioned(eventID string, timestamp int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	result, err := s.db.Exec(`
+		UPDATE events SET actioned_at = ? WHERE event_id = ?
+	`, timestamp, eventID)
+	if err != nil {
+		return fmt.Errorf("failed to update event actioned: %w", err)
+	}
+
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("event not found: %s", eventID)
+	}
+
+	s.incrementRollbackCounter()
+	return nil
+}
+
+// GetSyncSequence returns the current sync sequence number
+func (s *SQLiteStorage) GetSyncSequence() (int64, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var seqStr string
+	err := s.db.QueryRow(`SELECT value FROM _metadata WHERE key = 'event_sync_sequence'`).Scan(&seqStr)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get sync sequence: %w", err)
+	}
+
+	var seq int64
+	fmt.Sscanf(seqStr, "%d", &seq)
+	return seq, nil
+}
+
+// IncrementSyncSequence increments and returns the new sync sequence
+func (s *SQLiteStorage) IncrementSyncSequence() (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Get current value
+	var seqStr string
+	err := s.db.QueryRow(`SELECT value FROM _metadata WHERE key = 'event_sync_sequence'`).Scan(&seqStr)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get sync sequence: %w", err)
+	}
+
+	var seq int64
+	fmt.Sscanf(seqStr, "%d", &seq)
+	seq++
+
+	// Update
+	_, err = s.db.Exec(`
+		UPDATE _metadata SET value = ?, updated_at = ?
+		WHERE key = 'event_sync_sequence'
+	`, fmt.Sprintf("%d", seq), time.Now().Unix())
+	if err != nil {
+		return 0, fmt.Errorf("failed to update sync sequence: %w", err)
+	}
+
+	return seq, nil
+}
+
+// CleanupEvents removes old events based on retention policies
+func (s *SQLiteStorage) CleanupEvents(feedRetentionDays, auditRetentionDays int, autoArchive bool) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now().Unix()
+	var totalDeleted int64
+
+	// 1. Remove soft-deleted items older than 7 days
+	result, err := s.db.Exec(`
+		DELETE FROM events
+		WHERE feed_status = 'deleted' AND created_at < ?
+	`, now-7*24*3600)
+	if err == nil {
+		n, _ := result.RowsAffected()
+		totalDeleted += n
+	}
+
+	// 2. Remove ephemeral items older than 24 hours
+	result, err = s.db.Exec(`
+		DELETE FROM events
+		WHERE retention_class = 'ephemeral' AND created_at < ?
+	`, now-24*3600)
+	if err == nil {
+		n, _ := result.RowsAffected()
+		totalDeleted += n
+	}
+
+	// 3. Remove hidden (audit-only) items older than audit retention
+	if auditRetentionDays > 0 {
+		auditCutoff := now - int64(auditRetentionDays)*24*3600
+		result, err = s.db.Exec(`
+			DELETE FROM events
+			WHERE feed_status = 'hidden' AND retention_class != 'permanent' AND created_at < ?
+		`, auditCutoff)
+		if err == nil {
+			n, _ := result.RowsAffected()
+			totalDeleted += n
+		}
+	}
+
+	// 4. Auto-archive feed items older than feed retention
+	if autoArchive && feedRetentionDays > 0 {
+		feedCutoff := now - int64(feedRetentionDays)*24*3600
+		s.db.Exec(`
+			UPDATE events
+			SET feed_status = 'archived', archived_at = ?
+			WHERE feed_status IN ('active', 'read') AND created_at < ?
+		`, now, feedCutoff)
+	}
+
+	if totalDeleted > 0 {
+		s.incrementRollbackCounter()
+	}
+
+	return totalDeleted, nil
+}
+
+// scanEventRows scans multiple event rows and decrypts payloads
+func (s *SQLiteStorage) scanEventRows(rows *sql.Rows) ([]EventRecord, error) {
+	var events []EventRecord
+
+	for rows.Next() {
+		var event EventRecord
+		var encPayload []byte
+		var readAt, actionedAt, archivedAt, expiresAt sql.NullInt64
+
+		if err := rows.Scan(
+			&event.EventID, &event.EventType, &event.SourceType, &event.SourceID, &encPayload,
+			&event.FeedStatus, &event.ActionType, &event.Priority,
+			&event.CreatedAt, &readAt, &actionedAt, &archivedAt, &expiresAt,
+			&event.SyncSequence, &event.RetentionClass,
+		); err != nil {
+			return nil, fmt.Errorf("failed to scan event row: %w", err)
+		}
+
+		// Decrypt payload
+		var err error
+		event.Payload, err = s.decrypt(encPayload)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decrypt event payload: %w", err)
+		}
+
+		// Convert nullable fields
+		if readAt.Valid {
+			event.ReadAt = &readAt.Int64
+		}
+		if actionedAt.Valid {
+			event.ActionedAt = &actionedAt.Int64
+		}
+		if archivedAt.Valid {
+			event.ArchivedAt = &archivedAt.Int64
+		}
+		if expiresAt.Valid {
+			event.ExpiresAt = &expiresAt.Int64
+		}
+
+		events = append(events, event)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating event rows: %w", err)
+	}
+
+	return events, nil
+}
+
+// join is a simple string join helper (avoiding strings package import)
+func join(strs []string, sep string) string {
+	if len(strs) == 0 {
+		return ""
+	}
+	result := strs[0]
+	for i := 1; i < len(strs); i++ {
+		result += sep + strs[i]
+	}
+	return result
 }
