@@ -5333,10 +5333,15 @@ async function loadSystemHealth() {
 async function loadSystemLogs() {
   try {
     const token = idToken();
-    const filter = document.getElementById('logSourceFilter').value;
+    const filter = document.getElementById('logSourceFilter').value || 'all';
 
     // Fetch system logs from the backend
-    const res = await fetch(`${API_URL}/admin/system-logs?source=${filter}&limit=100`, {
+    // Only add source param if filter is not 'all'
+    let url = `${API_URL}/admin/system-logs?limit=100`;
+    if (filter !== 'all') {
+      url += `&source=${encodeURIComponent(filter)}`;
+    }
+    const res = await fetch(url, {
       headers: { 'Authorization': `Bearer ${token}` }
     });
 

@@ -487,25 +487,36 @@ export function setupHelpRequestsEventHandlers() {
   // Save button handler
   document.getElementById('saveHelpRequest')?.addEventListener('click', saveHelpRequest);
 
-  // Quick action buttons in detail modal
-  document.getElementById('helpCopyEmail')?.addEventListener('click', () => {
-    if (currentHelpRequest?.email) {
-      navigator.clipboard.writeText(currentHelpRequest.email);
-      showToast('Email copied to clipboard', 'success');
+  // Quick status action buttons in detail modal
+  document.getElementById('helpQuickContacted')?.addEventListener('click', async () => {
+    if (currentHelpRequest) {
+      try {
+        await api('/admin/help-requests/' + currentHelpRequest.request_id, {
+          method: 'PATCH',
+          body: JSON.stringify({ status: 'contacted' }),
+        });
+        showToast('Marked as contacted', 'success');
+        closeHelpDetailModal();
+        loadHelpRequests(false);
+      } catch (e) {
+        showToast('Error: ' + (e.message || e), 'error');
+      }
     }
   });
 
-  document.getElementById('helpCopyPhone')?.addEventListener('click', () => {
-    if (currentHelpRequest?.phone) {
-      navigator.clipboard.writeText(currentHelpRequest.phone);
-      showToast('Phone copied to clipboard', 'success');
-    }
-  });
-
-  document.getElementById('helpSendEmail')?.addEventListener('click', () => {
-    if (currentHelpRequest?.email) {
-      // Open default mail client with pre-filled email
-      window.location.href = 'mailto:' + encodeURIComponent(currentHelpRequest.email);
+  document.getElementById('helpQuickInProgress')?.addEventListener('click', async () => {
+    if (currentHelpRequest) {
+      try {
+        await api('/admin/help-requests/' + currentHelpRequest.request_id, {
+          method: 'PATCH',
+          body: JSON.stringify({ status: 'in_progress' }),
+        });
+        showToast('Marked as in progress', 'success');
+        closeHelpDetailModal();
+        loadHelpRequests(false);
+      } catch (e) {
+        showToast('Error: ' + (e.message || e), 'error');
+      }
     }
   });
 

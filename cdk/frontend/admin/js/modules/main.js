@@ -1109,6 +1109,175 @@ async function loadSentEmails() {
   }
 }
 
+// Load combined broadcast history (emails + vault broadcasts)
+async function loadBroadcastHistory() {
+  if (!signedIn()) return;
+
+  const container = document.getElementById('broadcastHistoryList');
+  if (!container) return;
+
+  const filter = document.getElementById('historyTypeFilter')?.value || 'all';
+
+  // Show loading
+  container.replaceChildren();
+  const loadingDiv = document.createElement('div');
+  loadingDiv.style.cssText = 'padding:20px;background:#050505;border-radius:8px;text-align:center;color:var(--gray);';
+  loadingDiv.textContent = 'Loading...';
+  container.appendChild(loadingDiv);
+
+  try {
+    // Fetch vault broadcasts
+    let vaultBroadcasts = [];
+    if (filter === 'all' || filter === 'vault') {
+      try {
+        const vaultData = await api('/admin/broadcasts');
+        vaultBroadcasts = (vaultData.broadcasts || []).map(b => ({
+          ...b,
+          source: 'vault',
+          sent_at: b.sent_at
+        }));
+      } catch (e) {
+        console.log('No vault broadcasts or error:', e.message);
+      }
+    }
+
+    // Fetch email broadcasts
+    let emailBroadcasts = [];
+    if (filter === 'all' || filter === 'email') {
+      try {
+        const emailData = await api('/admin/sent-emails');
+        const emailArray = Array.isArray(emailData) ? emailData : (emailData.emails || []);
+        emailBroadcasts = emailArray.slice(0, 50).map(e => ({
+          broadcast_id: e.email_id,
+          type: 'email',
+          priority: 'normal',
+          title: e.subject,
+          message: e.body_preview || (e.body_text || '').substring(0, 100),
+          sent_at: e.sent_at,
+          sent_by: e.sent_by,
+          source: 'email',
+          recipient_count: e.recipient_count
+        }));
+      } catch (e) {
+        console.log('No emails or error:', e.message);
+      }
+    }
+
+    // Combine and sort by sent_at
+    const allBroadcasts = [...vaultBroadcasts, ...emailBroadcasts].sort((a, b) => {
+      return new Date(b.sent_at).getTime() - new Date(a.sent_at).getTime();
+    });
+
+    container.replaceChildren();
+
+    if (allBroadcasts.length === 0) {
+      const emptyDiv = document.createElement('div');
+      emptyDiv.style.cssText = 'padding:20px;background:#050505;border-radius:8px;text-align:center;color:var(--gray);';
+      emptyDiv.textContent = 'No broadcasts found.';
+      container.appendChild(emptyDiv);
+      return;
+    }
+
+    // Render broadcasts
+    allBroadcasts.slice(0, 50).forEach(b => {
+      const isVault = b.source === 'vault';
+      const typeColor = b.type === 'security_alert' ? '#ef4444' :
+                        b.type === 'system_announcement' ? '#3b82f6' :
+                        b.type === 'admin_message' ? '#10b981' : '#6b7280';
+
+      const card = document.createElement('div');
+      card.style.cssText = `padding:16px;background:#050505;border-radius:8px;border-left:4px solid ${typeColor};`;
+
+      // Header row
+      const header = document.createElement('div');
+      header.style.cssText = 'display:flex;justify-content:space-between;align-items:start;gap:12px;margin-bottom:8px;';
+
+      const titleWrap = document.createElement('div');
+      titleWrap.style.cssText = 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;';
+
+      // Source icon
+      const sourceIcon = document.createElement('span');
+      sourceIcon.style.color = typeColor;
+      sourceIcon.innerHTML = isVault ?
+        '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>' :
+        '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path><polyline points="22,6 12,13 2,6"></polyline></svg>';
+      titleWrap.appendChild(sourceIcon);
+
+      // Title
+      const titleSpan = document.createElement('span');
+      titleSpan.style.cssText = 'font-weight:600;color:var(--text);';
+      titleSpan.textContent = b.title || 'Untitled';
+      titleWrap.appendChild(titleSpan);
+
+      // Priority badge
+      if (b.priority === 'critical' || b.priority === 'high') {
+        const priorityBadge = document.createElement('span');
+        priorityBadge.style.cssText = b.priority === 'critical' ?
+          'background:#ef4444;color:#fff;padding:2px 8px;border-radius:4px;font-size:0.7rem;' :
+          'background:#f59e0b;color:#000;padding:2px 8px;border-radius:4px;font-size:0.7rem;';
+        priorityBadge.textContent = b.priority.toUpperCase();
+        titleWrap.appendChild(priorityBadge);
+      }
+
+      // Status badge
+      const statusBadge = document.createElement('span');
+      statusBadge.style.cssText = 'background:#10b98122;color:#10b981;padding:2px 8px;border-radius:4px;font-size:0.7rem;';
+      statusBadge.textContent = isVault ? (b.delivery_status || 'sent') : 'Sent';
+      titleWrap.appendChild(statusBadge);
+
+      header.appendChild(titleWrap);
+
+      // Timestamp
+      const timestamp = document.createElement('span');
+      timestamp.style.cssText = 'color:var(--gray);font-size:0.8rem;white-space:nowrap;';
+      timestamp.textContent = b.sent_at ? new Date(b.sent_at).toLocaleString() : '—';
+      header.appendChild(timestamp);
+
+      card.appendChild(header);
+
+      // Message preview
+      const messageP = document.createElement('p');
+      messageP.style.cssText = 'margin:0 0 8px 0;color:var(--gray);font-size:0.9rem;line-height:1.5;';
+      const msgText = b.message || '';
+      messageP.textContent = msgText.length > 200 ? msgText.substring(0, 200) + '...' : msgText;
+      card.appendChild(messageP);
+
+      // Meta info
+      const meta = document.createElement('div');
+      meta.style.cssText = 'display:flex;gap:16px;color:var(--gray);font-size:0.8rem;flex-wrap:wrap;';
+
+      const typeSpan = document.createElement('span');
+      typeSpan.textContent = 'Type: ';
+      const typeValue = document.createElement('span');
+      typeValue.style.color = typeColor;
+      typeValue.textContent = (b.type || 'email').replace('_', ' ');
+      typeSpan.appendChild(typeValue);
+      meta.appendChild(typeSpan);
+
+      const bySpan = document.createElement('span');
+      bySpan.textContent = `By: ${b.sent_by || '—'}`;
+      meta.appendChild(bySpan);
+
+      if (b.recipient_count) {
+        const recipSpan = document.createElement('span');
+        recipSpan.textContent = `Recipients: ${b.recipient_count}`;
+        meta.appendChild(recipSpan);
+      }
+
+      card.appendChild(meta);
+      container.appendChild(card);
+    });
+
+  } catch (e) {
+    console.error('Error loading broadcast history:', e);
+    container.replaceChildren();
+    const errorDiv = document.createElement('div');
+    errorDiv.style.cssText = 'padding:20px;background:#050505;border-radius:8px;text-align:center;color:#ef4444;';
+    errorDiv.textContent = 'Error loading history: ' + (e.message || e);
+    container.appendChild(errorDiv);
+  }
+}
+
 async function sendBulkEmail() {
   const recipientType = document.getElementById('emailRecipientType')?.value;
   const subject = document.getElementById('emailSubject')?.value.trim();
@@ -1165,7 +1334,10 @@ async function sendBulkEmail() {
 
     showToast(`Email sent successfully to ${data.recipient_count || 0} recipients!`, 'success');
     closeComposeEmailModal();
-    await loadSentEmails();
+    // Refresh history if that panel is visible
+    if (document.getElementById('broadcast-history-panel')?.style.display !== 'none') {
+      await loadBroadcastHistory();
+    }
 
   } catch (err) {
     console.error('Error sending email:', err);
@@ -1198,15 +1370,18 @@ function setupCommunicationsTabSwitching() {
 
       // Load data for history panel
       if (targetPanel === 'broadcast-history') {
-        loadSentEmails();
+        loadBroadcastHistory();
       }
     });
   });
 
-  // Compose email modal
-  document.getElementById('openComposeEmailBtn')?.addEventListener('click', openComposeEmailModal);
+  // Compose email modal - sendBulkEmail button
+  // Note: openComposeEmailBtn handler is set in users.js setupUserEventHandlers
   document.getElementById('sendBulkEmail')?.addEventListener('click', sendBulkEmail);
-  document.getElementById('refreshSentEmails')?.addEventListener('click', loadSentEmails);
+
+  // Broadcast history refresh and filter
+  document.getElementById('refreshBroadcastHistory')?.addEventListener('click', loadBroadcastHistory);
+  document.getElementById('historyTypeFilter')?.addEventListener('change', loadBroadcastHistory);
 
   // Close compose modal on data-action
   document.querySelectorAll('[data-action="closeComposeEmailModal"]').forEach(el => {
