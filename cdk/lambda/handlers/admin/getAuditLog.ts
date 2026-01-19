@@ -55,11 +55,12 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   const limit = Math.min(Math.max(1, requestedLimit), MAX_LIMIT);
 
   try {
-    // Query audit table using email-timestamp-index GSI
+    // Query audit table using actor-email-index GSI (for admin activity)
+    // This finds all audit entries where this admin performed the action
     const result = await ddb.send(new QueryCommand({
       TableName: TABLE_AUDIT,
-      IndexName: 'email-timestamp-index',
-      KeyConditionExpression: 'email = :email',
+      IndexName: 'actor-email-index',
+      KeyConditionExpression: 'actor_email = :email',
       ExpressionAttributeValues: marshall({
         ':email': email,
       }),

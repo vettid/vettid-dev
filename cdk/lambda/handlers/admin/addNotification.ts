@@ -6,7 +6,7 @@ import { ok, badRequest, internalError, requireAdminGroup } from "../../common/u
 const ddb = new DynamoDBClient({});
 const TABLE_NOTIFICATION_PREFERENCES = process.env.TABLE_NOTIFICATION_PREFERENCES!;
 
-const VALID_NOTIFICATION_TYPES = ['waitlist', 'user', 'vote', 'system_health'];
+const VALID_NOTIFICATION_TYPES = ['waitlist', 'user', 'vote', 'help_offer', 'system_health'];
 
 // Email validation regex
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;

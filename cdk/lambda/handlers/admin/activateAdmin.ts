@@ -196,7 +196,13 @@ If you did not expect this email, please contact your system administrator.
     }, requestOrigin);
 
   } catch (error: any) {
-    console.error('Error activating admin:', error);
+    console.error('Error activating admin:', {
+      name: error.name,
+      message: error.message,
+      code: error.code,
+      email: decodedEmail,
+      stack: error.stack
+    });
 
     if (error.name === 'UsernameExistsException') {
       // Clean up the pending record since user already exists

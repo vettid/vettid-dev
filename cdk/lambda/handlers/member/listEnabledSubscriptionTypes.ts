@@ -34,12 +34,12 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     // Get user's subscription history from audit table
     const auditResult = await ddb.send(new ScanCommand({
       TableName: TABLE_AUDIT,
-      FilterExpression: '#act = :action AND user_guid = :uguid',
+      FilterExpression: '#t = :type AND user_guid = :uguid',
       ExpressionAttributeNames: {
-        '#act': 'action',
+        '#t': 'type',
       },
       ExpressionAttributeValues: {
-        ':action': { S: 'subscription_created' },
+        ':type': { S: 'subscription_created' },
         ':uguid': { S: userGuid },
       },
     }));

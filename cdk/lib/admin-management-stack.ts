@@ -446,6 +446,12 @@ export class AdminManagementStack extends cdk.Stack {
     // Cognito permissions for activation
     activateAdmin.addToRolePolicy(cognitoAdminPolicy);
 
+    // SES permissions for activation (send welcome email and check verification)
+    activateAdmin.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['ses:SendEmail', 'ses:GetIdentityVerificationAttributes'],
+      resources: ['*'],
+    }));
+
     // SES permissions for resend
     resendAdminVerification.addToRolePolicy(new iam.PolicyStatement({
       actions: ['ses:SendEmail', 'ses:SendTemplatedEmail'],

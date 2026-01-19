@@ -226,6 +226,14 @@ export class InfrastructureStack extends cdk.Stack {
       projectionType: dynamodb.ProjectionType.ALL,
     });
 
+    // GSI for querying admin activity by actor (the admin who performed the action)
+    audit.addGlobalSecondaryIndex({
+      indexName: 'actor-email-index',
+      partitionKey: { name: 'actor_email', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'createdAtTimestamp', type: dynamodb.AttributeType.NUMBER },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
     // Waitlist table
     const waitlist = new dynamodb.Table(this, 'Waitlist', {
       partitionKey: { name: 'email', type: dynamodb.AttributeType.STRING },
