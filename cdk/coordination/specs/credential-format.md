@@ -1,102 +1,225 @@
 # Protean Credential Format Specification
 
+**Version:** 2.0
+**Last Updated:** 2026-01-19
+**Status:** Active
+
 This document defines the format and cryptographic operations for the Protean Credential System used in VettID Vault Services.
+
+---
 
 ## Overview
 
-The Protean Credential System uses three types of rotating keys:
+The Protean Credential System uses rotating keys for security:
 
 | Key Type | Purpose | Rotation |
 |----------|---------|----------|
 | **CEK** (Credential Encryption Key) | Encrypt credential blob | After each authentication |
-| **TK** (Transaction Key) | Encrypt sensitive data in transit | After each use |
-| **LAT** (Ledger Authentication Token) | Mutual authentication | After each transaction |
+| **UTK** (User Transaction Key) | Encrypt sensitive payloads to vault | Single-use |
+| **LTK** (Ledger Transaction Key) | Decrypt UTK-encrypted payloads (vault-side) | Paired with UTK |
 
 ## Cryptographic Algorithms
 
-| Algorithm | Usage | Library |
-|-----------|-------|---------|
-| X25519 | Key exchange (CEK, TK) | TweetNaCl, libsodium, CryptoKit |
-| XChaCha20-Poly1305 | Authenticated encryption | TweetNaCl, libsodium |
-| Argon2id | Password hashing | argon2-browser, Swift Crypto |
-| Ed25519 | Signatures | TweetNaCl, CryptoKit |
+| Algorithm | Usage | Parameters |
+|-----------|-------|------------|
+| X25519 | Key exchange (CEK, UTK) | 32-byte keys |
+| XChaCha20-Poly1305 | Authenticated encryption | 24-byte nonce |
+| Argon2id | Password hashing | t=3, m=65536 (64MB), p=4 |
+| Ed25519 | Identity signatures | 32-byte public, 64-byte private |
+| HKDF-SHA256 | Key derivation | Domain-separated |
+
+### HKDF Domain Separation
+
+All HKDF operations use domain strings as salt for cryptographic separation:
+
+| Domain | Purpose |
+|--------|---------|
+| `vettid-cek-v1` | CEK credential encryption |
+| `vettid-utk-v1` | UTK payload encryption |
+| `vettid-pin-v1` | PIN-related encryption |
+
+---
 
 ## Credential Blob Structure
 
-### On-Device Storage
+### On-Device Storage (App Side)
 
-The credential blob stored on the mobile device:
-
-```json
-{
-  "user_guid": "550e8400-e29b-41d4-a716-446655440000",
-  "encrypted_blob": "<base64-encoded ciphertext>",
-  "ephemeral_public_key": "<base64-encoded 32-byte X25519 public key>",
-  "cek_version": 42
-}
-```
-
-### Decrypted Blob Contents
-
-After decryption with the CEK private key:
+The app stores these items locally:
 
 ```json
 {
-  "guid": "550e8400-e29b-41d4-a716-446655440000",
-  "password_hash": "$argon2id$v=19$m=65536,t=3,p=4$<salt>$<hash>",
-  "hash_algorithm": "argon2id",
-  "hash_version": "1.0",
-  "policies": {
-    "ttl_hours": 24,
-    "max_failed_attempts": 3
+  "encrypted_credential": "<base64: ephemeral_pubkey || nonce || ciphertext>",
+  "password_salt": "<base64-16-bytes>",
+  "argon2_params": {
+    "t": 3,
+    "m": 65536,
+    "p": 4
   },
-  "secrets": {
-    "vault_access_key": "<base64-encoded key>",
-    "backup_private_key": "<base64-encoded X25519 private key>",
-    "custom_secrets": {
-      // User-defined secrets
+  "utks": [
+    {
+      "id": "utk-xxx",
+      "public_key": "<base64-32-bytes>"
     }
-  },
-  "vault_credential": {
-    // Second Protean credential for vault communication
-    "encrypted_blob": "...",
-    "ephemeral_public_key": "...",
-    "version": 1
-  },
-  "vault_credential_backups": [
-    // Previous 3 versions for backup compatibility
   ]
 }
 ```
+
+| Field | Description |
+|-------|-------------|
+| `encrypted_credential` | CEK-encrypted Protean Credential (opaque to app) |
+| `password_salt` | Extracted from PHC string for re-hashing |
+| `argon2_params` | Extracted from PHC string for re-hashing |
+| `utks` | Available UTKs for encrypting payloads to vault |
+
+**Note:** The app cannot decrypt `encrypted_credential` - only the vault can.
+
+---
+
+### Decrypted Credential Structure (Vault Side)
+
+The Protean Credential format inside the encrypted blob:
+
+```json
+{
+  "format_version": 2,
+
+  "identity": {
+    "private_key": "<base64-Ed25519-seed-32-bytes>",
+    "public_key": "<base64-Ed25519-32-bytes>"
+  },
+
+  "master_secret": "<base64-32-bytes>",
+
+  "auth": {
+    "type": "password",
+    "hash": "$argon2id$v=19$m=65536,t=3,p=4$<base64-salt>$<base64-hash>"
+  },
+
+  "crypto_metadata": {
+    "cipher": "xchacha20-poly1305",
+    "kex": "x25519",
+    "kdf": "hkdf-sha256",
+    "domain": "vettid-cek-v1"
+  },
+
+  "binding": {
+    "vault_id": "vault-xxx",
+    "bound_at": 1705555555
+  },
+
+  "crypto_keys": [
+    {
+      "id": "key-xxx",
+      "label": "ethereum-main",
+      "type": "secp256k1",
+      "private_key": "<base64>",
+      "public_key": "<base64>",
+      "derivation_path": "m/44'/60'/0'/0/0",
+      "created_at": 1705555555
+    }
+  ],
+
+  "timestamps": {
+    "created_at": 1705555555,
+    "last_modified": 1705666666,
+    "auth_changed_at": 1705600000
+  },
+
+  "version": 1
+}
+```
+
+### Field Descriptions
+
+#### Top-Level Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `format_version` | int | Yes | Credential format version (currently 2) |
+| `version` | int | Yes | Credential instance version (increments on changes) |
+
+#### Identity Object
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `private_key` | base64 | Ed25519 seed (32 bytes) for signing |
+| `public_key` | base64 | Ed25519 public key (32 bytes) - user's identity |
+
+#### Auth Object
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | string | Authentication type: `"password"` or `"pin"` |
+| `hash` | string | PHC-format Argon2id hash (self-describing) |
+
+**PHC Format:** `$argon2id$v=19$m=65536,t=3,p=4$<salt>$<hash>`
+
+#### Crypto Metadata Object
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `cipher` | string | Symmetric cipher: `"xchacha20-poly1305"` |
+| `kex` | string | Key exchange: `"x25519"` |
+| `kdf` | string | Key derivation: `"hkdf-sha256"` |
+| `domain` | string | HKDF domain used: `"vettid-cek-v1"` |
+
+This enables algorithm agility - future credentials can use different algorithms.
+
+#### Binding Object
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `vault_id` | string | ID of the vault this credential is bound to |
+| `bound_at` | int64 | Unix timestamp when binding was created |
+
+**Security:** The vault verifies the `vault_id` matches before performing operations.
+
+#### Crypto Keys Array
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | string | Yes | Unique key identifier |
+| `label` | string | Yes | Human-readable label |
+| `type` | string | Yes | Key type: `"secp256k1"`, `"ed25519"`, etc. |
+| `private_key` | base64 | Yes | Private key material |
+| `public_key` | base64 | Yes | Public key (stored for efficiency) |
+| `derivation_path` | string | No | BIP32 path for HD keys |
+| `created_at` | int64 | Yes | Unix timestamp |
+
+#### Timestamps Object
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `created_at` | int64 | When credential was first created |
+| `last_modified` | int64 | When credential was last changed |
+| `auth_changed_at` | int64 | When password/PIN was last changed |
+
+---
 
 ## Encryption Operations
 
 ### Encrypt Credential Blob
 
 ```typescript
-interface EncryptedBlob {
-  ciphertext: Uint8Array;        // XChaCha20-Poly1305 ciphertext
-  ephemeralPublicKey: Uint8Array; // 32-byte X25519 public key
-}
-
 function encryptCredentialBlob(
   plaintext: Uint8Array,
   recipientPublicKey: Uint8Array  // CEK public key
-): EncryptedBlob {
+): Uint8Array {
   // 1. Generate ephemeral X25519 key pair
-  const ephemeralKeyPair = nacl.box.keyPair();
+  const ephemeralKeyPair = x25519.generateKeyPair();
 
   // 2. Derive shared secret via ECDH
-  const sharedSecret = nacl.scalarMult(
+  const sharedSecret = x25519.sharedKey(
     ephemeralKeyPair.secretKey,
     recipientPublicKey
   );
 
-  // 3. Derive symmetric key using HKDF-SHA256
+  // 3. Derive symmetric key using HKDF-SHA256 with domain separation
   const symmetricKey = hkdf(
     sharedSecret,
-    32,                           // 32 bytes for XChaCha20
-    'credential-encryption-v1'    // info string
+    'vettid-cek-v1',  // Domain as salt
+    null,             // No info
+    32                // 32 bytes for XChaCha20
   );
 
   // 4. Encrypt with XChaCha20-Poly1305
@@ -107,10 +230,8 @@ function encryptCredentialBlob(
     plaintext
   );
 
-  return {
-    ciphertext: concat(nonce, ciphertext),
-    ephemeralPublicKey: ephemeralKeyPair.publicKey
-  };
+  // 5. Format: ephemeral_pubkey (32) || nonce (24) || ciphertext
+  return concat(ephemeralKeyPair.publicKey, nonce, ciphertext);
 }
 ```
 
@@ -118,25 +239,27 @@ function encryptCredentialBlob(
 
 ```typescript
 function decryptCredentialBlob(
-  encrypted: EncryptedBlob,
+  encrypted: Uint8Array,
   recipientPrivateKey: Uint8Array  // CEK private key
 ): Uint8Array {
-  // 1. Derive shared secret
-  const sharedSecret = nacl.scalarMult(
+  // 1. Extract components
+  const ephemeralPublicKey = encrypted.slice(0, 32);
+  const nonce = encrypted.slice(32, 56);
+  const ciphertext = encrypted.slice(56);
+
+  // 2. Derive shared secret
+  const sharedSecret = x25519.sharedKey(
     recipientPrivateKey,
-    encrypted.ephemeralPublicKey
+    ephemeralPublicKey
   );
 
-  // 2. Derive symmetric key
+  // 3. Derive symmetric key with domain separation
   const symmetricKey = hkdf(
     sharedSecret,
-    32,
-    'credential-encryption-v1'
+    'vettid-cek-v1',  // Domain as salt
+    null,
+    32
   );
-
-  // 3. Extract nonce and ciphertext
-  const nonce = encrypted.ciphertext.slice(0, 24);
-  const ciphertext = encrypted.ciphertext.slice(24);
 
   // 4. Decrypt
   const plaintext = xchacha20poly1305.open(
@@ -153,6 +276,8 @@ function decryptCredentialBlob(
 }
 ```
 
+---
+
 ## Password Hashing (Argon2id)
 
 ### Parameters
@@ -161,20 +286,30 @@ function decryptCredentialBlob(
 const ARGON2_PARAMS = {
   type: 'argon2id',     // Hybrid mode (recommended)
   timeCost: 3,          // 3 iterations
-  memoryCost: 65536,    // 64 MB
+  memoryCost: 65536,    // 64 MB (OWASP minimum)
   parallelism: 4,       // 4 threads
   hashLength: 32,       // 32-byte output
   saltLength: 16        // 16-byte salt
 };
 ```
 
-### Hash Format
+### PHC String Format
 
-Argon2 produces a PHC string format:
+All password hashes use PHC (Password Hashing Competition) string format:
 
 ```
 $argon2id$v=19$m=65536,t=3,p=4$<base64-salt>$<base64-hash>
 ```
+
+| Component | Description |
+|-----------|-------------|
+| `$argon2id$` | Algorithm identifier |
+| `v=19` | Argon2 version (0x13 = 19) |
+| `m=65536` | Memory in KB (64 MB) |
+| `t=3` | Time/iterations |
+| `p=4` | Parallelism |
+| `<salt>` | Base64-encoded salt (no padding) |
+| `<hash>` | Base64-encoded hash (no padding) |
 
 ### Implementation
 
@@ -192,9 +327,9 @@ async function hashPassword(password: string): Promise<string> {
   return hash;  // Returns PHC string
 }
 
-// Verify password (during authentication)
+// Verify password
 async function verifyPassword(
-  storedHash: string,
+  storedHash: string,  // PHC string
   password: string
 ): Promise<boolean> {
   try {
@@ -205,206 +340,185 @@ async function verifyPassword(
 }
 ```
 
-## Transaction Keys (TK)
+---
+
+## UTK/LTK Operations
 
 ### Key Structure
 
 ```typescript
-interface TransactionKey {
-  keyId: string;           // Unique identifier
+interface UTK {
+  id: string;              // Unique identifier
   publicKey: Uint8Array;   // X25519 public key (32 bytes)
-  algorithm: 'X25519';
-  createdAt: string;       // ISO8601 timestamp
 }
 
-// Server-side only
-interface TransactionKeyPrivate extends TransactionKey {
-  encryptedPrivateKey: Uint8Array;  // Encrypted with KMS
-  status: 'unused' | 'used';
+// Vault-side only
+interface LTK {
+  id: string;              // Matches UTK id
+  privateKey: Uint8Array;  // X25519 private key (32 bytes)
+  usedAt: number | null;   // Null if unused
 }
 ```
 
-### Usage Flow
+### Encrypt with UTK (App Side)
 
 ```typescript
-// Mobile app: Encrypt sensitive data
-function encryptWithTransactionKey(
+function encryptWithUTK(
   data: Uint8Array,
-  transactionKey: TransactionKey
-): { keyId: string; ciphertext: Uint8Array } {
-  // Generate ephemeral key for this encryption
-  const ephemeral = nacl.box.keyPair();
+  utk: UTK
+): { utk_id: string; ciphertext: Uint8Array } {
+  // Generate ephemeral key
+  const ephemeral = x25519.generateKeyPair();
 
   // Derive shared secret
-  const sharedSecret = nacl.scalarMult(
+  const sharedSecret = x25519.sharedKey(
     ephemeral.secretKey,
-    transactionKey.publicKey
+    utk.publicKey
   );
 
-  // Derive symmetric key
-  const symmetricKey = hkdf(sharedSecret, 32, 'transaction-encryption-v1');
+  // Derive symmetric key with UTK domain
+  const symmetricKey = hkdf(
+    sharedSecret,
+    'vettid-utk-v1',  // UTK domain
+    null,
+    32
+  );
 
-  // Encrypt
+  // Encrypt with XChaCha20-Poly1305
   const nonce = randomBytes(24);
-  const ciphertext = xchacha20poly1305.seal(symmetricKey, nonce, data);
+  const encrypted = xchacha20poly1305.seal(symmetricKey, nonce, data);
 
+  // Format: ephemeral_pubkey (32) || nonce (24) || ciphertext
   return {
-    keyId: transactionKey.keyId,
-    ciphertext: concat(ephemeral.publicKey, nonce, ciphertext)
+    utk_id: utk.id,
+    ciphertext: concat(ephemeral.publicKey, nonce, encrypted)
   };
 }
+```
 
-// Server: Decrypt
-function decryptWithTransactionKey(
-  keyId: string,
+### Decrypt with LTK (Vault Side)
+
+```typescript
+function decryptWithLTK(
+  ltk: LTK,
   ciphertext: Uint8Array
 ): Uint8Array {
-  // Retrieve private key from storage
-  const privateKey = await getTransactionKeyPrivate(keyId);
-
   // Extract components
   const ephemeralPublicKey = ciphertext.slice(0, 32);
   const nonce = ciphertext.slice(32, 56);
   const encrypted = ciphertext.slice(56);
 
   // Derive shared secret
-  const sharedSecret = nacl.scalarMult(privateKey, ephemeralPublicKey);
+  const sharedSecret = x25519.sharedKey(
+    ltk.privateKey,
+    ephemeralPublicKey
+  );
 
-  // Derive symmetric key
-  const symmetricKey = hkdf(sharedSecret, 32, 'transaction-encryption-v1');
+  // Derive symmetric key with UTK domain
+  const symmetricKey = hkdf(
+    sharedSecret,
+    'vettid-utk-v1',
+    null,
+    32
+  );
 
   // Decrypt
-  const plaintext = xchacha20poly1305.open(symmetricKey, nonce, encrypted);
-
-  // Mark key as used
-  await markTransactionKeyUsed(keyId);
-
-  return plaintext;
+  return xchacha20poly1305.open(symmetricKey, nonce, encrypted);
 }
 ```
 
-### Key Pool Management
-
-- **Initial pool size:** 20 keys at enrollment
-- **Replenishment threshold:** 10 unused keys
-- **Replenishment quantity:** 10 new keys
-- **Mobile app responsibility:** Request replenishment when pool low
-
-## Ledger Authentication Token (LAT)
-
-### Token Structure
-
-```typescript
-interface LAT {
-  token: string;    // 256-bit random token (64 hex chars)
-  version: number;  // Increments on each use
-}
-```
-
-### Token Generation
-
-```typescript
-function generateLAT(): LAT {
-  const token = randomBytes(32);
-  return {
-    token: toHex(token),
-    version: 1
-  };
-}
-```
-
-### Validation Flow
-
-```typescript
-// Server: Get current LAT
-async function getCurrentLAT(userGuid: string): Promise<LAT> {
-  const activeLat = await db.query(
-    'SELECT token, version FROM ledger_auth_tokens WHERE user_guid = ? AND status = "active"',
-    [userGuid]
-  );
-  return activeLat;
-}
-
-// Mobile: Verify LAT before sending credentials
-function verifyLAT(received: LAT, stored: LAT): boolean {
-  // Constant-time comparison
-  return timingSafeEqual(received.token, stored.token) &&
-         received.version === stored.version;
-}
-
-// Server: Rotate LAT after successful auth
-async function rotateLAT(userGuid: string): Promise<LAT> {
-  const newLat = generateLAT();
-  newLat.version = (await getCurrentLAT(userGuid)).version + 1;
-
-  await db.transaction(async (tx) => {
-    // Mark old LAT as used
-    await tx.query(
-      'UPDATE ledger_auth_tokens SET status = "used" WHERE user_guid = ? AND status = "active"',
-      [userGuid]
-    );
-
-    // Insert new LAT
-    await tx.query(
-      'INSERT INTO ledger_auth_tokens (token, version, user_guid, status) VALUES (?, ?, ?, "active")',
-      [hashToken(newLat.token), newLat.version, userGuid]
-    );
-  });
-
-  return newLat;
-}
-```
-
-### Security Properties
-
-- **Version-based validation:** No time-based expiration
-- **Single active LAT:** Only one active LAT per user
-- **Phishing prevention:** Mobile app verifies server identity before sending credentials
-- **Replay prevention:** LAT changes after each successful authentication
+---
 
 ## CEK Rotation
 
-After each successful authentication:
+After each successful authentication, the CEK is rotated:
 
 ```typescript
-async function rotateCEK(userGuid: string): Promise<{
-  newBlob: EncryptedBlob;
-  newPublicKey: Uint8Array;
+async function rotateCEK(
+  credential: ProteanCredential,
+  currentCEKPrivate: Uint8Array
+): Promise<{
+  newEncryptedCredential: Uint8Array;
+  newCEKPublic: Uint8Array;
+  newCEKPrivate: Uint8Array;
 }> {
   // 1. Generate new CEK key pair
-  const newKeyPair = nacl.box.keyPair();
+  const newKeyPair = x25519.generateKeyPair();
 
-  // 2. Get current blob and decrypt
-  const currentBlob = await getCurrentCredentialBlob(userGuid);
-  const currentPrivateKey = await getCEKPrivateKey(userGuid);
-  const plaintext = decryptCredentialBlob(currentBlob, currentPrivateKey);
+  // 2. Update credential timestamps
+  credential.timestamps.last_modified = Date.now() / 1000;
+  credential.version += 1;
 
-  // 3. Re-encrypt with new key
-  const newBlob = encryptCredentialBlob(plaintext, newKeyPair.publicKey);
-
-  // 4. Store new private key (encrypted with KMS)
-  await storeCEKPrivateKey(userGuid, newKeyPair.secretKey);
-
-  // 5. Increment version
-  const newVersion = currentBlob.cek_version + 1;
+  // 3. Serialize and encrypt with new CEK
+  const plaintext = JSON.stringify(credential);
+  const newEncrypted = encryptCredentialBlob(
+    new TextEncoder().encode(plaintext),
+    newKeyPair.publicKey
+  );
 
   return {
-    newBlob: {
-      ...newBlob,
-      user_guid: userGuid,
-      cek_version: newVersion
-    },
-    newPublicKey: newKeyPair.publicKey
+    newEncryptedCredential: newEncrypted,
+    newCEKPublic: newKeyPair.publicKey,
+    newCEKPrivate: newKeyPair.secretKey
   };
 }
 ```
+
+---
+
+## Format Migration
+
+When loading a credential, check `format_version` and migrate if needed:
+
+```typescript
+function migrateCredential(credential: any): ProteanCredential {
+  const version = credential.format_version || 1;
+
+  if (version === 1) {
+    // Migrate from v1 to v2
+    return {
+      format_version: 2,
+      identity: {
+        private_key: credential.identity_private_key,
+        public_key: credential.identity_public_key
+      },
+      master_secret: credential.vault_master_secret,
+      auth: {
+        type: credential.auth_type || 'password',
+        hash: credential.password_hash
+      },
+      crypto_metadata: {
+        cipher: 'xchacha20-poly1305',
+        kex: 'x25519',
+        kdf: 'hkdf-sha256',
+        domain: 'vettid-cek-v1'
+      },
+      binding: null,  // Will be set on first vault operation
+      crypto_keys: (credential.crypto_keys || []).map(k => ({
+        ...k,
+        public_key: derivePublicKey(k.type, k.private_key)
+      })),
+      timestamps: {
+        created_at: credential.created_at,
+        last_modified: credential.created_at,
+        auth_changed_at: credential.created_at
+      },
+      version: credential.version
+    };
+  }
+
+  return credential;
+}
+```
+
+---
 
 ## Mobile Storage Recommendations
 
 ### Android
 
 ```kotlin
-// Use EncryptedSharedPreferences
+// Use EncryptedSharedPreferences for credential storage
 val masterKey = MasterKey.Builder(context)
     .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
     .build()
@@ -417,11 +531,11 @@ val sharedPreferences = EncryptedSharedPreferences.create(
     EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
 )
 
-// Store credential blob
+// Store credential data
 sharedPreferences.edit()
-    .putString("credential_blob", credentialBlobJson)
-    .putString("lat_token", lat.token)
-    .putInt("lat_version", lat.version)
+    .putString("encrypted_credential", base64Encode(encryptedBlob))
+    .putString("password_salt", base64Encode(salt))
+    .putString("argon2_params", paramsJson)
     .apply()
 ```
 
@@ -432,8 +546,8 @@ sharedPreferences.edit()
 let query: [String: Any] = [
     kSecClass as String: kSecClassGenericPassword,
     kSecAttrService as String: "dev.vettid.credentials",
-    kSecAttrAccount as String: "credential_blob",
-    kSecValueData as String: credentialBlobData,
+    kSecAttrAccount as String: "encrypted_credential",
+    kSecValueData as String: encryptedCredentialData,
     kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
     kSecAttrAccessControl as String: SecAccessControlCreateWithFlags(
         nil,
@@ -446,63 +560,33 @@ let query: [String: Any] = [
 SecItemAdd(query as CFDictionary, nil)
 ```
 
-## Wire Format Examples
-
-### Enrollment Finalize Response
-
-```json
-{
-  "credentialBlob": {
-    "userGuid": "550e8400-e29b-41d4-a716-446655440000",
-    "encryptedBlob": "nonce24bytes...ciphertext...",
-    "ephemeralPublicKey": "32bytepublickey...",
-    "cekVersion": 1
-  },
-  "lat": {
-    "token": "a1b2c3d4e5f6...64hexchars",
-    "version": 1
-  },
-  "transactionKeys": [
-    {
-      "keyId": "tk_abc123",
-      "publicKey": "32bytepublickey...",
-      "algorithm": "X25519",
-      "createdAt": "2025-01-01T00:00:00Z"
-    }
-    // ... 19 more keys
-  ]
-}
-```
-
-### Authentication Execute Response
-
-```json
-{
-  "success": true,
-  "newCredentialBlob": {
-    "userGuid": "550e8400-e29b-41d4-a716-446655440000",
-    "encryptedBlob": "newnonce24bytes...newciphertext...",
-    "ephemeralPublicKey": "new32bytepublickey...",
-    "cekVersion": 43
-  },
-  "newLat": {
-    "token": "b2c3d4e5f6a7...64hexchars",
-    "version": 43
-  },
-  "actionToken": "eyJhbGciOiJFZDI1NTE5...",
-  "newTransactionKeys": [
-    // Replenished keys if pool was low
-  ]
-}
-```
+---
 
 ## Security Checklist
 
-- [ ] Use constant-time comparison for all token/hash verification
+- [ ] Use constant-time comparison for all hash verification
 - [ ] Clear sensitive data from memory after use
-- [ ] Use secure random number generation
+- [ ] Use cryptographically secure random number generation
 - [ ] Validate all cryptographic outputs (check for null/failure)
+- [ ] Verify vault binding before performing operations
+- [ ] Use XChaCha20-Poly1305 with 24-byte random nonces
+- [ ] Use domain separation in HKDF (`vettid-cek-v1`, `vettid-utk-v1`)
+- [ ] Validate PHC string format and minimum Argon2id parameters
 - [ ] Log authentication attempts (without sensitive data)
 - [ ] Implement rate limiting on authentication endpoints
-- [ ] Use TLS 1.3 for all API communication
-- [ ] Encrypt private keys at rest (KMS/HSM)
+
+---
+
+## Changelog
+
+- **2026-01-19 (v2.0)**: Major format revision
+  - Added `format_version` for migration support
+  - Restructured to grouped objects (`identity`, `auth`, `timestamps`)
+  - Added `crypto_metadata` for algorithm agility
+  - Added `binding` for vault binding
+  - Enhanced `crypto_keys` with `public_key` and `derivation_path`
+  - Unified auth to single PHC-format `hash` field
+  - Updated HKDF to use domain separation
+  - Removed redundant `hash_algorithm` and `hash_version` fields
+
+- **2025-01-01 (v1.0)**: Initial specification

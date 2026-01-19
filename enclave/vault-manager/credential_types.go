@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"sync"
 )
 
@@ -120,12 +121,190 @@ type UnsealedCredential struct {
 	Version    int         `json:"version"`
 }
 
-// CryptoKey represents a cryptographic key stored in the credential
+// CryptoKey represents a cryptographic key stored in the credential (V1 format)
 type CryptoKey struct {
 	Label      string `json:"label"`
 	Type       string `json:"type"` // "secp256k1", "ed25519", etc.
 	PrivateKey []byte `json:"private_key"`
 	CreatedAt  int64  `json:"created_at"`
+}
+
+// --- Protean Credential Format V2 ---
+// This is the new structured format with grouped fields and metadata
+
+// ProteanCredentialV2 is the new credential format with grouped fields
+// See cdk/coordination/specs/credential-format.md for specification
+type ProteanCredentialV2 struct {
+	FormatVersion int `json:"format_version"` // Should be 2
+
+	Identity CredentialIdentity `json:"identity"`
+
+	MasterSecret []byte `json:"master_secret"`
+
+	Auth CredentialAuth `json:"auth"`
+
+	CryptoMetadata CredentialCryptoMetadata `json:"crypto_metadata"`
+
+	Binding *CredentialBinding `json:"binding,omitempty"`
+
+	CryptoKeys []CryptoKeyV2 `json:"crypto_keys"`
+
+	Timestamps CredentialTimestamps `json:"timestamps"`
+
+	Version int `json:"version"` // Instance version, increments on changes
+}
+
+// CredentialIdentity holds the Ed25519 identity keypair
+type CredentialIdentity struct {
+	PrivateKey []byte `json:"private_key"` // Ed25519 seed (32 bytes)
+	PublicKey  []byte `json:"public_key"`  // Ed25519 public key (32 bytes)
+}
+
+// CredentialAuth holds authentication information
+type CredentialAuth struct {
+	Type string `json:"type"` // "password" or "pin"
+	Hash string `json:"hash"` // PHC format: $argon2id$v=19$m=65536,t=3,p=4$<salt>$<hash>
+}
+
+// CredentialCryptoMetadata enables algorithm agility
+type CredentialCryptoMetadata struct {
+	Cipher string `json:"cipher"` // e.g., "xchacha20-poly1305"
+	Kex    string `json:"kex"`    // Key exchange: "x25519"
+	Kdf    string `json:"kdf"`    // Key derivation: "hkdf-sha256"
+	Domain string `json:"domain"` // HKDF domain: "vettid-cek-v1"
+}
+
+// CredentialBinding ties the credential to a specific vault
+type CredentialBinding struct {
+	VaultID string `json:"vault_id"` // Owner space / vault ID
+	BoundAt int64  `json:"bound_at"` // Unix timestamp
+}
+
+// CredentialTimestamps tracks credential lifecycle
+type CredentialTimestamps struct {
+	CreatedAt     int64 `json:"created_at"`
+	LastModified  int64 `json:"last_modified"`
+	AuthChangedAt int64 `json:"auth_changed_at"`
+}
+
+// CryptoKeyV2 represents a cryptographic key with enhanced metadata
+type CryptoKeyV2 struct {
+	ID             string `json:"id"`
+	Label          string `json:"label"`
+	Type           string `json:"type"` // "secp256k1", "ed25519", etc.
+	PrivateKey     []byte `json:"private_key"`
+	PublicKey      []byte `json:"public_key"`            // Stored for efficiency
+	DerivationPath string `json:"derivation_path,omitempty"` // BIP32 path for HD keys
+	CreatedAt      int64  `json:"created_at"`
+}
+
+// DefaultCryptoMetadata returns the current default cryptographic parameters
+func DefaultCryptoMetadata() CredentialCryptoMetadata {
+	return CredentialCryptoMetadata{
+		Cipher: "xchacha20-poly1305",
+		Kex:    "x25519",
+		Kdf:    "hkdf-sha256",
+		Domain: DomainCEK,
+	}
+}
+
+// MigrateV1ToV2 converts a V1 UnsealedCredential to V2 format
+func MigrateV1ToV2(v1 *UnsealedCredential, vaultID string) *ProteanCredentialV2 {
+	now := currentTimestamp()
+
+	// Determine auth hash - prefer PHC format PasswordHash, fall back to constructing from AuthHash/AuthSalt
+	authHash := v1.PasswordHash
+	if authHash == "" && len(v1.AuthHash) > 0 && len(v1.AuthSalt) > 0 {
+		// Legacy format - would need to reconstruct PHC string
+		// For now, this signals migration is needed at the application level
+		authHash = ""
+	}
+
+	// Migrate crypto keys
+	cryptoKeys := make([]CryptoKeyV2, len(v1.CryptoKeys))
+	for i, k := range v1.CryptoKeys {
+		cryptoKeys[i] = CryptoKeyV2{
+			ID:         fmt.Sprintf("key-%d", i),
+			Label:      k.Label,
+			Type:       k.Type,
+			PrivateKey: k.PrivateKey,
+			PublicKey:  nil, // Will need to be derived from private key
+			CreatedAt:  k.CreatedAt,
+		}
+	}
+
+	return &ProteanCredentialV2{
+		FormatVersion: 2,
+		Identity: CredentialIdentity{
+			PrivateKey: v1.IdentityPrivateKey,
+			PublicKey:  v1.IdentityPublicKey,
+		},
+		MasterSecret: v1.VaultMasterSecret,
+		Auth: CredentialAuth{
+			Type: v1.AuthType,
+			Hash: authHash,
+		},
+		CryptoMetadata: DefaultCryptoMetadata(),
+		Binding: &CredentialBinding{
+			VaultID: vaultID,
+			BoundAt: now,
+		},
+		CryptoKeys: cryptoKeys,
+		Timestamps: CredentialTimestamps{
+			CreatedAt:     v1.CreatedAt,
+			LastModified:  now,
+			AuthChangedAt: v1.CreatedAt,
+		},
+		Version: v1.Version,
+	}
+}
+
+// ToV1 converts a V2 credential back to V1 format for backward compatibility
+func (v2 *ProteanCredentialV2) ToV1() *UnsealedCredential {
+	// Migrate crypto keys back
+	cryptoKeys := make([]CryptoKey, len(v2.CryptoKeys))
+	for i, k := range v2.CryptoKeys {
+		cryptoKeys[i] = CryptoKey{
+			Label:      k.Label,
+			Type:       k.Type,
+			PrivateKey: k.PrivateKey,
+			CreatedAt:  k.CreatedAt,
+		}
+	}
+
+	return &UnsealedCredential{
+		IdentityPrivateKey: v2.Identity.PrivateKey,
+		IdentityPublicKey:  v2.Identity.PublicKey,
+		VaultMasterSecret:  v2.MasterSecret,
+		PasswordHash:       v2.Auth.Hash,
+		AuthType:           v2.Auth.Type,
+		CryptoKeys:         cryptoKeys,
+		CreatedAt:          v2.Timestamps.CreatedAt,
+		Version:            v2.Version,
+	}
+}
+
+// SecureErase zeros all sensitive data in the V2 credential
+func (v2 *ProteanCredentialV2) SecureErase() {
+	if v2 == nil {
+		return
+	}
+
+	zeroBytes(v2.Identity.PrivateKey)
+	zeroBytes(v2.Identity.PublicKey)
+	zeroBytes(v2.MasterSecret)
+
+	v2.Auth.Hash = ""
+
+	for i := range v2.CryptoKeys {
+		zeroBytes(v2.CryptoKeys[i].PrivateKey)
+		zeroBytes(v2.CryptoKeys[i].PublicKey)
+	}
+	v2.CryptoKeys = nil
+
+	v2.Identity.PrivateKey = nil
+	v2.Identity.PublicKey = nil
+	v2.MasterSecret = nil
 }
 
 // NOTE: BlockListEntry and CallRecord are defined in calls.go
