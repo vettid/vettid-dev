@@ -1,8 +1,10 @@
 # Nitro Enclave Architecture - Mobile Developer Briefing
 
-**Date:** 2026-01-03
-**Status:** DEPLOYED TO PRODUCTION
+**Date:** 2026-01-03 (Updated: 2026-01-18)
+**Status:** DEPLOYED TO PRODUCTION - NATS API FINALIZED
 **Action Required:** Both iOS and Android need updates
+
+> **API Specification:** See [`/cdk/coordination/specs/nitro-enrollment-nats-api.md`](../cdk/coordination/specs/nitro-enrollment-nats-api.md) for the complete NATS enrollment API reference.
 
 ---
 
@@ -275,51 +277,63 @@ require(attestedPublicKey.contentEquals(responsePublicKey)) { "Public key mismat
 
 ---
 
-## Updated Enrollment Flow
+## Updated Enrollment Flow (NATS-Based)
+
+> **For detailed API specification, see:** [`/cdk/coordination/specs/nitro-enrollment-nats-api.md`](../cdk/coordination/specs/nitro-enrollment-nats-api.md)
 
 ```
-┌─────────┐                    ┌─────────┐                    ┌─────────┐
-│  Mobile │                    │  Lambda │                    │ Enclave │
-└────┬────┘                    └────┬────┘                    └────┬────┘
-     │                              │                              │
-     │  POST /vault/enroll/start   │                              │
-     │─────────────────────────────>│                              │
-     │                              │   Request attestation        │
-     │                              │─────────────────────────────>│
-     │                              │   Attestation + public key   │
-     │                              │<─────────────────────────────│
-     │   enclave_attestation        │                              │
-     │<─────────────────────────────│                              │
-     │                              │                              │
-     │  ┌─────────────────────┐     │                              │
-     │  │ VERIFY ATTESTATION  │     │                              │
-     │  │ 1. Parse CBOR       │     │                              │
-     │  │ 2. Verify cert chain│     │                              │
-     │  │ 3. Compare PCRs     │     │                              │
-     │  │ 4. Verify public key│     │                              │
-     │  └─────────────────────┘     │                              │
-     │                              │                              │
-     │  Encrypt password to         │                              │
-     │  enclave public key          │                              │
-     │                              │                              │
-     │  POST /vault/enroll/set-password                            │
-     │─────────────────────────────>│                              │
-     │                              │   Forward encrypted auth     │
-     │                              │─────────────────────────────>│
-     │                              │   (stored for finalize)      │
-     │   OK                         │                              │
-     │<─────────────────────────────│                              │
-     │                              │                              │
-     │  POST /vault/enroll/finalize │                              │
-     │─────────────────────────────>│                              │
-     │                              │   Create sealed credential   │
-     │                              │─────────────────────────────>│
-     │                              │   Sealed credential + keys   │
-     │                              │<─────────────────────────────│
-     │   credential_package         │                              │
-     │<─────────────────────────────│                              │
-     │                              │                              │
+┌─────────┐                    ┌─────────────┐                    ┌─────────┐
+│  Mobile │                    │ NATS Cluster│                    │ Enclave │
+└────┬────┘                    └──────┬──────┘                    └────┬────┘
+     │                                │                                │
+     │  1. POST /nats/account (REST)  │                                │
+     │──────────────────────────────► │                                │
+     │  { owner_space, nats_creds }   │                                │
+     │◄────────────────────────────── │                                │
+     │                                │                                │
+     │  2. Connect to NATS            │                                │
+     │─────────────────────────────── ◄ ──────────────────────────────│
+     │                                │                                │
+     │  3. forVault.attestation       │                                │
+     │────────────────────────────────┼───────────────────────────────►│
+     │                                │                                │
+     │  4. forApp.attestation.response│   (attestation_document)       │
+     │◄───────────────────────────────┼────────────────────────────────│
+     │                                │                                │
+     │  ┌─────────────────────┐       │                                │
+     │  │ VERIFY ATTESTATION  │       │                                │
+     │  │ 1. Parse CBOR       │       │                                │
+     │  │ 2. Verify cert chain│       │                                │
+     │  │ 3. Compare PCRs     │       │                                │
+     │  │ 4. Extract pub key  │       │                                │
+     │  └─────────────────────┘       │                                │
+     │                                │                                │
+     │  5. forVault.pin               │  (ECIES-encrypted PIN)         │
+     │────────────────────────────────┼───────────────────────────────►│
+     │                                │                                │
+     │                                │   6. Enclave:                  │
+     │                                │      - Decrypt PIN             │
+     │                                │      - Generate sealed material│
+     │                                │      - Derive DEK              │
+     │                                │      - Create credential       │
+     │                                │      - Encrypt with DEK        │
+     │                                │                                │
+     │  7. forApp.pin.response (JetStream)                             │
+     │◄───────────────────────────────┼────────────────────────────────│
+     │  { status: "pin_set",          │                                │
+     │    encrypted_credential,       │                                │
+     │    new_utks }                  │                                │
+     │                                │                                │
+     │  8. Store encrypted_credential │                                │
+     │     (SecureStorage + backup)   │                                │
+     │                                │                                │
 ```
+
+**Key Differences from Old Flow:**
+- No REST-based `/vault/enroll/*` endpoints - all communication via NATS
+- Credential is created and returned **immediately in PIN setup response**
+- No separate "vault ready" or "create credential" step
+- Responses delivered via JetStream for guaranteed delivery
 
 ---
 

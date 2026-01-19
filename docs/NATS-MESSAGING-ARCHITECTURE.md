@@ -410,9 +410,42 @@ WEB_INITIATED → PENDING → AUTHENTICATED → NATS_CONNECTED → COMPLETED
 
 ## PIN Setup Flow
 
-### Current Implementation (REST + NATS Notification)
+> **⚠️ DEPRECATED (EC2 Model):** The REST-based PIN setup below was for the old EC2-per-user vault architecture.
+>
+> **For the current Nitro Enclave architecture, see:** [`/cdk/coordination/specs/nitro-enrollment-nats-api.md`](../cdk/coordination/specs/nitro-enrollment-nats-api.md)
 
-PIN setup is handled via REST API for security. NATS is used for real-time sync notifications.
+### Current Implementation (Nitro Enclave - NATS Direct)
+
+PIN setup is handled via direct NATS messaging to the Nitro enclave:
+
+| Direction | Topic | Purpose |
+|-----------|-------|---------|
+| App → Enclave | `OwnerSpace.{guid}.forVault.pin` | PIN setup request |
+| Enclave → App | `OwnerSpace.{guid}.forApp.pin.response` | PIN setup response (via JetStream) |
+
+**Response Format:**
+```json
+{
+  "status": "pin_set",
+  "encrypted_credential": "<base64-DEK-encrypted-credential>",
+  "new_utks": ["<utk-id-1>", "<utk-id-2>", ...]
+}
+```
+
+The credential is created immediately during PIN setup - no separate "vault ready" or "create credential" step is needed.
+
+**NOTE:** The response topic MUST use `forApp` prefix, not just `app`. This is a common mistake.
+
+---
+
+### Legacy Implementation (REST + NATS Notification) - DEPRECATED
+
+> **⚠️ DEPRECATED:** This section documents the old EC2 model. Do not use for new implementations.
+
+<details>
+<summary>Click to expand deprecated REST-based flow</summary>
+
+PIN setup was handled via REST API for security. NATS was used for real-time sync notifications.
 
 #### PIN Setup
 
@@ -437,16 +470,7 @@ Topic: OwnerSpace.{member_guid}.forApp.pin.setup
 }
 ```
 
-### Expected Topic Pattern for Direct NATS PIN Setup
-
-If implementing PIN setup via NATS:
-
-| Direction | Topic | Purpose |
-|-----------|-------|---------|
-| App → Vault | `OwnerSpace.{guid}.forVault.pin` | PIN setup request |
-| Vault → App | `OwnerSpace.{guid}.forApp.pin.response` | PIN setup response |
-
-**NOTE:** The response topic MUST use `forApp` prefix, not just `app`. This is a common mistake.
+</details>
 
 ---
 
