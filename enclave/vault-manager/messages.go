@@ -515,6 +515,11 @@ func (mh *MessageHandler) handleCredentialOperation(ctx context.Context, msg *In
 		return mh.credentialHandler.HandleGet(msg)
 	case "version":
 		return mh.credentialHandler.HandleVersion(msg)
+	case "delete":
+		// Delete credential (for vault decommission)
+		// First clear in-memory state, then delete from storage
+		mh.proteanCredentialHandler.ClearCredential()
+		return mh.credentialHandler.HandleDelete(msg)
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown credential operation: %s", opType))
 	}

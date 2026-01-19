@@ -59,13 +59,29 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     const logEntries: any[] = [];
 
     // Filter log groups based on source parameter
-    let targetLogGroups = allLogGroups;
-    if (source === 'api') {
-      // API Gateway logs (if configured)
+    let targetLogGroups: LogGroup[] = [];
+
+    if (source === 'all') {
+      // All logs: Lambda + API Gateway
+      targetLogGroups = [...allLogGroups];
+      const apiLogGroups = await logs.send(new DescribeLogGroupsCommand({
+        logGroupNamePrefix: '/aws/apigateway/vettid'
+      }));
+      if (apiLogGroups.logGroups) {
+        targetLogGroups = targetLogGroups.concat(apiLogGroups.logGroups);
+      }
+    } else if (source === 'api') {
+      // API Gateway logs only
       const apiLogGroups = await logs.send(new DescribeLogGroupsCommand({
         logGroupNamePrefix: '/aws/apigateway/'
       }));
       targetLogGroups = apiLogGroups.logGroups || [];
+    } else if (source === 'lambda' || source === 'errors') {
+      // Lambda logs only (errors filter applied later if source === 'errors')
+      targetLogGroups = allLogGroups;
+    } else {
+      // Unknown source - default to all Lambda logs
+      targetLogGroups = allLogGroups;
     }
 
     // Sort log groups by last event time (most recent first) and take top 20

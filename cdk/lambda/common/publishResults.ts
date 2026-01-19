@@ -174,7 +174,7 @@ export async function publishVoteResults(
     do {
       const votesResult: any = await ddb.send(new QueryCommand({
         TableName: tableVotes,
-        IndexName: 'proposal-index',
+        IndexName: 'proposal-vote-index',
         KeyConditionExpression: 'proposal_id = :pid',
         ExpressionAttributeValues: marshall({ ':pid': proposalId }),
         ExclusiveStartKey: lastEvaluatedKey,

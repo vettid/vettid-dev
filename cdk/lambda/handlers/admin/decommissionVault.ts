@@ -45,6 +45,7 @@ import {
   nowIso,
   validateOrigin,
 } from '../../common/util';
+import { publishToNats } from '../../common/nats-publisher';
 
 const ddb = new DynamoDBClient({});
 const s3 = new S3Client({});
@@ -63,6 +64,7 @@ interface DecommissionResult {
   credential_backups_deleted: number;
   profiles_deleted: number;
   s3_objects_deleted: number;
+  enclave_credential_deleted: boolean;
   errors: string[];
 }
 
@@ -197,6 +199,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     credential_backups_deleted: 0,
     profiles_deleted: 0,
     s3_objects_deleted: 0,
+    enclave_credential_deleted: false,
     errors: [],
   };
 
@@ -298,6 +301,24 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       console.log(`Deleted ${s3Result.count} S3 objects`);
     }
 
+    // 8. Delete credential from enclave via vault reset
+    // This clears the credential from the enclave's SQLite storage
+    try {
+      const natsResult = await publishToNats('enclave.vault.reset', {
+        user_guid: userGuid,
+      });
+      if (natsResult.success) {
+        result.enclave_credential_deleted = true;
+        console.log(`Sent vault reset to enclave for user: ${userGuid}`);
+      } else {
+        result.errors.push(`Enclave: ${natsResult.error || 'Failed to send vault reset'}`);
+        console.error('Failed to send vault reset:', natsResult.error);
+      }
+    } catch (error: any) {
+      result.errors.push(`Enclave: ${error.message}`);
+      console.error('Error sending vault reset:', error);
+    }
+
     // Audit log
     await putAudit({
       type: 'vault_decommissioned',
@@ -310,6 +331,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         credential_backups_deleted: result.credential_backups_deleted,
         profiles_deleted: result.profiles_deleted,
         s3_objects_deleted: result.s3_objects_deleted,
+        enclave_credential_deleted: result.enclave_credential_deleted,
       },
       errors: result.errors,
     });
@@ -321,7 +343,8 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       result.enrollment_sessions_deleted +
       result.credential_backups_deleted +
       result.profiles_deleted +
-      result.s3_objects_deleted;
+      result.s3_objects_deleted +
+      (result.enclave_credential_deleted ? 1 : 0);
 
     return ok({
       message: hasErrors

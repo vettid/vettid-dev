@@ -263,6 +263,12 @@ func (p *ParentProcess) forwardToEnclave(ctx context.Context, msg *NATSMessage) 
 	if isEnclaveSubject(msg.Subject) {
 		// Map enclave subject to appropriate message type
 		msgType := mapEnclaveSubjectToType(msg.Subject)
+
+		// Handle vault reset directly in parent (not forwarded to vault-manager)
+		if msgType == EnclaveMessageTypeVaultReset {
+			return p.handleVaultReset(ctx, msg)
+		}
+
 		enclaveMsg = &EnclaveMessage{
 			Type:    msgType,
 			Subject: msg.Subject,
@@ -840,11 +846,14 @@ func mapEnclaveSubjectToType(subject string) EnclaveMessageType {
 	// Map known enclave subjects to message types
 	// enclave.attestation.request -> attestation_request
 	// enclave.health -> health_check
+	// enclave.vault.reset -> vault_reset (for decommission)
 	switch {
 	case subject == "enclave.attestation.request":
 		return EnclaveMessageTypeAttestationRequest
 	case subject == "enclave.health" || subject == "enclave.health.check":
 		return EnclaveMessageTypeHealthCheck
+	case subject == "enclave.vault.reset":
+		return EnclaveMessageTypeVaultReset
 	default:
 		// For unknown enclave subjects, use vault_op as fallback
 		// Note: enclave.credential.create/unseal are deprecated - mobile apps use
@@ -1079,6 +1088,8 @@ func (p *ParentProcess) handleControlCommand(ctx context.Context, msg *NATSMessa
 	switch cmd.Command {
 	case "health.request":
 		return p.handleHealthRequestCommand(ctx, msg, cmd)
+	case "credential.delete":
+		return p.handleCredentialDeleteCommand(ctx, msg, cmd)
 	default:
 		log.Warn().
 			Str("command", cmd.Command).
@@ -1105,6 +1116,144 @@ func (p *ParentProcess) handleHealthRequestCommand(ctx context.Context, msg *NAT
 			log.Error().Err(err).Str("reply", msg.Reply).Msg("Failed to publish health response")
 		}
 	}
+
+	return nil
+}
+
+// handleCredentialDeleteCommand handles credential deletion for vault decommission
+// Subject format: Control.user.{guid}.credential.delete
+// This is an admin-only operation used during vault decommission to clear
+// the credential from the enclave's SQLite storage.
+func (p *ParentProcess) handleCredentialDeleteCommand(ctx context.Context, msg *NATSMessage, cmd *SignedControlCommand) error {
+	// Extract user GUID from subject: Control.user.{guid}.credential.delete
+	parts := splitSubject(msg.Subject)
+	if len(parts) < 5 || parts[0] != "Control" || parts[1] != "user" {
+		log.Error().Str("subject", msg.Subject).Msg("Invalid credential.delete subject format")
+		return fmt.Errorf("invalid subject format for credential.delete")
+	}
+
+	userGuid := parts[2]
+
+	log.Info().
+		Str("command_id", cmd.CommandID).
+		Str("issued_by", cmd.IssuedBy).
+		Str("user_guid", userGuid).
+		Msg("Processing credential delete command (vault decommission)")
+
+	// Transform to vault operation subject that the vault-manager expects
+	// OwnerSpace.{guid}.forVault.credential.delete
+	vaultSubject := fmt.Sprintf("OwnerSpace.%s.forVault.credential.delete", userGuid)
+
+	// Create enclave message with proper routing
+	enclaveMsg := &EnclaveMessage{
+		Type:       EnclaveMessageTypeVaultOp,
+		OwnerSpace: userGuid,
+		Subject:    vaultSubject,
+		Payload:    []byte("{}"), // Empty payload - delete doesn't need parameters
+		ReplyTo:    msg.Reply,
+	}
+
+	// Send to enclave
+	response, err := p.sendWithHandlerSupport(ctx, enclaveMsg)
+	if err != nil {
+		log.Error().Err(err).Str("user_guid", userGuid).Msg("Failed to delete credential in enclave")
+		return err
+	}
+
+	// Send response back
+	if response != nil && msg.Reply != "" {
+		responseData := p.formatEnclaveResponse(response)
+		if err := p.natsClient.Publish(msg.Reply, responseData); err != nil {
+			log.Error().Err(err).Str("reply", msg.Reply).Msg("Failed to publish credential delete reply")
+		}
+	}
+
+	log.Info().
+		Str("user_guid", userGuid).
+		Str("command_id", cmd.CommandID).
+		Msg("Credential delete command completed")
+
+	return nil
+}
+
+// handleVaultReset handles vault reset requests for decommissioning
+// Subject: enclave.vault.reset
+// Payload: {"user_guid": "..."}
+// This forwards a credential.delete request to the vault-manager for the specified user
+func (p *ParentProcess) handleVaultReset(ctx context.Context, msg *NATSMessage) error {
+	// Parse the request payload
+	var req struct {
+		UserGuid string `json:"user_guid"`
+	}
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		log.Error().Err(err).Msg("Failed to parse vault reset request")
+		if msg.Reply != "" {
+			errorResponse := map[string]interface{}{
+				"success": false,
+				"error":   "invalid request format",
+			}
+			if responseData, err := json.Marshal(errorResponse); err == nil {
+				p.natsClient.Publish(msg.Reply, responseData)
+			}
+		}
+		return fmt.Errorf("invalid vault reset request: %w", err)
+	}
+
+	if req.UserGuid == "" {
+		log.Error().Msg("Vault reset request missing user_guid")
+		if msg.Reply != "" {
+			errorResponse := map[string]interface{}{
+				"success": false,
+				"error":   "user_guid is required",
+			}
+			if responseData, err := json.Marshal(errorResponse); err == nil {
+				p.natsClient.Publish(msg.Reply, responseData)
+			}
+		}
+		return fmt.Errorf("user_guid is required")
+	}
+
+	log.Info().
+		Str("user_guid", req.UserGuid).
+		Msg("Processing vault reset request (decommission)")
+
+	// Forward as credential.delete to the vault-manager
+	// This is the same path used by the Control.user.*.credential.delete command
+	vaultSubject := fmt.Sprintf("OwnerSpace.%s.forVault.credential.delete", req.UserGuid)
+
+	enclaveMsg := &EnclaveMessage{
+		Type:       EnclaveMessageTypeVaultOp,
+		OwnerSpace: req.UserGuid,
+		Subject:    vaultSubject,
+		Payload:    []byte("{}"),
+		ReplyTo:    msg.Reply,
+	}
+
+	// Send to enclave
+	response, err := p.sendWithHandlerSupport(ctx, enclaveMsg)
+	if err != nil {
+		log.Error().Err(err).Str("user_guid", req.UserGuid).Msg("Failed to reset vault")
+		if msg.Reply != "" {
+			errorResponse := map[string]interface{}{
+				"success": false,
+				"error":   "failed to reset vault",
+			}
+			if responseData, err := json.Marshal(errorResponse); err == nil {
+				p.natsClient.Publish(msg.Reply, responseData)
+			}
+		}
+		return err
+	}
+
+	// Send response back
+	if response != nil && msg.Reply != "" {
+		responseData := p.formatEnclaveResponse(response)
+		p.natsClient.Publish(msg.Reply, responseData)
+	}
+
+	log.Info().
+		Str("user_guid", req.UserGuid).
+		Msg("Vault reset completed")
 
 	return nil
 }

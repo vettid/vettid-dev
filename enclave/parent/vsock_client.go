@@ -135,6 +135,9 @@ const (
 	EnclaveMessageTypeCredentialUnseal   EnclaveMessageType = "credential_unseal"
 	EnclaveMessageTypeCredentialResponse EnclaveMessageType = "credential_response"
 
+	// Vault management
+	EnclaveMessageTypeVaultReset EnclaveMessageType = "vault_reset"
+
 	// General
 	EnclaveMessageTypeOK              EnclaveMessageType = "ok"
 	EnclaveMessageTypeError           EnclaveMessageType = "error"

@@ -242,6 +242,49 @@ func (h *CredentialHandler) HandleVersion(msg *IncomingMessage) (*OutgoingMessag
 	}, nil
 }
 
+// HandleDelete handles credential.delete messages (for vault decommission)
+// SECURITY: This permanently deletes the credential blob from storage.
+// Used during vault decommission to ensure clean re-enrollment.
+func (h *CredentialHandler) HandleDelete(msg *IncomingMessage) (*OutgoingMessage, error) {
+	// Check if credential exists
+	_, err := h.storage.Get(credentialStorageKey)
+	if err != nil {
+		// Credential doesn't exist - that's fine for decommission, return success
+		log.Info().Msg("Credential delete requested but no credential exists")
+		resp := map[string]interface{}{
+			"success": true,
+			"deleted": false,
+			"message": "no credential found",
+		}
+		respBytes, _ := json.Marshal(resp)
+		return &OutgoingMessage{
+			RequestID: msg.GetID(),
+			Type:      MessageTypeResponse,
+			Payload:   respBytes,
+		}, nil
+	}
+
+	// Delete the credential
+	if err := h.storage.Delete(credentialStorageKey); err != nil {
+		log.Error().Err(err).Msg("Failed to delete credential")
+		return h.errorResponse(msg.GetID(), "Failed to delete credential")
+	}
+
+	log.Info().Msg("Credential deleted successfully")
+
+	resp := map[string]interface{}{
+		"success": true,
+		"deleted": true,
+	}
+	respBytes, _ := json.Marshal(resp)
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
 func (h *CredentialHandler) errorResponse(id string, message string) (*OutgoingMessage, error) {
 	resp := map[string]interface{}{
 		"success": false,

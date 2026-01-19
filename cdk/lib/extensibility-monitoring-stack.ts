@@ -255,6 +255,11 @@ export class ExtensibilityMonitoringStack extends cdk.Stack {
     this.getVaultStatus = getVaultStatus;
     this.getVaultMetrics = getVaultMetrics;
 
+    // NATS operator secret for decommission (to send enclave.vault.reset message)
+    const natsOperatorSecretForDecommission = cdk.aws_secretsmanager.Secret.fromSecretNameV2(
+      this, 'NatsOperatorSecretForDecommission', 'vettid/nats/operator-key'
+    );
+
     // Vault Decommission - Complete cleanup of user's vault data
     const decommissionVault = new lambdaNode.NodejsFunction(this, 'DecommissionVaultFn', {
       entry: 'lambda/handlers/admin/decommissionVault.ts',
@@ -267,6 +272,8 @@ export class ExtensibilityMonitoringStack extends cdk.Stack {
         TABLE_CREDENTIAL_BACKUPS: tables.credentialBackups.tableName,
         TABLE_PROFILES: tables.profiles.tableName,
         BACKUP_BUCKET: props.infrastructure.backupBucket.bucketName,
+        NATS_OPERATOR_SECRET_ARN: natsOperatorSecretForDecommission.secretArn,
+        NATS_DOMAIN: 'nats.vettid.dev',
       },
       timeout: cdk.Duration.seconds(60), // Longer timeout for batch deletions
     });
@@ -280,6 +287,12 @@ export class ExtensibilityMonitoringStack extends cdk.Stack {
     tables.audit.grantReadWriteData(decommissionVault);
     // S3 permissions for backup cleanup
     props.infrastructure.backupBucket.grantReadWrite(decommissionVault);
+    // Secrets Manager permissions for NATS operator key (to send enclave.vault.reset message)
+    // Note: Using explicit IAM policy because fromSecretNameV2 grantRead may not properly resolve
+    decommissionVault.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['secretsmanager:GetSecretValue'],
+      resources: [`arn:aws:secretsmanager:${this.region}:${this.account}:secret:vettid/nats/operator-key-*`],
+    }));
 
     this.decommissionVault = decommissionVault;
 

@@ -74,7 +74,7 @@ async function getUserDetails(userGuid: string): Promise<{ email: string; first_
 async function getVoterGuids(proposalId: string): Promise<Set<string>> {
   const result = await ddb.send(new QueryCommand({
     TableName: TABLE_VOTES,
-    IndexName: 'proposal-index',
+    IndexName: 'proposal-vote-index',
     KeyConditionExpression: 'proposal_id = :pid',
     ExpressionAttributeValues: marshall({ ':pid': proposalId }),
     ProjectionExpression: 'user_guid'

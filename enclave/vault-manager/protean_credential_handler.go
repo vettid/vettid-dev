@@ -212,3 +212,32 @@ func (h *ProteanCredentialHandler) errorResponse(requestID string, errMsg string
 		Error:     errMsg,
 	}, nil
 }
+
+// ClearCredential securely erases the credential from vault state (for decommission)
+// SECURITY: This zeros all cryptographic material and clears the credential reference
+func (h *ProteanCredentialHandler) ClearCredential() {
+	h.state.mu.Lock()
+	defer h.state.mu.Unlock()
+
+	// Securely erase existing credential if present
+	if h.state.credential != nil {
+		h.state.credential.SecureErase()
+		h.state.credential = nil
+		log.Info().Str("owner_space", h.ownerSpace).Msg("In-memory credential cleared for decommission")
+	}
+
+	// Also clear CEK pair since it's no longer needed
+	if h.state.cekPair != nil {
+		zeroBytes(h.state.cekPair.PrivateKey)
+		zeroBytes(h.state.cekPair.PublicKey)
+		h.state.cekPair = nil
+		log.Debug().Msg("CEK pair cleared")
+	}
+
+	// Clear DEK if present
+	if h.state.dek != nil {
+		zeroBytes(h.state.dek)
+		h.state.dek = nil
+		log.Debug().Msg("DEK cleared")
+	}
+}
