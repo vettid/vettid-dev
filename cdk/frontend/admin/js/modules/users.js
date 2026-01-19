@@ -468,10 +468,19 @@ function appendStatusBadges(container, user) {
 // ============================================
 
 export function updateUsersSelectedCount() {
-  const checkboxes = document.querySelectorAll('.user-checkbox:checked');
+  // Only count checkboxes in the currently visible view (table or cards)
+  const tableContainer = document.getElementById('usersTableContainer');
+  const cardContainer = document.getElementById('usersCardContainer');
+  const isTableVisible = tableContainer && getComputedStyle(tableContainer).display !== 'none';
+  const container = isTableVisible ? tableContainer : cardContainer;
+  const checkboxes = container ? container.querySelectorAll('.user-checkbox:checked') : [];
   const count = checkboxes.length;
+
+  // Update bulk bar visibility and count
+  const bulkBar = document.getElementById('usersBulkBar');
   const countEl = document.getElementById('usersBulkCount');
-  if (countEl) countEl.textContent = count > 0 ? `${count} selected` : '';
+  if (bulkBar) bulkBar.classList.toggle('active', count > 0);
+  if (countEl) countEl.textContent = count;
 
   // Check selection states
   const hasPendingReg = Array.from(checkboxes).some(cb => cb.dataset.status === 'pending');
@@ -479,7 +488,7 @@ export function updateUsersSelectedCount() {
   const hasDisabled = Array.from(checkboxes).some(cb => cb.dataset.status === 'disabled');
   const hasRejected = Array.from(checkboxes).some(cb => cb.dataset.status === 'rejected');
 
-  // Enable/disable buttons
+  // Enable/disable buttons based on selection states
   const btns = {
     approve: document.getElementById('bulkApproveReg'),
     reject: document.getElementById('bulkRejectReg'),
@@ -488,11 +497,11 @@ export function updateUsersSelectedCount() {
     delete: document.getElementById('bulkDeleteUsers')
   };
 
-  if (btns.approve) btns.approve.disabled = count === 0 || !hasPendingReg;
-  if (btns.reject) btns.reject.disabled = count === 0 || !hasPendingReg;
-  if (btns.disable) btns.disable.disabled = count === 0 || !hasApproved;
-  if (btns.enable) btns.enable.disabled = count === 0 || !hasDisabled;
-  if (btns.delete) btns.delete.disabled = count === 0 || !(hasDisabled || hasRejected);
+  if (btns.approve) btns.approve.disabled = !hasPendingReg;
+  if (btns.reject) btns.reject.disabled = !hasPendingReg;
+  if (btns.disable) btns.disable.disabled = !hasApproved;
+  if (btns.enable) btns.enable.disabled = !hasDisabled;
+  if (btns.delete) btns.delete.disabled = !(hasDisabled || hasRejected);
 }
 
 // ============================================
@@ -890,9 +899,15 @@ export function openComposeEmailModal(useSelectedUsers = false) {
     emailMode = 'group';
     selectedEmailRecipients = [];
 
-    // Show recipient type selector
+    // Show recipient type selector and ensure it's visible
     if (recipientTypeSelect) {
-      recipientTypeSelect.parentElement.style.display = 'block';
+      const parent = recipientTypeSelect.parentElement;
+      if (parent) {
+        parent.style.display = 'block';
+        parent.style.visibility = 'visible';
+        parent.hidden = false;
+      }
+      recipientTypeSelect.style.display = 'block';
       recipientTypeSelect.value = '';
     }
   }
@@ -941,11 +956,12 @@ export async function sendEmail() {
   try {
     const payload = {
       subject,
-      body
+      body_html: `<html><body>${body.replace(/\n/g, '<br>')}</body></html>`,
+      body_text: body
     };
 
     if (emailMode === 'group') {
-      payload.recipient_group = recipientType;
+      payload.recipient_type = recipientType;
     } else {
       payload.recipients = selectedEmailRecipients;
     }

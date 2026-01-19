@@ -398,16 +398,20 @@ export async function cancelPendingAdmin(email) {
 export function updateAdminsBulkButtons() {
   const checkboxes = document.querySelectorAll('.admin-checkbox:checked');
   const count = checkboxes.length;
+
+  // Update bulk bar visibility and count
+  const bulkBar = document.getElementById('adminsBulkBar');
   const countEl = document.getElementById('adminsBulkCount');
-  if (countEl) countEl.textContent = count > 0 ? `${count} selected` : '';
+  if (bulkBar) bulkBar.classList.toggle('active', count > 0);
+  if (countEl) countEl.textContent = count;
 
   const hasEnabled = Array.from(checkboxes).some(cb => cb.dataset.enabled === 'true');
   const hasDisabled = Array.from(checkboxes).some(cb => cb.dataset.enabled === 'false');
 
   const disableBtn = document.getElementById('bulkDisableAdmins');
   const enableBtn = document.getElementById('bulkEnableAdmins');
-  if (disableBtn) disableBtn.disabled = count === 0 || !hasEnabled;
-  if (enableBtn) enableBtn.disabled = count === 0 || !hasDisabled;
+  if (disableBtn) disableBtn.disabled = !hasEnabled;
+  if (enableBtn) enableBtn.disabled = !hasDisabled;
 }
 
 export async function bulkDisableAdmins() {

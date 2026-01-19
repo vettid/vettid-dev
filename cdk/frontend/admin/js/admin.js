@@ -3001,15 +3001,24 @@ document.querySelectorAll('.proposal-filter').forEach(btn=>{
   };
 });
 
-document.getElementById('toggleProposalForm').onclick=()=>document.getElementById('createProposalModal').classList.add('active');
-document.getElementById('createProposalBtn').onclick=createProposal;
+const toggleProposalFormBtn = document.getElementById('toggleProposalForm');
+const createProposalBtn = document.getElementById('createProposalBtn');
+
+if (toggleProposalFormBtn) toggleProposalFormBtn.onclick = () => document.getElementById('createProposalModal')?.classList.add('active');
+if (createProposalBtn) createProposalBtn.onclick = createProposal;
 
 // Notification button handlers
-document.getElementById('addWaitlistNotification').onclick=()=>openAddNotificationModal('waitlist');
-document.getElementById('addUserNotification').onclick=()=>openAddNotificationModal('user');
-document.getElementById('addVoteNotification').onclick=()=>openAddNotificationModal('vote');
-document.getElementById('addHelpOfferNotification').onclick=()=>openAddNotificationModal('help_offer');
-document.getElementById('addSystemHealthNotification').onclick=()=>openAddNotificationModal('system_health');
+const addWaitlistBtn = document.getElementById('addWaitlistNotification');
+const addUserBtn = document.getElementById('addUserNotification');
+const addVoteBtn = document.getElementById('addVoteNotification');
+const addHelpOfferBtn = document.getElementById('addHelpOfferNotification');
+const addSystemHealthBtn = document.getElementById('addSystemHealthNotification');
+
+if (addWaitlistBtn) addWaitlistBtn.onclick = () => openAddNotificationModal('waitlist');
+if (addUserBtn) addUserBtn.onclick = () => openAddNotificationModal('user');
+if (addVoteBtn) addVoteBtn.onclick = () => openAddNotificationModal('vote');
+if (addHelpOfferBtn) addHelpOfferBtn.onclick = () => openAddNotificationModal('help_offer');
+if (addSystemHealthBtn) addSystemHealthBtn.onclick = () => openAddNotificationModal('system_health');
 
 // Proposal quorum type change handler (CSP-compliant - no inline handlers)
 const quorumTypeSelect = document.getElementById('proposalQuorumType');
@@ -6226,8 +6235,12 @@ document.getElementById('historyTypeFilter')?.addEventListener('change', loadBro
 async function loadSecurityEvents() {
   const range = document.getElementById('securityTimeRange')?.value || '24h';
   const severity = document.getElementById('securitySeverityFilter')?.value || 'all';
+  const container = document.getElementById('securityEventsList');
 
   try {
+    // Show loading state
+    if (container) container.textContent = 'Loading security events...';
+
     const data = await api(`/admin/security-events?range=${range}&severity=${severity}&limit=100`);
 
     // Update metrics

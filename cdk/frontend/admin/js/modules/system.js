@@ -262,7 +262,7 @@ export async function loadSystemLogs() {
 
 export async function loadSecurityEvents() {
   try {
-    const container = document.getElementById('securityEventsContent');
+    const container = document.getElementById('securityEventsList');
     if (!container) return;
 
     container.textContent = 'Loading...';
@@ -314,7 +314,7 @@ export async function loadSecurityEvents() {
     });
   } catch (e) {
     console.error('Error loading security events:', e);
-    const container = document.getElementById('securityEventsContent');
+    const container = document.getElementById('securityEventsList');
     if (container) container.textContent = 'Error loading events: ' + (e.message || e);
   }
 }
@@ -591,10 +591,144 @@ export async function loadVaultMetrics() {
 }
 
 // ============================================
-// Deployed Handlers (VettID-managed handlers)
+// Native Go Handlers (Built into Nitro Enclave)
 // ============================================
 
-let deployedHandlers = [];
+// Native handlers are compiled into the enclave binary - this is a static list
+// that reflects the handlers defined in vault-manager/messages.go
+const nativeHandlers = [
+  // Authentication & Security
+  {
+    id: 'authenticate',
+    name: 'Authentication',
+    description: 'Validates user credentials and establishes secure sessions within the enclave.',
+    category: 'Security',
+    icon: '🔐',
+    operations: ['validate', 'session']
+  },
+  {
+    id: 'pin',
+    name: 'PIN Management',
+    description: 'Secure PIN-based credential protection with setup, unlock, and change operations.',
+    category: 'Security',
+    icon: '🔑',
+    operations: ['setup', 'unlock', 'change']
+  },
+  {
+    id: 'unseal',
+    name: 'Credential Unsealing',
+    description: 'Decrypts and loads user credentials into secure enclave memory using KMS attestation.',
+    category: 'Security',
+    icon: '📂',
+    operations: ['unseal']
+  },
+  {
+    id: 'sign',
+    name: 'Cryptographic Signing',
+    description: 'Ed25519 digital signatures for authentication challenges and document signing.',
+    category: 'Security',
+    icon: '✍️',
+    operations: ['sign']
+  },
+
+  // Communication
+  {
+    id: 'message',
+    name: 'Secure Messaging',
+    description: 'End-to-end encrypted vault-to-vault messaging with read receipts.',
+    category: 'Communication',
+    icon: '💬',
+    operations: ['send', 'read-receipt']
+  },
+  {
+    id: 'notification',
+    name: 'Notifications',
+    description: 'Push notification delivery for profile updates, revocations, and alerts.',
+    category: 'Communication',
+    icon: '🔔',
+    operations: ['profile-broadcast', 'revoke-notify']
+  },
+  {
+    id: 'call',
+    name: 'WebRTC Calls',
+    description: 'Secure peer-to-peer video/audio calls with signaling and call history.',
+    category: 'Communication',
+    icon: '📞',
+    operations: ['start', 'accept', 'reject', 'end', 'signal', 'history']
+  },
+
+  // Data Management
+  {
+    id: 'secrets',
+    name: 'Secret Storage',
+    description: 'Encrypted storage for sensitive data like passwords, keys, and secure notes.',
+    category: 'Data',
+    icon: '🗝️',
+    operations: ['add', 'update', 'retrieve', 'delete', 'list']
+  },
+  {
+    id: 'profile',
+    name: 'Profile Management',
+    description: 'User profile data storage and retrieval with encrypted attributes.',
+    category: 'Data',
+    icon: '👤',
+    operations: ['get', 'update', 'delete']
+  },
+  {
+    id: 'credential',
+    name: 'Credential Operations',
+    description: 'Core credential lifecycle management including storage, sync, and versioning.',
+    category: 'Data',
+    icon: '🎫',
+    operations: ['store', 'sync', 'get', 'version']
+  },
+  {
+    id: 'backup',
+    name: 'Backup Operations',
+    description: 'Encrypted credential backup creation and restoration.',
+    category: 'Data',
+    icon: '💾',
+    operations: ['trigger', 'restore']
+  },
+
+  // Connections
+  {
+    id: 'connection',
+    name: 'Connection Management',
+    description: 'Manages trusted connections between vaults with invite creation and revocation.',
+    category: 'Connections',
+    icon: '🤝',
+    operations: ['create-invite', 'store-credentials', 'revoke', 'list', 'get']
+  },
+  {
+    id: 'block',
+    name: 'Block List',
+    description: 'Manages blocked users to prevent unwanted contact and messages.',
+    category: 'Connections',
+    icon: '🚫',
+    operations: ['add', 'remove']
+  },
+
+  // Governance
+  {
+    id: 'vote',
+    name: 'Voting',
+    description: 'Cryptographically signed voting for governance and verification proposals.',
+    category: 'Governance',
+    icon: '🗳️',
+    operations: ['cast']
+  },
+
+  // Bootstrap
+  {
+    id: 'bootstrap',
+    name: 'Bootstrap',
+    description: 'Initial vault setup and configuration during enrollment.',
+    category: 'System',
+    icon: '🚀',
+    operations: ['initialize']
+  }
+];
 
 export async function loadDeployedHandlers() {
   if (!isAdmin()) return;
@@ -602,60 +736,40 @@ export async function loadDeployedHandlers() {
   const grid = document.getElementById('deployedHandlersGrid');
   if (!grid) return;
 
-  // Show loading state
-  grid.replaceChildren();
-  const loadingDiv = document.createElement('div');
-  loadingDiv.style.cssText = 'grid-column:1/-1;padding:40px;text-align:center;color:var(--gray);';
-  loadingDiv.textContent = 'Loading deployed handlers...';
-  grid.appendChild(loadingDiv);
-
-  try {
-    const response = await api('/admin/handlers/deployed');
-    deployedHandlers = response.handlers || [];
-    renderDeployedHandlers();
-  } catch (err) {
-    console.error('Error loading deployed handlers:', err);
-    grid.replaceChildren();
-    const errorDiv = document.createElement('div');
-    errorDiv.style.cssText = 'grid-column:1/-1;padding:40px;text-align:center;color:#ef4444;';
-    errorDiv.textContent = 'Error loading handlers: ' + (err.message || err);
-    grid.appendChild(errorDiv);
-    showToast('Failed to load deployed handlers', 'error');
-  }
+  // Native handlers are static - no API call needed
+  renderDeployedHandlers();
 }
 
 function renderDeployedHandlers() {
   const grid = document.getElementById('deployedHandlersGrid');
   const countEl = document.getElementById('deployedHandlersCount');
 
-  if (countEl) countEl.textContent = deployedHandlers.length;
+  if (countEl) countEl.textContent = nativeHandlers.length;
 
   grid.replaceChildren();
 
-  if (deployedHandlers.length === 0) {
-    const emptyDiv = document.createElement('div');
-    emptyDiv.style.cssText = 'grid-column:1/-1;padding:40px;text-align:center;color:var(--gray);';
-    const iconDiv = document.createElement('div');
-    iconDiv.style.cssText = 'font-size:2rem;margin-bottom:8px;';
-    iconDiv.textContent = '📦';
-    const textDiv = document.createElement('div');
-    textDiv.textContent = 'No VettID handlers deployed yet';
-    emptyDiv.append(iconDiv, textDiv);
-    grid.appendChild(emptyDiv);
-    return;
-  }
+  // Group handlers by category
+  const categories = {};
+  nativeHandlers.forEach(h => {
+    if (!categories[h.category]) categories[h.category] = [];
+    categories[h.category].push(h);
+  });
 
-  deployedHandlers.forEach(h => {
-    const card = createHandlerCard(h);
-    grid.appendChild(card);
+  // Render each category
+  Object.keys(categories).forEach(category => {
+    const categoryHeader = document.createElement('div');
+    categoryHeader.style.cssText = 'grid-column:1/-1;padding:16px 0 8px 0;font-weight:600;color:var(--text);font-size:0.9rem;border-bottom:1px solid var(--border);margin-bottom:8px;';
+    categoryHeader.textContent = category;
+    grid.appendChild(categoryHeader);
+
+    categories[category].forEach(h => {
+      const card = createNativeHandlerCard(h);
+      grid.appendChild(card);
+    });
   });
 }
 
-function createHandlerCard(h) {
-  // Status colors: signed = green, revoked = red, pending = yellow
-  const statusColor = h.status === 'signed' ? '#10b981' : h.status === 'revoked' ? '#ef4444' : h.status === 'pending' ? '#f59e0b' : '#6b7280';
-  const statusLabel = h.status === 'signed' ? 'Deployed' : h.status;
-
+function createNativeHandlerCard(h) {
   const card = document.createElement('div');
   card.className = 'handler-card';
   card.style.cssText = 'padding:20px;background:#050505;border-radius:12px;border:1px solid var(--border);transition:border-color 0.2s;';
@@ -665,7 +779,7 @@ function createHandlerCard(h) {
   header.style.cssText = 'display:flex;align-items:start;gap:12px;margin-bottom:12px;';
 
   const iconDiv = document.createElement('div');
-  iconDiv.style.cssText = 'width:48px;height:48px;background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:1.5rem;';
+  iconDiv.style.cssText = 'width:48px;height:48px;background:linear-gradient(135deg,#10b981 0%,#059669 100%);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:1.5rem;';
   iconDiv.textContent = h.icon || '📦';
 
   const infoDiv = document.createElement('div');
@@ -673,52 +787,41 @@ function createHandlerCard(h) {
 
   const nameDiv = document.createElement('div');
   nameDiv.style.cssText = 'font-weight:600;color:var(--text);margin-bottom:2px;';
-  nameDiv.textContent = h.name || h.handler_id;
+  nameDiv.textContent = h.name;
 
   const idDiv = document.createElement('div');
   idDiv.style.cssText = 'font-size:0.8rem;color:var(--gray);font-family:monospace;';
-  idDiv.textContent = h.handler_id;
+  idDiv.textContent = h.id;
 
   infoDiv.append(nameDiv, idDiv);
 
-  const statusDot = document.createElement('span');
-  statusDot.style.cssText = `display:inline-block;width:10px;height:10px;border-radius:50%;background:${statusColor};`;
-  statusDot.title = statusLabel;
+  // Native badge
+  const nativeBadge = document.createElement('span');
+  nativeBadge.style.cssText = 'display:inline-block;padding:4px 8px;border-radius:8px;font-size:0.65rem;font-weight:600;background:linear-gradient(135deg,#10b981 0%,#059669 100%);color:#fff;';
+  nativeBadge.textContent = 'NATIVE';
 
-  header.append(iconDiv, infoDiv, statusDot);
+  header.append(iconDiv, infoDiv, nativeBadge);
   card.appendChild(header);
 
   // Description
   const descP = document.createElement('p');
-  descP.style.cssText = 'margin:0 0 12px 0;color:var(--gray);font-size:0.85rem;line-height:1.4;min-height:40px;';
-  const desc = h.description || 'No description';
-  descP.textContent = desc.length > 100 ? desc.substring(0, 100) + '...' : desc;
+  descP.style.cssText = 'margin:0 0 12px 0;color:var(--gray);font-size:0.85rem;line-height:1.4;';
+  descP.textContent = h.description;
   card.appendChild(descP);
 
-  // Version and category
-  const metaDiv = document.createElement('div');
-  metaDiv.style.cssText = 'display:flex;gap:8px;align-items:center;';
+  // Operations
+  if (h.operations && h.operations.length > 0) {
+    const opsDiv = document.createElement('div');
+    opsDiv.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;';
 
-  const versionCode = document.createElement('code');
-  versionCode.style.cssText = 'background:var(--bg-card);padding:4px 8px;border-radius:4px;font-size:0.8rem;color:var(--accent);';
-  versionCode.textContent = 'v' + (h.version || '1.0.0');
-  metaDiv.appendChild(versionCode);
+    h.operations.forEach(op => {
+      const opTag = document.createElement('code');
+      opTag.style.cssText = 'background:#1a1a1a;padding:3px 6px;border-radius:4px;font-size:0.7rem;color:var(--accent);';
+      opTag.textContent = op;
+      opsDiv.appendChild(opTag);
+    });
 
-  if (h.category) {
-    const categorySpan = document.createElement('span');
-    categorySpan.style.cssText = 'background:#222;padding:4px 8px;border-radius:4px;font-size:0.75rem;color:var(--gray);';
-    categorySpan.textContent = h.category;
-    metaDiv.appendChild(categorySpan);
-  }
-
-  card.appendChild(metaDiv);
-
-  // Install count
-  if (h.install_count > 0) {
-    const installDiv = document.createElement('div');
-    installDiv.style.cssText = 'margin-top:8px;font-size:0.75rem;color:var(--gray);';
-    installDiv.textContent = '📥 ' + h.install_count + ' installs';
-    card.appendChild(installDiv);
+    card.appendChild(opsDiv);
   }
 
   return card;
@@ -742,6 +845,187 @@ export function setupHandlersEventHandlers() {
       loadDeployedHandlers();
     });
   });
+}
+
+// ============================================
+// Notification Management
+// ============================================
+
+const NOTIFICATION_TYPES = {
+  'waitlist': 'Waitlist',
+  'user': 'User',
+  'vote': 'Vote',
+  'help_offer': 'Help Offer',
+  'system_health': 'System Health'
+};
+
+// State for notification admin selection
+let currentNotificationType = null;
+let availableNotificationAdmins = [];
+
+export async function loadNotifications(type) {
+  try {
+    const data = await api(`/admin/notifications/${type}`);
+    renderNotifications(type, data.admins || []);
+  } catch (error) {
+    console.error(`Error loading ${type} notifications:`, error);
+    showToast(`Failed to load ${NOTIFICATION_TYPES[type]} notifications`, 'error');
+  }
+}
+
+function renderNotifications(type, admins) {
+  const containerId = `${type}NotificationsList`;
+  const container = document.getElementById(containerId);
+
+  if (!container) return;
+
+  // Clear existing content
+  container.replaceChildren();
+
+  if (admins.length === 0) {
+    const emptyMsg = document.createElement('p');
+    emptyMsg.style.cssText = 'color:var(--gray);font-size:0.9rem;margin:0;';
+    emptyMsg.textContent = 'No admins assigned yet.';
+    container.appendChild(emptyMsg);
+    return;
+  }
+
+  admins.forEach(email => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;background:var(--bg-card);border:1px solid var(--border);border-radius:6px;padding:10px 14px;margin-bottom:8px;';
+
+    const emailSpan = document.createElement('span');
+    emailSpan.style.cssText = 'color:var(--text);font-size:0.9rem;';
+    emailSpan.textContent = email;
+
+    const removeBtn = document.createElement('button');
+    removeBtn.className = 'btn';
+    removeBtn.setAttribute('data-action', 'remove-notification');
+    removeBtn.setAttribute('data-type', type);
+    removeBtn.setAttribute('data-email', email);
+    removeBtn.style.cssText = 'background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);padding:6px 12px;font-size:0.85rem;';
+    removeBtn.textContent = 'Remove';
+
+    row.append(emailSpan, removeBtn);
+    container.appendChild(row);
+  });
+}
+
+export async function openAddNotificationModal(type) {
+  const typeName = NOTIFICATION_TYPES[type];
+  currentNotificationType = type;
+
+  try {
+    const adminData = await api('/admin/admins');
+    const allAdmins = adminData.admins || [];
+
+    const notifData = await api(`/admin/notifications/${type}`);
+    const assignedEmails = (notifData.admins || []);
+
+    availableNotificationAdmins = allAdmins.filter(a => !assignedEmails.includes(a.email));
+
+    if (availableNotificationAdmins.length === 0) {
+      showToast(`All admins are already assigned to ${typeName} notifications`, 'info');
+      return;
+    }
+
+    const modal = document.getElementById('selectNotificationAdminModal');
+    const modalTitle = document.getElementById('selectNotificationAdminTitle');
+    const adminList = document.getElementById('notificationAdminList');
+
+    modalTitle.textContent = `Add Admin to ${typeName} Notifications`;
+
+    adminList.replaceChildren();
+    availableNotificationAdmins.forEach(admin => {
+      const name = `${admin.given_name || ''} ${admin.family_name || ''}`.trim() || admin.email;
+      const option = document.createElement('div');
+      option.className = 'modal-option';
+      option.onclick = () => handleSelectNotificationAdmin(admin.email);
+
+      const titleDiv = document.createElement('div');
+      titleDiv.className = 'modal-option-title';
+      titleDiv.textContent = name;
+
+      const descDiv = document.createElement('div');
+      descDiv.className = 'modal-option-desc';
+      descDiv.textContent = admin.email;
+
+      option.append(titleDiv, descDiv);
+      adminList.appendChild(option);
+    });
+
+    modal.classList.add('active');
+
+  } catch (error) {
+    console.error('Error loading admins for notification:', error);
+    showToast(`Failed to load available admins`, 'error');
+  }
+}
+
+export function closeSelectNotificationAdminModal() {
+  document.getElementById('selectNotificationAdminModal')?.classList.remove('active');
+  currentNotificationType = null;
+  availableNotificationAdmins = [];
+}
+
+async function handleSelectNotificationAdmin(email) {
+  if (!currentNotificationType) return;
+
+  const typeName = NOTIFICATION_TYPES[currentNotificationType];
+
+  try {
+    await api(`/admin/notifications/${currentNotificationType}`, {
+      method: 'POST',
+      body: JSON.stringify({ admin_email: email })
+    });
+    showToast(`Added ${email} to ${typeName} notifications`, 'success');
+    await loadNotifications(currentNotificationType);
+    closeSelectNotificationAdminModal();
+  } catch (error) {
+    console.error('Error adding notification:', error);
+    showToast(`Failed to add admin to ${typeName} notifications`, 'error');
+  }
+}
+
+export async function removeNotification(type, email) {
+  const typeName = NOTIFICATION_TYPES[type];
+
+  if (!confirm(`Remove ${email} from ${typeName} notifications?`)) return;
+
+  try {
+    await api(`/admin/notifications/${type}/${encodeURIComponent(email)}`, 'DELETE');
+    showToast(`Removed ${email} from ${typeName} notifications`, 'success');
+    loadNotifications(type);
+  } catch (error) {
+    console.error('Error removing notification:', error);
+    showToast(`Failed to remove admin from ${typeName} notifications`, 'error');
+  }
+}
+
+export function loadAllNotifications() {
+  loadNotifications('waitlist');
+  loadNotifications('user');
+  loadNotifications('vote');
+  loadNotifications('help_offer');
+  loadNotifications('system_health');
+}
+
+export function setupNotificationEventHandlers() {
+  const addWaitlistBtn = document.getElementById('addWaitlistNotification');
+  const addUserBtn = document.getElementById('addUserNotification');
+  const addVoteBtn = document.getElementById('addVoteNotification');
+  const addHelpOfferBtn = document.getElementById('addHelpOfferNotification');
+  const addSystemHealthBtn = document.getElementById('addSystemHealthNotification');
+
+  if (addWaitlistBtn) addWaitlistBtn.onclick = () => openAddNotificationModal('waitlist');
+  if (addUserBtn) addUserBtn.onclick = () => openAddNotificationModal('user');
+  if (addVoteBtn) addVoteBtn.onclick = () => openAddNotificationModal('vote');
+  if (addHelpOfferBtn) addHelpOfferBtn.onclick = () => openAddNotificationModal('help_offer');
+  if (addSystemHealthBtn) addSystemHealthBtn.onclick = () => openAddNotificationModal('system_health');
+
+  // Close modal button
+  const closeBtn = document.getElementById('closeSelectNotificationAdmin');
+  if (closeBtn) closeBtn.onclick = closeSelectNotificationAdminModal;
 }
 
 // ============================================

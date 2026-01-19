@@ -107,7 +107,8 @@ import {
   closeCreateSubscriptionTypeModal,
   loadAllSubscriptions,
   renderSubscriptions,
-  setupMembershipEventHandlers
+  setupMembershipEventHandlers,
+  updateSubscriptionAnalytics
 } from './membership.js';
 
 import {
@@ -132,7 +133,13 @@ import {
   loadVaultMetrics,
   loadDeployedHandlers,
   loadHandlers,
-  setupHandlersEventHandlers
+  setupHandlersEventHandlers,
+  loadAllNotifications,
+  loadNotifications,
+  openAddNotificationModal,
+  closeSelectNotificationAdminModal,
+  removeNotification,
+  setupNotificationEventHandlers
 } from './system.js';
 
 import {
@@ -678,6 +685,10 @@ function loadSubTabData(subTab) {
     case 'subscription-types':
       loadSubscriptionTypes();
       break;
+    case 'subscription-analytics':
+      // Analytics uses data from subscriptions, use cached data if available
+      loadAllSubscriptions(false).then(() => updateSubscriptionAnalytics());
+      break;
     case 'membership-terms':
       loadCurrentTerms();
       break;
@@ -694,6 +705,9 @@ function loadSubTabData(subTab) {
       loadSecurityEvents();
       loadRecoveryRequests();
       loadDeletionRequests();
+      break;
+    case 'notifications':
+      loadAllNotifications();
       break;
   }
 }
@@ -844,6 +858,14 @@ function setupEventDelegation() {
       'openCsvImportModal': openCsvImportModal,
       'closeCsvImportModal': closeCsvImportModal,
 
+      // Notifications
+      'remove-notification': () => {
+        const type = target.dataset.type;
+        const email = target.dataset.email;
+        if (type && email) removeNotification(type, email);
+      },
+      'closeSelectNotificationAdminModal': closeSelectNotificationAdminModal,
+
       'stop-propagation': () => {
         e.stopPropagation();
       }
@@ -985,6 +1007,177 @@ function setupIdleTracking() {
   });
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Communications / Email Functions
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function loadSentEmails() {
+  if (!signedIn()) return;
+
+  const list = document.getElementById('sentEmailsList');
+  if (!list) return;
+
+  // Show loading
+  list.replaceChildren();
+  const loadingP = document.createElement('p');
+  loadingP.className = 'muted';
+  loadingP.style.cssText = 'text-align:center;padding:20px;';
+  loadingP.textContent = 'Loading sent emails...';
+  list.appendChild(loadingP);
+
+  try {
+    const emails = await api('/admin/sent-emails');
+
+    list.replaceChildren();
+
+    if (!emails || emails.length === 0) {
+      const emptyP = document.createElement('p');
+      emptyP.className = 'muted';
+      emptyP.style.cssText = 'text-align:center;padding:20px;';
+      emptyP.textContent = 'No emails sent yet';
+      list.appendChild(emptyP);
+      return;
+    }
+
+    // Display emails (newest first) using safe DOM methods
+    emails.forEach(email => {
+      const sentDate = new Date(email.sent_at).toLocaleString();
+      const recipientLabel = {
+        'waitlist': 'Waitlisted Users',
+        'registered': 'Registered Users',
+        'members': 'Members',
+        'subscribers': 'Subscribers'
+      }[email.recipient_type] || email.recipient_type;
+
+      const card = document.createElement('div');
+      card.style.cssText = 'background:var(--bg-input);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:12px;';
+
+      const header = document.createElement('div');
+      header.style.cssText = 'display:flex;justify-content:space-between;align-items:start;margin-bottom:8px;flex-wrap:wrap;gap:8px;';
+
+      const info = document.createElement('div');
+      info.style.cssText = 'flex:1;min-width:200px;';
+
+      const title = document.createElement('h4');
+      title.style.cssText = 'margin:0 0 4px 0;font-size:1rem;';
+      title.textContent = email.subject;
+
+      const recipient = document.createElement('p');
+      recipient.className = 'muted';
+      recipient.style.cssText = 'font-size:0.85rem;margin:0;';
+      recipient.textContent = 'To: ';
+      const recipientStrong = document.createElement('strong');
+      recipientStrong.textContent = recipientLabel;
+      recipient.appendChild(recipientStrong);
+
+      info.append(title, recipient);
+
+      const badge = document.createElement('span');
+      badge.style.cssText = 'background:#10b981;color:#fff;padding:4px 10px;border-radius:12px;font-size:0.75rem;font-weight:600;';
+      badge.textContent = `${email.recipient_count || 0} recipients`;
+
+      header.append(info, badge);
+
+      const meta = document.createElement('div');
+      meta.style.cssText = 'font-size:0.85rem;color:var(--gray);margin-bottom:8px;';
+      meta.textContent = `Sent: ${sentDate} | By: ${email.sent_by || 'Unknown'}`;
+
+      const details = document.createElement('details');
+      details.style.marginTop = '12px';
+
+      const summary = document.createElement('summary');
+      summary.style.cssText = 'cursor:pointer;color:var(--accent);font-size:0.9rem;font-weight:600;';
+      summary.textContent = 'View Message';
+
+      const content = document.createElement('div');
+      content.style.cssText = 'margin-top:12px;padding:12px;background:var(--bg-card);border-radius:4px;border:1px solid var(--border);font-size:0.9rem;max-height:300px;overflow-y:auto;white-space:pre-wrap;';
+      content.textContent = email.body_text || email.body_html?.replace(/<[^>]*>/g, '') || '';
+
+      details.append(summary, content);
+      card.append(header, meta, details);
+      list.appendChild(card);
+    });
+
+  } catch (err) {
+    console.error('Error loading sent emails:', err);
+    list.replaceChildren();
+    const errorP = document.createElement('p');
+    errorP.className = 'muted';
+    errorP.style.cssText = 'text-align:center;padding:20px;color:var(--error);';
+    errorP.textContent = 'Error loading sent emails. Please try again.';
+    list.appendChild(errorP);
+  }
+}
+
+async function sendBulkEmail() {
+  const recipientType = document.getElementById('emailRecipientType')?.value;
+  const subject = document.getElementById('emailSubject')?.value.trim();
+  const body = document.getElementById('emailBody')?.value.trim();
+
+  // Validation
+  if (!recipientType) {
+    showToast('Please select a recipient group', 'error');
+    return;
+  }
+  if (!subject) {
+    showToast('Please enter an email subject', 'error');
+    return;
+  }
+  if (!body) {
+    showToast('Please enter an email message', 'error');
+    return;
+  }
+
+  // Confirm before sending
+  const recipientLabel = {
+    'waitlist': 'all waitlisted users',
+    'registered': 'all registered users',
+    'members': 'all members',
+    'subscribers': 'all subscribers'
+  }[recipientType];
+
+  const confirmed = await openGenericConfirmModal(
+    'Send Bulk Email',
+    `Send this email to ${recipientLabel}? This action cannot be undone.`,
+    'Send Email',
+    'Cancel',
+    false
+  );
+  if (!confirmed) return;
+
+  const btn = document.getElementById('sendBulkEmail');
+  const originalText = btn?.textContent || 'Send';
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Sending...';
+  }
+
+  try {
+    const data = await api('/admin/send-bulk-email', {
+      method: 'POST',
+      body: JSON.stringify({
+        recipient_type: recipientType,
+        subject,
+        body_html: body,
+        body_text: body.replace(/<[^>]*>/g, '') // Strip HTML for text version
+      })
+    });
+
+    showToast(`Email sent successfully to ${data.recipient_count || 0} recipients!`, 'success');
+    closeComposeEmailModal();
+    await loadSentEmails();
+
+  } catch (err) {
+    console.error('Error sending email:', err);
+    showToast(err.message || 'Failed to send email', 'error');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = originalText;
+    }
+  }
+}
+
 function setupCommunicationsTabSwitching() {
   // Communications sub-tab switching (Email Broadcast / Vault Broadcast / History)
   document.querySelectorAll('.comm-tab').forEach(tab => {
@@ -1003,11 +1196,21 @@ function setupCommunicationsTabSwitching() {
       const panel = document.getElementById(`${targetPanel}-panel`);
       if (panel) panel.style.display = 'block';
 
-      // Load data for history panel if needed
-      if (targetPanel === 'broadcast-history' && typeof loadBroadcastHistory === 'function') {
-        loadBroadcastHistory();
+      // Load data for history panel
+      if (targetPanel === 'broadcast-history') {
+        loadSentEmails();
       }
     });
+  });
+
+  // Compose email modal
+  document.getElementById('openComposeEmailBtn')?.addEventListener('click', openComposeEmailModal);
+  document.getElementById('sendBulkEmail')?.addEventListener('click', sendBulkEmail);
+  document.getElementById('refreshSentEmails')?.addEventListener('click', loadSentEmails);
+
+  // Close compose modal on data-action
+  document.querySelectorAll('[data-action="closeComposeEmailModal"]').forEach(el => {
+    el.addEventListener('click', closeComposeEmailModal);
   });
 
   // Broadcast type description updates
@@ -1059,6 +1262,7 @@ document.addEventListener('DOMContentLoaded', () => {
   setupProposalEventHandlers();
   setupServicesEventHandlers();
   setupHandlersEventHandlers();
+  setupNotificationEventHandlers();
   setupWaitlistEventHandlers();
   setupHelpRequestsEventHandlers();
   setupCommunicationsTabSwitching();
@@ -1168,10 +1372,10 @@ function setupRefreshButtons() {
     genericConfirmBtn.onclick = () => closeGenericConfirmModal(true);
   }
 
-  // Refresh analytics button
+  // Refresh subscription analytics button
   const refreshAnalyticsBtn = document.getElementById('refreshAnalyticsBtn');
   if (refreshAnalyticsBtn) {
-    refreshAnalyticsBtn.onclick = () => loadSystemHealth();
+    refreshAnalyticsBtn.onclick = () => loadAllSubscriptions(true).then(() => updateSubscriptionAnalytics());
   }
 
   // Refresh vault metrics button
@@ -1267,18 +1471,12 @@ function setupWaitlistEventHandlers() {
 function updateWaitlistSelectedCount() {
   const checkboxes = document.querySelectorAll('.waitlist-checkbox:checked');
   const count = checkboxes.length;
-  const countText = count > 0 ? `${count} selected` : '';
 
+  // Update bulk bar visibility and count
+  const bulkBar = document.getElementById('waitlistBulkBar');
   const countEl = document.getElementById('selectedWaitlistCount');
-  if (countEl) countEl.textContent = countText;
-
-  const sendBtn = document.getElementById('sendInvitesBtn');
-  const rejectBtn = document.getElementById('rejectWaitlistBtn');
-  const deleteBtn = document.getElementById('deleteWaitlistBtn');
-
-  if (sendBtn) sendBtn.disabled = count === 0;
-  if (rejectBtn) rejectBtn.disabled = count === 0;
-  if (deleteBtn) deleteBtn.disabled = count === 0;
+  if (bulkBar) bulkBar.classList.toggle('active', count > 0);
+  if (countEl) countEl.textContent = count;
 }
 
 let pendingInviteWaitlistIds = [];

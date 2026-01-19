@@ -79,6 +79,37 @@ export async function loadInvites(resetPage = true) {
 }
 
 // ============================================
+// Badge Count Updates
+// ============================================
+
+function updateInviteBadgeCounts(now) {
+  let activeCt = 0, expiringSoonCt = 0, usedCt = 0;
+
+  store.invites.forEach(i => {
+    const expiresParsed = parseTimestamp(i.expires_at);
+    const expiresAt = expiresParsed ? expiresParsed.getTime() : null;
+    const daysLeft = expiresAt ? Math.ceil((expiresAt - now) / (1000 * 60 * 60 * 24)) : null;
+    const isExpired = expiresAt && expiresAt < now;
+    const isExpiringSoon = daysLeft && daysLeft < 7 && daysLeft > 0;
+
+    if (i.status === 'exhausted' || i.status === 'expired' || isExpired) {
+      usedCt++;
+    } else if (i.status === 'active' || i.status === 'new') {
+      activeCt++;
+      if (isExpiringSoon) expiringSoonCt++;
+    }
+  });
+
+  const activeEl = document.getElementById('activeInvitesCount');
+  const expiringEl = document.getElementById('expiringSoonInvitesCount');
+  const usedEl = document.getElementById('usedInvitesCount');
+
+  if (activeEl) activeEl.textContent = activeCt;
+  if (expiringEl) expiringEl.textContent = expiringSoonCt;
+  if (usedEl) usedEl.textContent = usedCt;
+}
+
+// ============================================
 // Invite Rendering
 // ============================================
 
@@ -88,6 +119,9 @@ export function renderInvites() {
 
   tbody.replaceChildren();
   const now = Date.now();
+
+  // Update badge counts
+  updateInviteBadgeCounts(now);
 
   // Apply filters
   let filtered = store.invites.filter(i => {
@@ -282,10 +316,19 @@ function highlightCell(cell, text, searchTerm) {
 // ============================================
 
 export function updateInvitesSelectedCount() {
-  const checkboxes = document.querySelectorAll('.invites-checkbox:checked');
+  // Only count checkboxes in the currently visible view (table or cards)
+  const tableContainer = document.getElementById('invitesTableContainer');
+  const cardContainer = document.getElementById('invitesCardContainer');
+  const isTableVisible = tableContainer && getComputedStyle(tableContainer).display !== 'none';
+  const container = isTableVisible ? tableContainer : cardContainer;
+  const checkboxes = container ? container.querySelectorAll('.invites-checkbox:checked') : [];
   const count = checkboxes.length;
+
+  // Update bulk bar visibility and count
+  const bulkBar = document.getElementById('invitesBulkBar');
   const countEl = document.getElementById('invitesSelectedCount');
-  if (countEl) countEl.textContent = count > 0 ? `${count} selected` : '';
+  if (bulkBar) bulkBar.classList.toggle('active', count > 0);
+  if (countEl) countEl.textContent = count;
 
   const statuses = Array.from(checkboxes).map(cb => cb.getAttribute('data-status'));
   const hasActive = statuses.includes('active');
@@ -293,7 +336,7 @@ export function updateInvitesSelectedCount() {
   const expireBtn = document.getElementById('bulkExpireInvites');
   const deleteBtn = document.getElementById('bulkDeleteInvites');
   if (expireBtn) expireBtn.disabled = !hasActive;
-  if (deleteBtn) deleteBtn.disabled = count === 0;
+  // Delete is always enabled when items selected
 }
 
 // ============================================

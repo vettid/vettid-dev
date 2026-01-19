@@ -487,6 +487,44 @@ export function setupHelpRequestsEventHandlers() {
   // Save button handler
   document.getElementById('saveHelpRequest')?.addEventListener('click', saveHelpRequest);
 
+  // Quick action buttons in detail modal
+  document.getElementById('helpCopyEmail')?.addEventListener('click', () => {
+    if (currentHelpRequest?.email) {
+      navigator.clipboard.writeText(currentHelpRequest.email);
+      showToast('Email copied to clipboard', 'success');
+    }
+  });
+
+  document.getElementById('helpCopyPhone')?.addEventListener('click', () => {
+    if (currentHelpRequest?.phone) {
+      navigator.clipboard.writeText(currentHelpRequest.phone);
+      showToast('Phone copied to clipboard', 'success');
+    }
+  });
+
+  document.getElementById('helpSendEmail')?.addEventListener('click', () => {
+    if (currentHelpRequest?.email) {
+      // Open default mail client with pre-filled email
+      window.location.href = 'mailto:' + encodeURIComponent(currentHelpRequest.email);
+    }
+  });
+
+  document.getElementById('helpQuickArchive')?.addEventListener('click', async () => {
+    if (currentHelpRequest) {
+      try {
+        await api('/admin/help-requests/' + currentHelpRequest.request_id, {
+          method: 'PATCH',
+          body: JSON.stringify({ status: 'archived' }),
+        });
+        showToast('Help offer archived', 'success');
+        closeHelpDetailModal();
+        loadHelpRequests(false);
+      } catch (e) {
+        showToast('Error: ' + (e.message || e), 'error');
+      }
+    }
+  });
+
   // Select all checkbox
   const selectAllHelp = document.getElementById('selectAllHelp');
   if (selectAllHelp) {
@@ -511,11 +549,12 @@ export function setupHelpRequestsEventHandlers() {
 export function updateHelpSelectedCount() {
   const checkboxes = document.querySelectorAll('.help-checkbox:checked');
   const count = checkboxes.length;
-  const countEl = document.getElementById('helpBulkCount');
-  const bulkBar = document.getElementById('helpBulkBar');
 
-  if (countEl) countEl.textContent = count > 0 ? `${count} selected` : '';
-  if (bulkBar) bulkBar.style.display = count > 0 ? 'flex' : 'none';
+  // Update bulk bar visibility and count
+  const bulkBar = document.getElementById('helpBulkBar');
+  const countEl = document.getElementById('helpBulkCount');
+  if (bulkBar) bulkBar.classList.toggle('active', count > 0);
+  if (countEl) countEl.textContent = count;
 
   // Update select all checkbox state
   const selectAll = document.getElementById('selectAllHelp');

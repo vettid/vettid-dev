@@ -41,7 +41,20 @@ export async function loadAllProposalsAdmin() {
       api('/admin/subscriptions?status=active')
     ]);
 
-    allProposalsData = { active, upcoming, closed };
+    // Deduplicate proposals by proposal_id (safety check)
+    const dedup = (arr) => {
+      const seen = new Set();
+      return arr.filter(p => {
+        if (seen.has(p.proposal_id)) return false;
+        seen.add(p.proposal_id);
+        return true;
+      });
+    };
+    allProposalsData = {
+      active: dedup(active),
+      upcoming: dedup(upcoming),
+      closed: dedup(closed)
+    };
     totalActiveSubscribers = (subsData.subscriptions || []).length;
 
     // Update counts
@@ -473,9 +486,16 @@ async function createClosedTile(p) {
         showToast('Results published successfully!', 'success');
         await loadAllProposalsAdmin(); // Refresh to show updated tile
       } catch (e) {
-        showToast('Failed to publish results: ' + (e.message || e), 'error');
-        publishBtn.disabled = false;
-        publishBtn.textContent = 'Publish Results';
+        // If already published (by auto-publish), just refresh the view
+        const errMsg = (e.message || String(e)).toLowerCase();
+        if (errMsg.includes('already') || errMsg.includes('published')) {
+          showToast('Results were already published. Refreshing...', 'info');
+          await loadAllProposalsAdmin();
+        } else {
+          showToast('Failed to publish results: ' + (e.message || e), 'error');
+          publishBtn.disabled = false;
+          publishBtn.textContent = 'Publish Results';
+        }
       }
     };
     tile.appendChild(publishBtn);
@@ -568,7 +588,11 @@ export async function loadProposalAnalytics(proposalId, status) {
       headers: { 'Authorization': `Bearer ${token}` }
     });
 
-    if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+    if (!res.ok) {
+      const errorText = await res.text().catch(() => 'No error body');
+      console.error('Proposal analytics error:', res.status, errorText);
+      throw new Error(`HTTP ${res.status}: ${res.statusText} - ${errorText.substring(0, 200)}`);
+    }
 
     const voteData = await res.json();
     const total = voteData.totalVotes || 0;

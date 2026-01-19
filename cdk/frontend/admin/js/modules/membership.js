@@ -368,10 +368,35 @@ export function renderSubscriptionTypes() {
   if (!container) return;
 
   const types = store.subscriptionTypes || [];
+
+  // Update badge counts
+  const enabledCount = types.filter(t => t.is_enabled === true || t.is_enabled === 'true').length;
+  const paidCount = types.filter(t => parseFloat(t.price) > 0).length;
+  const freeCount = types.filter(t => !t.price || parseFloat(t.price) === 0).length;
+
+  const enabledCountEl = document.getElementById('enabledTypesCount');
+  const allCountEl = document.getElementById('allTypesCount');
+  const paidCountEl = document.getElementById('paidTypesCount');
+  const freeCountEl = document.getElementById('freeTypesCount');
+
+  if (enabledCountEl) enabledCountEl.textContent = enabledCount;
+  if (allCountEl) allCountEl.textContent = types.length;
+  if (paidCountEl) paidCountEl.textContent = paidCount;
+  if (freeCountEl) freeCountEl.textContent = freeCount;
+
   let filtered = types;
-  if (subscriptionTypesFilter === 'enabled') {
-    // Handle both boolean and string 'true'/'false' values
-    filtered = types.filter(t => t.is_enabled === true || t.is_enabled === 'true');
+  switch (subscriptionTypesFilter) {
+    case 'enabled':
+      // Handle both boolean and string 'true'/'false' values
+      filtered = types.filter(t => t.is_enabled === true || t.is_enabled === 'true');
+      break;
+    case 'paid':
+      filtered = types.filter(t => parseFloat(t.price) > 0);
+      break;
+    case 'free':
+      filtered = types.filter(t => !t.price || parseFloat(t.price) === 0);
+      break;
+    // 'all' - no filtering
   }
 
   container.replaceChildren();
@@ -541,23 +566,30 @@ export async function createSubscriptionType() {
 
 export function filterSubscriptionTypes(filter) {
   subscriptionTypesFilter = filter;
-  // Update button styles - remove active from both, add to selected
-  const enabledBtn = document.getElementById('filterEnabledTypes');
-  const allBtn = document.getElementById('filterAllTypes');
 
-  if (enabledBtn && allBtn) {
-    if (filter === 'enabled') {
-      enabledBtn.classList.add('active');
-      enabledBtn.style.background = 'linear-gradient(135deg,#10b981 0%,#059669 100%)';
-      allBtn.classList.remove('active');
-      allBtn.style.background = 'linear-gradient(135deg,#6b7280 0%,#4b5563 100%)';
-    } else {
-      allBtn.classList.add('active');
-      allBtn.style.background = 'linear-gradient(135deg,#3b82f6 0%,#2563eb 100%)';
-      enabledBtn.classList.remove('active');
-      enabledBtn.style.background = 'linear-gradient(135deg,#6b7280 0%,#4b5563 100%)';
+  // Define button configs with their active gradients
+  const buttons = {
+    enabled: { el: document.getElementById('filterEnabledTypes'), active: 'linear-gradient(135deg,#10b981 0%,#059669 100%)' },
+    paid: { el: document.getElementById('filterPaidTypes'), active: 'linear-gradient(135deg,#a855f7 0%,#7c3aed 100%)' },
+    free: { el: document.getElementById('filterFreeTypes'), active: 'linear-gradient(135deg,#3b82f6 0%,#2563eb 100%)' },
+    all: { el: document.getElementById('filterAllTypes'), active: 'linear-gradient(135deg,#6b7280 0%,#4b5563 100%)' }
+  };
+  const inactiveGradient = 'linear-gradient(135deg,#374151 0%,#1f2937 100%)';
+
+  // Update all button styles
+  Object.keys(buttons).forEach(key => {
+    const btn = buttons[key];
+    if (btn.el) {
+      if (key === filter) {
+        btn.el.classList.add('active');
+        btn.el.style.background = btn.active;
+      } else {
+        btn.el.classList.remove('active');
+        btn.el.style.background = inactiveGradient;
+      }
     }
-  }
+  });
+
   renderSubscriptionTypes();
 }
 
@@ -616,13 +648,19 @@ export function renderSubscriptions() {
     const quickFilter = store.filters.subscriptions || 'all';
     const expiresDate = s.expires_at ? new Date(s.expires_at) : null;
     const daysLeft = expiresDate ? Math.ceil((expiresDate - now) / (1000 * 60 * 60 * 24)) : null;
+    const amount = s.amount || 0;
 
+    // Status-based filters
     if (quickFilter === 'active' && s.status !== 'active') return false;
     if (quickFilter === 'expiring') {
       if (s.status !== 'active') return false;
       if (!daysLeft || daysLeft > 30) return false;
     }
     if (quickFilter === 'expired' && s.status !== 'expired') return false;
+
+    // Payment-based filters (Paid/Free badges)
+    if (quickFilter === 'paid' && amount <= 0) return false;
+    if (quickFilter === 'free' && amount > 0) return false;
 
     // Search filter
     const search = store.pagination.subscriptions.search?.toLowerCase() || '';
@@ -643,7 +681,7 @@ export function renderSubscriptions() {
   if (filtered.length === 0) {
     const tr = document.createElement('tr');
     const td = document.createElement('td');
-    td.colSpan = 10;
+    td.colSpan = 11;
     td.style.cssText = 'text-align:center;padding:40px;';
     td.textContent = 'No subscriptions found';
     tr.appendChild(td);
@@ -676,48 +714,66 @@ export function renderSubscriptions() {
     const td3 = document.createElement('td');
     td3.textContent = s.email || '—';
 
-    // 4. Plan
+    // 4. User GUID (truncated with copy-to-clipboard)
     const td4 = document.createElement('td');
-    td4.textContent = s.plan || '—';
+    const guid = s.user_guid || '';
+    if (guid) {
+      const guidSpan = document.createElement('span');
+      guidSpan.style.cssText = 'font-family:monospace;font-size:0.75rem;cursor:pointer;color:var(--accent);';
+      guidSpan.title = `Click to copy: ${guid}`;
+      guidSpan.textContent = guid.length > 12 ? guid.slice(0, 12) + '…' : guid;
+      guidSpan.onclick = (e) => {
+        e.stopPropagation();
+        navigator.clipboard.writeText(guid);
+        showToast('GUID copied', 'success');
+      };
+      td4.appendChild(guidSpan);
+    } else {
+      td4.textContent = '—';
+    }
 
-    // 5. Status badge
+    // 5. Plan
     const td5 = document.createElement('td');
+    td5.textContent = s.plan || '—';
+
+    // 6. Status badge
+    const td6 = document.createElement('td');
     const statusBadge = document.createElement('span');
     statusBadge.style.cssText = 'display:inline-block;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;color:#fff;';
     const statusColors = { active: 'linear-gradient(135deg,#a855f7 0%,#7c3aed 100%)', expired: 'linear-gradient(135deg,#6b7280 0%,#4b5563 100%)', cancelled: 'linear-gradient(135deg,#f97316 0%,#ea580c 100%)' };
     statusBadge.style.background = statusColors[s.status] || 'linear-gradient(135deg,#6b7280 0%,#4b5563 100%)';
     statusBadge.textContent = (s.status || 'Unknown').charAt(0).toUpperCase() + (s.status || 'unknown').slice(1);
-    td5.appendChild(statusBadge);
+    td6.appendChild(statusBadge);
 
-    // 6. PIN badge
-    const td6 = document.createElement('td');
+    // 7. PIN badge
+    const td7 = document.createElement('td');
     const pinBadge = document.createElement('span');
     pinBadge.style.cssText = 'display:inline-block;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;color:#fff;';
     pinBadge.style.background = s.pin_enabled ? 'linear-gradient(135deg,#10b981 0%,#059669 100%)' : 'linear-gradient(135deg,#6b7280 0%,#4b5563 100%)';
     pinBadge.textContent = s.pin_enabled ? 'Yes' : 'No';
-    td6.appendChild(pinBadge);
+    td7.appendChild(pinBadge);
 
-    // 7. Vault badge (placeholder - would need vault status API)
-    const td7 = document.createElement('td');
+    // 8. Vault badge (placeholder - would need vault status API)
+    const td8 = document.createElement('td');
     const vaultBadge = document.createElement('span');
     vaultBadge.style.cssText = 'display:inline-block;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;color:#fff;background:linear-gradient(135deg,#6b7280 0%,#4b5563 100%);';
     vaultBadge.textContent = 'No';
-    td7.appendChild(vaultBadge);
+    td8.appendChild(vaultBadge);
 
-    // 8. Emails badge
-    const td8 = document.createElement('td');
+    // 9. Emails badge
+    const td9 = document.createElement('td');
     const emailBadge = document.createElement('span');
     emailBadge.style.cssText = 'display:inline-block;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;color:#fff;';
     emailBadge.style.background = s.system_emails_enabled ? 'linear-gradient(135deg,#10b981 0%,#059669 100%)' : 'linear-gradient(135deg,#6b7280 0%,#4b5563 100%)';
     emailBadge.textContent = s.system_emails_enabled ? 'On' : 'Off';
-    td8.appendChild(emailBadge);
+    td9.appendChild(emailBadge);
 
-    // 9. Expires date
-    const td9 = document.createElement('td');
-    td9.textContent = expiresDate ? expiresDate.toLocaleString() : '—';
-
-    // 10. Days left badge
+    // 10. Expires date
     const td10 = document.createElement('td');
+    td10.textContent = expiresDate ? expiresDate.toLocaleString() : '—';
+
+    // 11. Days left badge
+    const td11 = document.createElement('td');
     if (s.status === 'active' && daysLeft !== null) {
       const daysLeftBadge = document.createElement('span');
       daysLeftBadge.style.cssText = 'display:inline-block;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;';
@@ -732,13 +788,13 @@ export function renderSubscriptions() {
         daysLeftBadge.style.color = '#fff';
       }
       daysLeftBadge.textContent = `${daysLeft}d`;
-      td10.appendChild(daysLeftBadge);
+      td11.appendChild(daysLeftBadge);
     } else {
-      td10.textContent = '—';
-      td10.style.color = '#6b7280';
+      td11.textContent = '—';
+      td11.style.color = '#6b7280';
     }
 
-    tr.append(td1, td2, td3, td4, td5, td6, td7, td8, td9, td10);
+    tr.append(td1, td2, td3, td4, td5, td6, td7, td8, td9, td10, td11);
     tbody.appendChild(tr);
   });
 
@@ -774,8 +830,12 @@ function updateSubscriptionFilterCounts() {
 export function updateSubscriptionsSelectedCount() {
   const checkboxes = document.querySelectorAll('.subscription-checkbox:checked');
   const count = checkboxes.length;
-  const countEl = document.getElementById('subscriptionsBulkCount');
-  if (countEl) countEl.textContent = count > 0 ? `${count} selected` : '';
+
+  // Update bulk bar visibility and count
+  const bulkBar = document.getElementById('subscriptionsBulkBar');
+  const countEl = document.getElementById('selectedSubscriptionsCount');
+  if (bulkBar) bulkBar.classList.toggle('active', count > 0);
+  if (countEl) countEl.textContent = count;
 }
 
 export async function extendSubscription(subscriptionId) {
@@ -807,6 +867,133 @@ export async function reactivateSubscription(subscriptionId) {
   } catch (e) {
     showToast('Error: ' + (e.message || e), 'error');
   }
+}
+
+// ============================================
+// Subscription Analytics
+// ============================================
+
+/**
+ * Update all subscription analytics metrics (Revenue, Growth, Churn)
+ * This function populates the subscription-analytics sub-tab
+ */
+export function updateSubscriptionAnalytics() {
+  const now = new Date();
+  const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+
+  // Calculate revenue metrics
+  let monthlyRevenue = 0;
+  const revenueByPlan = new Map();
+
+  store.subscriptions.forEach(s => {
+    const amount = s.amount || 0;
+    if (s.status === 'active' && amount > 0) {
+      monthlyRevenue += amount;
+      const plan = s.plan || 'Unknown';
+      revenueByPlan.set(plan, (revenueByPlan.get(plan) || 0) + amount);
+    }
+  });
+
+  // Update estimated monthly revenue
+  const revenueEl = document.getElementById('estimatedMonthlyRevenue');
+  if (revenueEl) revenueEl.textContent = '$' + monthlyRevenue.toFixed(2);
+
+  // Update revenue by plan using safe DOM methods
+  const revenueByPlanEl = document.getElementById('revenueByPlan');
+  if (revenueByPlanEl) {
+    revenueByPlanEl.replaceChildren();
+
+    if (revenueByPlan.size === 0) {
+      const emptyMsg = document.createElement('div');
+      emptyMsg.style.cssText = 'color:var(--gray);font-size:0.85rem;';
+      emptyMsg.textContent = 'No active paid subscriptions';
+      revenueByPlanEl.appendChild(emptyMsg);
+    } else {
+      Array.from(revenueByPlan.entries())
+        .sort((a, b) => b[1] - a[1])
+        .forEach(([plan, revenue]) => {
+          const row = document.createElement('div');
+          row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:var(--bg-tertiary);border-radius:4px;';
+
+          const planSpan = document.createElement('span');
+          planSpan.style.cssText = 'color:var(--text);font-size:0.85rem;';
+          planSpan.textContent = plan;
+
+          const revenueSpan = document.createElement('span');
+          revenueSpan.style.cssText = 'font-weight:600;color:#10b981;';
+          revenueSpan.textContent = '$' + revenue.toFixed(2) + '/mo';
+
+          row.appendChild(planSpan);
+          row.appendChild(revenueSpan);
+          revenueByPlanEl.appendChild(row);
+        });
+    }
+  }
+
+  // Calculate subscription growth
+  let thisMonthCount = 0;
+  let last30DaysCount = 0;
+  let previousMonthCount = 0;
+  const previousMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const previousMonthEnd = new Date(now.getFullYear(), now.getMonth(), 1);
+
+  store.subscriptions.forEach(s => {
+    const createdAt = new Date(s.created_at);
+    if (createdAt >= startOfMonth) thisMonthCount++;
+    if (createdAt >= thirtyDaysAgo) last30DaysCount++;
+    if (createdAt >= previousMonthStart && createdAt < previousMonthEnd) previousMonthCount++;
+  });
+
+  const growthRate = previousMonthCount > 0
+    ? ((thisMonthCount - previousMonthCount) / previousMonthCount * 100)
+    : 0;
+  const growthRateColor = growthRate >= 0 ? '#10b981' : '#ef4444';
+  const growthRatePrefix = growthRate >= 0 ? '+' : '';
+
+  const growthThisMonthEl = document.getElementById('growthThisMonth');
+  const growthLast30DaysEl = document.getElementById('growthLast30Days');
+  const growthRateEl = document.getElementById('growthRate');
+
+  if (growthThisMonthEl) growthThisMonthEl.textContent = '+' + thisMonthCount;
+  if (growthLast30DaysEl) growthLast30DaysEl.textContent = '+' + last30DaysCount;
+  if (growthRateEl) {
+    growthRateEl.textContent = growthRatePrefix + growthRate.toFixed(1) + '%';
+    growthRateEl.style.color = growthRateColor;
+  }
+
+  // Calculate churn metrics
+  let cancelledLast30Days = 0;
+  let expiredLast30Days = 0;
+
+  store.subscriptions.forEach(s => {
+    // Check if cancelled in last 30 days
+    if (s.status === 'cancelled' && s.cancelled_at) {
+      const cancelledDate = new Date(s.cancelled_at);
+      if (cancelledDate >= thirtyDaysAgo) cancelledLast30Days++;
+    }
+    // Check if expired in last 30 days
+    const expiresDate = new Date(s.expires_at);
+    if (expiresDate >= thirtyDaysAgo && expiresDate <= now && s.status !== 'active') {
+      expiredLast30Days++;
+    }
+  });
+
+  const activeSubscriptions = store.subscriptions.filter(s => s.status === 'active').length;
+  const totalChurned = cancelledLast30Days + expiredLast30Days;
+  const totalBase = activeSubscriptions + totalChurned;
+  const churnRate = totalBase > 0 ? (totalChurned / totalBase * 100) : 0;
+  const retentionRate = 100 - churnRate;
+
+  const churnCancelledEl = document.getElementById('churnCancelled');
+  const churnExpiredEl = document.getElementById('churnExpired');
+  const churnRateEl = document.getElementById('churnRate');
+  const retentionRateEl = document.getElementById('retentionRate');
+
+  if (churnCancelledEl) churnCancelledEl.textContent = cancelledLast30Days;
+  if (churnExpiredEl) churnExpiredEl.textContent = expiredLast30Days;
+  if (churnRateEl) churnRateEl.textContent = churnRate.toFixed(1) + '%';
+  if (retentionRateEl) retentionRateEl.textContent = retentionRate.toFixed(1) + '%';
 }
 
 // ============================================
@@ -909,6 +1096,8 @@ export function setupMembershipEventHandlers() {
   // Subscription types filter buttons
   const filterAllTypes = document.getElementById('filterAllTypes');
   const filterEnabledTypes = document.getElementById('filterEnabledTypes');
+  const filterPaidTypes = document.getElementById('filterPaidTypes');
+  const filterFreeTypes = document.getElementById('filterFreeTypes');
 
   if (filterAllTypes) {
     filterAllTypes.onclick = () => filterSubscriptionTypes('all');
@@ -916,6 +1105,14 @@ export function setupMembershipEventHandlers() {
 
   if (filterEnabledTypes) {
     filterEnabledTypes.onclick = () => filterSubscriptionTypes('enabled');
+  }
+
+  if (filterPaidTypes) {
+    filterPaidTypes.onclick = () => filterSubscriptionTypes('paid');
+  }
+
+  if (filterFreeTypes) {
+    filterFreeTypes.onclick = () => filterSubscriptionTypes('free');
   }
 
   // Select all subscriptions checkbox

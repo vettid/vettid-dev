@@ -576,11 +576,15 @@
         <div style="margin-bottom:16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
           <button id="refreshWaitlist" class="btn">Refresh</button>
           <button id="batchImportBtn" class="btn" style="background:linear-gradient(135deg,#8b5cf6 0%,#7c3aed 100%);" data-action="openCsvImportModal">Batch Import</button>
-          <button id="sendInvitesBtn" class="btn" style="background:linear-gradient(135deg,#0e9e4d 0%,#0a7a3a 100%);" disabled>Invite</button>
           <button id="inviteAllPendingBtn" class="btn" style="background:linear-gradient(135deg,#0891b2 0%,#0e7490 100%);">Invite All Pending</button>
-          <button id="rejectWaitlistBtn" class="btn" style="background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);" disabled>Reject</button>
-          <button id="deleteWaitlistBtn" class="btn" style="background:linear-gradient(135deg,#7f1d1d 0%,#450a0a 100%);" disabled>Delete</button>
-          <span id="selectedWaitlistCount" style="color:var(--gray);margin-left:auto;"></span>
+        </div>
+
+        <!-- Bulk Action Bar -->
+        <div id="waitlistBulkBar" class="bulk-action-bar">
+          <span class="count"><span id="selectedWaitlistCount">0</span> selected</span>
+          <button id="sendInvitesBtn" class="btn" style="background:linear-gradient(135deg,#0e9e4d 0%,#0a7a3a 100%);">Invite</button>
+          <button id="rejectWaitlistBtn" class="btn" style="background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);">Reject</button>
+          <button id="deleteWaitlistBtn" class="btn" style="background:linear-gradient(135deg,#7f1d1d 0%,#450a0a 100%);">Delete</button>
         </div>
 
         <!-- Waitlist Table (desktop) -->
@@ -702,12 +706,16 @@
         <!-- Action Buttons -->
         <div style="margin-bottom:16px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
           <button id="refreshUsers" class="btn">Refresh</button>
-          <button id="bulkApproveReg" class="btn" style="background:linear-gradient(135deg,#0e9e4d 0%,#0a7a3a 100%);" disabled>Approve</button>
-          <button id="bulkRejectReg" class="btn" style="background:linear-gradient(135deg,#f59e0b 0%,#d97706 100%);" disabled>Reject</button>
-          <button id="bulkDisableUsers" class="btn" style="background:linear-gradient(135deg,#ec3024 0%,#c4271e 100%);" disabled>Disable</button>
-          <button id="bulkEnableUsers" class="btn" style="background:linear-gradient(135deg,#0e9e4d 0%,#0a7a3a 100%);" disabled>Enable</button>
-          <button id="bulkDeleteUsers" class="btn" style="background:linear-gradient(135deg,#7f1d1d 0%,#450a0a 100%);" disabled>Delete</button>
-          <span id="usersBulkCount" style="color:var(--gray);width:100%;margin-top:4px;"></span>
+        </div>
+
+        <!-- Bulk Action Bar -->
+        <div id="usersBulkBar" class="bulk-action-bar">
+          <span class="count"><span id="usersBulkCount">0</span> selected</span>
+          <button id="bulkApproveReg" class="btn" style="background:linear-gradient(135deg,#0e9e4d 0%,#0a7a3a 100%);">Approve</button>
+          <button id="bulkRejectReg" class="btn" style="background:linear-gradient(135deg,#f59e0b 0%,#d97706 100%);">Reject</button>
+          <button id="bulkDisableUsers" class="btn" style="background:linear-gradient(135deg,#ec3024 0%,#c4271e 100%);">Disable</button>
+          <button id="bulkEnableUsers" class="btn" style="background:linear-gradient(135deg,#0e9e4d 0%,#0a7a3a 100%);">Enable</button>
+          <button id="bulkDeleteUsers" class="btn" style="background:linear-gradient(135deg,#7f1d1d 0%,#450a0a 100%);">Delete</button>
         </div>
 
         <!-- Users Table (desktop) -->
@@ -754,12 +762,16 @@
           </button>
         </div>
 
-        <button id="refreshInvites" class="btn">Refresh</button>
-        <label style="margin-left:16px;">Search: <input id="invitesSearch" type="text" placeholder="Invite code..." style="width:200px" /></label>
-        <div style="margin-top:16px;">
-          <button id="bulkExpireInvites" class="btn" style="background:linear-gradient(135deg,#ec3024 0%,#c4271e 100%);box-shadow:0 4px 14px rgba(236,48,36,0.5);">Expire Selected</button>
-          <button id="bulkDeleteInvites" class="btn" style="background:linear-gradient(135deg,#6b3a7d 0%,#552e64 100%);margin-left:8px;box-shadow:0 4px 14px rgba(107,58,125,0.5);">Delete Selected</button>
-          <span id="invitesSelectedCount" style="margin-left:16px;opacity:.7;"></span>
+        <div style="margin-bottom:16px;display:flex;align-items:center;gap:12px;">
+          <button id="refreshInvites" class="btn">Refresh</button>
+          <label style="display:flex;align-items:center;gap:8px;">Search: <input id="invitesSearch" type="text" placeholder="Invite code..." style="width:200px" /></label>
+        </div>
+
+        <!-- Bulk Action Bar -->
+        <div id="invitesBulkBar" class="bulk-action-bar">
+          <span class="count"><span id="invitesSelectedCount">0</span> selected</span>
+          <button id="bulkExpireInvites" class="btn" style="background:linear-gradient(135deg,#ec3024 0%,#c4271e 100%);">Expire Selected</button>
+          <button id="bulkDeleteInvites" class="btn" style="background:linear-gradient(135deg,#6b3a7d 0%,#552e64 100%);">Delete Selected</button>
         </div>
         <div id="invitesTableContainer" class="list-view">
           <table id="invitesTable">
@@ -807,11 +819,11 @@
         </div>
 
         <!-- Bulk Action Bar -->
-        <div id="helpBulkBar" class="bulk-action-bar" style="display:none;background:var(--bg-tertiary);padding:12px 16px;border-radius:8px;margin-bottom:16px;align-items:center;gap:12px;flex-wrap:wrap;">
-          <span id="helpBulkCount" style="font-weight:600;color:var(--accent);"></span>
-          <button id="helpBulkContacted" class="btn" style="padding:6px 14px;font-size:0.85rem;background:linear-gradient(135deg,#f59e0b 0%,#d97706 100%);">Mark Contacted</button>
-          <button id="helpBulkInProgress" class="btn" style="padding:6px 14px;font-size:0.85rem;background:linear-gradient(135deg,#10b981 0%,#059669 100%);">Mark In Progress</button>
-          <button id="helpBulkArchive" class="btn" style="padding:6px 14px;font-size:0.85rem;background:linear-gradient(135deg,#6b7280 0%,#4b5563 100%);">Archive</button>
+        <div id="helpBulkBar" class="bulk-action-bar">
+          <span class="count"><span id="helpBulkCount">0</span> selected</span>
+          <button id="helpBulkContacted" class="btn" style="background:linear-gradient(135deg,#f59e0b 0%,#d97706 100%);">Mark Contacted</button>
+          <button id="helpBulkInProgress" class="btn" style="background:linear-gradient(135deg,#10b981 0%,#059669 100%);">Mark In Progress</button>
+          <button id="helpBulkArchive" class="btn" style="background:linear-gradient(135deg,#6b7280 0%,#4b5563 100%);">Archive</button>
         </div>
 
         <!-- Help Offers Table (desktop) -->
@@ -894,6 +906,13 @@
               <label style="display:block;margin-bottom:4px;font-weight:600;color:var(--accent);">Admin Notes</label>
               <textarea id="helpDetailNotes" rows="3" style="width:100%;" placeholder="Add notes about this volunteer..."></textarea>
             </div>
+            <!-- Quick Actions -->
+            <div style="display:flex;flex-wrap:wrap;gap:8px;padding:12px;background:var(--bg-tertiary);border-radius:6px;margin-bottom:16px;">
+              <button id="helpCopyEmail" class="btn" style="padding:8px 12px;font-size:0.8rem;background:var(--bg-card);border:1px solid var(--border);">Copy Email</button>
+              <button id="helpCopyPhone" class="btn" style="padding:8px 12px;font-size:0.8rem;background:var(--bg-card);border:1px solid var(--border);">Copy Phone</button>
+              <button id="helpSendEmail" class="btn" style="padding:8px 12px;font-size:0.8rem;background:linear-gradient(135deg,#3b82f6 0%,#1d4ed8 100%);">Send Email</button>
+              <button id="helpQuickArchive" class="btn" style="padding:8px 12px;font-size:0.8rem;background:linear-gradient(135deg,#6b7280 0%,#4b5563 100%);">Archive</button>
+            </div>
             <div style="display:flex;gap:12px;justify-content:flex-end;">
               <button id="saveHelpRequest" class="btn" style="background:linear-gradient(135deg,#10b981 0%,#059669 100%);">Save Changes</button>
             </div>
@@ -934,20 +953,20 @@
             </button>
           </div>
 
-          <!-- Search and Bulk Actions -->
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;flex-wrap:wrap;gap:12px;">
-            <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
-              <button id="refreshAdmins" class="btn">Refresh</button>
-              <label style="display:flex;align-items:center;gap:8px;">
-                Search:
-                <input id="adminsSearch" type="text" placeholder="Name or email..." style="width:250px" />
-              </label>
-            </div>
-            <div style="display:flex;gap:8px;flex-wrap:wrap;">
-              <button id="bulkDisableAdmins" class="btn" style="background:linear-gradient(135deg,#ec3024 0%,#c4271e 100%);" disabled>Disable</button>
-              <button id="bulkEnableAdmins" class="btn" style="background:linear-gradient(135deg,#0e9e4d 0%,#0a7a3a 100%);" disabled>Enable</button>
-              <span id="adminsBulkCount" style="color:var(--gray);"></span>
-            </div>
+          <!-- Search Bar -->
+          <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px;flex-wrap:wrap;">
+            <button id="refreshAdmins" class="btn">Refresh</button>
+            <label style="display:flex;align-items:center;gap:8px;">
+              Search:
+              <input id="adminsSearch" type="text" placeholder="Name or email..." style="width:250px" />
+            </label>
+          </div>
+
+          <!-- Bulk Action Bar -->
+          <div id="adminsBulkBar" class="bulk-action-bar">
+            <span class="count"><span id="adminsBulkCount">0</span> selected</span>
+            <button id="bulkDisableAdmins" class="btn" style="background:linear-gradient(135deg,#ec3024 0%,#c4271e 100%);">Disable</button>
+            <button id="bulkEnableAdmins" class="btn" style="background:linear-gradient(135deg,#0e9e4d 0%,#0a7a3a 100%);">Enable</button>
           </div>
 
           <div id="adminsTableContainer" class="list-view">
@@ -1301,19 +1320,21 @@
             <button id="refreshHandlersBtn" class="btn" style="padding:8px 16px;">↻ Refresh</button>
           </div>
 
-          <!-- Handler Marketplace Tabs -->
+          <!-- Native Handlers Tab -->
           <div style="display:flex;gap:8px;margin:20px 0;border-bottom:1px solid var(--border);padding-bottom:12px;">
             <button class="btn handler-tab active" data-handler-tab="deployed" style="background:linear-gradient(135deg,#10b981 0%,#059669 100%);padding:10px 20px;">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle;margin-right:6px;">
-                <polyline points="20 6 9 17 4 12"></polyline>
+                <path d="M12 2L2 7l10 5 10-5-10-5z"></path>
+                <path d="M2 17l10 5 10-5"></path>
+                <path d="M2 12l10 5 10-5"></path>
               </svg>
-              Deployed Handlers <span id="deployedHandlersCount" style="background:rgba(255,255,255,0.2);border-radius:10px;padding:2px 8px;margin-left:6px;font-size:0.75rem;">0</span>
+              Native Handlers <span id="deployedHandlersCount" style="background:rgba(255,255,255,0.2);border-radius:10px;padding:2px 8px;margin-left:6px;font-size:0.75rem;">0</span>
             </button>
           </div>
 
-          <!-- Deployed Handlers Panel -->
+          <!-- Native Handlers Panel -->
           <div id="deployed-handlers-panel" class="handler-panel">
-            <p class="muted" style="margin-bottom:16px;">Pre-compiled, VettID-signed WASM handlers running in Nitro enclaves.</p>
+            <p class="muted" style="margin-bottom:16px;">Core Go handlers built directly into the Nitro Enclave. These handle all vault operations including authentication, messaging, and credential management.</p>
             <div id="deployedHandlersGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px;">
               <div style="grid-column:1/-1;padding:40px;text-align:center;color:var(--gray);">Loading deployed handlers...</div>
             </div>
@@ -1401,6 +1422,12 @@
             <div style="display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap;">
               <button id="filterEnabledTypes" class="btn subscription-type-filter active" data-filter="enabled" style="background:linear-gradient(135deg,#10b981 0%,#059669 100%);padding:10px 20px;font-weight:600;">
                 Enabled <span id="enabledTypesCount" style="background:#065f46;color:#fff;border-radius:12px;padding:2px 8px;margin-left:8px;font-size:0.75rem;">0</span>
+              </button>
+              <button id="filterPaidTypes" class="btn subscription-type-filter" data-filter="paid" style="background:linear-gradient(135deg,#a855f7 0%,#7c3aed 100%);padding:10px 20px;font-weight:600;">
+                Paid <span id="paidTypesCount" style="background:#581c87;color:#fff;border-radius:12px;padding:2px 8px;margin-left:8px;font-size:0.75rem;">0</span>
+              </button>
+              <button id="filterFreeTypes" class="btn subscription-type-filter" data-filter="free" style="background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);padding:10px 20px;font-weight:600;">
+                Free <span id="freeTypesCount" style="background:#1e3a8a;color:#fff;border-radius:12px;padding:2px 8px;margin-left:8px;font-size:0.75rem;">0</span>
               </button>
               <button id="filterAllTypes" class="btn subscription-type-filter" data-filter="all" style="background:linear-gradient(135deg,#6b7280 0%,#4b5563 100%);padding:10px 20px;font-weight:600;">
                 All <span id="allTypesCount" style="background:var(--bg-button-secondary);color:#fff;border-radius:12px;padding:2px 8px;margin-left:8px;font-size:0.75rem;">0</span>
@@ -1753,8 +1780,12 @@
           <!-- Action Buttons -->
           <div style="margin-bottom:16px;">
             <button id="refreshSubscriptions" class="btn">Refresh</button>
-            <button id="bulkExtendSubscriptions" class="btn" style="background:linear-gradient(135deg,#0e9e4d 0%,#0a7a3a 100%);margin-left:8px;">7 Day Extension</button>
-            <span id="selectedSubscriptionsCount" style="margin-left:16px;color:var(--gray);"></span>
+          </div>
+
+          <!-- Bulk Action Bar -->
+          <div id="subscriptionsBulkBar" class="bulk-action-bar">
+            <span class="count"><span id="selectedSubscriptionsCount">0</span> selected</span>
+            <button id="bulkExtendSubscriptions" class="btn" style="background:linear-gradient(135deg,#0e9e4d 0%,#0a7a3a 100%);">7 Day Extension</button>
           </div>
 
           <!-- Subscriptions Table -->
@@ -1765,6 +1796,7 @@
                   <th><input type="checkbox" id="selectAllSubscriptions" /></th>
                   <th>Name</th>
                   <th>Email</th>
+                  <th>User GUID</th>
                   <th>Plan</th>
                   <th>Status</th>
                   <th>PIN</th>
