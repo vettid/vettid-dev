@@ -338,6 +338,10 @@ func (p *ParentProcess) forwardToEnclave(ctx context.Context, msg *NATSMessage) 
 
 	// Send response back via NATS
 	if response != nil {
+		// Copy RequestID from original message for response correlation (issue #5)
+		if enclaveMsg.RequestID != "" {
+			response.RequestID = enclaveMsg.RequestID
+		}
 		responseData := p.formatEnclaveResponse(response)
 
 		// If there's a reply address (NATS request/reply pattern), use it
@@ -350,13 +354,11 @@ func (p *ParentProcess) forwardToEnclave(ctx context.Context, msg *NATSMessage) 
 		// Also publish to app response subject for mobile apps using pub/sub pattern
 		// OwnerSpace.<guid>.forVault.<op> -> OwnerSpace.<guid>.forApp.<op>.response
 		//
-		// RELIABILITY: Publish multiple times with small delays to handle race condition
-		// where mobile app subscription may not be fully established when first response arrives.
-		// This is a workaround until JetStream is fully implemented for enrollment topics.
+		// Uses JetStream for exactly-once delivery with message persistence.
+		// Messages are retained until consumed or MaxAge (5 min) expires.
 		if enclaveMsg.OwnerSpace != "" {
 			appResponseSubject := buildAppResponseSubject(msg.Subject, enclaveMsg.OwnerSpace)
 			if appResponseSubject != "" {
-				// DEBUG: Log the response being published
 				log.Info().
 					Str("msg_type", string(response.Type)).
 					Str("owner_space", enclaveMsg.OwnerSpace).
@@ -364,22 +366,10 @@ func (p *ParentProcess) forwardToEnclave(ctx context.Context, msg *NATSMessage) 
 					Str("response_subject", appResponseSubject).
 					Int("response_bytes", len(responseData)).
 					Bool("has_attestation", response.Attestation != nil).
-					Msg("Publishing enclave response to mobile app")
+					Msg("Publishing enclave response to mobile app via JetStream")
 
-				// Publish with retries to handle subscription timing race condition
-				retryDelays := []time.Duration{0, 50 * time.Millisecond, 200 * time.Millisecond, 500 * time.Millisecond}
-				for i, delay := range retryDelays {
-					if delay > 0 {
-						time.Sleep(delay)
-					}
-					log.Debug().
-						Str("subject", appResponseSubject).
-						Int("response_len", len(responseData)).
-						Int("attempt", i+1).
-						Msg("Publishing response to app subject")
-					if err := p.natsClient.Publish(appResponseSubject, responseData); err != nil {
-						log.Error().Err(err).Str("subject", appResponseSubject).Int("attempt", i+1).Msg("Failed to publish to app response subject")
-					}
+				if err := p.natsClient.Publish(appResponseSubject, responseData); err != nil {
+					log.Error().Err(err).Str("subject", appResponseSubject).Msg("Failed to publish to app response subject")
 				}
 			}
 		}
@@ -476,11 +466,12 @@ func (p *ParentProcess) sendWithHandlerSupport(ctx context.Context, msg *Enclave
 	}
 }
 
-// parseAttestationRequest parses the JSON attestation request to extract the nonce
+// parseAttestationRequest parses the JSON attestation request to extract the nonce and request ID
 // Handles both flat format {"nonce": "..."} and nested format {"payload": {"nonce": "..."}}
 func (p *ParentProcess) parseAttestationRequest(data []byte, msg *EnclaveMessage) error {
-	// Try nested format first (Android sends {"type": "...", "payload": {"nonce": "..."}})
+	// Try nested format first (Android sends {"type": "...", "id": "...", "payload": {"nonce": "..."}})
 	var nestedReq struct {
+		ID      string `json:"id"` // Request ID to echo back in response
 		Payload struct {
 			Nonce string `json:"nonce"`
 		} `json:"payload"`
@@ -489,6 +480,11 @@ func (p *ParentProcess) parseAttestationRequest(data []byte, msg *EnclaveMessage
 
 	if err := json.Unmarshal(data, &nestedReq); err != nil {
 		return fmt.Errorf("failed to unmarshal attestation request: %w", err)
+	}
+
+	// Capture request ID for response correlation (issue #5)
+	if nestedReq.ID != "" {
+		msg.RequestID = nestedReq.ID
 	}
 
 	// Check nested payload first, then fall back to top-level
@@ -507,7 +503,7 @@ func (p *ParentProcess) parseAttestationRequest(data []byte, msg *EnclaveMessage
 	}
 
 	msg.Nonce = nonce
-	log.Debug().Int("nonce_len", len(nonce)).Msg("Parsed attestation request nonce")
+	log.Debug().Int("nonce_len", len(nonce)).Str("request_id", msg.RequestID).Msg("Parsed attestation request")
 	return nil
 }
 
@@ -670,10 +666,12 @@ func (p *ParentProcess) formatEnclaveResponse(response *EnclaveMessage) []byte {
 			Attestation string `json:"attestation"`
 			PublicKey   string `json:"public_key"`
 			Timestamp   string `json:"timestamp"`
+			EventID     string `json:"event_id,omitempty"` // Echo back request ID for correlation (issue #5)
 		}{
 			Attestation: base64.StdEncoding.EncodeToString(response.Attestation.Document),
 			PublicKey:   base64.StdEncoding.EncodeToString(response.Attestation.PublicKey),
 			Timestamp:   time.Now().UTC().Format(time.RFC3339),
+			EventID:     response.RequestID,
 		}
 
 		data, err := json.Marshal(resp)
@@ -685,6 +683,7 @@ func (p *ParentProcess) formatEnclaveResponse(response *EnclaveMessage) []byte {
 		// DEBUG: Log attestation response details for testing
 		log.Debug().
 			Str("timestamp", resp.Timestamp).
+			Str("event_id", resp.EventID).
 			Int("attestation_len", len(resp.Attestation)).
 			Int("public_key_len", len(resp.PublicKey)).
 			Int("response_size", len(data)).
@@ -750,7 +749,28 @@ func (p *ParentProcess) formatEnclaveResponse(response *EnclaveMessage) []byte {
 		return data
 	}
 
-	// For other responses, use the payload directly
+	// For vault_op responses (PIN setup, etc.), wrap with event_id for correlation
+	// Mobile apps expect event_id to match request ID (issue #6)
+	if len(response.Payload) > 0 && response.RequestID != "" {
+		// Try to parse payload as JSON and add event_id
+		var payloadMap map[string]interface{}
+		if err := json.Unmarshal(response.Payload, &payloadMap); err == nil {
+			// Successfully parsed as object - add event_id and timestamp
+			payloadMap["event_id"] = response.RequestID
+			if _, hasTimestamp := payloadMap["timestamp"]; !hasTimestamp {
+				payloadMap["timestamp"] = time.Now().UTC().Format(time.RFC3339)
+			}
+			if data, err := json.Marshal(payloadMap); err == nil {
+				log.Debug().
+					Str("event_id", response.RequestID).
+					Int("payload_len", len(data)).
+					Msg("Wrapped vault response with event_id")
+				return data
+			}
+		}
+	}
+
+	// Fallback: return payload directly
 	return response.Payload
 }
 

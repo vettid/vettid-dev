@@ -255,6 +255,14 @@ func splitSubject(subject string) []string {
 // handleVaultOp routes a vault operation to the appropriate vault-manager
 // The ownerSpace is extracted from the NATS subject if not explicitly provided
 func (s *Supervisor) handleVaultOp(ctx context.Context, msg *Message) (*Message, error) {
+	// DEBUG: Log incoming vault operation for tracing
+	log.Info().
+		Str("subject", msg.Subject).
+		Str("owner_space", msg.OwnerSpace).
+		Str("request_id", msg.RequestID).
+		Int("payload_len", len(msg.Payload)).
+		Msg("DEBUG: handleVaultOp received message")
+
 	ownerSpace := msg.OwnerSpace
 
 	// Extract ownerSpace from subject if not provided
@@ -274,17 +282,33 @@ func (s *Supervisor) handleVaultOp(ctx context.Context, msg *Message) (*Message,
 	// For PIN operations, include the attestation private key
 	// The mobile app encrypts PIN with the attestation public key
 	if isPinOperation(msg.Subject) {
+		// DEBUG: Log PIN operation details
+		s.attestationKeysMu.RLock()
+		keyCount := len(s.attestationKeys)
+		var storedKeys []string
+		for k := range s.attestationKeys {
+			storedKeys = append(storedKeys, k[:8]+"...")
+		}
+		s.attestationKeysMu.RUnlock()
+
+		log.Info().
+			Str("owner_space", ownerSpace).
+			Int("stored_keys", keyCount).
+			Strs("key_prefixes", storedKeys).
+			Msg("DEBUG: PIN operation - checking attestation key")
+
 		attestationKey := s.getAttestationKey(ownerSpace)
 		if attestationKey != nil {
 			msg.AttestationPrivateKey = attestationKey
-			log.Debug().
+			log.Info().
 				Str("owner_space", ownerSpace).
 				Int("key_len", len(attestationKey)).
-				Msg("Including attestation key for PIN operation")
+				Msg("DEBUG: Found attestation key for PIN operation")
 		} else {
 			log.Warn().
 				Str("owner_space", ownerSpace).
-				Msg("No attestation key found for PIN operation")
+				Int("stored_keys", keyCount).
+				Msg("DEBUG: No attestation key found for PIN operation")
 		}
 	}
 
@@ -307,6 +331,13 @@ func isPinOperation(subject string) bool {
 // handleAttestationRequest generates an attestation document
 // SECURITY: Stores the ephemeral X25519 private key for later PIN decryption
 func (s *Supervisor) handleAttestationRequest(ctx context.Context, msg *Message) (*Message, error) {
+	// DEBUG: Log attestation request
+	log.Info().
+		Str("owner_space", msg.OwnerSpace).
+		Str("subject", msg.Subject).
+		Int("nonce_len", len(msg.Nonce)).
+		Msg("DEBUG: handleAttestationRequest received")
+
 	// Generate attestation with ephemeral X25519 keypair
 	attestation, err := GenerateAttestation(msg.Nonce)
 	if err != nil {
@@ -317,10 +348,17 @@ func (s *Supervisor) handleAttestationRequest(ctx context.Context, msg *Message)
 	// SECURITY: Key is stored per owner_space and expires with attestation validity
 	if msg.OwnerSpace != "" && len(attestation.PrivateKey) > 0 {
 		s.storeAttestationKey(msg.OwnerSpace, attestation.PrivateKey)
-		log.Debug().
+		log.Info().
 			Str("owner_space", msg.OwnerSpace).
 			Int("pubkey_len", len(attestation.PublicKey)).
-			Msg("Stored attestation private key for PIN decryption")
+			Int("privkey_len", len(attestation.PrivateKey)).
+			Msg("DEBUG: Stored attestation private key for PIN decryption")
+	} else {
+		log.Warn().
+			Str("owner_space", msg.OwnerSpace).
+			Bool("has_owner_space", msg.OwnerSpace != "").
+			Int("privkey_len", len(attestation.PrivateKey)).
+			Msg("DEBUG: NOT storing attestation key - missing owner_space or private key")
 	}
 
 	// Clear private key from response (never sent outside enclave)

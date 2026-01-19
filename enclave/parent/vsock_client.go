@@ -159,6 +159,7 @@ type EnclaveMessage struct {
 	// Attestation fields
 	Nonce       []byte       `json:"nonce,omitempty"`
 	Attestation *Attestation `json:"attestation,omitempty"`
+	RequestID   string       `json:"request_id,omitempty"` // Echo back to mobile for correlation
 
 	// Handler loading fields
 	HandlerID      string `json:"handler_id,omitempty"`
