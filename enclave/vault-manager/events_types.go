@@ -46,6 +46,12 @@ const (
 
 	// Profile events
 	EventTypeProfileUpdated EventType = "profile.updated"
+
+	// Feed interaction events (audit-only, tracks user actions on feed items)
+	EventTypeFeedItemRead     EventType = "feed.item_read"
+	EventTypeFeedItemArchived EventType = "feed.item_archived"
+	EventTypeFeedItemDeleted  EventType = "feed.item_deleted"
+	EventTypeFeedActionTaken  EventType = "feed.action_taken"
 )
 
 // FeedStatus controls visibility in the feed
@@ -196,6 +202,12 @@ var eventClassifications = map[EventType]EventClassification{
 
 	// Profile events
 	EventTypeProfileUpdated: {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
+
+	// Feed interaction events (audit-only, ephemeral)
+	EventTypeFeedItemRead:     {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionEphemeral},
+	EventTypeFeedItemArchived: {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionEphemeral},
+	EventTypeFeedItemDeleted:  {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionEphemeral},
+	EventTypeFeedActionTaken:  {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
 }
 
 // GetEventClassification returns the default classification for an event type

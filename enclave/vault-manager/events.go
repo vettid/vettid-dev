@@ -248,6 +248,9 @@ func (h *EventHandler) MarkRead(ctx context.Context, eventID string) error {
 		return fmt.Errorf("failed to mark event read: %w", err)
 	}
 
+	// Log status change for audit trail
+	h.logStatusChange(ctx, eventID, EventTypeFeedItemRead, "read")
+
 	// Notify app of status change
 	if h.publisher != nil {
 		h.notifyStatusChange(ctx, eventID, FeedStatusRead)
@@ -263,6 +266,9 @@ func (h *EventHandler) Archive(ctx context.Context, eventID string) error {
 		return fmt.Errorf("failed to archive event: %w", err)
 	}
 
+	// Log status change for audit trail
+	h.logStatusChange(ctx, eventID, EventTypeFeedItemArchived, "archived")
+
 	if h.publisher != nil {
 		h.notifyStatusChange(ctx, eventID, FeedStatusArchived)
 	}
@@ -277,6 +283,9 @@ func (h *EventHandler) Delete(ctx context.Context, eventID string) error {
 		return fmt.Errorf("failed to delete event: %w", err)
 	}
 
+	// Log status change for audit trail
+	h.logStatusChange(ctx, eventID, EventTypeFeedItemDeleted, "deleted")
+
 	if h.publisher != nil {
 		h.notifyStatusChange(ctx, eventID, FeedStatusDeleted)
 	}
@@ -284,12 +293,41 @@ func (h *EventHandler) Delete(ctx context.Context, eventID string) error {
 	return nil
 }
 
-// ExecuteAction marks an event as actioned
+// ExecuteAction marks an event as actioned with replay prevention
 func (h *EventHandler) ExecuteAction(ctx context.Context, eventID string, action string) error {
+	// SECURITY: Replay prevention - create unique action key
+	actionKey := fmt.Sprintf("action:%s:%s", eventID, action)
+
+	// Check if this action was already processed
+	if alreadyProcessed, err := h.storage.IsEventProcessed(actionKey); err == nil && alreadyProcessed {
+		log.Info().
+			Str("event_id", eventID).
+			Str("action", action).
+			Msg("Duplicate action detected - ignoring replay")
+		return fmt.Errorf("action already processed")
+	}
+
 	now := time.Now().Unix()
 	if err := h.storage.SQLite().UpdateEventActioned(eventID, now); err != nil {
 		return fmt.Errorf("failed to mark event actioned: %w", err)
 	}
+
+	// SECURITY: Mark action as processed to prevent future replays
+	if err := h.storage.MarkEventProcessed(actionKey, "feed_action"); err != nil {
+		log.Warn().Err(err).Str("action_key", actionKey).Msg("Failed to mark action as processed")
+	}
+
+	// Log action for audit trail
+	h.LogEvent(ctx, &Event{
+		EventType:  EventTypeFeedActionTaken,
+		SourceType: "feed",
+		SourceID:   eventID,
+		Title:      fmt.Sprintf("Action: %s", action),
+		Metadata: map[string]string{
+			"target_event_id": eventID,
+			"action":          action,
+		},
+	})
 
 	log.Info().
 		Str("event_id", eventID).
@@ -309,6 +347,26 @@ func (h *EventHandler) notifyStatusChange(ctx context.Context, eventID string, n
 
 	data, _ := json.Marshal(notification)
 	h.publisher.PublishToApp(ctx, "feed.updated", data)
+}
+
+// logStatusChange logs a feed status change for audit trail
+func (h *EventHandler) logStatusChange(ctx context.Context, eventID string, eventType EventType, newStatus string) {
+	// Log status change as a separate audit event (non-blocking)
+	go func() {
+		err := h.LogEvent(ctx, &Event{
+			EventType:  eventType,
+			SourceType: "feed",
+			SourceID:   eventID,
+			Title:      fmt.Sprintf("Feed item %s", newStatus),
+			Metadata: map[string]string{
+				"target_event_id": eventID,
+				"new_status":      newStatus,
+			},
+		})
+		if err != nil {
+			log.Warn().Err(err).Str("event_id", eventID).Msg("Failed to log status change")
+		}
+	}()
 }
 
 // --- Sync Operations ---
