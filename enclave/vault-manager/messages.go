@@ -671,6 +671,8 @@ func (mh *MessageHandler) handleConnectionOperation(ctx context.Context, msg *In
 		return mh.connectionsHandler.HandleStoreCredentials(msg)
 	case "initiate":
 		return mh.connectionsHandler.HandleInitiate(msg)
+	case "respond":
+		return mh.connectionsHandler.HandleRespond(msg)
 	case "revoke":
 		return mh.connectionsHandler.HandleRevoke(msg)
 	case "list":

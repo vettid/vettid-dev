@@ -131,6 +131,22 @@ type RevokeConnectionRequest struct {
 	ConnectionID string `json:"connection_id"`
 }
 
+// RespondConnectionRequest is the payload for connection.respond
+// Used for bidirectional consent - both parties must accept
+type RespondConnectionRequest struct {
+	ConnectionID    string `json:"connection_id"`
+	Response        string `json:"response"` // "accept" or "reject"
+	RejectionReason string `json:"rejection_reason,omitempty"`
+}
+
+// RespondConnectionResponse is the response for connection.respond
+type RespondConnectionResponse struct {
+	Success      bool   `json:"success"`
+	ConnectionID string `json:"connection_id"`
+	Status       string `json:"status"` // New connection status after response
+	Message      string `json:"message,omitempty"`
+}
+
 // ListConnectionsRequest is the payload for connection.list
 type ListConnectionsRequest struct {
 	Status     string   `json:"status,omitempty"`
@@ -533,6 +549,104 @@ func decodeHexKey(hexKey string) ([]byte, error) {
 		decoded[i] = b
 	}
 	return decoded, nil
+}
+
+// HandleRespond handles connection.respond messages
+// Part of bidirectional consent - both parties must accept for connection to become active
+func (h *ConnectionsHandler) HandleRespond(msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req RespondConnectionRequest
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		return h.errorResponse(msg.GetID(), "Invalid request format")
+	}
+
+	if req.ConnectionID == "" {
+		return h.errorResponse(msg.GetID(), "connection_id is required")
+	}
+	if req.Response != "accept" && req.Response != "reject" {
+		return h.errorResponse(msg.GetID(), "response must be 'accept' or 'reject'")
+	}
+
+	// Load the connection record
+	storageKey := "connections/" + req.ConnectionID
+	connData, err := h.storage.Get(storageKey)
+	if err != nil {
+		return h.errorResponse(msg.GetID(), "Connection not found")
+	}
+
+	var record ConnectionRecord
+	if err := json.Unmarshal(connData, &record); err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to read connection")
+	}
+
+	// Validate current status allows a response
+	validStatuses := map[string]bool{
+		"pending_our_review":   true, // We need to review and respond
+		"pending_their_accept": true, // They reviewed, now we confirm
+	}
+	if !validStatuses[record.Status] {
+		return h.errorResponse(msg.GetID(), fmt.Sprintf("Connection is not awaiting response (status: %s)", record.Status))
+	}
+
+	var newStatus string
+	var message string
+
+	if req.Response == "reject" {
+		// Rejection ends the connection flow
+		newStatus = "rejected"
+		message = "Connection rejected"
+
+		// Log rejection event
+		if h.eventHandler != nil {
+			h.eventHandler.LogConnectionEvent(context.Background(), EventTypeConnectionRejected, req.ConnectionID, record.PeerGUID, req.RejectionReason)
+		}
+	} else {
+		// Acceptance - determine next status based on current state
+		switch record.Status {
+		case "pending_our_review":
+			// We reviewed and accepted, now waiting for peer to accept
+			newStatus = "pending_their_accept"
+			message = "Accepted, waiting for peer confirmation"
+		case "pending_their_accept":
+			// Both parties have now accepted - connection is active!
+			newStatus = "active"
+			message = "Connection established"
+
+			// Log acceptance event
+			if h.eventHandler != nil {
+				h.eventHandler.LogConnectionEvent(context.Background(), EventTypeConnectionAccepted, req.ConnectionID, record.PeerGUID, "Bidirectional consent complete")
+			}
+		}
+	}
+
+	// Update connection record
+	record.Status = newStatus
+	newData, err := json.Marshal(record)
+	if err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to update connection")
+	}
+	if err := h.storage.Put(storageKey, newData); err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to store connection update")
+	}
+
+	log.Info().
+		Str("connection_id", req.ConnectionID).
+		Str("response", req.Response).
+		Str("new_status", newStatus).
+		Msg("Connection response processed")
+
+	resp := RespondConnectionResponse{
+		Success:      true,
+		ConnectionID: req.ConnectionID,
+		Status:       newStatus,
+		Message:      message,
+	}
+	respBytes, _ := json.Marshal(resp)
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
 }
 
 // HandleRevoke handles connection.revoke messages
