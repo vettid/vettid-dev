@@ -28,7 +28,8 @@ const TABLE_REGISTRATIONS = process.env.TABLE_REGISTRATIONS!;
 const TABLE_AUDIT = process.env.TABLE_AUDIT;
 const USER_POOL_ID = process.env.USER_POOL_ID!;
 const REGISTERED_GROUP = process.env.REGISTERED_GROUP || 'registered';
-const CORS_ORIGIN = process.env.CORS_ORIGIN || '*';
+// SECURITY: No wildcard default - CORS_ORIGIN must be explicitly set
+const CORS_ORIGIN = process.env.CORS_ORIGIN || '';
 
 type RegistrationRequest = {
   first_name?: string;

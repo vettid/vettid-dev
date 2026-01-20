@@ -388,10 +388,18 @@ const webAcl = new wafv2.CfnWebACL(this, 'WebAcl', {
     });
 
     // Import the ACM certificate for api.vettid.dev
+    // SECURITY: Certificate ARN stored in cdk.context.json (gitignored) to avoid exposing account ID
+    const apiCertificateArn = this.node.tryGetContext('apiCertificateArn');
+    if (!apiCertificateArn) {
+      throw new Error(
+        'Missing required context: apiCertificateArn. ' +
+        'Set it in cdk.context.json or via -c apiCertificateArn=arn:aws:acm:...'
+      );
+    }
     const apiCertificate = acm.Certificate.fromCertificateArn(
       this,
       'ApiCertificate',
-      'arn:aws:acm:us-east-1:449757308783:certificate/832dc2d9-e8f9-41a1-b620-6664077dd5cd'
+      apiCertificateArn
     );
 
     // Create custom domain for API Gateway

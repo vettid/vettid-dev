@@ -2,6 +2,7 @@
  * Security utilities - rate limiting, audit logging
  */
 
+import { randomBytes } from 'crypto';
 import { getDynamoDBDocumentClient } from './clients';
 import { GetCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
 
@@ -82,7 +83,8 @@ export async function writeAuditLog(
     TableName: tableName,
     Item: {
       pk: `audit#${entry.userGuid || 'system'}`,
-      sk: `${now}#${Math.random().toString(36).substring(2, 9)}`,
+      // SECURITY: Use cryptographic random for sort key uniqueness
+      sk: `${now}#${randomBytes(4).toString('hex')}`,
       ...entry,
       timestamp: new Date(now).toISOString(),
       ttl: Math.floor(now / 1000) + 90 * 24 * 60 * 60, // 90 days
