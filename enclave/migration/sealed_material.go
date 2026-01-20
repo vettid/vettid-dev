@@ -456,6 +456,30 @@ func (m *SealedMaterialManager) CleanupExpiredVersions(userID string) (int, erro
 	return deleted, nil
 }
 
+// ListVersions returns all versions of sealed material for a user.
+func (m *SealedMaterialManager) ListVersions(userID string) ([]*SealedMaterialVersion, error) {
+	metadata, err := m.loadMetadata(userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load metadata: %w", err)
+	}
+
+	versions := make([]*SealedMaterialVersion, 0, len(metadata.Versions))
+	for _, info := range metadata.Versions {
+		v := &SealedMaterialVersion{
+			Version:    info.Version,
+			PCRVersion: info.PCRVersion,
+			CreatedAt:  info.CreatedAt,
+			VerifiedAt: info.VerifiedAt,
+			ExpiresAt:  info.ExpiresAt,
+		}
+		// Note: SealedData is not loaded here for efficiency
+		// Use GetVersion() to get full data for a specific version
+		versions = append(versions, v)
+	}
+
+	return versions, nil
+}
+
 // GetNextVersionNumber returns the next version number to use for a new version.
 func (m *SealedMaterialManager) GetNextVersionNumber(userID string) (int, error) {
 	metadata, err := m.loadMetadata(userID)
