@@ -440,7 +440,9 @@ When a user updates their profile:
 ### 4. End-to-End Encryption
 - Each user has an Ed25519 keypair (public in profile, private in Protean Credential)
 - Sensitive vault-to-vault messages encrypted with peer's public key
-- Key compromise requires credential re-enrollment
+- Profile data changes (name, email, etc.) do NOT affect the keypair
+- Key rotation available without credential re-enrollment
+- Only catastrophic key compromise (private key extracted) requires re-enrollment
 
 ### 5. Verification Indicators
 - `email_verified` flag shows if email was verified during enrollment
