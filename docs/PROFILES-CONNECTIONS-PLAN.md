@@ -494,36 +494,122 @@ Pending Requests (3)
 ├── John Smith - Awaiting your review
 ├── Jane Doe - Awaiting their acceptance
 └── Bob Wilson - Awaiting their review
+
+Active Connections (12)
+├── Alice Cooper ✓ - Last active: 2 hours ago
+├── Bob's Hardware Store ✓ - Last active: 1 day ago
+└── Mom ✓ - Last active: 5 minutes ago
 ```
 
+- Use color coding: green (active), yellow (pending), red (issue)
+- Badge counts on navigation tabs for pending actions
+- Sort by: recent activity, alphabetical, connection date
+
 ### 2. Profile Preview Before Accept
-- Show peer's profile with verification badges
+- Show peer's profile with verification badges (✓ Email Verified, ✓ ID Verified)
 - Highlight what data will be shared with them
 - "By accepting, you will share: Name, Email, Phone"
+- Show peer's capabilities: "This connection can request: Payment, Identity Verification"
+- Warning if peer has no verifications: "This person has not verified their identity"
+- Option to adjust sharing settings before accepting
 
 ### 3. Easy Sharing Options
-- Share via: QR Code, Copy Link, Share Sheet (SMS, Email, etc.)
-- "Nearby" option using Bluetooth/WiFi Direct for in-person
+- **QR Code**: Full-screen display with brightness boost, works offline
+- **Copy Link**: Deep link that opens app directly
+- **Share Sheet**: Native OS share to SMS, Email, WhatsApp, etc.
+- **Nearby**: Bluetooth/WiFi Direct for in-person (no internet needed)
+- **NFC Tap**: For devices with NFC support
+- Show invitation expiry countdown: "Expires in 23h 45m"
+- Allow re-generating expired invitations with one tap
 
 ### 4. Connection Health Indicators
-- Show last activity time
-- Warn if credentials expiring soon
-- Alert if profile sync failed
+- **Last active**: "2 hours ago", "3 days ago", "Offline"
+- **Credential status**: "Credentials rotate in 5 days"
+- **Sync status**: "Profile up to date" or "Update available"
+- **Trust level**: Based on verification status and connection age
+- Visual indicator for connections that haven't been active in 30+ days
 
 ### 5. Capability Discovery UI
 - "What can I request from this connection?"
-- Show available credential types without revealing values
-- Enable contextual requests (e.g., "Request payment method")
+- Grouped by category: Payments, Identity, Documents
+- Show available credential types without revealing values:
+  ```
+  Payment Methods (2)
+  ├── Visa •••• 4242
+  └── Mastercard •••• 8888
+
+  Identity Documents (1)
+  └── Driver's License - California
+  ```
+- "Request" button next to each capability
+- History of past requests and responses
 
 ### 6. Notification Preferences
-- Per-connection notification settings
-- Mute without blocking
-- Digest mode for low-priority connections
+- **Per-connection settings**:
+  - All notifications
+  - Important only (requests, security alerts)
+  - Muted (no notifications, still receive messages)
+- **Global quiet hours**: No notifications 10pm - 8am
+- **Digest mode**: Daily summary instead of real-time
+- **Priority connections**: Always notify regardless of quiet hours
 
 ### 7. Offline Handling
 - Queue acceptance/rejection when offline
-- Show "pending sync" indicator
+- Show "pending sync" indicator with retry button
 - Gracefully handle mid-handshake disconnections
+- Cache peer profiles for offline viewing
+- Show clear "You're offline" banner with last sync time
+- Auto-sync when connection restored
+
+### 8. Onboarding & First-Time Experience
+- **First connection wizard**: Guide user through creating first invitation
+- **Sample connection**: Option to connect with VettID support for testing
+- **Tooltips**: Explain verification badges, capability icons on first view
+- **Empty states**: Friendly messages when no connections exist yet
+  - "No connections yet. Invite someone to get started!"
+
+### 9. Profile Management
+- **Preview mode**: "See how others see your profile"
+- **Quick sharing toggles**: One-tap to show/hide phone, address, etc.
+- **Field-level privacy**: Lock icon on fields not shared
+- **Edit history**: "Last updated 3 days ago"
+- **Sync indicator**: Show when profile is syncing to vault
+
+### 10. Trust Building Features
+- **Connection age badge**: "Connected for 2 years"
+- **Mutual connections**: "You both know: Alice, Bob" (if implemented)
+- **Verification chain**: Show what's been verified and by whom
+- **Activity summary**: "15 successful transactions"
+
+### 11. Error Recovery
+- **Clear error messages**: "Connection failed: John rejected your request"
+- **Suggested actions**: "Try sending a new invitation"
+- **Retry with context**: Don't lose user's input on failure
+- **Support shortcut**: Easy access to help when errors occur
+
+### 12. Accessibility
+- **Screen reader support**: All status indicators have text descriptions
+- **High contrast mode**: Clear visual distinction between states
+- **Large touch targets**: Minimum 48dp for all interactive elements
+- **Keyboard navigation**: Full support for external keyboards
+
+### 13. Connection Organization
+- **Labels/Tags**: User-defined categories (Family, Work, Merchants)
+- **Favorites**: Pin important connections to top
+- **Search**: Find by name, email, organization
+- **Filters**: By status, verification level, last active
+- **Archive**: Hide inactive connections without revoking
+
+### 14. Invitation Tracking
+- **Sent invitations list**: Track all pending outbound invitations
+- **Status updates**: "John viewed your invitation" (if they open the link)
+- **Reminder option**: "Resend invitation" for pending invites
+- **Cancel invitation**: Revoke before acceptance
+
+### 15. Data Portability
+- **Export connections**: Download list with peer profiles (JSON/CSV)
+- **Export activity log**: All connection events for personal records
+- **Backup reminder**: Prompt to backup before major changes
 
 ---
 
