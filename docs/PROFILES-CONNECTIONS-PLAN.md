@@ -3,8 +3,8 @@
 ## Overview
 
 This document outlines the implementation plan for the Profiles and Connections features in VettID. These features enable users to:
-1. **Profiles**: Manage personal profile data stored in the vault
-2. **Connections**: Establish peer-to-peer encrypted communication channels between vaults
+1. **Profiles**: Manage personal profile data with selective sharing controls
+2. **Connections**: Establish peer-to-peer encrypted communication channels between vaults with bidirectional consent
 
 ---
 
@@ -14,225 +14,594 @@ This document outlines the implementation plan for the Profiles and Connections 
 
 | Component | Status | Notes |
 |-----------|--------|-------|
-| `ProfileViewModel` | ✅ Implemented | Load, edit, save, publish profile |
-| `ProfileScreen` | ✅ Implemented | UI for viewing/editing profile |
-| `ProfileApiClient` | ⚠️ Uses HTTP | Should migrate to NATS vault handlers |
-| `ConnectionsViewModel` | ✅ Implemented | List, search, navigate to connections |
-| `ConnectionsScreen` | ✅ Implemented | Connection list UI |
-| `ConnectionsClient` | ✅ Implemented | NATS handlers for connection operations |
-| `ConnectionDetailScreen` | ✅ Implemented | View connection details |
-| `CreateInvitationScreen` | ✅ Implemented | Create QR code invitation |
-| `ScanInvitationScreen` | ✅ Implemented | Scan peer's QR invitation |
+| `ProfileViewModel` | ⚠️ Needs Update | Expand for new profile structure |
+| `ProfileScreen` | ⚠️ Needs Update | Add sharing controls, metadata editor |
+| `ProfileApiClient` | ⚠️ Uses HTTP | Migrate to NATS vault handlers |
+| `ConnectionsViewModel` | ⚠️ Needs Update | Add consent flow, profile caching |
+| `ConnectionsScreen` | ⚠️ Needs Update | Show peer profiles, pending requests |
+| `ConnectionsClient` | ⚠️ Needs Update | Implement new handshake flow |
+| `ConnectionDetailScreen` | ⚠️ Needs Update | Display peer profile, capabilities |
+| `CreateInvitationScreen` | ✅ Implemented | QR code + share options |
+| `ScanInvitationScreen` | ⚠️ Needs Update | Add profile review step |
 
 ### iOS Implementation Status
 
 | Component | Status | Notes |
 |-----------|--------|-------|
-| Profile Feature | ✅ Implemented | Full profile management |
-| Connections Feature | ✅ Implemented | Connection list and management |
-
-### Backend Handler Status
-
-| Handler | Topic | Status |
-|---------|-------|--------|
-| `profile.get` | `forVault.profile.get` | ⚠️ Verify |
-| `profile.update` | `forVault.profile.update` | ⚠️ Verify |
-| `profile.publish` | `forVault.profile.publish` | ⚠️ Verify |
-| `connection.create-invite` | `forVault.connection.create-invite` | ✅ Implemented |
-| `connection.store-credentials` | `forVault.connection.store-credentials` | ✅ Implemented |
-| `connection.list` | `forVault.connection.list` | ✅ Implemented |
-| `connection.get-credentials` | `forVault.connection.get-credentials` | ✅ Implemented |
-| `connection.rotate` | `forVault.connection.rotate` | ✅ Implemented |
-| `connection.revoke` | `forVault.connection.revoke` | ✅ Implemented |
+| Profile Feature | ⚠️ Needs Update | Align with new profile structure |
+| Connections Feature | ⚠️ Needs Update | Implement consent flow |
 
 ---
 
 ## Architecture
 
-### Profile Data Flow
-
-```
-┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│   Mobile    │────▶│    NATS     │────▶│   Vault     │
-│     App     │◀────│   Server    │◀────│  (Enclave)  │
-└─────────────┘     └─────────────┘     └─────────────┘
-      │                                        │
-      │  1. profile.get/update                 │
-      │  2. Encrypted at rest                  │
-      │  3. Owner-only access                  │
-      └────────────────────────────────────────┘
-```
-
-### Connection Flow
-
-```
-┌─────────────┐                              ┌─────────────┐
-│   User A    │                              │   User B    │
-│   (Vault)   │                              │   (Vault)   │
-└──────┬──────┘                              └──────┬──────┘
-       │                                            │
-       │ 1. Create Invitation                       │
-       │    (generates NATS creds for B)            │
-       ▼                                            │
-┌─────────────┐                                     │
-│  QR Code    │─────── Share QR ───────────────────▶│
-│  (Invite)   │                                     │
-└─────────────┘                                     │
-       │                                            ▼
-       │                              2. Scan & Store Credentials
-       │                                 (B stores A's creds)
-       │                                            │
-       │                              3. B creates reciprocal invite
-       │◀─────────────────────────────────────────────
-       │
-       ▼
-4. A stores B's credentials
-   (bidirectional connection established)
-```
-
----
-
-## Profile Feature
-
-### Data Model
+### Profile Data Model
 
 ```typescript
-interface Profile {
-  user_guid: string;           // Owner's GUID
-  display_name: string;        // Required
-  bio?: string;                // Optional
-  location?: string;           // Optional
-  avatar_url?: string;         // Optional (future)
-  profile_version: number;     // For conflict resolution
-  updated_at: string;          // ISO8601 timestamp
+interface UserProfile {
+  // === Required Fields (always shared) ===
+  user_guid: string;              // Unique identifier
+  public_key: string;             // Ed25519 public key (private in Protean Credential)
+  first_name: string;             // Required
+  last_name: string;              // Required
+  email: string;                  // Required, verified
+
+  // === Verification Status ===
+  email_verified: boolean;
+  identity_verified: boolean;     // Future: ID verification
+
+  // === Optional Shareable Fields ===
+  display_name?: string;          // Preferred display name
+  phone?: string;
+  address?: Address;
+  bio?: string;
+  avatar_url?: string;
+  organization?: string;
+  job_title?: string;
+
+  // === Sharing Preferences ===
+  sharing_settings: SharingSettings;
+
+  // === Metadata ===
+  profile_version: number;
+  updated_at: string;             // ISO8601
+  created_at: string;
+}
+
+interface Address {
+  street?: string;
+  city?: string;
+  state?: string;
+  postal_code?: string;
+  country?: string;
+}
+
+interface SharingSettings {
+  // Which optional fields to include in shared profile
+  share_phone: boolean;
+  share_address: boolean;
+  share_organization: boolean;
+  share_bio: boolean;
+  share_avatar: boolean;
+
+  // Per-connection overrides (connection_id -> field list)
+  connection_overrides?: Record<string, string[]>;
 }
 ```
 
-### NATS Handlers Required
+### Capability Metadata
 
-#### 1. `profile.get`
-- **Topic**: `{owner_space}.forVault.profile.get`
-- **Request**: `{}`
-- **Response**: `{ profile: Profile }`
+Stored separately for efficient updates and queries:
 
-#### 2. `profile.update`
-- **Topic**: `{owner_space}.forVault.profile.update`
-- **Request**: 
-  ```json
-  {
-    "display_name": "string",
-    "bio": "string | null",
-    "location": "string | null"
-  }
-  ```
-- **Response**: `{ profile: Profile }`
+```typescript
+interface VaultCapabilities {
+  user_guid: string;
 
-#### 3. `profile.publish`
-- **Topic**: `{owner_space}.forVault.profile.publish`
-- **Description**: Broadcasts profile to all active connections
-- **Request**: `{}`
-- **Response**: `{ published_to: number }`
+  // === Available Data Types ===
+  available_credentials: CredentialMetadata[];
 
-### Storage
+  // === Supported Event Handlers ===
+  supported_handlers: HandlerManifest[];
 
-- Profile data stored in vault's encrypted DynamoDB
-- Key: `profile:{user_guid}`
-- Encrypted with vault's DEK
+  // === Version Info ===
+  capabilities_version: number;
+  updated_at: string;
+}
 
----
+interface CredentialMetadata {
+  credential_type: string;        // e.g., "credit_card", "drivers_license", "passport"
+  credential_subtype?: string;    // e.g., "visa", "mastercard"
+  display_name: string;           // e.g., "Visa ending in 4242"
+  credential_id: string;          // For requesting specific credential
+  issuer?: string;
+  expires_at?: string;
+  // NOTE: Never includes actual credential data
+}
 
-## Connections Feature
+interface HandlerManifest {
+  handler_type: string;           // e.g., "payment.request", "document.sign"
+  version: string;                // Handler version
+  description: string;
+  required_permissions: string[]; // What the handler needs
+  supported_since: string;        // When this vault added support
+}
 
-### Data Model
+// Example capabilities for a user:
+// {
+//   available_credentials: [
+//     { credential_type: "credit_card", credential_subtype: "visa", display_name: "Visa •••• 4242", ... },
+//     { credential_type: "drivers_license", display_name: "CA Driver's License", ... }
+//   ],
+//   supported_handlers: [
+//     { handler_type: "payment.request", version: "1.0", ... },
+//     { handler_type: "identity.verify", version: "1.0", ... }
+//   ]
+// }
+//
+// This allows a merchant connection to see "User has a Visa card" and request payment
+// WITHOUT ever seeing the actual card number until the user explicitly approves.
+```
+
+### Connection Data Model
 
 ```typescript
 interface Connection {
-  connection_id: string;       // UUID
-  peer_guid: string;           // Peer's user GUID
-  label: string;               // User-defined name
-  status: 'active' | 'pending' | 'revoked' | 'expired';
+  connection_id: string;
+
+  // === Peer Identity ===
+  peer_guid: string;
+  peer_public_key: string;        // For E2E encryption
+
+  // === Cached Peer Profile ===
+  peer_profile: CachedPeerProfile;
+  peer_capabilities?: VaultCapabilities;
+
+  // === Connection State ===
+  status: ConnectionStatus;
   direction: 'outbound' | 'inbound';
-  nats_credentials: string;    // Encrypted NATS .creds
-  peer_owner_space: string;    // For receiving their messages
-  peer_message_space: string;  // For sending to them
+
+  // === NATS Credentials ===
+  nats_credentials: string;       // Encrypted
+  peer_owner_space: string;
+  peer_message_space: string;
+
+  // === Timestamps ===
   created_at: string;
+  accepted_at?: string;
   expires_at?: string;
   last_rotated_at?: string;
+  profile_last_synced_at?: string;
+}
+
+type ConnectionStatus =
+  | 'pending_their_review'    // Waiting for peer to review our profile
+  | 'pending_our_review'      // We need to review their profile
+  | 'pending_their_accept'    // They reviewed, waiting for their accept
+  | 'pending_our_accept'      // We reviewed, need to accept
+  | 'active'                  // Both accepted, connection established
+  | 'revoked'                 // Connection terminated
+  | 'expired'                 // Invitation expired
+  | 'blocked';                // Peer blocked
+
+interface CachedPeerProfile {
+  // Subset of UserProfile that peer chose to share
+  user_guid: string;
+  public_key: string;
+  first_name: string;
+  last_name: string;
+  email: string;
+  email_verified: boolean;
+
+  // Optional fields (based on peer's sharing settings)
+  display_name?: string;
+  phone?: string;
+  address?: Address;
+  bio?: string;
+  avatar_url?: string;
+  organization?: string;
+
+  // Sync metadata
+  profile_version: number;
+  cached_at: string;
 }
 ```
 
-### Connection Establishment Flow
+---
 
-1. **User A creates invitation**
-   - Calls `connection.create-invite`
-   - Vault generates NATS credentials scoped to A's message space
-   - Returns QR code data with credentials
+## Connection Flow (Bidirectional Consent)
 
-2. **User B scans invitation**
-   - Decodes QR code to get A's credentials
-   - Calls `connection.store-credentials` to save A's creds
-   - Creates reciprocal invitation for A
+```
+┌─────────────────┐                                    ┌─────────────────┐
+│     User A      │                                    │     User B      │
+│    (Inviter)    │                                    │   (Invitee)     │
+└────────┬────────┘                                    └────────┬────────┘
+         │                                                      │
+         │ 1. CREATE INVITATION                                 │
+         │    - Generate temp NATS creds for B                  │
+         │    - Creds scoped to A's message space               │
+         │    - Set invitation expiry (default: 24h)            │
+         ▼                                                      │
+    ┌─────────┐                                                 │
+    │ Invite  │──── Share via QR/Message/Email/Link ───────────▶│
+    │  Data   │                                                 │
+    └─────────┘                                                 │
+         │                                                      ▼
+         │                                    2. INITIATE CONNECTION
+         │                                       - Connect to A's message space
+         │                                       - Retrieve A's shared profile
+         │                                       - Send B's shared profile to A
+         │                                       - Generate reciprocal NATS creds
+         │◀──────────────── Profile Exchange ────────────────────│
+         │                                                      │
+         │                                                      ▼
+         │                                    3. REVIEW & DECIDE (User B)
+         │                                       - Display A's profile
+         │                                       - Show verification status
+         │                                       - [ACCEPT] or [REJECT]
+         │                                                      │
+         │                        ┌─────────────────────────────┤
+         │                        │                             │
+         │                   [REJECT]                      [ACCEPT]
+         │                        │                             │
+         │                        ▼                             ▼
+         │              Revoke A's temp creds         Notify A of acceptance
+         │              Connection terminated         A must now review B
+         │                                                      │
+         ▼                                                      │
+    4. REVIEW & DECIDE (User A)◀────────────────────────────────┘
+       - Display B's profile
+       - Show verification status
+       - [ACCEPT] or [REJECT]
+         │
+         ├──────────[REJECT]────────▶ Revoke B's creds, notify B
+         │
+         └──────────[ACCEPT]────────▶ 5. ESTABLISH SECURE CONNECTION
+                                         │
+                                         ▼
+                                    ┌─────────────────────────────┐
+                                    │  BIDIRECTIONAL CONNECTION   │
+                                    │  - Exchange permanent keys  │
+                                    │  - Rotate NATS credentials  │
+                                    │  - Cache peer profiles      │
+                                    │  - Subscribe to updates     │
+                                    └─────────────────────────────┘
+                                                │
+                                    ┌───────────┴───────────┐
+                                    │                       │
+                                    ▼                       ▼
+                              User A's Vault          User B's Vault
+                              stores B's profile      stores A's profile
+                              + capabilities          + capabilities
+```
 
-3. **User A completes connection**
-   - Scans B's reciprocal QR code
-   - Stores B's credentials
-   - Both users now have bidirectional communication
+### Step-by-Step Protocol
 
-### NATS Handlers
+#### Step 1: Create Invitation (User A)
+```typescript
+// Request
+{
+  action: "connection.create-invite",
+  label: "Connection with Bob",           // A's label for this connection
+  expiry_hours: 24,                        // Optional, default 24h
+  share_fields: ["phone", "organization"] // Optional per-invite overrides
+}
 
-| Handler | Description |
-|---------|-------------|
-| `connection.create-invite` | Generate NATS credentials for peer |
-| `connection.store-credentials` | Store peer's credentials in vault |
-| `connection.list` | List all connections with status filter |
-| `connection.get-credentials` | Get credentials for a connection |
-| `connection.rotate` | Rotate credentials (security refresh) |
-| `connection.revoke` | Permanently revoke a connection |
+// Response
+{
+  invitation_id: string,
+  invitation_code: string,                // Short code for manual entry
+  invitation_url: string,                 // Deep link
+  qr_data: string,                        // For QR code generation
+  temp_nats_credentials: string,          // Encrypted, for B to use
+  expires_at: string
+}
+```
 
-### Security Considerations
+#### Step 2: Initiate Connection (User B)
+```typescript
+// B decodes invitation and connects to A's message space
 
-1. **Credential Scoping**: Each connection gets minimal NATS permissions
-2. **Rotation**: Credentials should be rotated periodically
-3. **Revocation**: Immediate credential revocation on user action
-4. **Expiry**: Invitations expire after configurable time (default: 24h)
+// Request to A's vault
+{
+  action: "connection.initiate",
+  invitation_id: string,
+  requester_profile: SharedProfile,       // B's profile to share with A
+  requester_capabilities: VaultCapabilities,
+  requester_nats_credentials: string      // Reciprocal creds for A
+}
+
+// Response from A's vault
+{
+  connection_id: string,
+  inviter_profile: SharedProfile,         // A's profile
+  inviter_capabilities: VaultCapabilities,
+  status: "pending_their_review"          // B needs to review A
+}
+```
+
+#### Step 3: Review & Accept/Reject (User B)
+```typescript
+// Request
+{
+  action: "connection.respond",
+  connection_id: string,
+  response: "accept" | "reject",
+  rejection_reason?: string               // Optional, for A's information
+}
+
+// If accepted, A's vault transitions to "pending_our_accept"
+// If rejected, temp credentials are revoked
+```
+
+#### Step 4: Review & Accept/Reject (User A)
+```typescript
+// A receives notification that B accepted
+// A reviews B's profile
+
+// Request
+{
+  action: "connection.respond",
+  connection_id: string,
+  response: "accept" | "reject"
+}
+```
+
+#### Step 5: Finalize Connection
+```typescript
+// Automatically triggered when both accept
+
+// Both vaults:
+// 1. Generate permanent NATS credentials for peer
+// 2. Rotate encryption keys
+// 3. Cache peer profile and capabilities
+// 4. Subscribe to peer's profile.updated topic
+
+// Connection status changes to "active"
+```
+
+---
+
+## Profile Updates & Notifications
+
+When a user updates their profile:
+
+```typescript
+// 1. Update local profile
+{
+  action: "profile.update",
+  updates: Partial<UserProfile>
+}
+
+// 2. Vault automatically notifies all active connections
+// Published to: {peer_message_space}.profile.updated
+{
+  event_type: "profile.updated",
+  user_guid: string,
+  updated_fields: string[],
+  profile_version: number,
+  timestamp: string
+}
+
+// 3. Connected vaults fetch updated profile
+{
+  action: "connection.get-profile",
+  connection_id: string
+}
+
+// Response includes only fields the updater chose to share
+```
+
+---
+
+## NATS Topics
+
+| Topic | Direction | Description |
+|-------|-----------|-------------|
+| `{space}.forVault.profile.get` | → Vault | Get own profile |
+| `{space}.forVault.profile.update` | → Vault | Update own profile |
+| `{space}.forVault.profile.get-shared` | → Vault | Get profile to share (applies sharing settings) |
+| `{space}.forVault.capabilities.get` | → Vault | Get own capabilities |
+| `{space}.forVault.capabilities.update` | → Vault | Update capabilities |
+| `{space}.forVault.connection.create-invite` | → Vault | Create invitation |
+| `{space}.forVault.connection.initiate` | → Vault | Initiate connection (invitee) |
+| `{space}.forVault.connection.respond` | → Vault | Accept/reject connection |
+| `{space}.forVault.connection.list` | → Vault | List connections |
+| `{space}.forVault.connection.get` | → Vault | Get connection details |
+| `{space}.forVault.connection.get-profile` | → Vault | Get peer's cached profile |
+| `{space}.forVault.connection.rotate` | → Vault | Rotate credentials |
+| `{space}.forVault.connection.revoke` | → Vault | Revoke connection |
+| `{space}.forVault.connection.block` | → Vault | Block peer |
+| `{peer_message_space}.profile.updated` | Vault → Vault | Profile update notification |
+| `{peer_message_space}.capabilities.updated` | Vault → Vault | Capabilities update notification |
+| `{peer_message_space}.connection.request` | Vault → Vault | New connection request |
+| `{peer_message_space}.connection.accepted` | Vault → Vault | Connection accepted |
+| `{peer_message_space}.connection.rejected` | Vault → Vault | Connection rejected |
+
+---
+
+## Security Considerations
+
+### 1. Bidirectional Consent
+- **Both parties must explicitly accept** before connection is established
+- Either party can reject at any point during the handshake
+- Rejection immediately revokes any temporary credentials
+
+### 2. Credential Scoping & Rotation
+- Invitation credentials are temporary with short TTL (default 24h)
+- Permanent credentials have minimal NATS permissions (only peer's message space)
+- Credentials rotate automatically (recommendation: every 7 days)
+- Manual rotation available for security-conscious users
+
+### 3. Profile Privacy
+- Users control exactly which fields to share via `SharingSettings`
+- Per-connection overrides allow different sharing levels for different connections
+- Credential metadata never includes actual credential data (just type/display name)
+
+### 4. End-to-End Encryption
+- Each user has an Ed25519 keypair (public in profile, private in Protean Credential)
+- Sensitive vault-to-vault messages encrypted with peer's public key
+- Key compromise requires credential re-enrollment
+
+### 5. Verification Indicators
+- `email_verified` flag shows if email was verified during enrollment
+- Future: `identity_verified` for ID document verification
+- UI should clearly indicate verification status to help prevent impersonation
+
+### 6. Rate Limiting & Spam Prevention
+- Limit invitation creation (e.g., max 10 pending invitations)
+- Limit connection requests per day
+- Block feature prevents repeated requests from blocked users
+
+### 7. Invitation Security
+- Invitation codes are single-use
+- Expired invitations cannot be used
+- QR codes should include checksum for tampering detection
+
+### 8. Forward Secrecy
+- Use X25519 for ephemeral session keys (rotated frequently)
+- Ed25519 identity key for authentication only
+- Compromise of current session key doesn't expose past messages
+
+### 9. Trust on First Use (TOFU)
+- Pin peer's public key after first successful connection
+- Alert user if peer's key changes (possible compromise or re-enrollment)
+- Require explicit acceptance to continue with new key
+
+### 10. Audit Trail
+- Log all connection events: created, accepted, rejected, revoked, blocked
+- Include timestamps and device info
+- Available in user's security audit log (Feed feature)
+
+### 11. Emergency Controls
+- "Revoke All Connections" panic button for suspected compromise
+- "Lock Profile" to temporarily prevent new connection requests
+- These actions should require password confirmation
+
+### 12. Invitation Binding
+- Invitation can optionally be bound to specific identifier (email, phone)
+- Only that identifier can accept the invitation
+- Prevents invitation forwarding/sharing attacks
+
+---
+
+## Usability Recommendations
+
+### 1. Clear Status Indicators
+```
+Pending Requests (3)
+├── John Smith - Awaiting your review
+├── Jane Doe - Awaiting their acceptance
+└── Bob Wilson - Awaiting their review
+```
+
+### 2. Profile Preview Before Accept
+- Show peer's profile with verification badges
+- Highlight what data will be shared with them
+- "By accepting, you will share: Name, Email, Phone"
+
+### 3. Easy Sharing Options
+- Share via: QR Code, Copy Link, Share Sheet (SMS, Email, etc.)
+- "Nearby" option using Bluetooth/WiFi Direct for in-person
+
+### 4. Connection Health Indicators
+- Show last activity time
+- Warn if credentials expiring soon
+- Alert if profile sync failed
+
+### 5. Capability Discovery UI
+- "What can I request from this connection?"
+- Show available credential types without revealing values
+- Enable contextual requests (e.g., "Request payment method")
+
+### 6. Notification Preferences
+- Per-connection notification settings
+- Mute without blocking
+- Digest mode for low-priority connections
+
+### 7. Offline Handling
+- Queue acceptance/rejection when offline
+- Show "pending sync" indicator
+- Gracefully handle mid-handshake disconnections
 
 ---
 
 ## Implementation Tasks
 
-### Phase 1: Profile NATS Migration (Android)
-
-- [ ] Create `ProfileClient.kt` using NATS handlers
-- [ ] Migrate `ProfileViewModel` from HTTP to NATS
+### Phase 1: Profile Expansion
+- [ ] Define new profile schema in backend
+- [ ] Create `ProfileClient.kt` with NATS handlers
+- [ ] Add sharing settings UI
+- [ ] Implement capability metadata storage
 - [ ] Add profile caching in `EncryptedSharedPreferences`
-- [ ] Test profile get/update/publish flow
 
-### Phase 2: Connections Polish (Android)
+### Phase 2: Connection Handshake
+- [ ] Implement bidirectional consent flow in backend
+- [ ] Create connection state machine
+- [ ] Build profile review screen
+- [ ] Add accept/reject UI with confirmation
+- [ ] Implement invitation expiry handling
 
-- [ ] Add connection request notifications
-- [ ] Implement credential rotation UI
-- [ ] Add connection expiry warnings
-- [ ] Test full connection flow E2E
+### Phase 3: Profile Sync & Notifications
+- [ ] Implement `profile.updated` notification handler
+- [ ] Build profile cache invalidation logic
+- [ ] Add connection health monitoring
+- [ ] Create update notification UI
 
-### Phase 3: Backend Verification
+### Phase 4: Credential Rotation
+- [ ] Implement automatic rotation schedule
+- [ ] Add manual rotation option
+- [ ] Build rotation failure recovery
+- [ ] Test rotation during active sessions
 
-- [ ] Verify all profile handlers in vault-manager
-- [ ] Verify all connection handlers in vault-manager
-- [ ] Add integration tests for handlers
-- [ ] Document handler response formats
-
-### Phase 4: Cross-Platform Testing
-
-- [ ] Test Android ↔ iOS connections
-- [ ] Test profile publishing between platforms
-- [ ] Verify message delivery after connection
+### Phase 5: Capability Discovery
+- [ ] Design capability request protocol
+- [ ] Build capability browser UI
+- [ ] Implement selective disclosure flow
+- [ ] Test cross-platform capability exchange
 
 ---
 
-## Related Issues
+## Storage Architecture
 
-- Issue #16: Test and verify post-enrollment NATS topics
-- Enclave Migration: May affect connection credential storage
+### Local Storage (EncryptedSharedPreferences)
+
+```
+vettid_profiles/
+├── my_profile.json           # User's own profile
+├── my_capabilities.json      # User's capability metadata
+└── sharing_settings.json     # Sharing preferences
+
+vettid_connections/
+├── index.json                # Connection list with status
+├── {connection_id}/
+│   ├── connection.json       # Connection metadata
+│   ├── peer_profile.json     # Cached peer profile
+│   ├── peer_capabilities.json
+│   └── credentials.enc       # Encrypted NATS credentials
+└── pending_requests.json     # Incoming requests awaiting review
+```
+
+### Vault Storage (Encrypted DynamoDB)
+
+```
+profile:{user_guid}           # Full profile
+capabilities:{user_guid}      # Capability metadata
+connection:{connection_id}    # Connection record
+invitation:{invitation_id}    # Pending invitation
+```
+
+---
+
+## Error Handling
+
+| Scenario | Handling |
+|----------|----------|
+| Invitation expired | Show "This invitation has expired" with option to request new one |
+| Peer rejected | Show "Connection declined" - no retry without new invitation |
+| Network failure during handshake | Save state, retry on reconnect |
+| Profile sync failed | Use cached version, show "Last updated X ago" |
+| Credential rotation failed | Retry with backoff, alert user if persistent |
+| Blocked user attempts contact | Silently ignore, no notification to blocker |
 
 ---
 
