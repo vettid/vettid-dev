@@ -12,17 +12,19 @@ import (
 // MessagingHandler handles vault-to-vault messaging operations.
 // Messages flow: App -> Vault -> Peer Vault -> Peer App
 type MessagingHandler struct {
-	ownerSpace string
-	storage    *EncryptedStorage
-	publisher  *VsockPublisher
+	ownerSpace   string
+	storage      *EncryptedStorage
+	publisher    *VsockPublisher
+	eventHandler *EventHandler
 }
 
 // NewMessagingHandler creates a new messaging handler
-func NewMessagingHandler(ownerSpace string, storage *EncryptedStorage, publisher *VsockPublisher) *MessagingHandler {
+func NewMessagingHandler(ownerSpace string, storage *EncryptedStorage, publisher *VsockPublisher, eventHandler *EventHandler) *MessagingHandler {
 	return &MessagingHandler{
-		ownerSpace: ownerSpace,
-		storage:    storage,
-		publisher:  publisher,
+		ownerSpace:   ownerSpace,
+		storage:      storage,
+		publisher:    publisher,
+		eventHandler: eventHandler,
 	}
 }
 
@@ -195,6 +197,11 @@ func (h *MessagingHandler) HandleSend(msg *IncomingMessage) (*OutgoingMessage, e
 		return h.errorResponse(msg.GetID(), "Failed to send message to peer")
 	}
 
+	// Log message sent event for audit
+	if h.eventHandler != nil {
+		h.eventHandler.LogMessageEvent(context.Background(), EventTypeMessageSent, messageID, req.ConnectionID, "")
+	}
+
 	log.Info().
 		Str("message_id", messageID).
 		Str("connection_id", req.ConnectionID).
@@ -334,6 +341,11 @@ func (h *MessagingHandler) HandleIncomingMessage(ctx context.Context, data []byt
 	// SECURITY: Mark event as processed to prevent replay
 	if err := h.storage.MarkEventProcessed(eventID, "incoming_message"); err != nil {
 		log.Warn().Err(err).Str("message_id", peerMsg.MessageID).Msg("Failed to mark message as processed")
+	}
+
+	// Log message received event for audit and feed
+	if h.eventHandler != nil {
+		h.eventHandler.LogMessageEvent(ctx, EventTypeMessageReceived, peerMsg.MessageID, peerMsg.ConnectionID, "New message")
 	}
 
 	// Notify app about new message

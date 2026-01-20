@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
@@ -13,15 +14,17 @@ import (
 // ConnectionsHandler handles connection credential management.
 // This enables vault-to-vault communication.
 type ConnectionsHandler struct {
-	ownerSpace string
-	storage    *EncryptedStorage
+	ownerSpace   string
+	storage      *EncryptedStorage
+	eventHandler *EventHandler
 }
 
 // NewConnectionsHandler creates a new connections handler
-func NewConnectionsHandler(ownerSpace string, storage *EncryptedStorage) *ConnectionsHandler {
+func NewConnectionsHandler(ownerSpace string, storage *EncryptedStorage, eventHandler *EventHandler) *ConnectionsHandler {
 	return &ConnectionsHandler{
-		ownerSpace: ownerSpace,
-		storage:    storage,
+		ownerSpace:   ownerSpace,
+		storage:      storage,
+		eventHandler: eventHandler,
 	}
 }
 
@@ -178,6 +181,11 @@ func (h *ConnectionsHandler) HandleCreateInvite(msg *IncomingMessage) (*Outgoing
 	// Add to index
 	h.addToConnectionIndex(connectionID)
 
+	// Log connection created event for audit
+	if h.eventHandler != nil {
+		h.eventHandler.LogConnectionEvent(context.Background(), EventTypeConnectionCreated, connectionID, req.PeerGUID, "Connection invite created")
+	}
+
 	log.Info().Str("connection_id", connectionID).Msg("Connection invite created")
 
 	resp := CreateInviteResponse{
@@ -248,6 +256,11 @@ func (h *ConnectionsHandler) HandleStoreCredentials(msg *IncomingMessage) (*Outg
 
 	h.addToConnectionIndex(req.ConnectionID)
 
+	// Log connection accepted event for audit (storing credentials means accepting the connection)
+	if h.eventHandler != nil {
+		h.eventHandler.LogConnectionEvent(context.Background(), EventTypeConnectionAccepted, req.ConnectionID, req.PeerGUID, "Connection established")
+	}
+
 	log.Info().Str("connection_id", req.ConnectionID).Msg("Connection credentials stored")
 
 	resp := StoreCredentialsResponse{
@@ -291,6 +304,11 @@ func (h *ConnectionsHandler) HandleRevoke(msg *IncomingMessage) (*OutgoingMessag
 	newData, _ := json.Marshal(record)
 	if err := h.storage.Put(storageKey, newData); err != nil {
 		return h.errorResponse(msg.GetID(), "Failed to revoke connection")
+	}
+
+	// Log connection revoked event for audit and feed
+	if h.eventHandler != nil {
+		h.eventHandler.LogConnectionEvent(context.Background(), EventTypeConnectionRevoked, req.ConnectionID, record.PeerGUID, "Connection revoked")
 	}
 
 	log.Info().Str("connection_id", req.ConnectionID).Msg("Connection revoked")
