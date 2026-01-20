@@ -90,6 +90,9 @@ type MessageHandler struct {
 
 	// Voting handler for vault-signed votes
 	voteHandler *VoteHandler
+
+	// Migration handler for migration status, acknowledgment, and recovery
+	migrationHandler *MigrationHandler
 }
 
 // VsockPublisher implements CallPublisher using vsock to parent
@@ -171,6 +174,9 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 	// Create credential secret handler for critical secrets
 	credentialSecretHandler := NewCredentialSecretHandler(ownerSpace, storage, vaultState, bootstrapHandler, eventHandler)
 
+	// Create migration handler for migration status and recovery
+	migrationHandler := NewMigrationHandler(ownerSpace, storage, vaultState, sealerProxy)
+
 	return &MessageHandler{
 		ownerSpace:           ownerSpace,
 		storage:              storage,
@@ -194,6 +200,9 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 
 		// Voting
 		voteHandler: voteHandler,
+
+		// Migration
+		migrationHandler: migrationHandler,
 	}
 }
 
@@ -540,6 +549,12 @@ func (mh *MessageHandler) handleCredentialOperation(ctx context.Context, msg *In
 	case "secret":
 		// Critical secrets stored within Protean Credential
 		return mh.handleCredentialSecretOperation(ctx, msg, opParts[1:])
+	case "migration":
+		// Migration status and acknowledgment
+		return mh.handleCredentialMigrationOperation(ctx, msg, opParts[1:])
+	case "emergency_recovery":
+		// Emergency recovery when both enclaves unavailable
+		return mh.migrationHandler.HandleEmergencyRecovery(ctx, msg)
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown credential operation: %s", opType))
 	}
@@ -565,6 +580,24 @@ func (mh *MessageHandler) handleCredentialSecretOperation(ctx context.Context, m
 		return mh.credentialSecretHandler.HandleDelete(msg)
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown credential.secret operation: %s", opType))
+	}
+}
+
+// handleCredentialMigrationOperation routes credential.migration.* operations
+func (mh *MessageHandler) handleCredentialMigrationOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
+	if len(opParts) < 2 {
+		return mh.errorResponse(msg.GetID(), "missing credential.migration operation type")
+	}
+
+	opType := opParts[1]
+
+	switch opType {
+	case "status":
+		return mh.migrationHandler.HandleStatus(ctx, msg)
+	case "acknowledge":
+		return mh.migrationHandler.HandleAcknowledge(ctx, msg)
+	default:
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown credential.migration operation: %s", opType))
 	}
 }
 
@@ -1007,4 +1040,5 @@ func (mh *MessageHandler) SecureErase() {
 	mh.connectionsHandler = nil
 	mh.notificationsHandler = nil
 	mh.credentialSecretHandler = nil
+	mh.migrationHandler = nil
 }
