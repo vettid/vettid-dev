@@ -1,92 +1,244 @@
-# Plan: Service Connections Feature
-
-> **Status: PENDING REVIEW**
+# Service Connections Feature
 
 **Feature**: B2C Service Connections for VettID Vault
 
 ## Overview
 
-Enable users to connect to services (apps, websites, businesses) via QR code or deep link, with explicit data contracts, sandboxed storage, and strong security guarantees. Service connections are clearly distinguished from peer-to-peer connections.
+Enable users to connect to services (apps, businesses, organizations) that run their own VettID Service Vaults. Service connections use the same vault-to-vault NATS communication as peer connections, but with additional contract-based permissions and data access controls.
+
+**Key Principle**: Services are vaults too. A service runs a VettID Service Vault that communicates with user vaults over NATS, using the same E2E encryption and bidirectional consent model as peer connections.
 
 ---
 
-## Key Concepts
+## Architecture
 
-### Service Connection Flow
-1. User scans QR code / clicks link → initiates connection
-2. Vault verifies service identity (DNS/HTTPS/Registry)
-3. Contract displayed: required fields, permissions, storage
-4. Missing required fields detected → user prompted to add
-5. User accepts/rejects contract
-6. Connection established with key rotation like peer connections
+### Service Vault vs User Vault
 
-### Data Contract Model
-- **Required Fields**: Must exist in profile to connect
-- **Optional Fields**: Requested but not blocking
-- **On-Demand Fields**: Service can access anytime
-- **Consent Fields**: Require user approval per-request
-- **Storage Permission**: Whether service can store data in vault
+| Aspect | User Vault | Service Vault |
+|--------|-----------|---------------|
+| **Runs on** | User's device (via enclave) | Service's infrastructure (via enclave) |
+| **Identity** | User GUID | Service GUID |
+| **Connections** | Peers + Services | Users only |
+| **Data contracts** | Accepts contracts | Defines contracts |
+| **Storage** | Personal data | Service-specific data per user |
+| **Verification** | Email, identity | Organization verification |
 
-### Service Vault Storage
-- **Sandboxed**: Each service gets isolated namespace
-- **Visibility Levels**:
-  - `hidden`: User sees nothing
-  - `metadata`: User sees label/description but not value
-  - `viewable`: User can see the actual value
+### Communication Flow
+
+```
+┌─────────────────┐                NATS                ┌─────────────────┐
+│   User Vault    │◄──────────────────────────────────►│  Service Vault  │
+│  (on device)    │         E2E Encrypted              │  (on service)   │
+└─────────────────┘                                    └─────────────────┘
+        │                                                      │
+        │ Stores:                                              │ Stores:
+        │ - Service connection                                 │ - User connection
+        │ - Accepted contract                                  │ - Contract definition
+        │ - Service-provided data                              │ - User-provided data
+        │ - Access history                                     │ - Request history
+```
+
+---
+
+## Service Connection Flow (Bidirectional Consent)
+
+```
+┌─────────────────┐                                    ┌─────────────────┐
+│      User       │                                    │     Service     │
+│   (Consumer)    │                                    │   (Provider)    │
+└────────┬────────┘                                    └────────┬────────┘
+         │                                                      │
+         │ 1. DISCOVER SERVICE                                  │
+         │    - Scan QR code / click link / search              │
+         │    - Contains service_guid + NATS connection info    │
+         ▼                                                      │
+    ┌─────────┐                                                 │
+    │ Service │──── Request service profile + contract ────────►│
+    │  Info   │                                                 │
+    └─────────┘                                                 │
+         │◄────────── Service profile + contract ───────────────│
+         │                                                      │
+         ▼                                                      │
+    2. REVIEW CONTRACT                                          │
+       - Display service profile + verification status          │
+       - Show required/optional fields                          │
+       - Show what service can access/store                     │
+       - Check if user has required fields                      │
+       - [ACCEPT] or [REJECT]                                   │
+         │                                                      │
+         ├──────────[REJECT]────────► Connection terminated     │
+         │                                                      │
+         └──────────[ACCEPT]────────►                           │
+                                     3. INITIATE CONNECTION     │
+                                        - Send user profile     │
+                                        - Send NATS credentials │
+                                        - Exchange E2E keys     │
+         │◄─────────────────────────────────────────────────────│
+         │                                                      │
+         ▼                                                      ▼
+    4. CONNECTION ACTIVE                               4. CONNECTION ACTIVE
+       - Store service connection                         - Store user connection
+       - Cache service profile                            - Cache user profile
+       - Subscribe to service events                      - Subscribe to user events
+       - Track contract version                           - Enforce contract
+```
+
+### Step-by-Step Protocol
+
+#### Step 1: Discover Service
+```typescript
+// User scans QR or clicks deep link containing:
+{
+  type: "vettid-service",
+  service_guid: string,
+  nats_endpoint: string,           // NATS connection info
+  invitation_token: string,        // One-time token for initial connection
+  expires_at: string
+}
+```
+
+#### Step 2: Request Service Profile & Contract
+```typescript
+// Request to service vault
+{
+  action: "service.profile.get",
+  invitation_token: string
+}
+
+// Response from service vault
+{
+  service_guid: string,
+  service_name: string,
+  service_description: string,
+  service_logo_url: string,
+  service_category: string,        // "retail", "healthcare", "finance", etc.
+  organization: {
+    name: string,
+    verified: boolean,
+    verification_type: string      // "business", "nonprofit", "government"
+  },
+  contract: ServiceDataContract,
+  temp_nats_credentials: string    // For completing connection
+}
+```
+
+#### Step 3: Accept Contract & Initiate Connection
+```typescript
+// Request to service vault
+{
+  action: "service.connection.initiate",
+  service_guid: string,
+  user_profile: SharedProfile,     // Fields user chose to share
+  user_nats_credentials: string,   // Reciprocal credentials
+  user_e2e_public_key: string,
+  contract_version: number         // Accepting this version
+}
+
+// Response
+{
+  connection_id: string,
+  service_e2e_public_key: string,
+  status: "active"
+}
+```
 
 ---
 
 ## Data Models
 
-### ServiceConnectionRecord
-Extends `ConnectionRecord` with service-specific fields:
+### ServiceConnectionRecord (User Vault)
 ```go
 type ServiceConnectionRecord struct {
     ConnectionRecord // Embed base (E2E keys, status, activity)
 
+    // Service identification
     IsServiceConnection bool   `json:"is_service_connection"`
     ServiceGUID         string `json:"service_guid"`
     ServiceName         string `json:"service_name"`
     ServiceLogoURL      string `json:"service_logo_url,omitempty"`
     ServiceDescription  string `json:"service_description,omitempty"`
     ServiceCategory     string `json:"service_category,omitempty"`
-    ServiceURL          string `json:"service_url,omitempty"`
 
-    VerificationStatus  string `json:"verification_status"` // "verified", "unverified"
-    VerificationMethod  string `json:"verification_method,omitempty"`
+    // Organization verification
+    OrganizationName     string `json:"organization_name,omitempty"`
+    OrganizationVerified bool   `json:"organization_verified"`
+    VerificationType     string `json:"verification_type,omitempty"`
 
-    ContractID          string    `json:"contract_id"`
-    ContractVersion     int       `json:"contract_version"`
-    ContractAcceptedAt  time.Time `json:"contract_accepted_at"`
+    // Contract tracking
+    ContractID         string    `json:"contract_id"`
+    ContractVersion    int       `json:"contract_version"`
+    ContractAcceptedAt time.Time `json:"contract_accepted_at"`
+
+    // Usability fields (same as peer connections)
+    Tags       []string `json:"tags,omitempty"`
+    IsFavorite bool     `json:"is_favorite"`
+    IsArchived bool     `json:"is_archived"`
+    IsMuted    bool     `json:"is_muted"`
+}
+```
+
+### UserConnectionRecord (Service Vault)
+```go
+type UserConnectionRecord struct {
+    ConnectionRecord // Embed base
+
+    // User identification
+    UserGUID    string `json:"user_guid"`
+    UserProfile map[string]string `json:"user_profile"` // Shared fields only
+
+    // Contract enforcement
+    ContractID      string    `json:"contract_id"`
+    ContractVersion int       `json:"contract_version"`
+    AcceptedAt      time.Time `json:"accepted_at"`
+
+    // Rate limiting state
+    RequestCount    int       `json:"request_count"`
+    RequestWindowAt time.Time `json:"request_window_at"`
 }
 ```
 
 ### ServiceDataContract
 ```go
 type ServiceDataContract struct {
-    ContractID     string   `json:"contract_id"`
-    ServiceGUID    string   `json:"service_guid"`
-    Version        int      `json:"version"`
+    ContractID  string `json:"contract_id"`
+    ServiceGUID string `json:"service_guid"`
+    Version     int    `json:"version"`
 
-    RequiredFields []string `json:"required_fields"`
-    OptionalFields []string `json:"optional_fields"`
-    OnDemandFields []string `json:"on_demand_fields"`
-    ConsentFields  []string `json:"consent_fields"`
+    // Human-readable info
+    Title       string `json:"title"`
+    Description string `json:"description"`
+    TermsURL    string `json:"terms_url,omitempty"`
+    PrivacyURL  string `json:"privacy_url,omitempty"`
 
-    CanStoreData       bool     `json:"can_store_data"`
-    StorageCategories  []string `json:"storage_categories,omitempty"`
-    CanRequestAuth     bool     `json:"can_request_auth"`
-    MaxRequestsPerHour int      `json:"max_requests_per_hour,omitempty"`
+    // Field access levels
+    RequiredFields []FieldSpec `json:"required_fields"` // Must have to connect
+    OptionalFields []FieldSpec `json:"optional_fields"` // Requested but not required
+    OnDemandFields []string    `json:"on_demand_fields"` // Service can read anytime
+    ConsentFields  []string    `json:"consent_fields"`   // Requires per-request approval
 
-    Title       string     `json:"title"`
-    Description string     `json:"description"`
-    TermsURL    string     `json:"terms_url,omitempty"`
-    CreatedAt   time.Time  `json:"created_at"`
-    ExpiresAt   *time.Time `json:"expires_at,omitempty"`
+    // Service permissions
+    CanStoreData      bool     `json:"can_store_data"`
+    StorageCategories []string `json:"storage_categories,omitempty"`
+    CanSendMessages   bool     `json:"can_send_messages"`
+    CanRequestAuth    bool     `json:"can_request_auth"`
+
+    // Rate limits
+    MaxRequestsPerHour int `json:"max_requests_per_hour,omitempty"`
+    MaxStorageMB       int `json:"max_storage_mb,omitempty"`
+
+    // Timestamps
+    CreatedAt time.Time  `json:"created_at"`
+    ExpiresAt *time.Time `json:"expires_at,omitempty"`
+}
+
+type FieldSpec struct {
+    Field       string `json:"field"`
+    Purpose     string `json:"purpose"`      // Why service needs this
+    Retention   string `json:"retention"`    // How long service keeps it
 }
 ```
 
-### ServiceStorageRecord
+### ServiceStorageRecord (User Vault - Service's sandbox)
 ```go
 type ServiceStorageRecord struct {
     Key             string     `json:"key"`
@@ -108,10 +260,11 @@ type ServiceStorageRecord struct {
 type ServiceRequest struct {
     RequestID       string     `json:"request_id"`
     ConnectionID    string     `json:"connection_id"`
-    RequestType     string     `json:"request_type"` // "auth", "consent"
+    RequestType     string     `json:"request_type"` // "auth", "consent", "payment"
     RequestedFields []string   `json:"requested_fields,omitempty"`
     RequestedAction string     `json:"requested_action,omitempty"`
     Purpose         string     `json:"purpose,omitempty"`
+    Amount          *Money     `json:"amount,omitempty"` // For payment requests
     Status          string     `json:"status"` // "pending", "approved", "denied", "expired"
     RequestedAt     time.Time  `json:"requested_at"`
     ExpiresAt       time.Time  `json:"expires_at"`
@@ -119,234 +272,411 @@ type ServiceRequest struct {
 }
 ```
 
-### ServiceVerification
-```go
-type ServiceVerification struct {
-    ServiceGUID        string    `json:"service_guid"`
-    VerificationStatus string    `json:"verification_status"`
-    VerificationMethod string    `json:"verification_method"` // "dns", "https", "registry"
-    VerifiedDomain     string    `json:"verified_domain,omitempty"`
-    VerifiedAt         time.Time `json:"verified_at"`
-    ExpiresAt          time.Time `json:"expires_at"` // 24-hour cache
-}
-```
-
 ---
 
-## Storage Keys
+## NATS Topics
 
+### Service-to-User Communication
 ```
-connections/{connection_id}              # ServiceConnectionRecord (extends ConnectionRecord)
-service-contracts/{contract_id}          # ServiceDataContract
-service-data/{connection_id}/{key}       # ServiceStorageRecord
-service-requests/{request_id}            # ServiceRequest
-service-verifications/{service_guid}     # ServiceVerification (cached)
-service-rate-limits/{connection_id}      # RateLimiter state
-```
-
----
-
-## Files to Create
-
-### 1. `service_connections.go` (~800 lines)
-**Handler**: `ServiceConnectionHandler`
-- `HandleInitiate(msg)` - Verify service, load contract, check required fields
-- `HandleAccept(msg)` - Create connection after contract acceptance
-- `HandleReject(msg)` - Reject connection request
-- `HandleRevoke(msg)` - Revoke connection with optional data cleanup
-- `HandleList(msg)` - List service connections
-- `HandleGet(msg)` - Get single service connection details
-- `HandleGetContract(msg)` - Get contract for a connection
-
-### 2. `service_data.go` (~600 lines)
-**Handler**: `ServiceDataHandler`
-- `HandleGet(msg)` - Get profile fields with contract enforcement
-- `HandleStore(msg)` - Store data in service sandbox
-- `HandleList(msg)` - List service-stored data (visibility filtered)
-- `HandleDelete(msg)` - Delete service data
-- `enforceContract()` - Validate field access against contract
-- `checkRateLimit()` - Token bucket rate limiting
-
-### 3. `service_requests.go` (~500 lines)
-**Handler**: `ServiceRequestsHandler`
-- `HandleAuthRequest(msg)` - Service requests user authentication
-- `HandleConsentRequest(msg)` - Service requests data consent
-- `HandleRespond(msg)` - User approves/denies request
-- `HandleList(msg)` - List pending/historical requests
-- Feed notification integration
-
-### 4. `service_verification.go` (~400 lines)
-- `verifyServiceIdentity()` - Orchestrate verification
-- `verifyViaDNS()` - Check TXT record at `_vettid.{domain}`
-- `verifyViaHTTPS()` - Validate certificate
-- `verifyViaRegistry()` - Query centralized registry (optional)
-- Verification caching (24-hour TTL)
-
-### 5. `service_contracts.go` (~300 lines)
-- `validateContract()` - Validate contract structure
-- `enforceContractCompliance()` - Runtime field access checks
-- `checkFieldsAvailable()` - Detect missing required fields
-- `getContract()` - Load contract with caching
-
----
-
-## Files to Modify
-
-### `messages.go`
-- Add handlers to `MessageHandler` struct
-- Initialize in `NewMessageHandler()`
-- Add routing case for "service" operation
-- Add `handleServiceOperation()`, `handleServiceConnectionOperation()`, etc.
-
-### `connections.go`
-- Add `IsServiceConnection`, `ServiceGUID`, `ContractID` to `ConnectionRecord`
-- Add `ConnectionType` filter to `ListConnectionsRequest`
-- Filter by connection type in `HandleList()`
-
-### `events_types.go`
-Add event types:
-```go
-EventTypeServiceConnectionInitiated  = "service.connection.initiated"
-EventTypeServiceConnectionAccepted   = "service.connection.accepted"
-EventTypeServiceConnectionRejected   = "service.connection.rejected"
-EventTypeServiceConnectionRevoked    = "service.connection.revoked"
-EventTypeServiceDataAccessed         = "service.data.accessed"
-EventTypeServiceDataStored           = "service.data.stored"
-EventTypeServiceAuthRequested        = "service.auth.requested"
-EventTypeServiceConsentRequested     = "service.consent.requested"
-EventTypeServiceRequestApproved      = "service.request.approved"
-EventTypeServiceRequestDenied        = "service.request.denied"
-EventTypeServiceContractViolation    = "service.contract.violation"
-EventTypeServiceRateLimitExceeded    = "service.rate_limit.exceeded"
+# User vault subscribes to:
+{user_space}.forVault.service.request.auth      # Service requests authentication
+{user_space}.forVault.service.request.consent   # Service requests field consent
+{user_space}.forVault.service.request.payment   # Service requests payment
+{user_space}.forVault.service.data.store        # Service stores data in user's sandbox
+{user_space}.forVault.service.data.update       # Service updates stored data
+{user_space}.forVault.service.message           # Service sends message to user
+{user_space}.forVault.service.contract.update   # Contract version changed
 ```
 
-### `profile.go`
-- Add `CheckFieldsAvailable(fields []string)` helper method
-
----
-
-## Message Subjects
-
+### User-to-Service Communication
 ```
-# Service Connection
-service.connection.initiate    # Start connection process
-service.connection.accept      # Accept contract
-service.connection.reject      # Reject connection
-service.connection.revoke      # Revoke existing connection
+# Service vault subscribes to:
+{service_space}.forVault.user.connect           # User initiates connection
+{service_space}.forVault.user.disconnect        # User revokes connection
+{service_space}.forVault.user.profile.update    # User profile changed
+{service_space}.forVault.user.request.respond   # User responds to request
+{service_space}.forVault.user.data.get          # User retrieves stored data
+```
+
+### User Vault Handlers (forVault subjects)
+```
+# Service connection management
+service.connection.discover    # Get service profile + contract
+service.connection.initiate    # Accept contract, establish connection
 service.connection.list        # List service connections
-service.connection.get         # Get connection details
-service.connection.contract    # Get contract details
+service.connection.get         # Get service connection details
+service.connection.update      # Update tags, favorite, muted status
+service.connection.revoke      # Revoke connection, optional data cleanup
 
-# Service Data
-service.data.get               # Get profile fields (contract-enforced)
-service.data.store             # Store data in service sandbox
-service.data.list              # List stored data
-service.data.delete            # Delete stored data
+# Service data in user's sandbox
+service.data.list              # List data stored by services
+service.data.get               # Get specific data item
+service.data.delete            # Delete service data
 
-# Service Requests
-service.request.auth           # Request user authentication
-service.request.consent        # Request data consent
-service.request.respond        # User response to request
-service.request.list           # List requests
+# Service requests
+service.request.list           # List pending/historical requests
+service.request.respond        # Approve/deny request
+
+# Contract management
+service.contract.get           # Get current contract for connection
+service.contract.history       # Get contract version history
+```
+
+---
+
+## Usability Features
+
+### 1. Clear Service Identification
+
+**Visual distinction from peer connections:**
+```
+My Connections
+├── 👤 People (12)
+│   ├── Alice Cooper ✓
+│   ├── Bob Smith ✓
+│   └── ...
+│
+└── 🏢 Services (5)
+    ├── Acme Retail ✓ᵛ (verified business)
+    ├── City Health Clinic ✓ᵛ
+    ├── LocalBank ✓ᵛ
+    ├── CoffeeShop Rewards
+    └── ...
+```
+
+**Implementation:**
+- `IsServiceConnection` flag for filtering
+- Service logo prominently displayed
+- Organization verification badge (✓ᵛ for verified)
+- Category icons (retail, health, finance, etc.)
+
+### 2. Contract Review UX
+
+**Before accepting, show:**
+```
+┌─────────────────────────────────────────────────────┐
+│ 🏢 Acme Retail wants to connect                     │
+│    ✓ᵛ Verified Business                            │
+├─────────────────────────────────────────────────────┤
+│                                                     │
+│ They need:                                          │
+│ ├── ✓ Email (required) - "For order confirmations" │
+│ ├── ✓ Name (required) - "For shipping labels"      │
+│ └── ○ Phone (optional) - "For delivery updates"    │
+│                                                     │
+│ They can:                                           │
+│ ├── Store purchase history in your vault           │
+│ ├── Send you messages                              │
+│ └── Request payments                               │
+│                                                     │
+│ ⚠️ Missing required field: Email                   │
+│    [Add Email to Profile]                          │
+│                                                     │
+├─────────────────────────────────────────────────────┤
+│ [View Full Terms]  [Privacy Policy]                 │
+│                                                     │
+│         [Decline]              [Accept]             │
+└─────────────────────────────────────────────────────┘
+```
+
+### 3. Service Connection Health
+
+**Same health indicators as peer connections:**
+- Last active: "2 hours ago"
+- Contract status: "v2 accepted" or "New contract available (v3)"
+- Data stored: "12 items, 2.3 MB"
+- Request history: "3 requests this month"
+
+### 4. Notification Preferences
+
+**Per-service settings (extends peer connection settings):**
+```kotlin
+data class ServiceNotificationSettings(
+    val level: NotificationLevel,        // ALL, IMPORTANT, MUTED
+    val allowPaymentRequests: Boolean,   // Show payment request notifications
+    val allowMessages: Boolean,          // Show service messages
+    val bypassQuietHours: Boolean        // For critical services
+)
+```
+
+### 5. Service Organization
+
+**Tags, favorites, archive (same as peers):**
+- User-defined tags: "Shopping", "Health", "Finance"
+- Favorite services pinned to top
+- Archive inactive services without revoking
+- Search by name, category, tags
+
+### 6. Activity Dashboard
+
+**Per-service activity view:**
+```
+Acme Retail - Activity
+├── Today
+│   ├── 10:30 AM - Stored "Order #12345"
+│   └── 10:31 AM - Requested payment: $49.99 ✓ Approved
+│
+├── Yesterday
+│   └── 3:15 PM - Updated shipping address
+│
+└── Last Week
+    ├── Stored 3 items
+    └── 1 payment request ($129.00)
+```
+
+### 7. Data Transparency
+
+**User controls service-stored data:**
+```
+Data stored by Acme Retail
+├── 📦 Orders (3 items)
+│   ├── Order #12345 - $49.99 - Jan 19
+│   ├── Order #12344 - $129.00 - Jan 15
+│   └── Order #12343 - $75.50 - Jan 10
+│
+├── 📍 Saved Addresses (1 item)
+│   └── Home: 123 Main St...
+│
+└── [Delete All Data] [Export Data]
+```
+
+### 8. Request Management
+
+**Pending requests in unified feed:**
+```
+Feed
+├── 🔔 Acme Retail requests payment: $49.99
+│   "Order #12345 - Winter Jacket"
+│   [Approve] [Decline] [View Details]
+│
+├── 🔔 City Health requests: Date of Birth
+│   "For appointment scheduling"
+│   [Share] [Decline]
+│
+└── 🔔 LocalBank requests authentication
+    "Confirm login from new device"
+    [Approve] [Decline]
+```
+
+### 9. Offline Handling
+
+**Same offline queue as peer connections:**
+- Queue request responses when offline
+- Cache service profiles for offline viewing
+- Show "pending sync" indicators
+- Auto-sync when online
+
+### 10. Trust Indicators
+
+**Trust signals for services:**
+```kotlin
+data class ServiceTrustInfo(
+    val organizationVerified: Boolean,
+    val verificationType: String,        // "business", "nonprofit", "government"
+    val connectionAge: Duration,
+    val totalTransactions: Int,
+    val lastActivity: Instant,
+    val contractVersion: Int,
+    val userRating: Float?               // Future: community ratings
+)
 ```
 
 ---
 
 ## Security Architecture
 
-### 1. Service Identity Verification
-- **DNS**: TXT record `_vettid.{domain}` contains service_guid
-- **HTTPS**: Certificate chain validation for domain
-- **Registry**: Optional centralized VettID registry with signatures
-- **Caching**: 24-hour TTL to reduce verification overhead
+### 1. Vault-to-Vault Verification
+- Services must run VettID Service Vault
+- E2E encryption using X25519 key exchange
+- Service identity verified through NATS credentials
+- Organization verification through VettID registry (future)
 
 ### 2. Contract Enforcement
-- Every data access checked against contract
-- On-demand fields: immediate access
-- Consent fields: create approval request, block until approved
-- Unauthorized fields: block + log violation event
+- Every data access checked against accepted contract
+- On-demand fields: immediate access within rate limits
+- Consent fields: creates approval request, blocks until approved
+- Unauthorized access: blocked + logged + user notified
 
 ### 3. Rate Limiting
 - Token bucket algorithm per connection
 - `MaxRequestsPerHour` defined in contract
-- Exceeding limit logs event + returns error
+- Exceeding limit returns error + logs event
+- User notified of excessive requests
 
 ### 4. Sandbox Isolation
-- Storage namespaced: `service-data/{connection_id}/{key}`
-- Connection ID verified on every operation
-- No cross-connection access possible
+- Each service's data namespaced: `service-data/{connection_id}/{key}`
+- Services cannot access other services' data
+- User has full visibility and delete capability
 
 ### 5. Revocation
 - Immediate status change blocks all access
-- Optional data cleanup (user's choice)
-- Event logged for audit
+- User chooses: keep data, delete data, or export then delete
+- Service notified of revocation
+- All pending requests auto-denied
+
+### 6. Contract Updates
+- Service can publish new contract version
+- User notified of changes
+- User must accept new contract or connection limited
+- Previous contract honored for grace period
 
 ---
 
-## Usability Features
+## Storage Keys
 
-### Clear Service Identification
-- `IsServiceConnection` flag distinguishes from peers
-- Service logo, name, verified badge displayed
-- Connection list filterable by type
+### User Vault
+```
+connections/{connection_id}              # ServiceConnectionRecord
+service-contracts/{connection_id}        # Accepted contract copy
+service-data/{connection_id}/{key}       # ServiceStorageRecord
+service-requests/{request_id}            # ServiceRequest
+service-activity/{connection_id}/{date}  # Activity log
+```
 
-### Contract Review UX
-- Human-readable title and description
-- Required vs optional fields clearly marked
-- Storage and auth permissions shown
-- Link to full terms if available
+### Service Vault
+```
+users/{connection_id}                    # UserConnectionRecord
+contracts/{contract_id}                  # ServiceDataContract (master)
+user-data/{connection_id}/{key}          # User-provided data
+requests/{request_id}                    # Outbound requests
+```
 
-### Missing Data Handling
-- Before acceptance, check all required fields exist
-- Return list of missing fields
-- Prompt user to add profile data
-- Retry connection after adding
+---
 
-### Notifications
-- Auth requests appear in feed with accept/decline
-- Consent requests show requested fields
-- Contract violations alert user
+## Event Types
 
-### Activity Transparency
-- All service data access logged
-- User can view access history
-- Data export available on revocation
+```go
+// Service connection events
+EventTypeServiceConnectionInitiated  = "service.connection.initiated"
+EventTypeServiceConnectionAccepted   = "service.connection.accepted"
+EventTypeServiceConnectionRejected   = "service.connection.rejected"
+EventTypeServiceConnectionRevoked    = "service.connection.revoked"
+
+// Service data events
+EventTypeServiceDataStored           = "service.data.stored"
+EventTypeServiceDataAccessed         = "service.data.accessed"
+EventTypeServiceDataDeleted          = "service.data.deleted"
+
+// Service request events
+EventTypeServiceAuthRequested        = "service.auth.requested"
+EventTypeServiceConsentRequested     = "service.consent.requested"
+EventTypeServicePaymentRequested     = "service.payment.requested"
+EventTypeServiceRequestApproved      = "service.request.approved"
+EventTypeServiceRequestDenied        = "service.request.denied"
+EventTypeServiceRequestExpired       = "service.request.expired"
+
+// Contract events
+EventTypeServiceContractUpdated      = "service.contract.updated"
+EventTypeServiceContractViolation    = "service.contract.violation"
+
+// Rate limit events
+EventTypeServiceRateLimitWarning     = "service.rate_limit.warning"
+EventTypeServiceRateLimitExceeded    = "service.rate_limit.exceeded"
+```
+
+---
+
+## Files to Create
+
+### User Vault (vault-manager)
+
+#### 1. `service_connections.go` (~600 lines)
+- `HandleDiscover(msg)` - Get service profile + contract
+- `HandleInitiate(msg)` - Accept contract, establish connection
+- `HandleList(msg)` - List service connections with filters
+- `HandleGet(msg)` - Get service connection details
+- `HandleUpdate(msg)` - Update tags, favorite, muted, archived
+- `HandleRevoke(msg)` - Revoke with data cleanup options
+
+#### 2. `service_data.go` (~400 lines)
+- `HandleList(msg)` - List data stored by services
+- `HandleGet(msg)` - Get specific data item
+- `HandleDelete(msg)` - Delete service data
+- `HandleExport(msg)` - Export all data from a service
+
+#### 3. `service_requests.go` (~400 lines)
+- `HandleList(msg)` - List pending/historical requests
+- `HandleRespond(msg)` - Approve/deny request
+- `HandleIncomingAuth(msg)` - Process auth request from service
+- `HandleIncomingConsent(msg)` - Process consent request
+- `HandleIncomingPayment(msg)` - Process payment request
+
+#### 4. `service_contracts.go` (~200 lines)
+- `HandleGetContract(msg)` - Get contract for connection
+- `HandleContractHistory(msg)` - Get version history
+- `validateContract()` - Validate contract structure
+- `checkRequiredFields()` - Check user has required fields
+
+### Service Vault (service-vault-manager - new package)
+
+#### 1. `user_connections.go` (~500 lines)
+- `HandleConnect(msg)` - Accept user connection
+- `HandleDisconnect(msg)` - Handle user revocation
+- `HandleList(msg)` - List connected users
+- `HandleGet(msg)` - Get user connection details
+
+#### 2. `user_requests.go` (~400 lines)
+- `HandleRequestAuth(msg)` - Send auth request to user
+- `HandleRequestConsent(msg)` - Send consent request
+- `HandleRequestPayment(msg)` - Send payment request
+- `HandleUserResponse(msg)` - Process user's response
+
+#### 3. `user_data.go` (~300 lines)
+- `HandleStoreData(msg)` - Store data in user's sandbox
+- `HandleGetData(msg)` - Read on-demand fields
+- `HandleDeleteData(msg)` - Delete stored data
+
+#### 4. `contract_manager.go` (~200 lines)
+- `HandleGetContract(msg)` - Return current contract
+- `HandleUpdateContract(msg)` - Publish new version
+- `enforceContract()` - Validate requests against contract
+
+---
+
+## Files to Modify
+
+### `connections.go`
+- Add `IsServiceConnection` field to `ConnectionRecord`
+- Add `ConnectionType` filter to `ListConnectionsRequest`
+- Filter by type in `HandleList()`
+
+### `messages.go`
+- Add `ServiceConnectionHandler`, `ServiceDataHandler`, `ServiceRequestsHandler`
+- Add routing for `service.*` operations
+
+### `events_types.go`
+- Add all service event types and classifications
 
 ---
 
 ## Implementation Phases
 
-### Phase 1: Core Connection
-- `service_connections.go`: initiate, accept, reject, list, get
+### Phase 1: Core Service Connections
+- `service_connections.go`: discover, initiate, list, get, revoke
 - Basic routing in `messages.go`
 - Event types added
 - Unit tests
 
-### Phase 2: Verification
-- `service_verification.go`: DNS, HTTPS verification
-- Verification caching
-- Unverified service warnings
+### Phase 2: Contract & Data Management
+- `service_contracts.go`: validation, required field checking
+- `service_data.go`: list, get, delete, export
+- Contract enforcement
 
-### Phase 3: Contract Enforcement
-- `service_data.go`: get with enforcement, store, list, delete
-- `service_contracts.go`: validation, compliance checking
-- Contract violation logging
+### Phase 3: Service Requests
+- `service_requests.go`: auth, consent, payment requests
+- Feed integration for request notifications
+- Request expiration handling
 
-### Phase 4: Service Requests
-- `service_requests.go`: auth, consent, respond, list
-- Feed notification integration
-- Request expiration
-
-### Phase 5: Security Hardening
-- Rate limiting implementation
-- Revocation + data cleanup
-- Security audit
-
-### Phase 6: Polish
-- Connection type filtering
+### Phase 4: Usability Polish
+- Tags, favorites, archive for services
 - Activity dashboard
-- Data export
-- Documentation
+- Notification preferences per service
+- Offline queue support
+
+### Phase 5: Service Vault SDK
+- `service-vault-manager` package
+- Documentation for service developers
+- Example service implementation
 
 ---
 
@@ -360,18 +690,20 @@ go test -v ./...
 ```
 
 ### Manual Testing
-1. Create mock service with contract
-2. Initiate connection → verify contract displayed
+1. Create mock service vault with contract
+2. Discover service → verify profile + contract displayed
 3. Test with missing required fields → verify detection
-4. Accept connection → verify stored correctly
-5. Service data.get → verify contract enforcement
-6. Service data.store → verify sandbox isolation
-7. Service request.auth → verify feed notification
-8. Revoke → verify access blocked, optional cleanup
+4. Accept contract → verify connection established
+5. Service stores data → verify in user's sandbox
+6. Service requests auth → verify feed notification
+7. Approve/deny requests → verify response delivered
+8. Revoke connection → verify access blocked
+9. Test rate limiting → verify limits enforced
+10. Test contract update → verify user notified
 
 ### Security Testing
-1. Attempt access to unauthorized fields → verify blocked
-2. Exceed rate limit → verify error returned
-3. Access after revocation → verify blocked
-4. Cross-connection access → verify impossible
-5. Service impersonation → verify verification fails
+1. Attempt access to unauthorized fields → blocked
+2. Exceed rate limit → error returned
+3. Access after revocation → blocked
+4. Cross-service data access → impossible
+5. Tampered contract → rejected
