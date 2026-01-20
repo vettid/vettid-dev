@@ -57,6 +57,23 @@ type ProfileDeleteRequest struct {
 	Fields []string `json:"fields"` // Fields to delete
 }
 
+// ProfileGetSharedRequest is the payload for profile.get-shared
+type ProfileGetSharedRequest struct {
+	ConnectionID string `json:"connection_id,omitempty"` // Optional: apply connection-specific overrides
+}
+
+// ProfileGetSharedResponse is the response for profile.get-shared
+type ProfileGetSharedResponse struct {
+	Fields map[string]ProfileFieldResponse `json:"fields"`
+}
+
+// SharingSettings controls which profile fields are shared
+type SharingSettings struct {
+	DefaultShared        []string            `json:"default_shared"`         // Fields shared by default
+	ConnectionOverrides  map[string][]string `json:"connection_overrides"`   // connection_id -> fields
+	UpdatedAt            int64               `json:"updated_at"`
+}
+
 // --- Handler methods ---
 
 // HandleGet handles profile.get messages
@@ -225,6 +242,139 @@ func (h *ProfileHandler) HandleDelete(msg *IncomingMessage) (*OutgoingMessage, e
 		Type:      MessageTypeResponse,
 		Payload:   respBytes,
 	}, nil
+}
+
+// HandleGetShared handles profile.get-shared messages
+// Returns profile fields filtered by sharing settings
+func (h *ProfileHandler) HandleGetShared(msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req ProfileGetSharedRequest
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		// Allow empty payload
+		req = ProfileGetSharedRequest{}
+	}
+
+	// Load sharing settings
+	settings, err := h.loadSharingSettings()
+	if err != nil {
+		// If no sharing settings exist, return empty profile
+		result := ProfileGetSharedResponse{
+			Fields: make(map[string]ProfileFieldResponse),
+		}
+		respBytes, _ := json.Marshal(result)
+		return &OutgoingMessage{
+			RequestID: msg.GetID(),
+			Type:      MessageTypeResponse,
+			Payload:   respBytes,
+		}, nil
+	}
+
+	// Determine which fields to share
+	fieldsToShare := settings.DefaultShared
+
+	// Apply connection-specific overrides if connection_id is provided
+	if req.ConnectionID != "" && settings.ConnectionOverrides != nil {
+		if override, exists := settings.ConnectionOverrides[req.ConnectionID]; exists {
+			fieldsToShare = override
+		}
+	}
+
+	// Get the shared fields
+	result := ProfileGetSharedResponse{
+		Fields: make(map[string]ProfileFieldResponse),
+	}
+
+	for _, field := range fieldsToShare {
+		storageKey := "profile/" + field
+		data, err := h.storage.Get(storageKey)
+		if err != nil {
+			continue // Skip missing fields
+		}
+
+		var entry ProfileEntry
+		if err := json.Unmarshal(data, &entry); err != nil {
+			continue
+		}
+
+		result.Fields[field] = ProfileFieldResponse{
+			Value:     entry.Value,
+			UpdatedAt: entry.UpdatedAt.Format(time.RFC3339),
+		}
+	}
+
+	respBytes, _ := json.Marshal(result)
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// HandleUpdateSharingSettings handles profile.sharing-settings.update messages
+func (h *ProfileHandler) HandleUpdateSharingSettings(msg *IncomingMessage) (*OutgoingMessage, error) {
+	var settings SharingSettings
+	if err := json.Unmarshal(msg.Payload, &settings); err != nil {
+		return h.errorResponse(msg.GetID(), "Invalid request format")
+	}
+
+	settings.UpdatedAt = time.Now().Unix()
+
+	data, err := json.Marshal(settings)
+	if err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to marshal settings")
+	}
+
+	if err := h.storage.Put("profile/_sharing_settings", data); err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to save sharing settings")
+	}
+
+	log.Info().Msg("Profile sharing settings updated")
+
+	resp := map[string]interface{}{
+		"success": true,
+	}
+	respBytes, _ := json.Marshal(resp)
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// HandleGetSharingSettings handles profile.sharing-settings.get messages
+func (h *ProfileHandler) HandleGetSharingSettings(msg *IncomingMessage) (*OutgoingMessage, error) {
+	settings, err := h.loadSharingSettings()
+	if err != nil {
+		// Return empty settings if none exist
+		settings = &SharingSettings{
+			DefaultShared:       []string{},
+			ConnectionOverrides: make(map[string][]string),
+		}
+	}
+
+	respBytes, _ := json.Marshal(settings)
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// loadSharingSettings loads the sharing settings from storage
+func (h *ProfileHandler) loadSharingSettings() (*SharingSettings, error) {
+	data, err := h.storage.Get("profile/_sharing_settings")
+	if err != nil {
+		return nil, err
+	}
+
+	var settings SharingSettings
+	if err := json.Unmarshal(data, &settings); err != nil {
+		return nil, err
+	}
+
+	return &settings, nil
 }
 
 func (h *ProfileHandler) errorResponse(id string, message string) (*OutgoingMessage, error) {

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -38,7 +39,7 @@ type ConnectionRecord struct {
 	CredentialsType   string    `json:"credentials_type"` // "outbound" or "inbound"
 	Credentials       string    `json:"credentials,omitempty"`
 	MessageSpaceTopic string    `json:"message_space_topic"`
-	Status            string    `json:"status"` // "active", "revoked"
+	Status            string    `json:"status"` // "active", "revoked", "pending", "expired"
 	CreatedAt         time.Time `json:"created_at"`
 	ExpiresAt         time.Time `json:"expires_at,omitempty"`
 	LastRotatedAt     time.Time `json:"last_rotated_at,omitempty"`
@@ -49,6 +50,25 @@ type ConnectionRecord struct {
 	LocalPrivateKey []byte `json:"local_private_key,omitempty"`
 	PeerPublicKey   []byte `json:"peer_public_key,omitempty"`
 	SharedSecret    []byte `json:"shared_secret,omitempty"`
+
+	// Activity tracking
+	LastActiveAt  *time.Time `json:"last_active_at,omitempty"`
+	ActivityCount int        `json:"activity_count"`
+
+	// Organization features
+	Tags       []string `json:"tags,omitempty"`
+	IsFavorite bool     `json:"is_favorite"`
+	IsArchived bool     `json:"is_archived"`
+
+	// Credential tracking
+	CredentialsExpireAt *time.Time `json:"credentials_expire_at,omitempty"`
+
+	// Peer profile sync
+	PeerProfileVersion int `json:"peer_profile_version"`
+
+	// Peer verifications and capabilities
+	PeerVerifications []string          `json:"peer_verifications,omitempty"`
+	PeerCapabilities  map[string]string `json:"peer_capabilities,omitempty"`
 }
 
 // --- Request/Response types ---
@@ -93,7 +113,15 @@ type RevokeConnectionRequest struct {
 
 // ListConnectionsRequest is the payload for connection.list
 type ListConnectionsRequest struct {
-	Status string `json:"status,omitempty"`
+	Status     string   `json:"status,omitempty"`
+	Tags       []string `json:"tags,omitempty"`
+	IsFavorite *bool    `json:"is_favorite,omitempty"`
+	IsArchived *bool    `json:"is_archived,omitempty"`
+	Search     string   `json:"search,omitempty"`
+	SortBy     string   `json:"sort_by,omitempty"` // "recent_activity", "alphabetical", "created_at"
+	SortOrder  string   `json:"sort_order,omitempty"` // "asc", "desc"
+	Limit      int      `json:"limit,omitempty"`
+	Offset     int      `json:"offset,omitempty"`
 }
 
 // ConnectionInfo represents connection info in list response
@@ -108,6 +136,17 @@ type ConnectionInfo struct {
 	E2EReady         bool   `json:"e2e_ready"`
 	KeyExchangeAt    string `json:"key_exchange_at,omitempty"`
 	KeyRotationCount int    `json:"key_rotation_count,omitempty"`
+
+	// Enhanced fields
+	LastActiveAt        string   `json:"last_active_at,omitempty"`
+	ActivityCount       int      `json:"activity_count,omitempty"`
+	Tags                []string `json:"tags,omitempty"`
+	IsFavorite          bool     `json:"is_favorite,omitempty"`
+	IsArchived          bool     `json:"is_archived,omitempty"`
+	NeedsAttention      bool     `json:"needs_attention,omitempty"`
+	CredentialsExpireAt string   `json:"credentials_expire_at,omitempty"`
+	PeerProfileVersion  int      `json:"peer_profile_version,omitempty"`
+	PeerVerifications   []string `json:"peer_verifications,omitempty"`
 }
 
 // ListConnectionsResponse is the response for connection.list
@@ -118,6 +157,48 @@ type ListConnectionsResponse struct {
 // GetConnectionRequest is the payload for connection.get
 type GetConnectionRequest struct {
 	ConnectionID string `json:"connection_id"`
+}
+
+// ConnectionUpdateRequest is the payload for connection.update
+type ConnectionUpdateRequest struct {
+	ConnectionID string   `json:"connection_id"`
+	Tags         []string `json:"tags,omitempty"`
+	IsFavorite   *bool    `json:"is_favorite,omitempty"`
+	IsArchived   *bool    `json:"is_archived,omitempty"`
+	PeerAlias    string   `json:"peer_alias,omitempty"`
+}
+
+// ConnectionUpdateResponse is the response for connection.update
+type ConnectionUpdateResponse struct {
+	Success      bool   `json:"success"`
+	ConnectionID string `json:"connection_id"`
+}
+
+// GetCapabilitiesRequest is the payload for connection.get-capabilities
+type GetCapabilitiesRequest struct {
+	ConnectionID string `json:"connection_id"`
+}
+
+// GetCapabilitiesResponse is the response for connection.get-capabilities
+type GetCapabilitiesResponse struct {
+	ConnectionID string            `json:"connection_id"`
+	Capabilities map[string]string `json:"capabilities"`
+}
+
+// ActivitySummaryRequest is the payload for connection.activity-summary
+type ActivitySummaryRequest struct {
+	ConnectionID string `json:"connection_id"`
+}
+
+// ActivitySummaryResponse is the response for connection.activity-summary
+type ActivitySummaryResponse struct {
+	ConnectionID     string `json:"connection_id"`
+	TotalMessages    int    `json:"total_messages"`
+	MessagesSent     int    `json:"messages_sent"`
+	MessagesReceived int    `json:"messages_received"`
+	TotalCalls       int    `json:"total_calls"`
+	LastActivityAt   string `json:"last_activity_at,omitempty"`
+	LastActivityType string `json:"last_activity_type,omitempty"`
 }
 
 // --- Handler methods ---
@@ -358,15 +439,62 @@ func (h *ConnectionsHandler) HandleList(msg *IncomingMessage) (*OutgoingMessage,
 			continue
 		}
 
+		// Filter by tags if specified
+		if len(req.Tags) > 0 {
+			hasTag := false
+			for _, reqTag := range req.Tags {
+				for _, recTag := range record.Tags {
+					if reqTag == recTag {
+						hasTag = true
+						break
+					}
+				}
+				if hasTag {
+					break
+				}
+			}
+			if !hasTag {
+				continue
+			}
+		}
+
+		// Filter by favorite if specified
+		if req.IsFavorite != nil && record.IsFavorite != *req.IsFavorite {
+			continue
+		}
+
+		// Filter by archived if specified
+		if req.IsArchived != nil && record.IsArchived != *req.IsArchived {
+			continue
+		}
+
+		// Filter by search term (case-insensitive substring match on alias)
+		if req.Search != "" {
+			searchLower := strings.ToLower(req.Search)
+			if !strings.Contains(strings.ToLower(record.PeerAlias), searchLower) {
+				continue
+			}
+		}
+
+		// Compute needs_attention flag
+		needsAttention := h.computeNeedsAttention(&record)
+
 		info := ConnectionInfo{
-			ConnectionID:     record.ConnectionID,
-			PeerAlias:        record.PeerAlias,
-			PeerGUID:         record.PeerGUID,
-			Status:           record.Status,
-			CreatedAt:        record.CreatedAt.Format(time.RFC3339),
-			CredentialsType:  record.CredentialsType,
-			E2EReady:         len(record.SharedSecret) > 0,
-			KeyRotationCount: record.KeyRotationCount,
+			ConnectionID:       record.ConnectionID,
+			PeerAlias:          record.PeerAlias,
+			PeerGUID:           record.PeerGUID,
+			Status:             record.Status,
+			CreatedAt:          record.CreatedAt.Format(time.RFC3339),
+			CredentialsType:    record.CredentialsType,
+			E2EReady:           len(record.SharedSecret) > 0,
+			KeyRotationCount:   record.KeyRotationCount,
+			ActivityCount:      record.ActivityCount,
+			Tags:               record.Tags,
+			IsFavorite:         record.IsFavorite,
+			IsArchived:         record.IsArchived,
+			NeedsAttention:     needsAttention,
+			PeerProfileVersion: record.PeerProfileVersion,
+			PeerVerifications:  record.PeerVerifications,
 		}
 
 		if !record.LastRotatedAt.IsZero() {
@@ -375,12 +503,40 @@ func (h *ConnectionsHandler) HandleList(msg *IncomingMessage) (*OutgoingMessage,
 		if !record.KeyExchangeAt.IsZero() {
 			info.KeyExchangeAt = record.KeyExchangeAt.Format(time.RFC3339)
 		}
+		if record.LastActiveAt != nil {
+			info.LastActiveAt = record.LastActiveAt.Format(time.RFC3339)
+		}
+		if record.CredentialsExpireAt != nil {
+			info.CredentialsExpireAt = record.CredentialsExpireAt.Format(time.RFC3339)
+		}
 
 		connections = append(connections, info)
 	}
 
-	resp := ListConnectionsResponse{
+	// Sort connections
+	h.sortConnections(connections, req.SortBy, req.SortOrder)
+
+	// Apply pagination
+	total := len(connections)
+	if req.Offset > 0 && req.Offset < len(connections) {
+		connections = connections[req.Offset:]
+	} else if req.Offset >= len(connections) {
+		connections = []ConnectionInfo{}
+	}
+	if req.Limit > 0 && req.Limit < len(connections) {
+		connections = connections[:req.Limit]
+	}
+
+	resp := struct {
+		Connections []ConnectionInfo `json:"connections"`
+		Total       int              `json:"total"`
+		Offset      int              `json:"offset"`
+		Limit       int              `json:"limit"`
+	}{
 		Connections: connections,
+		Total:       total,
+		Offset:      req.Offset,
+		Limit:       req.Limit,
 	}
 	respBytes, _ := json.Marshal(resp)
 
@@ -389,6 +545,97 @@ func (h *ConnectionsHandler) HandleList(msg *IncomingMessage) (*OutgoingMessage,
 		Type:      MessageTypeResponse,
 		Payload:   respBytes,
 	}, nil
+}
+
+// computeNeedsAttention determines if a connection requires user attention
+func (h *ConnectionsHandler) computeNeedsAttention(record *ConnectionRecord) bool {
+	// Pending invitations need attention
+	if record.Status == "pending" {
+		return true
+	}
+
+	// Expiring credentials within 7 days need attention
+	if record.CredentialsExpireAt != nil {
+		sevenDays := time.Now().Add(7 * 24 * time.Hour)
+		if record.CredentialsExpireAt.Before(sevenDays) {
+			return true
+		}
+	}
+
+	// Expired connections need attention
+	if !record.ExpiresAt.IsZero() && record.ExpiresAt.Before(time.Now()) {
+		return true
+	}
+
+	return false
+}
+
+// sortConnections sorts the connection list based on sort parameters
+func (h *ConnectionsHandler) sortConnections(connections []ConnectionInfo, sortBy, sortOrder string) {
+	if sortBy == "" {
+		sortBy = "created_at"
+	}
+	if sortOrder == "" {
+		sortOrder = "desc"
+	}
+
+	// Sort using sort.Slice
+	switch sortBy {
+	case "alphabetical":
+		if sortOrder == "asc" {
+			for i := 0; i < len(connections)-1; i++ {
+				for j := i + 1; j < len(connections); j++ {
+					if strings.ToLower(connections[i].PeerAlias) > strings.ToLower(connections[j].PeerAlias) {
+						connections[i], connections[j] = connections[j], connections[i]
+					}
+				}
+			}
+		} else {
+			for i := 0; i < len(connections)-1; i++ {
+				for j := i + 1; j < len(connections); j++ {
+					if strings.ToLower(connections[i].PeerAlias) < strings.ToLower(connections[j].PeerAlias) {
+						connections[i], connections[j] = connections[j], connections[i]
+					}
+				}
+			}
+		}
+	case "recent_activity":
+		if sortOrder == "asc" {
+			for i := 0; i < len(connections)-1; i++ {
+				for j := i + 1; j < len(connections); j++ {
+					if connections[i].LastActiveAt > connections[j].LastActiveAt {
+						connections[i], connections[j] = connections[j], connections[i]
+					}
+				}
+			}
+		} else {
+			for i := 0; i < len(connections)-1; i++ {
+				for j := i + 1; j < len(connections); j++ {
+					if connections[i].LastActiveAt < connections[j].LastActiveAt {
+						connections[i], connections[j] = connections[j], connections[i]
+					}
+				}
+			}
+		}
+	default: // created_at
+		if sortOrder == "asc" {
+			for i := 0; i < len(connections)-1; i++ {
+				for j := i + 1; j < len(connections); j++ {
+					if connections[i].CreatedAt > connections[j].CreatedAt {
+						connections[i], connections[j] = connections[j], connections[i]
+					}
+				}
+			}
+		} else {
+			for i := 0; i < len(connections)-1; i++ {
+				for j := i + 1; j < len(connections); j++ {
+					if connections[i].CreatedAt < connections[j].CreatedAt {
+						connections[i], connections[j] = connections[j], connections[i]
+					}
+				}
+			}
+		}
+	}
 }
 
 // HandleGet handles connection.get messages
@@ -412,15 +659,38 @@ func (h *ConnectionsHandler) HandleGet(msg *IncomingMessage) (*OutgoingMessage, 
 		return h.errorResponse(msg.GetID(), "Failed to read connection")
 	}
 
+	// Compute needs_attention flag
+	needsAttention := h.computeNeedsAttention(&record)
+
 	info := ConnectionInfo{
-		ConnectionID:     record.ConnectionID,
-		PeerAlias:        record.PeerAlias,
-		PeerGUID:         record.PeerGUID,
-		Status:           record.Status,
-		CreatedAt:        record.CreatedAt.Format(time.RFC3339),
-		CredentialsType:  record.CredentialsType,
-		E2EReady:         len(record.SharedSecret) > 0,
-		KeyRotationCount: record.KeyRotationCount,
+		ConnectionID:       record.ConnectionID,
+		PeerAlias:          record.PeerAlias,
+		PeerGUID:           record.PeerGUID,
+		Status:             record.Status,
+		CreatedAt:          record.CreatedAt.Format(time.RFC3339),
+		CredentialsType:    record.CredentialsType,
+		E2EReady:           len(record.SharedSecret) > 0,
+		KeyRotationCount:   record.KeyRotationCount,
+		ActivityCount:      record.ActivityCount,
+		Tags:               record.Tags,
+		IsFavorite:         record.IsFavorite,
+		IsArchived:         record.IsArchived,
+		NeedsAttention:     needsAttention,
+		PeerProfileVersion: record.PeerProfileVersion,
+		PeerVerifications:  record.PeerVerifications,
+	}
+
+	if !record.LastRotatedAt.IsZero() {
+		info.LastRotatedAt = record.LastRotatedAt.Format(time.RFC3339)
+	}
+	if !record.KeyExchangeAt.IsZero() {
+		info.KeyExchangeAt = record.KeyExchangeAt.Format(time.RFC3339)
+	}
+	if record.LastActiveAt != nil {
+		info.LastActiveAt = record.LastActiveAt.Format(time.RFC3339)
+	}
+	if record.CredentialsExpireAt != nil {
+		info.CredentialsExpireAt = record.CredentialsExpireAt.Format(time.RFC3339)
 	}
 
 	respBytes, _ := json.Marshal(info)
@@ -430,6 +700,210 @@ func (h *ConnectionsHandler) HandleGet(msg *IncomingMessage) (*OutgoingMessage, 
 		Type:      MessageTypeResponse,
 		Payload:   respBytes,
 	}, nil
+}
+
+// HandleUpdate handles connection.update messages
+func (h *ConnectionsHandler) HandleUpdate(msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req ConnectionUpdateRequest
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		return h.errorResponse(msg.GetID(), "Invalid request format")
+	}
+
+	if req.ConnectionID == "" {
+		return h.errorResponse(msg.GetID(), "connection_id is required")
+	}
+
+	storageKey := "connections/" + req.ConnectionID
+	data, err := h.storage.Get(storageKey)
+	if err != nil {
+		return h.errorResponse(msg.GetID(), "Connection not found")
+	}
+
+	var record ConnectionRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to read connection")
+	}
+
+	// Update fields if provided
+	if req.Tags != nil {
+		record.Tags = req.Tags
+	}
+	if req.IsFavorite != nil {
+		record.IsFavorite = *req.IsFavorite
+	}
+	if req.IsArchived != nil {
+		record.IsArchived = *req.IsArchived
+	}
+	if req.PeerAlias != "" {
+		record.PeerAlias = req.PeerAlias
+	}
+
+	// Save updated record
+	newData, err := json.Marshal(record)
+	if err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to marshal connection")
+	}
+
+	if err := h.storage.Put(storageKey, newData); err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to update connection")
+	}
+
+	log.Info().Str("connection_id", req.ConnectionID).Msg("Connection updated")
+
+	resp := ConnectionUpdateResponse{
+		Success:      true,
+		ConnectionID: req.ConnectionID,
+	}
+	respBytes, _ := json.Marshal(resp)
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// HandleGetCapabilities handles connection.get-capabilities messages
+func (h *ConnectionsHandler) HandleGetCapabilities(msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req GetCapabilitiesRequest
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		return h.errorResponse(msg.GetID(), "Invalid request format")
+	}
+
+	if req.ConnectionID == "" {
+		return h.errorResponse(msg.GetID(), "connection_id is required")
+	}
+
+	data, err := h.storage.Get("connections/" + req.ConnectionID)
+	if err != nil {
+		return h.errorResponse(msg.GetID(), "Connection not found")
+	}
+
+	var record ConnectionRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to read connection")
+	}
+
+	capabilities := record.PeerCapabilities
+	if capabilities == nil {
+		capabilities = make(map[string]string)
+	}
+
+	resp := GetCapabilitiesResponse{
+		ConnectionID: req.ConnectionID,
+		Capabilities: capabilities,
+	}
+	respBytes, _ := json.Marshal(resp)
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// HandleActivitySummary handles connection.activity-summary messages
+func (h *ConnectionsHandler) HandleActivitySummary(msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req ActivitySummaryRequest
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		return h.errorResponse(msg.GetID(), "Invalid request format")
+	}
+
+	if req.ConnectionID == "" {
+		return h.errorResponse(msg.GetID(), "connection_id is required")
+	}
+
+	data, err := h.storage.Get("connections/" + req.ConnectionID)
+	if err != nil {
+		return h.errorResponse(msg.GetID(), "Connection not found")
+	}
+
+	var record ConnectionRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to read connection")
+	}
+
+	// Load activity summary from separate storage
+	// Activity is stored at connections/{connection_id}/activity
+	activityKey := "connections/" + req.ConnectionID + "/activity"
+	var summary ActivitySummaryResponse
+	summary.ConnectionID = req.ConnectionID
+
+	activityData, err := h.storage.Get(activityKey)
+	if err == nil {
+		json.Unmarshal(activityData, &summary)
+	}
+
+	// Always use the total activity count from the connection record
+	summary.TotalMessages = summary.MessagesSent + summary.MessagesReceived
+
+	if record.LastActiveAt != nil {
+		summary.LastActivityAt = record.LastActiveAt.Format(time.RFC3339)
+	}
+
+	respBytes, _ := json.Marshal(summary)
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// UpdateConnectionActivity updates activity tracking for a connection
+func (h *ConnectionsHandler) UpdateConnectionActivity(connectionID string, activityType string) error {
+	storageKey := "connections/" + connectionID
+	data, err := h.storage.Get(storageKey)
+	if err != nil {
+		return fmt.Errorf("connection not found: %s", connectionID)
+	}
+
+	var record ConnectionRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		return fmt.Errorf("failed to read connection: %w", err)
+	}
+
+	// Update activity tracking
+	now := time.Now()
+	record.LastActiveAt = &now
+	record.ActivityCount++
+
+	// Save updated record
+	newData, err := json.Marshal(record)
+	if err != nil {
+		return fmt.Errorf("failed to marshal connection: %w", err)
+	}
+
+	if err := h.storage.Put(storageKey, newData); err != nil {
+		return fmt.Errorf("failed to update connection: %w", err)
+	}
+
+	// Update activity summary
+	activityKey := "connections/" + connectionID + "/activity"
+	var summary ActivitySummaryResponse
+	activityData, err := h.storage.Get(activityKey)
+	if err == nil {
+		json.Unmarshal(activityData, &summary)
+	}
+
+	summary.ConnectionID = connectionID
+	summary.LastActivityAt = now.Format(time.RFC3339)
+	summary.LastActivityType = activityType
+
+	switch activityType {
+	case "message_sent":
+		summary.MessagesSent++
+	case "message_received":
+		summary.MessagesReceived++
+	case "call":
+		summary.TotalCalls++
+	}
+	summary.TotalMessages = summary.MessagesSent + summary.MessagesReceived
+
+	summaryData, _ := json.Marshal(summary)
+	h.storage.Put(activityKey, summaryData)
+
+	return nil
 }
 
 // Helper methods

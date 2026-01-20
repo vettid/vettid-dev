@@ -93,6 +93,11 @@ type MessageHandler struct {
 
 	// Migration handler for migration status, acknowledgment, and recovery
 	migrationHandler *MigrationHandler
+
+	// Usability feature handlers
+	invitationsHandler *InvitationsHandler
+	capabilityHandler  *CapabilityHandler
+	settingsHandler    *SettingsHandler
 }
 
 // VsockPublisher implements CallPublisher using vsock to parent
@@ -203,6 +208,11 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 
 		// Migration
 		migrationHandler: migrationHandler,
+
+		// Usability feature handlers
+		invitationsHandler: NewInvitationsHandler(ownerSpace, storage),
+		capabilityHandler:  NewCapabilityHandler(ownerSpace, storage, publisher, eventHandler),
+		settingsHandler:    NewSettingsHandler(ownerSpace, storage),
 	}
 }
 
@@ -325,6 +335,18 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 	case "audit":
 		// Audit log operations
 		return mh.handleAuditOperation(ctx, msg, parts[opIndex+1:])
+	case "invitation":
+		// Invitation lifecycle operations
+		return mh.handleInvitationOperation(ctx, msg, parts[opIndex+1:])
+	case "capability":
+		// Capability request operations
+		return mh.handleCapabilityOperation(ctx, msg, parts[opIndex+1:])
+	case "settings":
+		// Settings operations
+		return mh.handleSettingsOperation(ctx, msg, parts[opIndex+1:])
+	case "notifications":
+		// Notifications operations (digest)
+		return mh.handleNotificationsDigestOperation(ctx, msg, parts[opIndex+1:])
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown operation: %s", operation))
 	}
@@ -516,6 +538,21 @@ func (mh *MessageHandler) handleProfileOperation(ctx context.Context, msg *Incom
 		return mh.profileHandler.HandleUpdate(msg)
 	case "delete":
 		return mh.profileHandler.HandleDelete(msg)
+	case "get-shared":
+		return mh.profileHandler.HandleGetShared(msg)
+	case "sharing-settings":
+		// Handle sub-operations for sharing settings
+		if len(opParts) < 3 {
+			return mh.errorResponse(msg.GetID(), "missing sharing-settings operation")
+		}
+		switch opParts[2] {
+		case "get":
+			return mh.profileHandler.HandleGetSharingSettings(msg)
+		case "update":
+			return mh.profileHandler.HandleUpdateSharingSettings(msg)
+		default:
+			return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown sharing-settings operation: %s", opParts[2]))
+		}
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown profile operation: %s", opType))
 	}
@@ -638,6 +675,12 @@ func (mh *MessageHandler) handleConnectionOperation(ctx context.Context, msg *In
 		return mh.connectionsHandler.HandleList(msg)
 	case "get":
 		return mh.connectionsHandler.HandleGet(msg)
+	case "update":
+		return mh.connectionsHandler.HandleUpdate(msg)
+	case "get-capabilities":
+		return mh.connectionsHandler.HandleGetCapabilities(msg)
+	case "activity-summary":
+		return mh.connectionsHandler.HandleActivitySummary(msg)
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown connection operation: %s", opType))
 	}
@@ -963,6 +1006,99 @@ func (mh *MessageHandler) handleIncomingReadReceipt(ctx context.Context, msg *In
 	return mh.successResponse(msg.GetID(), nil)
 }
 
+// --- Usability Feature Operation Handlers ---
+
+// handleInvitationOperation routes invitation-related operations
+func (mh *MessageHandler) handleInvitationOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
+	if len(opParts) < 2 {
+		return mh.errorResponse(msg.GetID(), "missing invitation operation type")
+	}
+
+	opType := opParts[1]
+
+	switch opType {
+	case "list":
+		return mh.invitationsHandler.HandleList(msg)
+	case "cancel":
+		return mh.invitationsHandler.HandleCancel(msg)
+	case "resend":
+		return mh.invitationsHandler.HandleResend(msg)
+	case "viewed":
+		return mh.invitationsHandler.HandleViewed(msg)
+	default:
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown invitation operation: %s", opType))
+	}
+}
+
+// handleCapabilityOperation routes capability-related operations
+func (mh *MessageHandler) handleCapabilityOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
+	if len(opParts) < 2 {
+		return mh.errorResponse(msg.GetID(), "missing capability operation type")
+	}
+
+	opType := opParts[1]
+
+	switch opType {
+	case "request":
+		// Check for sub-operations
+		if len(opParts) >= 3 && opParts[2] == "list" {
+			return mh.capabilityHandler.HandleRequestList(msg)
+		}
+		return mh.capabilityHandler.HandleRequest(msg)
+	case "respond":
+		return mh.capabilityHandler.HandleRespond(msg)
+	case "get":
+		return mh.capabilityHandler.HandleGet(msg)
+	case "list":
+		return mh.capabilityHandler.HandleRequestList(msg)
+	default:
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown capability operation: %s", opType))
+	}
+}
+
+// handleSettingsOperation routes settings-related operations
+func (mh *MessageHandler) handleSettingsOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
+	if len(opParts) < 2 {
+		return mh.errorResponse(msg.GetID(), "missing settings operation type")
+	}
+
+	opType := opParts[1]
+
+	switch opType {
+	case "notifications":
+		// Handle sub-operations for notifications settings
+		if len(opParts) < 3 {
+			return mh.errorResponse(msg.GetID(), "missing notifications operation")
+		}
+		switch opParts[2] {
+		case "get":
+			return mh.settingsHandler.HandleNotificationsGet(msg)
+		case "update":
+			return mh.settingsHandler.HandleNotificationsUpdate(msg)
+		default:
+			return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown notifications operation: %s", opParts[2]))
+		}
+	default:
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown settings operation: %s", opType))
+	}
+}
+
+// handleNotificationsDigestOperation routes notifications digest operations
+func (mh *MessageHandler) handleNotificationsDigestOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
+	if len(opParts) < 2 {
+		return mh.errorResponse(msg.GetID(), "missing notifications operation type")
+	}
+
+	opType := opParts[1]
+
+	switch opType {
+	case "digest":
+		return mh.settingsHandler.HandleNotificationsDigest(msg)
+	default:
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown notifications operation: %s", opType))
+	}
+}
+
 // Response helpers
 
 func (mh *MessageHandler) successResponse(id string, payload []byte) (*OutgoingMessage, error) {
@@ -1041,4 +1177,7 @@ func (mh *MessageHandler) SecureErase() {
 	mh.notificationsHandler = nil
 	mh.credentialSecretHandler = nil
 	mh.migrationHandler = nil
+	mh.invitationsHandler = nil
+	mh.capabilityHandler = nil
+	mh.settingsHandler = nil
 }
