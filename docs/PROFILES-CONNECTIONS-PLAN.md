@@ -486,9 +486,11 @@ When a user updates their profile:
 
 ---
 
-## Usability Recommendations
+## Usability Features
 
 ### 1. Clear Status Indicators
+
+**Description:**
 ```
 Pending Requests (3)
 ├── John Smith - Awaiting your review
@@ -505,7 +507,37 @@ Active Connections (12)
 - Badge counts on navigation tabs for pending actions
 - Sort by: recent activity, alphabetical, connection date
 
+**Implementation Requirements:**
+
+| Platform | Component | Work Required |
+|----------|-----------|---------------|
+| Android | `ConnectionsScreen.kt` | Add `ConnectionStatusChip` composable with color states |
+| Android | `ConnectionsViewModel.kt` | Add `pendingCount`, `sortOrder` StateFlow |
+| Android | `BottomNavigation` | Add badge count from ViewModel |
+| iOS | `ConnectionsView.swift` | Add status pills with SF Symbols |
+| iOS | `ConnectionsViewModel.swift` | Add computed `pendingCount` property |
+| iOS | `TabView` | Add `.badge()` modifier |
+| Backend | `connection.list` handler | Add `last_active_at` field to response |
+| Backend | DynamoDB | Track `last_activity_timestamp` per connection |
+
+**Data Model Additions:**
+```kotlin
+data class ConnectionListItem(
+    val connectionId: String,
+    val peerName: String,
+    val status: ConnectionStatus,
+    val lastActiveAt: Instant?,
+    val hasUnreadActivity: Boolean
+)
+
+enum class SortOrder { RECENT_ACTIVITY, ALPHABETICAL, CONNECTION_DATE }
+```
+
+---
+
 ### 2. Profile Preview Before Accept
+
+**Description:**
 - Show peer's profile with verification badges (✓ Email Verified, ✓ ID Verified)
 - Highlight what data will be shared with them
 - "By accepting, you will share: Name, Email, Phone"
@@ -513,7 +545,35 @@ Active Connections (12)
 - Warning if peer has no verifications: "This person has not verified their identity"
 - Option to adjust sharing settings before accepting
 
+**Implementation Requirements:**
+
+| Platform | Component | Work Required |
+|----------|-----------|---------------|
+| Android | `ConnectionReviewScreen.kt` | New screen with peer profile display |
+| Android | `ConnectionReviewViewModel.kt` | Load peer profile, sharing preview |
+| Android | `VerificationBadge.kt` | Reusable composable for ✓ badges |
+| Android | `SharingPreviewCard.kt` | Show "You will share: X, Y, Z" |
+| iOS | `ConnectionReviewView.swift` | SwiftUI view for peer review |
+| iOS | `VerificationBadgeView.swift` | Reusable badge component |
+| Backend | `connection.initiate` | Return `peer_verifications` array |
+| Backend | `profile.get-shared` | Return `fields_to_share` preview |
+
+**UI Flow:**
+```
+Scan QR → Loading → Review Screen → [Adjust Sharing] → Accept/Reject
+                         │
+                         ├── Peer Profile Card
+                         ├── Verification Badges
+                         ├── "You will share" section
+                         ├── "They can request" section
+                         └── Warning banner (if unverified)
+```
+
+---
+
 ### 3. Easy Sharing Options
+
+**Description:**
 - **QR Code**: Full-screen display with brightness boost, works offline
 - **Copy Link**: Deep link that opens app directly
 - **Share Sheet**: Native OS share to SMS, Email, WhatsApp, etc.
@@ -522,14 +582,84 @@ Active Connections (12)
 - Show invitation expiry countdown: "Expires in 23h 45m"
 - Allow re-generating expired invitations with one tap
 
+**Implementation Requirements:**
+
+| Platform | Component | Work Required |
+|----------|-----------|---------------|
+| Android | `CreateInvitationScreen.kt` | Update with all sharing methods |
+| Android | `QrCodeFullScreen.kt` | Full-screen QR with auto-brightness |
+| Android | `NearbyShareManager.kt` | Implement Google Nearby Connections API |
+| Android | `NfcInvitationWriter.kt` | Write invitation to NFC tag |
+| Android | `WindowManager` | Set `BRIGHTNESS_OVERRIDE_FULL` for QR |
+| iOS | `CreateInvitationView.swift` | Update with sharing methods |
+| iOS | `QRCodeFullScreenView.swift` | Full-screen with brightness boost |
+| iOS | `MultipeerManager.swift` | Implement MultipeerConnectivity |
+| iOS | `NFCWriter.swift` | Core NFC for writing invitations |
+| Backend | `connection.create-invite` | Add `regenerate` flag for expired |
+| Deep Links | Android `AndroidManifest.xml` | Add intent filter for `vettid://connect` |
+| Deep Links | iOS `Info.plist` | Add URL scheme `vettid://` |
+
+**QR Brightness Code (Android):**
+```kotlin
+DisposableEffect(Unit) {
+    val window = (context as Activity).window
+    val originalBrightness = window.attributes.screenBrightness
+    window.attributes = window.attributes.apply {
+        screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_FULL
+    }
+    onDispose {
+        window.attributes = window.attributes.apply {
+            screenBrightness = originalBrightness
+        }
+    }
+}
+```
+
+---
+
 ### 4. Connection Health Indicators
+
+**Description:**
 - **Last active**: "2 hours ago", "3 days ago", "Offline"
 - **Credential status**: "Credentials rotate in 5 days"
 - **Sync status**: "Profile up to date" or "Update available"
 - **Trust level**: Based on verification status and connection age
 - Visual indicator for connections that haven't been active in 30+ days
 
+**Implementation Requirements:**
+
+| Platform | Component | Work Required |
+|----------|-----------|---------------|
+| Android | `ConnectionHealthCard.kt` | Composable showing all health metrics |
+| Android | `ConnectionDetailScreen.kt` | Add health section |
+| Android | `CredentialRotationTracker.kt` | Track rotation schedule locally |
+| iOS | `ConnectionHealthView.swift` | SwiftUI health metrics card |
+| iOS | `ConnectionDetailView.swift` | Add health section |
+| Backend | `connection.get` | Return `credentials_expire_at`, `profile_version` |
+| Backend | `connection.list` | Return `last_active_at`, `needs_attention` flag |
+
+**Health Status Model:**
+```kotlin
+data class ConnectionHealth(
+    val lastActiveAt: Instant?,
+    val credentialsExpireAt: Instant,
+    val profileVersion: Int,
+    val cachedProfileVersion: Int,
+    val trustScore: TrustLevel
+) {
+    val needsProfileSync: Boolean get() = profileVersion > cachedProfileVersion
+    val credentialsExpiringSoon: Boolean get() = credentialsExpireAt < Instant.now().plus(7.days)
+    val isStale: Boolean get() = lastActiveAt?.let { it < Instant.now().minus(30.days) } ?: true
+}
+
+enum class TrustLevel { NEW, ESTABLISHED, TRUSTED, VERIFIED }
+```
+
+---
+
 ### 5. Capability Discovery UI
+
+**Description:**
 - "What can I request from this connection?"
 - Grouped by category: Payments, Identity, Documents
 - Show available credential types without revealing values:
@@ -544,7 +674,37 @@ Active Connections (12)
 - "Request" button next to each capability
 - History of past requests and responses
 
+**Implementation Requirements:**
+
+| Platform | Component | Work Required |
+|----------|-----------|---------------|
+| Android | `CapabilityBrowserScreen.kt` | New screen for browsing peer capabilities |
+| Android | `CapabilityCard.kt` | Grouped display by category |
+| Android | `RequestHistoryScreen.kt` | List of past requests/responses |
+| Android | `CapabilityRequestDialog.kt` | Confirm before sending request |
+| iOS | `CapabilityBrowserView.swift` | SwiftUI capability browser |
+| iOS | `RequestHistoryView.swift` | Request history list |
+| Backend | `connection.get-capabilities` | New handler to fetch peer capabilities |
+| Backend | `capability.request` | New handler to request specific capability |
+| Backend | `capability.request.list` | List request history |
+| Backend | DynamoDB | `capability_requests` table |
+
+**Request Flow:**
+```
+Browse Capabilities → Select Item → Confirm Dialog → Send Request
+                                                         │
+                                          Peer receives notification
+                                                         │
+                                          Peer approves/denies
+                                                         │
+                                          Requester gets result
+```
+
+---
+
 ### 6. Notification Preferences
+
+**Description:**
 - **Per-connection settings**:
   - All notifications
   - Important only (requests, security alerts)
@@ -553,7 +713,42 @@ Active Connections (12)
 - **Digest mode**: Daily summary instead of real-time
 - **Priority connections**: Always notify regardless of quiet hours
 
+**Implementation Requirements:**
+
+| Platform | Component | Work Required |
+|----------|-----------|---------------|
+| Android | `NotificationPreferencesScreen.kt` | Global notification settings |
+| Android | `ConnectionNotificationSettings.kt` | Per-connection preferences |
+| Android | `NotificationPreferencesStore.kt` | EncryptedSharedPreferences storage |
+| Android | `QuietHoursManager.kt` | Check time before showing notification |
+| Android | `DigestWorker.kt` | WorkManager job for daily digest |
+| iOS | `NotificationPreferencesView.swift` | Settings UI |
+| iOS | `NotificationManager.swift` | Quiet hours, digest logic |
+| iOS | `BackgroundTasks` | Daily digest task |
+| Backend | `settings.notifications.update` | Store user preferences |
+| Backend | `notifications.digest` | Aggregate notifications for digest |
+
+**Preferences Model:**
+```kotlin
+data class NotificationPreferences(
+    val globalEnabled: Boolean = true,
+    val quietHoursEnabled: Boolean = false,
+    val quietHoursStart: LocalTime = LocalTime.of(22, 0),
+    val quietHoursEnd: LocalTime = LocalTime.of(8, 0),
+    val digestMode: DigestMode = DigestMode.REALTIME,
+    val connectionOverrides: Map<String, ConnectionNotificationLevel> = emptyMap(),
+    val priorityConnections: Set<String> = emptySet()
+)
+
+enum class ConnectionNotificationLevel { ALL, IMPORTANT_ONLY, MUTED }
+enum class DigestMode { REALTIME, DAILY_DIGEST }
+```
+
+---
+
 ### 7. Offline Handling
+
+**Description:**
 - Queue acceptance/rejection when offline
 - Show "pending sync" indicator with retry button
 - Gracefully handle mid-handshake disconnections
@@ -561,55 +756,298 @@ Active Connections (12)
 - Show clear "You're offline" banner with last sync time
 - Auto-sync when connection restored
 
+**Implementation Requirements:**
+
+| Platform | Component | Work Required |
+|----------|-----------|---------------|
+| Android | `OfflineQueueManager.kt` | Queue operations when offline |
+| Android | `ConnectionRepository.kt` | Add offline queue, sync status |
+| Android | `OfflineBanner.kt` | Composable banner with retry |
+| Android | `NetworkMonitor.kt` | ConnectivityManager observer |
+| Android | `SyncWorker.kt` | WorkManager to process queue |
+| iOS | `OfflineQueueManager.swift` | Queue operations |
+| iOS | `ConnectionRepository.swift` | Offline support |
+| iOS | `NetworkMonitor.swift` | NWPathMonitor observer |
+| iOS | `BackgroundSync.swift` | Process queue when online |
+
+**Offline Queue Model:**
+```kotlin
+data class PendingOperation(
+    val id: String,
+    val type: OperationType,
+    val connectionId: String,
+    val payload: String,  // JSON
+    val createdAt: Instant,
+    val retryCount: Int = 0
+)
+
+enum class OperationType {
+    ACCEPT_CONNECTION,
+    REJECT_CONNECTION,
+    UPDATE_PROFILE,
+    SEND_MESSAGE,
+    ROTATE_CREDENTIALS
+}
+
+// Queue stored in EncryptedSharedPreferences
+// Processed FIFO when connectivity restored
+```
+
+---
+
 ### 8. Onboarding & First-Time Experience
+
+**Description:**
 - **First connection wizard**: Guide user through creating first invitation
 - **Sample connection**: Option to connect with VettID support for testing
 - **Tooltips**: Explain verification badges, capability icons on first view
 - **Empty states**: Friendly messages when no connections exist yet
-  - "No connections yet. Invite someone to get started!"
+
+**Implementation Requirements:**
+
+| Platform | Component | Work Required |
+|----------|-----------|---------------|
+| Android | `ConnectionsOnboardingScreen.kt` | Step-by-step wizard |
+| Android | `TooltipOverlay.kt` | Spotlight tooltips for first use |
+| Android | `EmptyConnectionsState.kt` | Friendly empty state |
+| Android | `OnboardingPreferences.kt` | Track which tooltips shown |
+| iOS | `ConnectionsOnboardingView.swift` | Wizard with page indicators |
+| iOS | `TooltipModifier.swift` | SwiftUI tooltip overlay |
+| iOS | `EmptyConnectionsView.swift` | Empty state with illustration |
+| Backend | VettID Support Vault | Pre-configured test connection endpoint |
+
+**Onboarding Flow:**
+```
+First Launch → "Let's create your first connection!"
+                         │
+            ┌────────────┼────────────┐
+            │            │            │
+       "Invite Someone"  │   "Connect with VettID Support"
+            │            │            │
+    Create QR Screen     │     Auto-accept test connection
+            │            │            │
+    Share with friend    │     Explore features safely
+            │            │            │
+            └────────────┴────────────┘
+                         │
+              "Great! You're all set."
+```
+
+---
 
 ### 9. Profile Management
+
+**Description:**
 - **Preview mode**: "See how others see your profile"
 - **Quick sharing toggles**: One-tap to show/hide phone, address, etc.
 - **Field-level privacy**: Lock icon on fields not shared
 - **Edit history**: "Last updated 3 days ago"
 - **Sync indicator**: Show when profile is syncing to vault
 
+**Implementation Requirements:**
+
+| Platform | Component | Work Required |
+|----------|-----------|---------------|
+| Android | `ProfilePreviewScreen.kt` | Show profile as others see it |
+| Android | `ProfileEditScreen.kt` | Add sharing toggles per field |
+| Android | `SharingToggle.kt` | Eye/lock icon toggle component |
+| Android | `ProfileSyncIndicator.kt` | Syncing/synced status |
+| Android | `ProfileViewModel.kt` | Add `previewMode`, `syncStatus` |
+| iOS | `ProfilePreviewView.swift` | Preview mode |
+| iOS | `ProfileEditView.swift` | Sharing toggles |
+| iOS | `SharingToggleStyle.swift` | Custom toggle style |
+| Backend | `profile.update` | Return `updated_at` timestamp |
+| Backend | `profile.get-shared` | Apply sharing settings |
+
+**UI Layout:**
+```
+┌─────────────────────────────────────┐
+│ My Profile          [Preview] [Edit]│
+├─────────────────────────────────────┤
+│ Name: John Smith            🔓      │
+│ Email: john@example.com     🔓      │
+│ Phone: +1 555-1234          👁️ ────── Toggle to share/hide
+│ Address: 123 Main St        🔒      │
+│ Organization: Acme Inc      👁️      │
+├─────────────────────────────────────┤
+│ Last updated: 3 days ago    ✓ Synced│
+└─────────────────────────────────────┘
+```
+
+---
+
 ### 10. Trust Building Features
+
+**Description:**
 - **Connection age badge**: "Connected for 2 years"
-- **Mutual connections**: "You both know: Alice, Bob" (if implemented)
+- **Mutual connections**: "You both know: Alice, Bob" (future)
 - **Verification chain**: Show what's been verified and by whom
 - **Activity summary**: "15 successful transactions"
 
+**Implementation Requirements:**
+
+| Platform | Component | Work Required |
+|----------|-----------|---------------|
+| Android | `TrustBadge.kt` | Connection age badge composable |
+| Android | `VerificationChain.kt` | Show verification history |
+| Android | `ActivitySummary.kt` | Transaction/interaction count |
+| Android | `ConnectionDetailScreen.kt` | Add trust section |
+| iOS | `TrustBadgeView.swift` | Age badge |
+| iOS | `VerificationChainView.swift` | Verification history |
+| iOS | `ActivitySummaryView.swift` | Activity count |
+| Backend | `connection.get` | Return `created_at`, `activity_count` |
+| Backend | `connection.activity-summary` | Aggregate activity stats |
+| Backend | DynamoDB | Track `activity_count` per connection |
+
+**Trust Calculation:**
+```kotlin
+fun calculateTrustLevel(connection: Connection): TrustLevel {
+    val ageMonths = ChronoUnit.MONTHS.between(connection.createdAt, Instant.now())
+    val hasVerifiedEmail = connection.peerProfile.emailVerified
+    val hasVerifiedIdentity = connection.peerProfile.identityVerified
+    val activityCount = connection.activityCount
+
+    return when {
+        hasVerifiedIdentity && ageMonths >= 12 -> TrustLevel.VERIFIED
+        hasVerifiedEmail && ageMonths >= 6 && activityCount >= 10 -> TrustLevel.TRUSTED
+        ageMonths >= 1 || activityCount >= 3 -> TrustLevel.ESTABLISHED
+        else -> TrustLevel.NEW
+    }
+}
+```
+
+---
+
 ### 11. Error Recovery
+
+**Description:**
 - **Clear error messages**: "Connection failed: John rejected your request"
 - **Suggested actions**: "Try sending a new invitation"
 - **Retry with context**: Don't lose user's input on failure
 - **Support shortcut**: Easy access to help when errors occur
 
-### 12. Accessibility
-- **Screen reader support**: All status indicators have text descriptions
-- **High contrast mode**: Clear visual distinction between states
-- **Large touch targets**: Minimum 48dp for all interactive elements
-- **Keyboard navigation**: Full support for external keyboards
+**Implementation Requirements:**
 
-### 13. Connection Organization
+| Platform | Component | Work Required |
+|----------|-----------|---------------|
+| Android | `ConnectionErrorScreen.kt` | Dedicated error screen |
+| Android | `ErrorMessageMapper.kt` | Map error codes to user messages |
+| Android | `RetryManager.kt` | Preserve state for retry |
+| Android | `SupportShortcut.kt` | Quick link to help/support |
+| iOS | `ConnectionErrorView.swift` | Error display |
+| iOS | `ErrorMessageMapper.swift` | Error code mapping |
+| iOS | `RetryManager.swift` | State preservation |
+
+**Error Message Mapping:**
+```kotlin
+object ConnectionErrorMessages {
+    fun getErrorMessage(error: ConnectionError): ErrorDisplay {
+        return when (error) {
+            is ConnectionError.Rejected -> ErrorDisplay(
+                title = "Connection Declined",
+                message = "${error.peerName} declined your connection request.",
+                suggestedAction = "You can send a new invitation if you'd like to try again.",
+                actionButton = "Create New Invitation"
+            )
+            is ConnectionError.Expired -> ErrorDisplay(
+                title = "Invitation Expired",
+                message = "This invitation is no longer valid.",
+                suggestedAction = "Create a new invitation to connect.",
+                actionButton = "Create New Invitation"
+            )
+            is ConnectionError.NetworkError -> ErrorDisplay(
+                title = "Connection Failed",
+                message = "Unable to reach the server. Check your internet connection.",
+                suggestedAction = "Your progress has been saved. Try again when you're online.",
+                actionButton = "Retry"
+            )
+            // ... more mappings
+        }
+    }
+}
+```
+
+---
+
+### 12. Connection Organization
+
+**Description:**
 - **Labels/Tags**: User-defined categories (Family, Work, Merchants)
 - **Favorites**: Pin important connections to top
 - **Search**: Find by name, email, organization
 - **Filters**: By status, verification level, last active
 - **Archive**: Hide inactive connections without revoking
 
-### 14. Invitation Tracking
+**Implementation Requirements:**
+
+| Platform | Component | Work Required |
+|----------|-----------|---------------|
+| Android | `ConnectionTagsManager.kt` | Create/assign tags |
+| Android | `TagChip.kt` | Tag display composable |
+| Android | `ConnectionsFilterSheet.kt` | Bottom sheet with filters |
+| Android | `ConnectionSearchBar.kt` | Search with debounce |
+| Android | `ArchiveManager.kt` | Archive/unarchive logic |
+| iOS | `ConnectionTagsManager.swift` | Tag management |
+| iOS | `ConnectionsFilterView.swift` | Filter sheet |
+| iOS | `ConnectionSearchBar.swift` | Search bar |
+| Backend | `connection.update` | Add `tags`, `is_favorite`, `is_archived` fields |
+| Backend | `connection.list` | Support filter/search query params |
+| Backend | DynamoDB | GSI for tag-based queries |
+
+**Filter/Search Model:**
+```kotlin
+data class ConnectionFilter(
+    val searchQuery: String? = null,
+    val tags: Set<String>? = null,
+    val status: Set<ConnectionStatus>? = null,
+    val verificationLevel: VerificationLevel? = null,
+    val showArchived: Boolean = false,
+    val favoritesOnly: Boolean = false,
+    val sortOrder: SortOrder = SortOrder.RECENT_ACTIVITY
+)
+
+data class ConnectionTag(
+    val id: String,
+    val name: String,
+    val color: String  // Hex color
+)
+```
+
+---
+
+### 13. Invitation Tracking
+
+**Description:**
 - **Sent invitations list**: Track all pending outbound invitations
 - **Status updates**: "John viewed your invitation" (if they open the link)
 - **Reminder option**: "Resend invitation" for pending invites
 - **Cancel invitation**: Revoke before acceptance
 
-### 15. Data Portability
-- **Export connections**: Download list with peer profiles (JSON/CSV)
-- **Export activity log**: All connection events for personal records
-- **Backup reminder**: Prompt to backup before major changes
+**Implementation Requirements:**
+
+| Platform | Component | Work Required |
+|----------|-----------|---------------|
+| Android | `SentInvitationsScreen.kt` | List of outbound invitations |
+| Android | `InvitationStatusCard.kt` | Show status, expiry, actions |
+| Android | `InvitationViewModel.kt` | Track invitation states |
+| iOS | `SentInvitationsView.swift` | Invitation list |
+| iOS | `InvitationStatusCard.swift` | Status display |
+| Backend | `invitation.list` | List user's sent invitations |
+| Backend | `invitation.cancel` | Revoke pending invitation |
+| Backend | `invitation.resend` | Regenerate with new expiry |
+| Backend | `invitation.viewed` | Track when invitation link opened |
+| Backend | DynamoDB | `invitations` table with status tracking |
+
+**Invitation Status Flow:**
+```
+Created → Sent → Viewed → Accepted/Rejected/Expired/Cancelled
+   │        │       │
+   │        │       └── "John viewed 2 hours ago"
+   │        │
+   │        └── "Sent via SMS"
+   │
+   └── "Created 5 minutes ago, expires in 23h 55m"
+```
 
 ---
 
