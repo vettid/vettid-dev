@@ -20,11 +20,12 @@ const (
 	EventTypeCallAnswered  EventType = "call.answered"
 
 	// Connection events
-	EventTypeConnectionRequest  EventType = "connection.request"
-	EventTypeConnectionAccepted EventType = "connection.accepted"
-	EventTypeConnectionRejected EventType = "connection.rejected"
-	EventTypeConnectionRevoked  EventType = "connection.revoked"
-	EventTypeConnectionCreated  EventType = "connection.created"
+	EventTypeConnectionRequest   EventType = "connection.request"
+	EventTypeConnectionInitiated EventType = "connection.initiated"
+	EventTypeConnectionAccepted  EventType = "connection.accepted"
+	EventTypeConnectionRejected  EventType = "connection.rejected"
+	EventTypeConnectionRevoked   EventType = "connection.revoked"
+	EventTypeConnectionCreated   EventType = "connection.created"
 
 	// Message events
 	EventTypeMessageReceived EventType = "message.received"
@@ -176,11 +177,12 @@ var eventClassifications = map[EventType]EventClassification{
 	EventTypeCallAnswered: {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
 
 	// Connection events
-	EventTypeConnectionRequest:  {FeedStatusActive, ActionTypeAcceptDecline, PriorityNormal, RetentionStandard},
-	EventTypeConnectionAccepted: {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
-	EventTypeConnectionRejected: {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
-	EventTypeConnectionRevoked:  {FeedStatusActive, ActionTypeAcknowledge, PriorityLow, RetentionStandard},
-	EventTypeConnectionCreated:  {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
+	EventTypeConnectionRequest:   {FeedStatusActive, ActionTypeAcceptDecline, PriorityNormal, RetentionStandard},
+	EventTypeConnectionInitiated: {FeedStatusActive, ActionTypeAcceptDecline, PriorityNormal, RetentionStandard},
+	EventTypeConnectionAccepted:  {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
+	EventTypeConnectionRejected:  {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
+	EventTypeConnectionRevoked:   {FeedStatusActive, ActionTypeAcknowledge, PriorityLow, RetentionStandard},
+	EventTypeConnectionCreated:   {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
 
 	// Message events
 	EventTypeMessageReceived: {FeedStatusActive, ActionTypeReply, PriorityLow, RetentionStandard},

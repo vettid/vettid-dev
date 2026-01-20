@@ -106,6 +106,26 @@ type StoreCredentialsResponse struct {
 	E2EPublicKey string `json:"e2e_public_key"`
 }
 
+// InitiateConnectionRequest is the payload for connection.initiate
+// Used when User B (invitee) initiates connection with User A (inviter)
+type InitiateConnectionRequest struct {
+	InvitationID         string            `json:"invitation_id"`
+	RequesterProfile     map[string]string `json:"requester_profile"`               // B's profile to share with A
+	RequesterCapabilities map[string]string `json:"requester_capabilities,omitempty"` // B's capabilities
+	RequesterNATSCreds   string            `json:"requester_nats_credentials"`       // Reciprocal creds for A
+	RequesterE2EPublicKey string           `json:"requester_e2e_public_key"`
+}
+
+// InitiateConnectionResponse is the response for connection.initiate
+type InitiateConnectionResponse struct {
+	ConnectionID        string            `json:"connection_id"`
+	InviterProfile      map[string]string `json:"inviter_profile"`       // A's profile
+	InviterCapabilities map[string]string `json:"inviter_capabilities,omitempty"`
+	InviterE2EPublicKey string            `json:"inviter_e2e_public_key"`
+	PeerVerifications   []string          `json:"peer_verifications"`    // A's verification status
+	Status              string            `json:"status"`                // "pending_their_review"
+}
+
 // RevokeConnectionRequest is the payload for connection.revoke
 type RevokeConnectionRequest struct {
 	ConnectionID string `json:"connection_id"`
@@ -356,6 +376,163 @@ func (h *ConnectionsHandler) HandleStoreCredentials(msg *IncomingMessage) (*Outg
 		Type:      MessageTypeResponse,
 		Payload:   respBytes,
 	}, nil
+}
+
+// HandleInitiate handles connection.initiate messages
+// This is used when User B (invitee) initiates a connection with User A (inviter)
+// Part of the bidirectional consent flow
+func (h *ConnectionsHandler) HandleInitiate(msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req InitiateConnectionRequest
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		return h.errorResponse(msg.GetID(), "Invalid request format")
+	}
+
+	if req.InvitationID == "" {
+		return h.errorResponse(msg.GetID(), "invitation_id is required")
+	}
+	if req.RequesterE2EPublicKey == "" {
+		return h.errorResponse(msg.GetID(), "requester_e2e_public_key is required")
+	}
+
+	// Find the connection associated with this invitation
+	// Invitations are linked to connections via the connection_id stored in the invitation
+	invitationData, err := h.storage.Get("invitations/" + req.InvitationID)
+	if err != nil {
+		return h.errorResponse(msg.GetID(), "Invitation not found")
+	}
+
+	var invitation struct {
+		ConnectionID string `json:"connection_id"`
+		Status       string `json:"status"`
+		ExpiresAt    string `json:"expires_at"`
+	}
+	if err := json.Unmarshal(invitationData, &invitation); err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to read invitation")
+	}
+
+	if invitation.Status != "pending" {
+		return h.errorResponse(msg.GetID(), "Invitation is no longer valid")
+	}
+
+	// Load the connection record
+	connectionID := invitation.ConnectionID
+	storageKey := "connections/" + connectionID
+	connData, err := h.storage.Get(storageKey)
+	if err != nil {
+		return h.errorResponse(msg.GetID(), "Connection not found")
+	}
+
+	var record ConnectionRecord
+	if err := json.Unmarshal(connData, &record); err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to read connection")
+	}
+
+	// Store requester's info in the connection record
+	record.PeerCapabilities = req.RequesterCapabilities
+	record.Status = "pending_our_review" // Inviter (A) needs to review invitee (B)
+
+	// Decode peer's E2E public key and compute shared secret
+	peerPublicKey, err := decodeHexKey(req.RequesterE2EPublicKey)
+	if err != nil {
+		return h.errorResponse(msg.GetID(), "Invalid requester public key format")
+	}
+	record.PeerPublicKey = peerPublicKey
+
+	// Compute shared secret using X25519
+	if len(record.LocalPrivateKey) > 0 && len(peerPublicKey) > 0 {
+		sharedSecret, err := curve25519.X25519(record.LocalPrivateKey, peerPublicKey)
+		if err == nil {
+			record.SharedSecret = sharedSecret
+			record.KeyExchangeAt = time.Now()
+		}
+	}
+
+	// Save updated connection record
+	newData, err := json.Marshal(record)
+	if err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to update connection")
+	}
+	if err := h.storage.Put(storageKey, newData); err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to store connection update")
+	}
+
+	// Log the initiation event
+	if h.eventHandler != nil {
+		h.eventHandler.LogConnectionEvent(context.Background(), EventTypeConnectionInitiated, connectionID, "", "Connection initiated by peer")
+	}
+
+	// Load the inviter's profile to return to the requester
+	inviterProfile := make(map[string]string)
+	profileIndexData, err := h.storage.Get("profile/_index")
+	if err == nil {
+		var fieldNames []string
+		if json.Unmarshal(profileIndexData, &fieldNames) == nil {
+			for _, field := range fieldNames {
+				fieldData, err := h.storage.Get("profile/" + field)
+				if err == nil {
+					var entry struct {
+						Value string `json:"value"`
+					}
+					if json.Unmarshal(fieldData, &entry) == nil {
+						inviterProfile[field] = entry.Value
+					}
+				}
+			}
+		}
+	}
+
+	// Build peer verifications array from profile
+	peerVerifications := []string{}
+	if _, ok := inviterProfile["email_verified"]; ok {
+		if inviterProfile["email_verified"] == "true" {
+			peerVerifications = append(peerVerifications, "email")
+		}
+	}
+	if _, ok := inviterProfile["identity_verified"]; ok {
+		if inviterProfile["identity_verified"] == "true" {
+			peerVerifications = append(peerVerifications, "identity")
+		}
+	}
+
+	log.Info().
+		Str("connection_id", connectionID).
+		Str("invitation_id", req.InvitationID).
+		Msg("Connection initiated")
+
+	resp := InitiateConnectionResponse{
+		ConnectionID:        connectionID,
+		InviterProfile:      inviterProfile,
+		InviterCapabilities: record.PeerCapabilities,
+		InviterE2EPublicKey: fmt.Sprintf("%x", record.LocalPublicKey),
+		PeerVerifications:   peerVerifications,
+		Status:              "pending_their_review", // B needs to review A
+	}
+	respBytes, _ := json.Marshal(resp)
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// decodeHexKey decodes a hex-encoded key string
+func decodeHexKey(hexKey string) ([]byte, error) {
+	// Remove any leading 0x prefix if present
+	if len(hexKey) >= 2 && hexKey[:2] == "0x" {
+		hexKey = hexKey[2:]
+	}
+
+	decoded := make([]byte, len(hexKey)/2)
+	for i := 0; i < len(decoded); i++ {
+		var b byte
+		_, err := fmt.Sscanf(hexKey[i*2:i*2+2], "%02x", &b)
+		if err != nil {
+			return nil, fmt.Errorf("invalid hex at position %d: %w", i*2, err)
+		}
+		decoded[i] = b
+	}
+	return decoded, nil
 }
 
 // HandleRevoke handles connection.revoke messages

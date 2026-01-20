@@ -184,6 +184,7 @@ func (h *ProfileHandler) HandleUpdate(msg *IncomingMessage) (*OutgoingMessage, e
 	resp := map[string]interface{}{
 		"success":        true,
 		"fields_updated": updatedFields,
+		"updated_at":     now.Format(time.RFC3339),
 	}
 	respBytes, _ := json.Marshal(resp)
 
