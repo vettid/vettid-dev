@@ -48,6 +48,41 @@ const (
 	// Profile events
 	EventTypeProfileUpdated EventType = "profile.updated"
 
+	// Service connection events (B2C)
+	EventTypeServiceConnectionInitiated EventType = "service.connection.initiated"
+	EventTypeServiceConnectionAccepted  EventType = "service.connection.accepted"
+	EventTypeServiceConnectionRejected  EventType = "service.connection.rejected"
+	EventTypeServiceConnectionRevoked   EventType = "service.connection.revoked"
+
+	// Service data events
+	EventTypeServiceDataRequested EventType = "service.data.requested"
+	EventTypeServiceDataProvided  EventType = "service.data.provided"
+	EventTypeServiceDataDenied    EventType = "service.data.denied"
+	EventTypeServiceDataStored    EventType = "service.data.stored"
+	EventTypeServiceDataDeleted   EventType = "service.data.deleted"
+
+	// Service request events
+	EventTypeServiceAuthRequested    EventType = "service.auth.requested"
+	EventTypeServiceConsentRequested EventType = "service.consent.requested"
+	EventTypeServicePaymentRequested EventType = "service.payment.requested"
+	EventTypeServiceRequestApproved  EventType = "service.request.approved"
+	EventTypeServiceRequestDenied    EventType = "service.request.denied"
+	EventTypeServiceRequestExpired   EventType = "service.request.expired"
+
+	// Contract events
+	EventTypeServiceContractUpdatePublished EventType = "service.contract.update_published"
+	EventTypeServiceContractAccepted        EventType = "service.contract.accepted"
+	EventTypeServiceContractRejected        EventType = "service.contract.rejected"
+	EventTypeServiceContractViolation       EventType = "service.contract.violation"
+
+	// Rate limit events
+	EventTypeServiceRateLimitWarning  EventType = "service.rate_limit.warning"
+	EventTypeServiceRateLimitExceeded EventType = "service.rate_limit.exceeded"
+
+	// Resource events
+	EventTypeServiceResourceDownloaded EventType = "service.resource.downloaded"
+	EventTypeServiceResourceVerified   EventType = "service.resource.verified"
+
 	// Feed interaction events (audit-only, tracks user actions on feed items)
 	EventTypeFeedItemRead     EventType = "feed.item_read"
 	EventTypeFeedItemArchived EventType = "feed.item_archived"
@@ -210,6 +245,41 @@ var eventClassifications = map[EventType]EventClassification{
 	EventTypeFeedItemArchived: {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionEphemeral},
 	EventTypeFeedItemDeleted:  {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionEphemeral},
 	EventTypeFeedActionTaken:  {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
+
+	// Service connection events
+	EventTypeServiceConnectionInitiated: {FeedStatusActive, ActionTypeAcceptDecline, PriorityNormal, RetentionStandard},
+	EventTypeServiceConnectionAccepted:  {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
+	EventTypeServiceConnectionRejected:  {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
+	EventTypeServiceConnectionRevoked:   {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
+
+	// Service data events
+	EventTypeServiceDataRequested: {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
+	EventTypeServiceDataProvided:  {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
+	EventTypeServiceDataDenied:    {FeedStatusActive, ActionTypeAcknowledge, PriorityLow, RetentionStandard},
+	EventTypeServiceDataStored:    {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
+	EventTypeServiceDataDeleted:   {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
+
+	// Service request events
+	EventTypeServiceAuthRequested:    {FeedStatusActive, ActionTypeAcceptDecline, PriorityHigh, RetentionStandard},
+	EventTypeServiceConsentRequested: {FeedStatusActive, ActionTypeAcceptDecline, PriorityNormal, RetentionStandard},
+	EventTypeServicePaymentRequested: {FeedStatusActive, ActionTypeAcceptDecline, PriorityHigh, RetentionStandard},
+	EventTypeServiceRequestApproved:  {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
+	EventTypeServiceRequestDenied:    {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
+	EventTypeServiceRequestExpired:   {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionEphemeral},
+
+	// Contract events
+	EventTypeServiceContractUpdatePublished: {FeedStatusActive, ActionTypeAcceptDecline, PriorityNormal, RetentionStandard},
+	EventTypeServiceContractAccepted:        {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
+	EventTypeServiceContractRejected:        {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
+	EventTypeServiceContractViolation:       {FeedStatusActive, ActionTypeAcknowledge, PriorityHigh, RetentionPermanent},
+
+	// Rate limit events
+	EventTypeServiceRateLimitWarning:  {FeedStatusActive, ActionTypeAcknowledge, PriorityNormal, RetentionStandard},
+	EventTypeServiceRateLimitExceeded: {FeedStatusActive, ActionTypeAcknowledge, PriorityHigh, RetentionStandard},
+
+	// Resource events
+	EventTypeServiceResourceDownloaded: {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
+	EventTypeServiceResourceVerified:   {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
 }
 
 // GetEventClassification returns the default classification for an event type

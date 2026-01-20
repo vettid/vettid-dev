@@ -98,6 +98,13 @@ type MessageHandler struct {
 	invitationsHandler *InvitationsHandler
 	capabilityHandler  *CapabilityHandler
 	settingsHandler    *SettingsHandler
+
+	// Service connection handlers (B2C)
+	serviceConnectionHandler  *ServiceConnectionHandler
+	serviceContractsHandler   *ServiceContractsHandler
+	serviceDataHandler        *ServiceDataHandler
+	serviceRequestsHandler    *ServiceRequestsHandler
+	serviceResourcesHandler   *ServiceResourcesHandler
 }
 
 // VsockPublisher implements CallPublisher using vsock to parent
@@ -182,12 +189,22 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 	// Create migration handler for migration status and recovery
 	migrationHandler := NewMigrationHandler(ownerSpace, storage, vaultState, sealerProxy)
 
+	// Create profile handler (needed by service contracts)
+	profileHandler := NewProfileHandler(ownerSpace, storage)
+
+	// Create service connection handlers (B2C)
+	serviceConnectionHandler := NewServiceConnectionHandler(ownerSpace, storage, eventHandler)
+	serviceContractsHandler := NewServiceContractsHandler(ownerSpace, storage, eventHandler, serviceConnectionHandler, profileHandler)
+	serviceDataHandler := NewServiceDataHandler(ownerSpace, storage, eventHandler, serviceConnectionHandler, serviceContractsHandler, profileHandler)
+	serviceRequestsHandler := NewServiceRequestsHandler(ownerSpace, storage, eventHandler, serviceConnectionHandler, serviceContractsHandler)
+	serviceResourcesHandler := NewServiceResourcesHandler(ownerSpace, storage, eventHandler, serviceConnectionHandler)
+
 	return &MessageHandler{
 		ownerSpace:           ownerSpace,
 		storage:              storage,
 		callHandler:          NewCallHandler(ownerSpace, storage, publisher, eventHandler),
 		secretsHandler:       NewSecretsHandler(ownerSpace, storage),
-		profileHandler:       NewProfileHandler(ownerSpace, storage),
+		profileHandler:       profileHandler,
 		credentialHandler:    NewCredentialHandler(ownerSpace, storage),
 		messagingHandler:     NewMessagingHandler(ownerSpace, storage, publisher, eventHandler),
 		connectionsHandler:      NewConnectionsHandler(ownerSpace, storage, eventHandler),
@@ -213,6 +230,13 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 		invitationsHandler: NewInvitationsHandler(ownerSpace, storage),
 		capabilityHandler:  NewCapabilityHandler(ownerSpace, storage, publisher, eventHandler),
 		settingsHandler:    NewSettingsHandler(ownerSpace, storage),
+
+		// Service connection handlers (B2C)
+		serviceConnectionHandler:  serviceConnectionHandler,
+		serviceContractsHandler:   serviceContractsHandler,
+		serviceDataHandler:        serviceDataHandler,
+		serviceRequestsHandler:    serviceRequestsHandler,
+		serviceResourcesHandler:   serviceResourcesHandler,
 	}
 }
 
@@ -347,6 +371,9 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 	case "notifications":
 		// Notifications operations (digest)
 		return mh.handleNotificationsDigestOperation(ctx, msg, parts[opIndex+1:])
+	case "service":
+		// Service connection operations (B2C)
+		return mh.handleServiceOperation(ctx, msg, parts[opIndex+1:])
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown operation: %s", operation))
 	}
@@ -1184,4 +1211,172 @@ func (mh *MessageHandler) SecureErase() {
 	mh.invitationsHandler = nil
 	mh.capabilityHandler = nil
 	mh.settingsHandler = nil
+	mh.serviceConnectionHandler = nil
+	mh.serviceContractsHandler = nil
+	mh.serviceDataHandler = nil
+	mh.serviceRequestsHandler = nil
+	mh.serviceResourcesHandler = nil
+}
+
+// handleServiceOperation routes service-related operations
+// Handles B2C service connections including connection management,
+// contract handling, and data access
+func (mh *MessageHandler) handleServiceOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
+	if len(opParts) < 2 {
+		return mh.errorResponse(msg.GetID(), "missing service operation type")
+	}
+
+	subOp := opParts[1] // e.g., "connection", "contract", "data"
+
+	switch subOp {
+	case "connection":
+		return mh.handleServiceConnectionOperation(ctx, msg, opParts[1:])
+	case "contract":
+		return mh.handleServiceContractOperation(ctx, msg, opParts[1:])
+	case "data":
+		return mh.handleServiceDataOperation(ctx, msg, opParts[1:])
+	case "request":
+		return mh.handleServiceRequestOperation(ctx, msg, opParts[1:])
+	case "profile":
+		return mh.handleServiceProfileOperation(ctx, msg, opParts[1:])
+	default:
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown service operation: %s", subOp))
+	}
+}
+
+// handleServiceConnectionOperation routes service.connection.* operations
+func (mh *MessageHandler) handleServiceConnectionOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
+	if len(opParts) < 2 {
+		return mh.errorResponse(msg.GetID(), "missing connection operation type")
+	}
+
+	opType := opParts[1] // e.g., "discover", "initiate", "list"
+
+	switch opType {
+	case "discover":
+		return mh.serviceConnectionHandler.HandleDiscover(msg)
+	case "initiate":
+		return mh.serviceConnectionHandler.HandleInitiate(msg)
+	case "list":
+		return mh.serviceConnectionHandler.HandleList(msg)
+	case "get":
+		return mh.serviceConnectionHandler.HandleGet(msg)
+	case "update":
+		return mh.serviceConnectionHandler.HandleUpdate(msg)
+	case "revoke":
+		return mh.serviceConnectionHandler.HandleRevoke(msg)
+	case "health":
+		return mh.serviceConnectionHandler.HandleHealth(msg)
+	default:
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown connection operation: %s", opType))
+	}
+}
+
+// handleServiceContractOperation routes service.contract.* operations
+func (mh *MessageHandler) handleServiceContractOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
+	if len(opParts) < 2 {
+		return mh.errorResponse(msg.GetID(), "missing contract operation type")
+	}
+
+	opType := opParts[1] // e.g., "get", "accept", "reject", "history"
+
+	switch opType {
+	case "get":
+		return mh.serviceContractsHandler.HandleGetContract(msg)
+	case "accept":
+		return mh.serviceContractsHandler.HandleAcceptUpdate(msg)
+	case "reject":
+		return mh.serviceContractsHandler.HandleRejectUpdate(msg)
+	case "history":
+		return mh.serviceContractsHandler.HandleContractHistory(msg)
+	case "update-notification":
+		// Incoming notification from service about contract update
+		return mh.serviceContractsHandler.HandleContractUpdateNotification(msg)
+	default:
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown contract operation: %s", opType))
+	}
+}
+
+// handleServiceDataOperation routes service.data.* operations
+func (mh *MessageHandler) handleServiceDataOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
+	if len(opParts) < 2 {
+		return mh.errorResponse(msg.GetID(), "missing data operation type")
+	}
+
+	opType := opParts[1] // e.g., "get", "store", "list", "delete", "summary", "export"
+
+	switch opType {
+	case "get":
+		// Incoming request from service for profile data
+		return mh.serviceDataHandler.HandleGet(msg)
+	case "store":
+		// Incoming request from service to store data
+		return mh.serviceDataHandler.HandleStore(msg)
+	case "list":
+		// User listing service-stored data
+		return mh.serviceDataHandler.HandleList(msg)
+	case "delete":
+		// User deleting service data
+		return mh.serviceDataHandler.HandleDelete(msg)
+	case "summary":
+		// User getting storage summary
+		return mh.serviceDataHandler.HandleSummary(msg)
+	case "export":
+		// User exporting service data
+		return mh.serviceDataHandler.HandleExport(msg)
+	default:
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown data operation: %s", opType))
+	}
+}
+
+// handleServiceRequestOperation routes service.request.* operations
+func (mh *MessageHandler) handleServiceRequestOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
+	if len(opParts) < 2 {
+		return mh.errorResponse(msg.GetID(), "missing request operation type")
+	}
+
+	opType := opParts[1] // e.g., "auth", "consent", "payment", "respond", "list"
+
+	switch opType {
+	case "auth":
+		// Incoming auth request from service
+		return mh.serviceRequestsHandler.HandleAuthRequest(msg)
+	case "consent":
+		// Incoming consent request from service
+		return mh.serviceRequestsHandler.HandleConsentRequest(msg)
+	case "payment":
+		// Incoming payment request from service
+		return mh.serviceRequestsHandler.HandlePaymentRequest(msg)
+	case "respond":
+		// User responding to a request
+		return mh.serviceRequestsHandler.HandleRespond(msg)
+	case "list":
+		// User listing requests
+		return mh.serviceRequestsHandler.HandleList(msg)
+	default:
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown request operation: %s", opType))
+	}
+}
+
+// handleServiceProfileOperation routes service.profile.* operations
+func (mh *MessageHandler) handleServiceProfileOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
+	if len(opParts) < 2 {
+		return mh.errorResponse(msg.GetID(), "missing profile operation type")
+	}
+
+	opType := opParts[1] // e.g., "get", "resources", "verify-download"
+
+	switch opType {
+	case "get":
+		// Get cached service profile
+		return mh.serviceResourcesHandler.HandleGetProfile(msg)
+	case "resources":
+		// Get trusted resources
+		return mh.serviceResourcesHandler.HandleGetResources(msg)
+	case "verify-download":
+		// Verify a download
+		return mh.serviceResourcesHandler.HandleVerifyDownload(msg)
+	default:
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown profile operation: %s", opType))
+	}
 }
