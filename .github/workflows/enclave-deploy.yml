@@ -1,0 +1,261 @@
+name: Enclave Deploy with Migration
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+      skip_migration:
+        description: 'Skip migration (fresh deploy)'
+        required: false
+        type: boolean
+        default: false
+      auto_cutover:
+        description: 'Auto cutover after verification (staging only)'
+        required: false
+        type: boolean
+        default: false
+
+env:
+  AWS_REGION: us-east-1
+  ENCLAVE_IMAGE_BUCKET: vettid-enclave-images
+  SECRETS_MANAGER_SECRET: vettid/enclave/pcr-config
+
+jobs:
+  build-enclave:
+    name: Build Enclave Image
+    runs-on: ubuntu-latest
+    outputs:
+      pcr0: ${{ steps.extract-pcrs.outputs.pcr0 }}
+      pcr1: ${{ steps.extract-pcrs.outputs.pcr1 }}
+      pcr2: ${{ steps.extract-pcrs.outputs.pcr2 }}
+      image_version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Generate version
+        id: version
+        run: echo "version=$(date +%Y%m%d%H%M%S)-$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Build enclave image
+        env:
+          IMAGE_VERSION: ${{ steps.version.outputs.version }}
+        working-directory: enclave
+        run: |
+          ./scripts/build-enclave.sh
+          mv vault-manager.eif "vault-manager-${IMAGE_VERSION}.eif"
+
+      - name: Extract PCR values
+        id: extract-pcrs
+        env:
+          IMAGE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # Extract PCRs from the EIF
+          PCR_OUTPUT=$(nitro-cli describe-eif --eif-path "enclave/vault-manager-${IMAGE_VERSION}.eif")
+          echo "pcr0=$(echo "$PCR_OUTPUT" | jq -r '.Measurements.PCR0')" >> $GITHUB_OUTPUT
+          echo "pcr1=$(echo "$PCR_OUTPUT" | jq -r '.Measurements.PCR1')" >> $GITHUB_OUTPUT
+          echo "pcr2=$(echo "$PCR_OUTPUT" | jq -r '.Measurements.PCR2')" >> $GITHUB_OUTPUT
+
+      - name: Sign PCR configuration
+        id: sign-config
+        env:
+          PCR0: ${{ steps.extract-pcrs.outputs.pcr0 }}
+          PCR1: ${{ steps.extract-pcrs.outputs.pcr1 }}
+          PCR2: ${{ steps.extract-pcrs.outputs.pcr2 }}
+          IMAGE_VERSION: ${{ steps.version.outputs.version }}
+          DEPLOYMENT_SIGNING_KEY: ${{ secrets.DEPLOYMENT_SIGNING_KEY }}
+        run: |
+          # Create PCR config JSON
+          cat > pcr-config.json << EOF
+          {
+            "new_pcrs": {
+              "pcr0": "${PCR0}",
+              "pcr1": "${PCR1}",
+              "pcr2": "${PCR2}"
+            },
+            "valid_from": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "version": "${IMAGE_VERSION}"
+          }
+          EOF
+
+          # Sign the config with deployment key
+          echo "${DEPLOYMENT_SIGNING_KEY}" | base64 -d > deploy-key.pem
+          ./scripts/sign-pcr-config.sh pcr-config.json deploy-key.pem > signed-pcr-config.json
+          rm deploy-key.pem
+
+      - name: Upload signed config to Secrets Manager
+        env:
+          DEPLOY_ENV: ${{ inputs.environment }}
+        run: |
+          aws secretsmanager put-secret-value \
+            --secret-id "${SECRETS_MANAGER_SECRET}-${DEPLOY_ENV}" \
+            --secret-string file://signed-pcr-config.json
+
+      - name: Upload enclave image to S3
+        env:
+          IMAGE_VERSION: ${{ steps.version.outputs.version }}
+          DEPLOY_ENV: ${{ inputs.environment }}
+        run: |
+          aws s3 cp \
+            "enclave/vault-manager-${IMAGE_VERSION}.eif" \
+            "s3://${ENCLAVE_IMAGE_BUCKET}/${DEPLOY_ENV}/"
+
+      - name: Update KMS policy with new PCRs
+        env:
+          DEPLOY_ENV: ${{ inputs.environment }}
+          PCR0: ${{ steps.extract-pcrs.outputs.pcr0 }}
+          PCR1: ${{ steps.extract-pcrs.outputs.pcr1 }}
+          PCR2: ${{ steps.extract-pcrs.outputs.pcr2 }}
+        run: |
+          ./scripts/update-kms-policy.sh \
+            --environment "${DEPLOY_ENV}" \
+            --add-pcrs "${PCR0},${PCR1},${PCR2}"
+
+  deploy-new-enclave:
+    name: Deploy New Enclave Fleet
+    needs: build-enclave
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy new enclave fleet
+        env:
+          DEPLOY_ENV: ${{ inputs.environment }}
+          IMAGE_VERSION: ${{ needs.build-enclave.outputs.image_version }}
+        run: |
+          ./scripts/deploy-enclave-fleet.sh \
+            --environment "${DEPLOY_ENV}" \
+            --version "${IMAGE_VERSION}" \
+            --traffic-weight 0
+
+  run-migration:
+    name: Run Migration
+    needs: [build-enclave, deploy-new-enclave]
+    if: ${{ !inputs.skip_migration }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Trigger migration in old enclave
+        env:
+          DEPLOY_ENV: ${{ inputs.environment }}
+          PCR0: ${{ needs.build-enclave.outputs.pcr0 }}
+          PCR1: ${{ needs.build-enclave.outputs.pcr1 }}
+          PCR2: ${{ needs.build-enclave.outputs.pcr2 }}
+        run: |
+          ./scripts/trigger-migration.sh \
+            --environment "${DEPLOY_ENV}" \
+            --target-pcrs "${PCR0},${PCR1},${PCR2}"
+
+      - name: Wait for migration completion
+        env:
+          DEPLOY_ENV: ${{ inputs.environment }}
+        run: |
+          ./scripts/wait-for-migration.sh \
+            --environment "${DEPLOY_ENV}" \
+            --timeout 3600
+
+      - name: Trigger warmup verification
+        env:
+          DEPLOY_ENV: ${{ inputs.environment }}
+        run: |
+          ./scripts/trigger-warmup-verification.sh \
+            --environment "${DEPLOY_ENV}"
+
+      - name: Verify all users migrated
+        env:
+          DEPLOY_ENV: ${{ inputs.environment }}
+        run: |
+          ./scripts/verify-migration-complete.sh \
+            --environment "${DEPLOY_ENV}"
+
+  cutover:
+    name: Traffic Cutover
+    needs: [build-enclave, deploy-new-enclave, run-migration]
+    if: ${{ always() && (needs.run-migration.result == 'success' || inputs.skip_migration) }}
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Switch traffic to new enclave
+        env:
+          DEPLOY_ENV: ${{ inputs.environment }}
+          IMAGE_VERSION: ${{ needs.build-enclave.outputs.image_version }}
+        run: |
+          ./scripts/deploy-enclave-fleet.sh \
+            --environment "${DEPLOY_ENV}" \
+            --version "${IMAGE_VERSION}" \
+            --traffic-weight 100
+
+      - name: Drain old enclave fleet
+        env:
+          DEPLOY_ENV: ${{ inputs.environment }}
+        run: |
+          ./scripts/deploy-enclave-fleet.sh \
+            --environment "${DEPLOY_ENV}" \
+            --drain-old
+
+  cleanup:
+    name: Cleanup Old Enclave
+    needs: [cutover]
+    runs-on: ubuntu-latest
+    if: ${{ inputs.environment == 'staging' && inputs.auto_cutover }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Remove old PCRs from KMS policy
+        env:
+          DEPLOY_ENV: ${{ inputs.environment }}
+        run: |
+          ./scripts/update-kms-policy.sh \
+            --environment "${DEPLOY_ENV}" \
+            --remove-old-pcrs
+
+      - name: Terminate old enclave fleet
+        env:
+          DEPLOY_ENV: ${{ inputs.environment }}
+        run: |
+          ./scripts/terminate-enclave-fleet.sh \
+            --environment "${DEPLOY_ENV}"
