@@ -491,15 +491,18 @@ type ServiceRequest struct {
 # Service connection management
 service.connection.discover    # Get service profile + contract
 service.connection.initiate    # Accept contract, establish connection
-service.connection.list        # List service connections
+service.connection.list        # List service connections (with filters)
 service.connection.get         # Get service connection details
-service.connection.update      # Update tags, favorite, muted status
+service.connection.update      # Update tags, favorite, muted, archived
 service.connection.revoke      # Revoke connection (clean break)
+service.connection.health      # Get connection health status
 
 # Service data in user's sandbox
 service.data.list              # List data stored by services
 service.data.get               # Get specific data item
 service.data.delete            # Delete service data
+service.data.export            # Export all data from a service
+service.data.summary           # Get storage usage summary
 
 # Service requests
 service.request.list           # List pending/historical requests
@@ -514,6 +517,20 @@ service.contract.history       # Get contract version history
 # Service profile
 service.profile.get            # Get cached service profile
 service.profile.resources      # Get trusted resources list
+service.profile.verify-download # Verify download signature
+
+# Activity tracking (usability)
+service.activity.list          # List activity for a connection
+service.activity.summary       # Get aggregated activity stats
+
+# Notification preferences (usability)
+service.notifications.get      # Get notification settings for a service
+service.notifications.update   # Update notification settings
+
+# Offline queue (usability)
+service.offline.list           # List pending offline actions
+service.offline.sync           # Trigger sync of offline actions
+service.offline.clear          # Clear synced actions
 ```
 
 ---
@@ -619,16 +636,164 @@ My Connections
 └─────────────────────────────────────────────────────┘
 ```
 
-### 5. Other Usability Features
+### 5. Connection Organization
 
-Same as peer connections:
-- Tags, favorites, archive
-- Activity dashboard per service
-- Data transparency and user control
-- Request management in unified feed
-- Notification preferences per service
-- Offline handling (for cached service profile)
-- Trust indicators
+**Tags, favorites, archive (same as peer connections):**
+
+```go
+// ServiceConnectionRecord includes:
+Tags       []string `json:"tags,omitempty"`      // User-defined: "Shopping", "Health", etc.
+IsFavorite bool     `json:"is_favorite"`         // Pinned to top of list
+IsArchived bool     `json:"is_archived"`         // Hidden from main view, not revoked
+IsMuted    bool     `json:"is_muted"`            // Suppress non-critical notifications
+```
+
+**Handlers:**
+- `service.connection.update` - Update tags, favorite, muted, archived status
+- `service.connection.list` - Filter by tags, favorites, archived status
+
+### 6. Activity Dashboard
+
+**Per-service activity tracking:**
+
+```go
+type ServiceActivity struct {
+    ConnectionID  string    `json:"connection_id"`
+    ActivityType  string    `json:"activity_type"` // "data_request", "data_store", "auth", "payment"
+    Description   string    `json:"description"`
+    Fields        []string  `json:"fields,omitempty"`
+    Amount        *Money    `json:"amount,omitempty"`
+    Status        string    `json:"status"` // "approved", "denied", "pending"
+    Timestamp     time.Time `json:"timestamp"`
+}
+
+type ActivitySummary struct {
+    ConnectionID       string    `json:"connection_id"`
+    TotalDataRequests  int       `json:"total_data_requests"`
+    TotalDataStored    int       `json:"total_data_stored"`
+    TotalAuthRequests  int       `json:"total_auth_requests"`
+    TotalPayments      int       `json:"total_payments"`
+    TotalPaymentAmount Money     `json:"total_payment_amount"`
+    LastActivityAt     time.Time `json:"last_activity_at"`
+    ActivityThisMonth  int       `json:"activity_this_month"`
+}
+```
+
+**Handlers:**
+- `service.activity.list` - List activity for a service connection
+- `service.activity.summary` - Get aggregated stats
+
+### 7. Notification Preferences
+
+**Per-service notification settings:**
+
+```go
+type ServiceNotificationSettings struct {
+    ConnectionID         string `json:"connection_id"`
+    Level                string `json:"level"` // "all", "important", "muted"
+    AllowDataRequests    bool   `json:"allow_data_requests"`
+    AllowAuthRequests    bool   `json:"allow_auth_requests"`
+    AllowPaymentRequests bool   `json:"allow_payment_requests"`
+    AllowMessages        bool   `json:"allow_messages"`
+    BypassQuietHours     bool   `json:"bypass_quiet_hours"` // For critical services
+}
+```
+
+**Handlers:**
+- `service.notifications.get` - Get notification settings
+- `service.notifications.update` - Update notification settings
+
+### 8. Data Transparency
+
+**User controls all service-stored data:**
+
+```go
+type ServiceDataSummary struct {
+    ConnectionID   string            `json:"connection_id"`
+    TotalItems     int               `json:"total_items"`
+    TotalSizeBytes int64             `json:"total_size_bytes"`
+    Categories     map[string]int    `json:"categories"` // Category → item count
+    OldestItem     time.Time         `json:"oldest_item"`
+    NewestItem     time.Time         `json:"newest_item"`
+}
+```
+
+**Handlers:**
+- `service.data.list` - List all data stored by a service
+- `service.data.get` - Get specific item (respects visibility level)
+- `service.data.delete` - Delete specific item or all items
+- `service.data.export` - Export all data as JSON
+
+### 9. Offline Handling
+
+**Offline queue for service interactions:**
+
+```go
+type OfflineServiceAction struct {
+    ActionID     string    `json:"action_id"`
+    ConnectionID string    `json:"connection_id"`
+    ActionType   string    `json:"action_type"` // "request_response", "revoke", "contract_accept"
+    Payload      []byte    `json:"payload"`
+    CreatedAt    time.Time `json:"created_at"`
+    SyncStatus   string    `json:"sync_status"` // "pending", "synced", "failed"
+    SyncedAt     time.Time `json:"synced_at,omitempty"`
+    Error        string    `json:"error,omitempty"`
+}
+```
+
+**Behavior:**
+- Queue request responses when offline
+- Cache service profiles for offline viewing
+- Show "pending sync" indicators in UI
+- Auto-sync when connectivity restored
+- Retry failed syncs with exponential backoff
+
+### 10. Trust Indicators
+
+**Trust signals displayed to user:**
+
+```go
+type ServiceTrustIndicators struct {
+    // Organization verification
+    OrganizationVerified bool   `json:"organization_verified"`
+    VerificationType     string `json:"verification_type"` // "business", "nonprofit", "government"
+
+    // Connection history
+    ConnectionAge     time.Duration `json:"connection_age"`
+    TotalInteractions int           `json:"total_interactions"`
+    LastActivity      time.Time     `json:"last_activity"`
+
+    // Contract status
+    ContractVersion        int  `json:"contract_version"`
+    PendingContractUpdate  bool `json:"pending_contract_update"`
+
+    // Behavior indicators
+    RateLimitViolations int  `json:"rate_limit_violations"`
+    ContractViolations  int  `json:"contract_violations"`
+    HasExcessiveRequests bool `json:"has_excessive_requests"`
+}
+```
+
+### 11. Connection Health
+
+**Health indicators for service connections:**
+
+```go
+type ServiceConnectionHealth struct {
+    ConnectionID      string    `json:"connection_id"`
+    Status            string    `json:"status"` // "healthy", "warning", "critical"
+    LastActiveAt      time.Time `json:"last_active_at"`
+    ContractStatus    string    `json:"contract_status"` // "current", "update_available", "expired"
+    DataStorageUsed   int64     `json:"data_storage_used"`
+    DataStorageLimit  int64     `json:"data_storage_limit"`
+    RequestsThisHour  int       `json:"requests_this_hour"`
+    RequestLimit      int       `json:"request_limit"`
+    Issues            []string  `json:"issues,omitempty"` // Any warnings or problems
+}
+```
+
+**Handlers:**
+- `service.connection.health` - Get health status for a connection
 
 ---
 
@@ -736,80 +901,6 @@ EventTypeServiceResourceVerified     = "service.resource.verified"
 
 ---
 
-## Files to Create
-
-### User Vault (vault-manager)
-
-#### 1. `service_connections.go` (~600 lines)
-- `HandleDiscover(msg)` - Get service profile + contract
-- `HandleInitiate(msg)` - Accept contract, establish connection
-- `HandleList(msg)` - List service connections with filters
-- `HandleGet(msg)` - Get service connection details
-- `HandleUpdate(msg)` - Update tags, favorite, muted, archived
-- `HandleRevoke(msg)` - Revoke connection (clean break)
-
-#### 2. `service_data.go` (~400 lines)
-- `HandleIncomingDataRequest(msg)` - Process on-demand data request from service
-- `HandleList(msg)` - List data stored by services
-- `HandleGet(msg)` - Get specific data item
-- `HandleDelete(msg)` - Delete service data
-- `HandleExport(msg)` - Export all data from a service
-
-#### 3. `service_requests.go` (~400 lines)
-- `HandleList(msg)` - List pending/historical requests
-- `HandleRespond(msg)` - Approve/deny request
-- `HandleIncomingAuth(msg)` - Process auth request from service
-- `HandleIncomingConsent(msg)` - Process consent request
-- `HandleIncomingPayment(msg)` - Process payment request
-
-#### 4. `service_contracts.go` (~300 lines)
-- `HandleGetContract(msg)` - Get contract for connection
-- `HandleAcceptUpdate(msg)` - Accept contract update
-- `HandleRejectUpdate(msg)` - Reject update (triggers disconnect)
-- `HandleContractHistory(msg)` - Get version history
-- `validateContract()` - Validate contract structure
-- `checkRequiredFields()` - Check user has required fields
-- `enforceContract()` - Validate request against contract
-
-#### 5. `service_resources.go` (~200 lines)
-- `HandleGetResources(msg)` - Get trusted resources list
-- `HandleVerifyDownload(msg)` - Verify download signature
-- `verifySignature()` - Ed25519 signature verification
-
-### Service Vault (service-vault-manager - new package)
-
-#### 1. `user_connections.go` (~400 lines)
-- `HandleConnect(msg)` - Accept user connection
-- `HandleDisconnect(msg)` - Handle user revocation
-- `HandleList(msg)` - List connected users
-- `HandleGet(msg)` - Get user connection details (no profile data)
-
-#### 2. `user_requests.go` (~500 lines)
-- `HandleRequestData(msg)` - Request on-demand fields from user
-- `HandleRequestAuth(msg)` - Send auth request to user
-- `HandleRequestConsent(msg)` - Send consent request
-- `HandleRequestPayment(msg)` - Send payment request
-- `HandleUserResponse(msg)` - Process user's response
-
-#### 3. `user_data.go` (~200 lines)
-- `HandleStoreData(msg)` - Store data in user's sandbox
-- `HandleDeleteData(msg)` - Delete stored data
-
-#### 4. `contract_manager.go` (~300 lines)
-- `HandleGetContract(msg)` - Return current contract
-- `HandleUpdateContract(msg)` - Publish new version
-- `enforceContract()` - Validate requests against contract
-- `notifyUsers()` - Notify connected users of update
-
-#### 5. `profile_manager.go` (~200 lines)
-- `HandleGetProfile(msg)` - Return service profile
-- `HandleUpdateProfile(msg)` - Update service profile
-- `HandleAddResource(msg)` - Add trusted resource
-- `HandleRemoveResource(msg)` - Remove trusted resource
-- `signDownload()` - Sign download with Ed25519 key
-
----
-
 ## Files to Modify
 
 ### `connections.go`
@@ -839,27 +930,98 @@ EventTypeServiceResourceVerified     = "service.resource.verified"
 - `service_contracts.go`: validation, updates, accept/reject
 - Contract update notification flow
 - Clean break on rejection
+- Contract change diffing for UI
 
 ### Phase 3: On-Demand Data Access
 - `service_data.go`: incoming requests, enforcement
-- Rate limiting per connection
+- Rate limiting per connection (token bucket)
 - Consent field handling
+- Data storage sandbox per service
 
 ### Phase 4: Service Requests
 - `service_requests.go`: auth, consent, payment requests
 - Feed integration for request notifications
 - Request expiration handling
+- Request history tracking
 
 ### Phase 5: Trusted Resources
 - `service_resources.go`: resource management, download verification
 - Ed25519 signature verification
-- Download hash validation
+- Download hash validation (SHA256/SHA512)
 
-### Phase 6: Service Vault SDK
+### Phase 6: Usability Features - Connection Organization
+- Tags support: add, remove, list by tag
+- Favorites: pin/unpin services
+- Archive: hide without revoking
+- Mute: suppress non-critical notifications
+- Filter and search in `service.connection.list`
+
+### Phase 7: Usability Features - Activity & Transparency
+- `service_activity.go`: activity logging and queries
+  - `service.activity.list` - List activity for a connection
+  - `service.activity.summary` - Aggregated stats
+- Data transparency handlers:
+  - `service.data.summary` - Storage usage per service
+  - `service.data.export` - Export all service data as JSON
+- Connection health indicators:
+  - `service.connection.health` - Status, issues, limits
+
+### Phase 8: Usability Features - Notifications & Trust
+- `service_notifications.go`: per-service notification preferences
+  - `service.notifications.get` - Get settings
+  - `service.notifications.update` - Update settings
+- Trust indicators calculation
+  - Organization verification status
+  - Connection age and interaction history
+  - Rate limit and contract violation tracking
+- Digest notifications for service activity
+
+### Phase 9: Usability Features - Offline Support
+- `service_offline.go`: offline queue management
+  - Queue request responses when offline
+  - Track sync status per action
+  - Auto-sync on connectivity restored
+  - Exponential backoff for failed syncs
+- Offline profile cache for services
+
+### Phase 10: Service Vault SDK
 - `service-vault-manager` package
 - Profile and contract management
+- User connection handlers (no profile caching)
 - Documentation for service developers
 - Example service implementation
+
+---
+
+## Files to Create (Updated)
+
+### User Vault (vault-manager)
+
+#### Core Handlers
+| File | Lines | Description |
+|------|-------|-------------|
+| `service_connections.go` | ~600 | Discover, initiate, list, get, update, revoke, health |
+| `service_contracts.go` | ~300 | Contract get, accept, reject, history, validation |
+| `service_data.go` | ~400 | Incoming requests, list, get, delete, export, summary |
+| `service_requests.go` | ~400 | Auth, consent, payment requests and responses |
+| `service_resources.go` | ~200 | Trusted resources, download verification |
+
+#### Usability Handlers
+| File | Lines | Description |
+|------|-------|-------------|
+| `service_activity.go` | ~300 | Activity logging, list, summary |
+| `service_notifications.go` | ~200 | Per-service notification preferences |
+| `service_offline.go` | ~250 | Offline queue management and sync |
+
+### Service Vault (service-vault-manager)
+
+| File | Lines | Description |
+|------|-------|-------------|
+| `user_connections.go` | ~400 | Accept, disconnect, list, get (no profile caching) |
+| `user_requests.go` | ~500 | Data, auth, consent, payment requests |
+| `user_data.go` | ~200 | Store and delete data in user sandbox |
+| `contract_manager.go` | ~300 | Contract management and updates |
+| `profile_manager.go` | ~200 | Service profile and trusted resources |
 
 ---
 
