@@ -16,8 +16,8 @@ type ConfigFetcher interface {
 	Fetch() ([]byte, error)
 }
 
-// MigrationConfig holds the configuration for enclave migration.
-type MigrationConfig struct {
+// PCRConfigManagerConfig holds the configuration for PCR config management.
+type PCRConfigManagerConfig struct {
 	// DeploymentPublicKey is the Ed25519 public key used to verify signed PCR configs.
 	// This should be embedded at build time.
 	DeploymentPublicKey ed25519.PublicKey
@@ -30,14 +30,14 @@ type MigrationConfig struct {
 	ConfigFetcher ConfigFetcher
 }
 
-// MigrationManager handles fetching and validating PCR configurations for migration.
-type MigrationManager struct {
-	config   *MigrationConfig
+// PCRConfigManager handles fetching and validating PCR configurations for migration.
+type PCRConfigManager struct {
+	config   *PCRConfigManagerConfig
 	verifier *PCRConfigVerifier
 }
 
-// NewMigrationManager creates a new migration manager.
-func NewMigrationManager(config *MigrationConfig) (*MigrationManager, error) {
+// NewPCRConfigManager creates a new PCR config manager.
+func NewPCRConfigManager(config *PCRConfigManagerConfig) (*PCRConfigManager, error) {
 	if config == nil {
 		return nil, fmt.Errorf("config is required")
 	}
@@ -59,7 +59,7 @@ func NewMigrationManager(config *MigrationConfig) (*MigrationManager, error) {
 		return nil, fmt.Errorf("failed to create verifier: %w", err)
 	}
 
-	return &MigrationManager{
+	return &PCRConfigManager{
 		config:   config,
 		verifier: verifier,
 	}, nil
@@ -72,7 +72,7 @@ func NewMigrationManager(config *MigrationConfig) (*MigrationManager, error) {
 // - (*PCRValues, nil) if migration config is valid and migration is needed
 // - (nil, nil) if no migration config exists
 // - (nil, error) if there's an error fetching or validating the config
-func (m *MigrationManager) GetNewPCRsForMigration() (*PCRValues, error) {
+func (m *PCRConfigManager) GetNewPCRsForMigration() (*PCRValues, error) {
 	log.Info().Msg("Checking for PCR migration config")
 
 	// Fetch the signed config
@@ -111,25 +111,25 @@ func (m *MigrationManager) GetNewPCRsForMigration() (*PCRValues, error) {
 	return &signedConfig.NewPCRs, nil
 }
 
-// MigrationStatus represents the current migration state.
-type MigrationStatus string
+// GlobalMigrationStatus represents the overall migration status.
+type GlobalMigrationStatus string
 
 const (
-	MigrationStatusNone       MigrationStatus = "none"        // No migration needed/available
-	MigrationStatusPending    MigrationStatus = "pending"     // Migration config found, not started
-	MigrationStatusInProgress MigrationStatus = "in_progress" // Migration running
-	MigrationStatusCompleted  MigrationStatus = "completed"   // Migration finished successfully
-	MigrationStatusFailed     MigrationStatus = "failed"      // Migration failed
+	GlobalMigrationStatusNone       GlobalMigrationStatus = "none"        // No migration needed/available
+	GlobalMigrationStatusPending    GlobalMigrationStatus = "pending"     // Migration config found, not started
+	GlobalMigrationStatusInProgress GlobalMigrationStatus = "in_progress" // Migration running
+	GlobalMigrationStatusCompleted  GlobalMigrationStatus = "completed"   // Migration finished successfully
+	GlobalMigrationStatusFailed     GlobalMigrationStatus = "failed"      // Migration failed
 )
 
-// MigrationState tracks the state of an enclave migration.
-type MigrationState struct {
-	Status     MigrationStatus `json:"status"`
-	NewPCRs    *PCRValues      `json:"new_pcrs,omitempty"`
-	Version    string          `json:"version,omitempty"`
-	StartedAt  int64           `json:"started_at,omitempty"`
-	FinishedAt int64           `json:"finished_at,omitempty"`
-	Error      string          `json:"error,omitempty"`
+// GlobalMigrationState tracks the overall state of an enclave migration.
+type GlobalMigrationState struct {
+	Status     GlobalMigrationStatus `json:"status"`
+	NewPCRs    *PCRValues            `json:"new_pcrs,omitempty"`
+	Version    string                `json:"version,omitempty"`
+	StartedAt  int64                 `json:"started_at,omitempty"`
+	FinishedAt int64                 `json:"finished_at,omitempty"`
+	Error      string                `json:"error,omitempty"`
 
 	// Migration progress
 	TotalUsers     int `json:"total_users,omitempty"`
