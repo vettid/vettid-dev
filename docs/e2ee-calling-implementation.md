@@ -1,12 +1,14 @@
 # E2EE Calling Implementation Plan (Vault-Centric)
 
+> **Implementation Note (2026-01-21):** This plan originally proposed WASM handlers for call logic. The production implementation uses **native Go handlers** in the vault-manager (`enclave/vault-manager/calls.go`). The architectural concepts (vault-centric state, MessageSpace signaling) remain valid, but handler implementation is in Go rather than WASM.
+
 ## Overview
 
-This plan describes the implementation of end-to-end encrypted WebRTC calls using a **vault-centric architecture**. Call state and signaling are handled entirely within user vaults using local NATS JetStream for storage, with WASM handlers for logic.
+This plan describes the implementation of end-to-end encrypted WebRTC calls using a **vault-centric architecture**. Call state and signaling are handled entirely within user vaults using local storage, with native Go handlers for logic.
 
 **Key Principles:**
-- Call state is stored in each user's **local vault JetStream KV** (not central NATS)
-- WASM handlers in vaults process call events
+- Call state is stored in each user's **vault SQLite database** (not central NATS)
+- Native Go handlers in vault-manager process call events
 - Central NATS is for **real-time messaging only** (pub/sub, no storage)
 - MessageSpace is ephemeral signaling, not data storage
 - AWS only provides TURN credentials (single Lambda)

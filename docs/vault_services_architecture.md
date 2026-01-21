@@ -1,5 +1,7 @@
 # VettID Vault Services Architecture
 
+> **Implementation Note (2026-01-21):** The production implementation uses **native Go handlers** in the vault-manager rather than the WASM-based event handler system described in Section 10. All vault operations are implemented directly in Go within the Nitro Enclave. References to WASM handlers reflect the original design proposal.
+
 ## Document Purpose
 
 This document describes the Vault Services system - a secure personal data vault infrastructure that enables VettID members to deploy, manage, and interact with their own private vault instance. Vault Services builds upon the Protean Credential System for authentication and extends it with dedicated vault enrollment.

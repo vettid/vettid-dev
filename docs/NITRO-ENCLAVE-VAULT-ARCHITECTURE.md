@@ -4,10 +4,12 @@
 
 | Field | Value |
 |-------|-------|
-| Version | 2.0 |
-| Date | 2026-01-09 |
-| Status | Proposal - Pending Review |
+| Version | 2.1 |
+| Date | 2026-01-21 |
+| Status | Implemented |
 | Author | Architecture Team |
+
+> **Implementation Note (2026-01-21):** The production implementation uses **native Go handlers** in the vault-manager rather than the WASM-based handler system originally proposed. All vault operations (credentials, connections, voting, messaging, etc.) are implemented directly in Go for better performance and simpler deployment. References to WASM handlers in this document reflect the original design proposal.
 
 ### Terminology
 
@@ -73,7 +75,7 @@ Migrate to a multi-tenant vault architecture using AWS Nitro Enclaves:
 
 - **Shared compute**: Multiple vault-manager processes run within a single Nitro Enclave
 - **Per-user isolation**: Each vault has its own SQLite database with DEK encryption, persisted to S3
-- **Shared handlers**: WASM event handlers loaded once, executed in isolated contexts
+- **Native Go handlers**: All vault operations implemented in Go for optimal performance
 - **Hardware attestation**: Users can cryptographically verify the code handling their data
 
 ### 1.3 Key Benefits

@@ -1,8 +1,10 @@
 # Vault Services Security Analysis
 
-**Document Version:** 1.0  
-**Analysis Date:** December 6, 2024  
+**Document Version:** 1.1
+**Analysis Date:** December 6, 2024 (Updated: January 21, 2026)
 **Analyzed Document:** Vault Services Architecture v3.3
+
+> **Implementation Note (2026-01-21):** The production implementation uses **native Go handlers** rather than WASM sandboxing. Handler isolation is achieved through the Nitro Enclave's hardware isolation and per-user vault-manager processes with separate SQLite databases.
 
 ---
 

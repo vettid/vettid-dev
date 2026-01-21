@@ -2,6 +2,8 @@
 
 Comprehensive test suite for VettID Vault Services covering unit tests, integration tests, security tests, end-to-end tests, and performance benchmarks.
 
+> **Note:** The WASM handler tests (`tests/integration/registry/`, `tests/integration/handlers/`, `tests/e2e/handlerLifecycle.test.ts`) test legacy infrastructure. The production implementation uses **native Go handlers** in the vault-manager.
+
 ## Quick Start
 
 ```bash
@@ -38,7 +40,7 @@ cdk/tests/
 │   ├── connections/                   # Connection fixtures
 │   │   └── mockConnection.ts          # Connection and key exchange mocks
 │   ├── handlers/                      # Handler fixtures
-│   │   └── mockHandler.ts             # WASM handler mock data
+│   │   └── mockHandler.ts             # Handler mock data (legacy WASM fixtures)
 │   ├── messaging/                     # Messaging fixtures
 │   │   └── mockMessage.ts             # Encrypted message mocks
 │   └── security/                      # Security fixtures
@@ -131,11 +133,13 @@ cdk/tests/
 - E2E vault lifecycle tests
 - NATS relay integration tests
 
-### Phase 6: Handler System
-- Handler verification tests (signature, manifest, WASM)
+### Phase 6: Handler System (Legacy - WASM Deprecated)
+- Handler verification tests (signature, manifest)
 - Handler execution tests (I/O, state management)
 - Sandbox isolation tests (memory, CPU, filesystem, network)
 - Egress control tests
+
+> **Note:** Phase 6 tests legacy WASM infrastructure. Production uses native Go handlers.
 - First-party handler tests (messaging, profile, connections)
 - Handler registry API tests
 
