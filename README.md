@@ -77,11 +77,6 @@ Two logical deployments provide separation of concerns:
 - PIN-authorized vote casting inside the vault
 - Published results with aggregated counts
 
-### Extensibility
-- Dynamic handler registry for custom business logic
-- WASM-based handler execution
-- Signed handler manifests for security
-
 ## Repository Structure
 
 ```

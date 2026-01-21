@@ -87,7 +87,7 @@ Mobile App → NATS (E2E encrypted) → Parent Process → vsock → Enclave →
 
 ### Key Data Stores
 - **DynamoDB**: Metadata (registrations, proposals, votes, audit logs)
-- **S3**: Encrypted vault databases (per-user SQLite), handler WASM binaries, backups
+- **S3**: Encrypted vault databases (per-user SQLite), backups
 - **Secrets Manager**: Sealed material, NATS account seeds
 
 ## Security Patterns
