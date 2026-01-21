@@ -651,7 +651,6 @@ function activateParentContent(tab, target, isSubscribers, isVoteManagement, isS
     document.getElementById('system-health').classList.add('active');
     document.querySelector('[data-sub-tab="system-health"]')?.classList.add('active');
     loadSystemHealth();
-    loadSystemLogs();
   } else if (isAdminTab) {
     document.getElementById('admin-users').classList.add('active');
     document.querySelector('[data-sub-tab="admin-users"]')?.classList.add('active');

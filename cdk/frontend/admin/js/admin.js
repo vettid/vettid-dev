@@ -2146,6 +2146,15 @@ document.querySelectorAll('th.sortable').forEach(th=>{
 // Tab switching with hierarchical navigation support
 document.querySelectorAll('.tab').forEach(tab => {
   tab.onclick = () => {
+    // Reset scroll position when switching tabs
+    window.scrollTo(0, 0);
+
+    // Close mobile sidebar when tab is clicked
+    if (window.innerWidth <= 768) {
+      document.getElementById('sidebar')?.classList.remove('mobile-open');
+      document.getElementById('sidebarOverlay')?.classList.remove('visible');
+    }
+
     const target = tab.getAttribute('data-tab');
     const subTab = tab.getAttribute('data-sub-tab');
 
@@ -2253,7 +2262,6 @@ document.querySelectorAll('.tab').forEach(tab => {
         if (isVoteManagement) loadAllProposalsAdmin();
         if (isSiteManagement) {
           loadSystemHealth();
-          loadSystemLogs();
         }
         if (isAdmin) { loadAdmins(); loadPendingAdmins(); }
       }
@@ -2287,7 +2295,8 @@ document.querySelectorAll('.tab').forEach(tab => {
 
       // Close sidebar on mobile
       if (window.innerWidth <= 768) {
-        document.getElementById('sidebar').classList.add('collapsed');
+        document.getElementById('sidebar').classList.remove('mobile-open');
+        document.getElementById('sidebarOverlay')?.classList.remove('visible');
       }
       return;
     }
@@ -2319,6 +2328,13 @@ document.querySelectorAll('.tab').forEach(tab => {
     tab.classList.add('active');
     document.getElementById(target).classList.add('active');
 
+    // Reset all bulk action bars and select-all checkboxes when switching tabs
+    document.querySelectorAll('.bulk-action-bar').forEach(bar => bar.classList.remove('active'));
+    ['selectAllUsers', 'selectAllWaitlist', 'selectAllInvites', 'selectAllAdmins', 'selectAllSubscriptions', 'selectAllHelp'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.checked = false;
+    });
+
     // Always refresh data when switching to a tab
     if (target === 'waitlist') loadWaitlist();
     if (target === 'users') loadUsers();
@@ -2329,7 +2345,8 @@ document.querySelectorAll('.tab').forEach(tab => {
 
     // Close sidebar on mobile after selecting tab
     if (window.innerWidth <= 768) {
-      document.getElementById('sidebar').classList.add('collapsed');
+      document.getElementById('sidebar').classList.remove('mobile-open');
+      document.getElementById('sidebarOverlay')?.classList.remove('visible');
     }
   };
 });
@@ -2341,6 +2358,37 @@ document.getElementById('sidebarToggle').onclick=()=>{
   sidebar.classList.toggle('collapsed');
   toggle.innerHTML=sidebar.classList.contains('collapsed')?'&gt;':'&lt;';
 };
+
+// Mobile menu toggle
+const mobileMenuBtn = document.getElementById('mobileMenuBtn');
+const sidebarOverlay = document.getElementById('sidebarOverlay');
+if (mobileMenuBtn) {
+  mobileMenuBtn.onclick = () => {
+    const sidebar = document.getElementById('sidebar');
+    sidebar.classList.toggle('mobile-open');
+    sidebarOverlay?.classList.toggle('visible');
+  };
+}
+if (sidebarOverlay) {
+  sidebarOverlay.onclick = () => {
+    const sidebar = document.getElementById('sidebar');
+    sidebar.classList.remove('mobile-open');
+    sidebarOverlay.classList.remove('visible');
+  };
+}
+
+// Mobile filter toggle (Users tab)
+const mobileFilterToggle = document.getElementById('mobileFilterToggle');
+if (mobileFilterToggle) {
+  mobileFilterToggle.onclick = () => {
+    const filterSections = document.querySelectorAll('#users .filter-section');
+    const isExpanded = filterSections[0]?.classList.contains('mobile-expanded');
+    filterSections.forEach(section => {
+      section.classList.toggle('mobile-expanded', !isExpanded);
+    });
+    mobileFilterToggle.innerHTML = isExpanded ? '⚙️ Show Filters' : '⚙️ Hide Filters';
+  };
+}
 
 // User dropdown toggle
 const userDropdownBtn=document.querySelector('.user-dropdown-btn');
@@ -3023,8 +3071,6 @@ document.getElementById('filterAllTypes').onclick=()=>filterSubscriptionTypes('a
 
 // System Health Event Handlers
 document.getElementById('refreshSystemHealth').onclick=loadSystemHealth;
-document.getElementById('refreshLogs').onclick=loadSystemLogs;
-document.getElementById('logSourceFilter').onchange=loadSystemLogs;
 
 // Removed initial loading - now handled by lazy tab loading
 
@@ -3911,8 +3957,9 @@ async function loadAllSubscriptions(resetPage=true){
   if(resetPage)paginationState.subscriptions.page=0;
   const tbody=document.querySelector('#subscriptionsTable tbody');
 
-  // Show loading skeleton
+  // Show loading skeleton (both table and card for mobile)
   showLoadingSkeleton('subscriptionsTable');
+  showGridLoadingSkeleton('subscriptionsCardContainer', 3);
 
   try{
     // Fetch ALL subscriptions (no status filter)
@@ -3930,6 +3977,11 @@ async function loadAllSubscriptions(resetPage=true){
   }catch(e){
     showToast('Failed to load subscriptions: '+(e.message||e),'error');
     tbody.innerHTML=`<tr><td colspan="10" class="muted">${escapeHtml(e.message||String(e))}</td></tr>`;
+    // Also show error in card container for mobile
+    const cardContainer = document.getElementById('subscriptionsCardContainer');
+    if (cardContainer) {
+      cardContainer.innerHTML = `<div class="data-card" style="text-align:center;padding:40px;color:#ef4444;"><div style="font-size:2rem;margin-bottom:12px;">⚠️</div><div>${escapeHtml(e.message||String(e))}</div></div>`;
+    }
   }
 }
 
@@ -4103,6 +4155,11 @@ async function renderSubscriptions(){
   // Check for empty state
   if(filtered.length===0){
     showEmptyState('subscriptionsTable','No subscriptions found','Try adjusting your filters');
+    // Also show empty state in card container for mobile
+    const cardContainer = document.getElementById('subscriptionsCardContainer');
+    if (cardContainer) {
+      cardContainer.innerHTML = '<div class="data-card" style="text-align:center;padding:40px;"><div style="font-size:2rem;margin-bottom:12px;">📭</div><div style="color:var(--gray);">No subscriptions found</div><div style="color:var(--gray);font-size:0.85rem;">Try adjusting your filters</div></div>';
+    }
     return;
   }
 
@@ -6632,7 +6689,7 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 
 // ============================================
-// HANDLER MARKETPLACE MANAGEMENT
+// HANDLER REGISTRY MANAGEMENT
 // ============================================
 
 let deployedHandlers = [];
@@ -6730,7 +6787,7 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 
 // ========================================
-// Supported Services Management
+// Services Registry Management
 // ========================================
 
 let servicesData = [];
@@ -7106,7 +7163,7 @@ async function deleteService() {
   }
 }
 
-// Event listeners for supported services
+// Event listeners for services registry
 document.addEventListener('DOMContentLoaded', function() {
   // Add service button
   const addServiceBtn = document.getElementById('addServiceBtn');

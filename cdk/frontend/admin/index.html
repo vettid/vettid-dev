@@ -135,6 +135,7 @@
     .proposal-filter.active{opacity:1 !important;box-shadow:0 4px 12px rgba(255,193,37,0.4) !important;transform:scale(1.02);border:2px solid var(--accent) !important;}
     .subscription-type-filter.active{opacity:1 !important;box-shadow:0 4px 12px rgba(255,193,37,0.4) !important;transform:scale(1.02);border:2px solid var(--accent) !important;}
     .filter-active{opacity:1 !important;box-shadow:0 4px 12px rgba(255,193,37,0.4) !important;transform:scale(1.02);border:2px solid var(--accent) !important;}
+    .mobile-filter-toggle{display:none;}
     .waitlist-filter.active{opacity:1 !important;box-shadow:0 4px 12px rgba(255,193,37,0.4) !important;transform:scale(1.02);border:2px solid var(--accent) !important;}
     .help-filter{opacity:0.7;transition:all 0.2s;}
     .help-filter.active{opacity:1 !important;box-shadow:0 4px 12px rgba(255,193,37,0.4) !important;transform:scale(1.02);border:2px solid var(--accent) !important;}
@@ -214,20 +215,42 @@
     .data-card-actions .btn{flex:1;font-size:0.75rem;padding:6px 10px;}
     table.hide-on-card{display:table;}
     table.hide-on-card.hidden{display:none;}
+    /* Mobile menu button - hidden on desktop */
+    .mobile-menu-btn{display:none;align-items:center;justify-content:center;background:none;border:none;color:var(--accent);font-size:1.5rem;cursor:pointer;padding:8px;}
+    .sidebar-overlay{display:none;position:fixed;top:60px;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);z-index:998;}
+    .sidebar-overlay.visible{display:block;}
     @media(max-width:768px){
+      .mobile-menu-btn{display:flex !important;}
       body{height:auto!important;min-height:100vh;overflow:auto!important;}
-      .sidebar{position:fixed;left:0;top:60px;bottom:0;z-index:999;box-shadow:2px 0 8px rgba(0,0,0,0.3);}
+      .sidebar{position:fixed;left:0;top:60px;bottom:0;z-index:999;box-shadow:2px 0 8px rgba(0,0,0,0.3);transform:translateX(-100%);transition:transform 0.3s ease;}
+      .sidebar.mobile-open{transform:translateX(0);}
+      .sidebar-toggle{display:none;}
       .main-container{flex-direction:column;overflow:visible;min-height:calc(100vh - 60px);}
       .wrap{padding:16px;padding-bottom:100px;overflow:visible;-webkit-overflow-scrolling:touch;min-height:0;flex:1;}
       .tab-content{height:auto!important;overflow:visible!important;}
       .sub-tab-content{height:auto!important;overflow:visible!important;}
       .tab-content.card{overflow:visible!important;}
       .user-dropdown-menu{right:auto;left:0;}
+      /* Mobile filters - collapsible */
+      .mobile-filter-toggle{display:block !important;margin-bottom:12px;width:100%;}
+      .filter-section{display:none !important;}
+      .filter-section.mobile-expanded{display:block !important;}
+      #userFiltersSection.mobile-expanded{display:flex !important;}
+      .quick-filters{flex-direction:column !important;}
+      .quick-filters .btn{width:100% !important;padding:14px 20px !important;}
       /* Mobile pagination styles */
       .pagination{flex-direction:column;gap:10px;padding:16px;}
       .pagination label{width:100%;text-align:center;}
       .pagination .info{width:100%;order:1;}
       .pagination button{min-width:100px;}
+      /* Mobile bulk action bar */
+      .bulk-action-bar{flex-wrap:wrap;gap:8px;padding:10px 12px;}
+      .bulk-action-bar .count{width:100%;margin-bottom:4px;}
+      .bulk-action-bar button{flex:1 1 auto;min-width:calc(50% - 8px);font-size:0.75rem;padding:8px 10px;}
+      /* Mobile action dropdowns - prevent overflow */
+      .action-dropdown-menu{right:auto;left:0;max-width:90vw;}
+      .data-card-actions{flex-wrap:wrap;}
+      .data-card-actions .btn{min-width:auto;flex:1 1 auto;}
       /* Mobile modal styles */
       .modal{width:95%;max-width:95%;padding:16px;max-height:90vh;overflow-y:auto;}
       .modal-header{margin-bottom:16px;padding-bottom:10px;}
@@ -462,10 +485,13 @@
 
 
   <header>
-    <h1 style="display:flex;align-items:center;gap:12px;">
-      <img src="https://vettid.dev/assets/logo.jpg" alt="VettID Logo" style="height:36px;width:36px;border-radius:6px;" />
-      Admin
-    </h1>
+    <div style="display:flex;align-items:center;gap:12px;">
+      <button id="mobileMenuBtn" class="mobile-menu-btn" aria-label="Toggle navigation menu">☰</button>
+      <h1 style="display:flex;align-items:center;gap:12px;margin:0;">
+        <img src="https://vettid.dev/assets/logo.jpg" alt="VettID Logo" style="height:36px;width:36px;border-radius:6px;" />
+        Admin
+      </h1>
+    </div>
     <div style="display:flex;align-items:center;gap:16px;">
       <div id="userDropdownContainer" class="user-dropdown" style="display:none;">
         <div class="user-dropdown-btn">
@@ -493,6 +519,7 @@
       <button id="signin" class="btn">Sign in</button>
     </div>
   </header>
+  <div class="sidebar-overlay" id="sidebarOverlay"></div>
 
   <div class="main-container">
     <div class="admin-only">
@@ -526,7 +553,7 @@
             <button class="tab tab-child" data-tab="site-management" data-sub-tab="system-health">System Health</button>
             <button class="tab tab-child" data-tab="site-management" data-sub-tab="vault-metrics">Vault Metrics</button>
             <button class="tab tab-child" data-tab="site-management" data-sub-tab="event-handlers">Event Handlers</button>
-            <button class="tab tab-child" data-tab="site-management" data-sub-tab="supported-services">Supported Services</button>
+            <button class="tab tab-child" data-tab="site-management" data-sub-tab="supported-services">Services Registry</button>
             <button class="tab tab-child" data-tab="site-management" data-sub-tab="subscription-types">Subscription Types</button>
             <button class="tab tab-child" data-tab="site-management" data-sub-tab="membership-terms">Membership Terms</button>
             <button class="tab tab-child" data-tab="site-management" data-sub-tab="email">Communications</button>
@@ -628,8 +655,13 @@
       <div id="users" class="tab-content card">
         <h3 style="margin-top:0;">User Management</h3>
 
+        <!-- Mobile Filter Toggle Button -->
+        <button id="mobileFilterToggle" class="btn mobile-filter-toggle" style="background:linear-gradient(135deg,#6366f1 0%,#4f46e5 100%);padding:12px 20px;font-weight:600;">
+          ⚙️ Show Filters
+        </button>
+
         <!-- Quick Filter Badges -->
-        <div style="display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap;">
+        <div id="userFiltersSection" class="filter-section" style="display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap;">
           <button id="quickFilterAction" class="btn filter-active" style="background:linear-gradient(135deg,#f59e0b 0%,#d97706 100%);padding:10px 20px;font-weight:600;position:relative;">
             Pending <span id="actionCount" style="background:#dc2626;color:#fff;border-radius:12px;padding:2px 8px;margin-left:8px;font-size:0.75rem;">0</span>
           </button>
@@ -645,7 +677,7 @@
         </div>
 
         <!-- Advanced Filters -->
-        <div style="padding:16px;background:var(--bg-card);border-radius:8px;border:1px solid var(--border);margin-bottom:20px;">
+        <div class="filter-section" style="padding:16px;background:var(--bg-card);border-radius:8px;border:1px solid var(--border);margin-bottom:20px;">
           <h4 style="margin:0 0 12px 0;color:var(--accent);">Filters</h4>
           <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:12px;">
             <div>
@@ -1172,25 +1204,6 @@
               </div>
             </div>
           </div>
-
-          <!-- Recent Logs Viewer -->
-          <div style="padding:20px;background:var(--bg-input);border-radius:8px;border:1px solid var(--border);">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-              <h4 style="margin:0;color:var(--accent);">Recent System Logs</h4>
-              <div style="display:flex;gap:8px;">
-                <select id="logSourceFilter" style="padding:6px 12px;background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:0.85rem;">
-                  <option value="all">All Sources</option>
-                  <option value="lambda">Lambda Functions</option>
-                  <option value="api">API Gateway</option>
-                  <option value="errors">Errors Only</option>
-                </select>
-                <button id="refreshLogs" class="btn" style="padding:6px 16px;font-size:0.85rem;">Refresh Logs</button>
-              </div>
-            </div>
-            <div id="systemLogsContainer" style="max-height:400px;overflow-y:auto;background:var(--bg-logs);border-radius:4px;padding:12px;font-family:monospace;font-size:0.75rem;line-height:1.6;">
-              <div style="color:var(--gray);">Loading logs...</div>
-            </div>
-          </div>
         </div>
 
         <!-- Vault Metrics Sub-Tab -->
@@ -1319,11 +1332,11 @@
           <p id="vaultMetricsGeneratedAt" class="muted" style="margin-top:16px;font-size:0.8rem;">Last updated: —</p>
         </div>
 
-        <!-- Event Handlers Sub-Tab (Handler Marketplace) -->
+        <!-- Event Handlers Sub-Tab (Handler Registry) -->
         <div id="event-handlers" class="sub-tab-content">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
             <div>
-              <h3 style="margin:0;">Handler Marketplace</h3>
+              <h3 style="margin:0;">Handler Registry</h3>
               <p class="muted" style="margin:4px 0 0 0;">Secure Nitro enclave handlers - signed and deployed by VettID.</p>
             </div>
             <button id="refreshHandlersBtn" class="btn" style="padding:8px 16px;">↻ Refresh</button>
@@ -1350,9 +1363,9 @@
           </div>
         </div>
 
-        <!-- Supported Services Sub-Tab -->
+        <!-- Services Registry Sub-Tab -->
         <div id="supported-services" class="sub-tab-content">
-          <h3 style="margin-top:0;">Supported Services</h3>
+          <h3 style="margin-top:0;">Services Registry</h3>
           <p class="muted">Manage third-party services and integrations that work with VettID vaults.</p>
 
           <!-- Action Buttons -->

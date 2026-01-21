@@ -673,6 +673,9 @@ async function cancelAccount() {
 // Tab switching with parent/child support
 document.querySelectorAll('.tab').forEach(tab => {
   tab.onclick = () => {
+    // Reset scroll position when switching tabs
+    window.scrollTo(0, 0);
+
     const target = tab.getAttribute('data-tab');
     const subTab = tab.getAttribute('data-sub-tab');
     const isParent = tab.classList.contains('tab-parent');
@@ -2455,6 +2458,9 @@ async function clearGettingStartedComplete() {
 }
 
 function switchToTab(tabName, subTabName) {
+  // Reset scroll position when switching tabs
+  window.scrollTo(0, 0);
+
   const tab = document.querySelector(`.tab[data-tab="${tabName}"]:not(.tab-child)`);
   const content = document.getElementById(tabName);
   const isParent = tab?.classList.contains('tab-parent');
@@ -4737,7 +4743,7 @@ function renderRestoreStatus(status) {
         '<p style="margin:0;color:#10b981;font-weight:600;">Recovery Ready</p>' +
         '<p style="margin:4px 0 0 0;color:var(--gray);font-size:0.9rem;">Scan the QR code with your VettID app</p>' +
         '</div></div>' +
-        '<div id="recoveryQRContainer" data-recovery-id="' + safeRecoveryId + '" style="background:#fff;padding:20px;border-radius:12px;display:inline-block;margin:20px 0;">' +
+        '<div id="recoveryQRContainer" data-recovery-id="' + safeRecoveryId + '" style="background:#fff;padding:8px;border-radius:6px;display:inline-block;margin:20px 0;box-shadow:0 2px 8px rgba(0,0,0,0.3);">' +
         '<img id="recoveryQRImage" alt="Recovery QR Code" style="width:250px;height:250px;display:none;" />' +
         '<div id="recoveryQRError" style="display:none;color:#f44336;padding:20px;"></div>' +
         '<div id="recoveryQRLoading" style="width:250px;height:250px;display:flex;align-items:center;justify-content:center;">' +
@@ -5262,7 +5268,7 @@ function showEnrollmentModal(session) {
         Scan this QR code with the VettID app on your mobile device to complete enrollment.
       </p>
 
-      <div id="enrollmentQRContainer" style="background:#fff;padding:8px;border-radius:6px;display:inline-block;margin-bottom:16px;">
+      <div id="enrollmentQRContainer" style="background:#fff;padding:4px;border-radius:4px;display:inline-block;margin-bottom:16px;box-shadow:0 2px 8px rgba(0,0,0,0.3);">
         <div id="enrollmentQRCode" style="width:180px;height:180px;display:flex;align-items:center;justify-content:center;">
           <div style="color:#000;font-size:0.85rem;">Loading...</div>
         </div>

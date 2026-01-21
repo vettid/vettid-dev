@@ -506,7 +506,7 @@ async function createClosedTile(p) {
     const publicLink = document.createElement('a');
     publicLink.style.cssText = 'display:block;width:100%;padding:8px 12px;font-size:0.8rem;background:var(--bg-tertiary);border:1px solid #8b5cf6;color:#8b5cf6;font-weight:600;margin-bottom:8px;text-align:center;border-radius:6px;text-decoration:none;';
     publicLink.textContent = 'View Public Vote List';
-    publicLink.href = `${config.apiUrl}/votes/${p.proposal_id}/published`;
+    publicLink.href = `/votes?id=${p.proposal_id}`;
     publicLink.target = '_blank';
     publicLink.rel = 'noopener noreferrer';
     tile.appendChild(publicLink);
@@ -776,7 +776,7 @@ function updateMerkleSection(proposalId, publishedData) {
   const publicLink = document.createElement('a');
   publicLink.style.cssText = 'display:inline-block;padding:8px 16px;font-size:0.8rem;background:var(--bg-card);border:1px solid #8b5cf6;color:#8b5cf6;font-weight:600;border-radius:6px;text-decoration:none;';
   publicLink.textContent = 'View Public Vote List';
-  publicLink.href = `${config.apiUrl}/votes/${proposalId}/published?include_votes=true`;
+  publicLink.href = `/votes?id=${proposalId}`;
   publicLink.target = '_blank';
   publicLink.rel = 'noopener noreferrer';
 

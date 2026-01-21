@@ -117,15 +117,22 @@
       .tab-child{min-height:48px;padding:16px 20px 16px 40px;}
       .tab-parent{min-height:48px;padding:16px 20px;}
       .tab-children.expanded{max-height:500px;}
-      header{flex-direction:row;gap:8px;padding:12px 16px;overflow:hidden;}
+      header{flex-direction:row;gap:8px;padding:12px 16px;overflow:visible;}
       header h1{font-size:1.1rem;}
       header .btn{padding:8px 12px;font-size:0.85rem;}
       #userEmail{font-size:0.8rem;max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-      .user-dropdown{flex-shrink:1;min-width:0;overflow:hidden;}
-      .wrap{padding:16px;overflow-x:hidden;}
+      .user-dropdown{flex-shrink:1;min-width:0;overflow:visible;}
+      .user-dropdown-menu{left:auto;right:0;}
+      .wrap{padding:16px;overflow-x:hidden;-webkit-overflow-scrolling:touch;}
       #getting-started{max-width:100%;overflow-x:hidden;}
       #gettingStartedSteps{max-width:100%;overflow-x:hidden;}
       #gettingStartedSteps > div{max-width:100%;box-sizing:border-box;word-wrap:break-word;}
+
+      /* Mobile tab content scrolling fix */
+      .tab-content{height:auto !important;}
+      .tab-content.active{overflow-y:visible;}
+      .sub-tab-content{max-height:none;}
+      .card{overflow:visible;}
 
       /* Mobile Modal Improvements */
       #proposalResultsModal > div,
