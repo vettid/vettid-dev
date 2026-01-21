@@ -123,7 +123,19 @@ Response helpers: `ok()`, `created()`, `badRequest()`, `unauthorized()`, `notFou
 
 ## Key Documentation
 
+### Architecture
 - `docs/NITRO-ENCLAVE-VAULT-ARCHITECTURE.md` - Complete vault design
-- `docs/PCR-HANDLING-GUIDE.md` - Attestation validation
 - `docs/NATS-MESSAGING-ARCHITECTURE.md` - Messaging patterns
-- `cdk/REFACTORING_GUIDE.md` - Code organization and migration
+- `docs/e2ee-key-exchange-architecture.md` - WebRTC E2E encryption design
+- `docs/vault_services_architecture.md` - Service layer design
+
+### API Specifications
+- `docs/specs/vault-services-api.yaml` - OpenAPI 3.0 specification
+- `docs/specs/nitro-enrollment-nats-api.md` - Enrollment flow API
+- `docs/specs/credential-format.md` - Credential blob format
+- `docs/specs/nats-api.md` - NATS API reference
+
+### Operations
+- `docs/PCR-HANDLING-GUIDE.md` - Attestation validation
+- `docs/SECURITY.md` - Post-clone configuration guide
+- `docs/runbooks/` - Operational runbooks (capacity, incidents, updates)
