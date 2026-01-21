@@ -7,7 +7,7 @@
  * - Rate limiting
  * - Account lockout
  *
- * @see cdk/coordination/specs/vault-services-api.yaml
+ * @see docs/specs/vault-services-api.yaml
  */
 
 import * as crypto from 'crypto';

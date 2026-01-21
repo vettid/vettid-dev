@@ -8,7 +8,7 @@
  * 4. Server verifies LAT token and version
  * 5. Server rotates LAT on success
  *
- * @see cdk/coordination/specs/vault-services-api.yaml
+ * @see docs/specs/vault-services-api.yaml
  * @see POST /vault/auth/execute
  */
 

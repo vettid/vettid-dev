@@ -9,7 +9,7 @@
  * Note: These tests verify implementation correctness.
  * Actual timing analysis requires controlled environments.
  *
- * @see cdk/coordination/specs/vault-services-api.yaml
+ * @see docs/specs/vault-services-api.yaml
  */
 
 import * as crypto from 'crypto';

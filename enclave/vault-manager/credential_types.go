@@ -133,7 +133,7 @@ type CryptoKey struct {
 // This is the new structured format with grouped fields and metadata
 
 // ProteanCredentialV2 is the new credential format with grouped fields
-// See cdk/coordination/specs/credential-format.md for specification
+// See docs/specs/credential-format.md for specification
 type ProteanCredentialV2 struct {
 	FormatVersion int `json:"format_version"` // Should be 2
 

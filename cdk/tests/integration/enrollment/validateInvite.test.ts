@@ -6,7 +6,7 @@
  * - Returns attestation challenge
  * - Returns transaction keys for password encryption
  *
- * @see cdk/coordination/specs/vault-services-api.yaml
+ * @see docs/specs/vault-services-api.yaml
  * @see POST /vault/enroll/start
  */
 

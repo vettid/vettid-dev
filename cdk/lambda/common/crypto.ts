@@ -9,7 +9,7 @@
  * signing), import directly from 'crypto-keys' to avoid bundling
  * the argon2 native module.
  *
- * @see cdk/coordination/specs/credential-format.md
+ * @see docs/specs/credential-format.md
  */
 
 // Re-export everything from crypto-keys (no native dependencies)

@@ -6,7 +6,7 @@
  * - Shows status transitions (pending_enrollment -> enrolled -> running, etc.)
  * - Provides instance information for running vaults
  *
- * @see cdk/coordination/specs/vault-services-api.yaml
+ * @see docs/specs/vault-services-api.yaml
  * @see GET /member/vault/status
  */
 

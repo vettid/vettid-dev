@@ -67,7 +67,7 @@ vettid-ios/
 
 ### Shared Specifications
 
-API specifications and coordination documents live in `vettid-dev/cdk/coordination/specs/`:
+API specifications live in `vettid-dev/docs/specs/`:
 - `vault-services-api.yaml` - OpenAPI 3.0 specification
 - `credential-format.md` - Credential blob format
 - `nats-topics.md` - NATS topic structure
@@ -75,7 +75,6 @@ API specifications and coordination documents live in `vettid-dev/cdk/coordinati
 Mobile instances should:
 1. Clone `vettid-dev` to access specifications
 2. Reference specs when implementing API clients
-3. Report issues to `vettid-dev/cdk/coordination/results/issues/`
 
 ### Status Updates
 

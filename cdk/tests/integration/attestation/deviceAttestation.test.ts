@@ -7,7 +7,7 @@
  * - Certificate chain validation
  * - Security level detection
  *
- * @see cdk/coordination/specs/vault-services-api.yaml
+ * @see docs/specs/vault-services-api.yaml
  */
 
 // ============================================

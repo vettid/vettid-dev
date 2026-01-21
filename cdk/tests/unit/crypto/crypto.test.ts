@@ -10,7 +10,7 @@
  * - Transaction key pool management
  * - Serialization helpers
  *
- * @see cdk/coordination/specs/credential-format.md
+ * @see docs/specs/credential-format.md
  * @see cdk/lambda/common/crypto.ts
  */
 

@@ -6,7 +6,7 @@
  * - Generates an enrollment invite code
  * - Returns QR code data for mobile enrollment
  *
- * @see cdk/coordination/specs/vault-services-api.yaml
+ * @see docs/specs/vault-services-api.yaml
  * @see POST /member/vault/deploy
  */
 

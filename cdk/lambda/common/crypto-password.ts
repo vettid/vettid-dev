@@ -8,7 +8,7 @@
  * IMPORTANT: Only import this module in Lambdas that actually need
  * password hashing (verifyPassword, createCredential, etc.)
  *
- * @see cdk/coordination/specs/credential-format.md
+ * @see docs/specs/credential-format.md
  */
 
 import { timingSafeEqual } from 'crypto';

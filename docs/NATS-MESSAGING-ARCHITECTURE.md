@@ -412,7 +412,7 @@ WEB_INITIATED → PENDING → AUTHENTICATED → NATS_CONNECTED → COMPLETED
 
 > **⚠️ DEPRECATED (EC2 Model):** The REST-based PIN setup below was for the old EC2-per-user vault architecture.
 >
-> **For the current Nitro Enclave architecture, see:** [`/cdk/coordination/specs/nitro-enrollment-nats-api.md`](../cdk/coordination/specs/nitro-enrollment-nats-api.md)
+> **For the current Nitro Enclave architecture, see:** [`/docs/specs/nitro-enrollment-nats-api.md`](./specs/nitro-enrollment-nats-api.md)
 
 ### Current Implementation (Nitro Enclave - NATS Direct)
 

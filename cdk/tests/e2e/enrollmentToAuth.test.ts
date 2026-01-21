@@ -8,8 +8,8 @@
  *
  * This test simulates the complete Protean credential lifecycle.
  *
- * @see cdk/coordination/specs/vault-services-api.yaml
- * @see cdk/coordination/specs/credential-format.md
+ * @see docs/specs/vault-services-api.yaml
+ * @see docs/specs/credential-format.md
  */
 
 import * as crypto from 'crypto';

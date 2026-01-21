@@ -7,7 +7,7 @@
  * - Expiration handling
  * - Single-use enforcement
  *
- * @see cdk/coordination/specs/vault-services-api.yaml
+ * @see docs/specs/vault-services-api.yaml
  * @see POST /admin/invites
  * @see POST /member/vault/deploy
  * @see POST /vault/enroll/start

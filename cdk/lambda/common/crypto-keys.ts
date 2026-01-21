@@ -10,7 +10,7 @@
  * This module has NO native dependencies and works on all Node.js versions.
  * Password hashing (argon2) is in crypto-password.ts
  *
- * @see cdk/coordination/specs/credential-format.md
+ * @see docs/specs/credential-format.md
  */
 
 import {

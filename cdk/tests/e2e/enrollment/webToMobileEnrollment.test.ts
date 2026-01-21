@@ -7,7 +7,7 @@
  * 3. Mobile scans QR and completes enrollment
  * 4. Web portal shows updated vault status
  *
- * @see cdk/coordination/specs/vault-services-api.yaml
+ * @see docs/specs/vault-services-api.yaml
  * @see POST /member/vault/deploy
  * @see GET /member/vault/status
  * @see POST /vault/enroll/start

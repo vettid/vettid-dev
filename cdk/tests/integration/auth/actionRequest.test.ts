@@ -6,7 +6,7 @@
  * 2. Server returns challenge + available transaction keys
  * 3. Server validates credential status
  *
- * @see cdk/coordination/specs/vault-services-api.yaml
+ * @see docs/specs/vault-services-api.yaml
  * @see POST /vault/auth/action-request
  */
 

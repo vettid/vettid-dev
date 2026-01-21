@@ -9,8 +9,8 @@
  * 5. Transaction key pool initialization
  * 6. LAT generation
  *
- * @see cdk/coordination/specs/vault-services-api.yaml
- * @see cdk/coordination/specs/credential-format.md
+ * @see docs/specs/vault-services-api.yaml
+ * @see docs/specs/credential-format.md
  */
 
 import {

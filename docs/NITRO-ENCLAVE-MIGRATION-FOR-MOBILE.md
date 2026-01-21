@@ -4,7 +4,7 @@
 **Status:** DEPLOYED TO PRODUCTION - NATS API FINALIZED
 **Action Required:** Both iOS and Android need updates
 
-> **API Specification:** See [`/cdk/coordination/specs/nitro-enrollment-nats-api.md`](../cdk/coordination/specs/nitro-enrollment-nats-api.md) for the complete NATS enrollment API reference.
+> **API Specification:** See [`/docs/specs/nitro-enrollment-nats-api.md`](./specs/nitro-enrollment-nats-api.md) for the complete NATS enrollment API reference.
 
 ---
 
@@ -279,7 +279,7 @@ require(attestedPublicKey.contentEquals(responsePublicKey)) { "Public key mismat
 
 ## Updated Enrollment Flow (NATS-Based)
 
-> **For detailed API specification, see:** [`/cdk/coordination/specs/nitro-enrollment-nats-api.md`](../cdk/coordination/specs/nitro-enrollment-nats-api.md)
+> **For detailed API specification, see:** [`/docs/specs/nitro-enrollment-nats-api.md`](./specs/nitro-enrollment-nats-api.md)
 
 ```
 ┌─────────┐                    ┌─────────────┐                    ┌─────────┐
