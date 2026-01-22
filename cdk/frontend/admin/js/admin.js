@@ -853,7 +853,7 @@ function renderAuth(){
     }
   }
 }
-document.getElementById('signin').onclick=beginLogin;
+document.getElementById('signin').onclick=()=>window.location.href='/login.html';
 
 // Initialize and attach theme toggle
 initTheme();
@@ -1476,9 +1476,17 @@ document.addEventListener('change',e=>{
 function updatePagination(list,items){const state=paginationState[list];const start=state.page*state.perPage;const end=start+state.perPage;const page=items.slice(start,end);state.total=items.length;const infoEl=document.getElementById(list+'Info');const prevBtn=document.getElementById(list+'Prev');const nextBtn=document.getElementById(list+'Next');if(items.length===0){infoEl.textContent='No items';prevBtn.disabled=true;nextBtn.disabled=true;}else{infoEl.textContent=`${start+1}-${Math.min(end,items.length)} of ${items.length}`;prevBtn.disabled=state.page===0;nextBtn.disabled=end>=items.length;}return page;}
 function searchFilter(item,query,fields){if(!query)return true;const q=query.toLowerCase();return fields.some(f=>(item[f]||'').toLowerCase().includes(q));}
 
-handleRedirect();renderAuth();
-// Start periodic token expiry check if signed in
-if(signedIn()){startTokenExpiryCheck();}
+handleRedirect();
+
+// Redirect to login page if not signed in and not processing OAuth callback
+const urlParams = new URLSearchParams(window.location.search);
+if (!signedIn() && !urlParams.has('code')) {
+  window.location.href = '/login.html';
+} else {
+  renderAuth();
+  // Start periodic token expiry check if signed in
+  if(signedIn()){startTokenExpiryCheck();}
+}
 // Mark users tab as loaded and load it on page load (default active tab)
 if(signedIn()&&isAdmin()){tabsLoaded.users=true;loadUsers();}
 let invitesData=[];

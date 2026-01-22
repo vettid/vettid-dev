@@ -88,6 +88,14 @@ if [[ -f "$ADMIN_HTML" ]]; then
     echo -e "${GREEN}Admin HTML CSP header configured${NC}"
 fi
 
+# Replace placeholders in admin/login.html for CSP header
+ADMIN_LOGIN_HTML="$TEMP_DIR/admin/login.html"
+if [[ -f "$ADMIN_LOGIN_HTML" ]]; then
+    sed -i "s|__API_URL__|$API_URL|g" "$ADMIN_LOGIN_HTML"
+    sed -i "s|__ADMIN_COGNITO_DOMAIN__|$ADMIN_COGNITO_DOMAIN|g" "$ADMIN_LOGIN_HTML"
+    echo -e "${GREEN}Admin Login HTML CSP header configured${NC}"
+fi
+
 # Replace placeholders in account/index.html for CSP header
 ACCOUNT_HTML="$TEMP_DIR/account/index.html"
 if [[ -f "$ACCOUNT_HTML" ]]; then
