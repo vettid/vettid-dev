@@ -800,6 +800,12 @@ export function renderSubscriptions() {
 
   // Attach checkbox handlers
   tbody.querySelectorAll('.subscription-checkbox').forEach(cb => cb.onchange = updateSubscriptionsSelectedCount);
+
+  // Render cards for mobile view
+  renderSubscriptionsCards(page);
+
+  // Reset selection count (checkboxes were just rebuilt, so none are checked)
+  updateSubscriptionsSelectedCount();
 }
 
 /**
@@ -828,7 +834,12 @@ function updateSubscriptionFilterCounts() {
 }
 
 export function updateSubscriptionsSelectedCount() {
-  const checkboxes = document.querySelectorAll('.subscription-checkbox:checked');
+  // Only count checkboxes in the currently visible view (table or cards)
+  const tableContainer = document.getElementById('subscriptionsTableContainer');
+  const cardContainer = document.getElementById('subscriptionsCardContainer');
+  const isTableVisible = tableContainer && getComputedStyle(tableContainer).display !== 'none';
+  const container = isTableVisible ? tableContainer : cardContainer;
+  const checkboxes = container ? container.querySelectorAll('.subscription-checkbox:checked') : [];
   const count = checkboxes.length;
 
   // Update bulk bar visibility and count
@@ -836,6 +847,133 @@ export function updateSubscriptionsSelectedCount() {
   const countEl = document.getElementById('selectedSubscriptionsCount');
   if (bulkBar) bulkBar.classList.toggle('active', count > 0);
   if (countEl) countEl.textContent = count;
+}
+
+// ============================================
+// Card Rendering for Mobile
+// ============================================
+
+export function renderSubscriptionsCards(subscriptions) {
+  const cardContainer = document.getElementById('subscriptionsCardContainer');
+  if (!cardContainer) return;
+
+  cardContainer.replaceChildren();
+  const now = new Date();
+
+  subscriptions.forEach(s => {
+    const card = document.createElement('div');
+    card.className = 'data-card';
+
+    const expiresDate = s.expires_at ? new Date(s.expires_at) : null;
+    const daysLeft = expiresDate ? Math.ceil((expiresDate - now) / (1000 * 60 * 60 * 24)) : null;
+    const name = `${s.first_name || ''} ${s.last_name || ''}`.trim() || 'Unknown';
+
+    // Determine status display
+    let statusText = (s.status || 'Unknown').charAt(0).toUpperCase() + (s.status || 'unknown').slice(1);
+    let statusColor = '#6b7280';
+    if (s.status === 'active') statusColor = '#a855f7';
+    else if (s.status === 'expired') statusColor = '#6b7280';
+    else if (s.status === 'cancelled') statusColor = '#f97316';
+
+    // Header
+    const header = document.createElement('div');
+    header.className = 'data-card-header';
+    const headerInner = document.createElement('div');
+    headerInner.style.cssText = 'display:flex;align-items:center;gap:12px;flex:1;';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.className = 'subscription-checkbox';
+    cb.dataset.guid = s.user_guid || '';
+    cb.dataset.status = s.status;
+    cb.style.cssText = 'width:18px;height:18px;cursor:pointer;';
+    cb.onchange = updateSubscriptionsSelectedCount;
+    const title = document.createElement('div');
+    title.className = 'data-card-title';
+    title.textContent = name;
+    headerInner.append(cb, title);
+    header.appendChild(headerInner);
+
+    // Body
+    const body = document.createElement('div');
+    body.className = 'data-card-body';
+
+    // Email row
+    const emailRow = document.createElement('div');
+    emailRow.className = 'data-card-row';
+    const emailLabel = document.createElement('span');
+    emailLabel.className = 'data-card-label';
+    emailLabel.textContent = 'Email:';
+    const emailValue = document.createElement('span');
+    emailValue.className = 'data-card-value';
+    emailValue.textContent = s.email || '—';
+    emailRow.append(emailLabel, emailValue);
+    body.appendChild(emailRow);
+
+    // Status row
+    const statusRow = document.createElement('div');
+    statusRow.className = 'data-card-row';
+    const statusLabel = document.createElement('span');
+    statusLabel.className = 'data-card-label';
+    statusLabel.textContent = 'Status:';
+    const statusBadge = document.createElement('span');
+    statusBadge.className = 'data-card-badge';
+    statusBadge.style.cssText = `background:${statusColor};font-size:0.65rem;`;
+    statusBadge.textContent = statusText;
+    statusRow.append(statusLabel, statusBadge);
+    body.appendChild(statusRow);
+
+    // Plan row
+    const planRow = document.createElement('div');
+    planRow.className = 'data-card-row';
+    const planLabel = document.createElement('span');
+    planLabel.className = 'data-card-label';
+    planLabel.textContent = 'Plan:';
+    const planValue = document.createElement('span');
+    planValue.className = 'data-card-value';
+    planValue.textContent = s.plan || '—';
+    planRow.append(planLabel, planValue);
+    body.appendChild(planRow);
+
+    // Days left row (for active subscriptions)
+    if (s.status === 'active' && daysLeft !== null) {
+      const daysRow = document.createElement('div');
+      daysRow.className = 'data-card-row';
+      const daysLabel = document.createElement('span');
+      daysLabel.className = 'data-card-label';
+      daysLabel.textContent = 'Days Left:';
+      const daysBadge = document.createElement('span');
+      daysBadge.className = 'data-card-badge';
+      daysBadge.style.fontSize = '0.65rem';
+      if (daysLeft < 7) {
+        daysBadge.style.background = '#ef4444';
+      } else if (daysLeft <= 30) {
+        daysBadge.style.background = '#f59e0b';
+        daysBadge.style.color = '#000';
+      } else {
+        daysBadge.style.background = '#10b981';
+      }
+      daysBadge.textContent = `${daysLeft}d`;
+      daysRow.append(daysLabel, daysBadge);
+      body.appendChild(daysRow);
+    }
+
+    // Expires row
+    if (expiresDate) {
+      const expiresRow = document.createElement('div');
+      expiresRow.className = 'data-card-row';
+      const expiresLabel = document.createElement('span');
+      expiresLabel.className = 'data-card-label';
+      expiresLabel.textContent = 'Expires:';
+      const expiresValue = document.createElement('span');
+      expiresValue.className = 'data-card-value';
+      expiresValue.textContent = expiresDate.toLocaleDateString();
+      expiresRow.append(expiresLabel, expiresValue);
+      body.appendChild(expiresRow);
+    }
+
+    card.append(header, body);
+    cardContainer.appendChild(card);
+  });
 }
 
 export async function extendSubscription(subscriptionId) {
@@ -1125,6 +1263,13 @@ export function setupMembershipEventHandlers() {
       updateSubscriptionsSelectedCount();
     };
   }
+
+  // Subscription checkbox change handler (delegated for both table and cards)
+  document.addEventListener('change', (e) => {
+    if (e.target.classList.contains('subscription-checkbox')) {
+      updateSubscriptionsSelectedCount();
+    }
+  });
 
   // Search input
   const searchInput = document.getElementById('subscriptionsSearch');

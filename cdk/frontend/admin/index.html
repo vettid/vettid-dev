@@ -65,7 +65,7 @@
 
     *{box-sizing:border-box;}
     body{display:flex;flex-direction:column;height:100vh;margin:0;overflow:hidden;}
-    header{display:flex;justify-content:space-between;align-items:center;padding:16px 24px;background:var(--bg-header);border-bottom:2px solid var(--accent);box-shadow:0 2px 8px rgba(0,0,0,0.3);flex-shrink:0;}
+    header{display:flex;justify-content:space-between;align-items:center;padding:16px 24px;background:var(--bg-header);border-bottom:2px solid var(--accent);box-shadow:0 2px 8px rgba(0,0,0,0.3);flex-shrink:0;position:relative;z-index:1002;}
     .main-container{display:flex;flex:1;overflow:hidden;}
     .sidebar{width:220px;background:var(--bg-sidebar);border-right:2px solid #222;display:flex;flex-direction:column;overflow-y:auto;transition:width 0.3s ease;position:relative;flex-shrink:0;}
     .sidebar.collapsed{width:0;overflow:hidden;border-right:none;}
@@ -139,7 +139,8 @@
     .waitlist-filter.active{opacity:1 !important;box-shadow:0 4px 12px rgba(255,193,37,0.4) !important;transform:scale(1.02);border:2px solid var(--accent) !important;}
     .help-filter{opacity:0.7;transition:all 0.2s;}
     .help-filter.active{opacity:1 !important;box-shadow:0 4px 12px rgba(255,193,37,0.4) !important;transform:scale(1.02);border:2px solid var(--accent) !important;}
-    .modal-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.8);z-index:10000;display:none;align-items:center;justify-content:center;}
+    .modal-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.8);z-index:10000;display:none;align-items:center;justify-content:center;pointer-events:none;}
+    .modal-overlay.active{pointer-events:auto;}
     .modal-overlay.active{display:flex;}
     .modal{background:var(--bg-card);border:2px solid var(--accent);border-radius:8px;padding:24px;max-width:500px;width:90%;max-height:90vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,0.6);}
     .modal-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;border-bottom:1px solid var(--border);padding-bottom:12px;}
@@ -190,12 +191,22 @@
     .card-grid{display:none;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px;margin-top:16px;}
     .list-view{display:block;}
     @media(max-width:768px){
-      .card-grid{display:grid;}
+      .card-grid{display:grid !important;}
       .list-view{display:none!important;}
+      .sub-tab-content .card-grid{display:grid !important;}
     }
     @media(min-width:769px){
       .card-grid{display:none!important;}
       .list-view{display:block;}
+    }
+    /* Mobile filter toggle - hide on desktop, show on mobile */
+    .mobile-filter-toggle{display:none;margin-bottom:12px;width:100%;background:linear-gradient(135deg,#374151 0%,#1f2937 100%);}
+    @media(max-width:768px){
+      .mobile-filter-toggle{display:block;}
+      .filters-hidden{display:none!important;}
+    }
+    @media(min-width:769px){
+      .filters-hidden{display:block!important;}
     }
     /* Responsive tile grids - single column on mobile */
     .tile-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px;width:100%;}
@@ -216,14 +227,20 @@
     table.hide-on-card{display:table;}
     table.hide-on-card.hidden{display:none;}
     /* Mobile menu button - hidden on desktop */
-    .mobile-menu-btn{display:none;align-items:center;justify-content:center;background:none;border:none;color:var(--accent);font-size:1.5rem;cursor:pointer;padding:8px;}
-    .sidebar-overlay{display:none;position:fixed;top:60px;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);z-index:998;}
+    .mobile-menu-btn{display:none;align-items:center;justify-content:center;background:none;border:none;color:var(--accent);font-size:1.5rem;cursor:pointer;padding:8px;-webkit-tap-highlight-color:rgba(255,193,37,0.3);touch-action:manipulation;}
+    .sidebar-overlay{display:none;position:fixed;top:60px;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);z-index:998;pointer-events:none;}
+    .sidebar-overlay.visible{pointer-events:auto;}
     .sidebar-overlay.visible{display:block;}
     @media(max-width:768px){
       .mobile-menu-btn{display:flex !important;}
       body{height:auto!important;min-height:100vh;overflow:auto!important;}
-      .sidebar{position:fixed;left:0;top:60px;bottom:0;z-index:999;box-shadow:2px 0 8px rgba(0,0,0,0.3);transform:translateX(-100%);transition:transform 0.3s ease;}
-      .sidebar.mobile-open{transform:translateX(0);}
+      .sidebar{position:fixed;left:0;top:60px;bottom:0;width:240px;z-index:999;box-shadow:4px 0 16px rgba(0,0,0,0.4);transform:translateX(-100%);transition:transform 0.3s ease;background:#14120f !important;border-right:1px solid #2a2622;}
+      .sidebar .tabs{background:#14120f !important;padding-top:16px !important;}
+      .sidebar .tab{color:#a8a29e !important;background:transparent !important;padding:16px 20px !important;font-size:0.95rem !important;}
+      .sidebar .tab.active{color:#ffc125 !important;background:rgba(255,193,37,0.12) !important;border-left:3px solid #ffc125 !important;}
+      .sidebar .tab:hover{color:#e8e6e3 !important;background:rgba(255,255,255,0.05) !important;}
+      .sidebar:target{transform:translateX(0) !important;visibility:visible !important;}
+      .sidebar:target ~ .sidebar-overlay{display:block !important;pointer-events:auto;}
       .sidebar-toggle{display:none;}
       .main-container{flex-direction:column;overflow:visible;min-height:calc(100vh - 60px);}
       .wrap{padding:16px;padding-bottom:100px;overflow:visible;-webkit-overflow-scrolling:touch;min-height:0;flex:1;}
@@ -382,6 +399,8 @@
   </style>
 </head>
 <body>
+  <!-- Anchor target for pure CSS mobile menu toggle (no JS needed) -->
+
   <div id="toastContainer" class="toast-container"></div>
 
   <!-- Password Change Modal -->
@@ -486,7 +505,7 @@
 
   <header>
     <div style="display:flex;align-items:center;gap:12px;">
-      <button id="mobileMenuBtn" class="mobile-menu-btn" aria-label="Toggle navigation menu">☰</button>
+      <a href="#mobileMenu" class="mobile-menu-btn" aria-label="Toggle navigation menu">☰</a>
       <h1 style="display:flex;align-items:center;gap:12px;margin:0;">
         <img src="https://vettid.dev/assets/logo.jpg" alt="VettID Logo" style="height:36px;width:36px;border-radius:6px;" />
         Admin
@@ -519,11 +538,9 @@
       <button id="signin" class="btn">Sign in</button>
     </div>
   </header>
-  <div class="sidebar-overlay" id="sidebarOverlay"></div>
-
   <div class="main-container">
     <div class="admin-only">
-      <div class="sidebar" id="sidebar">
+      <div class="sidebar" id="mobileMenu">
         <div class="tabs">
           <button class="tab active" data-tab="waitlist">Waitlist</button>
           <button class="tab" data-tab="users">Users</button>
@@ -569,6 +586,7 @@
           </div>
         </div>
       </div>
+      <a href="#_" class="sidebar-overlay" id="sidebarOverlay"></a>
       <button class="sidebar-toggle" id="sidebarToggle">&lt;</button>
     </div>
 
@@ -1771,8 +1789,11 @@
             </button>
           </div>
 
+          <!-- Mobile Filter Toggle -->
+          <button id="toggleSubsFilters" class="btn mobile-filter-toggle" onclick="document.getElementById('subsFiltersContent').classList.toggle('filters-hidden');this.textContent=this.textContent.includes('Show')?'Hide Filters':'Show Filters';">Show Filters</button>
+
           <!-- Filters and Search -->
-          <div style="padding:16px;background:var(--bg-card);border-radius:8px;border:1px solid var(--border);margin-bottom:20px;">
+          <div id="subsFiltersContent" class="filters-hidden" style="padding:16px;background:var(--bg-card);border-radius:8px;border:1px solid var(--border);margin-bottom:20px;">
             <h4 style="margin:0 0 12px 0;color:var(--accent);">Filters</h4>
             <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:12px;">
               <div>

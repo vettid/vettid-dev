@@ -117,6 +117,22 @@ function handler(event) {
   `),
 });
 
+// CloudFront Function: block vettid.dev/admin/* (admin is only at admin.vettid.dev)
+const adminBlockFn = new cloudfront.Function(this, 'AdminBlockFn', {
+  code: cloudfront.FunctionCode.fromInline(`
+function handler(event) {
+  return {
+    statusCode: 403,
+    statusDescription: 'Forbidden',
+    headers: {
+      'content-type': { value: 'text/html' }
+    },
+    body: '<html><head><title>403 Forbidden</title></head><body><h1>Forbidden</h1></body></html>'
+  };
+}
+  `),
+});
+
 // CloudFront Function: clean URL rewrite for apex (e.g. /foo -> /foo/index.html)
 const htmlRewriteFn = new cloudfront.Function(this, 'HtmlRewriteFn', {
   code: cloudfront.FunctionCode.fromInline(`
@@ -617,6 +633,21 @@ const rootDist = new cloudfront.Distribution(this, 'RootDist', {
       viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.HTTPS_ONLY,
       functionAssociations: [
         { eventType: cloudfront.FunctionEventType.VIEWER_REQUEST, function: apiProxyFn },
+      ],
+    },
+    // Redirect /admin to admin.vettid.dev (admin portal is on separate subdomain)
+    '/admin': {
+      origin: siteOrigin, // never reached; redirect happens at viewer request
+      viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+      functionAssociations: [
+        { eventType: cloudfront.FunctionEventType.VIEWER_REQUEST, function: adminBlockFn },
+      ],
+    },
+    '/admin/*': {
+      origin: siteOrigin, // never reached; redirect happens at viewer request
+      viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+      functionAssociations: [
+        { eventType: cloudfront.FunctionEventType.VIEWER_REQUEST, function: adminBlockFn },
       ],
     },
   },
