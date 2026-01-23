@@ -1239,3 +1239,355 @@ func generateEventID() string {
 	// TODO: Use crypto/rand for production
 	return fmt.Sprintf("evt-%d", time.Now().UnixNano())
 }
+
+// --- Service-initiated call methods (DEV-034) ---
+
+// ServiceCallInitiateRequest is the payload for service call initiation
+type ServiceCallInitiateRequest struct {
+	CallID      string            `json:"call_id"`
+	CallType    string            `json:"call_type"`    // "voice" or "video"
+	ServiceKey  string            `json:"service_key"`  // Service's X25519 public key (base64)
+	DisplayName string            `json:"display_name"` // Name to show on incoming call
+	Metadata    map[string]string `json:"metadata,omitempty"`
+}
+
+// ServiceCallSignalingRequest is the payload for service WebRTC signaling
+type ServiceCallSignalingRequest struct {
+	CallID     string          `json:"call_id"`
+	SignalType string          `json:"signal_type"` // "offer", "answer", "candidate"
+	Payload    json.RawMessage `json:"payload"`     // WebRTC SDP or ICE candidate
+	PeerKeyPub string          `json:"peer_key_pub,omitempty"` // Service's X25519 public key
+}
+
+// ServiceCallEndRequest is the payload for service ending a call
+type ServiceCallEndRequest struct {
+	CallID string `json:"call_id"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// HandleServiceCallInitiate handles an incoming call from a service (DEV-034)
+// SECURITY: Connection must be active and have call capability (already verified by router)
+func (ch *CallHandler) HandleServiceCallInitiate(ctx context.Context, msg *IncomingMessage, conn *ServiceConnectionRecord) (*OutgoingMessage, error) {
+	var req ServiceCallInitiateRequest
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		return ch.errorResponse(msg.GetID(), "invalid request format")
+	}
+
+	// Generate call ID if not provided
+	if req.CallID == "" {
+		req.CallID = fmt.Sprintf("svc-call-%d", time.Now().UnixNano())
+	}
+
+	// Validate call type
+	if req.CallType != "voice" && req.CallType != "video" {
+		req.CallType = "voice" // Default to voice
+	}
+
+	// Check if this call ID is already active
+	if _, exists := ch.activeCalls[req.CallID]; exists {
+		return ch.errorResponse(msg.GetID(), "call already in progress")
+	}
+
+	now := time.Now()
+
+	// Create active call state
+	activeCall := &ActiveCall{
+		CallID:    req.CallID,
+		PeerID:    conn.ServiceGUID, // Service is the "peer" in this context
+		Direction: "incoming",
+		Status:    "ringing",
+		StartedAt: now,
+	}
+
+	// Decode and store service's public key if provided
+	if req.ServiceKey != "" {
+		if peerPubKey, err := base64.StdEncoding.DecodeString(req.ServiceKey); err == nil && len(peerPubKey) == 32 {
+			activeCall.PeerPubKey = peerPubKey
+		}
+	}
+
+	ch.activeCalls[req.CallID] = activeCall
+
+	// Log call record
+	record := &CallRecord{
+		CallID:    req.CallID,
+		CallerID:  conn.ServiceGUID, // Service is the caller
+		CalleeID:  ch.ownerSpace,    // Vault owner is the callee
+		Direction: "incoming",
+		Status:    "initiated",
+		StartedAt: now.Unix(),
+	}
+	if err := ch.storeCallRecord(ctx, record); err != nil {
+		log.Error().Err(err).Msg("Failed to store service call record")
+	}
+
+	// Log incoming service call event (will appear in feed with accept/decline action)
+	if ch.eventHandler != nil {
+		displayName := req.DisplayName
+		if displayName == "" {
+			displayName = conn.ServiceProfile.ServiceName
+		}
+		ch.eventHandler.LogCallEvent(ctx, EventTypeCallIncoming, req.CallID, conn.ServiceGUID, "Incoming service call", map[string]string{
+			"service_name": conn.ServiceProfile.ServiceName,
+			"call_type":    req.CallType,
+			"display_name": displayName,
+		})
+	}
+
+	// Forward to owner's app as incoming call
+	callEvent := map[string]interface{}{
+		"type":          "service.call.incoming",
+		"call_id":       req.CallID,
+		"call_type":     req.CallType,
+		"service_id":    conn.ServiceGUID,
+		"service_name":  conn.ServiceProfile.ServiceName,
+		"display_name":  req.DisplayName,
+		"service_key":   req.ServiceKey,
+		"metadata":      req.Metadata,
+		"connection_id": conn.ConnectionID,
+		"timestamp":     now.Unix(),
+	}
+	eventData, _ := json.Marshal(callEvent)
+
+	if err := ch.publisher.PublishToApp(ctx, "service.call.incoming", eventData); err != nil {
+		log.Warn().Err(err).Msg("Failed to forward service call to app")
+		// Continue - call state is stored
+	}
+
+	log.Info().
+		Str("call_id", req.CallID).
+		Str("service_id", conn.ServiceGUID).
+		Str("call_type", req.CallType).
+		Msg("Service call initiated")
+
+	// Generate our X25519 keypair for E2EE
+	localPrivKey, localPubKey, err := generateX25519KeyPair()
+	if err != nil {
+		return ch.errorResponse(msg.GetID(), "failed to generate encryption keys")
+	}
+	activeCall.LocalPrivKey = localPrivKey
+	activeCall.LocalPubKey = localPubKey
+
+	resp := map[string]interface{}{
+		"success":       true,
+		"call_id":       req.CallID,
+		"status":        "ringing",
+		"vault_key_pub": base64.StdEncoding.EncodeToString(localPubKey),
+	}
+	respBytes, _ := json.Marshal(resp)
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// HandleServiceCallSignaling handles WebRTC signaling from a service (DEV-034)
+func (ch *CallHandler) HandleServiceCallSignaling(ctx context.Context, msg *IncomingMessage, conn *ServiceConnectionRecord) (*OutgoingMessage, error) {
+	var req ServiceCallSignalingRequest
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		return ch.errorResponse(msg.GetID(), "invalid request format")
+	}
+
+	if req.CallID == "" {
+		return ch.errorResponse(msg.GetID(), "call_id is required")
+	}
+	if req.SignalType == "" {
+		return ch.errorResponse(msg.GetID(), "signal_type is required")
+	}
+
+	// Validate signal type
+	switch req.SignalType {
+	case "offer", "answer", "candidate":
+		// Valid
+	default:
+		return ch.errorResponse(msg.GetID(), "invalid signal_type: must be offer, answer, or candidate")
+	}
+
+	activeCall, exists := ch.activeCalls[req.CallID]
+	if !exists {
+		return ch.errorResponse(msg.GetID(), "call not found or already ended")
+	}
+
+	// Verify this call is from the same service
+	if activeCall.PeerID != conn.ServiceGUID {
+		return ch.errorResponse(msg.GetID(), "call belongs to different service")
+	}
+
+	// Store peer's public key if provided
+	var sharedSecretB64 string
+	if req.PeerKeyPub != "" {
+		peerPubKey, err := base64.StdEncoding.DecodeString(req.PeerKeyPub)
+		if err == nil && len(peerPubKey) == 32 {
+			activeCall.PeerPubKey = peerPubKey
+
+			// Derive shared secret if we have our local key
+			if activeCall.LocalPrivKey != nil {
+				sharedSecret, err := deriveSharedSecret(activeCall.LocalPrivKey, peerPubKey, req.CallID)
+				if err == nil {
+					activeCall.SharedSecret = sharedSecret
+					sharedSecretB64 = base64.StdEncoding.EncodeToString(sharedSecret)
+				}
+			}
+		}
+	}
+
+	// Forward signaling to app
+	signalingEvent := map[string]interface{}{
+		"type":          fmt.Sprintf("service.call.%s", req.SignalType),
+		"call_id":       req.CallID,
+		"signal_type":   req.SignalType,
+		"payload":       req.Payload,
+		"service_id":    conn.ServiceGUID,
+		"service_key":   req.PeerKeyPub,
+		"shared_secret": sharedSecretB64,
+		"timestamp":     time.Now().Unix(),
+	}
+	eventData, _ := json.Marshal(signalingEvent)
+
+	if err := ch.publisher.PublishToApp(ctx, fmt.Sprintf("service.call.%s", req.SignalType), eventData); err != nil {
+		log.Warn().Err(err).Str("signal_type", req.SignalType).Msg("Failed to forward signaling to app")
+	}
+
+	log.Debug().
+		Str("call_id", req.CallID).
+		Str("signal_type", req.SignalType).
+		Str("service_id", conn.ServiceGUID).
+		Msg("Service call signaling forwarded")
+
+	resp := map[string]interface{}{
+		"success":       true,
+		"call_id":       req.CallID,
+		"signal_type":   req.SignalType,
+		"shared_secret": sharedSecretB64,
+	}
+	respBytes, _ := json.Marshal(resp)
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// HandleServiceCallEnd handles call termination from a service (DEV-034)
+func (ch *CallHandler) HandleServiceCallEnd(ctx context.Context, msg *IncomingMessage, conn *ServiceConnectionRecord) (*OutgoingMessage, error) {
+	var req ServiceCallEndRequest
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		return ch.errorResponse(msg.GetID(), "invalid request format")
+	}
+
+	if req.CallID == "" {
+		return ch.errorResponse(msg.GetID(), "call_id is required")
+	}
+
+	activeCall, exists := ch.activeCalls[req.CallID]
+	if !exists {
+		// Call may have already ended - that's OK
+		return ch.successResponse(msg.GetID(), map[string]interface{}{
+			"call_id": req.CallID,
+			"status":  "ended",
+		})
+	}
+
+	// Verify this call is from the same service
+	if activeCall.PeerID != conn.ServiceGUID {
+		return ch.errorResponse(msg.GetID(), "call belongs to different service")
+	}
+
+	now := time.Now()
+
+	// Update call record
+	if err := ch.updateCallRecord(ctx, req.CallID, func(r *CallRecord) {
+		r.EndedAt = now.Unix()
+		if r.AnsweredAt > 0 {
+			r.DurationSecs = int(r.EndedAt - r.AnsweredAt)
+		}
+		if r.Status == "initiated" {
+			r.Status = "missed" // Service hung up before user answered
+		}
+	}); err != nil {
+		log.Error().Err(err).Msg("Failed to update call record")
+	}
+
+	// Clean up active call
+	delete(ch.activeCalls, req.CallID)
+
+	// Log call ended event
+	if ch.eventHandler != nil {
+		ch.eventHandler.LogCallEvent(ctx, EventTypeCallEnded, req.CallID, conn.ServiceGUID, "Service call ended", map[string]string{
+			"reason": req.Reason,
+		})
+	}
+
+	// Notify app
+	endEvent := map[string]interface{}{
+		"type":       "service.call.ended",
+		"call_id":    req.CallID,
+		"service_id": conn.ServiceGUID,
+		"reason":     req.Reason,
+		"timestamp":  now.Unix(),
+	}
+	eventData, _ := json.Marshal(endEvent)
+
+	if err := ch.publisher.PublishToApp(ctx, "service.call.ended", eventData); err != nil {
+		log.Warn().Err(err).Msg("Failed to forward call end to app")
+	}
+
+	log.Info().
+		Str("call_id", req.CallID).
+		Str("service_id", conn.ServiceGUID).
+		Str("reason", req.Reason).
+		Msg("Service call ended")
+
+	resp := map[string]interface{}{
+		"success": true,
+		"call_id": req.CallID,
+		"status":  "ended",
+	}
+	respBytes, _ := json.Marshal(resp)
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// SendServiceCallResponse sends a response back to the service via NATS
+// This is used when the user accepts/rejects/ends a service call
+func (ch *CallHandler) SendServiceCallResponse(ctx context.Context, callID string, responseType string, payload json.RawMessage) error {
+	activeCall, exists := ch.activeCalls[callID]
+	if !exists {
+		return fmt.Errorf("call not found: %s", callID)
+	}
+
+	// Send response to service via MessageSpace
+	// The service subscribes to their callback topic for responses
+	responseEvent := map[string]interface{}{
+		"type":          responseType,
+		"call_id":       callID,
+		"vault_key_pub": base64.StdEncoding.EncodeToString(activeCall.LocalPubKey),
+		"payload":       payload,
+		"timestamp":     time.Now().Unix(),
+	}
+	eventData, _ := json.Marshal(responseEvent)
+
+	// Publish to MessageSpace.{serviceGUID}.forOwner.call.{responseType}
+	subject := fmt.Sprintf("MessageSpace.%s.forOwner.call.%s", activeCall.PeerID, responseType)
+	msg := &OutgoingMessage{
+		ID:      generateMessageID(),
+		Type:    MessageTypeNATSPublish,
+		Subject: subject,
+		Payload: eventData,
+	}
+
+	// Use the publisher's sendFn to send via vsock
+	if p, ok := ch.publisher.(*VsockPublisher); ok {
+		return p.sendFn(msg)
+	}
+
+	log.Warn().Str("call_id", callID).Msg("Publisher does not support direct send")
+	return nil
+}

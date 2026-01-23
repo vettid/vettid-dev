@@ -136,10 +136,12 @@ type ServiceDataContract struct {
 	ConsentFields  []string    `json:"consent_fields"`
 	CanStoreData      bool     `json:"can_store_data"`
 	StorageCategories []string `json:"storage_categories,omitempty"`
-	CanSendMessages   bool     `json:"can_send_messages"`
-	CanRequestAuth    bool     `json:"can_request_auth"`
-	CanRequestPayment bool     `json:"can_request_payment"`
-	MaxRequestsPerHour int     `json:"max_requests_per_hour,omitempty"`
+	CanSendMessages    bool     `json:"can_send_messages"`
+	CanRequestAuth     bool     `json:"can_request_auth"`
+	CanRequestPayment  bool     `json:"can_request_payment"`
+	CanRequestVoiceCall bool    `json:"can_request_voice_call"` // DEV-034: Voice call capability
+	CanRequestVideoCall bool    `json:"can_request_video_call"` // DEV-034: Video call capability
+	MaxRequestsPerHour int      `json:"max_requests_per_hour,omitempty"`
 	MaxNotificationsPerHour int `json:"max_notifications_per_hour,omitempty"` // DEV-033
 	MaxStorageMB       int     `json:"max_storage_mb,omitempty"`
 	CreatedAt   time.Time  `json:"created_at"`

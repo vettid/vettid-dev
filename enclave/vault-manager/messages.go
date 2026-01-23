@@ -1477,6 +1477,14 @@ func (mh *MessageHandler) handleFromServiceOperation(ctx context.Context, msg *I
 		}
 		return mh.handleFromServiceNotification(ctx, msg, conn)
 
+	case "call":
+		// Service initiating a call (DEV-034)
+		// Check if service has voice or video call capability
+		if !conn.ServiceProfile.CurrentContract.CanRequestVoiceCall && !conn.ServiceProfile.CurrentContract.CanRequestVideoCall {
+			return mh.errorResponse(msg.GetID(), "service does not have call capability")
+		}
+		return mh.handleFromServiceCall(ctx, msg, conn, opParts[1:])
+
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown service operation: %s", operation))
 	}
@@ -1708,4 +1716,44 @@ func (mh *MessageHandler) findConnectionByServiceID(serviceID string) (*ServiceC
 	}
 
 	return nil, fmt.Errorf("no active connection found for service %s", serviceID)
+}
+
+// handleFromServiceCall handles call operations from services (DEV-034)
+// Supports: call.initiate, call.signal (offer/answer/candidate), call.end
+func (mh *MessageHandler) handleFromServiceCall(ctx context.Context, msg *IncomingMessage, conn *ServiceConnectionRecord, opParts []string) (*OutgoingMessage, error) {
+	if len(opParts) < 1 {
+		return mh.errorResponse(msg.GetID(), "missing call operation type")
+	}
+
+	opType := opParts[0]
+
+	// Check call type capability
+	var callType string
+	if len(opParts) > 1 {
+		callType = opParts[1] // e.g., "video" or "voice"
+	}
+
+	// For initiate, verify the specific call type is allowed
+	if opType == "initiate" {
+		if callType == "video" && !conn.ServiceProfile.CurrentContract.CanRequestVideoCall {
+			return mh.errorResponse(msg.GetID(), "service does not have video call capability")
+		}
+		if callType == "voice" && !conn.ServiceProfile.CurrentContract.CanRequestVoiceCall {
+			return mh.errorResponse(msg.GetID(), "service does not have voice call capability")
+		}
+	}
+
+	switch opType {
+	case "initiate":
+		// Service initiating a call
+		return mh.callHandler.HandleServiceCallInitiate(ctx, msg, conn)
+	case "signal":
+		// Service sending WebRTC signaling (offer/answer/candidate)
+		return mh.callHandler.HandleServiceCallSignaling(ctx, msg, conn)
+	case "end":
+		// Service ending the call
+		return mh.callHandler.HandleServiceCallEnd(ctx, msg, conn)
+	default:
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown service call operation: %s", opType))
+	}
 }

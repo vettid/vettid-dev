@@ -278,6 +278,74 @@ func (s *SQLiteStorage) initSchema() error {
 	CREATE INDEX IF NOT EXISTS idx_auth_requests_pending
 		ON service_auth_requests(connection_id, status, expires_at)
 		WHERE status = 'pending';
+
+	-- ===============================
+	-- User Secrets Storage (DEV-040)
+	-- ===============================
+
+	-- Secrets table - user-managed password vault
+	-- Stores passwords, API keys, secure notes, etc.
+	-- All sensitive fields encrypted with vault DEK.
+	CREATE TABLE IF NOT EXISTS secrets (
+		id TEXT PRIMARY KEY,
+		name TEXT NOT NULL,
+		category TEXT NOT NULL CHECK(category IN ('login','card','identity','secure_note','api_key','crypto_wallet','custom')),
+		fields BLOB NOT NULL,              -- CBOR-encoded SecretField array, encrypted
+		notes BLOB,                        -- Encrypted notes
+		tags TEXT,                         -- JSON array of tag strings
+		favorite INTEGER DEFAULT 0,
+		created_at INTEGER NOT NULL,
+		updated_at INTEGER NOT NULL,
+		last_viewed INTEGER,
+		deleted_at INTEGER,                -- Soft delete timestamp (for sync)
+		sync_version INTEGER DEFAULT 1     -- Incremented on each change (for sync)
+	);
+
+	-- Index for category filtering
+	CREATE INDEX IF NOT EXISTS idx_secrets_category
+		ON secrets(category, updated_at DESC)
+		WHERE deleted_at IS NULL;
+
+	-- Index for favorites
+	CREATE INDEX IF NOT EXISTS idx_secrets_favorite
+		ON secrets(favorite, updated_at DESC)
+		WHERE favorite = 1 AND deleted_at IS NULL;
+
+	-- Index for sync (find changes since last sync)
+	CREATE INDEX IF NOT EXISTS idx_secrets_sync
+		ON secrets(sync_version)
+		WHERE deleted_at IS NULL;
+
+	-- Index for soft-deleted secrets (tombstones for sync)
+	CREATE INDEX IF NOT EXISTS idx_secrets_deleted
+		ON secrets(deleted_at)
+		WHERE deleted_at IS NOT NULL;
+
+	-- Full-text search for secrets (name and tags)
+	-- FTS5 allows efficient searching across secret names
+	CREATE VIRTUAL TABLE IF NOT EXISTS secrets_fts USING fts5(
+		id UNINDEXED,
+		name,
+		tags,
+		content='secrets',
+		content_rowid='rowid'
+	);
+
+	-- Triggers to keep FTS index in sync
+	CREATE TRIGGER IF NOT EXISTS secrets_ai AFTER INSERT ON secrets BEGIN
+		INSERT INTO secrets_fts(id, name, tags)
+		VALUES (new.id, new.name, new.tags);
+	END;
+
+	CREATE TRIGGER IF NOT EXISTS secrets_ad AFTER DELETE ON secrets BEGIN
+		DELETE FROM secrets_fts WHERE id = old.id;
+	END;
+
+	CREATE TRIGGER IF NOT EXISTS secrets_au AFTER UPDATE ON secrets BEGIN
+		DELETE FROM secrets_fts WHERE id = old.id;
+		INSERT INTO secrets_fts(id, name, tags)
+		VALUES (new.id, new.name, new.tags);
+	END;
 	`
 
 	if _, err := s.db.Exec(schema); err != nil {
