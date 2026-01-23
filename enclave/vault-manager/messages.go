@@ -109,6 +109,11 @@ type MessageHandler struct {
 	serviceActivityHandler      *ServiceActivityHandler      // Phase 7: Activity & Transparency
 	serviceNotificationsHandler *ServiceNotificationsHandler // Phase 8: Notifications & Trust
 	serviceOfflineHandler       *ServiceOfflineHandler       // Phase 9: Offline Support
+
+	// Combined datastore handler (Phase 4: Advanced Features)
+	combinedDatastoreHandler  *CombinedDatastoreHandler
+	datastoreAccessController *DatastoreAccessController
+	datastoreAuditHandler     *DatastoreAuditHandler
 }
 
 // VsockPublisher implements CallPublisher using vsock to parent
@@ -162,6 +167,22 @@ func (p *VsockPublisher) PublishToVault(ctx context.Context, targetOwnerSpace st
 	return p.sendFn(msg)
 }
 
+// PublishRaw sends a raw message to an arbitrary subject
+func (p *VsockPublisher) PublishRaw(subject string, payload []byte) error {
+	msg := &OutgoingMessage{
+		ID:      generateMessageID(),
+		Type:    MessageTypeNATSPublish,
+		Subject: subject,
+		Payload: payload,
+	}
+
+	log.Debug().
+		Str("subject", subject).
+		Msg("Publishing raw message")
+
+	return p.sendFn(msg)
+}
+
 // NewMessageHandler creates a new message handler
 func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *VsockPublisher, sendFn func(msg *OutgoingMessage) error) *MessageHandler {
 	// Create vault state - this holds all cryptographic material in memory
@@ -206,6 +227,11 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 	serviceNotificationsHandler := NewServiceNotificationsHandler(ownerSpace, storage, eventHandler, serviceConnectionHandler)
 	serviceOfflineHandler := NewServiceOfflineHandler(ownerSpace, storage, eventHandler, serviceConnectionHandler)
 
+	// Create combined datastore handler (Phase 4)
+	combinedDatastoreHandler := NewCombinedDatastoreHandler(ownerSpace, storage, eventHandler, serviceConnectionHandler, publisher)
+	datastoreAccessController := NewDatastoreAccessController(ownerSpace, storage, eventHandler, combinedDatastoreHandler, publisher)
+	datastoreAuditHandler := NewDatastoreAuditHandler(ownerSpace, storage, combinedDatastoreHandler)
+
 	return &MessageHandler{
 		ownerSpace:           ownerSpace,
 		storage:              storage,
@@ -247,6 +273,11 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 		serviceActivityHandler:      serviceActivityHandler,
 		serviceNotificationsHandler: serviceNotificationsHandler,
 		serviceOfflineHandler:       serviceOfflineHandler,
+
+		// Combined datastore (Phase 4)
+		combinedDatastoreHandler:  combinedDatastoreHandler,
+		datastoreAccessController: datastoreAccessController,
+		datastoreAuditHandler:     datastoreAuditHandler,
 	}
 }
 
@@ -401,6 +432,9 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 	case "service":
 		// Service connection operations (B2C)
 		return mh.handleServiceOperation(ctx, msg, parts[opIndex+1:])
+	case "datastore":
+		// Combined datastore operations (Phase 4)
+		return mh.handleDatastoreOperation(ctx, msg, parts[opIndex+1:])
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown operation: %s", operation))
 	}
@@ -1531,6 +1565,63 @@ func (mh *MessageHandler) handleServiceOfflineOperation(ctx context.Context, msg
 		return mh.serviceOfflineHandler.HandleGetSyncStatus(msg)
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown offline operation: %s", opType))
+	}
+}
+
+// handleDatastoreOperation routes datastore.* operations (Phase 4: Combined Datastore)
+func (mh *MessageHandler) handleDatastoreOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
+	if len(opParts) < 1 {
+		return mh.errorResponse(msg.GetID(), "missing datastore operation type")
+	}
+
+	opType := opParts[0]
+
+	switch opType {
+	case "create":
+		return mh.combinedDatastoreHandler.HandleCreate(msg)
+	case "approve":
+		return mh.combinedDatastoreHandler.HandleApprove(msg)
+	case "reject":
+		return mh.combinedDatastoreHandler.HandleReject(msg)
+	case "invite":
+		return mh.combinedDatastoreHandler.HandleInviteParticipant(msg)
+	case "join":
+		return mh.combinedDatastoreHandler.HandleAcceptInvitation(msg)
+	case "approve-participant":
+		return mh.combinedDatastoreHandler.HandleApproveParticipant(msg)
+	case "list":
+		return mh.combinedDatastoreHandler.HandleList(msg)
+	case "get":
+		return mh.combinedDatastoreHandler.HandleGet(msg)
+	// Access control operations (DEV-051)
+	case "read":
+		return mh.datastoreAccessController.HandleRead(ctx, msg)
+	case "write":
+		return mh.datastoreAccessController.HandleWrite(ctx, msg)
+	case "delete":
+		return mh.datastoreAccessController.HandleDelete(ctx, msg)
+	case "subscribe":
+		return mh.datastoreAccessController.HandleSubscribe(ctx, msg)
+	case "unsubscribe":
+		return mh.datastoreAccessController.HandleUnsubscribe(ctx, msg)
+	// Audit operations (DEV-052)
+	case "audit":
+		if len(opParts) < 2 {
+			return mh.errorResponse(msg.GetID(), "missing audit operation type")
+		}
+		auditOp := opParts[1]
+		switch auditOp {
+		case "query":
+			return mh.datastoreAuditHandler.HandleQuery(ctx, msg)
+		case "export":
+			return mh.datastoreAuditHandler.HandleExport(ctx, msg)
+		case "verify":
+			return mh.datastoreAuditHandler.HandleVerifyChain(ctx, msg)
+		default:
+			return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown audit operation: %s", auditOp))
+		}
+	default:
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown datastore operation: %s", opType))
 	}
 }
 

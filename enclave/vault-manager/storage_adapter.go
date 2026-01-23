@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/json"
+
 	"github.com/mesmerverse/vettid-dev/enclave/vault-manager/storage"
 )
 
@@ -200,6 +202,89 @@ func (s *EncryptedStorage) CleanupEvents(feedRetentionDays, auditRetentionDays i
 		return 0, ErrStorageNotInitialized
 	}
 	return s.sqlite.CleanupEvents(feedRetentionDays, auditRetentionDays, autoArchive)
+}
+
+// ===============================
+// Index Helpers (for lists)
+// ===============================
+
+// GetIndex returns the IDs stored in an index key as a string slice
+func (s *EncryptedStorage) GetIndex(indexKey string) ([]string, error) {
+	data, err := s.Get(indexKey)
+	if err == ErrKeyNotFound {
+		return []string{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if data == nil || len(data) == 0 {
+		return []string{}, nil
+	}
+	var ids []string
+	if err := json.Unmarshal(data, &ids); err != nil {
+		return nil, err
+	}
+	return ids, nil
+}
+
+// AddToIndex adds an ID to an index if not already present
+func (s *EncryptedStorage) AddToIndex(indexKey, id string) error {
+	ids, err := s.GetIndex(indexKey)
+	if err != nil {
+		return err
+	}
+	// Check if already exists
+	for _, existing := range ids {
+		if existing == id {
+			return nil
+		}
+	}
+	ids = append(ids, id)
+	data, err := json.Marshal(ids)
+	if err != nil {
+		return err
+	}
+	return s.Put(indexKey, data)
+}
+
+// RemoveFromIndex removes an ID from an index
+func (s *EncryptedStorage) RemoveFromIndex(indexKey, id string) error {
+	ids, err := s.GetIndex(indexKey)
+	if err != nil {
+		return err
+	}
+	var newIDs []string
+	for _, existing := range ids {
+		if existing != id {
+			newIDs = append(newIDs, existing)
+		}
+	}
+	data, err := json.Marshal(newIDs)
+	if err != nil {
+		return err
+	}
+	return s.Put(indexKey, data)
+}
+
+// PutJSON marshals and stores a value as JSON
+func (s *EncryptedStorage) PutJSON(key string, v interface{}) error {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	return s.Put(key, data)
+}
+
+// GetJSON retrieves and unmarshals a JSON value
+func (s *EncryptedStorage) GetJSON(key string, v interface{}) error {
+	data, err := s.Get(key)
+	if err != nil {
+		return err
+	}
+	if data == nil {
+		return ErrKeyNotFound
+	}
+	return json.Unmarshal(data, v)
 }
 
 // Errors

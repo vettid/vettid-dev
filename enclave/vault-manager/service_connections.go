@@ -929,6 +929,35 @@ func (h *ServiceConnectionHandler) GetConnection(connectionID string) (*ServiceC
 	return &record, nil
 }
 
+// GetConnectionByServiceID finds an active connection for a service by its GUID
+func (h *ServiceConnectionHandler) GetConnectionByServiceID(serviceID string) (*ServiceConnectionRecord, error) {
+	// Get all connections from index
+	indexData, err := h.storage.Get("service-connections-index")
+	if err != nil {
+		return nil, err
+	}
+
+	var connectionIDs []string
+	if indexData != nil {
+		if err := json.Unmarshal(indexData, &connectionIDs); err != nil {
+			return nil, err
+		}
+	}
+
+	// Search for matching service
+	for _, connID := range connectionIDs {
+		conn, err := h.GetConnection(connID)
+		if err != nil {
+			continue
+		}
+		if conn.ServiceGUID == serviceID && conn.Status == "active" {
+			return conn, nil
+		}
+	}
+
+	return nil, fmt.Errorf("no active connection found for service %s", serviceID)
+}
+
 // UpdateLastActive updates the last active timestamp for a connection
 func (h *ServiceConnectionHandler) UpdateLastActive(connectionID string) error {
 	storageKey := "service-connections/" + connectionID
