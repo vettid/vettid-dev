@@ -580,6 +580,9 @@ func (h *ServiceConnectionHandler) HandleList(msg *IncomingMessage) (*OutgoingMe
 		connections = append(connections, info)
 	}
 
+	// Apply sorting
+	sortConnections(connections, req.SortBy, req.SortOrder)
+
 	// Apply pagination
 	total := len(connections)
 	start := req.Offset
@@ -952,6 +955,312 @@ func generateUUID() string {
 	b := make([]byte, 16)
 	rand.Read(b)
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
+}
+
+// sortConnections sorts a slice of ServiceConnectionInfo by the specified field
+func sortConnections(connections []ServiceConnectionInfo, sortBy, sortOrder string) {
+	if sortBy == "" {
+		sortBy = "created_at" // Default sort
+	}
+	if sortOrder == "" {
+		sortOrder = "desc" // Default order (newest first)
+	}
+
+	// Simple bubble sort for small lists (connections per user typically < 100)
+	n := len(connections)
+	for i := 0; i < n-1; i++ {
+		for j := 0; j < n-i-1; j++ {
+			shouldSwap := false
+
+			switch sortBy {
+			case "name":
+				if sortOrder == "asc" {
+					shouldSwap = connections[j].ServiceName > connections[j+1].ServiceName
+				} else {
+					shouldSwap = connections[j].ServiceName < connections[j+1].ServiceName
+				}
+			case "last_active":
+				t1 := getTimeValue(connections[j].LastActiveAt)
+				t2 := getTimeValue(connections[j+1].LastActiveAt)
+				if sortOrder == "asc" {
+					shouldSwap = t1.After(t2)
+				} else {
+					shouldSwap = t1.Before(t2)
+				}
+			case "category":
+				if sortOrder == "asc" {
+					shouldSwap = connections[j].ServiceCategory > connections[j+1].ServiceCategory
+				} else {
+					shouldSwap = connections[j].ServiceCategory < connections[j+1].ServiceCategory
+				}
+			case "created_at":
+				fallthrough
+			default:
+				if sortOrder == "asc" {
+					shouldSwap = connections[j].CreatedAt.After(connections[j+1].CreatedAt)
+				} else {
+					shouldSwap = connections[j].CreatedAt.Before(connections[j+1].CreatedAt)
+				}
+			}
+
+			if shouldSwap {
+				connections[j], connections[j+1] = connections[j+1], connections[j]
+			}
+		}
+	}
+}
+
+// getTimeValue returns a time.Time from a pointer, or zero time if nil
+func getTimeValue(t *time.Time) time.Time {
+	if t == nil {
+		return time.Time{}
+	}
+	return *t
+}
+
+// --- Tag Management (Phase 6) ---
+
+// ListTagsRequest is the payload for service.connection.tags.list
+type ListTagsRequest struct{}
+
+// ListTagsResponse contains all unique tags
+type ListTagsResponse struct {
+	Tags       []TagInfo `json:"tags"`
+	TotalCount int       `json:"total_count"`
+}
+
+// TagInfo contains tag details with usage count
+type TagInfo struct {
+	Tag   string `json:"tag"`
+	Count int    `json:"count"` // Number of connections with this tag
+}
+
+// HandleListTags handles service.connection.tags.list
+// Returns all unique tags across all service connections with usage counts
+func (h *ServiceConnectionHandler) HandleListTags(msg *IncomingMessage) (*OutgoingMessage, error) {
+	// Load connection index
+	indexData, err := h.storage.Get("service-connections/_index")
+	var connectionIDs []string
+	if err == nil {
+		json.Unmarshal(indexData, &connectionIDs)
+	}
+
+	// Count tags
+	tagCounts := make(map[string]int)
+	for _, connID := range connectionIDs {
+		data, err := h.storage.Get("service-connections/" + connID)
+		if err != nil {
+			continue
+		}
+
+		var record ServiceConnectionRecord
+		if err := json.Unmarshal(data, &record); err != nil {
+			continue
+		}
+
+		// Only count active/non-revoked connections
+		if record.Status == "revoked" {
+			continue
+		}
+
+		for _, tag := range record.Tags {
+			tagCounts[tag]++
+		}
+	}
+
+	// Convert to sorted list
+	var tags []TagInfo
+	for tag, count := range tagCounts {
+		tags = append(tags, TagInfo{Tag: tag, Count: count})
+	}
+
+	// Sort by count (descending), then alphabetically
+	for i := 0; i < len(tags)-1; i++ {
+		for j := i + 1; j < len(tags); j++ {
+			if tags[j].Count > tags[i].Count ||
+				(tags[j].Count == tags[i].Count && tags[j].Tag < tags[i].Tag) {
+				tags[i], tags[j] = tags[j], tags[i]
+			}
+		}
+	}
+
+	resp := ListTagsResponse{
+		Tags:       tags,
+		TotalCount: len(tags),
+	}
+	respBytes, _ := json.Marshal(resp)
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// AddTagRequest is the payload for service.connection.tags.add
+type AddTagRequest struct {
+	ConnectionID string `json:"connection_id"`
+	Tag          string `json:"tag"`
+}
+
+// HandleAddTag handles service.connection.tags.add
+// Adds a single tag to a connection (convenience method)
+func (h *ServiceConnectionHandler) HandleAddTag(msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req AddTagRequest
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		return h.errorResponse(msg.GetID(), "Invalid request format")
+	}
+
+	if req.ConnectionID == "" {
+		return h.errorResponse(msg.GetID(), "connection_id is required")
+	}
+	if req.Tag == "" {
+		return h.errorResponse(msg.GetID(), "tag is required")
+	}
+
+	// Normalize tag (lowercase, trim)
+	tag := strings.ToLower(strings.TrimSpace(req.Tag))
+	if tag == "" {
+		return h.errorResponse(msg.GetID(), "tag cannot be empty")
+	}
+
+	storageKey := "service-connections/" + req.ConnectionID
+	data, err := h.storage.Get(storageKey)
+	if err != nil {
+		return h.errorResponse(msg.GetID(), "Connection not found")
+	}
+
+	var record ServiceConnectionRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to read connection")
+	}
+
+	// Check if tag already exists
+	for _, existingTag := range record.Tags {
+		if existingTag == tag {
+			// Already has this tag, return success
+			resp := map[string]interface{}{
+				"success": true,
+				"message": "Tag already exists",
+			}
+			respBytes, _ := json.Marshal(resp)
+			return &OutgoingMessage{
+				RequestID: msg.GetID(),
+				Type:      MessageTypeResponse,
+				Payload:   respBytes,
+			}, nil
+		}
+	}
+
+	// Add tag
+	record.Tags = append(record.Tags, tag)
+
+	// Save
+	newData, _ := json.Marshal(record)
+	if err := h.storage.Put(storageKey, newData); err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to update connection")
+	}
+
+	log.Info().
+		Str("connection_id", req.ConnectionID).
+		Str("tag", tag).
+		Msg("Tag added to service connection")
+
+	resp := map[string]interface{}{
+		"success": true,
+		"tags":    record.Tags,
+	}
+	respBytes, _ := json.Marshal(resp)
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// RemoveTagRequest is the payload for service.connection.tags.remove
+type RemoveTagRequest struct {
+	ConnectionID string `json:"connection_id"`
+	Tag          string `json:"tag"`
+}
+
+// HandleRemoveTag handles service.connection.tags.remove
+// Removes a single tag from a connection (convenience method)
+func (h *ServiceConnectionHandler) HandleRemoveTag(msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req RemoveTagRequest
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		return h.errorResponse(msg.GetID(), "Invalid request format")
+	}
+
+	if req.ConnectionID == "" {
+		return h.errorResponse(msg.GetID(), "connection_id is required")
+	}
+	if req.Tag == "" {
+		return h.errorResponse(msg.GetID(), "tag is required")
+	}
+
+	tag := strings.ToLower(strings.TrimSpace(req.Tag))
+
+	storageKey := "service-connections/" + req.ConnectionID
+	data, err := h.storage.Get(storageKey)
+	if err != nil {
+		return h.errorResponse(msg.GetID(), "Connection not found")
+	}
+
+	var record ServiceConnectionRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to read connection")
+	}
+
+	// Remove tag
+	var newTags []string
+	found := false
+	for _, existingTag := range record.Tags {
+		if existingTag == tag {
+			found = true
+		} else {
+			newTags = append(newTags, existingTag)
+		}
+	}
+
+	if !found {
+		resp := map[string]interface{}{
+			"success": true,
+			"message": "Tag not found",
+		}
+		respBytes, _ := json.Marshal(resp)
+		return &OutgoingMessage{
+			RequestID: msg.GetID(),
+			Type:      MessageTypeResponse,
+			Payload:   respBytes,
+		}, nil
+	}
+
+	record.Tags = newTags
+
+	// Save
+	newData, _ := json.Marshal(record)
+	if err := h.storage.Put(storageKey, newData); err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to update connection")
+	}
+
+	log.Info().
+		Str("connection_id", req.ConnectionID).
+		Str("tag", tag).
+		Msg("Tag removed from service connection")
+
+	resp := map[string]interface{}{
+		"success": true,
+		"tags":    record.Tags,
+	}
+	respBytes, _ := json.Marshal(resp)
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
 }
 
 // getSharedProfileForConnection returns the profile fields to share with a new connection

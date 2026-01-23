@@ -106,6 +106,9 @@ type MessageHandler struct {
 	serviceDataHandler        *ServiceDataHandler
 	serviceRequestsHandler    *ServiceRequestsHandler
 	serviceResourcesHandler   *ServiceResourcesHandler
+	serviceActivityHandler      *ServiceActivityHandler      // Phase 7: Activity & Transparency
+	serviceNotificationsHandler *ServiceNotificationsHandler // Phase 8: Notifications & Trust
+	serviceOfflineHandler       *ServiceOfflineHandler       // Phase 9: Offline Support
 }
 
 // VsockPublisher implements CallPublisher using vsock to parent
@@ -199,6 +202,9 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 	serviceDataHandler := NewServiceDataHandler(ownerSpace, storage, eventHandler, serviceConnectionHandler, serviceContractsHandler, profileHandler)
 	serviceRequestsHandler := NewServiceRequestsHandler(ownerSpace, storage, eventHandler, serviceConnectionHandler, serviceContractsHandler)
 	serviceResourcesHandler := NewServiceResourcesHandler(ownerSpace, storage, eventHandler, serviceConnectionHandler)
+	serviceActivityHandler := NewServiceActivityHandler(ownerSpace, storage, eventHandler, serviceConnectionHandler)
+	serviceNotificationsHandler := NewServiceNotificationsHandler(ownerSpace, storage, eventHandler, serviceConnectionHandler)
+	serviceOfflineHandler := NewServiceOfflineHandler(ownerSpace, storage, eventHandler, serviceConnectionHandler)
 
 	return &MessageHandler{
 		ownerSpace:           ownerSpace,
@@ -238,6 +244,9 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 		serviceDataHandler:        serviceDataHandler,
 		serviceRequestsHandler:    serviceRequestsHandler,
 		serviceResourcesHandler:   serviceResourcesHandler,
+		serviceActivityHandler:      serviceActivityHandler,
+		serviceNotificationsHandler: serviceNotificationsHandler,
+		serviceOfflineHandler:       serviceOfflineHandler,
 	}
 }
 
@@ -1257,6 +1266,16 @@ func (mh *MessageHandler) handleServiceOperation(ctx context.Context, msg *Incom
 		return mh.handleServiceRequestOperation(ctx, msg, opParts[1:])
 	case "profile":
 		return mh.handleServiceProfileOperation(ctx, msg, opParts[1:])
+	case "activity":
+		return mh.handleServiceActivityOperation(ctx, msg, opParts[1:])
+	case "notifications":
+		return mh.handleServiceNotificationsOperation(ctx, msg, opParts[1:])
+	case "trust":
+		return mh.handleServiceTrustOperation(ctx, msg, opParts[1:])
+	case "violations":
+		return mh.handleServiceViolationsOperation(ctx, msg, opParts[1:])
+	case "offline":
+		return mh.handleServiceOfflineOperation(ctx, msg, opParts[1:])
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown service operation: %s", subOp))
 	}
@@ -1285,6 +1304,22 @@ func (mh *MessageHandler) handleServiceConnectionOperation(ctx context.Context, 
 		return mh.serviceConnectionHandler.HandleRevoke(msg)
 	case "health":
 		return mh.serviceConnectionHandler.HandleHealth(msg)
+	// Tag operations (Phase 6)
+	case "tags":
+		if len(opParts) < 3 {
+			return mh.serviceConnectionHandler.HandleListTags(msg) // Default to list
+		}
+		tagOp := opParts[2]
+		switch tagOp {
+		case "list":
+			return mh.serviceConnectionHandler.HandleListTags(msg)
+		case "add":
+			return mh.serviceConnectionHandler.HandleAddTag(msg)
+		case "remove":
+			return mh.serviceConnectionHandler.HandleRemoveTag(msg)
+		default:
+			return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown tag operation: %s", tagOp))
+		}
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown connection operation: %s", opType))
 	}
@@ -1396,6 +1431,106 @@ func (mh *MessageHandler) handleServiceProfileOperation(ctx context.Context, msg
 		return mh.serviceResourcesHandler.HandleVerifyDownload(msg)
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown profile operation: %s", opType))
+	}
+}
+
+// handleServiceActivityOperation routes service.activity.* operations (Phase 7)
+func (mh *MessageHandler) handleServiceActivityOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
+	if len(opParts) < 2 {
+		return mh.errorResponse(msg.GetID(), "missing activity operation type")
+	}
+
+	opType := opParts[1] // e.g., "list", "summary"
+
+	switch opType {
+	case "list":
+		return mh.serviceActivityHandler.HandleActivityList(msg)
+	case "summary":
+		return mh.serviceActivityHandler.HandleActivitySummary(msg)
+	case "data-summary":
+		return mh.serviceActivityHandler.HandleDataSummary(msg)
+	case "data-export":
+		return mh.serviceActivityHandler.HandleDataExport(msg)
+	default:
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown activity operation: %s", opType))
+	}
+}
+
+// handleServiceNotificationsOperation routes service.notifications.* operations (Phase 8)
+func (mh *MessageHandler) handleServiceNotificationsOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
+	if len(opParts) < 2 {
+		return mh.errorResponse(msg.GetID(), "missing notifications operation type")
+	}
+
+	opType := opParts[1] // e.g., "get", "update"
+
+	switch opType {
+	case "get":
+		return mh.serviceNotificationsHandler.HandleGetNotificationSettings(msg)
+	case "update":
+		return mh.serviceNotificationsHandler.HandleUpdateNotificationSettings(msg)
+	default:
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown notifications operation: %s", opType))
+	}
+}
+
+// handleServiceTrustOperation routes service.trust.* operations (Phase 8)
+func (mh *MessageHandler) handleServiceTrustOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
+	if len(opParts) < 2 {
+		return mh.errorResponse(msg.GetID(), "missing trust operation type")
+	}
+
+	opType := opParts[1] // e.g., "get"
+
+	switch opType {
+	case "get":
+		return mh.serviceNotificationsHandler.HandleGetTrustIndicators(msg)
+	default:
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown trust operation: %s", opType))
+	}
+}
+
+// handleServiceViolationsOperation routes service.violations.* operations (Phase 8)
+func (mh *MessageHandler) handleServiceViolationsOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
+	if len(opParts) < 2 {
+		return mh.errorResponse(msg.GetID(), "missing violations operation type")
+	}
+
+	opType := opParts[1] // e.g., "list", "acknowledge"
+
+	switch opType {
+	case "list":
+		return mh.serviceNotificationsHandler.HandleListViolations(msg)
+	case "acknowledge":
+		return mh.serviceNotificationsHandler.HandleAcknowledgeViolation(msg)
+	default:
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown violations operation: %s", opType))
+	}
+}
+
+// handleServiceOfflineOperation routes service.offline.* operations (Phase 9)
+func (mh *MessageHandler) handleServiceOfflineOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
+	if len(opParts) < 2 {
+		return mh.errorResponse(msg.GetID(), "missing offline operation type")
+	}
+
+	opType := opParts[1] // e.g., "list", "sync", "clear", "retry", "cancel", "status"
+
+	switch opType {
+	case "list":
+		return mh.serviceOfflineHandler.HandleListOfflineActions(msg)
+	case "sync":
+		return mh.serviceOfflineHandler.HandleTriggerSync(msg)
+	case "clear":
+		return mh.serviceOfflineHandler.HandleClearOfflineActions(msg)
+	case "retry":
+		return mh.serviceOfflineHandler.HandleRetryAction(msg)
+	case "cancel":
+		return mh.serviceOfflineHandler.HandleCancelAction(msg)
+	case "status":
+		return mh.serviceOfflineHandler.HandleGetSyncStatus(msg)
+	default:
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown offline operation: %s", opType))
 	}
 }
 
