@@ -49,6 +49,13 @@ export class VettIdStack extends cdk.Stack {
     const memberPoolDomain = props.infrastructure.memberPoolDomain;
     const adminPoolDomain = props.infrastructure.adminPoolDomain;
 
+    // ===== EMAIL CONFIGURATION =====
+    // Read from CDK context (can be overridden via -c flag or cdk.json)
+    const sesFromEmail = this.node.tryGetContext('vettid:sesFromEmail') || 'no-reply@vettid.dev';
+    const sesFromAuthEmail = this.node.tryGetContext('vettid:sesFromAuthEmail') || 'no-reply@auth.vettid.dev';
+    const adminNotificationEmail = this.node.tryGetContext('vettid:adminNotificationEmail') || 'admin@vettid.dev';
+    const securityContactEmail = this.node.tryGetContext('vettid:securityContactEmail') || 'security@vettid.dev';
+
     // ===== S3 BUCKETS =====
 
     // S3 bucket for CloudFront access logs with 90-day retention
@@ -847,7 +854,7 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       TABLE_VOTES: tables.votes.tableName,
       TABLE_SUBSCRIPTION_TYPES: tables.subscriptionTypes.tableName,
       TERMS_BUCKET: termsBucket.bucketName,
-      SES_FROM: 'no-reply@auth.vettid.dev',
+      SES_FROM: sesFromAuthEmail,
       STAGE: 'prod',  // SECURITY: Ensures CORS excludes localhost origins
       CORS_ORIGIN: 'https://vettid.dev,https://www.vettid.dev,https://admin.vettid.dev,https://account.vettid.dev,https://register.vettid.dev',
       ALLOWED_ORIGINS: 'https://vettid.dev,https://www.vettid.dev,https://admin.vettid.dev,https://account.vettid.dev,https://register.vettid.dev',
@@ -867,7 +874,7 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
         ...defaultEnv,
         TABLE_WAITLIST: tables.waitlist.tableName,
         TABLE_NOTIFICATION_PREFERENCES: tables.notificationPreferences.tableName,
-        SES_FROM: 'no-reply@vettid.dev',
+        SES_FROM: sesFromEmail,
       },
       timeout: cdk.Duration.seconds(15), // Allow time for admin notifications
     });
@@ -887,8 +894,8 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       environment: {
         ...defaultEnv,
         TABLE_HELP_REQUESTS: tables.helpRequests.tableName,
-        SES_FROM: 'no-reply@vettid.dev',
-        ADMIN_NOTIFICATION_EMAIL: 'admin@vettid.dev',
+        SES_FROM: sesFromEmail,
+        ADMIN_NOTIFICATION_EMAIL: adminNotificationEmail,
       },
       timeout: cdk.Duration.seconds(15),
       description: 'Public endpoint to submit volunteer help requests',
@@ -1104,7 +1111,7 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       runtime: lambda.Runtime.NODEJS_22_X,
       environment: {
         ...defaultEnv,
-        SES_FROM: 'no-reply@vettid.dev',
+        SES_FROM: sesFromEmail,
       },
       timeout: cdk.Duration.minutes(2), // Allow time to scan subscriptions and send emails
       description: 'Check for subscriptions expiring in 48 hours and send warning emails',
@@ -1115,7 +1122,7 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       environment: {
         ...defaultEnv,
         TABLE_VOTES: tables.votes.tableName,
-        SES_FROM: 'no-reply@vettid.dev',
+        SES_FROM: sesFromEmail,
       },
       timeout: cdk.Duration.minutes(5), // Allow time to send many reminder emails
       description: 'Send reminder emails for proposals closing soon',

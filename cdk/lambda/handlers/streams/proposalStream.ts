@@ -40,7 +40,7 @@ const TABLE_REGISTRATIONS = process.env.TABLE_REGISTRATIONS!;
 const TABLE_PROPOSALS = process.env.TABLE_PROPOSALS!;
 const TABLE_VOTES = process.env.TABLE_VOTES!;
 const PUBLISHED_VOTES_BUCKET = process.env.PUBLISHED_VOTES_BUCKET!;
-const SES_FROM = process.env.SES_FROM || 'no-reply@vettid.dev';
+const SES_FROM = process.env.SES_FROM!;
 
 interface ProposalRecord {
   proposal_id: string;

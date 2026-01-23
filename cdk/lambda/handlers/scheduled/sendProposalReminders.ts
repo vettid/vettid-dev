@@ -11,7 +11,7 @@ const TABLE_VOTES = process.env.TABLE_VOTES!;
 const TABLE_SUBSCRIPTIONS = process.env.TABLE_SUBSCRIPTIONS!;
 const TABLE_REGISTRATIONS = process.env.TABLE_REGISTRATIONS!;
 const TABLE_AUDIT = process.env.TABLE_AUDIT!;
-const SES_FROM = process.env.SES_FROM || 'no-reply@vettid.dev';
+const SES_FROM = process.env.SES_FROM!;
 
 /**
  * Hash identifier for safe logging (no PII in logs)

@@ -79,6 +79,10 @@ export class BusinessGovernanceStack extends cdk.Stack {
     const termsBucket = props.infrastructure.termsBucket;
     const memberUserPool = props.infrastructure.memberUserPool;
 
+    // ===== EMAIL CONFIGURATION =====
+    // Read from CDK context (can be overridden via -c flag or cdk.json)
+    const sesFromAuthEmail = this.node.tryGetContext('vettid:sesFromAuthEmail') || 'no-reply@auth.vettid.dev';
+
     // Default environment variables
     const defaultEnv = {
       TABLE_REGISTRATIONS: tables.registrations.tableName,
@@ -394,7 +398,7 @@ export class BusinessGovernanceStack extends cdk.Stack {
       runtime: lambda.Runtime.NODEJS_22_X,
       environment: {
         ...defaultEnv,
-        SES_FROM_EMAIL: 'no-reply@auth.vettid.dev',
+        SES_FROM_EMAIL: sesFromAuthEmail,
         USER_POOL_ID: memberUserPool.userPoolId,
         REGISTERED_GROUP: 'registered',
       },

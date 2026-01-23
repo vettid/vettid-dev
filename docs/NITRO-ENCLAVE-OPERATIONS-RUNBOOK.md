@@ -114,7 +114,7 @@
 ```bash
 # Get overall system health (requires admin token)
 curl -H "Authorization: Bearer $ADMIN_TOKEN" \
-  https://tiqpij5mue.execute-api.us-east-1.amazonaws.com/admin/system-health
+  https://${API_GATEWAY_ID}.execute-api.${AWS_REGION}.amazonaws.com/admin/system-health
 ```
 
 **Response includes:**
@@ -142,7 +142,7 @@ aws elbv2 describe-target-health \
     --output text)
 
 # Check enclave attestation
-curl -s -X POST "https://tiqpij5mue.execute-api.us-east-1.amazonaws.com/vault/enroll/start-direct" \
+curl -s -X POST "https://${API_GATEWAY_ID}.execute-api.${AWS_REGION}.amazonaws.com/vault/enroll/start-direct" \
   -H "Content-Type: application/json" \
   -d '{"device_id":"health-check","device_type":"android","invitation_code":"HEALTH-CHECK"}' \
   | jq '.enclave_attestation | keys'
@@ -430,7 +430,7 @@ aws autoscaling start-instance-refresh \
 
 - CloudWatch Dashboard: `https://console.aws.amazon.com/cloudwatch/home?region=us-east-1#dashboards:name=VettID-Nitro-Enclave`
 - ASG Console: `https://console.aws.amazon.com/ec2autoscaling/home?region=us-east-1#/details/VettID-Nitro-EnclaveASG`
-- API Gateway: `https://tiqpij5mue.execute-api.us-east-1.amazonaws.com`
+- API Gateway: `https://${API_GATEWAY_ID}.execute-api.${AWS_REGION}.amazonaws.com`
 
 ### Key SSM Parameters
 

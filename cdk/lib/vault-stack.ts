@@ -152,6 +152,10 @@ export class VaultStack extends cdk.Stack {
     const tables = props.infrastructure.tables;
     const memberUserPool = props.infrastructure.memberUserPool;
 
+    // ===== EMAIL CONFIGURATION =====
+    // Read from CDK context (can be overridden via -c flag or cdk.json)
+    const sesFromEmail = this.node.tryGetContext('vettid:sesFromEmail') || 'noreply@vettid.dev';
+
     // Default environment variables for vault functions
     // Note: Legacy tables (Credentials, CredentialKeys, TransactionKeys, LedgerAuthTokens)
     // removed - vault-manager uses JetStream storage. Handlers referencing these will fail.
@@ -370,8 +374,9 @@ export class VaultStack extends cdk.Stack {
         // Required for enrollment JWT verification
         ENROLLMENT_JWT_SECRET_ARN: props.infrastructure.enrollmentJwtSecretArn,
         // SECURITY: Secret for HMAC-based attestation binding tokens
-        // In production, this should come from Secrets Manager
-        DEVICE_ATTESTATION_SECRET: process.env.DEVICE_ATTESTATION_SECRET || 'dev-attestation-secret',
+        // Must be explicitly set - no default value for security
+        // Set via: export DEVICE_ATTESTATION_SECRET=$(openssl rand -hex 32)
+        DEVICE_ATTESTATION_SECRET: process.env.DEVICE_ATTESTATION_SECRET || '',
       },
       timeout: cdk.Duration.seconds(30),
     });
@@ -938,7 +943,7 @@ export class VaultStack extends cdk.Stack {
       TABLE_RECOVERY_REQUESTS: tables.credentialRecoveryRequests.tableName,
       TABLE_AUDIT: tables.audit.tableName,
       BACKUP_BUCKET: props.infrastructure.backupBucket.bucketName,
-      FROM_EMAIL: 'noreply@vettid.dev',
+      FROM_EMAIL: sesFromEmail,
     };
 
     this.requestCredentialRecovery = new lambdaNode.NodejsFunction(this, 'RequestCredentialRecoveryFn', {

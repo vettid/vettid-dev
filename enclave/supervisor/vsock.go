@@ -337,9 +337,10 @@ func getSharedSecret() ([]byte, error) {
 			return secret, nil
 		}
 
-		// Last resort in dev mode: hardcoded test secret
-		log.Warn().Msg("SECURITY WARNING: Using hardcoded development secret - not for production")
-		return []byte("development-vsock-secret-32bytes!"), nil
+		// SECURITY: No hardcoded fallback - require explicit configuration
+		// To set up dev mode: echo -n "your-32-byte-hex-encoded-secret" > /tmp/vettid-vsock-secret
+		return nil, fmt.Errorf("%w: no secret file found at %s or %s - create dev secret file with: echo -n '<64-hex-chars>' > %s",
+			ErrNoSharedSecret, secretFilePath, secretFilePathDev, secretFilePathDev)
 	}
 
 	return nil, fmt.Errorf("%w: failed to read from %s: %v", ErrNoSharedSecret, secretFilePath, err)

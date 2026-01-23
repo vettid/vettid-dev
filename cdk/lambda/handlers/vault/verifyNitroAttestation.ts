@@ -40,9 +40,12 @@ import {
 const ddb = new DynamoDBClient({});
 
 const TABLE_ENROLLMENT_SESSIONS = process.env.TABLE_ENROLLMENT_SESSIONS!;
-// SECURITY: Secret for generating attestation binding tokens
-// This should be a 32-byte hex string stored in environment or Secrets Manager
-const ATTESTATION_BINDING_SECRET = process.env.ATTESTATION_BINDING_SECRET || 'default-dev-secret-replace-in-production';
+// SECURITY: Secret for generating attestation binding tokens - must be explicitly configured
+// Generate with: export ATTESTATION_BINDING_SECRET=$(openssl rand -hex 32)
+if (!process.env.ATTESTATION_BINDING_SECRET) {
+  throw new Error('ATTESTATION_BINDING_SECRET environment variable is required');
+}
+const ATTESTATION_BINDING_SECRET = process.env.ATTESTATION_BINDING_SECRET;
 
 // Rate limiting: 20 attestation verifications per IP per 5 minutes
 const RATE_LIMIT_MAX_REQUESTS = 20;

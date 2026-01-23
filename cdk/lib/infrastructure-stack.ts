@@ -117,6 +117,10 @@ export class InfrastructureStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
+    // ===== EMAIL CONFIGURATION =====
+    // Read from CDK context (can be overridden via -c flag or cdk.json)
+    const sesFromAuthEmail = this.node.tryGetContext('vettid:sesFromAuthEmail') || 'no-reply@auth.vettid.dev';
+
     // ===== KMS KEY FOR DYNAMODB ENCRYPTION =====
     // SECURITY: Customer-managed key for DynamoDB table encryption
     // This provides:
@@ -1007,7 +1011,7 @@ export class InfrastructureStack extends cdk.Stack {
         MAGIC_LINK_TABLE: magicLinkTokens.tableName,
         REGISTRATIONS_TABLE: registrations.tableName,
         MAGIC_LINK_URL: 'https://vettid.dev/auth',
-        SES_FROM: 'no-reply@auth.vettid.dev',
+        SES_FROM: sesFromAuthEmail,
       },
       timeout: cdk.Duration.seconds(10),
     });

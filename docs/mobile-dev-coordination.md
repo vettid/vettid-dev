@@ -22,7 +22,7 @@ This document outlines the coordination strategy for developing the VettID mobil
 
 - **UI/UX Specification:** `cdk/coordination/mobile-ui-plan.md`
 - **E2EE Architecture:** `cdk/coordination/e2ee-key-exchange-architecture.md`
-- **Backend API:** VettID API at `https://tiqpij5mue.execute-api.us-east-1.amazonaws.com`
+- **Backend API:** VettID API (URL available from CDK stack outputs)
 
 ---
 

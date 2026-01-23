@@ -14,7 +14,7 @@ const RATE_LIMIT_WINDOW_MINUTES = 60;
 
 const TABLE_WAITLIST = process.env.TABLE_WAITLIST!;
 const TABLE_NOTIFICATION_PREFERENCES = process.env.TABLE_NOTIFICATION_PREFERENCES!;
-const SES_FROM = process.env.SES_FROM || 'no-reply@vettid.dev';
+const SES_FROM = process.env.SES_FROM!;
 // SECURITY: Remove wildcard default - CORS_ORIGIN must be explicitly set or use allowed list
 const CORS_ORIGIN = process.env.CORS_ORIGIN || '';
 

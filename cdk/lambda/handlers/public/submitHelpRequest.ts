@@ -21,8 +21,8 @@ const RATE_LIMIT_MAX_REQUESTS = 3;
 const RATE_LIMIT_WINDOW_MINUTES = 60;
 
 const TABLE_HELP_REQUESTS = process.env.TABLE_HELP_REQUESTS!;
-const SES_FROM = process.env.SES_FROM || 'no-reply@vettid.dev';
-const ADMIN_NOTIFICATION_EMAIL = process.env.ADMIN_NOTIFICATION_EMAIL || 'admin@vettid.dev';
+const SES_FROM = process.env.SES_FROM!;
+const ADMIN_NOTIFICATION_EMAIL = process.env.ADMIN_NOTIFICATION_EMAIL!;
 
 // Valid help types (must match frontend)
 const VALID_HELP_TYPES = [

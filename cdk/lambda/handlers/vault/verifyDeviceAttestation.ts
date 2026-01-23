@@ -48,7 +48,11 @@ import {
 const ddb = new DynamoDBClient({});
 
 const TABLE_ENROLLMENT_SESSIONS = process.env.TABLE_ENROLLMENT_SESSIONS!;
-const DEVICE_ATTESTATION_SECRET = process.env.DEVICE_ATTESTATION_SECRET || 'dev-attestation-secret';
+// SECURITY: Attestation secret must be explicitly configured - no default
+const DEVICE_ATTESTATION_SECRET = process.env.DEVICE_ATTESTATION_SECRET;
+if (!DEVICE_ATTESTATION_SECRET) {
+  throw new Error('DEVICE_ATTESTATION_SECRET environment variable is required');
+}
 
 // Rate limiting: 5 attestation attempts per session per 15 minutes
 const RATE_LIMIT_MAX_REQUESTS = 5;
