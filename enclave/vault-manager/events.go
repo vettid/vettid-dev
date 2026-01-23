@@ -643,3 +643,58 @@ func (h *EventHandler) LogSecurityEvent(ctx context.Context, eventType EventType
 		Message:    message,
 	})
 }
+
+// LogServiceEvent logs a service interaction event (DEV-025)
+// Used to audit all service requests, responses, and data access
+func (h *EventHandler) LogServiceEvent(ctx context.Context, eventType EventType, connectionID, serviceID, serviceName string, operation string, metadata map[string]string) error {
+	if metadata == nil {
+		metadata = make(map[string]string)
+	}
+	metadata["connection_id"] = connectionID
+	metadata["service_id"] = serviceID
+	metadata["service_name"] = serviceName
+	metadata["operation"] = operation
+
+	title := fmt.Sprintf("Service: %s", serviceName)
+	if operation != "" {
+		title = fmt.Sprintf("%s - %s", serviceName, operation)
+	}
+
+	return h.LogEvent(ctx, &Event{
+		EventType:  eventType,
+		SourceType: "service",
+		SourceID:   connectionID,
+		Title:      title,
+		Metadata:   metadata,
+	})
+}
+
+// LogServiceDataAccess logs a service data access event with field details
+func (h *EventHandler) LogServiceDataAccess(ctx context.Context, connectionID, serviceID, serviceName string, fields []string, accessType string, allowed bool) error {
+	eventType := EventTypeServiceDataProvided
+	status := "allowed"
+	if !allowed {
+		eventType = EventTypeServiceDataDenied
+		status = "denied"
+	}
+
+	return h.LogServiceEvent(ctx, eventType, connectionID, serviceID, serviceName, "data_access", map[string]string{
+		"access_type": accessType,
+		"fields":      fmt.Sprintf("%v", fields),
+		"status":      status,
+	})
+}
+
+// LogServiceAuthRequest logs a service authentication request
+func (h *EventHandler) LogServiceAuthRequest(ctx context.Context, connectionID, serviceID, serviceName, purpose string) error {
+	return h.LogServiceEvent(ctx, EventTypeServiceAuthRequested, connectionID, serviceID, serviceName, "auth_request", map[string]string{
+		"purpose": purpose,
+	})
+}
+
+// LogServiceConsentRequest logs a service consent request
+func (h *EventHandler) LogServiceConsentRequest(ctx context.Context, connectionID, serviceID, serviceName string, fields []string) error {
+	return h.LogServiceEvent(ctx, EventTypeServiceConsentRequested, connectionID, serviceID, serviceName, "consent_request", map[string]string{
+		"fields": fmt.Sprintf("%v", fields),
+	})
+}

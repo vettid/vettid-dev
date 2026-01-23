@@ -98,6 +98,47 @@ MessageSpace.{user_guid}.fromService.{service_id}/
 
 **SECURITY CRITICAL:** Services can ONLY publish to `fromService` topics - they cannot subscribe to any MessageSpace topics. This ensures services cannot observe user data or communications.
 
+### Directory Namespace (DEV-004)
+
+**Purpose:** Real-time service discovery and announcements.
+
+```
+Directory/
+├── services.{service_id}      # Service profile updates (Backend → All)
+├── announcements              # System-wide service announcements (Backend → All)
+└── categories.{category}      # Category-specific service listings
+```
+
+**Use Cases:**
+- Service availability notifications (new service registered, service suspended)
+- Real-time service profile updates
+- Service category filtering
+
+**Permissions:**
+- **Publish:** Backend services only (admin accounts)
+- **Subscribe:** All mobile apps and vaults (read-only access)
+
+**Example Messages:**
+```json
+// Directory.services.signal-app - Service profile update
+{
+  "event": "profile_updated",
+  "service_id": "signal-app",
+  "service_name": "Signal",
+  "category": "messaging",
+  "status": "active",
+  "updated_at": "2024-01-15T10:00:00Z"
+}
+
+// Directory.announcements - System announcement
+{
+  "event": "new_service",
+  "service_id": "new-bank-app",
+  "message": "New banking service available",
+  "timestamp": "2024-01-15T10:00:00Z"
+}
+```
+
 ### Topic Naming Conventions
 
 | Prefix | Direction | Publisher | Subscriber |
@@ -107,6 +148,7 @@ MessageSpace.{user_guid}.fromService.{service_id}/
 | `forOwner` | → | Connections | Vault |
 | `fromService` | → | B2C Services | Vault |
 | `forServices` | → | Vault | Backend |
+| `Directory` | → | Backend | Apps, Vaults |
 
 **CRITICAL:** The naming convention is consistent:
 - `forVault.*` = messages TO the vault

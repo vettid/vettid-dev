@@ -147,6 +147,7 @@ func (s *SQLiteStorage) initSchema() error {
 
 	-- Unified events table for audit logging and user feed
 	-- This replaces the ledger_entries table with a more comprehensive schema
+	-- Includes hash chain for tamper evidence (DEV-025)
 	CREATE TABLE IF NOT EXISTS events (
 		event_id TEXT PRIMARY KEY,
 		event_type TEXT NOT NULL,
@@ -170,7 +171,12 @@ func (s *SQLiteStorage) initSchema() error {
 		sync_sequence INTEGER NOT NULL,
 
 		-- Retention
-		retention_class TEXT DEFAULT 'standard'
+		retention_class TEXT DEFAULT 'standard',
+
+		-- Hash chain for tamper evidence (DEV-025)
+		-- Each entry includes hash of previous entry
+		previous_hash TEXT,              -- SHA-256 hash of previous entry (hex)
+		entry_hash TEXT                  -- SHA-256 hash of this entry (hex)
 	);
 
 	-- Index for feed queries (most common: list active items)
@@ -1096,9 +1102,12 @@ type EventRecord struct {
 	ExpiresAt      *int64
 	SyncSequence   int64
 	RetentionClass string
+	// Hash chain for tamper evidence (DEV-025)
+	PreviousHash string // SHA-256 hash of previous entry (hex)
+	EntryHash    string // SHA-256 hash of this entry (hex)
 }
 
-// StoreEvent stores a new event in the events table
+// StoreEvent stores a new event in the events table with hash chain integrity
 func (s *SQLiteStorage) StoreEvent(event *EventRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1109,18 +1118,37 @@ func (s *SQLiteStorage) StoreEvent(event *EventRecord) error {
 		return fmt.Errorf("failed to encrypt event payload: %w", err)
 	}
 
+	// Get the previous entry's hash for chain integrity (DEV-025)
+	var previousHash string
+	row := s.db.QueryRow(`SELECT entry_hash FROM events ORDER BY sync_sequence DESC LIMIT 1`)
+	if err := row.Scan(&previousHash); err != nil && err != sql.ErrNoRows {
+		return fmt.Errorf("failed to get previous hash: %w", err)
+	}
+	// If no previous entries, use genesis hash
+	if previousHash == "" {
+		previousHash = "genesis"
+	}
+
+	// Compute entry hash: SHA256(previous_hash || event_id || event_type || source_id || payload || created_at)
+	hashInput := fmt.Sprintf("%s|%s|%s|%s|%x|%d",
+		previousHash, event.EventID, event.EventType, event.SourceID, encPayload, event.CreatedAt)
+	entryHash := fmt.Sprintf("%x", sha256.Sum256([]byte(hashInput)))
+
+	event.PreviousHash = previousHash
+	event.EntryHash = entryHash
+
 	_, err = s.db.Exec(`
 		INSERT INTO events (
 			event_id, event_type, source_type, source_id, payload,
 			feed_status, action_type, priority,
 			created_at, read_at, actioned_at, archived_at, expires_at,
-			sync_sequence, retention_class
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			sync_sequence, retention_class, previous_hash, entry_hash
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		event.EventID, event.EventType, event.SourceType, event.SourceID, encPayload,
 		event.FeedStatus, event.ActionType, event.Priority,
 		event.CreatedAt, event.ReadAt, event.ActionedAt, event.ArchivedAt, event.ExpiresAt,
-		event.SyncSequence, event.RetentionClass,
+		event.SyncSequence, event.RetentionClass, event.PreviousHash, event.EntryHash,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to store event: %w", err)
@@ -1504,6 +1532,84 @@ func (s *SQLiteStorage) CleanupEvents(feedRetentionDays, auditRetentionDays int,
 	}
 
 	return totalDeleted, nil
+}
+
+// VerifyEventChain verifies the integrity of the event hash chain (DEV-025)
+// Returns the number of verified events and any integrity violation error
+func (s *SQLiteStorage) VerifyEventChain() (int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.db.Query(`
+		SELECT event_id, event_type, source_id, payload, created_at, previous_hash, entry_hash
+		FROM events
+		ORDER BY sync_sequence ASC
+	`)
+	if err != nil {
+		return 0, fmt.Errorf("failed to query events: %w", err)
+	}
+	defer rows.Close()
+
+	verified := 0
+	expectedPreviousHash := "genesis"
+
+	for rows.Next() {
+		var eventID, eventType, sourceID string
+		var encPayload []byte
+		var createdAt int64
+		var previousHash, entryHash sql.NullString
+
+		if err := rows.Scan(&eventID, &eventType, &sourceID, &encPayload, &createdAt, &previousHash, &entryHash); err != nil {
+			return verified, fmt.Errorf("failed to scan event: %w", err)
+		}
+
+		// Skip events without hash (pre-DEV-025)
+		if !entryHash.Valid || entryHash.String == "" {
+			expectedPreviousHash = "legacy"
+			verified++
+			continue
+		}
+
+		// Verify previous hash matches
+		if previousHash.Valid && previousHash.String != expectedPreviousHash {
+			return verified, fmt.Errorf("chain broken at event %s: expected previous_hash %s, got %s",
+				eventID, expectedPreviousHash, previousHash.String)
+		}
+
+		// Recompute hash to verify entry_hash
+		hashInput := fmt.Sprintf("%s|%s|%s|%s|%x|%d",
+			expectedPreviousHash, eventID, eventType, sourceID, encPayload, createdAt)
+		computedHash := fmt.Sprintf("%x", sha256.Sum256([]byte(hashInput)))
+
+		if computedHash != entryHash.String {
+			return verified, fmt.Errorf("hash mismatch at event %s: computed %s, stored %s",
+				eventID, computedHash, entryHash.String)
+		}
+
+		expectedPreviousHash = entryHash.String
+		verified++
+	}
+
+	return verified, nil
+}
+
+// GetChainHead returns the hash of the most recent event for chain continuation
+func (s *SQLiteStorage) GetChainHead() (string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var hash sql.NullString
+	err := s.db.QueryRow(`SELECT entry_hash FROM events ORDER BY sync_sequence DESC LIMIT 1`).Scan(&hash)
+	if err == sql.ErrNoRows {
+		return "genesis", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if !hash.Valid || hash.String == "" {
+		return "genesis", nil
+	}
+	return hash.String, nil
 }
 
 // scanEventRows scans multiple event rows and decrypts payloads

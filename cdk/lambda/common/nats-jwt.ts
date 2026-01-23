@@ -362,6 +362,7 @@ export async function generateUserCredentials(
     subAllow = [
       `${ownerSpace}.forApp.>`,
       `${ownerSpace}.eventTypes`,
+      'Directory.>',                                   // DEV-004: Service discovery
       '$JS.API.CONSUMER.CREATE.ENROLLMENT',           // Receive consumer create response
       '$JS.API.CONSUMER.MSG.NEXT.ENROLLMENT.>',       // Receive fetched messages
       '$JS.API.STREAM.INFO.ENROLLMENT',               // Get stream info (for consumer setup)
@@ -382,6 +383,7 @@ export async function generateUserCredentials(
       `${messageSpace}.fromService.>`, // Receive messages from third-party services
       `${messageSpace}.call.>`,        // Vault-to-vault call signaling (inbound)
       'Broadcast.>',                    // Allow subscribing to admin broadcasts
+      'Directory.>',                    // DEV-004: Service discovery
     ];
   } else {
     // Control: publish to Control.* namespace

@@ -6,6 +6,8 @@ import {
   aws_iam as iam,
   aws_apigatewayv2 as apigw,
   aws_apigatewayv2_integrations as integrations,
+  aws_events as events,
+  aws_events_targets as targets_events,
 } from 'aws-cdk-lib';
 import { InfrastructureStack } from './infrastructure-stack';
 
@@ -282,6 +284,34 @@ export class ExtensibilityMonitoringStack extends cdk.Stack {
     this.registerServiceCredentials = registerServiceCredentials;
     this.verifyServiceAttestation = verifyServiceAttestation;
     this.listServiceDirectory = listServiceDirectory;
+
+    // DEV-014: Scheduled domain validation for registered services
+    const validateServiceDomains = new lambdaNode.NodejsFunction(this, 'ValidateServiceDomainsFn', {
+      entry: 'lambda/handlers/scheduled/validateServiceDomains.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        TABLE_SERVICE_REGISTRY: tables.serviceRegistry.tableName,
+        TABLE_AUDIT: tables.audit.tableName,
+      },
+      timeout: cdk.Duration.minutes(5), // Allow time to validate multiple services
+      description: 'Scheduled validation of service domain ownership via DNS TXT records',
+    });
+
+    tables.serviceRegistry.grantReadWriteData(validateServiceDomains);
+    tables.audit.grantReadWriteData(validateServiceDomains);
+
+    // Run domain validation daily at 3 AM UTC
+    const domainValidationRule = new events.Rule(this, 'ServiceDomainValidationRule', {
+      description: 'Daily validation of registered service domain ownership',
+      schedule: events.Schedule.cron({
+        minute: '0',
+        hour: '3', // 3 AM UTC
+        day: '*',
+        month: '*',
+        year: '*',
+      }),
+    });
+    domainValidationRule.addTarget(new targets_events.LambdaFunction(validateServiceDomains));
 
     // ===== VAULT MANAGEMENT ADMIN FUNCTIONS =====
 

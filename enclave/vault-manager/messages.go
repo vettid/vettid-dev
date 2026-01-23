@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/rs/zerolog/log"
 )
@@ -193,7 +194,7 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 	profileHandler := NewProfileHandler(ownerSpace, storage)
 
 	// Create service connection handlers (B2C)
-	serviceConnectionHandler := NewServiceConnectionHandler(ownerSpace, storage, eventHandler)
+	serviceConnectionHandler := NewServiceConnectionHandler(ownerSpace, storage, eventHandler, profileHandler)
 	serviceContractsHandler := NewServiceContractsHandler(ownerSpace, storage, eventHandler, serviceConnectionHandler, profileHandler)
 	serviceDataHandler := NewServiceDataHandler(ownerSpace, storage, eventHandler, serviceConnectionHandler, serviceContractsHandler, profileHandler)
 	serviceRequestsHandler := NewServiceRequestsHandler(ownerSpace, storage, eventHandler, serviceConnectionHandler, serviceContractsHandler)
@@ -1525,34 +1526,116 @@ func (mh *MessageHandler) handleFromServiceDataOperation(ctx context.Context, ms
 	}
 }
 
-// handleFromServiceNotification handles notification messages from services
+// ServiceNotification represents a notification from a service (DEV-033)
+type ServiceNotification struct {
+	Title    string                 `json:"title"`
+	Body     string                 `json:"body"`
+	Priority string                 `json:"priority,omitempty"` // "low", "normal", "high", "urgent"
+	ImageURL string                 `json:"image_url,omitempty"`
+	ActionURL string                `json:"action_url,omitempty"`
+	Data     map[string]interface{} `json:"data,omitempty"`
+}
+
+// handleFromServiceNotification handles notification messages from services (DEV-033)
+// Supports priority levels, rate limiting, and forwarding to the app
 func (mh *MessageHandler) handleFromServiceNotification(ctx context.Context, msg *IncomingMessage, conn *ServiceConnectionRecord) (*OutgoingMessage, error) {
-	// Create feed event for the notification
-	var notification struct {
-		Title   string `json:"title"`
-		Message string `json:"message"`
-		Action  string `json:"action,omitempty"`
-		Data    json.RawMessage `json:"data,omitempty"`
-	}
+	var notification ServiceNotification
 	if err := json.Unmarshal(msg.Payload, &notification); err != nil {
 		return mh.errorResponse(msg.GetID(), "invalid notification format")
 	}
 
-	// Log to event feed
-	if mh.eventHandler != nil {
-		mh.eventHandler.LogConnectionEvent(
-			ctx,
-			EventTypeServiceNotification,
-			conn.ConnectionID,
-			conn.ServiceGUID,
-			notification.Message,
-		)
+	// Validate required fields
+	if notification.Title == "" && notification.Body == "" {
+		return mh.errorResponse(msg.GetID(), "title or body is required")
 	}
 
-	// Return success
+	// Default priority
+	if notification.Priority == "" {
+		notification.Priority = "normal"
+	}
+
+	// Validate priority
+	var priority Priority
+	switch notification.Priority {
+	case "low":
+		priority = PriorityLow
+	case "normal":
+		priority = PriorityNormal
+	case "high":
+		priority = PriorityHigh
+	case "urgent":
+		priority = PriorityUrgent
+	default:
+		priority = PriorityNormal
+	}
+
+	// Check rate limit for notifications (max 10 per hour per service by default)
+	maxNotificationsPerHour := conn.ServiceProfile.CurrentContract.MaxNotificationsPerHour
+	if maxNotificationsPerHour == 0 {
+		maxNotificationsPerHour = 10 // Default limit
+	}
+	if err := mh.checkServiceNotificationRateLimit(conn.ConnectionID, maxNotificationsPerHour); err != nil {
+		log.Warn().
+			Str("connection_id", conn.ConnectionID).
+			Str("service_id", conn.ServiceGUID).
+			Msg("Service notification rate limit exceeded")
+		return mh.errorResponse(msg.GetID(), "notification rate limit exceeded")
+	}
+
+	// Create feed event for the notification
+	if mh.eventHandler != nil {
+		event := &Event{
+			EventType:  EventTypeServiceNotification,
+			SourceType: "service",
+			SourceID:   conn.ConnectionID,
+			Title:      notification.Title,
+			Message:    notification.Body,
+			Priority:   priority,
+			FeedStatus: FeedStatusActive,
+			ActionType: ActionTypeView,
+			Metadata: map[string]string{
+				"service_id":   conn.ServiceGUID,
+				"service_name": conn.ServiceProfile.ServiceName,
+				"action_url":   notification.ActionURL,
+				"image_url":    notification.ImageURL,
+			},
+		}
+		if err := mh.eventHandler.LogEvent(ctx, event); err != nil {
+			log.Error().Err(err).Msg("Failed to log service notification")
+		}
+	}
+
+	// Forward to app via NATS (if connected)
+	if mh.publisher != nil {
+		appNotification := map[string]interface{}{
+			"type":         "service.notification",
+			"service_id":   conn.ServiceGUID,
+			"service_name": conn.ServiceProfile.ServiceName,
+			"title":        notification.Title,
+			"body":         notification.Body,
+			"priority":     notification.Priority,
+			"image_url":    notification.ImageURL,
+			"action_url":   notification.ActionURL,
+			"data":         notification.Data,
+			"received_at":  time.Now().Unix(),
+		}
+		notifBytes, _ := json.Marshal(appNotification)
+		if err := mh.publisher.PublishToApp(ctx, "service.notification", notifBytes); err != nil {
+			log.Warn().Err(err).Msg("Failed to forward notification to app")
+			// Continue - notification is still stored in feed
+		}
+	}
+
+	log.Info().
+		Str("connection_id", conn.ConnectionID).
+		Str("service_id", conn.ServiceGUID).
+		Str("priority", notification.Priority).
+		Msg("Service notification processed")
+
 	resp := map[string]interface{}{
-		"success": true,
-		"message": "notification received",
+		"success":    true,
+		"message":    "notification received",
+		"event_type": "service.notification",
 	}
 	respBytes, _ := json.Marshal(resp)
 
@@ -1561,6 +1644,43 @@ func (mh *MessageHandler) handleFromServiceNotification(ctx context.Context, msg
 		Type:      MessageTypeResponse,
 		Payload:   respBytes,
 	}, nil
+}
+
+// checkServiceNotificationRateLimit checks rate limit for service notifications
+func (mh *MessageHandler) checkServiceNotificationRateLimit(connectionID string, maxPerHour int) error {
+	// Use simple in-memory tracking via storage
+	key := fmt.Sprintf("rate-limit/notification/%s", connectionID)
+	data, _ := mh.storage.Get(key)
+
+	var state struct {
+		Count       int   `json:"count"`
+		WindowStart int64 `json:"window_start"`
+	}
+
+	now := time.Now().Unix()
+	hourAgo := now - 3600
+
+	if data != nil {
+		json.Unmarshal(data, &state)
+	}
+
+	// Reset window if expired
+	if state.WindowStart < hourAgo {
+		state.Count = 0
+		state.WindowStart = now
+	}
+
+	// Check limit
+	if state.Count >= maxPerHour {
+		return fmt.Errorf("rate limit exceeded: %d/%d per hour", state.Count, maxPerHour)
+	}
+
+	// Increment counter
+	state.Count++
+	newData, _ := json.Marshal(state)
+	mh.storage.Put(key, newData)
+
+	return nil
 }
 
 // findConnectionByServiceID finds a service connection by the service's GUID

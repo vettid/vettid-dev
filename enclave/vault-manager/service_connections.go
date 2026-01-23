@@ -19,17 +19,19 @@ import (
 // - Clean break on cancellation (service loses all access)
 // - User controls contracts (can reject updates)
 type ServiceConnectionHandler struct {
-	ownerSpace   string
-	storage      *EncryptedStorage
-	eventHandler *EventHandler
+	ownerSpace     string
+	storage        *EncryptedStorage
+	eventHandler   *EventHandler
+	profileHandler *ProfileHandler // DEV-026: For auto-sharing profile on connection
 }
 
 // NewServiceConnectionHandler creates a new service connection handler
-func NewServiceConnectionHandler(ownerSpace string, storage *EncryptedStorage, eventHandler *EventHandler) *ServiceConnectionHandler {
+func NewServiceConnectionHandler(ownerSpace string, storage *EncryptedStorage, eventHandler *EventHandler, profileHandler *ProfileHandler) *ServiceConnectionHandler {
 	return &ServiceConnectionHandler{
-		ownerSpace:   ownerSpace,
-		storage:      storage,
-		eventHandler: eventHandler,
+		ownerSpace:     ownerSpace,
+		storage:        storage,
+		eventHandler:   eventHandler,
+		profileHandler: profileHandler,
 	}
 }
 
@@ -138,6 +140,7 @@ type ServiceDataContract struct {
 	CanRequestAuth    bool     `json:"can_request_auth"`
 	CanRequestPayment bool     `json:"can_request_payment"`
 	MaxRequestsPerHour int     `json:"max_requests_per_hour,omitempty"`
+	MaxNotificationsPerHour int `json:"max_notifications_per_hour,omitempty"` // DEV-033
 	MaxStorageMB       int     `json:"max_storage_mb,omitempty"`
 	CreatedAt   time.Time  `json:"created_at"`
 	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
@@ -233,9 +236,10 @@ type InitiateServiceConnectionRequest struct {
 
 // InitiateServiceConnectionResponse is the response for service.connection.initiate
 type InitiateServiceConnectionResponse struct {
-	ConnectionID    string `json:"connection_id"`
-	E2EPublicKey    string `json:"e2e_public_key"`
-	Status          string `json:"status"`
+	ConnectionID  string                          `json:"connection_id"`
+	E2EPublicKey  string                          `json:"e2e_public_key"`
+	Status        string                          `json:"status"`
+	SharedProfile map[string]ProfileFieldResponse `json:"shared_profile,omitempty"` // DEV-026: Auto-shared profile fields
 }
 
 // ListServiceConnectionsRequest is the payload for service.connection.list
@@ -461,10 +465,17 @@ func (h *ServiceConnectionHandler) HandleInitiate(msg *IncomingMessage) (*Outgoi
 		Int("contract_version", req.ContractVersion).
 		Msg("Service connection established")
 
+	// DEV-026: Get shared profile data to include in response
+	var sharedProfile map[string]ProfileFieldResponse
+	if h.profileHandler != nil {
+		sharedProfile = h.getSharedProfileForConnection(connectionID)
+	}
+
 	resp := InitiateServiceConnectionResponse{
-		ConnectionID: connectionID,
-		E2EPublicKey: fmt.Sprintf("%x", publicKey[:]),
-		Status:       "active",
+		ConnectionID:  connectionID,
+		E2EPublicKey:  fmt.Sprintf("%x", publicKey[:]),
+		Status:        "active",
+		SharedProfile: sharedProfile,
 	}
 	respBytes, _ := json.Marshal(resp)
 
@@ -939,4 +950,70 @@ func generateUUID() string {
 	b := make([]byte, 16)
 	rand.Read(b)
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
+}
+
+// getSharedProfileForConnection returns the profile fields to share with a new connection
+// DEV-026: Profile auto-sharing on connection initiation
+func (h *ServiceConnectionHandler) getSharedProfileForConnection(connectionID string) map[string]ProfileFieldResponse {
+	if h.profileHandler == nil {
+		return nil
+	}
+
+	// Load sharing settings
+	settingsData, err := h.storage.Get("profile/_sharing_settings")
+	if err != nil {
+		log.Debug().Msg("No sharing settings found, returning empty profile")
+		return nil
+	}
+
+	var settings SharingSettings
+	if err := json.Unmarshal(settingsData, &settings); err != nil {
+		log.Warn().Err(err).Msg("Failed to parse sharing settings")
+		return nil
+	}
+
+	// Determine which fields to share
+	fieldsToShare := settings.DefaultShared
+
+	// Apply connection-specific overrides if available
+	if settings.ConnectionOverrides != nil {
+		if override, exists := settings.ConnectionOverrides[connectionID]; exists {
+			fieldsToShare = override
+		}
+	}
+
+	if len(fieldsToShare) == 0 {
+		return nil
+	}
+
+	// Fetch the profile fields
+	sharedProfile := make(map[string]ProfileFieldResponse)
+	for _, field := range fieldsToShare {
+		storageKey := "profile/" + field
+		data, err := h.storage.Get(storageKey)
+		if err != nil {
+			continue // Skip missing fields
+		}
+
+		var entry ProfileEntry
+		if err := json.Unmarshal(data, &entry); err != nil {
+			continue
+		}
+
+		sharedProfile[field] = ProfileFieldResponse{
+			Value:     entry.Value,
+			UpdatedAt: entry.UpdatedAt.Format(time.RFC3339),
+		}
+	}
+
+	if len(sharedProfile) == 0 {
+		return nil
+	}
+
+	log.Info().
+		Str("connection_id", connectionID).
+		Int("shared_fields", len(sharedProfile)).
+		Msg("Auto-shared profile fields on connection")
+
+	return sharedProfile
 }
