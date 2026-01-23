@@ -201,6 +201,77 @@ func (s *SQLiteStorage) initSchema() error {
 	CREATE INDEX IF NOT EXISTS idx_events_source
 		ON events(source_type, source_id, created_at DESC)
 		WHERE source_id IS NOT NULL;
+
+	-- ===============================
+	-- Service Connections Tables
+	-- ===============================
+
+	-- Service contracts table - stores cryptographically signed connection agreements
+	-- Each contract defines what capabilities a service has to access vault data.
+	-- Contracts are versioned to support renegotiation without losing history.
+	CREATE TABLE IF NOT EXISTS service_contracts (
+		contract_id TEXT PRIMARY KEY,
+		connection_id TEXT NOT NULL,
+		service_guid TEXT NOT NULL,
+		version INTEGER NOT NULL,
+		status TEXT NOT NULL CHECK(status IN ('pending','active','superseded','rejected','expired')),
+		contract_data BLOB NOT NULL,          -- Encrypted contract terms (JSON)
+		user_signature BLOB,                   -- User's Ed25519 signature of contract
+		service_signature BLOB,                -- Service's Ed25519 signature of contract
+		signed_at INTEGER,                     -- When both parties signed
+		capabilities TEXT NOT NULL DEFAULT '', -- Comma-separated: auth,authz,data,payment,call,notify
+		created_at INTEGER NOT NULL,
+		expires_at INTEGER,
+		UNIQUE(connection_id, version)
+	);
+
+	-- Index for finding active contracts by connection
+	CREATE INDEX IF NOT EXISTS idx_contracts_connection
+		ON service_contracts(connection_id, status)
+		WHERE status = 'active';
+
+	-- Index for finding contracts by service
+	CREATE INDEX IF NOT EXISTS idx_contracts_service
+		ON service_contracts(service_guid, status);
+
+	-- Service connection keys table - stores per-connection encryption keys
+	-- Each connection has its own X25519 keypair for E2E encryption with the service.
+	CREATE TABLE IF NOT EXISTS service_connection_keys (
+		connection_id TEXT PRIMARY KEY,
+		service_guid TEXT NOT NULL,
+		private_key BLOB NOT NULL,             -- X25519 private key (encrypted with DEK)
+		public_key BLOB NOT NULL,              -- X25519 public key
+		service_public_key BLOB,               -- Service's X25519 public key (once established)
+		shared_secret BLOB,                    -- Cached ECDH shared secret (encrypted with DEK)
+		created_at INTEGER NOT NULL,
+		rotated_at INTEGER
+	);
+
+	-- Index for finding keys by service
+	CREATE INDEX IF NOT EXISTS idx_connection_keys_service
+		ON service_connection_keys(service_guid);
+
+	-- Service auth requests table - tracks pending authentication requests from services
+	-- Services send auth requests, vault creates feed event, user approves/denies.
+	CREATE TABLE IF NOT EXISTS service_auth_requests (
+		request_id TEXT PRIMARY KEY,
+		connection_id TEXT NOT NULL,
+		service_guid TEXT NOT NULL,
+		challenge BLOB NOT NULL,               -- Service-provided challenge to sign
+		status TEXT NOT NULL CHECK(status IN ('pending','approved','denied','expired')),
+		context TEXT,                          -- Service-provided context (JSON)
+		callback_subject TEXT NOT NULL,        -- NATS subject for response
+		feed_event_id TEXT,                    -- Link to user feed event
+		response_signature BLOB,               -- User's signature if approved
+		created_at INTEGER NOT NULL,
+		responded_at INTEGER,
+		expires_at INTEGER NOT NULL
+	);
+
+	-- Index for pending requests by connection
+	CREATE INDEX IF NOT EXISTS idx_auth_requests_pending
+		ON service_auth_requests(connection_id, status, expires_at)
+		WHERE status = 'pending';
 	`
 
 	if _, err := s.db.Exec(schema); err != nil {
@@ -1494,4 +1565,565 @@ func join(strs []string, sep string) string {
 		result += sep + strs[i]
 	}
 	return result
+}
+
+// ===============================
+// Service Contracts Operations
+// ===============================
+// These methods manage service connections including contracts,
+// encryption keys, and authentication requests.
+
+// ServiceContract represents a signed agreement between user and service
+type ServiceContract struct {
+	ContractID       string
+	ConnectionID     string
+	ServiceGUID      string
+	Version          int
+	Status           string // pending, active, superseded, rejected, expired
+	ContractData     []byte // Decrypted contract terms
+	UserSignature    []byte
+	ServiceSignature []byte
+	SignedAt         *int64
+	Capabilities     string // Comma-separated: auth,authz,data,payment,call,notify
+	CreatedAt        int64
+	ExpiresAt        *int64
+}
+
+// ServiceConnectionKey represents per-connection encryption keys
+type ServiceConnectionKey struct {
+	ConnectionID     string
+	ServiceGUID      string
+	PrivateKey       []byte // Decrypted X25519 private key
+	PublicKey        []byte
+	ServicePublicKey []byte
+	SharedSecret     []byte // Decrypted cached ECDH result
+	CreatedAt        int64
+	RotatedAt        *int64
+}
+
+// ServiceAuthRequest represents a pending auth request from a service
+type ServiceAuthRequest struct {
+	RequestID         string
+	ConnectionID      string
+	ServiceGUID       string
+	Challenge         []byte
+	Status            string // pending, approved, denied, expired
+	Context           string // JSON context from service
+	CallbackSubject   string
+	FeedEventID       string
+	ResponseSignature []byte
+	CreatedAt         int64
+	RespondedAt       *int64
+	ExpiresAt         int64
+}
+
+// StoreServiceContract stores a new service contract
+func (s *SQLiteStorage) StoreServiceContract(contract *ServiceContract) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Encrypt contract data
+	encContractData, err := s.encrypt(contract.ContractData)
+	if err != nil {
+		return fmt.Errorf("failed to encrypt contract data: %w", err)
+	}
+
+	_, err = s.db.Exec(`
+		INSERT INTO service_contracts (
+			contract_id, connection_id, service_guid, version, status,
+			contract_data, user_signature, service_signature, signed_at,
+			capabilities, created_at, expires_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`,
+		contract.ContractID, contract.ConnectionID, contract.ServiceGUID,
+		contract.Version, contract.Status, encContractData,
+		contract.UserSignature, contract.ServiceSignature, contract.SignedAt,
+		contract.Capabilities, contract.CreatedAt, contract.ExpiresAt,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to store service contract: %w", err)
+	}
+
+	s.incrementRollbackCounter()
+	return nil
+}
+
+// GetServiceContract retrieves a contract by ID
+func (s *SQLiteStorage) GetServiceContract(contractID string) (*ServiceContract, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var contract ServiceContract
+	var encContractData []byte
+	var signedAt, expiresAt sql.NullInt64
+
+	err := s.db.QueryRow(`
+		SELECT contract_id, connection_id, service_guid, version, status,
+		       contract_data, user_signature, service_signature, signed_at,
+		       capabilities, created_at, expires_at
+		FROM service_contracts
+		WHERE contract_id = ?
+	`, contractID).Scan(
+		&contract.ContractID, &contract.ConnectionID, &contract.ServiceGUID,
+		&contract.Version, &contract.Status, &encContractData,
+		&contract.UserSignature, &contract.ServiceSignature, &signedAt,
+		&contract.Capabilities, &contract.CreatedAt, &expiresAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get service contract: %w", err)
+	}
+
+	// Decrypt contract data
+	contract.ContractData, err = s.decrypt(encContractData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decrypt contract data: %w", err)
+	}
+
+	if signedAt.Valid {
+		contract.SignedAt = &signedAt.Int64
+	}
+	if expiresAt.Valid {
+		contract.ExpiresAt = &expiresAt.Int64
+	}
+
+	return &contract, nil
+}
+
+// GetActiveContractByConnection returns the active contract for a connection
+func (s *SQLiteStorage) GetActiveContractByConnection(connectionID string) (*ServiceContract, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var contract ServiceContract
+	var encContractData []byte
+	var signedAt, expiresAt sql.NullInt64
+
+	err := s.db.QueryRow(`
+		SELECT contract_id, connection_id, service_guid, version, status,
+		       contract_data, user_signature, service_signature, signed_at,
+		       capabilities, created_at, expires_at
+		FROM service_contracts
+		WHERE connection_id = ? AND status = 'active'
+		ORDER BY version DESC
+		LIMIT 1
+	`, connectionID).Scan(
+		&contract.ContractID, &contract.ConnectionID, &contract.ServiceGUID,
+		&contract.Version, &contract.Status, &encContractData,
+		&contract.UserSignature, &contract.ServiceSignature, &signedAt,
+		&contract.Capabilities, &contract.CreatedAt, &expiresAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get active contract: %w", err)
+	}
+
+	contract.ContractData, err = s.decrypt(encContractData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decrypt contract data: %w", err)
+	}
+
+	if signedAt.Valid {
+		contract.SignedAt = &signedAt.Int64
+	}
+	if expiresAt.Valid {
+		contract.ExpiresAt = &expiresAt.Int64
+	}
+
+	return &contract, nil
+}
+
+// ListContractsByService returns all contracts for a service
+func (s *SQLiteStorage) ListContractsByService(serviceGUID string, includeInactive bool) ([]ServiceContract, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	query := `
+		SELECT contract_id, connection_id, service_guid, version, status,
+		       contract_data, user_signature, service_signature, signed_at,
+		       capabilities, created_at, expires_at
+		FROM service_contracts
+		WHERE service_guid = ?
+	`
+	if !includeInactive {
+		query += ` AND status = 'active'`
+	}
+	query += ` ORDER BY created_at DESC`
+
+	rows, err := s.db.Query(query, serviceGUID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list contracts: %w", err)
+	}
+	defer rows.Close()
+
+	var contracts []ServiceContract
+	for rows.Next() {
+		var contract ServiceContract
+		var encContractData []byte
+		var signedAt, expiresAt sql.NullInt64
+
+		if err := rows.Scan(
+			&contract.ContractID, &contract.ConnectionID, &contract.ServiceGUID,
+			&contract.Version, &contract.Status, &encContractData,
+			&contract.UserSignature, &contract.ServiceSignature, &signedAt,
+			&contract.Capabilities, &contract.CreatedAt, &expiresAt,
+		); err != nil {
+			return nil, fmt.Errorf("failed to scan contract: %w", err)
+		}
+
+		contract.ContractData, err = s.decrypt(encContractData)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decrypt contract data: %w", err)
+		}
+
+		if signedAt.Valid {
+			contract.SignedAt = &signedAt.Int64
+		}
+		if expiresAt.Valid {
+			contract.ExpiresAt = &expiresAt.Int64
+		}
+
+		contracts = append(contracts, contract)
+	}
+
+	return contracts, nil
+}
+
+// UpdateContractStatus updates the status of a contract
+func (s *SQLiteStorage) UpdateContractStatus(contractID, newStatus string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	result, err := s.db.Exec(`
+		UPDATE service_contracts SET status = ? WHERE contract_id = ?
+	`, newStatus, contractID)
+	if err != nil {
+		return fmt.Errorf("failed to update contract status: %w", err)
+	}
+
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("contract not found: %s", contractID)
+	}
+
+	s.incrementRollbackCounter()
+	return nil
+}
+
+// SignContract updates a contract with signatures
+func (s *SQLiteStorage) SignContract(contractID string, userSig, serviceSig []byte, signedAt int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	result, err := s.db.Exec(`
+		UPDATE service_contracts
+		SET user_signature = ?, service_signature = ?, signed_at = ?, status = 'active'
+		WHERE contract_id = ?
+	`, userSig, serviceSig, signedAt, contractID)
+	if err != nil {
+		return fmt.Errorf("failed to sign contract: %w", err)
+	}
+
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("contract not found: %s", contractID)
+	}
+
+	s.incrementRollbackCounter()
+	return nil
+}
+
+// ===============================
+// Service Connection Key Operations
+// ===============================
+
+// StoreConnectionKey stores a new connection key pair
+func (s *SQLiteStorage) StoreConnectionKey(key *ServiceConnectionKey) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Encrypt private key and shared secret
+	encPrivateKey, err := s.encrypt(key.PrivateKey)
+	if err != nil {
+		return fmt.Errorf("failed to encrypt private key: %w", err)
+	}
+
+	var encSharedSecret []byte
+	if key.SharedSecret != nil {
+		encSharedSecret, err = s.encrypt(key.SharedSecret)
+		if err != nil {
+			return fmt.Errorf("failed to encrypt shared secret: %w", err)
+		}
+	}
+
+	_, err = s.db.Exec(`
+		INSERT INTO service_connection_keys (
+			connection_id, service_guid, private_key, public_key,
+			service_public_key, shared_secret, created_at, rotated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`,
+		key.ConnectionID, key.ServiceGUID, encPrivateKey, key.PublicKey,
+		key.ServicePublicKey, encSharedSecret, key.CreatedAt, key.RotatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to store connection key: %w", err)
+	}
+
+	s.incrementRollbackCounter()
+	return nil
+}
+
+// GetConnectionKey retrieves connection keys by connection ID
+func (s *SQLiteStorage) GetConnectionKey(connectionID string) (*ServiceConnectionKey, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var key ServiceConnectionKey
+	var encPrivateKey []byte
+	var encSharedSecret []byte
+	var rotatedAt sql.NullInt64
+
+	err := s.db.QueryRow(`
+		SELECT connection_id, service_guid, private_key, public_key,
+		       service_public_key, shared_secret, created_at, rotated_at
+		FROM service_connection_keys
+		WHERE connection_id = ?
+	`, connectionID).Scan(
+		&key.ConnectionID, &key.ServiceGUID, &encPrivateKey, &key.PublicKey,
+		&key.ServicePublicKey, &encSharedSecret, &key.CreatedAt, &rotatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get connection key: %w", err)
+	}
+
+	// Decrypt private key
+	key.PrivateKey, err = s.decrypt(encPrivateKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decrypt private key: %w", err)
+	}
+
+	// Decrypt shared secret if present
+	if len(encSharedSecret) > 0 {
+		key.SharedSecret, err = s.decrypt(encSharedSecret)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decrypt shared secret: %w", err)
+		}
+	}
+
+	if rotatedAt.Valid {
+		key.RotatedAt = &rotatedAt.Int64
+	}
+
+	return &key, nil
+}
+
+// UpdateConnectionKeySharedSecret updates the cached shared secret
+func (s *SQLiteStorage) UpdateConnectionKeySharedSecret(connectionID string, servicePubKey, sharedSecret []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	encSharedSecret, err := s.encrypt(sharedSecret)
+	if err != nil {
+		return fmt.Errorf("failed to encrypt shared secret: %w", err)
+	}
+
+	result, err := s.db.Exec(`
+		UPDATE service_connection_keys
+		SET service_public_key = ?, shared_secret = ?
+		WHERE connection_id = ?
+	`, servicePubKey, encSharedSecret, connectionID)
+	if err != nil {
+		return fmt.Errorf("failed to update shared secret: %w", err)
+	}
+
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("connection key not found: %s", connectionID)
+	}
+
+	s.incrementRollbackCounter()
+	return nil
+}
+
+// DeleteConnectionKey deletes connection keys
+func (s *SQLiteStorage) DeleteConnectionKey(connectionID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.Exec(`DELETE FROM service_connection_keys WHERE connection_id = ?`, connectionID)
+	if err != nil {
+		return fmt.Errorf("failed to delete connection key: %w", err)
+	}
+
+	s.incrementRollbackCounter()
+	return nil
+}
+
+// ===============================
+// Service Auth Request Operations
+// ===============================
+
+// StoreAuthRequest stores a new auth request from a service
+func (s *SQLiteStorage) StoreAuthRequest(req *ServiceAuthRequest) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.Exec(`
+		INSERT INTO service_auth_requests (
+			request_id, connection_id, service_guid, challenge, status,
+			context, callback_subject, feed_event_id, response_signature,
+			created_at, responded_at, expires_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`,
+		req.RequestID, req.ConnectionID, req.ServiceGUID, req.Challenge, req.Status,
+		req.Context, req.CallbackSubject, req.FeedEventID, req.ResponseSignature,
+		req.CreatedAt, req.RespondedAt, req.ExpiresAt,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to store auth request: %w", err)
+	}
+
+	s.incrementRollbackCounter()
+	return nil
+}
+
+// GetAuthRequest retrieves an auth request by ID
+func (s *SQLiteStorage) GetAuthRequest(requestID string) (*ServiceAuthRequest, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var req ServiceAuthRequest
+	var respondedAt sql.NullInt64
+
+	err := s.db.QueryRow(`
+		SELECT request_id, connection_id, service_guid, challenge, status,
+		       context, callback_subject, feed_event_id, response_signature,
+		       created_at, responded_at, expires_at
+		FROM service_auth_requests
+		WHERE request_id = ?
+	`, requestID).Scan(
+		&req.RequestID, &req.ConnectionID, &req.ServiceGUID, &req.Challenge, &req.Status,
+		&req.Context, &req.CallbackSubject, &req.FeedEventID, &req.ResponseSignature,
+		&req.CreatedAt, &respondedAt, &req.ExpiresAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get auth request: %w", err)
+	}
+
+	if respondedAt.Valid {
+		req.RespondedAt = &respondedAt.Int64
+	}
+
+	return &req, nil
+}
+
+// GetPendingAuthRequests returns pending auth requests for a connection
+func (s *SQLiteStorage) GetPendingAuthRequests(connectionID string) ([]ServiceAuthRequest, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	now := time.Now().Unix()
+	rows, err := s.db.Query(`
+		SELECT request_id, connection_id, service_guid, challenge, status,
+		       context, callback_subject, feed_event_id, response_signature,
+		       created_at, responded_at, expires_at
+		FROM service_auth_requests
+		WHERE connection_id = ? AND status = 'pending' AND expires_at > ?
+		ORDER BY created_at DESC
+	`, connectionID, now)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get pending auth requests: %w", err)
+	}
+	defer rows.Close()
+
+	var requests []ServiceAuthRequest
+	for rows.Next() {
+		var req ServiceAuthRequest
+		var respondedAt sql.NullInt64
+
+		if err := rows.Scan(
+			&req.RequestID, &req.ConnectionID, &req.ServiceGUID, &req.Challenge, &req.Status,
+			&req.Context, &req.CallbackSubject, &req.FeedEventID, &req.ResponseSignature,
+			&req.CreatedAt, &respondedAt, &req.ExpiresAt,
+		); err != nil {
+			return nil, fmt.Errorf("failed to scan auth request: %w", err)
+		}
+
+		if respondedAt.Valid {
+			req.RespondedAt = &respondedAt.Int64
+		}
+
+		requests = append(requests, req)
+	}
+
+	return requests, nil
+}
+
+// UpdateAuthRequestStatus updates the status of an auth request
+func (s *SQLiteStorage) UpdateAuthRequestStatus(requestID, newStatus string, signature []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now().Unix()
+	result, err := s.db.Exec(`
+		UPDATE service_auth_requests
+		SET status = ?, response_signature = ?, responded_at = ?
+		WHERE request_id = ?
+	`, newStatus, signature, now, requestID)
+	if err != nil {
+		return fmt.Errorf("failed to update auth request status: %w", err)
+	}
+
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("auth request not found: %s", requestID)
+	}
+
+	s.incrementRollbackCounter()
+	return nil
+}
+
+// CleanupExpiredAuthRequests removes expired auth requests
+func (s *SQLiteStorage) CleanupExpiredAuthRequests() (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now().Unix()
+	result, err := s.db.Exec(`
+		UPDATE service_auth_requests
+		SET status = 'expired'
+		WHERE status = 'pending' AND expires_at < ?
+	`, now)
+	if err != nil {
+		return 0, fmt.Errorf("failed to expire auth requests: %w", err)
+	}
+
+	expired, _ := result.RowsAffected()
+
+	// Delete old expired/denied requests (older than 7 days)
+	cutoff := now - 7*24*3600
+	result, err = s.db.Exec(`
+		DELETE FROM service_auth_requests
+		WHERE status IN ('expired', 'denied') AND created_at < ?
+	`, cutoff)
+	if err != nil {
+		return expired, fmt.Errorf("failed to cleanup old auth requests: %w", err)
+	}
+
+	deleted, _ := result.RowsAffected()
+	if expired+deleted > 0 {
+		s.incrementRollbackCounter()
+	}
+
+	return expired + deleted, nil
 }

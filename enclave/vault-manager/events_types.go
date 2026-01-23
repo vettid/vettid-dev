@@ -83,6 +83,9 @@ const (
 	EventTypeServiceResourceDownloaded EventType = "service.resource.downloaded"
 	EventTypeServiceResourceVerified   EventType = "service.resource.verified"
 
+	// Service notification events
+	EventTypeServiceNotification EventType = "service.notification"
+
 	// Feed interaction events (audit-only, tracks user actions on feed items)
 	EventTypeFeedItemRead     EventType = "feed.item_read"
 	EventTypeFeedItemArchived EventType = "feed.item_archived"
@@ -280,6 +283,9 @@ var eventClassifications = map[EventType]EventClassification{
 	// Resource events
 	EventTypeServiceResourceDownloaded: {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
 	EventTypeServiceResourceVerified:   {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
+
+	// Service notification events
+	EventTypeServiceNotification: {FeedStatusActive, ActionTypeView, PriorityNormal, RetentionStandard},
 }
 
 // GetEventClassification returns the default classification for an event type

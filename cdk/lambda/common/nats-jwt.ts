@@ -367,7 +367,7 @@ export async function generateUserCredentials(
       '$JS.API.STREAM.INFO.ENROLLMENT',               // Get stream info (for consumer setup)
     ];
   } else if (clientType === 'vault') {
-    // Vault instance: publish to app, services, connections, and call signaling; subscribe from app, control, and calls
+    // Vault instance: publish to app, services, connections, and call signaling; subscribe from app, control, calls, and services
     pubAllow = [
       `${ownerSpace}.forApp.>`,
       `${ownerSpace}.forServices.>`,   // For health/status messages to backend
@@ -379,6 +379,7 @@ export async function generateUserCredentials(
       `${ownerSpace}.forVault.>`,
       `${ownerSpace}.eventTypes`,
       `${messageSpace}.forOwner.>`,
+      `${messageSpace}.fromService.>`, // Receive messages from third-party services
       `${messageSpace}.call.>`,        // Vault-to-vault call signaling (inbound)
       'Broadcast.>',                    // Allow subscribing to admin broadcasts
     ];
@@ -462,6 +463,173 @@ export async function generateBootstrapCredentials(
     {
       pub: { allow: pubAllow },
       sub: { allow: subAllow },
+    },
+    expiresAt
+  );
+
+  return {
+    jwt,
+    seed,
+    publicKey,
+  };
+}
+
+/**
+ * SECURITY: Service-specific resource limits
+ * Services have publish-only access with stricter rate limits than user accounts.
+ * This prevents services from overloading user vaults with messages.
+ */
+const SERVICE_ACCOUNT_LIMITS = {
+  subs: 10,            // Minimal subscriptions (only for responses)
+  data: 50_000_000,    // 50 MB/sec data transfer
+  payload: 1_048_576,  // 1 MB max message payload
+  imports: 0,          // No imports
+  exports: 0,          // No exports
+  wildcards: false,    // No wildcards - explicit topic names only
+  conn: 5,             // Limited connections
+  leaf: 0,             // No leaf nodes
+};
+
+/**
+ * Generate NATS account credentials for a third-party service
+ *
+ * Services get a dedicated NATS account with publish-only permissions.
+ * SECURITY PRINCIPLE: Services can ONLY publish to users, never subscribe.
+ * This ensures users maintain complete control over their data.
+ *
+ * @param serviceId - The service's unique identifier (matches serviceRegistry.service_id)
+ * @param serviceName - Display name for the service account
+ */
+export async function generateServiceAccountCredentials(
+  serviceId: string,
+  serviceName: string
+): Promise<GeneratedCredentials & { accountJwt: string }> {
+  const accountKeyPair = nkeys.createAccount();
+  const seed = new TextDecoder().decode(accountKeyPair.getSeed());
+  const publicKey = accountKeyPair.getPublicKey();
+
+  const accountName = `service-${serviceId.substring(0, 16)}`;
+
+  // Create account JWT with service-specific limits
+  const operatorKeys = await getOperatorKeys();
+  const operatorKeyPair = nkeys.fromSeed(new TextEncoder().encode(operatorKeys.operatorSeed));
+
+  const now = Math.floor(Date.now() / 1000);
+  const jti = createHash('sha256')
+    .update(`${publicKey}:${now}:${randomUUID()}`)
+    .digest('hex')
+    .substring(0, 22);
+
+  const claims: NatsAccountClaims = {
+    jti,
+    iat: now,
+    exp: now + ACCOUNT_JWT_TTL_SECONDS,
+    iss: operatorKeys.operatorPublicKey,
+    sub: publicKey,
+    name: accountName,
+    nats: {
+      limits: SERVICE_ACCOUNT_LIMITS,
+      // SECURITY: Default permissions for all users in this service account
+      // Services can ONLY publish to MessageSpace.*.fromService.<serviceId>.*
+      // Services can NOT subscribe to any MessageSpace topics
+      default_permissions: {
+        pub: {
+          allow: [`MessageSpace.*.fromService.${serviceId}.>`],
+          deny: [
+            'MessageSpace.*.forOwner.>',  // Cannot impersonate owner responses
+            'MessageSpace.*.forService.>', // Cannot impersonate service responses
+            'MessageSpace.*.call.>',      // Cannot participate in calls
+            '$SYS.>',                      // No system access
+            '$JS.>',                       // No JetStream access
+            'Control.>',                   // No control commands
+            'Broadcast.>',                 // No broadcasts
+            'OwnerSpace.>',                // No direct vault access
+          ],
+        },
+        sub: {
+          // SECURITY: Services cannot subscribe to ANY MessageSpace topics
+          // They can only receive responses on their callback subjects
+          allow: [`_INBOX.${serviceId}.>`],
+          deny: [
+            'MessageSpace.>',             // Cannot read any MessageSpace
+            'OwnerSpace.>',               // Cannot read any OwnerSpace
+            '$SYS.>',                      // No system access
+            'Control.>',                   // No control commands
+            'Broadcast.>',                 // No broadcasts
+          ],
+        },
+      },
+      type: 'account',
+      version: 2,
+    },
+  };
+
+  const header = {
+    typ: 'JWT',
+    alg: 'ed25519-nkey',
+  };
+
+  const accountJwt = encodeJwt(header, claims, operatorKeyPair);
+
+  return {
+    jwt: accountJwt,
+    seed,
+    publicKey,
+    accountJwt,
+  };
+}
+
+/**
+ * Generate user credentials for a service to connect to NATS
+ *
+ * The service uses these credentials to publish messages to user vaults.
+ * Permissions are strictly limited to publish-only on MessageSpace.*.fromService.<serviceId>.*
+ *
+ * @param serviceId - The service's unique identifier
+ * @param accountSeed - The service's NATS account seed
+ * @param expiresAt - When the credentials expire (max 24 hours)
+ */
+export async function generateServiceUserCredentials(
+  serviceId: string,
+  accountSeed: string,
+  expiresAt: Date
+): Promise<GeneratedCredentials> {
+  const userKeyPair = nkeys.createUser();
+  const seed = new TextDecoder().decode(userKeyPair.getSeed());
+  const publicKey = userKeyPair.getPublicKey();
+
+  const userName = `svc-${serviceId.substring(0, 12)}`;
+
+  // SECURITY: Explicit publish-only permissions
+  // Services can ONLY send messages to vaults via MessageSpace.*.fromService.<serviceId>.*
+  const pubAllow = [`MessageSpace.*.fromService.${serviceId}.>`];
+  const pubDeny = [
+    'MessageSpace.*.forOwner.>',   // Cannot impersonate owner responses
+    'MessageSpace.*.call.>',       // Cannot participate in calls
+    'OwnerSpace.>',                // No direct vault access
+    '$SYS.>',
+    '$JS.>',
+    'Control.>',
+    'Broadcast.>',
+  ];
+
+  // SECURITY: Services can ONLY subscribe to their inbox for responses
+  const subAllow = [`_INBOX.${serviceId}.>`];
+  const subDeny = [
+    'MessageSpace.>',              // Cannot read MessageSpace
+    'OwnerSpace.>',                // Cannot read OwnerSpace
+    '$SYS.>',
+    'Control.>',
+    'Broadcast.>',
+  ];
+
+  const jwt = await createUserJwt(
+    userName,
+    publicKey,
+    accountSeed,
+    {
+      pub: { allow: pubAllow, deny: pubDeny },
+      sub: { allow: subAllow, deny: subDeny },
     },
     expiresAt
   );

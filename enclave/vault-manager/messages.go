@@ -284,10 +284,27 @@ func (mh *MessageHandler) HandleMessage(ctx context.Context, msg *IncomingMessag
 // handleVaultOp routes vault operations based on subject
 func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	// Parse subject to determine operation type
-	// Format: OwnerSpace.{guid}.forVault.{operation...}
+	// Formats supported:
+	// - OwnerSpace.{guid}.forVault.{operation...}  (from mobile app)
+	// - MessageSpace.{guid}.fromService.{serviceId}.{operation...}  (from services)
 	parts := strings.Split(msg.Subject, ".")
 	if len(parts) < 4 {
 		return mh.errorResponse(msg.GetID(), "invalid subject format")
+	}
+
+	// Check for service messages first (fromService routing)
+	// Format: MessageSpace.{ownerSpace}.fromService.{serviceId}.{operation}.*
+	serviceIndex := -1
+	for i, part := range parts {
+		if part == "fromService" {
+			serviceIndex = i
+			break
+		}
+	}
+	if serviceIndex != -1 && serviceIndex+2 < len(parts) {
+		// This is a message from a service
+		serviceID := parts[serviceIndex+1]
+		return mh.handleFromServiceOperation(ctx, msg, serviceID, parts[serviceIndex+2:])
 	}
 
 	// Extract operation path (everything after forVault)
@@ -1379,4 +1396,196 @@ func (mh *MessageHandler) handleServiceProfileOperation(ctx context.Context, msg
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown profile operation: %s", opType))
 	}
+}
+
+// handleFromServiceOperation handles incoming messages from services via NATS
+// Subject format: MessageSpace.{ownerSpace}.fromService.{serviceId}.{operation}.*
+//
+// SECURITY: This is the entry point for all service-initiated communication.
+// Key security principles:
+// - Services can ONLY publish to vaults, never subscribe to user data
+// - Connection must be active and verified before processing
+// - Capabilities are enforced per-operation
+// - All operations are logged for audit
+func (mh *MessageHandler) handleFromServiceOperation(ctx context.Context, msg *IncomingMessage, serviceID string, opParts []string) (*OutgoingMessage, error) {
+	if len(opParts) < 1 {
+		return mh.errorResponse(msg.GetID(), "missing service operation type")
+	}
+
+	log.Debug().
+		Str("service_id", serviceID).
+		Strs("operation", opParts).
+		Msg("Handling incoming service message")
+
+	// Find connection by service ID
+	conn, err := mh.findConnectionByServiceID(serviceID)
+	if err != nil {
+		log.Warn().
+			Str("service_id", serviceID).
+			Err(err).
+			Msg("Service connection lookup failed")
+		return mh.errorResponse(msg.GetID(), "service connection not found")
+	}
+
+	// Verify connection is active
+	if conn.Status != "active" {
+		log.Warn().
+			Str("service_id", serviceID).
+			Str("status", conn.Status).
+			Msg("Service connection not active")
+		return mh.errorResponse(msg.GetID(), "service connection not active")
+	}
+
+	// Update last active timestamp
+	go mh.serviceConnectionHandler.UpdateLastActive(conn.ConnectionID)
+
+	operation := opParts[0]
+
+	// Route based on operation type
+	switch operation {
+	case "auth":
+		// Service requesting user authentication
+		return mh.serviceRequestsHandler.HandleAuthRequest(msg)
+
+	case "consent":
+		// Service requesting data consent
+		return mh.serviceRequestsHandler.HandleConsentRequest(msg)
+
+	case "payment":
+		// Service requesting payment
+		if !conn.ServiceProfile.CurrentContract.CanRequestPayment {
+			return mh.errorResponse(msg.GetID(), "service does not have payment capability")
+		}
+		return mh.serviceRequestsHandler.HandlePaymentRequest(msg)
+
+	case "data":
+		// Service requesting or sending data
+		if len(opParts) < 2 {
+			return mh.errorResponse(msg.GetID(), "missing data operation type")
+		}
+		return mh.handleFromServiceDataOperation(ctx, msg, conn, opParts[1:])
+
+	case "contract-update":
+		// Service publishing contract update
+		return mh.serviceContractsHandler.HandleContractUpdateNotification(msg)
+
+	case "notify":
+		// Service sending notification
+		if !conn.ServiceProfile.CurrentContract.CanSendMessages {
+			return mh.errorResponse(msg.GetID(), "service does not have messaging capability")
+		}
+		return mh.handleFromServiceNotification(ctx, msg, conn)
+
+	default:
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown service operation: %s", operation))
+	}
+}
+
+// handleFromServiceDataOperation handles data requests from services
+// Enforces contract capabilities before allowing access
+func (mh *MessageHandler) handleFromServiceDataOperation(ctx context.Context, msg *IncomingMessage, conn *ServiceConnectionRecord, opParts []string) (*OutgoingMessage, error) {
+	if len(opParts) < 1 {
+		return mh.errorResponse(msg.GetID(), "missing data operation type")
+	}
+
+	opType := opParts[0]
+
+	switch opType {
+	case "get":
+		// Service requesting profile data
+		// Parse requested fields from payload
+		var req struct {
+			Fields []string `json:"fields"`
+		}
+		if err := json.Unmarshal(msg.Payload, &req); err != nil {
+			return mh.errorResponse(msg.GetID(), "invalid request format")
+		}
+
+		// Enforce contract - check which fields are allowed
+		allowed, denied, err := mh.serviceContractsHandler.EnforceContract(conn.ConnectionID, req.Fields, "read")
+		if err != nil {
+			return mh.errorResponse(msg.GetID(), "contract enforcement failed")
+		}
+		if !allowed {
+			// Return partial error - some fields denied
+			return mh.errorResponse(msg.GetID(), fmt.Sprintf("access denied for fields: %v", denied))
+		}
+
+		return mh.serviceDataHandler.HandleGet(msg)
+
+	case "store":
+		// Service storing data in user's vault
+		if !conn.ServiceProfile.CurrentContract.CanStoreData {
+			return mh.errorResponse(msg.GetID(), "service does not have storage capability")
+		}
+		return mh.serviceDataHandler.HandleStore(msg)
+
+	default:
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown data operation: %s", opType))
+	}
+}
+
+// handleFromServiceNotification handles notification messages from services
+func (mh *MessageHandler) handleFromServiceNotification(ctx context.Context, msg *IncomingMessage, conn *ServiceConnectionRecord) (*OutgoingMessage, error) {
+	// Create feed event for the notification
+	var notification struct {
+		Title   string `json:"title"`
+		Message string `json:"message"`
+		Action  string `json:"action,omitempty"`
+		Data    json.RawMessage `json:"data,omitempty"`
+	}
+	if err := json.Unmarshal(msg.Payload, &notification); err != nil {
+		return mh.errorResponse(msg.GetID(), "invalid notification format")
+	}
+
+	// Log to event feed
+	if mh.eventHandler != nil {
+		mh.eventHandler.LogConnectionEvent(
+			ctx,
+			EventTypeServiceNotification,
+			conn.ConnectionID,
+			conn.ServiceGUID,
+			notification.Message,
+		)
+	}
+
+	// Return success
+	resp := map[string]interface{}{
+		"success": true,
+		"message": "notification received",
+	}
+	respBytes, _ := json.Marshal(resp)
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// findConnectionByServiceID finds a service connection by the service's GUID
+func (mh *MessageHandler) findConnectionByServiceID(serviceID string) (*ServiceConnectionRecord, error) {
+	// Load connection index and find matching service
+	indexData, err := mh.storage.Get("service-connections/_index")
+	if err != nil {
+		return nil, fmt.Errorf("connection index not found")
+	}
+
+	var connectionIDs []string
+	if err := json.Unmarshal(indexData, &connectionIDs); err != nil {
+		return nil, fmt.Errorf("invalid connection index")
+	}
+
+	// Search for connection with matching service ID
+	for _, connID := range connectionIDs {
+		conn, err := mh.serviceConnectionHandler.GetConnection(connID)
+		if err != nil {
+			continue
+		}
+		if conn.ServiceGUID == serviceID && conn.Status == "active" {
+			return conn, nil
+		}
+	}
+
+	return nil, fmt.Errorf("no active connection found for service %s", serviceID)
 }

@@ -47,6 +47,11 @@ export class ExtensibilityMonitoringStack extends cdk.Stack {
   public readonly listServices!: lambdaNode.NodejsFunction;
   public readonly toggleServiceStatus!: lambdaNode.NodejsFunction;
 
+  // Service Registry admin functions (NATS-authenticated services)
+  public readonly registerServiceCredentials!: lambdaNode.NodejsFunction;
+  public readonly verifyServiceAttestation!: lambdaNode.NodejsFunction;
+  public readonly listServiceDirectory!: lambdaNode.NodejsFunction;
+
   // Vault management admin functions
   public readonly getVaultStatus!: lambdaNode.NodejsFunction;
   public readonly getVaultMetrics!: lambdaNode.NodejsFunction;
@@ -220,6 +225,63 @@ export class ExtensibilityMonitoringStack extends cdk.Stack {
     this.deleteService = deleteService;
     this.listServices = listServices;
     this.toggleServiceStatus = toggleServiceStatus;
+
+    // ===== SERVICE REGISTRY (NATS-AUTHENTICATED SERVICES) =====
+
+    const serviceRegistryEnv = {
+      ...defaultEnv,
+      TABLE_SUPPORTED_SERVICES: tables.supportedServices.tableName,
+      TABLE_SERVICE_REGISTRY: tables.serviceRegistry.tableName,
+      NATS_OPERATOR_SECRET_ARN: natsOperatorSecret.secretArn,
+      NATS_SEED_KMS_KEY_ID: props.infrastructure.natsSeedEncryptionKey.keyId,
+    };
+
+    // Register NATS credentials for an existing supported service
+    const registerServiceCredentials = new lambdaNode.NodejsFunction(this, 'RegisterServiceCredentialsFn', {
+      entry: 'lambda/handlers/admin/registerServiceCredentials.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: serviceRegistryEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    // Verify service domain ownership via DNS TXT or signature challenge
+    const verifyServiceAttestation = new lambdaNode.NodejsFunction(this, 'VerifyServiceAttestationFn', {
+      entry: 'lambda/handlers/admin/verifyServiceAttestation.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: serviceRegistryEnv,
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    // Public endpoint to list services with connection capabilities
+    const listServiceDirectory = new lambdaNode.NodejsFunction(this, 'ListServiceDirectoryFn', {
+      entry: 'lambda/handlers/public/listServiceDirectory.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        TABLE_SUPPORTED_SERVICES: tables.supportedServices.tableName,
+        TABLE_SERVICE_REGISTRY: tables.serviceRegistry.tableName,
+        STAGE: 'prod',
+        ALLOWED_ORIGINS: 'https://vettid.dev,https://admin.vettid.dev',
+      },
+      timeout: cdk.Duration.seconds(15),
+    });
+
+    // Service registry permissions
+    tables.supportedServices.grantReadData(registerServiceCredentials);
+    tables.serviceRegistry.grantReadWriteData(registerServiceCredentials);
+    tables.audit.grantReadWriteData(registerServiceCredentials);
+    natsOperatorSecret.grantRead(registerServiceCredentials);
+    // KMS encrypt permission for encrypting NATS seeds
+    props.infrastructure.natsSeedEncryptionKey.grantEncrypt(registerServiceCredentials);
+
+    tables.serviceRegistry.grantReadWriteData(verifyServiceAttestation);
+    tables.audit.grantReadWriteData(verifyServiceAttestation);
+
+    tables.supportedServices.grantReadData(listServiceDirectory);
+    tables.serviceRegistry.grantReadData(listServiceDirectory);
+
+    this.registerServiceCredentials = registerServiceCredentials;
+    this.verifyServiceAttestation = verifyServiceAttestation;
+    this.listServiceDirectory = listServiceDirectory;
 
     // ===== VAULT MANAGEMENT ADMIN FUNCTIONS =====
 
@@ -512,6 +574,23 @@ export class ExtensibilityMonitoringStack extends cdk.Stack {
   }
 
   /**
+   * Helper to create a public route without authorization
+   */
+  private publicRoute(
+    id: string,
+    httpApi: apigw.HttpApi,
+    path: string,
+    method: apigw.HttpMethod,
+    handler: lambdaNode.NodejsFunction,
+  ): void {
+    new apigw.HttpRoute(this, id, {
+      httpApi,
+      routeKey: apigw.HttpRouteKey.with(path, method),
+      integration: new integrations.HttpLambdaIntegration(`${id}Int`, handler),
+    });
+  }
+
+  /**
    * Add extensibility and monitoring routes to the HTTP API
    * Routes are created in this stack to stay under CloudFormation's 500 resource limit
    * Using HttpRoute directly (not httpApi.addRoutes) to avoid cyclic dependencies
@@ -531,6 +610,10 @@ export class ExtensibilityMonitoringStack extends cdk.Stack {
     this.route('UpdateService', httpApi, '/admin/services', apigw.HttpMethod.PUT, this.updateService, adminAuthorizer);
     this.route('DeleteService', httpApi, '/admin/services/delete', apigw.HttpMethod.POST, this.deleteService, adminAuthorizer);
     this.route('ToggleServiceStatus', httpApi, '/admin/services/status', apigw.HttpMethod.POST, this.toggleServiceStatus, adminAuthorizer);
+
+    // Service Registry Admin - Admin-only endpoints for NATS-authenticated services
+    this.route('RegisterServiceCredentials', httpApi, '/admin/service-registry', apigw.HttpMethod.POST, this.registerServiceCredentials, adminAuthorizer);
+    this.route('VerifyServiceAttestation', httpApi, '/admin/service-registry/{service_id}/attest', apigw.HttpMethod.POST, this.verifyServiceAttestation, adminAuthorizer);
 
     // Vault Management Admin - Admin-only endpoints for vault monitoring
     this.route('GetVaultStatus', httpApi, '/admin/vault-status', apigw.HttpMethod.GET, this.getVaultStatus, adminAuthorizer);
@@ -554,5 +637,8 @@ export class ExtensibilityMonitoringStack extends cdk.Stack {
     // System Monitoring routes
     this.route('GetSystemHealth', httpApi, '/admin/system-health', apigw.HttpMethod.GET, this.getSystemHealth, adminAuthorizer);
     this.route('GetSystemLogs', httpApi, '/admin/system-logs', apigw.HttpMethod.GET, this.getSystemLogs, adminAuthorizer);
+
+    // Public Service Directory - No auth required
+    this.publicRoute('ListServiceDirectory', httpApi, '/services/directory', apigw.HttpMethod.GET, this.listServiceDirectory);
   }
 }

@@ -72,14 +72,31 @@ OwnerSpace.{member_guid}/
 
 ### MessageSpace Namespace
 
-**Purpose:** Receive messages from connections and publish member's public profile.
+**Purpose:** Receive messages from connections, services, and publish member's public profile.
 
 ```
 MessageSpace.{member_guid}/
-├── forOwner.>        # Connections → Vault: Inbound messages
-├── ownerProfile      # Vault → Public: Member's public profile
-└── call.>            # Vault ↔ Vault: Call signaling
+├── forOwner.>                          # Connections → Vault: Inbound messages from other users
+├── fromService.{service_id}.>          # Services → Vault: Inbound messages from B2C services
+├── ownerProfile                        # Vault → Public: Member's public profile
+└── call.>                              # Vault ↔ Vault: Call signaling
 ```
+
+#### Service Topics (B2C)
+
+Third-party services communicate with user vaults via `fromService` topics:
+
+```
+MessageSpace.{user_guid}.fromService.{service_id}/
+├── auth.*            # Auth request/challenge
+├── consent.*         # Consent request for data access
+├── payment.*         # Payment request
+├── data.*            # Data operations (get/store)
+├── contract-update   # Contract version update notification
+└── notify            # Push notification from service
+```
+
+**SECURITY CRITICAL:** Services can ONLY publish to `fromService` topics - they cannot subscribe to any MessageSpace topics. This ensures services cannot observe user data or communications.
 
 ### Topic Naming Conventions
 
@@ -88,6 +105,7 @@ MessageSpace.{member_guid}/
 | `forVault` | → | App | Vault |
 | `forApp` | ← | Vault | App |
 | `forOwner` | → | Connections | Vault |
+| `fromService` | → | B2C Services | Vault |
 | `forServices` | → | Vault | Backend |
 
 **CRITICAL:** The naming convention is consistent:
@@ -147,12 +165,15 @@ MessageSpace.{member_guid}/
       "OwnerSpace.{member_guid}.forVault.>",
       "OwnerSpace.{member_guid}.eventTypes",
       "MessageSpace.{member_guid}.forOwner.>",
+      "MessageSpace.{member_guid}.fromService.>",
       "MessageSpace.{member_guid}.call.>",
       "Broadcast.>"
     ]
   }
 }
 ```
+
+**Note:** `fromService.>` subscription allows vaults to receive messages from connected B2C services.
 
 ### Vault Services (Control) Permissions
 
@@ -187,6 +208,40 @@ MessageSpace.{member_guid}/
 ```
 
 **Purpose:** Allow connections to send messages and view the member's profile.
+
+### Service Account Permissions (B2C)
+
+**Credential Type:** Account + User JWT
+**Lifetime:** Account permanent, User JWT 30 days
+
+```json
+{
+  "permissions": {
+    "pub": ["MessageSpace.*.fromService.{service_id}.>"],
+    "sub": []
+  }
+}
+```
+
+| Topic | Permission | Purpose |
+|-------|------------|---------|
+| `MessageSpace.*.fromService.{service_id}.>` | **Publish** | Send requests to connected users |
+| (none) | Subscribe | **DENIED** - Services cannot read any user data |
+
+**SECURITY:** Service credentials are strictly publish-only:
+- Services can ONLY publish to users who have active connections
+- Services CANNOT subscribe to any MessageSpace or OwnerSpace topics
+- Rate limits enforced: 50 MB/sec, 1 MB max payload
+- Each service has a unique service_id that appears in their publish topic
+
+**Registration Flow:**
+1. Service must exist in `supportedServices` table
+2. Admin registers service via `POST /admin/service-registry`
+3. Service receives NATS account credentials (seed stored encrypted with KMS)
+4. Service must complete domain attestation (DNS TXT or signature challenge)
+5. On attestation success, service status becomes "active"
+
+**Purpose:** Allow third-party services (banks, apps, etc.) to send authenticated requests to user vaults for authentication, data consent, and notifications.
 
 ---
 

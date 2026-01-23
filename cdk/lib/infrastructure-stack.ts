@@ -60,6 +60,8 @@ export class InfrastructureStack extends cdk.Stack {
     vaultDeletionRequests: dynamodb.Table;
     // Supported Services Registry
     supportedServices: dynamodb.Table;
+    // Service Registry (NATS-authenticated services)
+    serviceRegistry: dynamodb.Table;
     // Dynamic Handler Loading
     handlerManifest: dynamodb.Table;
     // Admin Portal: Communications
@@ -712,6 +714,47 @@ export class InfrastructureStack extends cdk.Stack {
       projectionType: dynamodb.ProjectionType.ALL,
     });
 
+    // ===== SERVICE REGISTRY (NATS-authenticated services) =====
+
+    // ServiceRegistry table - stores NATS-authenticated third-party service credentials
+    // This table extends supportedServices with actual NATS authentication credentials
+    // and attestation status for services that connect directly to user vaults.
+    // Schema:
+    //   service_id (PK): Matches supportedServices.service_id
+    //   status: 'pending' | 'active' | 'suspended' | 'revoked'
+    //   domain: Verified domain (e.g., signal.org) - must be unique
+    //   public_key: Ed25519 public key for signature verification
+    //   encryption_key: X25519 public key for E2E encryption
+    //   nats_account_public_key: NATS account public key
+    //   nats_account_seed_encrypted: KMS-encrypted NATS account seed
+    //   attestations: List of attestation records with timestamps
+    //   webhook_url: Optional callback URL for service notifications
+    //   rate_limit: Messages per second limit (default 100)
+    //   created_at, updated_at: ISO timestamps
+    const serviceRegistry = new dynamodb.Table(this, 'ServiceRegistry', {
+      partitionKey: { name: 'service_id', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: dynamoDbEncryptionKey,
+    });
+
+    // GSI for looking up service by domain (for attestation verification)
+    serviceRegistry.addGlobalSecondaryIndex({
+      indexName: 'domain-index',
+      partitionKey: { name: 'domain', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // GSI for listing services by status (for admin dashboard and directory API)
+    serviceRegistry.addGlobalSecondaryIndex({
+      indexName: 'status-index',
+      partitionKey: { name: 'status', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'created_at', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
     // ===== DYNAMIC HANDLER LOADING =====
 
     // Handler Manifest table - stores current version info for dynamic WASM loading
@@ -930,6 +973,8 @@ export class InfrastructureStack extends cdk.Stack {
       vaultDeletionRequests,
       // Supported Services Registry
       supportedServices,
+      // Service Registry (NATS-authenticated services)
+      serviceRegistry,
       // Dynamic Handler Loading
       handlerManifest,
       // Admin Portal: Communications
