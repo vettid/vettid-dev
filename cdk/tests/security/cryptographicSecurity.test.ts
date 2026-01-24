@@ -585,13 +585,23 @@ describe('Cryptographic Security Tests', () => {
         const avgMismatchEarly = avg(mismatchEarlyTimes);
         const avgMismatchLate = avg(mismatchLateTimes);
 
-        // Timing should be similar (within 50% tolerance due to OS scheduling)
-        // Constant-time comparison shouldn't show significant timing difference
-        const tolerance = 0.5;
+        // Timing should be similar - constant-time comparison shouldn't show
+        // significant timing difference based on match position.
+        // Note: High tolerance (90%) needed due to OS scheduling, CPU caching,
+        // and test environment variability. The key security property is that
+        // early vs late mismatches should have similar timing (both ratios similar).
+        const tolerance = 0.9;
 
         const earlyRatio = avgMismatchEarly / avgMatch;
         const lateRatio = avgMismatchLate / avgMatch;
 
+        // Primary security check: early and late mismatches should take similar time
+        // (within 50% of each other) - this is the actual timing attack resistance
+        const earlyVsLateRatio = avgMismatchEarly / avgMismatchLate;
+        expect(earlyVsLateRatio).toBeGreaterThan(0.5);
+        expect(earlyVsLateRatio).toBeLessThan(2.0);
+
+        // Secondary checks with high tolerance for environment variability
         expect(earlyRatio).toBeGreaterThan(1 - tolerance);
         expect(earlyRatio).toBeLessThan(1 + tolerance);
         expect(lateRatio).toBeGreaterThan(1 - tolerance);

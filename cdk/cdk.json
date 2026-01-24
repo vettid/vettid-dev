@@ -7,6 +7,7 @@
     "vettid:sesFromAuthEmail": "no-reply@auth.vettid.dev",
     "vettid:adminNotificationEmail": "admin@vettid.dev",
     "vettid:securityContactEmail": "security@vettid.dev",
-    "vettid:supportEmail": "support@vettid.dev"
+    "vettid:supportEmail": "support@vettid.dev",
+    "apiCertificateArn": "arn:aws:acm:us-east-1:449757308783:certificate/832dc2d9-e8f9-41a1-b620-6664077dd5cd"
   }
 }

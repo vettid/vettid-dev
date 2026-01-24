@@ -424,15 +424,21 @@ describe('Credential Generation', () => {
 
       const decoded = decodeJwt(creds.jwt);
 
-      // Vault can publish to forApp and forOwner
+      // Vault can publish to forApp, forServices, forOwner, ownerProfile, and call signaling
       expect(decoded.payload.nats.pub.allow).toContain(`${ownerSpace}.forApp.>`);
+      expect(decoded.payload.nats.pub.allow).toContain(`${ownerSpace}.forServices.>`);
       expect(decoded.payload.nats.pub.allow).toContain(`${messageSpace}.forOwner.>`);
       expect(decoded.payload.nats.pub.allow).toContain(`${messageSpace}.ownerProfile`);
+      expect(decoded.payload.nats.pub.allow).toContain(`${messageSpace}.call.>`);
 
-      // Vault can subscribe to forVault, control, and forOwner
+      // Vault can subscribe to forVault, eventTypes, forOwner, fromService, call, Broadcast, and Directory
       expect(decoded.payload.nats.sub.allow).toContain(`${ownerSpace}.forVault.>`);
-      expect(decoded.payload.nats.sub.allow).toContain(`${ownerSpace}.control`);
+      expect(decoded.payload.nats.sub.allow).toContain(`${ownerSpace}.eventTypes`);
       expect(decoded.payload.nats.sub.allow).toContain(`${messageSpace}.forOwner.>`);
+      expect(decoded.payload.nats.sub.allow).toContain(`${messageSpace}.fromService.>`);
+      expect(decoded.payload.nats.sub.allow).toContain(`${messageSpace}.call.>`);
+      expect(decoded.payload.nats.sub.allow).toContain('Broadcast.>');
+      expect(decoded.payload.nats.sub.allow).toContain('Directory.>');
     });
 
     it('should generate control permissions correctly', async () => {
@@ -449,9 +455,10 @@ describe('Credential Generation', () => {
 
       const decoded = decodeJwt(creds.jwt);
 
-      // Control can only publish to control topic
-      expect(decoded.payload.nats.pub.allow).toContain(`${ownerSpace}.control`);
-      expect(decoded.payload.nats.pub.allow.length).toBe(1);
+      // Control can publish to Control.global.> and Control.user.<guid>.>
+      expect(decoded.payload.nats.pub.allow).toContain('Control.global.>');
+      expect(decoded.payload.nats.pub.allow).toContain('Control.user.test-guid.>');
+      expect(decoded.payload.nats.pub.allow.length).toBe(2);
 
       // Control has no subscriptions
       expect(decoded.payload.nats.sub.allow.length).toBe(0);
