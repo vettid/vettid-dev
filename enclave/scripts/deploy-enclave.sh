@@ -467,6 +467,51 @@ systemctl daemon-reload
 systemctl enable vettid-enclave.service
 systemctl enable vettid-parent.service
 
+# Install and configure CloudWatch agent for log streaming
+echo "=== Installing CloudWatch Agent ==="
+dnf install -y amazon-cloudwatch-agent
+
+# Create CloudWatch agent config for streaming enclave logs
+cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json << 'CWCONFIG'
+{
+  "logs": {
+    "logs_collected": {
+      "journald": {
+        "unit": "vettid-parent.service",
+        "collect_list": [
+          {
+            "log_group_name": "/vettid/enclave/parent",
+            "log_stream_name": "{instance_id}",
+            "retention_in_days": 30
+          }
+        ]
+      }
+    },
+    "force_flush_interval": 5
+  }
+}
+CWCONFIG
+
+# Create systemd service for CloudWatch agent
+cat > /etc/systemd/system/amazon-cloudwatch-agent.service << 'CWSVC'
+[Unit]
+Description=Amazon CloudWatch Agent
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+CWSVC
+
+systemctl daemon-reload
+systemctl enable amazon-cloudwatch-agent.service
+echo "CloudWatch agent configured for log streaming"
+
 # Flush filesystem buffers to ensure service files are persisted before AMI creation
 sync
 
