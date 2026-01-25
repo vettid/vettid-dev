@@ -196,7 +196,8 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 	bootstrapHandler := NewBootstrapHandler(ownerSpace, vaultState)
 
 	// Create PIN handler - handles PIN setup/unlock/change using the sealer proxy
-	pinHandler := NewPINHandler(ownerSpace, vaultState, bootstrapHandler, sealerProxy)
+	// Storage is passed so DEK can initialize the encrypted SQLite database
+	pinHandler := NewPINHandler(ownerSpace, vaultState, bootstrapHandler, sealerProxy, storage)
 
 	// Create Protean Credential handler - handles credential creation (Phase 3)
 	proteanCredentialHandler := NewProteanCredentialHandler(ownerSpace, vaultState, bootstrapHandler)
@@ -570,7 +571,49 @@ func (mh *MessageHandler) handleBlockOperation(ctx context.Context, msg *Incomin
 
 // handleBootstrap handles vault bootstrap request
 func (mh *MessageHandler) handleBootstrap(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
-	return mh.bootstrapHandler.HandleBootstrap(ctx, msg)
+	response, err := mh.bootstrapHandler.HandleBootstrap(ctx, msg)
+	if err != nil {
+		return response, err
+	}
+
+	// Persist ECIES keys to S3 for cold vault recovery
+	// This allows the vault to receive encrypted PINs even after restart
+	mh.vaultState.mu.RLock()
+	eciesPrivate := mh.vaultState.eciesPrivateKey
+	eciesPublic := mh.vaultState.eciesPublicKey
+	mh.vaultState.mu.RUnlock()
+
+	if eciesPrivate != nil && eciesPublic != nil && mh.sealerProxy != nil {
+		// Marshal ECIES keys
+		eciesKeys := struct {
+			PrivateKey []byte `json:"private_key"`
+			PublicKey  []byte `json:"public_key"`
+		}{
+			PrivateKey: eciesPrivate,
+			PublicKey:  eciesPublic,
+		}
+		eciesData, err := json.Marshal(eciesKeys)
+		if err != nil {
+			log.Warn().Err(err).Str("owner_space", mh.ownerSpace).Msg("Failed to marshal ECIES keys")
+		} else {
+			defer zeroBytes(eciesData)
+
+			// Seal with KMS
+			sealedData, err := mh.sealerProxy.SealCredential(eciesData)
+			if err != nil {
+				log.Warn().Err(err).Str("owner_space", mh.ownerSpace).Msg("Failed to seal ECIES keys")
+			} else {
+				// Store sealed ECIES keys to S3
+				if err := mh.sealerProxy.StoreSealedECIES(sealedData); err != nil {
+					log.Warn().Err(err).Str("owner_space", mh.ownerSpace).Msg("Failed to store ECIES keys to S3 - cold vault unlock may not work")
+				} else {
+					log.Info().Str("owner_space", mh.ownerSpace).Msg("ECIES keys sealed and stored to S3 for cold vault recovery")
+				}
+			}
+		}
+	}
+
+	return response, nil
 }
 
 // handleUnseal handles credential unseal request
@@ -657,7 +700,40 @@ func (mh *MessageHandler) handleCredentialOperation(ctx context.Context, msg *In
 	switch opType {
 	case "create":
 		// Protean Credential creation (Phase 3 of enrollment)
-		return mh.proteanCredentialHandler.HandleCredentialCreate(ctx, msg)
+		response, err := mh.proteanCredentialHandler.HandleCredentialCreate(ctx, msg)
+		if err != nil {
+			return response, err
+		}
+
+		// Persist vault state to S3 for cold vault recovery
+		mh.vaultState.mu.RLock()
+		dek := mh.vaultState.dek
+		mh.vaultState.mu.RUnlock()
+
+		if dek != nil && mh.sealerProxy != nil {
+			// Create encrypted vault state for S3 storage
+			encryptedState, err := mh.createEncryptedVaultState(dek)
+			if err != nil {
+				log.Warn().Err(err).Str("owner_space", mh.ownerSpace).Msg("Failed to create encrypted vault state")
+			} else {
+				// Store to S3
+				if err := mh.sealerProxy.StoreVaultState(encryptedState); err != nil {
+					log.Warn().Err(err).Str("owner_space", mh.ownerSpace).Msg("Failed to store vault state to S3 - cold vault unlock may not work")
+				} else {
+					log.Info().Str("owner_space", mh.ownerSpace).Msg("Vault state encrypted and stored to S3 for cold vault recovery")
+				}
+			}
+		}
+
+		// SECURITY: Clear DEK after persistence is complete
+		mh.vaultState.mu.Lock()
+		if mh.vaultState.dek != nil {
+			zeroBytes(mh.vaultState.dek)
+			mh.vaultState.dek = nil
+		}
+		mh.vaultState.mu.Unlock()
+
+		return response, nil
 	case "store":
 		return mh.credentialHandler.HandleStore(msg)
 	case "sync":
@@ -1244,6 +1320,68 @@ func sanitizeErrorForClient(errMsg string) string {
 
 func generateMessageID() string {
 	return fmt.Sprintf("msg-%d", currentTimestamp())
+}
+
+// createEncryptedVaultState creates DEK-encrypted vault state for S3 storage.
+// Returns the encrypted bytes ready for S3 storage.
+func (mh *MessageHandler) createEncryptedVaultState(dek []byte) ([]byte, error) {
+	// Create DEK-encrypted vault state
+	mh.vaultState.mu.RLock()
+	persistedState := struct {
+		CEKPrivateKey []byte `json:"cek_private_key"`
+		CEKPublicKey  []byte `json:"cek_public_key"`
+		UTKPairs      []struct {
+			ID        string `json:"id"`
+			UTK       []byte `json:"utk"`
+			LTK       []byte `json:"ltk"`
+			UsedAt    int64  `json:"used_at"`
+			CreatedAt int64  `json:"created_at"`
+		} `json:"utk_pairs"`
+		Credential     *UnsealedCredential `json:"credential,omitempty"`
+		SealedMaterial []byte              `json:"sealed_material"`
+	}{
+		SealedMaterial: mh.vaultState.sealedMaterial,
+	}
+
+	if mh.vaultState.cekPair != nil {
+		persistedState.CEKPrivateKey = mh.vaultState.cekPair.PrivateKey
+		persistedState.CEKPublicKey = mh.vaultState.cekPair.PublicKey
+	}
+
+	for _, utk := range mh.vaultState.utkPairs {
+		persistedState.UTKPairs = append(persistedState.UTKPairs, struct {
+			ID        string `json:"id"`
+			UTK       []byte `json:"utk"`
+			LTK       []byte `json:"ltk"`
+			UsedAt    int64  `json:"used_at"`
+			CreatedAt int64  `json:"created_at"`
+		}{
+			ID:        utk.ID,
+			UTK:       utk.UTK,
+			LTK:       utk.LTK,
+			UsedAt:    utk.UsedAt,
+			CreatedAt: utk.CreatedAt,
+		})
+	}
+
+	if mh.vaultState.credential != nil {
+		persistedState.Credential = mh.vaultState.credential
+	}
+	mh.vaultState.mu.RUnlock()
+
+	// Marshal and encrypt with DEK
+	stateData, err := json.Marshal(persistedState)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal vault state: %w", err)
+	}
+	defer zeroBytes(stateData)
+
+	encryptedState, err := encryptWithDEK(dek, stateData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encrypt vault state: %w", err)
+	}
+
+	return encryptedState, nil
 }
 
 // SecureErase zeros all sensitive data in the message handler and its components

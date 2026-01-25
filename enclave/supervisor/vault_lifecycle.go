@@ -273,6 +273,14 @@ func (vm *VaultManager) GetStats() VaultStats {
 	}
 }
 
+// SetParentConnection sets the parent connection for S3 storage operations
+// This connection is used by the SealerHandler to proxy S3 requests to the parent
+func (vm *VaultManager) SetParentConnection(conn Connection) {
+	if vm.sealerHandler != nil {
+		vm.sealerHandler.SetParentConnection(conn)
+	}
+}
+
 // VaultProcess methods
 
 // touch updates the last access time

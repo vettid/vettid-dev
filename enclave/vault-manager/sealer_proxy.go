@@ -46,6 +46,13 @@ const (
 	SealerOpDeriveDEKFromPIN       SealerOperation = "derive_dek_from_pin"
 	SealerOpSealCredential         SealerOperation = "seal_credential"
 	SealerOpUnsealCredential       SealerOperation = "unseal_credential"
+	// S3 storage operations for vault state persistence
+	SealerOpStoreSealedMaterial SealerOperation = "store_sealed_material"
+	SealerOpLoadSealedMaterial  SealerOperation = "load_sealed_material"
+	SealerOpStoreVaultState     SealerOperation = "store_vault_state"
+	SealerOpLoadVaultState      SealerOperation = "load_vault_state"
+	SealerOpStoreSealedECIES    SealerOperation = "store_sealed_ecies"
+	SealerOpLoadSealedECIES     SealerOperation = "load_sealed_ecies"
 )
 
 // SealerRequest is sent from vault-manager to supervisor
@@ -226,4 +233,121 @@ func (p *SealerProxy) sendRequest(req SealerRequest) (*SealerResponse, error) {
 // SetResponseChannel sets the channel for receiving responses
 func (p *SealerProxy) SetResponseChannel(ch chan *IncomingMessage) {
 	p.responseCh = ch
+}
+
+// StoreSealedMaterial stores sealed material to S3 for cold vault recovery
+func (p *SealerProxy) StoreSealedMaterial(sealedMaterial []byte) error {
+	req := SealerRequest{
+		Operation:  SealerOpStoreSealedMaterial,
+		OwnerSpace: p.ownerSpace,
+		Data:       sealedMaterial,
+	}
+
+	resp, err := p.sendRequest(req)
+	if err != nil {
+		return err
+	}
+
+	if !resp.Success {
+		return fmt.Errorf("storage error: %s", resp.Error)
+	}
+
+	return nil
+}
+
+// LoadSealedMaterial loads sealed material from S3 for cold vault recovery
+func (p *SealerProxy) LoadSealedMaterial() ([]byte, error) {
+	req := SealerRequest{
+		Operation:  SealerOpLoadSealedMaterial,
+		OwnerSpace: p.ownerSpace,
+	}
+
+	resp, err := p.sendRequest(req)
+	if err != nil {
+		return nil, err
+	}
+
+	if !resp.Success {
+		return nil, fmt.Errorf("storage error: %s", resp.Error)
+	}
+
+	return resp.SealedMaterial, nil
+}
+
+// StoreSealedECIES stores KMS-sealed ECIES keys to S3 for cold vault recovery
+func (p *SealerProxy) StoreSealedECIES(sealedECIES []byte) error {
+	req := SealerRequest{
+		Operation:  SealerOpStoreSealedECIES,
+		OwnerSpace: p.ownerSpace,
+		Data:       sealedECIES,
+	}
+
+	resp, err := p.sendRequest(req)
+	if err != nil {
+		return err
+	}
+
+	if !resp.Success {
+		return fmt.Errorf("storage error: %s", resp.Error)
+	}
+
+	return nil
+}
+
+// LoadSealedECIES loads KMS-sealed ECIES keys from S3 for cold vault recovery
+func (p *SealerProxy) LoadSealedECIES() ([]byte, error) {
+	req := SealerRequest{
+		Operation:  SealerOpLoadSealedECIES,
+		OwnerSpace: p.ownerSpace,
+	}
+
+	resp, err := p.sendRequest(req)
+	if err != nil {
+		return nil, err
+	}
+
+	if !resp.Success {
+		return nil, fmt.Errorf("storage error: %s", resp.Error)
+	}
+
+	return resp.SealedData, nil
+}
+
+// StoreVaultState stores DEK-encrypted vault state to S3 for cold vault recovery
+func (p *SealerProxy) StoreVaultState(encryptedState []byte) error {
+	req := SealerRequest{
+		Operation:  SealerOpStoreVaultState,
+		OwnerSpace: p.ownerSpace,
+		Data:       encryptedState,
+	}
+
+	resp, err := p.sendRequest(req)
+	if err != nil {
+		return err
+	}
+
+	if !resp.Success {
+		return fmt.Errorf("storage error: %s", resp.Error)
+	}
+
+	return nil
+}
+
+// LoadVaultState loads DEK-encrypted vault state from S3 for cold vault recovery
+func (p *SealerProxy) LoadVaultState() ([]byte, error) {
+	req := SealerRequest{
+		Operation:  SealerOpLoadVaultState,
+		OwnerSpace: p.ownerSpace,
+	}
+
+	resp, err := p.sendRequest(req)
+	if err != nil {
+		return nil, err
+	}
+
+	if !resp.Success {
+		return nil, fmt.Errorf("storage error: %s", resp.Error)
+	}
+
+	return resp.UnsealedData, nil
 }

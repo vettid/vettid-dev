@@ -16,15 +16,17 @@ type PINHandler struct {
 	state        *VaultState
 	bootstrap    *BootstrapHandler
 	sealerProxy  *SealerProxy
+	storage      *EncryptedStorage
 }
 
 // NewPINHandler creates a new PIN handler
-func NewPINHandler(ownerSpace string, state *VaultState, bootstrap *BootstrapHandler, sealerProxy *SealerProxy) *PINHandler {
+func NewPINHandler(ownerSpace string, state *VaultState, bootstrap *BootstrapHandler, sealerProxy *SealerProxy, storage *EncryptedStorage) *PINHandler {
 	return &PINHandler{
 		ownerSpace:  ownerSpace,
 		state:       state,
 		bootstrap:   bootstrap,
 		sealerProxy: sealerProxy,
+		storage:     storage,
 	}
 }
 
@@ -98,6 +100,14 @@ func (h *PINHandler) HandlePINSetup(ctx context.Context, msg *IncomingMessage) (
 	h.state.dek = dekCopy // Store DEK copy for credential.create
 	h.state.mu.Unlock()
 
+	// Initialize encrypted storage with DEK so feed/events are accessible
+	// This creates the in-memory SQLite database with encryption
+	if err := h.storage.InitializeWithDEK(dekCopy); err != nil {
+		log.Error().Err(err).Str("owner_space", h.ownerSpace).Msg("Failed to initialize storage with DEK")
+		return h.errorResponse(msg.GetID(), "storage initialization failed")
+	}
+	log.Info().Str("owner_space", h.ownerSpace).Msg("Storage initialized with DEK")
+
 	// Generate CEK keypair for encrypting the Protean Credential
 	if err := h.bootstrap.GenerateCEKPair(); err != nil {
 		log.Error().Err(err).Msg("Failed to generate CEK keypair")
@@ -107,6 +117,15 @@ func (h *PINHandler) HandlePINSetup(ctx context.Context, msg *IncomingMessage) (
 	// Generate UTKs for credential creation
 	if err := h.bootstrap.GenerateMoreUTKs(5); err != nil {
 		log.Warn().Err(err).Msg("Failed to generate UTKs")
+	}
+
+	// Store sealed material to S3 for cold vault recovery
+	// This replaces sending it to the app - the enclave loads from S3 on cold unlock
+	if err := h.sealerProxy.StoreSealedMaterial(sealedMaterial); err != nil {
+		log.Warn().Err(err).Msg("Failed to store sealed material to S3 - cold unlock may not work")
+		// Don't fail PIN setup if S3 storage fails - vault is still usable while warm
+	} else {
+		log.Info().Str("owner_space", h.ownerSpace).Msg("Sealed material stored to S3 for cold vault recovery")
 	}
 
 	// Build response with UTKs in the new format
@@ -142,11 +161,21 @@ func (h *PINHandler) HandlePINSetup(ctx context.Context, msg *IncomingMessage) (
 }
 
 // HandlePINUnlock processes PIN unlock requests
-// Flow:
+// Supports two modes:
+// 1. Warm vault: ECIES keys are in memory, standard unlock flow
+// 2. Cold vault: ECIES keys need to be restored from KMS-sealed storage first
+//
+// Flow for warm vault:
 // 1. Decrypt PIN using ECIES
 // 2. Derive DEK from PIN + stored sealed material
-// 3. Decrypt credential with DEK
-// 4. Verify auth hash matches
+// 3. Verify auth hash matches
+// 4. Return success with new UTKs
+//
+// Flow for cold vault:
+// 1. Restore ECIES keys from KMS-sealed storage
+// 2. Decrypt PIN using ECIES
+// 3. Derive DEK from PIN + sealed material (from request)
+// 4. Restore full vault state from DEK-encrypted storage
 // 5. Return success with new UTKs
 func (h *PINHandler) HandlePINUnlock(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	log.Info().Str("owner_space", h.ownerSpace).Msg("PIN unlock requested")
@@ -156,9 +185,64 @@ func (h *PINHandler) HandlePINUnlock(ctx context.Context, msg *IncomingMessage) 
 		return h.errorResponse(msg.GetID(), "invalid request format")
 	}
 
-	// Validate UTK
+	// Check if vault is warm (has ECIES keys in memory)
+	h.state.mu.RLock()
+	eciesPrivateKey := h.state.eciesPrivateKey
+	sealedMaterial := h.state.sealedMaterial
+	storedCredential := h.state.credential
+	isWarmVault := eciesPrivateKey != nil && sealedMaterial != nil
+	h.state.mu.RUnlock()
+
+	// Handle cold vault unlock - load state from S3
+	if !isWarmVault {
+		log.Info().Str("owner_space", h.ownerSpace).Msg("Cold vault detected, loading state from S3")
+
+		// Load sealed ECIES keys from S3
+		sealedECIESBytes, err := h.sealerProxy.LoadSealedECIES()
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to load sealed ECIES keys from S3")
+			return h.errorResponse(msg.GetID(), "vault not initialized - no recovery data in storage")
+		}
+
+		// Unseal ECIES keys using KMS
+		eciesData, err := h.sealerProxy.UnsealCredential(sealedECIESBytes)
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to unseal ECIES keys")
+			return h.errorResponse(msg.GetID(), "failed to restore vault keys")
+		}
+		defer zeroBytes(eciesData)
+
+		// Parse ECIES keys
+		var eciesKeys struct {
+			PrivateKey []byte `json:"private_key"`
+			PublicKey  []byte `json:"public_key"`
+		}
+		if err := json.Unmarshal(eciesData, &eciesKeys); err != nil {
+			return h.errorResponse(msg.GetID(), "invalid ECIES keys format")
+		}
+
+		// Restore ECIES keys to vault state
+		h.state.mu.Lock()
+		h.state.eciesPrivateKey = eciesKeys.PrivateKey
+		h.state.eciesPublicKey = eciesKeys.PublicKey
+		eciesPrivateKey = h.state.eciesPrivateKey
+		h.state.mu.Unlock()
+
+		log.Info().Str("owner_space", h.ownerSpace).Msg("ECIES keys restored from S3 + KMS")
+
+		// Load sealed material from S3
+		sealedMaterialBytes, err := h.sealerProxy.LoadSealedMaterial()
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to load sealed material from S3")
+			return h.errorResponse(msg.GetID(), "failed to load vault recovery data")
+		}
+		sealedMaterial = sealedMaterialBytes
+	}
+
+	// Validate UTK (may fail for cold vault if UTKs aren't restored yet)
 	_, found := h.bootstrap.GetLTKForUTK(req.UTKID)
-	if !found {
+	if !found && isWarmVault {
+		// Only fail for warm vault - cold vault may not have UTKs yet
 		return h.errorResponse(msg.GetID(), "invalid UTK")
 	}
 
@@ -166,16 +250,6 @@ func (h *PINHandler) HandlePINUnlock(ctx context.Context, msg *IncomingMessage) 
 	encryptedPayload, err := base64.StdEncoding.DecodeString(req.EncryptedPayload)
 	if err != nil {
 		return h.errorResponse(msg.GetID(), "invalid payload encoding")
-	}
-
-	h.state.mu.RLock()
-	eciesPrivateKey := h.state.eciesPrivateKey
-	sealedMaterial := h.state.sealedMaterial
-	storedCredential := h.state.credential
-	h.state.mu.RUnlock()
-
-	if eciesPrivateKey == nil || sealedMaterial == nil {
-		return h.errorResponse(msg.GetID(), "vault not initialized")
 	}
 
 	payloadBytes, err := decryptWithECIES(eciesPrivateKey, encryptedPayload)
@@ -191,8 +265,10 @@ func (h *PINHandler) HandlePINUnlock(ctx context.Context, msg *IncomingMessage) 
 	// SECURITY: Zero PIN after use
 	defer payload.PIN.Zero()
 
-	// Mark UTK as used
-	h.bootstrap.MarkUTKUsed(req.UTKID)
+	// Mark UTK as used (if it exists)
+	if found {
+		h.bootstrap.MarkUTKUsed(req.UTKID)
+	}
 
 	// Derive DEK from PIN + sealed material
 	// SECURITY: Pass PIN as []byte so both ends can zero it
@@ -202,6 +278,84 @@ func (h *PINHandler) HandlePINUnlock(ctx context.Context, msg *IncomingMessage) 
 		return h.errorResponse(msg.GetID(), "invalid PIN")
 	}
 	defer zeroBytes(dek)
+
+	// For cold vault, restore full vault state from S3
+	if !isWarmVault {
+		encryptedStateBytes, err := h.sealerProxy.LoadVaultState()
+		if err != nil {
+			log.Warn().Err(err).Msg("Failed to load encrypted vault state from S3 - vault may have incomplete state")
+			// Don't fail - we can still continue with just ECIES and sealed material
+		} else {
+			// Decrypt vault state with DEK
+			stateData, err := decryptWithDEK(dek, encryptedStateBytes)
+			if err != nil {
+				log.Warn().Err(err).Msg("Failed to decrypt vault state - wrong PIN or corrupted data")
+				return h.errorResponse(msg.GetID(), "invalid PIN")
+			}
+			defer zeroBytes(stateData)
+
+			// Parse and restore vault state
+			var persistedState struct {
+				CEKPrivateKey []byte `json:"cek_private_key"`
+				CEKPublicKey  []byte `json:"cek_public_key"`
+				UTKPairs      []struct {
+					ID        string `json:"id"`
+					UTK       []byte `json:"utk"`
+					LTK       []byte `json:"ltk"`
+					UsedAt    int64  `json:"used_at"`
+					CreatedAt int64  `json:"created_at"`
+				} `json:"utk_pairs"`
+				Credential     *UnsealedCredential `json:"credential,omitempty"`
+				SealedMaterial []byte              `json:"sealed_material"`
+			}
+			if err := json.Unmarshal(stateData, &persistedState); err != nil {
+				return h.errorResponse(msg.GetID(), "invalid vault state format")
+			}
+
+			// Apply restored state
+			h.state.mu.Lock()
+			if len(persistedState.CEKPrivateKey) > 0 {
+				h.state.cekPair = &CEKPair{
+					PrivateKey: persistedState.CEKPrivateKey,
+					PublicKey:  persistedState.CEKPublicKey,
+				}
+			}
+			h.state.utkPairs = nil
+			for _, utk := range persistedState.UTKPairs {
+				h.state.utkPairs = append(h.state.utkPairs, &UTKPair{
+					ID:        utk.ID,
+					UTK:       utk.UTK,
+					LTK:       utk.LTK,
+					UsedAt:    utk.UsedAt,
+					CreatedAt: utk.CreatedAt,
+				})
+			}
+			if persistedState.Credential != nil {
+				h.state.credential = persistedState.Credential
+				storedCredential = persistedState.Credential
+			}
+			if len(persistedState.SealedMaterial) > 0 {
+				h.state.sealedMaterial = persistedState.SealedMaterial
+			} else {
+				h.state.sealedMaterial = sealedMaterial
+			}
+			h.state.mu.Unlock()
+
+			log.Info().
+				Str("owner_space", h.ownerSpace).
+				Int("utk_count", len(persistedState.UTKPairs)).
+				Bool("has_credential", persistedState.Credential != nil).
+				Msg("Vault state restored from S3")
+		}
+	}
+
+	// Initialize encrypted storage with DEK so feed/events are accessible
+	// This must happen before any storage operations
+	if err := h.storage.InitializeWithDEK(dek); err != nil {
+		log.Error().Err(err).Str("owner_space", h.ownerSpace).Msg("Failed to initialize storage with DEK on unlock")
+		return h.errorResponse(msg.GetID(), "storage initialization failed")
+	}
+	log.Info().Str("owner_space", h.ownerSpace).Msg("Storage initialized with DEK on unlock")
 
 	// If we have credential in memory, verify auth hash
 	if storedCredential != nil {

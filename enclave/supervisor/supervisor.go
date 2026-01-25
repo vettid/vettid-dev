@@ -123,6 +123,8 @@ func (s *Supervisor) handleConnection(ctx context.Context, rawConn Connection) {
 		s.parentConnMu.Unlock()
 		// Clear sealer connection
 		s.sealer.SetConnection(nil)
+		// Clear sealer handler connection (for S3 operations)
+		s.vaults.SetParentConnection(nil)
 	}()
 
 	// SECURITY: Perform mutual authentication handshake before accepting any messages
@@ -142,6 +144,10 @@ func (s *Supervisor) handleConnection(ctx context.Context, rawConn Connection) {
 
 	// Set connection for sealer (for KMS operations)
 	s.sealer.SetConnection(authConn)
+
+	// Set connection for sealer handler (for S3 storage operations)
+	// This allows vault-manager processes to store/load data via the parent
+	s.vaults.SetParentConnection(authConn)
 
 	log.Debug().Msg("New authenticated connection from parent process")
 

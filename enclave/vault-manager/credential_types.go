@@ -371,9 +371,10 @@ type PINSetupPayload struct {
 // PINSetupResponse is returned after PIN setup
 // Returns vault_ready + UTKs for credential creation (Phase 2)
 // Does NOT return the credential - that comes from credential.create (Phase 3)
+// Note: sealed_material is stored to S3, not returned to the app
 type PINSetupResponse struct {
-	Status string       `json:"status"` // "vault_ready"
-	UTKs   []UTKPublic  `json:"utks"`   // UTKs for credential creation
+	Status string      `json:"status"` // "vault_ready"
+	UTKs   []UTKPublic `json:"utks"`   // UTKs for credential creation
 }
 
 // UTKPublic is the public representation of a UTK sent to the app
@@ -399,6 +400,7 @@ type CredentialCreatePayload struct {
 }
 
 // CredentialCreateResponse is returned after Protean Credential creation
+// Note: Cold vault recovery data (encrypted_vault_state, sealed_ecies_keys) is stored to S3, not returned to the app
 type CredentialCreateResponse struct {
 	Status              string      `json:"status"`               // "created"
 	EncryptedCredential string      `json:"encrypted_credential"` // CEK-encrypted Protean Credential
@@ -406,6 +408,8 @@ type CredentialCreateResponse struct {
 }
 
 // PINUnlockRequest is the request to unlock with PIN
+// For cold vault unlock, the vault loads sealed_material, sealed_ecies_keys, and
+// encrypted_vault_state from S3 - the app does not send these.
 type PINUnlockRequest struct {
 	UTKID            string `json:"utk_id"`
 	EncryptedPayload string `json:"encrypted_payload"`
