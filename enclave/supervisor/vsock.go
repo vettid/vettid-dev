@@ -65,6 +65,9 @@ const (
 	// Mutual authentication handshake
 	MessageTypeHandshake         MessageType = "handshake"
 	MessageTypeHandshakeResponse MessageType = "handshake_response"
+
+	// Log forwarding (enclave sends logs to parent for CloudWatch)
+	MessageTypeLog MessageType = "log"
 )
 
 // SECURITY: Handshake constants
@@ -124,6 +127,11 @@ type Message struct {
 	// Attestation private key (for PIN decryption - passed to vault-manager)
 	// SECURITY: Only included for PIN operations, cleared after use
 	AttestationPrivateKey []byte `json:"attestation_private_key,omitempty"`
+
+	// Log forwarding
+	LogLevel   string `json:"log_level,omitempty"`   // "debug", "info", "warn", "error"
+	LogMessage string `json:"log_message,omitempty"` // Log message content
+	LogSource  string `json:"log_source,omitempty"`  // "supervisor", "vault-manager", owner_space
 
 	// Error
 	Error string `json:"error,omitempty"`

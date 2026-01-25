@@ -914,6 +914,8 @@ func (p *ParentProcess) handleEnclaveRequest(ctx context.Context, msg *EnclaveMe
 		return p.handleKMSEncrypt(ctx, msg)
 	case EnclaveMessageTypeKMSDecrypt:
 		return p.handleKMSDecrypt(ctx, msg)
+	case EnclaveMessageTypeLog:
+		return p.handleLogMessage(ctx, msg)
 	default:
 		return nil, fmt.Errorf("unknown message type: %s", msg.Type)
 	}
@@ -1017,6 +1019,40 @@ func (p *ParentProcess) handleKMSDecrypt(ctx context.Context, msg *EnclaveMessag
 	return &EnclaveMessage{
 		Type:       EnclaveMessageTypeKMSResponse,
 		Ciphertext: result, // CiphertextForRecipient - enclave must decrypt with its private key
+	}, nil
+}
+
+// handleLogMessage processes log messages from the enclave and forwards to stdout
+// for CloudWatch to capture via systemd journal
+func (p *ParentProcess) handleLogMessage(ctx context.Context, msg *EnclaveMessage) (*EnclaveMessage, error) {
+	// Log the message at the appropriate level
+	switch msg.LogLevel {
+	case "debug":
+		log.Debug().
+			Str("source", msg.LogSource).
+			Msg(msg.LogMessage)
+	case "info":
+		log.Info().
+			Str("source", msg.LogSource).
+			Msg(msg.LogMessage)
+	case "warn":
+		log.Warn().
+			Str("source", msg.LogSource).
+			Msg(msg.LogMessage)
+	case "error":
+		log.Error().
+			Str("source", msg.LogSource).
+			Msg(msg.LogMessage)
+	default:
+		log.Info().
+			Str("source", msg.LogSource).
+			Str("level", msg.LogLevel).
+			Msg(msg.LogMessage)
+	}
+
+	// Return OK (fire-and-forget from enclave perspective)
+	return &EnclaveMessage{
+		Type: EnclaveMessageTypeOK,
 	}, nil
 }
 

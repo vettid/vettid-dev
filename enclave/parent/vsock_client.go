@@ -141,6 +141,9 @@ const (
 	// General
 	EnclaveMessageTypeOK              EnclaveMessageType = "ok"
 	EnclaveMessageTypeError           EnclaveMessageType = "error"
+
+	// Log forwarding (enclave sends logs to parent for CloudWatch)
+	EnclaveMessageTypeLog EnclaveMessageType = "log"
 )
 
 // Attestation holds a Nitro attestation document
@@ -179,6 +182,11 @@ type EnclaveMessage struct {
 	SealedCredential  []byte             `json:"sealed_credential,omitempty"`
 	Challenge         *Challenge         `json:"challenge,omitempty"`
 	Credential        []byte             `json:"credential,omitempty"`
+
+	// Log forwarding fields
+	LogLevel   string `json:"log_level,omitempty"`   // "debug", "info", "warn", "error"
+	LogMessage string `json:"log_message,omitempty"` // Log message content
+	LogSource  string `json:"log_source,omitempty"`  // "supervisor", "vault-manager", or owner_space
 }
 
 // CredentialRequest is the request to create a new credential

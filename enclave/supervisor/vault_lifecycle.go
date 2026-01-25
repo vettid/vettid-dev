@@ -62,13 +62,13 @@ type VaultStats struct {
 }
 
 // NewVaultManager creates a new vault manager
-func NewVaultManager(cfg *Config, memMgr *MemoryManager, parentSender ParentSender, sealer *NitroSealer) *VaultManager {
+func NewVaultManager(cfg *Config, memMgr *MemoryManager, parentSender ParentSender, sealer *NitroSealer, logForwarder LogForwarder) *VaultManager {
 	// Create sealer handler for proxying KMS operations to vault-manager processes
 	sealerHandler := NewSealerHandler(sealer)
 
 	// Create process manager for spawning vault-manager subprocesses
 	// Per Architecture v3.1: Each vault runs in its own isolated process
-	procMgr := NewProcessManager(cfg.VaultManagerPath, cfg.DevMode, sealerHandler)
+	procMgr := NewProcessManager(cfg.VaultManagerPath, cfg.DevMode, sealerHandler, logForwarder)
 
 	return &VaultManager{
 		config:         cfg,

@@ -61,7 +61,8 @@ func NewSupervisor(cfg *Config) (*Supervisor, error) {
 	}
 
 	// Create vault manager with reference to supervisor for outbound messages
-	s.vaults = NewVaultManager(cfg, memMgr, s, sealer)
+	// Pass log forwarder to enable CloudWatch log streaming
+	s.vaults = NewVaultManager(cfg, memMgr, s, sealer, s.SendLog)
 
 	return s, nil
 }
@@ -455,4 +456,32 @@ func (s *Supervisor) handleHealthCheck(ctx context.Context, msg *Message) (*Mess
 func (s *Supervisor) shutdown() {
 	log.Info().Msg("Shutting down all vaults")
 	s.vaults.ShutdownAll()
+}
+
+// SendLog sends a log message to the parent for CloudWatch forwarding.
+// This is fire-and-forget - we don't wait for a response.
+func (s *Supervisor) SendLog(level, source, message string) {
+	s.parentConnMu.RLock()
+	conn := s.parentConn
+	s.parentConnMu.RUnlock()
+
+	if conn == nil {
+		// No parent connection, can't forward logs
+		return
+	}
+
+	msg := &Message{
+		Type:       MessageTypeLog,
+		LogLevel:   level,
+		LogSource:  source,
+		LogMessage: message,
+	}
+
+	// Fire and forget - don't block on log sending
+	go func() {
+		if err := conn.WriteMessage(msg); err != nil {
+			// Can't log this error (would cause infinite loop), just ignore
+			return
+		}
+	}()
 }

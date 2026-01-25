@@ -18,6 +18,9 @@ const (
 	processEvictionJitterMaxMs = 100
 )
 
+// LogForwarder is a function that forwards logs to the parent
+type LogForwarder func(level, source, message string)
+
 // ProcessManager handles spawning and managing vault-manager processes.
 // Each user vault runs in its own isolated process for security.
 type ProcessManager struct {
@@ -26,6 +29,7 @@ type ProcessManager struct {
 	processes     map[string]*ManagedProcess
 	mu            sync.RWMutex
 	sealerHandler *SealerHandler
+	logForwarder  LogForwarder // Optional callback to forward logs to parent
 }
 
 // ManagedProcess represents a spawned vault-manager process
@@ -38,12 +42,13 @@ type ManagedProcess struct {
 }
 
 // NewProcessManager creates a new process manager
-func NewProcessManager(binaryPath string, devMode bool, sealerHandler *SealerHandler) *ProcessManager {
+func NewProcessManager(binaryPath string, devMode bool, sealerHandler *SealerHandler, logForwarder LogForwarder) *ProcessManager {
 	return &ProcessManager{
 		binaryPath:    binaryPath,
 		devMode:       devMode,
 		processes:     make(map[string]*ManagedProcess),
 		sealerHandler: sealerHandler,
+		logForwarder:  logForwarder,
 	}
 }
 
@@ -122,7 +127,7 @@ func (pm *ProcessManager) Spawn(ownerSpace string) (*ManagedProcess, error) {
 	return proc, nil
 }
 
-// logStderr logs stderr output from the child process
+// logStderr logs stderr output from the child process and forwards to parent
 func (pm *ProcessManager) logStderr(ownerSpace string, stderr interface{ Read([]byte) (int, error) }) {
 	buf := make([]byte, 4096)
 	for {
@@ -131,10 +136,18 @@ func (pm *ProcessManager) logStderr(ownerSpace string, stderr interface{ Read([]
 			return
 		}
 		if n > 0 {
-			log.Debug().
+			logMsg := string(buf[:n])
+
+			// Log locally at Info level (was Debug)
+			log.Info().
 				Str("owner_space", ownerSpace).
-				Str("stderr", string(buf[:n])).
+				Str("stderr", logMsg).
 				Msg("vault-manager stderr")
+
+			// Forward to parent for CloudWatch if forwarder is configured
+			if pm.logForwarder != nil {
+				pm.logForwarder("info", "vault-manager:"+ownerSpace, logMsg)
+			}
 		}
 	}
 }
