@@ -415,6 +415,24 @@ func (p *ParentProcess) sendWithHandlerSupport(ctx context.Context, msg *Enclave
 			Int("payload_len", len(response.Payload)).
 			Msg("Received vsock response")
 
+		// Handle log messages from enclave (fire-and-forget, continue waiting for actual response)
+		if response.Type == EnclaveMessageTypeLog {
+			// Process the log message (outputs to stdout/journald for CloudWatch)
+			switch response.LogLevel {
+			case "debug":
+				log.Debug().Str("source", response.LogSource).Msg(response.LogMessage)
+			case "info":
+				log.Info().Str("source", response.LogSource).Msg(response.LogMessage)
+			case "warn":
+				log.Warn().Str("source", response.LogSource).Msg(response.LogMessage)
+			case "error":
+				log.Error().Str("source", response.LogSource).Msg(response.LogMessage)
+			default:
+				log.Info().Str("source", response.LogSource).Str("level", response.LogLevel).Msg(response.LogMessage)
+			}
+			continue // Keep waiting for the actual response
+		}
+
 		// Check if this is a KMS encrypt request (enclave needs to seal data)
 		if response.Type == EnclaveMessageTypeKMSEncrypt {
 			log.Debug().
@@ -461,6 +479,59 @@ func (p *ParentProcess) sendWithHandlerSupport(ctx context.Context, msg *Enclave
 				p.vsockClient.writeMu.Lock()
 				if err := p.vsockClient.writeMessage(kmsResp); err != nil {
 					log.Error().Err(err).Msg("Failed to send KMS decrypt response")
+				}
+				p.vsockClient.writeMu.Unlock()
+			}
+			continue // Wait for next response
+		}
+
+		// Check if this is a storage GET request (enclave needs to read from S3)
+		if response.Type == EnclaveMessageTypeStorageGet {
+			log.Debug().
+				Str("key", response.StorageKey).
+				Msg("Enclave requested storage GET during operation")
+
+			storageResp, err := p.handleStorageGet(ctx, response)
+			if err != nil {
+				log.Error().Err(err).Msg("Failed to handle storage GET request")
+				errMsg := &EnclaveMessage{
+					Type:  EnclaveMessageTypeError,
+					Error: err.Error(),
+				}
+				p.vsockClient.writeMu.Lock()
+				p.vsockClient.writeMessage(errMsg)
+				p.vsockClient.writeMu.Unlock()
+			} else {
+				p.vsockClient.writeMu.Lock()
+				if err := p.vsockClient.writeMessage(storageResp); err != nil {
+					log.Error().Err(err).Msg("Failed to send storage GET response")
+				}
+				p.vsockClient.writeMu.Unlock()
+			}
+			continue // Wait for next response
+		}
+
+		// Check if this is a storage PUT request (enclave needs to write to S3)
+		if response.Type == EnclaveMessageTypeStoragePut {
+			log.Debug().
+				Str("key", response.StorageKey).
+				Int("data_len", len(response.Payload)).
+				Msg("Enclave requested storage PUT during operation")
+
+			storageResp, err := p.handleStoragePut(ctx, response)
+			if err != nil {
+				log.Error().Err(err).Msg("Failed to handle storage PUT request")
+				errMsg := &EnclaveMessage{
+					Type:  EnclaveMessageTypeError,
+					Error: err.Error(),
+				}
+				p.vsockClient.writeMu.Lock()
+				p.vsockClient.writeMessage(errMsg)
+				p.vsockClient.writeMu.Unlock()
+			} else {
+				p.vsockClient.writeMu.Lock()
+				if err := p.vsockClient.writeMessage(storageResp); err != nil {
+					log.Error().Err(err).Msg("Failed to send storage PUT response")
 				}
 				p.vsockClient.writeMu.Unlock()
 			}
