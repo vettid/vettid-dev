@@ -217,6 +217,8 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 
 	// Create profile handler (needed by service contracts)
 	profileHandler := NewProfileHandler(ownerSpace, storage)
+	profileHandler.SetPublisher(publisher)
+	profileHandler.SetVaultState(vaultState)
 
 	// Create service connection handlers (B2C)
 	serviceConnectionHandler := NewServiceConnectionHandler(ownerSpace, storage, eventHandler, profileHandler)
@@ -583,6 +585,13 @@ func (mh *MessageHandler) handleBootstrap(ctx context.Context, msg *IncomingMess
 	eciesPublic := mh.vaultState.eciesPublicKey
 	mh.vaultState.mu.RUnlock()
 
+	log.Debug().
+		Str("owner_space", mh.ownerSpace).
+		Bool("has_ecies_private", eciesPrivate != nil).
+		Bool("has_ecies_public", eciesPublic != nil).
+		Bool("has_sealer_proxy", mh.sealerProxy != nil).
+		Msg("Checking ECIES storage conditions after bootstrap")
+
 	if eciesPrivate != nil && eciesPublic != nil && mh.sealerProxy != nil {
 		// Marshal ECIES keys
 		eciesKeys := struct {
@@ -684,6 +693,35 @@ func (mh *MessageHandler) handleProfileOperation(ctx context.Context, msg *Incom
 		default:
 			return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown sharing-settings operation: %s", opParts[2]))
 		}
+	case "categories":
+		// Handle category operations (predefined + custom)
+		if len(opParts) < 3 {
+			return mh.errorResponse(msg.GetID(), "missing categories operation")
+		}
+		switch opParts[2] {
+		case "get":
+			return mh.profileHandler.HandleCategoriesGet(msg)
+		case "update":
+			return mh.profileHandler.HandleCategoriesUpdate(msg)
+		default:
+			return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown categories operation: %s", opParts[2]))
+		}
+	case "public":
+		// Handle public profile operations
+		if len(opParts) < 3 {
+			return mh.errorResponse(msg.GetID(), "missing public operation")
+		}
+		switch opParts[2] {
+		case "get":
+			return mh.profileHandler.HandlePublicSettingsGet(msg)
+		case "update":
+			return mh.profileHandler.HandlePublicSettingsUpdate(msg)
+		default:
+			return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown public operation: %s", opParts[2]))
+		}
+	case "publish":
+		// Publish public profile to NATS
+		return mh.profileHandler.HandlePublish(ctx, msg)
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown profile operation: %s", opType))
 	}

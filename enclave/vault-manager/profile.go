@@ -1,7 +1,10 @@
 package main
 
 import (
+	"context"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -12,6 +15,8 @@ import (
 type ProfileHandler struct {
 	ownerSpace string
 	storage    *EncryptedStorage
+	publisher  *VsockPublisher
+	vaultState *VaultState
 }
 
 // NewProfileHandler creates a new profile handler
@@ -20,6 +25,16 @@ func NewProfileHandler(ownerSpace string, storage *EncryptedStorage) *ProfileHan
 		ownerSpace: ownerSpace,
 		storage:    storage,
 	}
+}
+
+// SetPublisher sets the publisher for NATS publishing (called after MessageHandler creation)
+func (h *ProfileHandler) SetPublisher(publisher *VsockPublisher) {
+	h.publisher = publisher
+}
+
+// SetVaultState sets the vault state reference for accessing crypto keys
+func (h *ProfileHandler) SetVaultState(state *VaultState) {
+	h.vaultState = state
 }
 
 // --- Request/Response types ---
@@ -400,4 +415,277 @@ func containsString(slice []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// HandleCategoriesGet handles profile.categories.get messages
+// Returns both predefined and custom categories
+func (h *ProfileHandler) HandleCategoriesGet(msg *IncomingMessage) (*OutgoingMessage, error) {
+	// Load custom categories from storage
+	var customCategories []CustomCategory
+	data, err := h.storage.Get("profile/_categories")
+	if err == nil {
+		json.Unmarshal(data, &customCategories)
+	}
+	if customCategories == nil {
+		customCategories = []CustomCategory{}
+	}
+
+	response := ProfileCategoriesGetResponse{
+		Predefined: PredefinedCategories,
+		Custom:     customCategories,
+	}
+
+	respBytes, _ := json.Marshal(response)
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// HandleCategoriesUpdate handles profile.categories.update messages
+// Updates the list of custom categories
+func (h *ProfileHandler) HandleCategoriesUpdate(msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req ProfileCategoriesUpdateRequest
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		return h.errorResponse(msg.GetID(), "Invalid request format")
+	}
+
+	// Store custom categories
+	data, err := json.Marshal(req.Categories)
+	if err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to serialize categories")
+	}
+
+	if err := h.storage.Put("profile/_categories", data); err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to save categories")
+	}
+
+	log.Info().Int("count", len(req.Categories)).Msg("Custom categories updated")
+
+	resp := map[string]interface{}{
+		"success": true,
+		"count":   len(req.Categories),
+	}
+	respBytes, _ := json.Marshal(resp)
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// HandlePublish handles profile.publish messages
+// Creates and publishes the public profile to NATS
+func (h *ProfileHandler) HandlePublish(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req ProfilePublishRequest
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		// Allow empty payload - use existing settings
+		req = ProfilePublishRequest{}
+	}
+
+	now := time.Now()
+	nowUnix := now.Unix()
+
+	// Load current public profile settings
+	var settings PublicProfileSettings
+	settingsData, err := h.storage.Get("profile/_public")
+	if err == nil {
+		json.Unmarshal(settingsData, &settings)
+	}
+
+	// Update fields if provided
+	if len(req.Fields) > 0 {
+		settings.Fields = req.Fields
+	}
+	settings.UpdatedAt = nowUnix
+	settings.PublishedAt = nowUnix
+	settings.Version++
+
+	// Save updated settings
+	settingsBytes, _ := json.Marshal(settings)
+	if err := h.storage.Put("profile/_public", settingsBytes); err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to save public profile settings")
+	}
+
+	// Build published profile
+	profile := PublishedProfile{
+		UserGUID:      h.ownerSpace,
+		EmailVerified: true, // Assume verified during registration
+		Fields:        make(map[string]PublishedField),
+		Version:       settings.Version,
+		UpdatedAt:     now.Format(time.RFC3339),
+	}
+
+	// Get public key from vault state
+	if h.vaultState != nil {
+		h.vaultState.mu.RLock()
+		if h.vaultState.credential != nil && h.vaultState.credential.IdentityPublicKey != nil {
+			profile.PublicKey = base64.StdEncoding.EncodeToString(h.vaultState.credential.IdentityPublicKey)
+		}
+		h.vaultState.mu.RUnlock()
+	}
+
+	// Load system fields (registration info) - always included
+	systemFields := []string{"_system_first_name", "_system_last_name", "_system_email"}
+	for _, field := range systemFields {
+		data, err := h.storage.Get("profile/" + field)
+		if err != nil {
+			continue
+		}
+		var entry ProfileEntry
+		if err := json.Unmarshal(data, &entry); err != nil {
+			continue
+		}
+		switch field {
+		case "_system_first_name":
+			profile.FirstName = entry.Value
+		case "_system_last_name":
+			profile.LastName = entry.Value
+		case "_system_email":
+			profile.Email = entry.Value
+		}
+	}
+
+	// Load selected personal data fields
+	for _, fieldName := range settings.Fields {
+		data, err := h.storage.Get("profile/" + fieldName)
+		if err != nil {
+			continue
+		}
+
+		// Try to parse as PersonalDataField first
+		var field PersonalDataField
+		if err := json.Unmarshal(data, &field); err != nil {
+			// Fall back to ProfileEntry format
+			var entry ProfileEntry
+			if err := json.Unmarshal(data, &entry); err != nil {
+				continue
+			}
+			profile.Fields[fieldName] = PublishedField{
+				DisplayName: fieldName,
+				Value:       entry.Value,
+				FieldType:   string(FieldTypeText),
+			}
+			continue
+		}
+
+		// Skip sensitive fields
+		if field.IsSensitive {
+			log.Warn().Str("field", fieldName).Msg("Skipping sensitive field from public profile")
+			continue
+		}
+
+		profile.Fields[fieldName] = PublishedField{
+			DisplayName: field.DisplayName,
+			Value:       field.Value,
+			FieldType:   string(field.FieldType),
+		}
+	}
+
+	// Publish to NATS
+	if h.publisher != nil {
+		profileBytes, err := json.Marshal(profile)
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to serialize public profile")
+		} else {
+			subject := fmt.Sprintf("%s.profile.public", h.ownerSpace)
+			if err := h.publisher.PublishRaw(subject, profileBytes); err != nil {
+				log.Error().Err(err).Str("subject", subject).Msg("Failed to publish public profile")
+				// Don't fail the request if NATS publish fails
+			} else {
+				log.Info().
+					Str("owner_space", h.ownerSpace).
+					Int("version", settings.Version).
+					Int("field_count", len(profile.Fields)).
+					Msg("Public profile published to NATS")
+			}
+		}
+	}
+
+	response := ProfilePublishResponse{
+		Success:     true,
+		Version:     settings.Version,
+		PublishedAt: now.Format(time.RFC3339),
+	}
+
+	respBytes, _ := json.Marshal(response)
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// HandlePublicSettingsGet handles profile.public.get messages
+// Returns the current public profile settings (which fields are shared)
+func (h *ProfileHandler) HandlePublicSettingsGet(msg *IncomingMessage) (*OutgoingMessage, error) {
+	var settings PublicProfileSettings
+	data, err := h.storage.Get("profile/_public")
+	if err == nil {
+		json.Unmarshal(data, &settings)
+	} else {
+		// Return empty settings if none exist
+		settings = PublicProfileSettings{
+			Version: 0,
+			Fields:  []string{},
+		}
+	}
+
+	respBytes, _ := json.Marshal(settings)
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// HandlePublicSettingsUpdate handles profile.public.update messages
+// Updates which fields are included in the public profile (without publishing)
+func (h *ProfileHandler) HandlePublicSettingsUpdate(msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req struct {
+		Fields []string `json:"fields"`
+	}
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		return h.errorResponse(msg.GetID(), "Invalid request format")
+	}
+
+	// Load existing settings
+	var settings PublicProfileSettings
+	data, err := h.storage.Get("profile/_public")
+	if err == nil {
+		json.Unmarshal(data, &settings)
+	}
+
+	// Update fields
+	settings.Fields = req.Fields
+	settings.UpdatedAt = time.Now().Unix()
+	settings.Version++
+
+	// Save settings
+	settingsBytes, _ := json.Marshal(settings)
+	if err := h.storage.Put("profile/_public", settingsBytes); err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to save settings")
+	}
+
+	log.Info().
+		Int("version", settings.Version).
+		Int("field_count", len(req.Fields)).
+		Msg("Public profile settings updated")
+
+	resp := map[string]interface{}{
+		"success": true,
+		"version": settings.Version,
+	}
+	respBytes, _ := json.Marshal(resp)
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
 }

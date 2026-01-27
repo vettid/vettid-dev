@@ -365,7 +365,16 @@ type PINSetupRequest struct {
 // PINSetupPayload is the decrypted PIN payload
 // SECURITY: Uses SensitiveBytes so PIN can be zeroed after use
 type PINSetupPayload struct {
-	PIN SensitiveBytes `json:"pin"` // The actual PIN (zeroable)
+	PIN     SensitiveBytes       `json:"pin"`               // The actual PIN (zeroable)
+	Profile *RegistrationProfile `json:"profile,omitempty"` // Optional registration profile
+}
+
+// RegistrationProfile contains the user's registration information
+// This is collected during member registration and sent to the vault during enrollment
+type RegistrationProfile struct {
+	FirstName string `json:"first_name"`
+	LastName  string `json:"last_name"`
+	Email     string `json:"email"`
 }
 
 // PINSetupResponse is returned after PIN setup
@@ -373,8 +382,9 @@ type PINSetupPayload struct {
 // Does NOT return the credential - that comes from credential.create (Phase 3)
 // Note: sealed_material is stored to S3, not returned to the app
 type PINSetupResponse struct {
-	Status string      `json:"status"` // "vault_ready"
-	UTKs   []UTKPublic `json:"utks"`   // UTKs for credential creation
+	Status        string      `json:"status"`          // "vault_ready"
+	UTKs          []UTKPublic `json:"utks"`            // UTKs for credential creation
+	ECIESPublicKey string     `json:"ecies_public_key"` // Base64-encoded X25519 public key for PIN unlock
 }
 
 // UTKPublic is the public representation of a UTK sent to the app
@@ -655,4 +665,115 @@ type CredentialSecretDeleteRequest struct {
 // CredentialSecretDeleteResponse is the response for credential.secret.delete
 type CredentialSecretDeleteResponse struct {
 	Success bool `json:"success"`
+}
+
+// --- Personal Data Types ---
+// For structured profile fields with dotted namespace naming
+
+// FieldType defines the type of a personal data field
+type FieldType string
+
+const (
+	FieldTypeText     FieldType = "text"     // General text
+	FieldTypePassword FieldType = "password" // Masked display
+	FieldTypeNumber   FieldType = "number"   // Numeric keyboard
+	FieldTypeDate     FieldType = "date"     // Date picker (YYYY-MM-DD)
+	FieldTypeEmail    FieldType = "email"    // Email keyboard
+	FieldTypePhone    FieldType = "phone"    // Phone keyboard
+	FieldTypeURL      FieldType = "url"      // URL keyboard
+	FieldTypeNote     FieldType = "note"     // Multi-line text
+)
+
+// PredefinedCategory represents the built-in categories
+type PredefinedCategory struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Icon string `json:"icon"`
+}
+
+// PredefinedCategories is the list of built-in categories
+var PredefinedCategories = []PredefinedCategory{
+	{ID: "identity", Name: "Identity", Icon: "person"},
+	{ID: "contact", Name: "Contact", Icon: "phone"},
+	{ID: "address", Name: "Address", Icon: "location"},
+	{ID: "financial", Name: "Financial", Icon: "account_balance"},
+	{ID: "medical", Name: "Medical", Icon: "medical"},
+	{ID: "other", Name: "Other", Icon: "more"},
+}
+
+// PersonalDataField represents a user's personal data field stored in the vault
+// Uses dotted namespace naming: personal.legal.first_name, contact.phone.mobile
+type PersonalDataField struct {
+	ID          string    `json:"id"`           // UUID
+	Name        string    `json:"name"`         // Dotted namespace: "contact.phone.mobile"
+	DisplayName string    `json:"display_name"` // Human-readable: "Mobile Phone"
+	Value       string    `json:"value"`        // The actual value (encrypted in vault)
+	FieldType   FieldType `json:"field_type"`   // TEXT, PASSWORD, NUMBER, DATE, EMAIL, PHONE, URL, NOTE
+	Category    string    `json:"category"`     // Category ID (predefined or custom)
+	IsSensitive bool      `json:"is_sensitive"` // If true, treated like minor secret
+	CreatedAt   int64     `json:"created_at"`   // Unix timestamp
+	UpdatedAt   int64     `json:"updated_at"`
+}
+
+// CustomCategory represents a user-defined category for organizing personal data
+type CustomCategory struct {
+	ID        string `json:"id"`             // UUID
+	Name      string `json:"name"`           // User-defined name
+	Icon      string `json:"icon,omitempty"` // Optional icon
+	CreatedAt int64  `json:"created_at"`
+}
+
+// PublicProfileSettings stores which fields to include in the public profile
+// Stored at profile/_public
+type PublicProfileSettings struct {
+	Version     int      `json:"version"`
+	Fields      []string `json:"fields"`       // Field names to include in public profile
+	UpdatedAt   int64    `json:"updated_at"`
+	PublishedAt int64    `json:"published_at"` // When last published to NATS
+}
+
+// PublishedField represents a single field in the published profile
+type PublishedField struct {
+	DisplayName string `json:"display_name"`
+	Value       string `json:"value"`
+	FieldType   string `json:"field_type"`
+}
+
+// PublishedProfile is the structure published to NATS for connections to see
+// Published to topic: {ownerSpace}.profile.public
+type PublishedProfile struct {
+	UserGUID      string                    `json:"user_guid"`
+	PublicKey     string                    `json:"public_key"`     // Ed25519 public key (base64)
+	FirstName     string                    `json:"first_name"`     // Always included from registration
+	LastName      string                    `json:"last_name"`      // Always included
+	Email         string                    `json:"email"`          // Always included
+	EmailVerified bool                      `json:"email_verified"` // From registration
+	Fields        map[string]PublishedField `json:"fields"`         // Selected personal data fields
+	Version       int                       `json:"profile_version"`
+	UpdatedAt     string                    `json:"updated_at"` // ISO8601
+}
+
+// --- Profile Request/Response Types ---
+
+// ProfileCategoriesGetResponse is the response for profile.categories.get
+type ProfileCategoriesGetResponse struct {
+	Predefined []PredefinedCategory `json:"predefined"`
+	Custom     []CustomCategory     `json:"custom"`
+}
+
+// ProfileCategoriesUpdateRequest is the request for profile.categories.update
+type ProfileCategoriesUpdateRequest struct {
+	Categories []CustomCategory `json:"categories"`
+}
+
+// ProfilePublishRequest is the request for profile.publish
+type ProfilePublishRequest struct {
+	Fields []string `json:"fields,omitempty"` // Optional: update selected fields before publishing
+}
+
+// ProfilePublishResponse is the response for profile.publish
+type ProfilePublishResponse struct {
+	Success     bool   `json:"success"`
+	Version     int    `json:"version"`
+	PublishedAt string `json:"published_at"` // ISO8601
 }
