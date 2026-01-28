@@ -65,9 +65,15 @@ func NewSQLiteStorage(ownerSpace string, dek []byte) (*SQLiteStorage, error) {
 		}
 	}
 
+	// Make a copy of the DEK to prevent aliasing issues.
+	// The caller may zero the original DEK after this call (e.g., for security),
+	// which would corrupt our encryption key if we just stored a reference.
+	dekCopy := make([]byte, len(dek))
+	copy(dekCopy, dek)
+
 	storage := &SQLiteStorage{
 		db:              db,
-		dek:             dek,
+		dek:             dekCopy,
 		ownerSpace:      ownerSpace,
 		dbPath:          ":memory:",
 		rollbackCounter: 0,
