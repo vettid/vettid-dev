@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mesmerverse/vettid-dev/enclave/vault-manager/storage"
+	"github.com/vettid/vettid-dev/enclave/vault-manager/storage"
 )
 
 // setupEventHandler creates a test EventHandler with initialized storage

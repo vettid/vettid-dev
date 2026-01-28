@@ -120,9 +120,17 @@ func (h *BootstrapHandler) HandleBootstrap(ctx context.Context, msg *IncomingMes
 
 	// Generate ECIES keypair if not already generated
 	if h.state.eciesPrivateKey == nil {
+		log.Debug().Str("owner_space", h.ownerSpace).Msg("Generating ECIES keypair for cold vault recovery")
 		if err := h.generateECIESKeypair(); err != nil {
 			return h.errorResponse(msg.GetID(), "failed to generate ECIES keypair")
 		}
+		log.Info().
+			Str("owner_space", h.ownerSpace).
+			Int("ecies_public_len", len(h.state.eciesPublicKey)).
+			Int("ecies_private_len", len(h.state.eciesPrivateKey)).
+			Msg("ECIES keypair generated")
+	} else {
+		log.Debug().Str("owner_space", h.ownerSpace).Msg("ECIES keypair already exists")
 	}
 
 	// Generate CEK keypair (X25519)
@@ -170,6 +178,64 @@ func (h *BootstrapHandler) HandleBootstrap(ctx context.Context, msg *IncomingMes
 
 	// Credential not yet created - app needs to set password
 	return h.buildBootstrapResponse(msg.GetID(), true, bindingVerified)
+}
+
+// GenerateECIESKeypairIfNeeded generates the ECIES keypair if not already present
+// Returns true if keys were generated, false if they already existed
+func (h *BootstrapHandler) GenerateECIESKeypairIfNeeded() (bool, error) {
+	h.state.mu.Lock()
+	defer h.state.mu.Unlock()
+
+	if h.state.eciesPrivateKey != nil {
+		log.Debug().Str("owner_space", h.ownerSpace).Msg("ECIES keypair already exists")
+		return false, nil
+	}
+
+	if err := h.generateECIESKeypairLocked(); err != nil {
+		return false, err
+	}
+
+	log.Info().
+		Str("owner_space", h.ownerSpace).
+		Int("ecies_public_len", len(h.state.eciesPublicKey)).
+		Int("ecies_private_len", len(h.state.eciesPrivateKey)).
+		Msg("ECIES keypair generated")
+
+	return true, nil
+}
+
+// GetECIESKeys returns the ECIES keys for storage (copies to prevent race conditions)
+func (h *BootstrapHandler) GetECIESKeys() (privateKey, publicKey []byte) {
+	h.state.mu.RLock()
+	defer h.state.mu.RUnlock()
+
+	if h.state.eciesPrivateKey == nil || h.state.eciesPublicKey == nil {
+		return nil, nil
+	}
+
+	// Return copies to prevent race conditions
+	privateKey = make([]byte, len(h.state.eciesPrivateKey))
+	publicKey = make([]byte, len(h.state.eciesPublicKey))
+	copy(privateKey, h.state.eciesPrivateKey)
+	copy(publicKey, h.state.eciesPublicKey)
+	return privateKey, publicKey
+}
+
+// generateECIESKeypairLocked generates the ECIES keypair (caller must hold lock)
+func (h *BootstrapHandler) generateECIESKeypairLocked() error {
+	privateKey := make([]byte, 32)
+	if _, err := rand.Read(privateKey); err != nil {
+		return fmt.Errorf("failed to generate ECIES private key: %w", err)
+	}
+
+	publicKey, err := curve25519.X25519(privateKey, curve25519.Basepoint)
+	if err != nil {
+		return fmt.Errorf("failed to derive ECIES public key: %w", err)
+	}
+
+	h.state.eciesPrivateKey = privateKey
+	h.state.eciesPublicKey = publicKey
+	return nil
 }
 
 // generateECIESKeypair generates the ECIES keypair for encrypting PIN/password
@@ -349,11 +415,27 @@ func (h *BootstrapHandler) GetLTKForUTK(utkID string) ([]byte, bool) {
 	h.state.mu.RLock()
 	defer h.state.mu.RUnlock()
 
-	for _, pair := range h.state.utkPairs {
+	log.Debug().
+		Str("requested_utk_id", utkID).
+		Int("total_utk_pairs", len(h.state.utkPairs)).
+		Msg("DEBUG: Looking up LTK for UTK")
+
+	for i, pair := range h.state.utkPairs {
+		log.Debug().
+			Int("index", i).
+			Str("pair_id", pair.ID).
+			Bool("is_used", pair.UsedAt != 0).
+			Int("ltk_len", len(pair.LTK)).
+			Msg("DEBUG: Checking UTK pair")
 		if pair.ID == utkID {
+			log.Info().
+				Str("utk_id", utkID).
+				Int("ltk_len", len(pair.LTK)).
+				Msg("DEBUG: Found LTK for UTK")
 			return pair.LTK, true
 		}
 	}
+	log.Warn().Str("utk_id", utkID).Msg("DEBUG: UTK not found")
 	return nil, false
 }
 

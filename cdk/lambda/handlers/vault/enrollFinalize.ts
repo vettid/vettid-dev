@@ -1,5 +1,5 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
-import { DynamoDBClient, GetItemCommand, PutItemCommand, UpdateItemCommand } from '@aws-sdk/client-dynamodb';
+import { DynamoDBClient, GetItemCommand, PutItemCommand, UpdateItemCommand, QueryCommand } from '@aws-sdk/client-dynamodb';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import {
   ok,
@@ -20,6 +20,7 @@ const ddb = new DynamoDBClient({});
 const TABLE_ENROLLMENT_SESSIONS = process.env.TABLE_ENROLLMENT_SESSIONS!;
 const TABLE_INVITES = process.env.TABLE_INVITES!;
 const TABLE_NATS_ACCOUNTS = process.env.TABLE_NATS_ACCOUNTS!;
+const TABLE_REGISTRATIONS = process.env.TABLE_REGISTRATIONS!;
 
 // SECURITY: Require device attestation before finalization
 // Set to 'true' in production to enforce hardware-backed attestation
@@ -107,12 +108,12 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     // Validate session state - must have completed NATS-based enrollment phases
     // PASSWORD_SET means vault-manager has confirmed credential creation via NATS
     // STARTED is also accepted for backwards compatibility
-    const validStates = ['PASSWORD_SET', 'STARTED'];
+    // AUTHENTICATED is accepted for NATS-based flow where enrollment happens entirely via NATS
+    const validStates = ['PASSWORD_SET', 'STARTED', 'AUTHENTICATED'];
     if (!validStates.includes(session.status)) {
       // Provide helpful error message based on current state
       const stateMessages: Record<string, string> = {
         'WEB_INITIATED': 'Mobile app has not scanned the QR code yet',
-        'AUTHENTICATED': 'App connected but enrollment not started',
         'DEVICE_ATTESTED': 'Device attested but enrollment not started',
         'NATS_CONNECTED': 'Waiting for enclave attestation verification',
         'ATTESTATION_VERIFIED': 'Waiting for PIN setup',
@@ -154,6 +155,37 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
 
     const now = new Date();
     const userGuid = session.user_guid;
+
+    // === FETCH REGISTRATION PROFILE ===
+    // Get user's registration data (firstName, lastName, email) to include in response
+    // This allows the mobile app to populate the profile during enrollment
+    let registrationProfile: { firstName: string; lastName: string; email: string } | null = null;
+    try {
+      const registrationResult = await ddb.send(new QueryCommand({
+        TableName: TABLE_REGISTRATIONS,
+        IndexName: 'user-guid-index',
+        KeyConditionExpression: 'user_guid = :user_guid',
+        ExpressionAttributeValues: marshall({
+          ':user_guid': userGuid,
+        }),
+        Limit: 1,
+      }));
+
+      if (registrationResult.Items && registrationResult.Items.length > 0) {
+        const registration = unmarshall(registrationResult.Items[0]);
+        registrationProfile = {
+          firstName: registration.first_name || '',
+          lastName: registration.last_name || '',
+          email: registration.email || '',
+        };
+        console.log(`Fetched registration profile for user ${userGuid}`);
+      } else {
+        console.log(`No registration found for user ${userGuid}`);
+      }
+    } catch (error) {
+      // Log but don't fail enrollment if profile fetch fails
+      console.warn('Failed to fetch registration profile:', error);
+    }
 
     // === NATS ACCOUNT ACTIVATION ===
     // The NATS account should already exist (created by enrollNatsBootstrap)
@@ -237,6 +269,39 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       }));
     }
 
+    // Update registration vault_status to indicate enrollment is complete
+    // This is used by the account portal to show the correct status
+    if (registrationProfile) {
+      try {
+        // Find and update the registration by user_guid
+        const regResult = await ddb.send(new QueryCommand({
+          TableName: TABLE_REGISTRATIONS,
+          IndexName: 'user-guid-index',
+          KeyConditionExpression: 'user_guid = :user_guid',
+          ExpressionAttributeValues: marshall({ ':user_guid': userGuid }),
+          ProjectionExpression: 'registration_id',
+          Limit: 1,
+        }));
+
+        if (regResult.Items && regResult.Items.length > 0) {
+          const registration = unmarshall(regResult.Items[0]);
+          await ddb.send(new UpdateItemCommand({
+            TableName: TABLE_REGISTRATIONS,
+            Key: marshall({ registration_id: registration.registration_id }),
+            UpdateExpression: 'SET vault_status = :vault_status, enrollment_completed_at = :completed_at',
+            ExpressionAttributeValues: marshall({
+              ':vault_status': vaultStatus,
+              ':completed_at': now.toISOString(),
+            }),
+          }));
+          console.log(`Updated registration vault_status to ${vaultStatus} for user ${userGuid}`);
+        }
+      } catch (regError) {
+        // Log but don't fail enrollment if registration update fails
+        console.warn('Failed to update registration vault_status:', regError);
+      }
+    }
+
     // Audit log
     await putAudit({
       type: 'enrollment_completed',
@@ -249,6 +314,9 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     return ok({
       status: 'enrolled',
       vault_status: vaultStatus,
+      // Registration profile data for mobile app to store locally
+      // Contains the system fields from registration (read-only in profile)
+      registration_profile: registrationProfile,
       // Vault bootstrap info - app uses credentials from enrollNatsBootstrap to call app.bootstrap
       // on the vault and receive:
       // 1. Full NATS credentials for vault communication

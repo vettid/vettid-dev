@@ -492,6 +492,14 @@ export class NitroStack extends cdk.Stack {
       tier: ssm.ParameterTier.STANDARD,
     });
 
+    // Store vault data bucket name in SSM for parent process configuration (S3 cold vault recovery)
+    new ssm.StringParameter(this, 'VaultDataBucketParameter', {
+      parameterName: '/vettid/nitro/vault-data-bucket',
+      description: 'S3 bucket for vault data storage (cold vault recovery)',
+      stringValue: this.vaultDataBucket.bucketName,
+      tier: ssm.ParameterTier.STANDARD,
+    });
+
     // EC2 describe for self-discovery
     this.enclaveInstanceRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
@@ -1032,6 +1040,11 @@ export class NitroStack extends cdk.Stack {
       'KMS_SEALING_KEY_ARN=$(aws ssm get-parameter --name /vettid/nitro/sealing-key-arn --region $REGION --query Parameter.Value --output text)',
       'echo "KMS sealing key ARN: $KMS_SEALING_KEY_ARN"',
       '',
+      '# Fetch vault data bucket from SSM for cold vault recovery',
+      'echo "Fetching vault data bucket from SSM..."',
+      'VAULT_DATA_BUCKET=$(aws ssm get-parameter --name /vettid/nitro/vault-data-bucket --region $REGION --query Parameter.Value --output text 2>/dev/null || echo "")',
+      'echo "Vault data bucket: $VAULT_DATA_BUCKET"',
+      '',
       '# Update parent config to use NATS credentials and KMS',
       'cat > /etc/vettid/parent.yaml << EOF',
       '# VettID Nitro Enclave Parent Configuration',
@@ -1055,8 +1068,9 @@ export class NitroStack extends cdk.Stack {
       '  max_reconnects: -1',
       '',
       's3:',
-      '  bucket: ""',
+      '  bucket: $VAULT_DATA_BUCKET',
       '  region: us-east-1',
+      '  key_prefix: ""  # Supervisor controls full S3 key path',
       '',
       'health:',
       '  port: 8080',

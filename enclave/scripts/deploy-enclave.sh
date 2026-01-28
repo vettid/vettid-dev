@@ -616,6 +616,38 @@ aws ssm put-parameter \
 
 log_info "SSM parameter updated: $AMI_SSM_PARAM = $NEW_AMI_ID"
 
+# VERIFY: Ensure PCR0 in SSM matches the actual EIF on the build instance
+# This catches SSM rate limiting issues (TooManyUpdates) that could cause mismatches
+log_info "Verifying PCR0 consistency between build instance and SSM..."
+
+VERIFY_CMD_ID=$(aws ssm send-command \
+    --instance-ids "$INSTANCE_ID" \
+    --document-name "AWS-RunShellScript" \
+    --parameters 'commands=["nitro-cli describe-eif --eif-path /opt/vettid/enclave/vettid-vault-enclave.eif 2>/dev/null | jq -r .Measurements.PCR0"]' \
+    --query 'Command.CommandId' \
+    --output text \
+    --region "$REGION")
+
+sleep 5
+
+ACTUAL_PCR0=$(aws ssm get-command-invocation \
+    --command-id "$VERIFY_CMD_ID" \
+    --instance-id "$INSTANCE_ID" \
+    --query 'StandardOutputContent' \
+    --output text \
+    --region "$REGION" 2>/dev/null | tr -d '[:space:]')
+
+SSM_PCR0=$(aws ssm get-parameter --name "/vettid/enclave/pcr/pcr0" --query 'Parameter.Value' --output text --region "$REGION")
+
+if [ "$ACTUAL_PCR0" != "$SSM_PCR0" ]; then
+    log_warn "PCR0 MISMATCH DETECTED!"
+    log_warn "  EIF on instance: $ACTUAL_PCR0"
+    log_warn "  SSM parameter:   $SSM_PCR0"
+    log_info "Updating SSM parameter to match actual EIF..."
+    aws ssm put-parameter --name "/vettid/enclave/pcr/pcr0" --value "$ACTUAL_PCR0" --type String --overwrite --region "$REGION"
+    log_info "SSM parameter corrected"
+fi
+
 # Get PCR values for verification and manifest publishing
 PCR0_VALUE=$(aws ssm get-parameter --name "/vettid/enclave/pcr/pcr0" --query 'Parameter.Value' --output text --region "$REGION")
 PCR1_VALUE=$(aws ssm get-parameter --name "/vettid/enclave/pcr/pcr1" --query 'Parameter.Value' --output text --region "$REGION")

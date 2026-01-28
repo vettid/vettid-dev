@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/mesmerverse/vettid-dev/enclave/vault-manager/storage"
+	"github.com/vettid/vettid-dev/enclave/vault-manager/storage"
 )
 
 // setupCredentialSecretHandler creates a test CredentialSecretHandler with initialized storage

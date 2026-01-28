@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mesmerverse/vettid-dev/enclave/vault-manager/storage"
+	"github.com/vettid/vettid-dev/enclave/vault-manager/storage"
 	"github.com/rs/zerolog/log"
 )
 
@@ -25,6 +25,9 @@ type EventHandler struct {
 	syncSequence int64
 }
 
+// ErrStorageNotReady is returned when storage hasn't been initialized with DEK
+var ErrStorageNotReady = fmt.Errorf("storage not ready: vault must be unlocked first")
+
 // NewEventHandler creates a new event handler
 func NewEventHandler(ownerSpace string, storage *EncryptedStorage, publisher *VsockPublisher) *EventHandler {
 	h := &EventHandler{
@@ -38,6 +41,11 @@ func NewEventHandler(ownerSpace string, storage *EncryptedStorage, publisher *Vs
 	h.loadSettings()
 
 	return h
+}
+
+// storageReady checks if the underlying SQLite storage is initialized
+func (h *EventHandler) storageReady() bool {
+	return h.storage != nil && h.storage.SQLite() != nil
 }
 
 // loadSettings loads feed settings from storage
@@ -210,6 +218,10 @@ func (h *EventHandler) ListFeed(ctx context.Context, req *FeedListRequest) (*Fee
 		limit = 50
 	}
 
+	if !h.storageReady() {
+		return nil, ErrStorageNotReady
+	}
+
 	events, total, err := h.storage.SQLite().ListFeedEvents(statuses, limit, req.Offset)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list feed events: %w", err)
@@ -229,6 +241,9 @@ func (h *EventHandler) ListFeed(ctx context.Context, req *FeedListRequest) (*Fee
 
 // GetEvent retrieves a single event by ID
 func (h *EventHandler) GetEvent(ctx context.Context, eventID string) (*Event, error) {
+	if !h.storageReady() {
+		return nil, ErrStorageNotReady
+	}
 	rec, err := h.storage.SQLite().GetEvent(eventID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get event: %w", err)
@@ -243,6 +258,9 @@ func (h *EventHandler) GetEvent(ctx context.Context, eventID string) (*Event, er
 
 // MarkRead marks an event as read
 func (h *EventHandler) MarkRead(ctx context.Context, eventID string) error {
+	if !h.storageReady() {
+		return ErrStorageNotReady
+	}
 	now := time.Now().Unix()
 	if err := h.storage.SQLite().UpdateEventStatus(eventID, string(FeedStatusRead), now); err != nil {
 		return fmt.Errorf("failed to mark event read: %w", err)
@@ -261,6 +279,9 @@ func (h *EventHandler) MarkRead(ctx context.Context, eventID string) error {
 
 // Archive archives an event
 func (h *EventHandler) Archive(ctx context.Context, eventID string) error {
+	if !h.storageReady() {
+		return ErrStorageNotReady
+	}
 	now := time.Now().Unix()
 	if err := h.storage.SQLite().UpdateEventStatus(eventID, string(FeedStatusArchived), now); err != nil {
 		return fmt.Errorf("failed to archive event: %w", err)
@@ -278,6 +299,9 @@ func (h *EventHandler) Archive(ctx context.Context, eventID string) error {
 
 // Delete soft-deletes an event
 func (h *EventHandler) Delete(ctx context.Context, eventID string) error {
+	if !h.storageReady() {
+		return ErrStorageNotReady
+	}
 	now := time.Now().Unix()
 	if err := h.storage.SQLite().UpdateEventStatus(eventID, string(FeedStatusDeleted), now); err != nil {
 		return fmt.Errorf("failed to delete event: %w", err)
@@ -373,6 +397,10 @@ func (h *EventHandler) logStatusChange(ctx context.Context, eventID string, even
 
 // Sync returns events since a given sequence number
 func (h *EventHandler) Sync(ctx context.Context, req *FeedSyncRequest) (*FeedSyncResponse, error) {
+	if !h.storageReady() {
+		return nil, ErrStorageNotReady
+	}
+
 	limit := req.Limit
 	if limit <= 0 {
 		limit = 100
@@ -408,6 +436,10 @@ func (h *EventHandler) Sync(ctx context.Context, req *FeedSyncRequest) (*FeedSyn
 
 // QueryAudit queries events for audit purposes
 func (h *EventHandler) QueryAudit(ctx context.Context, req *AuditQueryRequest) (*AuditQueryResponse, error) {
+	if !h.storageReady() {
+		return nil, ErrStorageNotReady
+	}
+
 	eventTypes := make([]string, len(req.EventTypes))
 	for i, et := range req.EventTypes {
 		eventTypes[i] = string(et)
@@ -442,6 +474,10 @@ func (h *EventHandler) QueryAudit(ctx context.Context, req *AuditQueryRequest) (
 
 // ExportAudit exports events for audit purposes (max 1000)
 func (h *EventHandler) ExportAudit(ctx context.Context, req *AuditExportRequest) (*AuditExportResponse, error) {
+	if !h.storageReady() {
+		return nil, ErrStorageNotReady
+	}
+
 	eventTypes := make([]string, len(req.EventTypes))
 	for i, et := range req.EventTypes {
 		eventTypes[i] = string(et)
@@ -511,6 +547,9 @@ func escapeCSV(s string) string {
 
 // RunCleanup performs event cleanup based on retention settings
 func (h *EventHandler) RunCleanup(ctx context.Context) (int64, error) {
+	if !h.storageReady() {
+		return 0, ErrStorageNotReady
+	}
 	deleted, err := h.storage.SQLite().CleanupEvents(
 		h.settings.FeedRetentionDays,
 		h.settings.AuditRetentionDays,

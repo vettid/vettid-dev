@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mesmerverse/vettid-dev/enclave/vault-manager/storage"
+	"github.com/vettid/vettid-dev/enclave/vault-manager/storage"
 	"github.com/rs/zerolog/log"
 )
 

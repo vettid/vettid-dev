@@ -19,7 +19,7 @@
  */
 
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
-import { DynamoDBClient, GetItemCommand, PutItemCommand, UpdateItemCommand } from '@aws-sdk/client-dynamodb';
+import { DynamoDBClient, GetItemCommand, PutItemCommand, UpdateItemCommand, QueryCommand } from '@aws-sdk/client-dynamodb';
 import { KMSClient, EncryptCommand, DecryptCommand } from '@aws-sdk/client-kms';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import { randomUUID } from 'crypto';
@@ -48,6 +48,7 @@ const kms = new KMSClient({});
 const TABLE_ENROLLMENT_SESSIONS = process.env.TABLE_ENROLLMENT_SESSIONS!;
 const TABLE_NATS_ACCOUNTS = process.env.TABLE_NATS_ACCOUNTS!;
 const TABLE_NATS_TOKENS = process.env.TABLE_NATS_TOKENS!;
+const TABLE_REGISTRATIONS = process.env.TABLE_REGISTRATIONS || 'vettid-registrations';
 const NATS_DOMAIN = process.env.NATS_DOMAIN || 'nats.vettid.dev';
 const NATS_SEED_KMS_KEY_ARN = process.env.NATS_SEED_KMS_KEY_ARN!;
 
@@ -62,6 +63,12 @@ const ENROLLMENT_TOKEN_VALIDITY_MINUTES = 60 * 24;
 const RATE_LIMIT_MAX_REQUESTS = 3;
 const RATE_LIMIT_WINDOW_MINUTES = 15;
 
+interface RegistrationProfile {
+  first_name: string;
+  last_name: string;
+  email: string;
+}
+
 interface NatsBootstrapResponse {
   nats_endpoint: string;
   nats_jwt: string;
@@ -72,6 +79,7 @@ interface NatsBootstrapResponse {
   user_guid: string;
   token_id: string;
   expires_at: string;
+  registration_profile?: RegistrationProfile;
 }
 
 export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
@@ -248,6 +256,36 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       owner_space: ownerSpace,
     }, requestId);
 
+    // Fetch registration profile for the user (using GSI on user_guid)
+    let registrationProfile: RegistrationProfile | undefined;
+    try {
+      const registrationResult = await ddb.send(new QueryCommand({
+        TableName: TABLE_REGISTRATIONS,
+        IndexName: 'user-guid-index',
+        KeyConditionExpression: 'user_guid = :guid',
+        ExpressionAttributeValues: marshall({ ':guid': userGuid }),
+        ProjectionExpression: 'first_name, last_name, email',
+        Limit: 1,
+      }));
+
+      if (registrationResult.Items && registrationResult.Items.length > 0) {
+        const reg = unmarshall(registrationResult.Items[0]);
+        if (reg.first_name && reg.last_name && reg.email) {
+          registrationProfile = {
+            first_name: reg.first_name,
+            last_name: reg.last_name,
+            email: reg.email,
+          };
+          console.log('Found registration profile:', { firstName: reg.first_name, lastName: reg.last_name, email: reg.email });
+        }
+      } else {
+        console.warn('No registration found for user_guid:', userGuid);
+      }
+    } catch (error) {
+      // Log but don't fail - profile is optional
+      console.warn('Failed to fetch registration profile:', error);
+    }
+
     const response: NatsBootstrapResponse = {
       nats_endpoint: `tls://${NATS_DOMAIN}:443`,
       nats_jwt: credentials.jwt,
@@ -258,6 +296,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       user_guid: userGuid,
       token_id: tokenId,
       expires_at: credExpiresAt,
+      registration_profile: registrationProfile,
     };
 
     return ok(response, origin);

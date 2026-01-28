@@ -3,7 +3,8 @@ package main
 import (
 	"encoding/json"
 
-	"github.com/mesmerverse/vettid-dev/enclave/vault-manager/storage"
+	"github.com/vettid/vettid-dev/enclave/vault-manager/storage"
+	"github.com/rs/zerolog/log"
 )
 
 // EncryptedStorage wraps the SQLite storage for the vault manager.
@@ -25,12 +26,22 @@ func NewEncryptedStorage(ownerSpace string) (*EncryptedStorage, error) {
 
 // InitializeWithDEK initializes storage with the data encryption key.
 // This creates the SQLite database with the DEK for encryption.
+// If storage is already initialized, it is preserved (idempotent).
 func (s *EncryptedStorage) InitializeWithDEK(dek []byte) error {
+	// If already initialized, don't recreate (preserve existing data)
+	// This is important because the SQLite database is in-memory
+	// and recreating it would lose all stored data
+	if s.sqlite != nil {
+		log.Debug().Str("owner_space", s.ownerSpace).Msg("Storage already initialized, preserving existing data")
+		return nil
+	}
+
 	sqlite, err := storage.NewSQLiteStorage(s.ownerSpace, dek)
 	if err != nil {
 		return err
 	}
 	s.sqlite = sqlite
+	log.Info().Str("owner_space", s.ownerSpace).Msg("Storage initialized with DEK")
 	return nil
 }
 

@@ -115,7 +115,7 @@ func DefaultConfig() *Config {
 		S3: S3Config{
 			Bucket:    "vettid-vault-data",
 			Region:    "us-east-1",
-			KeyPrefix: "vaults/",
+			KeyPrefix: "",  // Supervisor controls full S3 key path (vaults/{owner_space}/...)
 		},
 		Enclave: EnclaveConfig{
 			CID:              16, // Default enclave CID

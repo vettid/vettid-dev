@@ -10,17 +10,24 @@ import (
 )
 
 // AuthenticateRequest is the payload for app.authenticate
-// Used during credential restore to verify identity inside the enclave
+// Supports two modes:
+// 1. Post-enrollment verification: Uses UTK-encrypted password (key_id + encrypted_password_hash)
+// 2. Credential restore: Uses plain password hash + backup_key
 type AuthenticateRequest struct {
 	DeviceID            string `json:"device_id"`             // New device identifier
 	DeviceType          string `json:"device_type"`           // "android" or "ios"
 	AppVersion          string `json:"app_version"`           // App version
 	EncryptedCredential string `json:"encrypted_credential"`  // Base64 encrypted credential blob
-	PasswordHash        string `json:"password_hash"`         // Base64 Argon2id password hash from user
-	Nonce               string `json:"nonce"`                 // Base64 encryption nonce
 
-	// The backup key is passed from the parent process (fetched from storage)
-	BackupKey           string `json:"backup_key"`            // Base64 32-byte decryption key
+	// Mode 1: Post-enrollment verification (UTK-encrypted password)
+	KeyID                 string `json:"key_id,omitempty"`                 // UTK ID for decryption
+	EncryptedPasswordHash string `json:"encrypted_password_hash,omitempty"` // UTK-encrypted password hash
+	EphemeralPublicKey    string `json:"ephemeral_public_key,omitempty"`   // X25519 ephemeral public key
+	Nonce                 string `json:"nonce,omitempty"`                  // Base64 encryption nonce
+
+	// Mode 2: Credential restore (plain password hash + backup key)
+	PasswordHash        string `json:"password_hash,omitempty"`  // Base64 Argon2id password hash from user
+	BackupKey           string `json:"backup_key,omitempty"`     // Base64 32-byte decryption key (from parent)
 }
 
 // AuthenticateResponse is the response for app.authenticate
@@ -41,80 +48,260 @@ type DecryptedCredentialBlob struct {
 	CreatedAt    string `json:"created_at"`
 }
 
-// handleAuthenticate handles app.authenticate messages for credential restore
+// handleAuthenticate handles app.authenticate messages
+// Supports two modes:
+// Mode 1 - Post-enrollment verification: Uses UTK-encrypted password
+// Mode 2 - Credential restore: Uses plain password hash + backup key
 //
-// Security flow:
-// 1. App receives encrypted credential blob from Lambda (via restoreConfirm)
-// 2. App connects to vault with short-lived bootstrap credentials
-// 3. App sends encrypted credential + password hash to vault via NATS
-// 4. Parent process looks up backup decryption key and passes to enclave
-// 5. Enclave decrypts credential and verifies password hash matches
-// 6. On success: returns user_guid to parent which issues NATS credentials
-//
-// This keeps password verification inside the enclave for maximum security.
+// Security: Password verification happens inside the enclave for maximum security.
 func (mh *MessageHandler) handleAuthenticate(msg *IncomingMessage) (*OutgoingMessage, error) {
-	var req AuthenticateRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
-		return mh.authErrorResponse(msg.GetID(), "Invalid request format")
+	// Parse the standard message envelope format from mobile apps
+	// Format: {"id": "...", "type": "app.authenticate", "payload": {...}, "timestamp": "..."}
+	var envelope struct {
+		ID        string          `json:"id"`
+		Type      string          `json:"type"`
+		Payload   json.RawMessage `json:"payload"`
+		Timestamp string          `json:"timestamp"`
+	}
+	if err := json.Unmarshal(msg.Payload, &envelope); err != nil {
+		return mh.authErrorResponse(msg.GetID(), "Invalid message envelope format")
 	}
 
-	// Validate required fields
+	// Extract the actual request from the payload field
+	var req AuthenticateRequest
+	if err := json.Unmarshal(envelope.Payload, &req); err != nil {
+		return mh.authErrorResponse(msg.GetID(), "Invalid request payload format")
+	}
+
+	// Validate common required fields
 	if req.DeviceID == "" {
 		return mh.authErrorResponse(msg.GetID(), "device_id is required")
 	}
 	if req.EncryptedCredential == "" {
 		return mh.authErrorResponse(msg.GetID(), "encrypted_credential is required")
 	}
-	if req.PasswordHash == "" {
-		return mh.authErrorResponse(msg.GetID(), "password_hash is required")
-	}
-	if req.Nonce == "" {
-		return mh.authErrorResponse(msg.GetID(), "nonce is required")
-	}
-	if req.BackupKey == "" {
-		return mh.authErrorResponse(msg.GetID(), "backup_key is required")
+
+	// Determine mode based on fields present
+	isUTKMode := req.KeyID != "" && req.EncryptedPasswordHash != ""
+	isRestoreMode := req.BackupKey != "" && req.PasswordHash != ""
+
+	if !isUTKMode && !isRestoreMode {
+		return mh.authErrorResponse(msg.GetID(), "Either UTK fields (key_id, encrypted_password_hash) or restore fields (backup_key, password_hash) required")
 	}
 
+	if isUTKMode {
+		return mh.handleUTKAuthenticate(msg.GetID(), &req)
+	}
+	return mh.handleRestoreAuthenticate(msg.GetID(), &req)
+}
+
+// handleUTKAuthenticate handles post-enrollment verification using UTK-encrypted password
+func (mh *MessageHandler) handleUTKAuthenticate(requestID string, req *AuthenticateRequest) (*OutgoingMessage, error) {
 	log.Info().
 		Str("device_id", req.DeviceID).
 		Str("device_type", req.DeviceType).
-		Msg("Processing restore authentication request in enclave")
+		Str("key_id", req.KeyID).
+		Msg("Processing post-enrollment verification (UTK mode)")
 
-	// Step 1: Decode base64 inputs
-	encryptedCred, err := base64.StdEncoding.DecodeString(req.EncryptedCredential)
+	// Get the LTK for the provided UTK ID
+	ltk, found := mh.bootstrapHandler.GetLTKForUTK(req.KeyID)
+	if !found {
+		log.Warn().Str("key_id", req.KeyID).Msg("Invalid or expired UTK")
+		return mh.authErrorResponse(requestID, "Invalid or expired UTK")
+	}
+
+	// Decode the separate components sent by the app
+	// App sends: encrypted_password_hash (ciphertext), ephemeral_public_key, nonce
+	// decryptWithUTK expects: ephemeral_pubkey (32) || nonce (24) || ciphertext
+	ciphertext, err := base64.StdEncoding.DecodeString(req.EncryptedPasswordHash)
 	if err != nil {
-		log.Warn().Err(err).Msg("Invalid encrypted_credential encoding")
-		return mh.authErrorResponse(msg.GetID(), "Invalid encrypted_credential encoding")
+		log.Warn().Err(err).Msg("Invalid encrypted_password_hash encoding")
+		return mh.authErrorResponse(requestID, "Invalid encrypted_password_hash encoding")
+	}
+
+	ephemeralPubKey, err := base64.StdEncoding.DecodeString(req.EphemeralPublicKey)
+	if err != nil {
+		log.Warn().Err(err).Msg("Invalid ephemeral_public_key encoding")
+		return mh.authErrorResponse(requestID, "Invalid ephemeral_public_key encoding")
 	}
 
 	nonce, err := base64.StdEncoding.DecodeString(req.Nonce)
 	if err != nil {
 		log.Warn().Err(err).Msg("Invalid nonce encoding")
-		return mh.authErrorResponse(msg.GetID(), "Invalid nonce encoding")
+		return mh.authErrorResponse(requestID, "Invalid nonce encoding")
+	}
+
+	// Combine into the format expected by decryptWithUTK: pubkey (32) || nonce (24) || ciphertext
+	combinedPayload := make([]byte, 0, len(ephemeralPubKey)+len(nonce)+len(ciphertext))
+	combinedPayload = append(combinedPayload, ephemeralPubKey...)
+	combinedPayload = append(combinedPayload, nonce...)
+	combinedPayload = append(combinedPayload, ciphertext...)
+
+	// Decrypt using the LTK
+	passwordHashBytes, err := decryptWithUTK(ltk, combinedPayload)
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to decrypt password hash")
+		debugErr := fmt.Sprintf("DEBUG decrypt_pwd: err=%v ltk_len=%d ephPub_len=%d nonce_len=%d cipher_len=%d combined_len=%d",
+			err, len(ltk), len(ephemeralPubKey), len(nonce), len(ciphertext), len(combinedPayload))
+		return mh.authErrorResponse(requestID, debugErr)
+	}
+	defer zeroBytes(passwordHashBytes)
+
+	// Parse the decrypted payload - it contains {"password_hash": "PHC string"}
+	var payload struct {
+		PasswordHash string `json:"password_hash"`
+	}
+	if err := json.Unmarshal(passwordHashBytes, &payload); err != nil {
+		// Try interpreting as raw PHC string
+		payload.PasswordHash = string(passwordHashBytes)
+		log.Debug().
+			Int("raw_bytes_len", len(passwordHashBytes)).
+			Str("raw_string_preview", string(passwordHashBytes[:min(50, len(passwordHashBytes))])).
+			Msg("JSON unmarshal failed, using raw string")
+	} else {
+		log.Debug().Msg("JSON unmarshal succeeded for password payload")
+	}
+
+	log.Info().
+		Int("payload_hash_len", len(payload.PasswordHash)).
+		Str("payload_hash_prefix", payload.PasswordHash[:min(40, len(payload.PasswordHash))]).
+		Msg("DEBUG: Decrypted password hash from app")
+
+	// Get the stored credential to verify against
+	// First decrypt the encrypted_credential using CEK
+	encryptedCred, err := base64.StdEncoding.DecodeString(req.EncryptedCredential)
+	if err != nil {
+		log.Warn().Err(err).Msg("Invalid encrypted_credential encoding")
+		return mh.authErrorResponse(requestID, "Invalid encrypted_credential encoding")
+	}
+
+	log.Debug().Int("encrypted_cred_len", len(encryptedCred)).Msg("Decoded encrypted credential")
+
+	// Check if CEK is available
+	hasCEK := mh.vaultState != nil && mh.vaultState.cekPair != nil
+	log.Debug().Bool("has_cek", hasCEK).Msg("DEBUG: Checking CEK availability")
+
+	// Decrypt credential with CEK
+	credentialBytes, err := mh.decryptCredentialWithCEK(encryptedCred)
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to decrypt credential")
+		debugErr := fmt.Sprintf("DEBUG decrypt_cred: err=%v cred_len=%d has_cek=%v", err, len(encryptedCred), hasCEK)
+		return mh.authErrorResponse(requestID, debugErr)
+	}
+	defer zeroBytes(credentialBytes)
+
+	log.Debug().
+		Int("credential_bytes_len", len(credentialBytes)).
+		Str("credential_preview", string(credentialBytes[:min(100, len(credentialBytes))])).
+		Msg("Decrypted credential")
+
+	// Parse the credential
+	var credential struct {
+		PasswordHash string `json:"password_hash"`
+		UserGUID     string `json:"user_guid"`
+	}
+	if err := json.Unmarshal(credentialBytes, &credential); err != nil {
+		log.Warn().Err(err).Msg("Failed to parse credential")
+		return mh.authErrorResponse(requestID, "Invalid credential format")
+	}
+
+	log.Info().
+		Int("stored_hash_len", len(credential.PasswordHash)).
+		Str("stored_hash_prefix", credential.PasswordHash[:min(40, len(credential.PasswordHash))]).
+		Msg("DEBUG: Stored password hash from credential")
+
+	// Verify the password hash matches (constant-time for PHC strings)
+	if !timingSafeEqualStrings(payload.PasswordHash, credential.PasswordHash) {
+		log.Warn().
+			Str("device_id", req.DeviceID).
+			Int("payload_len", len(payload.PasswordHash)).
+			Int("stored_len", len(credential.PasswordHash)).
+			Bool("lengths_match", len(payload.PasswordHash) == len(credential.PasswordHash)).
+			Msg("Password verification failed - hash mismatch")
+		// DEBUG: Include comparison details in error message
+		debugMsg := fmt.Sprintf("DEBUG: payload_len=%d stored_len=%d payload_prefix=%s stored_prefix=%s",
+			len(payload.PasswordHash),
+			len(credential.PasswordHash),
+			payload.PasswordHash[:min(30, len(payload.PasswordHash))],
+			credential.PasswordHash[:min(30, len(credential.PasswordHash))])
+		return mh.authErrorResponse(requestID, debugMsg)
+	}
+
+	// Mark UTK as used
+	mh.bootstrapHandler.MarkUTKUsed(req.KeyID)
+
+	log.Info().
+		Str("device_id", req.DeviceID).
+		Str("user_guid", credential.UserGUID).
+		Msg("Post-enrollment verification successful")
+
+	resp := AuthenticateResponse{
+		Success:    true,
+		Message:    "Authentication successful",
+		UserGUID:   credential.UserGUID,
+		DeviceID:   req.DeviceID,
+		DeviceType: req.DeviceType,
+	}
+
+	respBytes, err := json.Marshal(resp)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal response: %w", err)
+	}
+
+	return &OutgoingMessage{
+		RequestID: requestID,
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// handleRestoreAuthenticate handles credential restore using backup key
+func (mh *MessageHandler) handleRestoreAuthenticate(requestID string, req *AuthenticateRequest) (*OutgoingMessage, error) {
+	log.Info().
+		Str("device_id", req.DeviceID).
+		Str("device_type", req.DeviceType).
+		Msg("Processing restore authentication request in enclave")
+
+	// Validate restore-specific fields
+	if req.Nonce == "" {
+		return mh.authErrorResponse(requestID, "nonce is required for restore")
+	}
+
+	// Step 1: Decode base64 inputs
+	encryptedCred, err := base64.StdEncoding.DecodeString(req.EncryptedCredential)
+	if err != nil {
+		log.Warn().Err(err).Msg("Invalid encrypted_credential encoding")
+		return mh.authErrorResponse(requestID, "Invalid encrypted_credential encoding")
+	}
+
+	nonce, err := base64.StdEncoding.DecodeString(req.Nonce)
+	if err != nil {
+		log.Warn().Err(err).Msg("Invalid nonce encoding")
+		return mh.authErrorResponse(requestID, "Invalid nonce encoding")
 	}
 
 	backupKey, err := base64.StdEncoding.DecodeString(req.BackupKey)
 	if err != nil {
 		log.Warn().Err(err).Msg("Invalid backup_key encoding")
-		return mh.authErrorResponse(msg.GetID(), "Invalid backup_key encoding")
+		return mh.authErrorResponse(requestID, "Invalid backup_key encoding")
 	}
 
 	if len(backupKey) != 32 {
 		log.Warn().Int("key_len", len(backupKey)).Msg("Invalid backup key length")
-		return mh.authErrorResponse(msg.GetID(), "Invalid backup key")
+		return mh.authErrorResponse(requestID, "Invalid backup key")
 	}
 
 	providedHash, err := base64.StdEncoding.DecodeString(req.PasswordHash)
 	if err != nil {
 		log.Warn().Err(err).Msg("Invalid password_hash encoding")
-		return mh.authErrorResponse(msg.GetID(), "Invalid password_hash encoding")
+		return mh.authErrorResponse(requestID, "Invalid password_hash encoding")
 	}
 
 	// Step 2: Decrypt the credential blob using ChaCha20-Poly1305
 	credentialBytes, err := decryptWithKey(backupKey, encryptedCred, nonce)
 	if err != nil {
 		log.Warn().Err(err).Msg("Failed to decrypt credential backup")
-		return mh.authErrorResponse(msg.GetID(), "Failed to decrypt credential - invalid key or corrupted backup")
+		return mh.authErrorResponse(requestID, "Failed to decrypt credential - invalid key or corrupted backup")
 	}
 	// SECURITY: Zero the backup key after use
 	defer zeroBytes(backupKey)
@@ -123,7 +310,7 @@ func (mh *MessageHandler) handleAuthenticate(msg *IncomingMessage) (*OutgoingMes
 	var credential DecryptedCredentialBlob
 	if err := json.Unmarshal(credentialBytes, &credential); err != nil {
 		log.Warn().Err(err).Msg("Failed to parse decrypted credential")
-		return mh.authErrorResponse(msg.GetID(), "Invalid credential format")
+		return mh.authErrorResponse(requestID, "Invalid credential format")
 	}
 	// SECURITY: Zero the credential bytes after parsing
 	defer zeroBytes(credentialBytes)
@@ -132,7 +319,7 @@ func (mh *MessageHandler) handleAuthenticate(msg *IncomingMessage) (*OutgoingMes
 	storedHash, err := base64.StdEncoding.DecodeString(credential.PasswordHash)
 	if err != nil {
 		log.Error().Msg("Stored password hash has invalid encoding")
-		return mh.authErrorResponse(msg.GetID(), "Credential data corrupted")
+		return mh.authErrorResponse(requestID, "Credential data corrupted")
 	}
 
 	// Constant-time comparison to prevent timing attacks
@@ -141,7 +328,7 @@ func (mh *MessageHandler) handleAuthenticate(msg *IncomingMessage) (*OutgoingMes
 			Str("device_id", req.DeviceID).
 			Str("user_guid", credential.UserGUID).
 			Msg("Password verification failed during restore")
-		return mh.authErrorResponse(msg.GetID(), "Password verification failed")
+		return mh.authErrorResponse(requestID, "Password verification failed")
 	}
 
 	log.Info().
@@ -165,10 +352,26 @@ func (mh *MessageHandler) handleAuthenticate(msg *IncomingMessage) (*OutgoingMes
 	}
 
 	return &OutgoingMessage{
-		RequestID: msg.GetID(),
+		RequestID: requestID,
 		Type:      MessageTypeResponse,
 		Payload:   respBytes,
 	}, nil
+}
+
+// decryptCredentialWithCEK decrypts the credential blob using the CEK
+func (mh *MessageHandler) decryptCredentialWithCEK(encryptedCred []byte) ([]byte, error) {
+	if mh.vaultState == nil || mh.vaultState.cekPair == nil {
+		return nil, fmt.Errorf("CEK not available")
+	}
+	return decryptWithCEK(mh.vaultState.cekPair.PrivateKey, encryptedCred)
+}
+
+// timingSafeEqualStrings compares two strings in constant time
+func timingSafeEqualStrings(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	return timingSafeEqual([]byte(a), []byte(b))
 }
 
 // authErrorResponse creates an authentication error response

@@ -1,4 +1,4 @@
-module github.com/mesmerverse/vettid-dev/enclave/test
+module github.com/vettid/vettid-dev/enclave/test
 
 go 1.24.0
 

@@ -317,6 +317,7 @@ export class VaultStack extends cdk.Stack {
         TABLE_NATS_ACCOUNTS: tables.natsAccounts.tableName,
         TABLE_NATS_TOKENS: tables.natsTokens.tableName,
         TABLE_AUDIT: tables.audit.tableName,
+        TABLE_REGISTRATIONS: tables.registrations.tableName,
         NATS_DOMAIN: 'nats.vettid.dev',
         NATS_OPERATOR_SECRET_ARN: natsOperatorSecretRef.secretArn,
         NATS_SEED_KMS_KEY_ARN: props.infrastructure.natsSeedEncryptionKey.keyArn,
@@ -330,6 +331,7 @@ export class VaultStack extends cdk.Stack {
     tables.natsAccounts.grantReadWriteData(this.enrollNatsBootstrap);
     tables.natsTokens.grantWriteData(this.enrollNatsBootstrap);
     tables.audit.grantWriteData(this.enrollNatsBootstrap);
+    tables.registrations.grantReadData(this.enrollNatsBootstrap);
     natsOperatorSecretRef.grantRead(this.enrollNatsBootstrap);
     props.infrastructure.natsSeedEncryptionKey.grantEncryptDecrypt(this.enrollNatsBootstrap);
     this.enrollNatsBootstrap.addToRolePolicy(new iam.PolicyStatement({

@@ -108,6 +108,21 @@ func (h *PINHandler) HandlePINSetup(ctx context.Context, msg *IncomingMessage) (
 	}
 	log.Info().Str("owner_space", h.ownerSpace).Msg("Storage initialized with DEK")
 
+	// Store registration profile if provided (from enrollment)
+	// This ensures the vault has the user's name and email from registration
+	if payload.Profile != nil {
+		if err := h.storeRegistrationProfile(payload.Profile); err != nil {
+			log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("Failed to store registration profile - can be synced later")
+			// Don't fail PIN setup if profile storage fails - it can be synced later
+		} else {
+			log.Info().
+				Str("owner_space", h.ownerSpace).
+				Str("first_name", payload.Profile.FirstName).
+				Str("email", payload.Profile.Email).
+				Msg("Registration profile stored to vault")
+		}
+	}
+
 	// Generate CEK keypair for encrypting the Protean Credential
 	if err := h.bootstrap.GenerateCEKPair(); err != nil {
 		log.Error().Err(err).Msg("Failed to generate CEK keypair")
@@ -128,6 +143,49 @@ func (h *PINHandler) HandlePINSetup(ctx context.Context, msg *IncomingMessage) (
 		log.Info().Str("owner_space", h.ownerSpace).Msg("Sealed material stored to S3 for cold vault recovery")
 	}
 
+	// Generate ECIES keypair for cold vault recovery
+	// This allows the vault to decrypt PINs even after enclave restart
+	generated, err := h.bootstrap.GenerateECIESKeypairIfNeeded()
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to generate ECIES keypair")
+		return h.errorResponse(msg.GetID(), "ECIES generation failed")
+	}
+
+	// Store ECIES keys to S3 if generated (or always store to ensure they exist)
+	if generated || true { // Always store to ensure keys are persisted
+		eciesPrivate, eciesPublic := h.bootstrap.GetECIESKeys()
+		if eciesPrivate != nil && eciesPublic != nil {
+			// Marshal ECIES keys
+			eciesKeys := struct {
+				PrivateKey []byte `json:"private_key"`
+				PublicKey  []byte `json:"public_key"`
+			}{
+				PrivateKey: eciesPrivate,
+				PublicKey:  eciesPublic,
+			}
+			eciesData, err := json.Marshal(eciesKeys)
+			if err != nil {
+				log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("Failed to marshal ECIES keys")
+			} else {
+				defer zeroBytes(eciesData)
+				defer zeroBytes(eciesPrivate)
+
+				// Seal with KMS
+				sealedECIES, err := h.sealerProxy.SealCredential(eciesData)
+				if err != nil {
+					log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("Failed to seal ECIES keys")
+				} else {
+					// Store sealed ECIES keys to S3
+					if err := h.sealerProxy.StoreSealedECIES(sealedECIES); err != nil {
+						log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("Failed to store ECIES keys to S3 - cold vault unlock may not work")
+					} else {
+						log.Info().Str("owner_space", h.ownerSpace).Msg("ECIES keys sealed and stored to S3 for cold vault recovery")
+					}
+				}
+			}
+		}
+	}
+
 	// Build response with UTKs in the new format
 	utks := h.bootstrap.GetUnusedUTKPairs()
 	utkPublics := make([]UTKPublic, len(utks))
@@ -138,9 +196,17 @@ func (h *PINHandler) HandlePINSetup(ctx context.Context, msg *IncomingMessage) (
 		}
 	}
 
+	// Get ECIES public key for PIN unlock (this is different from the attestation key!)
+	_, eciesPublic := h.bootstrap.GetECIESKeys()
+	eciesPublicB64 := ""
+	if eciesPublic != nil {
+		eciesPublicB64 = base64.StdEncoding.EncodeToString(eciesPublic)
+	}
+
 	response := PINSetupResponse{
-		Status: "vault_ready",
-		UTKs:   utkPublics,
+		Status:         "vault_ready",
+		UTKs:           utkPublics,
+		ECIESPublicKey: eciesPublicB64,
 	}
 
 	responseBytes, err := json.Marshal(response)
@@ -151,6 +217,7 @@ func (h *PINHandler) HandlePINSetup(ctx context.Context, msg *IncomingMessage) (
 	log.Info().
 		Str("owner_space", h.ownerSpace).
 		Int("utk_count", len(utkPublics)).
+		Bool("has_ecies_key", eciesPublicB64 != "").
 		Msg("PIN setup completed - vault ready for credential creation (Phase 3)")
 
 	return &OutgoingMessage{
@@ -357,12 +424,19 @@ func (h *PINHandler) HandlePINUnlock(ctx context.Context, msg *IncomingMessage) 
 	}
 	log.Info().Str("owner_space", h.ownerSpace).Msg("Storage initialized with DEK on unlock")
 
-	// If we have credential in memory, verify auth hash
-	if storedCredential != nil {
+	// If we have credential in memory AND it has auth hash set, verify auth hash
+	// Note: DEK derivation (line 327) already validates the PIN through KMS
+	// The auth hash is an additional check that may not be set for older credentials
+	if storedCredential != nil && len(storedCredential.AuthHash) > 0 && len(storedCredential.AuthSalt) > 0 {
 		// SECURITY: payload.PIN is already []byte (SensitiveBytes), passed directly
 		if !verifyAuthHash(payload.PIN, storedCredential.AuthSalt, storedCredential.AuthHash) {
+			log.Warn().Str("owner_space", h.ownerSpace).Msg("PIN auth hash verification failed (DEK derivation succeeded)")
 			return h.errorResponse(msg.GetID(), "invalid PIN")
 		}
+		log.Debug().Str("owner_space", h.ownerSpace).Msg("PIN auth hash verification passed")
+	} else if storedCredential != nil {
+		// Credential exists but no auth hash - DEK derivation already validated PIN
+		log.Debug().Str("owner_space", h.ownerSpace).Msg("Skipping auth hash verification (not set) - PIN validated via DEK derivation")
 	}
 
 	// Generate more UTKs
@@ -617,5 +691,50 @@ func (h *PINHandler) decryptMobileFormat(msg *IncomingMessage) ([]byte, error) {
 	}
 
 	return plaintext, nil
+}
+
+// storeRegistrationProfile stores the user's registration profile to encrypted storage
+// The profile is stored as system fields with _system_ prefix, marking them as read-only
+func (h *PINHandler) storeRegistrationProfile(profile *RegistrationProfile) error {
+	if profile == nil {
+		return nil
+	}
+
+	// Create profile handler using the PINHandler's storage
+	profileHandler := NewProfileHandler(h.ownerSpace, h.storage)
+
+	// Build fields map with _system_ prefix for read-only fields
+	fields := map[string]string{
+		"_system_first_name": profile.FirstName,
+		"_system_last_name":  profile.LastName,
+		"_system_email":      profile.Email,
+		"_system_stored_at":  fmt.Sprintf("%d", currentTimestamp()),
+	}
+
+	// Create update request
+	req := ProfileUpdateRequest{Fields: fields}
+	payload, err := json.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("failed to marshal profile request: %w", err)
+	}
+
+	// Create synthetic message for the profile handler
+	msg := &IncomingMessage{
+		RequestID: "profile_init_" + h.ownerSpace,
+		Payload:   payload,
+	}
+
+	// Store the profile fields
+	resp, err := profileHandler.HandleUpdate(msg)
+	if err != nil {
+		return fmt.Errorf("profile update failed: %w", err)
+	}
+
+	// Check for error response
+	if resp.Type == MessageTypeError {
+		return fmt.Errorf("profile update error: %s", resp.Error)
+	}
+
+	return nil
 }
 

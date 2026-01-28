@@ -158,12 +158,8 @@ func (h *ProteanCredentialHandler) HandleCredentialCreate(ctx context.Context, m
 		return h.errorResponse(msg.GetID(), "encryption failed")
 	}
 
-	// SECURITY: Clear the stored DEK - credential creation is complete
-	// DEK was only needed to verify vault readiness; actual encryption uses CEK
-	h.state.mu.Lock()
-	zeroBytes(h.state.dek)
-	h.state.dek = nil
-	h.state.mu.Unlock()
+	// NOTE: DEK is NOT cleared here - it's needed for vault state persistence
+	// The caller (messages.go) will clear DEK after persisting vault state for cold recovery
 
 	// Generate fresh UTKs for future operations
 	if err := h.bootstrap.GenerateMoreUTKs(5); err != nil {

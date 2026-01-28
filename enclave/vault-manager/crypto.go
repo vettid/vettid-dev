@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rs/zerolog/log"
 	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/crypto/curve25519"
@@ -358,8 +359,18 @@ func encryptWithDomain(recipientPubKey []byte, plaintext []byte, domain string) 
 // Format: ephemeral_pubkey (32) || nonce (24) || ciphertext
 // SECURITY: Zeroizes all intermediate key material after use
 func decryptWithDomain(privateKey []byte, ciphertext []byte, domain string) ([]byte, error) {
+	log.Debug().
+		Str("domain", domain).
+		Int("ciphertext_len", len(ciphertext)).
+		Int("private_key_len", len(privateKey)).
+		Msg("DEBUG: decryptWithDomain called")
+
 	minLen := 32 + chacha20poly1305.NonceSizeX
 	if len(ciphertext) < minLen {
+		log.Warn().
+			Int("min_len", minLen).
+			Int("actual_len", len(ciphertext)).
+			Msg("DEBUG: ciphertext too short")
 		return nil, fmt.Errorf("ciphertext too short: need at least %d bytes, got %d", minLen, len(ciphertext))
 	}
 
@@ -367,18 +378,28 @@ func decryptWithDomain(privateKey []byte, ciphertext []byte, domain string) ([]b
 	nonce := ciphertext[32 : 32+chacha20poly1305.NonceSizeX]
 	encrypted := ciphertext[32+chacha20poly1305.NonceSizeX:]
 
+	log.Debug().
+		Int("ephemeral_key_len", len(ephemeralPubKey)).
+		Int("nonce_len", len(nonce)).
+		Int("encrypted_len", len(encrypted)).
+		Msg("DEBUG: Parsed ciphertext components")
+
 	// X25519 key exchange
 	sharedSecret, err := curve25519.X25519(privateKey, ephemeralPubKey)
 	if err != nil {
+		log.Warn().Err(err).Msg("DEBUG: X25519 key exchange failed")
 		return nil, fmt.Errorf("key exchange failed: %w", err)
 	}
 	// SECURITY: Zero shared secret after use
 	defer zeroBytes(sharedSecret)
 
+	log.Debug().Int("shared_secret_len", len(sharedSecret)).Msg("DEBUG: X25519 key exchange succeeded")
+
 	// Derive encryption key using HKDF-SHA256 with domain separation
 	hkdfReader := hkdf.New(sha256.New, sharedSecret, []byte(domain), nil)
 	encKey := make([]byte, chacha20poly1305.KeySize)
 	if _, err := io.ReadFull(hkdfReader, encKey); err != nil {
+		log.Warn().Err(err).Msg("DEBUG: HKDF key derivation failed")
 		return nil, fmt.Errorf("key derivation failed: %w", err)
 	}
 	// SECURITY: Zero encryption key after use
@@ -387,13 +408,20 @@ func decryptWithDomain(privateKey []byte, ciphertext []byte, domain string) ([]b
 	// Decrypt using XChaCha20-Poly1305
 	aead, err := chacha20poly1305.NewX(encKey)
 	if err != nil {
+		log.Warn().Err(err).Msg("DEBUG: Cipher creation failed")
 		return nil, fmt.Errorf("cipher creation failed: %w", err)
 	}
 
 	plaintext, err := aead.Open(nil, nonce, encrypted, nil)
 	if err != nil {
+		log.Warn().Err(err).Str("domain", domain).Msg("DEBUG: AEAD decryption failed")
 		return nil, fmt.Errorf("decryption failed: %w", err)
 	}
+
+	log.Debug().
+		Str("domain", domain).
+		Int("plaintext_len", len(plaintext)).
+		Msg("DEBUG: decryptWithDomain succeeded")
 
 	return plaintext, nil
 }

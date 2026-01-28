@@ -92,22 +92,28 @@
   </div>
 
   <script>
-    // Pass the data parameter to the app via custom scheme
+    // Pass the data parameter to the app via Android App Link (https)
+    // This works better than custom schemes on privacy-focused browsers like Vanadium
     const params = new URLSearchParams(window.location.search);
     const data = params.get('data');
 
     if (data) {
-      const appUrl = 'vettid://enroll?data=' + encodeURIComponent(data);
+      // Use https App Link which preserves query parameters on all browsers
+      const appUrl = 'https://vettid.dev/enroll?data=' + encodeURIComponent(data);
+      // Fallback to custom scheme for iOS or if App Links don't work
+      const customSchemeUrl = 'vettid://enroll?data=' + encodeURIComponent(data);
+
       document.getElementById('openApp').href = appUrl;
 
-      // Try to open app automatically
+      // Try to open app automatically using App Link
       setTimeout(() => {
         window.location.href = appUrl;
       }, 500);
 
       document.getElementById('retry').onclick = (e) => {
         e.preventDefault();
-        window.location.href = appUrl;
+        // Try custom scheme as fallback on retry
+        window.location.href = customSchemeUrl;
       };
     }
   </script>

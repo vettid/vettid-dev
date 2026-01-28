@@ -53,7 +53,12 @@ type ProfileGetRequest struct {
 
 // ProfileGetResponse is the response for profile.get
 type ProfileGetResponse struct {
-	Fields map[string]ProfileFieldResponse `json:"fields"`
+	Success   bool                            `json:"success"`
+	FirstName string                          `json:"first_name,omitempty"`
+	LastName  string                          `json:"last_name,omitempty"`
+	Email     string                          `json:"email,omitempty"`
+	Fields    map[string]ProfileFieldResponse `json:"fields"`
+	Error     string                          `json:"error,omitempty"`
 }
 
 // ProfileFieldResponse represents a single profile field
@@ -93,14 +98,46 @@ type SharingSettings struct {
 
 // HandleGet handles profile.get messages
 func (h *ProfileHandler) HandleGet(msg *IncomingMessage) (*OutgoingMessage, error) {
+	log.Info().Str("owner_space", h.ownerSpace).Msg("HandleGet called")
+
 	var req ProfileGetRequest
 	if err := json.Unmarshal(msg.Payload, &req); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
 	result := ProfileGetResponse{
-		Fields: make(map[string]ProfileFieldResponse),
+		Success: true,
+		Fields:  make(map[string]ProfileFieldResponse),
 	}
+
+	// Load system fields (registration info) - these are returned at top level
+	systemFields := []string{"_system_first_name", "_system_last_name", "_system_email"}
+	for _, field := range systemFields {
+		storageKey := "profile/" + field
+		data, err := h.storage.Get(storageKey)
+		if err != nil {
+			log.Warn().Str("field", field).Str("key", storageKey).Err(err).Msg("Failed to get system field")
+			continue
+		}
+		log.Debug().Str("field", field).Int("data_len", len(data)).Msg("Got system field data")
+		var entry ProfileEntry
+		if err := json.Unmarshal(data, &entry); err != nil {
+			log.Warn().Str("field", field).Err(err).Msg("Failed to unmarshal system field")
+			continue
+		}
+		switch field {
+		case "_system_first_name":
+			result.FirstName = entry.Value
+			log.Debug().Str("first_name", entry.Value).Msg("Set first name")
+		case "_system_last_name":
+			result.LastName = entry.Value
+			log.Debug().Str("last_name", entry.Value).Msg("Set last name")
+		case "_system_email":
+			result.Email = entry.Value
+		}
+	}
+
+	log.Info().Str("first_name", result.FirstName).Str("last_name", result.LastName).Msg("Profile get result")
 
 	if len(req.Fields) == 0 {
 		// Get profile index to find all fields

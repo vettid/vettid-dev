@@ -44,6 +44,8 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       KeyConditionExpression: "email = :email",
       ExpressionAttributeValues: {
         ":email": { S: claims.email },
+        ":deleted": { S: "deleted" },
+        ":rejected": { S: "rejected" },
       },
       // Only return active registrations (not deleted or rejected)
       FilterExpression: "#status <> :deleted AND #status <> :rejected",
