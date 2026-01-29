@@ -98,6 +98,13 @@ func (h *PINHandler) HandlePINSetup(ctx context.Context, msg *IncomingMessage) (
 	h.state.mu.Lock()
 	h.state.sealedMaterial = sealedMaterial
 	h.state.dek = dekCopy // Store DEK copy for credential.create
+	// Clear any existing credential for fresh enrollment retries.
+	// This allows users to retry enrollment if credential.create succeeded
+	// but a later step (like finalize) failed.
+	if h.state.credential != nil {
+		log.Info().Str("owner_space", h.ownerSpace).Msg("Clearing existing credential for fresh enrollment")
+		h.state.credential = nil
+	}
 	h.state.mu.Unlock()
 
 	// Initialize encrypted storage with DEK so feed/events are accessible
