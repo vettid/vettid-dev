@@ -305,14 +305,29 @@ func (p *ParentProcess) forwardToEnclave(ctx context.Context, msg *NATSMessage) 
 		// Determine message type based on subject suffix
 		msgType := mapSubjectToMessageType(msg.Subject)
 
-		// Create enclave message
+		// Create enclave message - IMPORTANT: capture Subject here before any async operations
 		enclaveMsg = &EnclaveMessage{
 			Type:       msgType,
 			OwnerSpace: ownerSpace,
-			Subject:    msg.Subject,
+			Subject:    msg.Subject, // Copy subject for later use in response publishing
 			Payload:    msg.Data,
 			ReplyTo:    msg.Reply,
 		}
+
+		// Log incoming request for debugging JetStream race conditions
+		log.Debug().
+			Str("msg_type", string(msgType)).
+			Str("owner_space", ownerSpace).
+			Str("nats_subject", msg.Subject).
+			Str("captured_subject", enclaveMsg.Subject).
+			Bool("has_reply", msg.Reply != "").
+			Int("payload_len", len(msg.Data)).
+			Msg("Created enclave message from NATS request")
+
+		// Extract request ID from all incoming JSON payloads for response correlation.
+		// This enables proper request/response matching even with JetStream's async delivery.
+		// Called before message-specific parsers which may also set RequestID.
+		p.extractRequestID(msg.Data, enclaveMsg)
 
 		// For attestation requests from mobile apps, parse the JSON payload to extract nonce
 		if msgType == EnclaveMessageTypeAttestationRequest {
@@ -362,17 +377,29 @@ func (p *ParentProcess) forwardToEnclave(ctx context.Context, msg *NATSMessage) 
 		//
 		// Uses JetStream for exactly-once delivery with message persistence.
 		// Messages are retained until consumed or MaxAge (5 min) expires.
-		if enclaveMsg.OwnerSpace != "" {
-			appResponseSubject := buildAppResponseSubject(msg.Subject, enclaveMsg.OwnerSpace)
+		//
+		// IMPORTANT: Use enclaveMsg.Subject (copied at request start) instead of msg.Subject
+		// to ensure we use the correct subject even if there's any timing/state issues
+		if enclaveMsg.OwnerSpace != "" && enclaveMsg.Subject != "" {
+			appResponseSubject := buildAppResponseSubject(enclaveMsg.Subject, enclaveMsg.OwnerSpace)
 			if appResponseSubject != "" {
 				log.Info().
 					Str("msg_type", string(response.Type)).
 					Str("owner_space", enclaveMsg.OwnerSpace).
-					Str("original_subject", msg.Subject).
+					Str("enclave_msg_subject", enclaveMsg.Subject).
+					Str("nats_msg_subject", msg.Subject).
 					Str("response_subject", appResponseSubject).
 					Int("response_bytes", len(responseData)).
 					Bool("has_attestation", response.Attestation != nil).
 					Msg("Publishing enclave response to mobile app via JetStream")
+
+				// Verify subjects match - log warning if they don't (debugging)
+				if enclaveMsg.Subject != msg.Subject {
+					log.Warn().
+						Str("enclave_msg_subject", enclaveMsg.Subject).
+						Str("nats_msg_subject", msg.Subject).
+						Msg("RACE CONDITION DETECTED: Subject mismatch between enclaveMsg and msg")
+				}
 
 				if err := p.natsClient.Publish(appResponseSubject, responseData); err != nil {
 					log.Error().Err(err).Str("subject", appResponseSubject).Msg("Failed to publish to app response subject")
@@ -387,8 +414,22 @@ func (p *ParentProcess) forwardToEnclave(ctx context.Context, msg *NATSMessage) 
 // sendWithHandlerSupport sends a message to the enclave and handles any nested
 // handler_get requests that may come back before the final response.
 // This allows the enclave to dynamically request handlers during vault operations.
+//
+// CRITICAL: Uses requestMu to serialize the entire request-response cycle.
+// This prevents race conditions where multiple concurrent NATS messages could
+// interleave their vsock writes and reads, causing responses to be delivered
+// to the wrong goroutine. The pattern is:
+//   Goroutine A: write(pin-unlock) -> read() expects pin-unlock response
+//   Goroutine B: write(profile.get) -> read() expects profile.get response
+// Without requestMu, A could read B's response and vice versa.
 func (p *ParentProcess) sendWithHandlerSupport(ctx context.Context, msg *EnclaveMessage) (*EnclaveMessage, error) {
-	// Lock for write
+	// CRITICAL: Lock requestMu for the entire request-response cycle
+	// This ensures only one NATS message is processed through vsock at a time,
+	// preventing response interleaving between concurrent requests
+	p.vsockClient.requestMu.Lock()
+	defer p.vsockClient.requestMu.Unlock()
+
+	// Write the initial message
 	p.vsockClient.writeMu.Lock()
 	if err := p.vsockClient.writeMessage(msg); err != nil {
 		p.vsockClient.writeMu.Unlock()
@@ -396,7 +437,7 @@ func (p *ParentProcess) sendWithHandlerSupport(ctx context.Context, msg *Enclave
 	}
 	p.vsockClient.writeMu.Unlock()
 
-	// Lock for read and loop until we get the final response
+	// Read responses until we get the final one
 	p.vsockClient.readMu.Lock()
 	defer p.vsockClient.readMu.Unlock()
 
@@ -582,6 +623,34 @@ func (p *ParentProcess) parseAttestationRequest(data []byte, msg *EnclaveMessage
 	msg.Nonce = nonce
 	log.Debug().Int("nonce_len", len(nonce)).Str("request_id", msg.RequestID).Msg("Parsed attestation request")
 	return nil
+}
+
+// extractRequestID extracts the request ID from any JSON payload for response correlation.
+// Android clients send requests with {"id": "uuid", ...} that need to be echoed back.
+// This enables proper request/response matching even with JetStream's async delivery.
+func (p *ParentProcess) extractRequestID(data []byte, msg *EnclaveMessage) {
+	// Quick check if there's any "id" field to avoid unnecessary parsing
+	if len(data) == 0 {
+		return
+	}
+
+	// Parse just the id field from the JSON
+	var idExtract struct {
+		ID string `json:"id"`
+	}
+
+	if err := json.Unmarshal(data, &idExtract); err != nil {
+		// Not valid JSON or no id field - that's OK, just skip
+		return
+	}
+
+	if idExtract.ID != "" {
+		msg.RequestID = idExtract.ID
+		log.Debug().
+			Str("request_id", msg.RequestID).
+			Str("msg_type", string(msg.Type)).
+			Msg("Extracted request ID from payload")
+	}
 }
 
 // parseCredentialRequest parses the JSON credential request from enclave.credential.* subjects

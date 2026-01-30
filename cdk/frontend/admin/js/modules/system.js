@@ -261,61 +261,71 @@ export async function loadSystemLogs() {
 // ============================================
 
 export async function loadSecurityEvents() {
+  const range = document.getElementById('securityTimeRange')?.value || '24h';
+  const severity = document.getElementById('securitySeverityFilter')?.value || 'all';
+  const container = document.getElementById('securityEventsList');
+
   try {
-    const container = document.getElementById('securityEventsList');
+    if (container) container.textContent = 'Loading security events...';
+
+    const data = await api(`/admin/security-events?range=${range}&severity=${severity}&limit=100`);
+
+    // Update metrics
+    const metricTotal = document.getElementById('secMetricTotal');
+    const metricCritical = document.getElementById('secMetricCritical');
+    const metricHigh = document.getElementById('secMetricHigh');
+    const metricAuth = document.getElementById('secMetricAuth');
+    const metricRecovery = document.getElementById('secMetricRecovery');
+    const metricDeletion = document.getElementById('secMetricDeletion');
+
+    if (metricTotal) metricTotal.textContent = data.metrics?.total_events ?? '--';
+    if (metricCritical) metricCritical.textContent = data.metrics?.critical ?? '0';
+    if (metricHigh) metricHigh.textContent = data.metrics?.high ?? '0';
+    if (metricAuth) metricAuth.textContent = data.metrics?.auth_failures ?? '0';
+    if (metricRecovery) metricRecovery.textContent = data.metrics?.pending_recovery_requests ?? '0';
+    if (metricDeletion) metricDeletion.textContent = data.metrics?.pending_deletion_requests ?? '0';
+
+    // Render events list
     if (!container) return;
 
-    container.textContent = 'Loading...';
-
-    const data = await api('/admin/security-events?limit=50');
     const events = data.events || [];
-
     if (events.length === 0) {
-      container.textContent = 'No security events found';
+      container.innerHTML = '<div style="padding:20px;background:#050505;border-radius:8px;text-align:center;color:var(--gray);">No security events found for the selected time range.</div>';
       return;
     }
 
-    container.replaceChildren();
+    const severityColors = {
+      critical: { bg: 'rgba(239,68,68,0.2)', border: '#ef4444', text: '#ef4444' },
+      high: { bg: 'rgba(245,158,11,0.15)', border: '#f59e0b', text: '#f59e0b' },
+      medium: { bg: 'rgba(99,102,241,0.1)', border: '#6366f1', text: '#6366f1' },
+      low: { bg: 'rgba(156,163,175,0.1)', border: '#6b7280', text: '#9ca3af' }
+    };
 
-    events.forEach(event => {
-      const eventEl = document.createElement('div');
-      eventEl.style.cssText = 'padding:12px;border-bottom:1px solid var(--border);';
+    container.innerHTML = events.map(event => {
+      const colors = severityColors[event.severity] || severityColors.low;
+      const time = event.timestamp ? new Date(event.timestamp).toLocaleString() : 'Unknown';
+      const typeLabel = (event.type || 'unknown').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 
-      const header = document.createElement('div');
-      header.style.cssText = 'display:flex;justify-content:space-between;margin-bottom:4px;';
-
-      const type = document.createElement('span');
-      type.style.cssText = 'font-weight:600;color:var(--text);';
-      type.textContent = event.event_type || event.type || 'Unknown Event';
-
-      const time = document.createElement('span');
-      time.style.cssText = 'font-size:0.8rem;color:var(--gray);';
-      time.textContent = event.created_at ? new Date(event.created_at).toLocaleString() : '—';
-
-      header.append(type, time);
-
-      const details = document.createElement('div');
-      details.style.cssText = 'font-size:0.85rem;color:var(--gray);';
-      if (event.email) {
-        const emailSpan = document.createElement('span');
-        emailSpan.textContent = 'User: ' + event.email;
-        details.appendChild(emailSpan);
-      }
-      if (event.ip_address) {
-        const ipSpan = document.createElement('span');
-        ipSpan.style.marginLeft = event.email ? '12px' : '0';
-        ipSpan.textContent = 'IP: ' + event.ip_address;
-        details.appendChild(ipSpan);
-      }
-
-      eventEl.append(header);
-      if (details.childNodes.length > 0) eventEl.appendChild(details);
-      container.appendChild(eventEl);
-    });
+      return `
+        <div style="padding:12px 16px;background:${colors.bg};border-radius:8px;border-left:4px solid ${colors.border};display:flex;justify-content:space-between;align-items:center;">
+          <div style="flex:1;">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+              <span style="padding:2px 8px;background:${colors.border};color:#000;border-radius:4px;font-size:0.7rem;font-weight:700;text-transform:uppercase;">${event.severity || 'low'}</span>
+              <span style="color:${colors.text};font-weight:600;font-size:0.9rem;">${escapeHtml(typeLabel)}</span>
+            </div>
+            <p style="margin:0;color:var(--gray);font-size:0.85rem;">
+              ${event.email ? `User: ${escapeHtml(event.email)} | ` : ''}
+              ${event.path ? `Path: ${escapeHtml(event.path)} | ` : ''}
+              ${event.reason ? `Reason: ${escapeHtml(event.reason)}` : ''}
+            </p>
+          </div>
+          <span style="color:var(--gray);font-size:0.8rem;white-space:nowrap;">${time}</span>
+        </div>
+      `;
+    }).join('');
   } catch (e) {
     console.error('Error loading security events:', e);
-    const container = document.getElementById('securityEventsList');
-    if (container) container.textContent = 'Error loading events: ' + (e.message || e);
+    if (container) container.innerHTML = `<div style="padding:20px;background:#050505;border-radius:8px;text-align:center;color:#ef4444;">Error loading events: ${escapeHtml(e.message || String(e))}</div>`;
   }
 }
 
@@ -325,7 +335,7 @@ export async function loadSecurityEvents() {
 
 export async function loadRecoveryRequests() {
   try {
-    const container = document.getElementById('recoveryRequestsContent');
+    const container = document.getElementById('recoveryRequestsList');
     if (!container) return;
 
     container.textContent = 'Loading...';
@@ -384,7 +394,7 @@ export async function loadRecoveryRequests() {
     });
   } catch (e) {
     console.error('Error loading recovery requests:', e);
-    const container = document.getElementById('recoveryRequestsContent');
+    const container = document.getElementById('recoveryRequestsList');
     if (container) container.textContent = 'Error: ' + (e.message || e);
   }
 }
@@ -406,7 +416,7 @@ async function handleRecoveryRequest(requestId, action) {
 
 export async function loadDeletionRequests() {
   try {
-    const container = document.getElementById('deletionRequestsContent');
+    const container = document.getElementById('deletionRequestsList');
     if (!container) return;
 
     container.textContent = 'Loading...';
@@ -465,7 +475,7 @@ export async function loadDeletionRequests() {
     });
   } catch (e) {
     console.error('Error loading deletion requests:', e);
-    const container = document.getElementById('deletionRequestsContent');
+    const container = document.getElementById('deletionRequestsList');
     if (container) container.textContent = 'Error: ' + (e.message || e);
   }
 }
@@ -1026,6 +1036,25 @@ export function setupNotificationEventHandlers() {
   // Close modal button
   const closeBtn = document.getElementById('closeSelectNotificationAdmin');
   if (closeBtn) closeBtn.onclick = closeSelectNotificationAdminModal;
+}
+
+// ============================================
+// Security Events Setup
+// ============================================
+
+export function setupSecurityEventsHandlers() {
+  // Filter change listeners
+  const timeRangeEl = document.getElementById('securityTimeRange');
+  const severityEl = document.getElementById('securitySeverityFilter');
+  const refreshBtn = document.getElementById('refreshSecurityEvents');
+  const refreshRecoveryBtn = document.getElementById('refreshRecoveryRequests');
+  const refreshDeletionBtn = document.getElementById('refreshDeletionRequests');
+
+  if (timeRangeEl) timeRangeEl.onchange = loadSecurityEvents;
+  if (severityEl) severityEl.onchange = loadSecurityEvents;
+  if (refreshBtn) refreshBtn.onclick = loadSecurityEvents;
+  if (refreshRecoveryBtn) refreshRecoveryBtn.onclick = loadRecoveryRequests;
+  if (refreshDeletionBtn) refreshDeletionBtn.onclick = loadDeletionRequests;
 }
 
 // ============================================

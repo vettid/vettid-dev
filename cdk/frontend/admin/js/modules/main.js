@@ -139,7 +139,8 @@ import {
   openAddNotificationModal,
   closeSelectNotificationAdminModal,
   removeNotification,
-  setupNotificationEventHandlers
+  setupNotificationEventHandlers,
+  setupSecurityEventsHandlers
 } from './system.js';
 
 import {
@@ -1440,6 +1441,7 @@ document.addEventListener('DOMContentLoaded', () => {
   setupWaitlistEventHandlers();
   setupHelpRequestsEventHandlers();
   setupCommunicationsTabSwitching();
+  setupSecurityEventsHandlers();
 
   // Initialize date/time pickers
   setupDateTimePickers();
