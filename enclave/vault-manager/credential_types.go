@@ -629,12 +629,13 @@ type CredentialSecretGetRequest struct {
 
 // CredentialSecretGetResponse is the response for credential.secret.get
 type CredentialSecretGetResponse struct {
-	ID                 string `json:"id"`
-	Name               string `json:"name"`
-	Category           string `json:"category"`
-	EncryptedValue     string `json:"encrypted_value"`      // Base64-encoded
-	EphemeralPublicKey string `json:"ephemeral_public_key"` // Base64-encoded
-	Nonce              string `json:"nonce"`                // Base64-encoded
+	ID                 string   `json:"id"`
+	Name               string   `json:"name"`
+	Category           string   `json:"category"`
+	EncryptedValue     string   `json:"encrypted_value"`      // Base64-encoded
+	EphemeralPublicKey string   `json:"ephemeral_public_key"` // Base64-encoded
+	Nonce              string   `json:"nonce"`                // Base64-encoded
+	NewUTKs            []string `json:"new_utks,omitempty"`   // Replacement UTKs after consumption
 }
 
 // CredentialSecretListResponse is the response for credential.secret.list
@@ -664,7 +665,8 @@ type CredentialSecretDeleteRequest struct {
 
 // CredentialSecretDeleteResponse is the response for credential.secret.delete
 type CredentialSecretDeleteResponse struct {
-	Success bool `json:"success"`
+	Success bool     `json:"success"`
+	NewUTKs []string `json:"new_utks,omitempty"` // Replacement UTKs after consumption
 }
 
 // --- Personal Data Types ---

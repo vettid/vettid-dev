@@ -617,7 +617,7 @@ export async function openActivityLogModal(email, name) {
 
   try {
     const data = await api(`/admin/audit?email=${encodeURIComponent(email)}&limit=100`);
-    currentActivityData = data.entries || data || [];
+    currentActivityData = Array.isArray(data) ? data : (data.entries || []);
     renderActivityLog();
   } catch (e) {
     contentEl.textContent = 'Error loading activity: ' + (e.message || e);
@@ -670,8 +670,12 @@ export function renderActivityLog() {
     let typeColor = '#3b82f6';
     if (action.includes('login') || action.includes('auth')) {
       typeColor = '#10b981';
-    } else if (action.includes('error') || action.includes('failed')) {
+    } else if (action.includes('error') || action.includes('failed') || action.includes('rejected')) {
       typeColor = '#ef4444';
+    } else if (action.includes('approved') || action.includes('activated') || action.includes('created')) {
+      typeColor = '#10b981';
+    } else if (action.includes('invited') || action.includes('sent')) {
+      typeColor = '#8b5cf6';
     }
 
     const displayAction = (activity.action || activity.type || 'Unknown Action')
@@ -696,13 +700,57 @@ export function renderActivityLog() {
     header.append(actionDiv, timeSpan);
     item.appendChild(header);
 
-    if (activity.description) {
-      const descDiv = document.createElement('div');
-      descDiv.style.cssText = 'font-size:0.85rem;color:var(--gray);margin-bottom:4px;';
-      descDiv.textContent = activity.description;
-      item.appendChild(descDiv);
+    // Build context-aware details
+    const details = [];
+
+    // Target user info - prefer recipient_email for waitlist/invite actions
+    const targetEmail = activity.recipient_email || (activity.email !== activity.actor_email ? activity.email : null);
+    const targetName = [activity.first_name, activity.last_name].filter(Boolean).join(' ');
+    if (targetName && targetEmail) {
+      details.push(`User: ${targetName} (${targetEmail})`);
+    } else if (targetEmail) {
+      details.push(`User: ${targetEmail}`);
+    } else if (targetName) {
+      details.push(`User: ${targetName}`);
     }
 
+    // Waitlist-specific details
+    if (action.includes('waitlist') && activity.waitlist_id) {
+      details.push(`Waitlist: ${activity.waitlist_id.substring(0, 8)}...`);
+    }
+
+    // Admin type for admin-related events
+    if (activity.admin_type && action.includes('admin')) {
+      details.push(`Role: ${activity.admin_type}`);
+    }
+
+    // Status info
+    if (activity.ses_status) {
+      details.push(`Email: ${activity.ses_status}`);
+    }
+    if (activity.reason) {
+      details.push(`Reason: ${activity.reason}`);
+    }
+
+    // Path for API events
+    if (activity.path && (action.includes('error') || action.includes('denied'))) {
+      details.push(`Path: ${activity.path}`);
+    }
+
+    // Show description if provided
+    if (activity.description) {
+      details.push(activity.description);
+    }
+
+    // Render details
+    if (details.length > 0) {
+      const detailsDiv = document.createElement('div');
+      detailsDiv.style.cssText = 'font-size:0.85rem;color:var(--gray);margin-bottom:4px;';
+      detailsDiv.textContent = details.join(' • ');
+      item.appendChild(detailsDiv);
+    }
+
+    // IP address on separate line
     if (activity.ip_address) {
       const ipDiv = document.createElement('div');
       ipDiv.style.cssText = 'font-size:0.75rem;color:var(--gray);';

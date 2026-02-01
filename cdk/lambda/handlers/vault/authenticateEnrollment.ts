@@ -24,6 +24,7 @@ interface AuthenticateRequest {
   session_token: string;
   device_id: string;
   device_type: 'android' | 'ios';
+  device_name?: string;  // Optional human-readable device name (e.g., "Pixel 8 Pro")
 }
 
 /**
@@ -118,20 +119,34 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       return unauthorized('Session has expired', origin);
     }
 
+    // Sanitize device_name (optional, max 100 chars, alphanumeric and basic punctuation only)
+    const deviceName = body.device_name
+      ? body.device_name.replace(/[^a-zA-Z0-9\s\-_().]/g, '').substring(0, 100).trim()
+      : null;
+
     // Update session with device info and status
+    const updateExpression = deviceName
+      ? 'SET #status = :status, device_id = :device_id, device_type = :device_type, device_name = :device_name, authenticated_at = :now'
+      : 'SET #status = :status, device_id = :device_id, device_type = :device_type, authenticated_at = :now';
+
+    const updateValues: Record<string, any> = {
+      ':status': 'AUTHENTICATED',
+      ':device_id': deviceId,
+      ':device_type': deviceType,
+      ':now': now,
+    };
+    if (deviceName) {
+      updateValues[':device_name'] = deviceName;
+    }
+
     await ddb.send(new UpdateItemCommand({
       TableName: TABLE_ENROLLMENT_SESSIONS,
       Key: marshall({ session_id: session.session_id }),
-      UpdateExpression: 'SET #status = :status, device_id = :device_id, device_type = :device_type, authenticated_at = :now',
+      UpdateExpression: updateExpression,
       ExpressionAttributeNames: {
         '#status': 'status',
       },
-      ExpressionAttributeValues: marshall({
-        ':status': 'AUTHENTICATED',
-        ':device_id': deviceId,
-        ':device_type': deviceType,
-        ':now': now,
-      }),
+      ExpressionAttributeValues: marshall(updateValues),
     }));
 
     // Generate enrollment JWT

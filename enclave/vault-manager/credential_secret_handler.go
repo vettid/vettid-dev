@@ -172,6 +172,10 @@ func (h *CredentialSecretHandler) HandleGet(msg *IncomingMessage) (*OutgoingMess
 		return h.errorResponse(msg.GetID(), "Failed to unmarshal secret")
 	}
 
+	// Get replacement UTKs to replenish the app's pool
+	newUTKs := h.bootstrap.GetUnusedUTKs()
+	log.Debug().Int("new_utks_count", len(newUTKs)).Msg("Including replacement UTKs in secret get response")
+
 	resp := CredentialSecretGetResponse{
 		ID:                 secret.ID,
 		Name:               secret.Name,
@@ -179,6 +183,7 @@ func (h *CredentialSecretHandler) HandleGet(msg *IncomingMessage) (*OutgoingMess
 		EncryptedValue:     base64.StdEncoding.EncodeToString(secret.EncryptedValue),
 		EphemeralPublicKey: base64.StdEncoding.EncodeToString(secret.EphemeralPublicKey),
 		Nonce:              base64.StdEncoding.EncodeToString(secret.Nonce),
+		NewUTKs:            newUTKs,
 	}
 	respBytes, _ := json.Marshal(resp)
 
@@ -322,8 +327,13 @@ func (h *CredentialSecretHandler) HandleDelete(msg *IncomingMessage) (*OutgoingM
 		string(secret.Category),
 	)
 
+	// Get replacement UTKs to replenish the app's pool
+	newUTKs := h.bootstrap.GetUnusedUTKs()
+	log.Debug().Int("new_utks_count", len(newUTKs)).Msg("Including replacement UTKs in secret delete response")
+
 	resp := CredentialSecretDeleteResponse{
 		Success: true,
+		NewUTKs: newUTKs,
 	}
 	respBytes, _ := json.Marshal(resp)
 

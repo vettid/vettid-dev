@@ -736,15 +736,22 @@ func (l *vsockListener) Close() error {
 }
 
 // vsockConnection implements Connection for vsock
+// SECURITY: Uses mutex to prevent concurrent read/write corruption
 type vsockConnection struct {
-	conn net.Conn
+	conn    net.Conn
+	readMu  sync.Mutex // Protects concurrent reads
+	writeMu sync.Mutex // Protects concurrent writes (critical for async log messages)
 }
 
 func (c *vsockConnection) ReadMessage() (*Message, error) {
+	c.readMu.Lock()
+	defer c.readMu.Unlock()
 	return readMessage(c.conn)
 }
 
 func (c *vsockConnection) WriteMessage(msg *Message) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
 	return writeMessage(c.conn, msg)
 }
 
@@ -779,15 +786,22 @@ func (l *tcpListener) Close() error {
 }
 
 // tcpConnection implements Connection for TCP
+// SECURITY: Uses mutex to prevent concurrent read/write corruption
 type tcpConnection struct {
-	conn net.Conn
+	conn    net.Conn
+	readMu  sync.Mutex // Protects concurrent reads
+	writeMu sync.Mutex // Protects concurrent writes (critical for async log messages)
 }
 
 func (c *tcpConnection) ReadMessage() (*Message, error) {
+	c.readMu.Lock()
+	defer c.readMu.Unlock()
 	return readMessage(c.conn)
 }
 
 func (c *tcpConnection) WriteMessage(msg *Message) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
 	return writeMessage(c.conn, msg)
 }
 

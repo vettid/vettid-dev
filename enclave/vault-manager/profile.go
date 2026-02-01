@@ -517,11 +517,16 @@ func (h *ProfileHandler) HandleCategoriesUpdate(msg *IncomingMessage) (*Outgoing
 // HandlePublish handles profile.publish messages
 // Creates and publishes the public profile to NATS
 func (h *ProfileHandler) HandlePublish(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	log.Info().Str("owner_space", h.ownerSpace).Msg("HandlePublish called")
+
 	var req ProfilePublishRequest
 	if err := json.Unmarshal(msg.Payload, &req); err != nil {
 		// Allow empty payload - use existing settings
+		log.Debug().Msg("Empty or invalid payload, using existing settings")
 		req = ProfilePublishRequest{}
 	}
+
+	log.Debug().Int("fields_in_request", len(req.Fields)).Msg("Publishing profile")
 
 	now := time.Now()
 	nowUnix := now.Unix()
@@ -546,6 +551,12 @@ func (h *ProfileHandler) HandlePublish(ctx context.Context, msg *IncomingMessage
 	if err := h.storage.Put("profile/_public", settingsBytes); err != nil {
 		return h.errorResponse(msg.GetID(), "Failed to save public profile settings")
 	}
+
+	log.Debug().
+		Int("version", settings.Version).
+		Int("fields_to_publish", len(settings.Fields)).
+		Strs("field_names", settings.Fields).
+		Msg("Public profile settings saved")
 
 	// Build published profile
 	profile := PublishedProfile{
@@ -588,9 +599,15 @@ func (h *ProfileHandler) HandlePublish(ctx context.Context, msg *IncomingMessage
 
 	// Load selected personal data fields
 	for _, fieldName := range settings.Fields {
+		// Try profile storage first, then fall back to personal-data storage
 		data, err := h.storage.Get("profile/" + fieldName)
 		if err != nil {
-			continue
+			// Personal data is stored at personal-data/{namespace}
+			data, err = h.storage.Get("personal-data/" + fieldName)
+			if err != nil {
+				log.Debug().Str("field", fieldName).Msg("Field not found in profile or personal-data storage")
+				continue
+			}
 		}
 
 		// Try to parse as PersonalDataField first
@@ -673,6 +690,137 @@ func (h *ProfileHandler) HandlePublicSettingsGet(msg *IncomingMessage) (*Outgoin
 	}
 
 	respBytes, _ := json.Marshal(settings)
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// HandleGetPublished handles profile.get-published messages
+// Returns the last published profile as others see it
+func (h *ProfileHandler) HandleGetPublished(msg *IncomingMessage) (*OutgoingMessage, error) {
+	// Load current public profile settings
+	var settings PublicProfileSettings
+	settingsData, err := h.storage.Get("profile/_public")
+	if err != nil {
+		// No published profile yet
+		resp := map[string]interface{}{
+			"success":   true,
+			"published": false,
+			"message":   "No profile has been published yet",
+		}
+		respBytes, _ := json.Marshal(resp)
+		return &OutgoingMessage{
+			RequestID: msg.GetID(),
+			Type:      MessageTypeResponse,
+			Payload:   respBytes,
+		}, nil
+	}
+	json.Unmarshal(settingsData, &settings)
+
+	// Build the same profile that was published
+	profile := PublishedProfile{
+		UserGUID:      h.ownerSpace,
+		EmailVerified: true,
+		Fields:        make(map[string]PublishedField),
+		Version:       settings.Version,
+		UpdatedAt:     time.Unix(settings.PublishedAt, 0).Format(time.RFC3339),
+	}
+
+	// Get public key from vault state
+	if h.vaultState != nil {
+		h.vaultState.mu.RLock()
+		if h.vaultState.credential != nil && h.vaultState.credential.IdentityPublicKey != nil {
+			profile.PublicKey = base64.StdEncoding.EncodeToString(h.vaultState.credential.IdentityPublicKey)
+		}
+		h.vaultState.mu.RUnlock()
+	}
+
+	// Load system fields (registration info) - always included
+	systemFields := []string{"_system_first_name", "_system_last_name", "_system_email"}
+	for _, field := range systemFields {
+		data, err := h.storage.Get("profile/" + field)
+		if err != nil {
+			continue
+		}
+		var entry ProfileEntry
+		if err := json.Unmarshal(data, &entry); err != nil {
+			continue
+		}
+		switch field {
+		case "_system_first_name":
+			profile.FirstName = entry.Value
+		case "_system_last_name":
+			profile.LastName = entry.Value
+		case "_system_email":
+			profile.Email = entry.Value
+		}
+	}
+
+	// Load selected personal data fields
+	for _, fieldName := range settings.Fields {
+		data, err := h.storage.Get("profile/" + fieldName)
+		if err != nil {
+			// Also try personal-data storage
+			data, err = h.storage.Get("personal-data/" + fieldName)
+			if err != nil {
+				continue
+			}
+		}
+
+		// Try to parse as PersonalDataField first
+		var field PersonalDataField
+		if err := json.Unmarshal(data, &field); err != nil {
+			// Fall back to ProfileEntry format
+			var entry ProfileEntry
+			if err := json.Unmarshal(data, &entry); err != nil {
+				continue
+			}
+			profile.Fields[fieldName] = PublishedField{
+				DisplayName: fieldName,
+				Value:       entry.Value,
+				FieldType:   string(FieldTypeText),
+			}
+			continue
+		}
+
+		// Skip sensitive fields
+		if field.IsSensitive {
+			continue
+		}
+
+		profile.Fields[fieldName] = PublishedField{
+			DisplayName: field.DisplayName,
+			Value:       field.Value,
+			FieldType:   string(field.FieldType),
+		}
+	}
+
+	// Wrap in response format
+	resp := map[string]interface{}{
+		"success":        true,
+		"published":      settings.PublishedAt > 0,
+		"first_name":     profile.FirstName,
+		"last_name":      profile.LastName,
+		"email":          profile.Email,
+		"public_key":     profile.PublicKey,
+		"email_verified": profile.EmailVerified,
+		"fields":         profile.Fields,
+		"profile_version": profile.Version,
+		"updated_at":     profile.UpdatedAt,
+		"published_at":   time.Unix(settings.PublishedAt, 0).Format(time.RFC3339),
+	}
+
+	log.Info().
+		Str("owner_space", h.ownerSpace).
+		Int("version", profile.Version).
+		Int("field_count", len(profile.Fields)).
+		Bool("has_published", settings.PublishedAt > 0).
+		Msg("Returning published profile preview")
+
+	respBytes, _ := json.Marshal(resp)
 
 	return &OutgoingMessage{
 		RequestID: msg.GetID(),

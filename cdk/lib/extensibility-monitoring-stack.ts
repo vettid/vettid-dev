@@ -363,6 +363,8 @@ export class ExtensibilityMonitoringStack extends cdk.Stack {
         TABLE_ENROLLMENT_SESSIONS: tables.enrollmentSessions.tableName,
         TABLE_CREDENTIAL_BACKUPS: tables.credentialBackups.tableName,
         TABLE_PROFILES: tables.profiles.tableName,
+        TABLE_VAULT_INSTANCES: tables.vaultInstances.tableName,
+        TABLE_REGISTRATIONS: tables.registrations.tableName,
         BACKUP_BUCKET: props.infrastructure.backupBucket.bucketName,
         NATS_OPERATOR_SECRET_ARN: natsOperatorSecretForDecommission.secretArn,
         NATS_DOMAIN: 'nats.vettid.dev',
@@ -376,6 +378,8 @@ export class ExtensibilityMonitoringStack extends cdk.Stack {
     tables.enrollmentSessions.grantReadWriteData(decommissionVault);
     tables.credentialBackups.grantReadWriteData(decommissionVault);
     tables.profiles.grantReadWriteData(decommissionVault);
+    tables.vaultInstances.grantReadWriteData(decommissionVault);
+    tables.registrations.grantReadWriteData(decommissionVault);
     tables.audit.grantReadWriteData(decommissionVault);
     // S3 permissions for backup cleanup
     props.infrastructure.backupBucket.grantReadWrite(decommissionVault);

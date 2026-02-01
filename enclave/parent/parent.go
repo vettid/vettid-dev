@@ -329,6 +329,11 @@ func (p *ParentProcess) forwardToEnclave(ctx context.Context, msg *NATSMessage) 
 		// Called before message-specific parsers which may also set RequestID.
 		p.extractRequestID(msg.Data, enclaveMsg)
 
+		// Extract inner payload from message envelope format.
+		// Android clients send: {"id": "...", "type": "...", "payload": {...}, "timestamp": "..."}
+		// Vault handlers expect just the inner payload content.
+		enclaveMsg.Payload = p.extractInnerPayload(msg.Data)
+
 		// For attestation requests from mobile apps, parse the JSON payload to extract nonce
 		if msgType == EnclaveMessageTypeAttestationRequest {
 			if err := p.parseAttestationRequest(msg.Data, enclaveMsg); err != nil {
@@ -651,6 +656,63 @@ func (p *ParentProcess) extractRequestID(data []byte, msg *EnclaveMessage) {
 			Str("msg_type", string(msg.Type)).
 			Msg("Extracted request ID from payload")
 	}
+}
+
+// extractInnerPayload processes message envelope format from Android clients.
+// Android clients send: {"id": "...", "type": "...", "payload": {...}, "timestamp": "..."}
+// Vault-manager handlers expect: {"type": "...", "payload": {...}}
+// This function strips id/timestamp but preserves the type+payload structure.
+func (p *ParentProcess) extractInnerPayload(data []byte) []byte {
+	if len(data) == 0 {
+		return data
+	}
+
+	// Parse to check for envelope format
+	var envelope struct {
+		Type    string          `json:"type"`
+		Payload json.RawMessage `json:"payload"`
+	}
+
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		// Not valid JSON - return original data
+		return data
+	}
+
+	// If there's no payload field, check if it's a flat payload (no envelope)
+	if len(envelope.Payload) == 0 {
+		// No nested payload - this might be a flat format, return as-is
+		return data
+	}
+
+	// If there's no type field, just return the inner payload as-is (legacy format)
+	if envelope.Type == "" {
+		log.Debug().
+			Int("original_len", len(data)).
+			Int("payload_len", len(envelope.Payload)).
+			Msg("Extracted inner payload from message envelope (no type)")
+		return envelope.Payload
+	}
+
+	// Reconstruct with just type + payload (stripping id, timestamp, etc.)
+	// This preserves the nested structure that vault-manager expects
+	result := map[string]json.RawMessage{
+		"type":    json.RawMessage(`"` + envelope.Type + `"`),
+		"payload": envelope.Payload,
+	}
+
+	reconstructed, err := json.Marshal(result)
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to reconstruct payload, using original")
+		return data
+	}
+
+	log.Debug().
+		Int("original_len", len(data)).
+		Int("result_len", len(reconstructed)).
+		Str("type", envelope.Type).
+		Msg("Extracted inner payload from message envelope with type preserved")
+
+	return reconstructed
 }
 
 // parseCredentialRequest parses the JSON credential request from enclave.credential.* subjects

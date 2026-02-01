@@ -734,6 +734,44 @@ else
     log_warn "No enclave ASG found. You may need to manually update launch template."
 fi
 
+# Update KMS key policy with new PCR0
+log_info "Updating KMS key policy with new PCR0..."
+KMS_KEY_ID=$(aws kms list-aliases --query 'Aliases[?AliasName==`alias/vettid-enclave-sealing`].TargetKeyId' --output text --region "$REGION")
+
+if [ -n "$KMS_KEY_ID" ] && [ "$KMS_KEY_ID" != "None" ]; then
+    log_info "Found KMS key: $KMS_KEY_ID"
+
+    # Get current policy
+    CURRENT_POLICY=$(aws kms get-key-policy --key-id "$KMS_KEY_ID" --policy-name default --query 'Policy' --output text --region "$REGION")
+
+    # Update PCR0 in the policy using jq
+    # The policy has a condition like: "kms:RecipientAttestation:PCR0": "old_pcr0_value"
+    UPDATED_POLICY=$(echo "$CURRENT_POLICY" | jq --arg pcr0 "$PCR0_VALUE" '
+        .Statement = [.Statement[] |
+            if .Sid == "AllowEnclaveDecrypt" then
+                .Condition."StringEqualsIgnoreCase"."kms:RecipientAttestation:PCR0" = $pcr0
+            else
+                .
+            end
+        ]
+    ')
+
+    if [ -n "$UPDATED_POLICY" ]; then
+        # Put the updated policy
+        echo "$UPDATED_POLICY" | aws kms put-key-policy \
+            --key-id "$KMS_KEY_ID" \
+            --policy-name default \
+            --policy file:///dev/stdin \
+            --region "$REGION"
+
+        log_info "KMS key policy updated with PCR0: ${PCR0_VALUE:0:32}..."
+    else
+        log_warn "Failed to update KMS policy - jq parsing failed"
+    fi
+else
+    log_warn "KMS sealing key not found (alias/vettid-enclave-sealing)"
+fi
+
 log_info "=== Deployment Complete ==="
 log_info "New AMI: $NEW_AMI_ID"
 log_info "PCR0: $PCR0_VALUE"
@@ -742,4 +780,3 @@ log_info "Next steps:"
 log_info "1. Verify instance refresh completes: aws autoscaling describe-instance-refreshes --auto-scaling-group-name $ASG_NAME"
 log_info "2. Run verification: ./verify-deployment.sh"
 log_info "3. Verify PCR manifest updated: curl -s https://pcr-manifest.vettid.dev/pcr-manifest.json | jq '.pcr_sets[] | select(.is_current)'"
-log_info "4. Update KMS key policy if PCR0 changed (redeploy CDK)"

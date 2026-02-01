@@ -21,6 +21,7 @@ const TABLE_ENROLLMENT_SESSIONS = process.env.TABLE_ENROLLMENT_SESSIONS!;
 const TABLE_INVITES = process.env.TABLE_INVITES!;
 const TABLE_NATS_ACCOUNTS = process.env.TABLE_NATS_ACCOUNTS!;
 const TABLE_REGISTRATIONS = process.env.TABLE_REGISTRATIONS!;
+const TABLE_VAULT_INSTANCES = process.env.TABLE_VAULT_INSTANCES!;
 
 // SECURITY: Require device attestation before finalization
 // Set to 'true' in production to enforce hardware-backed attestation
@@ -252,6 +253,38 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       }),
     }));
 
+    // === CREATE VAULT INSTANCE RECORD ===
+    // This is the source of truth for vault status (used by getVaultStatus)
+    // NATS accounts are just messaging infrastructure - VaultInstances tracks actual vault state
+    try {
+      await ddb.send(new PutItemCommand({
+        TableName: TABLE_VAULT_INSTANCES,
+        Item: marshall({
+          user_guid: userGuid,
+          vault_type: 'nitro',
+          status: 'active',
+          created_at: now.toISOString(),
+          updated_at: now.toISOString(),
+          enrollment_method: 'nitro_enclave',
+          session_id: sessionId,
+          owner_space_id: ownerSpaceId,
+          device_type: session.device_type || 'unknown',
+          device_name: session.device_name || null,
+        }),
+        // Don't overwrite if already exists (idempotent)
+        ConditionExpression: 'attribute_not_exists(user_guid)',
+      }));
+      console.log(`Created VaultInstances record for user ${userGuid}`);
+    } catch (putError: any) {
+      if (putError.name === 'ConditionalCheckFailedException') {
+        // Record already exists - this is fine (re-enrollment or retry)
+        console.log(`VaultInstances record already exists for user ${userGuid}`);
+      } else {
+        // Log but don't fail enrollment
+        console.error('Failed to create VaultInstances record:', putError);
+      }
+    }
+
     // Mark invitation as used (only if there is one - QR code flow may not have invitation)
     if (session.invitation_code) {
       await ddb.send(new UpdateItemCommand({
@@ -288,13 +321,14 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
           await ddb.send(new UpdateItemCommand({
             TableName: TABLE_REGISTRATIONS,
             Key: marshall({ registration_id: registration.registration_id }),
-            UpdateExpression: 'SET vault_status = :vault_status, enrollment_completed_at = :completed_at',
+            UpdateExpression: 'SET vault_status = :vault_status, enrollment_status = :enrollment_status, enrollment_completed_at = :completed_at',
             ExpressionAttributeValues: marshall({
               ':vault_status': vaultStatus,
+              ':enrollment_status': 'completed',
               ':completed_at': now.toISOString(),
             }),
           }));
-          console.log(`Updated registration vault_status to ${vaultStatus} for user ${userGuid}`);
+          console.log(`Updated registration vault_status to ${vaultStatus} and enrollment_status to completed for user ${userGuid}`);
         }
       } catch (regError) {
         // Log but don't fail enrollment if registration update fails

@@ -74,6 +74,7 @@ type MessageHandler struct {
 	callHandler          *CallHandler
 	secretsHandler       *SecretsHandler
 	profileHandler       *ProfileHandler
+	personalDataHandler  *PersonalDataHandler
 	credentialHandler    *CredentialHandler
 	messagingHandler     *MessagingHandler
 	connectionsHandler       *ConnectionsHandler
@@ -220,6 +221,9 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 	profileHandler.SetPublisher(publisher)
 	profileHandler.SetVaultState(vaultState)
 
+	// Create personal data handler (separate from profile for clarity)
+	personalDataHandler := NewPersonalDataHandler(ownerSpace, storage)
+
 	// Create service connection handlers (B2C)
 	serviceConnectionHandler := NewServiceConnectionHandler(ownerSpace, storage, eventHandler, profileHandler)
 	serviceContractsHandler := NewServiceContractsHandler(ownerSpace, storage, eventHandler, serviceConnectionHandler, profileHandler)
@@ -241,6 +245,7 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 		callHandler:          NewCallHandler(ownerSpace, storage, publisher, eventHandler),
 		secretsHandler:       NewSecretsHandler(ownerSpace, storage),
 		profileHandler:       profileHandler,
+		personalDataHandler:  personalDataHandler,
 		credentialHandler:    NewCredentialHandler(ownerSpace, storage),
 		messagingHandler:     NewMessagingHandler(ownerSpace, storage, publisher, eventHandler),
 		connectionsHandler:      NewConnectionsHandler(ownerSpace, storage, eventHandler),
@@ -391,6 +396,8 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 		return mh.handleSecretsOperation(ctx, msg, parts[opIndex+1:])
 	case "profile":
 		return mh.handleProfileOperation(ctx, msg, parts[opIndex+1:])
+	case "personal-data":
+		return mh.handlePersonalDataOperation(ctx, msg, parts[opIndex+1:])
 	case "credential":
 		return mh.handleCredentialOperation(ctx, msg, parts[opIndex+1:])
 	case "message":
@@ -722,8 +729,31 @@ func (mh *MessageHandler) handleProfileOperation(ctx context.Context, msg *Incom
 	case "publish":
 		// Publish public profile to NATS
 		return mh.profileHandler.HandlePublish(ctx, msg)
+	case "get-published":
+		// Get the last published profile (what connections see)
+		return mh.profileHandler.HandleGetPublished(msg)
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown profile operation: %s", opType))
+	}
+}
+
+// handlePersonalDataOperation routes personal data operations
+func (mh *MessageHandler) handlePersonalDataOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
+	if len(opParts) < 2 {
+		return mh.errorResponse(msg.GetID(), "missing personal-data operation type")
+	}
+
+	opType := opParts[1]
+
+	switch opType {
+	case "get":
+		return mh.personalDataHandler.HandleGet(msg)
+	case "update":
+		return mh.personalDataHandler.HandleUpdate(msg)
+	case "delete":
+		return mh.personalDataHandler.HandleDelete(msg)
+	default:
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown personal-data operation: %s", opType))
 	}
 }
 
@@ -1439,6 +1469,7 @@ func (mh *MessageHandler) SecureErase() {
 	mh.callHandler = nil
 	mh.secretsHandler = nil
 	mh.profileHandler = nil
+	mh.personalDataHandler = nil
 	mh.credentialHandler = nil
 	mh.messagingHandler = nil
 	mh.connectionsHandler = nil

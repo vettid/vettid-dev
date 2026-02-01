@@ -50,6 +50,7 @@ const TABLE_NATS_TOKENS = 'VettID-Infrastructure-NatsTokensF1A0FFC9-2URUMO9P1I0O
 const TABLE_ENROLLMENT_SESSIONS = 'VettID-Infrastructure-EnrollmentSessions54BF48AC-1I8UL5Q8GOKG5';
 const TABLE_CREDENTIAL_BACKUPS = 'VettID-Infrastructure-CredentialBackups49D8A239-1XNZVD3X5F413';
 const TABLE_PROFILES = 'VettID-Infrastructure-Profiles4FC22479-JNQ6UGBR9JRK';
+const TABLE_VAULT_INSTANCES = 'VettID-Infrastructure-VaultInstances2DD43E46-16EOTGW7GBYR2';
 const BACKUP_BUCKET = 'vettid-infrastructure-vaultbackupsbucket803b5ae6-iprvicfnrkma';
 
 const cognito = new CognitoIdentityProviderClient({ region: 'us-east-1' });
@@ -64,6 +65,7 @@ interface CleanupResult {
   enrollmentSessionsDeleted: number;
   credentialBackupsDeleted: number;
   profilesDeleted: number;
+  vaultInstanceDeleted: boolean;
   s3ObjectsDeleted: number;
   enclaveCredentialDeleted: boolean;
 }
@@ -216,6 +218,21 @@ async function deleteS3Backups(userGuid: string): Promise<number> {
   }
 }
 
+async function deleteVaultInstance(userGuid: string): Promise<boolean> {
+  try {
+    await ddb.send(new DeleteItemCommand({
+      TableName: TABLE_VAULT_INSTANCES,
+      Key: marshall({ user_guid: userGuid }),
+    }));
+    return true;
+  } catch (error: any) {
+    if (error.name !== 'ResourceNotFoundException') {
+      console.error('  Error deleting vault instance:', error.message);
+    }
+    return false;
+  }
+}
+
 // ============================================================================
 // SSM Functions - Reset enclave credential via NATS server
 // ============================================================================
@@ -312,6 +329,7 @@ async function resetEnrollment(email: string): Promise<void> {
     enrollmentSessionsDeleted: 0,
     credentialBackupsDeleted: 0,
     profilesDeleted: 0,
+    vaultInstanceDeleted: false,
     s3ObjectsDeleted: 0,
     enclaveCredentialDeleted: false,
   };
@@ -341,13 +359,18 @@ async function resetEnrollment(email: string): Promise<void> {
   result.profilesDeleted = await deleteProfiles(userGuid);
   console.log(`   Deleted ${result.profilesDeleted} profile(s)`);
 
-  // 7. Delete S3 backup blobs
-  console.log('\n7. Deleting S3 backup files...');
+  // 7. Delete vault instance (this is what the account portal checks!)
+  console.log('\n7. Deleting vault instance...');
+  result.vaultInstanceDeleted = await deleteVaultInstance(userGuid);
+  console.log(`   ${result.vaultInstanceDeleted ? 'Deleted' : 'Not found or failed'}`);
+
+  // 8. Delete S3 backup blobs
+  console.log('\n8. Deleting S3 backup files...');
   result.s3ObjectsDeleted = await deleteS3Backups(userGuid);
   console.log(`   Deleted ${result.s3ObjectsDeleted} file(s)`);
 
-  // 8. Reset enclave credential storage
-  console.log('\n8. Resetting enclave credential storage...');
+  // 9. Reset enclave credential storage
+  console.log('\n9. Resetting enclave credential storage...');
   result.enclaveCredentialDeleted = await resetEnclaveCredential(userGuid);
   console.log(`   ${result.enclaveCredentialDeleted ? 'Reset message sent' : 'Failed to send reset'}`);
 
@@ -358,6 +381,7 @@ async function resetEnrollment(email: string): Promise<void> {
     result.enrollmentSessionsDeleted +
     result.credentialBackupsDeleted +
     result.profilesDeleted +
+    (result.vaultInstanceDeleted ? 1 : 0) +
     result.s3ObjectsDeleted +
     (result.enclaveCredentialDeleted ? 1 : 0);
 

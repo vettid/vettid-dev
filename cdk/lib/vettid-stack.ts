@@ -1263,10 +1263,12 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
     tables.audit.grantReadWriteData(checkSubscriptionExpiry);
 
     // SECURITY: SES permissions with strict resource constraints
-    // - Scoped to vettid.dev domain identity only
+    // - Domain identity for FROM address validation
+    // - Wildcard identity for recipient addresses (needed for sandbox mode and verified recipients)
     // - Pinned to specific templates (no wildcards)
     // - Condition restricts FROM address to verified identity
     const sesIdentityArn = `arn:aws:ses:${this.region}:${this.account}:identity/vettid.dev`;
+    const sesAllIdentitiesArn = `arn:aws:ses:${this.region}:${this.account}:identity/*`;
     // SECURITY: Pin to specific SES templates (no wildcards) to limit blast radius
     const sesTemplateArns = [
       `arn:aws:ses:${this.region}:${this.account}:template/RegistrationApproved`,
@@ -1312,11 +1314,12 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
         resources: ['*'], // VerifyEmailIdentity doesn't support resource-level permissions
       }),
     );
-    // SECURITY: SES SendEmail scoped to specific identity with FROM restriction
+    // SECURITY: SES SendEmail for waitlist with FROM restriction
+    // Uses wildcard identity to allow sending to any verified recipient (sandbox mode)
     submitWaitlist.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ['ses:SendEmail'],
-        resources: [sesIdentityArn],
+        resources: [sesAllIdentitiesArn],
         conditions: {
           // SECURITY: Only allow sending FROM our verified domain
           'StringLike': {
@@ -1326,10 +1329,11 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       }),
     );
     // SECURITY: SES SendEmail for help request admin notifications
+    // Uses wildcard identity to allow sending to any verified recipient (sandbox mode)
     submitHelpRequest.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ['ses:SendEmail'],
-        resources: [sesIdentityArn],
+        resources: [sesAllIdentitiesArn],
         conditions: {
           'StringLike': {
             'ses:FromAddress': '*@vettid.dev',

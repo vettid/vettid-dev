@@ -208,6 +208,7 @@ type VsockClient struct {
 	devMode       bool
 	readMu        sync.Mutex // Mutex for read operations
 	writeMu       sync.Mutex // Mutex for write operations
+	requestMu     sync.Mutex // Mutex for serializing complete request-response cycles (prevents response interleaving)
 	authenticated bool       // SECURITY: True if handshake completed
 	sharedSecret  []byte     // Pre-shared key for authentication
 	expectedPCRs  map[int][]byte // SECURITY: Expected PCR values for attestation verification

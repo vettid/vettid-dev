@@ -2832,39 +2832,16 @@ function renderVaultStatusContent(status) {
       break;
 
     case 'enrolled':
-      statusContent.innerHTML = `
-        <div style="padding:24px;background:#050a05;border-radius:4px;border:1px solid #10b981;text-align:center;">
-          <div style="font-size:3rem;margin-bottom:16px;">✓</div>
-          <div style="font-size:1.2rem;font-weight:600;color:#10b981;margin-bottom:8px;">Device Enrolled</div>
-          <p class="muted" style="margin-bottom:20px;">
-            Your mobile device is enrolled and connected to your Nitro Enclave vault.
-          </p>
-          <button data-action="provisionVault" class="btn" style="padding:12px 24px;background:linear-gradient(135deg,#10b981 0%,#059669 100%);font-weight:600;">
-            Initialize Vault
-          </button>
-        </div>
-      `;
-      break;
-
-    case 'provisioning':
-      if (provisioningCard) provisioningCard.style.display = 'block';
-      statusContent.innerHTML = `
-        <div style="padding:24px;background:#050505;border-radius:4px;border:1px solid var(--accent);text-align:center;">
-          <div style="font-size:1.2rem;font-weight:600;color:var(--accent);margin-bottom:8px;">Initializing Vault...</div>
-          <p class="muted">Setting up your secure Nitro Enclave vault. This may take a moment.</p>
-        </div>
-      `;
-      // Start polling for provisioning completion
-      startProvisioningPoll();
-      break;
+      // With multi-tenant Nitro Enclave architecture, enrolled means vault is active
+      // Fall through to 'active' case
+    case 'completed':
+      // enrollment_status = 'completed' also means vault is active
 
     case 'active':
       const enrolledDate = status.enrolled_at ? new Date(status.enrolled_at).toLocaleDateString() : 'Unknown';
-      const lastActivity = status.last_sync_at ? new Date(status.last_sync_at).toLocaleString() : 'Never';
       const deviceIcon = status.device_type === 'ios' ? '📱' : status.device_type === 'android' ? '🤖' : '📱';
-      const deviceLabel = status.device_type === 'ios' ? 'iOS' : status.device_type === 'android' ? 'Android' : 'Mobile';
-      const keysRemaining = status.transaction_keys_remaining !== undefined ? status.transaction_keys_remaining : 'N/A';
-      const keysColor = keysRemaining === 'N/A' ? '#6b7280' : keysRemaining < 5 ? '#ef4444' : keysRemaining < 10 ? '#f59e0b' : '#10b981';
+      // Show device_name if available, otherwise fall back to device_type label
+      const deviceLabel = status.device_name || (status.device_type === 'ios' ? 'iOS Device' : status.device_type === 'android' ? 'Android Device' : 'Mobile Device');
       // Attestation info
       const attestationTime = status.attestation_time ? new Date(status.attestation_time).toLocaleString() : null;
       const pcrHash = status.pcr_hash ? status.pcr_hash.substring(0, 12) + '...' : null;
@@ -2885,17 +2862,13 @@ function renderVaultStatusContent(status) {
             <div class="muted" style="font-size:0.8rem;margin-bottom:4px;">Enrolled Since</div>
             <div style="color:var(--text);font-size:0.9rem;">${enrolledDate}</div>
           </div>
-          <div style="padding:16px;background:#050505;border-radius:4px;border:1px solid #333;">
-            <div class="muted" style="font-size:0.8rem;margin-bottom:4px;">Last Activity</div>
-            <div style="color:var(--text);font-size:0.9rem;">${lastActivity}</div>
-          </div>
-          <div style="padding:16px;background:#050505;border-radius:4px;border:1px solid #333;">
-            <div class="muted" style="font-size:0.8rem;margin-bottom:4px;">Transaction Keys</div>
-            <div style="color:${keysColor};font-weight:600;">${keysRemaining}</div>
-          </div>
-          <div style="padding:16px;background:#050505;border-radius:4px;border:1px solid #333;">
-            <div class="muted" style="font-size:0.8rem;margin-bottom:4px;">Protection</div>
-            <div style="color:#10b981;font-weight:600;">Nitro Enclave</div>
+          <div style="padding:16px;background:#050505;border-radius:4px;border:1px solid #10b981;">
+            <div style="display:flex;align-items:center;gap:8px;">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+              </svg>
+              <span style="color:#10b981;font-weight:600;">Nitro Enclave Secured</span>
+            </div>
           </div>
         </div>
 
@@ -3078,91 +3051,8 @@ function renderHealthDashboard(health) {
   `;
 }
 
-async function provisionVault() {
-  try {
-    const token = idToken();
-    if (!token) throw new Error('No authentication token');
-
-    showToast('Provisioning vault...', 'info');
-
-    const res = await fetch(API_URL + '/vault/provision', {
-      method: 'POST',
-      headers: {
-        'Authorization': 'Bearer ' + token,
-        'Content-Type': 'application/json'
-      }
-    });
-
-    if (!res.ok) {
-      const errorData = await res.json().catch(() => ({}));
-      throw new Error(errorData.message || 'Failed to provision vault');
-    }
-
-    const data = await res.json();
-    showToast('Vault provisioning started', 'success');
-
-    // Update status to show provisioning state
-    vaultStatus = { status: 'provisioning' };
-    renderVaultStatusContent(vaultStatus);
-
-    // Start polling for completion
-    startProvisioningPoll();
-  } catch (error) {
-    console.error('Error provisioning vault:', error);
-    showToast('Failed to provision vault: ' + error.message, 'error');
-  }
-}
-
-let provisioningPollInterval = null;
-
-function startProvisioningPoll() {
-  stopProvisioningPoll();
-
-  const provisioningCard = document.getElementById('vaultProvisioningCard');
-  if (provisioningCard) provisioningCard.style.display = 'block';
-
-  let progress = 0;
-  provisioningPollInterval = setInterval(async () => {
-    // Update progress bar (simulated)
-    progress = Math.min(progress + Math.random() * 10, 90);
-    const progressBar = document.getElementById('provisioningProgressBar');
-    const progressText = document.getElementById('provisioningProgress');
-    if (progressBar) progressBar.style.width = progress + '%';
-    if (progressText) progressText.textContent = Math.round(progress) + '%';
-
-    // Check actual status
-    try {
-      const token = idToken();
-      const res = await fetch(API_URL + '/vault/status', {
-        method: 'GET',
-        headers: { 'Authorization': 'Bearer ' + token }
-      });
-
-      if (res.ok) {
-        const status = await res.json();
-        if (status.status === 'active') {
-          stopProvisioningPoll();
-          if (progressBar) progressBar.style.width = '100%';
-          if (progressText) progressText.textContent = '100%';
-
-          setTimeout(() => {
-            showToast('Vault provisioned successfully!', 'success');
-            loadVaultStatus();
-          }, 500);
-        }
-      }
-    } catch (e) {
-      console.error('Error polling provision status:', e);
-    }
-  }, 5000);
-}
-
-function stopProvisioningPoll() {
-  if (provisioningPollInterval) {
-    clearInterval(provisioningPollInterval);
-    provisioningPollInterval = null;
-  }
-}
+// Legacy provisioning functions removed - multi-tenant Nitro Enclave architecture
+// doesn't require per-user provisioning. Vault is automatically active after enrollment.
 
 async function stopVault() {
   try {
@@ -5069,6 +4959,7 @@ async function confirmVaultDeletion() {
 
 let enrollmentSession = null;
 let enrollmentPollInterval = null;
+let enrollmentSuccessHandled = false;  // Guard against multiple success toasts
 
 async function startEnrollment() {
   try {
@@ -5446,8 +5337,12 @@ function startEnrollmentTimer(expiresAt) {
 
 function startEnrollmentPoll() {
   stopEnrollmentPoll();
+  enrollmentSuccessHandled = false;  // Reset guard when starting new poll
 
   enrollmentPollInterval = setInterval(async () => {
+    // Guard against multiple async callbacks processing success
+    if (enrollmentSuccessHandled) return;
+
     try {
       const token = idToken();
       const res = await fetch(API_URL + '/vault/status', {
@@ -5458,8 +5353,9 @@ function startEnrollmentPoll() {
       if (res.ok) {
         const status = await res.json();
 
-        // Check if enrollment completed
-        if (status.status === 'enrolled' || status.status === 'active') {
+        // Check if enrollment completed (with guard check)
+        if ((status.status === 'enrolled' || status.status === 'active') && !enrollmentSuccessHandled) {
+          enrollmentSuccessHandled = true;  // Set guard immediately
           stopEnrollmentPoll();
           updateEnrollmentStatus('success', 'Enrollment complete!');
 
@@ -5702,7 +5598,6 @@ document.addEventListener('click', (e) => {
     // Vault management actions
     'startEnrollment': startEnrollment,
     'cancelEnrollment': cancelEnrollment,
-    'provisionVault': provisionVault,
     'startVault': startVault,
     // Modal close actions
     'closeTerminateModal': closeTerminateModal,

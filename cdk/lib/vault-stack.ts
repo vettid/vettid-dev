@@ -63,7 +63,7 @@ export class VaultStack extends cdk.Stack {
   public readonly natsLookupAccountJwt!: lambdaNode.NodejsFunction;
 
   // Vault status functions (enclave-based)
-  public readonly initializeVault!: lambdaNode.NodejsFunction;
+  // Note: initializeVault removed - multi-tenant Nitro Enclave doesn't need per-user initialization
   public readonly getVaultStatus!: lambdaNode.NodejsFunction;  // Member-facing vault status
   public readonly getVaultHealth!: lambdaNode.NodejsFunction;
   public readonly vaultReady!: lambdaNode.NodejsFunction;  // Internal endpoint for vault-manager ready signal
@@ -451,15 +451,7 @@ export class VaultStack extends cdk.Stack {
     tables.audit.grantWriteData(this.natsLookupAccountJwt);
 
     // ===== VAULT STATUS (ENCLAVE-BASED) =====
-
-    this.initializeVault = new lambdaNode.NodejsFunction(this, 'InitializeVaultFn', {
-      entry: 'lambda/handlers/vault/initializeVault.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: {
-        TABLE_VAULT_INSTANCES: tables.vaultInstances.tableName,
-      },
-      timeout: cdk.Duration.seconds(30),
-    });
+    // Note: initializeVault removed - multi-tenant Nitro Enclave doesn't need per-user initialization
 
     // Member-facing vault status endpoint
     this.getVaultStatus = new lambdaNode.NodejsFunction(this, 'GetVaultStatusFn', {
@@ -729,7 +721,6 @@ export class VaultStack extends cdk.Stack {
     // Note: EC2-per-user provisioning removed - now using multi-tenant Nitro Enclave architecture
 
     // Grant vault instances table access for remaining handlers
-    tables.vaultInstances.grantReadWriteData(this.initializeVault);
     tables.vaultInstances.grantReadWriteData(this.getVaultHealth);
     tables.vaultInstances.grantReadWriteData(this.vaultReady);
     tables.vaultInstances.grantReadWriteData(this.updateVaultHealth);
@@ -1442,7 +1433,7 @@ export class VaultStack extends cdk.Stack {
     });
 
     // Vault Lifecycle Management (Nitro enclave model - no EC2-per-user provisioning)
-    this.route('InitializeVault', httpApi, '/vault/initialize', apigw.HttpMethod.POST, this.initializeVault, memberAuthorizer);
+    // Note: /vault/initialize removed - multi-tenant Nitro Enclave doesn't need per-user initialization
     this.route('GetVaultHealth', httpApi, '/vault/health', apigw.HttpMethod.GET, this.getVaultHealth, memberAuthorizer);
     this.route('GetVaultStatus', httpApi, '/vault/status', apigw.HttpMethod.GET, this.getVaultStatus, memberAuthorizer);
 

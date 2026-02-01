@@ -32,11 +32,12 @@ type AuthenticateRequest struct {
 
 // AuthenticateResponse is the response for app.authenticate
 type AuthenticateResponse struct {
-	Success      bool   `json:"success"`
-	Message      string `json:"message"`
-	UserGUID     string `json:"user_guid,omitempty"`      // User identifier for credential generation
-	DeviceID     string `json:"device_id,omitempty"`      // Echo back device ID
-	DeviceType   string `json:"device_type,omitempty"`    // Echo back device type
+	Success      bool     `json:"success"`
+	Message      string   `json:"message"`
+	UserGUID     string   `json:"user_guid,omitempty"`      // User identifier for credential generation
+	DeviceID     string   `json:"device_id,omitempty"`      // Echo back device ID
+	DeviceType   string   `json:"device_type,omitempty"`    // Echo back device type
+	NewUTKs      []string `json:"new_utks,omitempty"`       // Replacement UTKs after consumption
 }
 
 // DecryptedCredentialBlob represents the structure inside an encrypted credential blob
@@ -235,12 +236,17 @@ func (mh *MessageHandler) handleUTKAuthenticate(requestID string, req *Authentic
 		Str("user_guid", credential.UserGUID).
 		Msg("Post-enrollment verification successful")
 
+	// Get replacement UTKs to replenish the app's pool
+	newUTKs := mh.bootstrapHandler.GetUnusedUTKs()
+	log.Debug().Int("new_utks_count", len(newUTKs)).Msg("Including replacement UTKs in auth response")
+
 	resp := AuthenticateResponse{
 		Success:    true,
 		Message:    "Authentication successful",
 		UserGUID:   credential.UserGUID,
 		DeviceID:   req.DeviceID,
 		DeviceType: req.DeviceType,
+		NewUTKs:    newUTKs,
 	}
 
 	respBytes, err := json.Marshal(resp)

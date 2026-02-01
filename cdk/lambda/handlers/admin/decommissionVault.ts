@@ -27,6 +27,7 @@ import {
   QueryCommand,
   BatchWriteItemCommand,
   ScanCommand,
+  UpdateItemCommand,
 } from '@aws-sdk/client-dynamodb';
 import {
   S3Client,
@@ -55,6 +56,8 @@ const TABLE_NATS_TOKENS = process.env.TABLE_NATS_TOKENS!;
 const TABLE_ENROLLMENT_SESSIONS = process.env.TABLE_ENROLLMENT_SESSIONS!;
 const TABLE_CREDENTIAL_BACKUPS = process.env.TABLE_CREDENTIAL_BACKUPS!;
 const TABLE_PROFILES = process.env.TABLE_PROFILES!;
+const TABLE_VAULT_INSTANCES = process.env.TABLE_VAULT_INSTANCES!;
+const TABLE_REGISTRATIONS = process.env.TABLE_REGISTRATIONS!;
 const BACKUP_BUCKET = process.env.BACKUP_BUCKET!;
 
 interface DecommissionResult {
@@ -63,6 +66,8 @@ interface DecommissionResult {
   enrollment_sessions_deleted: number;
   credential_backups_deleted: number;
   profiles_deleted: number;
+  vault_instance_deleted: boolean;
+  registration_reset: boolean;
   s3_objects_deleted: number;
   enclave_credential_deleted: boolean;
   errors: string[];
@@ -198,6 +203,8 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     enrollment_sessions_deleted: 0,
     credential_backups_deleted: 0,
     profiles_deleted: 0,
+    vault_instance_deleted: false,
+    registration_reset: false,
     s3_objects_deleted: 0,
     enclave_credential_deleted: false,
     errors: [],
@@ -291,7 +298,52 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       console.log(`Deleted ${profilesResult.count} profiles`);
     }
 
-    // 7. Delete S3 backup blobs
+    // 7. Delete VaultInstances record (this is what the portal checks)
+    if (TABLE_VAULT_INSTANCES) {
+      try {
+        await ddb.send(new DeleteItemCommand({
+          TableName: TABLE_VAULT_INSTANCES,
+          Key: marshall({ user_guid: userGuid }),
+        }));
+        result.vault_instance_deleted = true;
+        console.log('Deleted VaultInstances record');
+      } catch (error: any) {
+        // Ignore if not found
+        if (error.name !== 'ResourceNotFoundException' && !error.message?.includes('does not exist')) {
+          result.errors.push(`VaultInstances: ${error.message}`);
+        }
+      }
+    }
+
+    // 8. Reset registration status to allow re-enrollment
+    if (TABLE_REGISTRATIONS) {
+      try {
+        // Find registration by user_guid (uses scan since registration_id is the key)
+        const regResult = await ddb.send(new ScanCommand({
+          TableName: TABLE_REGISTRATIONS,
+          FilterExpression: 'user_guid = :guid',
+          ExpressionAttributeValues: marshall({ ':guid': userGuid }),
+          Limit: 1,
+        }));
+
+        if (regResult.Items && regResult.Items.length > 0) {
+          const reg = unmarshall(regResult.Items[0]);
+          // Reset enrollment_status to pending and remove vault-related fields
+          await ddb.send(new UpdateItemCommand({
+            TableName: TABLE_REGISTRATIONS,
+            Key: marshall({ registration_id: reg.registration_id }),
+            UpdateExpression: 'SET enrollment_status = :pending REMOVE vault_instance_id, vault_deployed_at',
+            ExpressionAttributeValues: marshall({ ':pending': 'pending' }),
+          }));
+          result.registration_reset = true;
+          console.log('Reset registration status to pending');
+        }
+      } catch (error: any) {
+        result.errors.push(`Registrations: ${error.message}`);
+      }
+    }
+
+    // 9. Delete S3 backup blobs
     if (BACKUP_BUCKET) {
       const s3Result = await deleteS3Objects(BACKUP_BUCKET, `${userGuid}/`);
       result.s3_objects_deleted = s3Result.count;
@@ -301,7 +353,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       console.log(`Deleted ${s3Result.count} S3 objects`);
     }
 
-    // 8. Delete credential from enclave via vault reset
+    // 10. Delete credential from enclave via vault reset
     // This clears the credential from the enclave's SQLite storage
     try {
       const natsResult = await publishToNats('enclave.vault.reset', {
@@ -330,6 +382,8 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         enrollment_sessions_deleted: result.enrollment_sessions_deleted,
         credential_backups_deleted: result.credential_backups_deleted,
         profiles_deleted: result.profiles_deleted,
+        vault_instance_deleted: result.vault_instance_deleted,
+        registration_reset: result.registration_reset,
         s3_objects_deleted: result.s3_objects_deleted,
         enclave_credential_deleted: result.enclave_credential_deleted,
       },
@@ -343,6 +397,8 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       result.enrollment_sessions_deleted +
       result.credential_backups_deleted +
       result.profiles_deleted +
+      (result.vault_instance_deleted ? 1 : 0) +
+      (result.registration_reset ? 1 : 0) +
       result.s3_objects_deleted +
       (result.enclave_credential_deleted ? 1 : 0);
 
