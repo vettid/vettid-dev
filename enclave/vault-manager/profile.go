@@ -140,24 +140,67 @@ func (h *ProfileHandler) HandleGet(msg *IncomingMessage) (*OutgoingMessage, erro
 	log.Info().Str("first_name", result.FirstName).Str("last_name", result.LastName).Msg("Profile get result")
 
 	if len(req.Fields) == 0 {
-		// Get profile index to find all fields
+		// Get fields from BOTH profile/_index AND personal-data/_index
+		// This provides backward compatibility for data that may be in either location
+		fieldSet := make(map[string]bool)
+
+		// Load profile index
 		indexData, err := h.storage.Get("profile/_index")
 		if err == nil {
 			var fieldNames []string
 			if json.Unmarshal(indexData, &fieldNames) == nil {
-				req.Fields = fieldNames
+				for _, name := range fieldNames {
+					fieldSet[name] = true
+				}
 			}
 		}
-	}
 
-	// Get specific fields
-	for _, field := range req.Fields {
-		storageKey := "profile/" + field
-		data, err := h.storage.Get(storageKey)
-		if err != nil {
-			continue // Skip missing fields
+		// Load personal-data index
+		pdIndexData, err := h.storage.Get("personal-data/_index")
+		if err == nil {
+			var pdFieldNames []string
+			if json.Unmarshal(pdIndexData, &pdFieldNames) == nil {
+				for _, name := range pdFieldNames {
+					fieldSet[name] = true
+				}
+			}
 		}
 
+		// Convert to slice
+		for name := range fieldSet {
+			req.Fields = append(req.Fields, name)
+		}
+		log.Debug().Int("profile_fields", len(fieldSet)).Strs("fields", req.Fields).Msg("Combined field index")
+	}
+
+	// Get specific fields - try profile/ first, then personal-data/
+	for _, field := range req.Fields {
+		var data []byte
+		var err error
+
+		// Try profile storage first
+		storageKey := "profile/" + field
+		data, err = h.storage.Get(storageKey)
+		if err != nil {
+			// Fall back to personal-data storage
+			storageKey = "personal-data/" + field
+			data, err = h.storage.Get(storageKey)
+			if err != nil {
+				continue // Skip missing fields
+			}
+		}
+
+		// Try to parse as PersonalDataEntry first (from personal-data storage)
+		var pdEntry PersonalDataEntry
+		if json.Unmarshal(data, &pdEntry) == nil && pdEntry.Namespace != "" {
+			result.Fields[field] = ProfileFieldResponse{
+				Value:     pdEntry.Value,
+				UpdatedAt: pdEntry.UpdatedAt.Format(time.RFC3339),
+			}
+			continue
+		}
+
+		// Fall back to ProfileEntry format
 		var entry ProfileEntry
 		if err := json.Unmarshal(data, &entry); err != nil {
 			continue
@@ -519,14 +562,17 @@ func (h *ProfileHandler) HandleCategoriesUpdate(msg *IncomingMessage) (*Outgoing
 func (h *ProfileHandler) HandlePublish(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	log.Info().Str("owner_space", h.ownerSpace).Msg("HandlePublish called")
 
+	// Extract inner payload from envelope format (Android wraps in {"type":..., "payload":...})
+	payload := h.extractInnerPayload(msg.Payload)
+
 	var req ProfilePublishRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := json.Unmarshal(payload, &req); err != nil {
 		// Allow empty payload - use existing settings
-		log.Debug().Msg("Empty or invalid payload, using existing settings")
+		log.Debug().Err(err).Str("payload", string(payload)).Msg("Empty or invalid payload, using existing settings")
 		req = ProfilePublishRequest{}
 	}
 
-	log.Debug().Int("fields_in_request", len(req.Fields)).Msg("Publishing profile")
+	log.Debug().Int("fields_in_request", len(req.Fields)).Strs("fields", req.Fields).Msg("Publishing profile")
 
 	now := time.Now()
 	nowUnix := now.Unix()
@@ -832,10 +878,13 @@ func (h *ProfileHandler) HandleGetPublished(msg *IncomingMessage) (*OutgoingMess
 // HandlePublicSettingsUpdate handles profile.public.update messages
 // Updates which fields are included in the public profile (without publishing)
 func (h *ProfileHandler) HandlePublicSettingsUpdate(msg *IncomingMessage) (*OutgoingMessage, error) {
+	// Extract inner payload from envelope format
+	payload := h.extractInnerPayload(msg.Payload)
+
 	var req struct {
 		Fields []string `json:"fields"`
 	}
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := json.Unmarshal(payload, &req); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -873,4 +922,36 @@ func (h *ProfileHandler) HandlePublicSettingsUpdate(msg *IncomingMessage) (*Outg
 		Type:      MessageTypeResponse,
 		Payload:   respBytes,
 	}, nil
+}
+
+// extractInnerPayload extracts the inner payload from the message envelope format.
+// Android sends: {"type": "...", "payload": {...}}
+// This function returns just the inner payload, or the original data if not in envelope format.
+func (h *ProfileHandler) extractInnerPayload(data json.RawMessage) json.RawMessage {
+	if len(data) == 0 {
+		return data
+	}
+
+	// Try to parse as envelope format
+	var envelope struct {
+		Type    string          `json:"type"`
+		Payload json.RawMessage `json:"payload"`
+	}
+
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		// Not valid JSON or not envelope format - return original
+		return data
+	}
+
+	// If there's a nested payload, return it
+	if len(envelope.Payload) > 0 {
+		log.Debug().
+			Str("type", envelope.Type).
+			Int("payload_len", len(envelope.Payload)).
+			Msg("Extracted inner payload from envelope")
+		return envelope.Payload
+	}
+
+	// No nested payload - return original (flat format)
+	return data
 }
