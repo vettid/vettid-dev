@@ -338,8 +338,10 @@ func (vp *VaultProcess) ProcessMessage(ctx context.Context, msg *Message) (*Mess
 				Int("payload_len", len(response.Payload)).
 				Msg("Received message from vault-manager")
 
-			// Check if this is a sealer request (vault-manager needs KMS operation)
-			if response.Type == MessageTypeSealerRequest {
+			// Handle different message types from vault-manager
+			switch response.Type {
+			case MessageTypeSealerRequest:
+				// Vault-manager needs KMS operation
 				log.Debug().
 					Str("owner_space", vp.OwnerSpace).
 					Msg("Handling sealer request from vault-manager")
@@ -368,10 +370,44 @@ func (vp *VaultProcess) ProcessMessage(ctx context.Context, msg *Message) (*Mess
 
 				// Continue waiting for the final response
 				continue
-			}
 
-			// Got the final response
-			return response, nil
+			case MessageTypeNATSPublish:
+				// Vault-manager wants to publish to NATS (e.g., profile updates)
+				// Forward to parent and continue waiting for the actual response
+				log.Debug().
+					Str("owner_space", vp.OwnerSpace).
+					Str("subject", response.Subject).
+					Msg("Forwarding NATS publish from vault-manager")
+
+				if vp.parentSender != nil {
+					if err := vp.parentSender.SendToParent(response); err != nil {
+						log.Warn().
+							Err(err).
+							Str("owner_space", vp.OwnerSpace).
+							Msg("Failed to forward NATS publish (non-fatal)")
+					}
+				}
+				// Continue waiting for the final response
+				continue
+
+			case MessageTypeLog:
+				// Vault-manager log message - forward and continue
+				log.Debug().
+					Str("owner_space", vp.OwnerSpace).
+					Str("log_level", response.LogLevel).
+					Msg("Forwarding log from vault-manager")
+
+				if vp.parentSender != nil {
+					// Fire and forget
+					go vp.parentSender.SendToParent(response)
+				}
+				// Continue waiting for the final response
+				continue
+
+			default:
+				// Got the final response (response, error, etc.)
+				return response, nil
+			}
 		}
 	}
 

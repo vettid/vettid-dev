@@ -251,8 +251,9 @@ func (pm *ProcessManager) Send(ctx context.Context, ownerSpace string, msg *Mess
 			return nil, fmt.Errorf("failed to read response: %w", err)
 		}
 
-		// Check if this is a sealer request
-		if response.Type == MessageTypeSealerRequest {
+		// Handle different message types from vault-manager
+		switch response.Type {
+		case MessageTypeSealerRequest:
 			// Handle sealer request and send response back
 			sealerResp := pm.handleSealerRequest(response)
 			if err := proc.Conn.WriteMessage(sealerResp); err != nil {
@@ -261,10 +262,21 @@ func (pm *ProcessManager) Send(ctx context.Context, ownerSpace string, msg *Mess
 			}
 			// Continue waiting for the final response
 			continue
-		}
 
-		// Got the final response
-		return response, nil
+		case MessageTypeNATSPublish, MessageTypeLog:
+			// These messages should be forwarded to parent, not returned as the response.
+			// In the process_manager context, we don't have direct access to forward them,
+			// so we log a warning and continue waiting for the actual response.
+			log.Warn().
+				Str("owner_space", ownerSpace).
+				Str("message_type", string(response.Type)).
+				Msg("Received intermediate message from vault-manager, waiting for actual response")
+			continue
+
+		default:
+			// Got the final response (response, error, etc.)
+			return response, nil
+		}
 	}
 }
 
