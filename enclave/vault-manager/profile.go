@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -497,6 +498,64 @@ func containsString(slice []string, s string) bool {
 	return false
 }
 
+// displayNameFromNamespace converts a dotted namespace to a human-readable display name.
+// e.g., "personal.legal.first_name" -> "Legal First Name"
+// e.g., "contact.phone.mobile" -> "Mobile Phone"
+func displayNameFromNamespace(namespace string) string {
+	// Known mappings for common namespaces
+	knownMappings := map[string]string{
+		"personal.legal.prefix":       "Name Prefix",
+		"personal.legal.first_name":   "Legal First Name",
+		"personal.legal.middle_name":  "Middle Name",
+		"personal.legal.last_name":    "Legal Last Name",
+		"personal.legal.suffix":       "Name Suffix",
+		"personal.info.birthday":      "Birthday",
+		"contact.phone.mobile":        "Mobile Phone",
+		"contact.phone.work":          "Work Phone",
+		"contact.phone.home":          "Home Phone",
+		"contact.email.personal":      "Personal Email",
+		"contact.email.work":          "Work Email",
+		"address.home.street":         "Street Address",
+		"address.home.street2":        "Address Line 2",
+		"address.home.city":           "City",
+		"address.home.state":          "State",
+		"address.home.postal_code":    "Postal Code",
+		"address.home.country":        "Country",
+		"address.work.street":         "Work Street",
+		"address.work.city":           "Work City",
+		"social.website.personal":     "Website",
+		"social.linkedin.url":         "LinkedIn",
+		"social.twitter.handle":       "X (Twitter)",
+		"social.instagram.handle":     "Instagram",
+		"social.github.username":      "GitHub",
+		"financial.bank.name":         "Bank Name",
+		"financial.bank.account_number": "Account Number",
+		"financial.bank.routing_number": "Routing Number",
+	}
+
+	// Return known mapping if exists
+	if displayName, ok := knownMappings[namespace]; ok {
+		return displayName
+	}
+
+	// Otherwise, derive from namespace parts
+	// e.g., "custom.identity.my_field" -> "My Field"
+	parts := strings.Split(namespace, ".")
+	if len(parts) == 0 {
+		return namespace
+	}
+
+	lastPart := parts[len(parts)-1]
+	// Replace underscores with spaces and title case each word
+	words := strings.Split(strings.ReplaceAll(lastPart, "_", " "), " ")
+	for i, word := range words {
+		if len(word) > 0 {
+			words[i] = strings.ToUpper(string(word[0])) + strings.ToLower(word[1:])
+		}
+	}
+	return strings.Join(words, " ")
+}
+
 // HandleCategoriesGet handles profile.categories.get messages
 // Returns both predefined and custom categories
 func (h *ProfileHandler) HandleCategoriesGet(msg *IncomingMessage) (*OutgoingMessage, error) {
@@ -665,7 +724,7 @@ func (h *ProfileHandler) HandlePublish(ctx context.Context, msg *IncomingMessage
 				continue
 			}
 			profile.Fields[fieldName] = PublishedField{
-				DisplayName: fieldName,
+				DisplayName: displayNameFromNamespace(fieldName),
 				Value:       entry.Value,
 				FieldType:   string(FieldTypeText),
 			}
@@ -678,8 +737,14 @@ func (h *ProfileHandler) HandlePublish(ctx context.Context, msg *IncomingMessage
 			continue
 		}
 
+		// Use field's display name if set, otherwise derive from namespace
+		displayName := field.DisplayName
+		if displayName == "" || displayName == fieldName {
+			displayName = displayNameFromNamespace(fieldName)
+		}
+
 		profile.Fields[fieldName] = PublishedField{
-			DisplayName: field.DisplayName,
+			DisplayName: displayName,
 			Value:       field.Value,
 			FieldType:   string(field.FieldType),
 		}
@@ -825,7 +890,7 @@ func (h *ProfileHandler) HandleGetPublished(msg *IncomingMessage) (*OutgoingMess
 				continue
 			}
 			profile.Fields[fieldName] = PublishedField{
-				DisplayName: fieldName,
+				DisplayName: displayNameFromNamespace(fieldName),
 				Value:       entry.Value,
 				FieldType:   string(FieldTypeText),
 			}
@@ -837,8 +902,14 @@ func (h *ProfileHandler) HandleGetPublished(msg *IncomingMessage) (*OutgoingMess
 			continue
 		}
 
+		// Use field's display name if set, otherwise derive from namespace
+		displayName := field.DisplayName
+		if displayName == "" || displayName == fieldName {
+			displayName = displayNameFromNamespace(fieldName)
+		}
+
 		profile.Fields[fieldName] = PublishedField{
-			DisplayName: field.DisplayName,
+			DisplayName: displayName,
 			Value:       field.Value,
 			FieldType:   string(field.FieldType),
 		}
