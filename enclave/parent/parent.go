@@ -368,7 +368,7 @@ func (p *ParentProcess) forwardToEnclave(ctx context.Context, msg *NATSMessage) 
 		if enclaveMsg.RequestID != "" {
 			response.RequestID = enclaveMsg.RequestID
 		}
-		responseData := p.formatEnclaveResponse(response)
+		responseData := p.formatEnclaveResponse(response, enclaveMsg.Subject)
 
 		// If there's a reply address (NATS request/reply pattern), use it
 		if msg.Reply != "" {
@@ -867,7 +867,9 @@ func (p *ParentProcess) parseCredentialRequestFromPayload(data []byte, msg *Encl
 }
 
 // formatEnclaveResponse formats an enclave response for NATS reply
-func (p *ParentProcess) formatEnclaveResponse(response *EnclaveMessage) []byte {
+// The requestSubject parameter is used to extract the request type (e.g., "pin.unlock")
+// and add it to the response for validation by the client.
+func (p *ParentProcess) formatEnclaveResponse(response *EnclaveMessage, requestSubject string) []byte {
 	// For attestation responses, format with proper fields
 	if response.Type == EnclaveMessageTypeAttestationResponse && response.Attestation != nil {
 		resp := struct {
@@ -968,11 +970,25 @@ func (p *ParentProcess) formatEnclaveResponse(response *EnclaveMessage) []byte {
 			if _, hasTimestamp := payloadMap["timestamp"]; !hasTimestamp {
 				payloadMap["timestamp"] = time.Now().UTC().Format(time.RFC3339)
 			}
+			// Add request_type from subject for client-side validation
+			// This allows clients to verify they received the correct response type
+			if requestSubject != "" {
+				requestType := extractRequestType(requestSubject)
+				if requestType != "" {
+					payloadMap["request_type"] = requestType
+				}
+			}
 			if data, err := json.Marshal(payloadMap); err == nil {
+				// Extract request_type for logging (may be nil if subject was empty)
+				reqType := ""
+				if rt, ok := payloadMap["request_type"].(string); ok {
+					reqType = rt
+				}
 				log.Debug().
 					Str("event_id", response.RequestID).
+					Str("request_type", reqType).
 					Int("payload_len", len(data)).
-					Msg("Wrapped vault response with event_id")
+					Msg("Wrapped vault response with event_id and request_type")
 				return data
 			}
 		}
@@ -1041,6 +1057,29 @@ func buildAppResponseSubject(subject, ownerSpace string) string {
 	// Build: OwnerSpace.<guid>.forApp.<op>.response
 	// ownerSpace is just the GUID, so we need to prepend "OwnerSpace."
 	return "OwnerSpace." + ownerSpace + ".forApp." + opPart + ".response"
+}
+
+// extractRequestType extracts the request type from a NATS subject
+// Example: "OwnerSpace.{guid}.forVault.pin.unlock" -> "pin.unlock"
+// Example: "OwnerSpace.{guid}.forVault.connection.list" -> "connection.list"
+// This allows clients to validate they received the expected response type
+func extractRequestType(subject string) string {
+	// Find ".forVault." in the subject
+	searchStr := ".forVault."
+	forVaultIdx := -1
+	for i := 0; i <= len(subject)-len(searchStr); i++ {
+		if subject[i:i+len(searchStr)] == searchStr {
+			forVaultIdx = i
+			break
+		}
+	}
+
+	if forVaultIdx == -1 {
+		return "" // Not a forVault subject
+	}
+
+	// Return the operation part after ".forVault."
+	return subject[forVaultIdx+len(searchStr):]
 }
 
 // mapEnclaveSubjectToType maps enclave.* subjects to message types
@@ -1133,8 +1172,8 @@ func (p *ParentProcess) handleStorageGet(ctx context.Context, msg *EnclaveMessag
 	}
 
 	return &EnclaveMessage{
-		Type:    EnclaveMessageTypeStorageResponse,
-		Payload: data,
+		Type:         EnclaveMessageTypeStorageResponse,
+		StorageValue: data, // Use StorageValue for binary data
 	}, nil
 }
 
@@ -1142,7 +1181,13 @@ func (p *ParentProcess) handleStorageGet(ctx context.Context, msg *EnclaveMessag
 func (p *ParentProcess) handleStoragePut(ctx context.Context, msg *EnclaveMessage) (*EnclaveMessage, error) {
 	key := p.config.S3.KeyPrefix + msg.StorageKey
 
-	if err := p.s3Client.Put(ctx, key, msg.Payload); err != nil {
+	// Use StorageValue for binary data (falls back to Payload for backwards compatibility)
+	data := msg.StorageValue
+	if len(data) == 0 {
+		data = msg.Payload
+	}
+
+	if err := p.s3Client.Put(ctx, key, data); err != nil {
 		return nil, fmt.Errorf("S3 put failed: %w", err)
 	}
 
@@ -1400,7 +1445,7 @@ func (p *ParentProcess) handleCredentialDeleteCommand(ctx context.Context, msg *
 
 	// Send response back
 	if response != nil && msg.Reply != "" {
-		responseData := p.formatEnclaveResponse(response)
+		responseData := p.formatEnclaveResponse(response, "")
 		if err := p.natsClient.Publish(msg.Reply, responseData); err != nil {
 			log.Error().Err(err).Str("reply", msg.Reply).Msg("Failed to publish credential delete reply")
 		}
@@ -1485,7 +1530,7 @@ func (p *ParentProcess) handleVaultReset(ctx context.Context, msg *NATSMessage) 
 
 	// Send response back
 	if response != nil && msg.Reply != "" {
-		responseData := p.formatEnclaveResponse(response)
+		responseData := p.formatEnclaveResponse(response, "")
 		p.natsClient.Publish(msg.Reply, responseData)
 	}
 
@@ -1514,7 +1559,7 @@ func (p *ParentProcess) forwardControlToEnclave(ctx context.Context, msg *NATSMe
 
 	// Send response back
 	if response != nil && msg.Reply != "" {
-		responseData := p.formatEnclaveResponse(response)
+		responseData := p.formatEnclaveResponse(response, msg.Subject)
 		if err := p.natsClient.Publish(msg.Reply, responseData); err != nil {
 			log.Error().Err(err).Str("reply", msg.Reply).Msg("Failed to publish control command reply")
 		}
