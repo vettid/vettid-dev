@@ -21,8 +21,9 @@ const (
 	MessageTypeNATSPublish MessageType = "nats_publish"
 
 	// Responses
-	MessageTypeResponse MessageType = "response"
-	MessageTypeError    MessageType = "error"
+	MessageTypeResponse        MessageType = "response"
+	MessageTypeError           MessageType = "error"
+	MessageTypeStorageResponse MessageType = "storage_response" // From parent for S3 operations
 )
 
 // IncomingMessage is a message from the supervisor/parent
@@ -309,9 +310,11 @@ func (mh *MessageHandler) GetSealerProxy() *SealerProxy {
 	return mh.sealerProxy
 }
 
-// IsSealerResponse checks if a message is a sealer response from supervisor
+// IsSealerResponse checks if a message is a sealer response from supervisor.
+// This includes both sealer_response (normal) and storage_response (shouldn't happen
+// but included for defensive handling in case of race conditions).
 func (mh *MessageHandler) IsSealerResponse(msg *IncomingMessage) bool {
-	return msg.Type == MessageTypeSealerResponse
+	return msg.Type == MessageTypeSealerResponse || msg.Type == MessageTypeStorageResponse
 }
 
 // HandleMessage processes an incoming message
@@ -325,6 +328,16 @@ func (mh *MessageHandler) HandleMessage(ctx context.Context, msg *IncomingMessag
 	switch msg.Type {
 	case MessageTypeVaultOp:
 		return mh.handleVaultOp(ctx, msg)
+	case MessageTypeStorageResponse:
+		// Storage responses should be handled by the sealer proxy's synchronous operations.
+		// If we receive one here in the main message handler, it means there was a
+		// race condition or message ordering issue between the main loop and sealer proxy.
+		// Log a warning and return nil - the caller should handle this gracefully.
+		log.Warn().
+			Str("id", msg.GetID()).
+			Str("type", string(msg.Type)).
+			Msg("Received storage_response in main handler - possible race condition with sealer proxy")
+		return nil, nil
 	default:
 		return nil, fmt.Errorf("unknown message type: %s", msg.Type)
 	}
@@ -656,13 +669,28 @@ func (mh *MessageHandler) handleSecretsOperation(ctx context.Context, msg *Incom
 
 	switch opType {
 	case "add":
-		return mh.secretsHandler.HandleAdd(msg)
+		response, err := mh.secretsHandler.HandleAdd(msg)
+		if err != nil {
+			return response, err
+		}
+		mh.persistVaultStateToS3()
+		return response, nil
 	case "update":
-		return mh.secretsHandler.HandleUpdate(msg)
+		response, err := mh.secretsHandler.HandleUpdate(msg)
+		if err != nil {
+			return response, err
+		}
+		mh.persistVaultStateToS3()
+		return response, nil
 	case "retrieve":
 		return mh.secretsHandler.HandleRetrieve(msg)
 	case "delete":
-		return mh.secretsHandler.HandleDelete(msg)
+		response, err := mh.secretsHandler.HandleDelete(msg)
+		if err != nil {
+			return response, err
+		}
+		mh.persistVaultStateToS3()
+		return response, nil
 	case "list":
 		return mh.secretsHandler.HandleList(msg)
 	default:
@@ -682,9 +710,19 @@ func (mh *MessageHandler) handleProfileOperation(ctx context.Context, msg *Incom
 	case "get":
 		return mh.profileHandler.HandleGet(msg)
 	case "update":
-		return mh.profileHandler.HandleUpdate(msg)
+		response, err := mh.profileHandler.HandleUpdate(msg)
+		if err != nil {
+			return response, err
+		}
+		mh.persistVaultStateToS3()
+		return response, nil
 	case "delete":
-		return mh.profileHandler.HandleDelete(msg)
+		response, err := mh.profileHandler.HandleDelete(msg)
+		if err != nil {
+			return response, err
+		}
+		mh.persistVaultStateToS3()
+		return response, nil
 	case "get-shared":
 		return mh.profileHandler.HandleGetShared(msg)
 	case "sharing-settings":
@@ -696,7 +734,12 @@ func (mh *MessageHandler) handleProfileOperation(ctx context.Context, msg *Incom
 		case "get":
 			return mh.profileHandler.HandleGetSharingSettings(msg)
 		case "update":
-			return mh.profileHandler.HandleUpdateSharingSettings(msg)
+			response, err := mh.profileHandler.HandleUpdateSharingSettings(msg)
+			if err != nil {
+				return response, err
+			}
+			mh.persistVaultStateToS3()
+			return response, nil
 		default:
 			return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown sharing-settings operation: %s", opParts[2]))
 		}
@@ -709,7 +752,12 @@ func (mh *MessageHandler) handleProfileOperation(ctx context.Context, msg *Incom
 		case "get":
 			return mh.profileHandler.HandleCategoriesGet(msg)
 		case "update":
-			return mh.profileHandler.HandleCategoriesUpdate(msg)
+			response, err := mh.profileHandler.HandleCategoriesUpdate(msg)
+			if err != nil {
+				return response, err
+			}
+			mh.persistVaultStateToS3()
+			return response, nil
 		default:
 			return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown categories operation: %s", opParts[2]))
 		}
@@ -722,16 +770,51 @@ func (mh *MessageHandler) handleProfileOperation(ctx context.Context, msg *Incom
 		case "get":
 			return mh.profileHandler.HandlePublicSettingsGet(msg)
 		case "update":
-			return mh.profileHandler.HandlePublicSettingsUpdate(msg)
+			response, err := mh.profileHandler.HandlePublicSettingsUpdate(msg)
+			if err != nil {
+				return response, err
+			}
+			mh.persistVaultStateToS3()
+			return response, nil
 		default:
 			return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown public operation: %s", opParts[2]))
 		}
 	case "publish":
 		// Publish public profile to NATS
-		return mh.profileHandler.HandlePublish(ctx, msg)
+		response, err := mh.profileHandler.HandlePublish(ctx, msg)
+		if err != nil {
+			return response, err
+		}
+		mh.persistVaultStateToS3()
+		return response, nil
 	case "get-published":
 		// Get the last published profile (what connections see)
 		return mh.profileHandler.HandleGetPublished(msg)
+	case "photo":
+		// Handle photo operations
+		if len(opParts) < 3 {
+			return mh.errorResponse(msg.GetID(), "missing photo operation")
+		}
+		switch opParts[2] {
+		case "get":
+			return mh.profileHandler.HandlePhotoGet(msg)
+		case "update":
+			response, err := mh.profileHandler.HandlePhotoUpdate(msg)
+			if err != nil {
+				return response, err
+			}
+			mh.persistVaultStateToS3()
+			return response, nil
+		case "delete":
+			response, err := mh.profileHandler.HandlePhotoDelete(msg)
+			if err != nil {
+				return response, err
+			}
+			mh.persistVaultStateToS3()
+			return response, nil
+		default:
+			return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown photo operation: %s", opParts[2]))
+		}
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown profile operation: %s", opType))
 	}
@@ -749,11 +832,48 @@ func (mh *MessageHandler) handlePersonalDataOperation(ctx context.Context, msg *
 	case "get":
 		return mh.personalDataHandler.HandleGet(msg)
 	case "update":
-		return mh.personalDataHandler.HandleUpdate(msg)
+		response, err := mh.personalDataHandler.HandleUpdate(msg)
+		if err != nil {
+			return response, err
+		}
+		// Persist vault state to S3 after successful update
+		mh.persistVaultStateToS3()
+		return response, nil
 	case "delete":
-		return mh.personalDataHandler.HandleDelete(msg)
+		response, err := mh.personalDataHandler.HandleDelete(msg)
+		if err != nil {
+			return response, err
+		}
+		// Persist vault state to S3 after successful delete
+		mh.persistVaultStateToS3()
+		return response, nil
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown personal-data operation: %s", opType))
+	}
+}
+
+// persistVaultStateToS3 persists the current vault state to S3 for durability.
+// This ensures that data modifications are not lost if the vault-manager is restarted.
+func (mh *MessageHandler) persistVaultStateToS3() {
+	mh.vaultState.mu.RLock()
+	dek := mh.vaultState.dek
+	mh.vaultState.mu.RUnlock()
+
+	if dek == nil || mh.sealerProxy == nil {
+		log.Debug().Str("owner_space", mh.ownerSpace).Msg("Cannot persist vault state - DEK or sealer not available")
+		return
+	}
+
+	encryptedState, err := mh.createEncryptedVaultState(dek)
+	if err != nil {
+		log.Warn().Err(err).Str("owner_space", mh.ownerSpace).Msg("Failed to create encrypted vault state for persistence")
+		return
+	}
+
+	if err := mh.sealerProxy.StoreVaultState(encryptedState); err != nil {
+		log.Warn().Err(err).Str("owner_space", mh.ownerSpace).Msg("Failed to persist vault state to S3")
+	} else {
+		log.Debug().Str("owner_space", mh.ownerSpace).Msg("Vault state persisted to S3 after data modification")
 	}
 }
 
@@ -793,13 +913,12 @@ func (mh *MessageHandler) handleCredentialOperation(ctx context.Context, msg *In
 			}
 		}
 
-		// SECURITY: Clear DEK after persistence is complete
-		mh.vaultState.mu.Lock()
-		if mh.vaultState.dek != nil {
-			zeroBytes(mh.vaultState.dek)
-			mh.vaultState.dek = nil
-		}
-		mh.vaultState.mu.Unlock()
+		// NOTE: DEK is intentionally NOT cleared here after credential.create
+		// The enrollment flow continues with personal-data.update and profile.publish
+		// which also need DEK for persistence. DEK will be cleared on:
+		// - Vault decommission (credential.delete)
+		// - Vault manager restart
+		// - Re-authentication (future)
 
 		return response, nil
 	case "store":
@@ -898,21 +1017,51 @@ func (mh *MessageHandler) handleConnectionOperation(ctx context.Context, msg *In
 
 	switch opType {
 	case "create-invite":
-		return mh.connectionsHandler.HandleCreateInvite(msg)
+		response, err := mh.connectionsHandler.HandleCreateInvite(msg)
+		if err != nil {
+			return response, err
+		}
+		mh.persistVaultStateToS3()
+		return response, nil
 	case "store-credentials":
-		return mh.connectionsHandler.HandleStoreCredentials(msg)
+		response, err := mh.connectionsHandler.HandleStoreCredentials(msg)
+		if err != nil {
+			return response, err
+		}
+		mh.persistVaultStateToS3()
+		return response, nil
 	case "initiate":
-		return mh.connectionsHandler.HandleInitiate(msg)
+		response, err := mh.connectionsHandler.HandleInitiate(msg)
+		if err != nil {
+			return response, err
+		}
+		mh.persistVaultStateToS3()
+		return response, nil
 	case "respond":
-		return mh.connectionsHandler.HandleRespond(msg)
+		response, err := mh.connectionsHandler.HandleRespond(msg)
+		if err != nil {
+			return response, err
+		}
+		mh.persistVaultStateToS3()
+		return response, nil
 	case "revoke":
-		return mh.connectionsHandler.HandleRevoke(msg)
+		response, err := mh.connectionsHandler.HandleRevoke(msg)
+		if err != nil {
+			return response, err
+		}
+		mh.persistVaultStateToS3()
+		return response, nil
 	case "list":
 		return mh.connectionsHandler.HandleList(msg)
 	case "get":
 		return mh.connectionsHandler.HandleGet(msg)
 	case "update":
-		return mh.connectionsHandler.HandleUpdate(msg)
+		response, err := mh.connectionsHandler.HandleUpdate(msg)
+		if err != nil {
+			return response, err
+		}
+		mh.persistVaultStateToS3()
+		return response, nil
 	case "get-capabilities":
 		return mh.connectionsHandler.HandleGetCapabilities(msg)
 	case "activity-summary":

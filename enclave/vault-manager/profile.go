@@ -672,6 +672,16 @@ func (h *ProfileHandler) HandlePublish(ctx context.Context, msg *IncomingMessage
 		UpdatedAt:     now.Format(time.RFC3339),
 	}
 
+	// Load profile photo if set
+	photoData, err := h.storage.Get("profile/_photo")
+	if err == nil {
+		var photoEntry ProfileEntry
+		if json.Unmarshal(photoData, &photoEntry) == nil && photoEntry.Value != "" {
+			profile.Photo = photoEntry.Value
+			log.Debug().Int("photo_size", len(photoEntry.Value)).Msg("Including photo in published profile")
+		}
+	}
+
 	// Get public key from vault state
 	if h.vaultState != nil {
 		h.vaultState.mu.RLock()
@@ -985,6 +995,131 @@ func (h *ProfileHandler) HandlePublicSettingsUpdate(msg *IncomingMessage) (*Outg
 	resp := map[string]interface{}{
 		"success": true,
 		"version": settings.Version,
+	}
+	respBytes, _ := json.Marshal(resp)
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// --- Profile Photo Handlers ---
+
+// HandlePhotoGet handles profile.photo.get messages
+// Returns the Base64-encoded profile photo or empty if not set
+func (h *ProfileHandler) HandlePhotoGet(msg *IncomingMessage) (*OutgoingMessage, error) {
+	log.Info().Str("owner_space", h.ownerSpace).Msg("HandlePhotoGet called")
+
+	// Load photo from storage
+	data, err := h.storage.Get("profile/_photo")
+	if err != nil {
+		// No photo set - return empty response
+		resp := map[string]interface{}{
+			"success": true,
+			"photo":   "",
+		}
+		respBytes, _ := json.Marshal(resp)
+		return &OutgoingMessage{
+			RequestID: msg.GetID(),
+			Type:      MessageTypeResponse,
+			Payload:   respBytes,
+		}, nil
+	}
+
+	// Photo is stored as a ProfileEntry with Base64 value
+	var entry ProfileEntry
+	if err := json.Unmarshal(data, &entry); err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to parse photo data")
+	}
+
+	resp := map[string]interface{}{
+		"success":    true,
+		"photo":      entry.Value,
+		"updated_at": entry.UpdatedAt.Format(time.RFC3339),
+	}
+	respBytes, _ := json.Marshal(resp)
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// HandlePhotoUpdate handles profile.photo.update messages
+// Stores a Base64-encoded JPEG photo (max 200KB for safety margin)
+func (h *ProfileHandler) HandlePhotoUpdate(msg *IncomingMessage) (*OutgoingMessage, error) {
+	log.Info().Str("owner_space", h.ownerSpace).Msg("HandlePhotoUpdate called")
+
+	// Extract inner payload from envelope format
+	payload := h.extractInnerPayload(msg.Payload)
+
+	var req struct {
+		Photo string `json:"photo"` // Base64-encoded JPEG
+	}
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return h.errorResponse(msg.GetID(), "Invalid request format")
+	}
+
+	if req.Photo == "" {
+		return h.errorResponse(msg.GetID(), "photo is required")
+	}
+
+	// Validate size (200KB max for safety margin, actual target is 150KB)
+	// Base64 encoding adds ~33% overhead, so 200KB base64 is ~150KB raw
+	maxBase64Size := 200 * 1024 // 200KB
+	if len(req.Photo) > maxBase64Size {
+		return h.errorResponse(msg.GetID(), fmt.Sprintf("Photo too large: %d bytes (max %d)", len(req.Photo), maxBase64Size))
+	}
+
+	// Store as ProfileEntry
+	now := time.Now().UTC()
+	entry := ProfileEntry{
+		Field:     "_photo",
+		Value:     req.Photo,
+		UpdatedAt: now,
+	}
+
+	data, err := json.Marshal(entry)
+	if err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to serialize photo")
+	}
+
+	if err := h.storage.Put("profile/_photo", data); err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to save photo")
+	}
+
+	log.Info().Str("owner_space", h.ownerSpace).Int("size", len(req.Photo)).Msg("Profile photo updated")
+
+	resp := map[string]interface{}{
+		"success":    true,
+		"updated_at": now.Format(time.RFC3339),
+	}
+	respBytes, _ := json.Marshal(resp)
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// HandlePhotoDelete handles profile.photo.delete messages
+// Removes the profile photo from storage
+func (h *ProfileHandler) HandlePhotoDelete(msg *IncomingMessage) (*OutgoingMessage, error) {
+	log.Info().Str("owner_space", h.ownerSpace).Msg("HandlePhotoDelete called")
+
+	if err := h.storage.Delete("profile/_photo"); err != nil {
+		// Not an error if photo didn't exist
+		log.Debug().Err(err).Msg("Photo delete - may not have existed")
+	}
+
+	log.Info().Str("owner_space", h.ownerSpace).Msg("Profile photo deleted")
+
+	resp := map[string]interface{}{
+		"success": true,
 	}
 	respBytes, _ := json.Marshal(resp)
 

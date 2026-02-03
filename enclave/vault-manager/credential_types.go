@@ -745,12 +745,13 @@ type PublishedField struct {
 // Published to topic: {ownerSpace}.profile.public
 type PublishedProfile struct {
 	UserGUID      string                    `json:"user_guid"`
-	PublicKey     string                    `json:"public_key"`     // Ed25519 public key (base64)
-	FirstName     string                    `json:"first_name"`     // Always included from registration
-	LastName      string                    `json:"last_name"`      // Always included
-	Email         string                    `json:"email"`          // Always included
-	EmailVerified bool                      `json:"email_verified"` // From registration
-	Fields        map[string]PublishedField `json:"fields"`         // Selected personal data fields
+	PublicKey     string                    `json:"public_key"`      // Ed25519 public key (base64)
+	FirstName     string                    `json:"first_name"`      // Always included from registration
+	LastName      string                    `json:"last_name"`       // Always included
+	Email         string                    `json:"email"`           // Always included
+	EmailVerified bool                      `json:"email_verified"`  // From registration
+	Photo         string                    `json:"photo,omitempty"` // Base64-encoded JPEG profile photo
+	Fields        map[string]PublishedField `json:"fields"`          // Selected personal data fields
 	Version       int                       `json:"profile_version"`
 	UpdatedAt     string                    `json:"updated_at"` // ISO8601
 }
