@@ -37,10 +37,14 @@ type PersonalDataGetRequest struct {
 }
 
 // PersonalDataGetResponse is the response for personal-data.get
+// Includes system fields (first_name, last_name, email) at top level for Android compatibility
 type PersonalDataGetResponse struct {
-	Success bool                                  `json:"success"`
-	Fields  map[string]PersonalDataFieldResponse `json:"fields"`
-	Error   string                                `json:"error,omitempty"`
+	Success   bool                                  `json:"success"`
+	FirstName string                                `json:"first_name,omitempty"`
+	LastName  string                                `json:"last_name,omitempty"`
+	Email     string                                `json:"email,omitempty"`
+	Fields    map[string]PersonalDataFieldResponse `json:"fields"`
+	Error     string                                `json:"error,omitempty"`
 }
 
 // PersonalDataFieldResponse represents a single personal data field in responses
@@ -57,6 +61,11 @@ type PersonalDataUpdateRequest struct {
 // PersonalDataDeleteRequest is the payload for personal-data.delete
 type PersonalDataDeleteRequest struct {
 	Namespaces []string `json:"namespaces"` // Namespaces to delete
+}
+
+// PersonalDataUpdateSortOrderRequest is the payload for personal-data.update-sort-order
+type PersonalDataUpdateSortOrderRequest struct {
+	SortOrder map[string]int `json:"sort_order"` // Namespace -> sort order index
 }
 
 // --- Handler methods ---
@@ -80,6 +89,40 @@ func (h *PersonalDataHandler) HandleGet(msg *IncomingMessage) (*OutgoingMessage,
 		Fields:  make(map[string]PersonalDataFieldResponse),
 	}
 
+	// Load system fields (registration info) from profile storage
+	// These are stored by PIN handler during enrollment
+	systemFields := []string{"_system_first_name", "_system_last_name", "_system_email"}
+	for _, field := range systemFields {
+		storageKey := "profile/" + field
+		data, err := h.storage.Get(storageKey)
+		if err != nil {
+			log.Debug().Str("field", field).Msg("System field not found in profile storage")
+			continue
+		}
+		// Parse as ProfileEntry (same format used by profile handler)
+		var entry struct {
+			Value     string `json:"value"`
+			UpdatedAt string `json:"updated_at"`
+		}
+		if err := json.Unmarshal(data, &entry); err != nil {
+			log.Warn().Str("field", field).Err(err).Msg("Failed to unmarshal system field")
+			continue
+		}
+		switch field {
+		case "_system_first_name":
+			result.FirstName = entry.Value
+		case "_system_last_name":
+			result.LastName = entry.Value
+		case "_system_email":
+			result.Email = entry.Value
+		}
+	}
+	log.Debug().
+		Str("first_name", result.FirstName).
+		Str("last_name", result.LastName).
+		Str("email", result.Email).
+		Msg("Loaded system fields for personal-data.get")
+
 	// Get the list of namespaces to return
 	namespaces := req.Namespaces
 	if len(namespaces) == 0 {
@@ -90,7 +133,7 @@ func (h *PersonalDataHandler) HandleGet(msg *IncomingMessage) (*OutgoingMessage,
 				log.Warn().Err(err).Msg("Failed to unmarshal personal data index")
 			}
 		}
-		log.Debug().Int("count", len(namespaces)).Msg("Loaded personal data index")
+		log.Info().Int("count", len(namespaces)).Strs("namespaces", namespaces).Msg("Loaded personal data index")
 	}
 
 	// Load each field
@@ -114,9 +157,15 @@ func (h *PersonalDataHandler) HandleGet(msg *IncomingMessage) (*OutgoingMessage,
 		}
 	}
 
-	log.Info().Int("fields", len(result.Fields)).Msg("Personal data get completed")
+	// Log field names for debugging
+	fieldNames := make([]string, 0, len(result.Fields))
+	for name := range result.Fields {
+		fieldNames = append(fieldNames, name)
+	}
+	log.Info().Int("fields", len(result.Fields)).Strs("field_names", fieldNames).Msg("Personal data get completed")
 
 	respBytes, _ := json.Marshal(result)
+	log.Debug().Str("response_json", string(respBytes)).Msg("Personal data response payload")
 	return &OutgoingMessage{
 		RequestID: msg.GetID(),
 		Type:      MessageTypeResponse,
@@ -254,6 +303,78 @@ func (h *PersonalDataHandler) HandleDelete(msg *IncomingMessage) (*OutgoingMessa
 	resp := map[string]interface{}{
 		"success":        true,
 		"fields_deleted": deletedCount,
+	}
+	respBytes, _ := json.Marshal(resp)
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// HandleUpdateSortOrder handles personal-data.update-sort-order messages
+// Stores the display order of personal data fields in the vault
+func (h *PersonalDataHandler) HandleUpdateSortOrder(msg *IncomingMessage) (*OutgoingMessage, error) {
+	log.Info().Str("owner_space", h.ownerSpace).Msg("PersonalDataHandler.HandleUpdateSortOrder called")
+
+	// Extract inner payload from envelope format
+	payload := h.extractInnerPayload(msg.Payload)
+
+	var req PersonalDataUpdateSortOrderRequest
+	if err := json.Unmarshal(payload, &req); err != nil {
+		log.Warn().Err(err).Str("payload", string(payload)).Msg("Failed to unmarshal sort order update request")
+		return h.errorResponse(msg.GetID(), "Invalid request format")
+	}
+
+	if len(req.SortOrder) == 0 {
+		return h.errorResponse(msg.GetID(), "sort_order is required")
+	}
+
+	// Store the sort order map
+	sortOrderBytes, err := json.Marshal(req.SortOrder)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to marshal sort order")
+		return h.errorResponse(msg.GetID(), "Failed to process sort order")
+	}
+
+	if err := h.storage.Put("personal-data/_sort_order", sortOrderBytes); err != nil {
+		log.Error().Err(err).Msg("Failed to store sort order")
+		return h.errorResponse(msg.GetID(), "Failed to store sort order")
+	}
+
+	log.Info().Int("fields", len(req.SortOrder)).Msg("Personal data sort order updated")
+
+	resp := map[string]interface{}{
+		"success":        true,
+		"fields_updated": len(req.SortOrder),
+	}
+	respBytes, _ := json.Marshal(resp)
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// HandleGetSortOrder handles personal-data.get-sort-order messages
+// Returns the stored display order of personal data fields
+func (h *PersonalDataHandler) HandleGetSortOrder(msg *IncomingMessage) (*OutgoingMessage, error) {
+	log.Info().Str("owner_space", h.ownerSpace).Msg("PersonalDataHandler.HandleGetSortOrder called")
+
+	sortOrder := make(map[string]int)
+
+	data, err := h.storage.Get("personal-data/_sort_order")
+	if err == nil {
+		if err := json.Unmarshal(data, &sortOrder); err != nil {
+			log.Warn().Err(err).Msg("Failed to unmarshal sort order")
+		}
+	}
+
+	resp := map[string]interface{}{
+		"success":    true,
+		"sort_order": sortOrder,
 	}
 	respBytes, _ := json.Marshal(resp)
 

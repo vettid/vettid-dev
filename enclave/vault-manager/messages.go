@@ -847,6 +847,16 @@ func (mh *MessageHandler) handlePersonalDataOperation(ctx context.Context, msg *
 		// Persist vault state to S3 after successful delete
 		mh.persistVaultStateToS3()
 		return response, nil
+	case "update-sort-order":
+		response, err := mh.personalDataHandler.HandleUpdateSortOrder(msg)
+		if err != nil {
+			return response, err
+		}
+		// Persist vault state to S3 after successful sort order update
+		mh.persistVaultStateToS3()
+		return response, nil
+	case "get-sort-order":
+		return mh.personalDataHandler.HandleGetSortOrder(msg)
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown personal-data operation: %s", opType))
 	}
