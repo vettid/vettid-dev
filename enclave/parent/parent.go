@@ -941,14 +941,23 @@ func (p *ParentProcess) formatEnclaveResponse(response *EnclaveMessage, requestS
 		return data
 	}
 
-	// For error responses, include the error message
+	// For error responses, include the error message and event_id for correlation
 	if response.Type == EnclaveMessageTypeError && response.Error != "" {
 		resp := struct {
-			Type  string `json:"type"`
-			Error string `json:"error"`
+			Type        string `json:"type"`
+			Error       string `json:"error"`
+			EventID     string `json:"event_id,omitempty"`
+			RequestType string `json:"request_type,omitempty"`
+			Timestamp   string `json:"timestamp,omitempty"`
 		}{
-			Type:  string(response.Type),
-			Error: response.Error,
+			Type:      string(response.Type),
+			Error:     response.Error,
+			EventID:   response.RequestID,
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+		}
+		// Add request_type from subject for client-side validation
+		if requestSubject != "" {
+			resp.RequestType = extractRequestType(requestSubject)
 		}
 
 		data, err := json.Marshal(resp)
@@ -956,6 +965,11 @@ func (p *ParentProcess) formatEnclaveResponse(response *EnclaveMessage, requestS
 			log.Error().Err(err).Msg("Failed to marshal error response")
 			return response.Payload
 		}
+		log.Debug().
+			Str("event_id", resp.EventID).
+			Str("error", resp.Error).
+			Str("request_type", resp.RequestType).
+			Msg("Formatted error response with event_id")
 		return data
 	}
 

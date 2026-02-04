@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/vettid/vettid-dev/enclave/vault-manager/storage"
 	"github.com/rs/zerolog/log"
 )
 
@@ -28,6 +29,38 @@ func NewPINHandler(ownerSpace string, state *VaultState, bootstrap *BootstrapHan
 		sealerProxy: sealerProxy,
 		storage:     storage,
 	}
+}
+
+// extractInnerPayload extracts the inner payload from the message envelope format.
+// Android sends: {"type": "...", "payload": {...}}
+// This function returns just the inner payload, or the original data if not in envelope format.
+func (h *PINHandler) extractInnerPayload(data json.RawMessage) json.RawMessage {
+	if len(data) == 0 {
+		return data
+	}
+
+	// Try to parse as envelope format
+	var envelope struct {
+		Type    string          `json:"type"`
+		Payload json.RawMessage `json:"payload"`
+	}
+
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		// Not valid JSON or not envelope format - return original
+		return data
+	}
+
+	// If there's a nested payload, return it
+	if len(envelope.Payload) > 0 {
+		log.Debug().
+			Str("type", envelope.Type).
+			Int("payload_len", len(envelope.Payload)).
+			Msg("Extracted inner payload from envelope")
+		return envelope.Payload
+	}
+
+	// No nested payload - return original (flat format)
+	return data
 }
 
 // HandlePINSetup processes initial PIN setup (Phase 2 of enrollment)
@@ -254,10 +287,17 @@ func (h *PINHandler) HandlePINSetup(ctx context.Context, msg *IncomingMessage) (
 func (h *PINHandler) HandlePINUnlock(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	log.Info().Str("owner_space", h.ownerSpace).Msg("PIN unlock requested")
 
+	// Extract inner payload from envelope format if present
+	// Android sends: {"type": "pin-unlock", "payload": {"utk_id": "...", ...}}
+	innerPayload := h.extractInnerPayload(msg.Payload)
+
 	var req PINUnlockRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := json.Unmarshal(innerPayload, &req); err != nil {
+		log.Error().Err(err).Str("payload", string(innerPayload)).Msg("Failed to unmarshal PIN unlock request")
 		return h.errorResponse(msg.GetID(), "invalid request format")
 	}
+
+	log.Debug().Str("owner_space", h.ownerSpace).Str("utk_id", req.UTKID).Msg("DEBUG: Parsed PIN unlock request")
 
 	// Check if vault is warm (has ECIES keys in memory)
 	h.state.mu.RLock()
@@ -354,6 +394,7 @@ func (h *PINHandler) HandlePINUnlock(ctx context.Context, msg *IncomingMessage) 
 	defer zeroBytes(dek)
 
 	// For cold vault, restore full vault state from S3
+	var databaseBackup json.RawMessage // Captured from persisted state for post-init restore
 	if !isWarmVault {
 		encryptedStateBytes, err := h.sealerProxy.LoadVaultState()
 		if err != nil {
@@ -370,9 +411,9 @@ func (h *PINHandler) HandlePINUnlock(ctx context.Context, msg *IncomingMessage) 
 
 			// Parse and restore vault state
 			var persistedState struct {
-				CEKPrivateKey []byte `json:"cek_private_key"`
-				CEKPublicKey  []byte `json:"cek_public_key"`
-				UTKPairs      []struct {
+				CEKPrivateKey  []byte `json:"cek_private_key"`
+				CEKPublicKey   []byte `json:"cek_public_key"`
+				UTKPairs       []struct {
 					ID        string `json:"id"`
 					UTK       []byte `json:"utk"`
 					LTK       []byte `json:"ltk"`
@@ -381,9 +422,16 @@ func (h *PINHandler) HandlePINUnlock(ctx context.Context, msg *IncomingMessage) 
 				} `json:"utk_pairs"`
 				Credential     *UnsealedCredential `json:"credential,omitempty"`
 				SealedMaterial []byte              `json:"sealed_material"`
+				DatabaseBackup json.RawMessage     `json:"database_backup,omitempty"`
 			}
 			if err := json.Unmarshal(stateData, &persistedState); err != nil {
 				return h.errorResponse(msg.GetID(), "invalid vault state format")
+			}
+
+			// Capture database backup for restore after storage init
+			if len(persistedState.DatabaseBackup) > 0 {
+				databaseBackup = persistedState.DatabaseBackup
+				log.Info().Str("owner_space", h.ownerSpace).Int("backup_size", len(databaseBackup)).Msg("Database backup found in vault state")
 			}
 
 			// Apply restored state
@@ -419,6 +467,7 @@ func (h *PINHandler) HandlePINUnlock(ctx context.Context, msg *IncomingMessage) 
 				Str("owner_space", h.ownerSpace).
 				Int("utk_count", len(persistedState.UTKPairs)).
 				Bool("has_credential", persistedState.Credential != nil).
+				Bool("has_db_backup", len(databaseBackup) > 0).
 				Msg("Vault state restored from S3")
 		}
 	}
@@ -430,6 +479,20 @@ func (h *PINHandler) HandlePINUnlock(ctx context.Context, msg *IncomingMessage) 
 		return h.errorResponse(msg.GetID(), "storage initialization failed")
 	}
 	log.Info().Str("owner_space", h.ownerSpace).Msg("Storage initialized with DEK on unlock")
+
+	// Restore database backup after storage initialization (cold vault only)
+	if len(databaseBackup) > 0 {
+		var backup storage.BackupData
+		if err := json.Unmarshal(databaseBackup, &backup); err != nil {
+			log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("Failed to unmarshal database backup")
+		} else {
+			if err := h.storage.RestoreBackup(&backup); err != nil {
+				log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("Failed to restore database backup")
+			} else {
+				log.Info().Str("owner_space", h.ownerSpace).Msg("Database backup restored successfully - vault data recovered")
+			}
+		}
+	}
 
 	// If we have credential in memory AND it has auth hash set, verify auth hash
 	// Note: DEK derivation (line 327) already validates the PIN through KMS

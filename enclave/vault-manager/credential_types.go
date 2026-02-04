@@ -149,6 +149,8 @@ type ProteanCredentialV2 struct {
 
 	CryptoKeys []CryptoKeyV2 `json:"crypto_keys"`
 
+	Secrets []CredentialSecretEntry `json:"secrets,omitempty"`
+
 	Timestamps CredentialTimestamps `json:"timestamps"`
 
 	Version int `json:"version"` // Instance version, increments on changes
@@ -196,6 +198,29 @@ type CryptoKeyV2 struct {
 	PublicKey      []byte `json:"public_key"`            // Stored for efficiency
 	DerivationPath string `json:"derivation_path,omitempty"` // BIP32 path for HD keys
 	CreatedAt      int64  `json:"created_at"`
+}
+
+// CredentialSecretEntry is a critical secret embedded in the Protean Credential.
+// The value is stored as plaintext within the credential because the credential
+// blob itself is already encrypted with CEK. No double-encryption needed.
+type CredentialSecretEntry struct {
+	ID          string         `json:"id"`
+	Name        string         `json:"name"`
+	Category    SecretCategory `json:"category"`
+	Description string         `json:"description,omitempty"`
+	Value       []byte         `json:"value"`
+	Owner       string         `json:"owner"`
+	CreatedAt   int64          `json:"created_at"`
+	UpdatedAt   int64          `json:"updated_at"`
+}
+
+// SecureErase zeros the secret value in a CredentialSecretEntry
+func (e *CredentialSecretEntry) SecureErase() {
+	if e == nil {
+		return
+	}
+	zeroBytes(e.Value)
+	e.Value = nil
 }
 
 // DefaultCryptoMetadata returns the current default cryptographic parameters
@@ -301,6 +326,11 @@ func (v2 *ProteanCredentialV2) SecureErase() {
 		zeroBytes(v2.CryptoKeys[i].PublicKey)
 	}
 	v2.CryptoKeys = nil
+
+	for i := range v2.Secrets {
+		v2.Secrets[i].SecureErase()
+	}
+	v2.Secrets = nil
 
 	v2.Identity.PrivateKey = nil
 	v2.Identity.PublicKey = nil
@@ -573,75 +603,59 @@ const (
 	SecretCategoryOther          SecretCategory = "OTHER"
 )
 
-// CredentialSecret represents a critical secret stored within the credential
-type CredentialSecret struct {
-	ID                 string         `json:"id"`
-	Name               string         `json:"name"`
-	Category           SecretCategory `json:"category"`
-	Description        string         `json:"description,omitempty"`
-	EncryptedValue     []byte         `json:"encrypted_value"`      // Pre-encrypted by client
-	EphemeralPublicKey []byte         `json:"ephemeral_public_key"` // ECIES ephemeral key
-	Nonce              []byte         `json:"nonce"`                // Encryption nonce
-	CreatedAt          int64          `json:"created_at"`
-	UpdatedAt          int64          `json:"updated_at"`
-}
-
-// SecureErase zeros sensitive data in the secret
-func (cs *CredentialSecret) SecureErase() {
-	if cs == nil {
-		return
-	}
-	zeroBytes(cs.EncryptedValue)
-	zeroBytes(cs.EphemeralPublicKey)
-	zeroBytes(cs.Nonce)
-	cs.EncryptedValue = nil
-	cs.EphemeralPublicKey = nil
-	cs.Nonce = nil
-}
-
 // --- Request/Response types for credential.secret.* operations ---
 
 // CredentialSecretAddRequest is the request for credential.secret.add
+// Requires the encrypted credential blob so the vault can add the secret to it
 type CredentialSecretAddRequest struct {
-	Name               string `json:"name"`
-	Category           string `json:"category"` // SEED_PHRASE, PRIVATE_KEY, etc.
-	Description        string `json:"description,omitempty"`
-	EncryptedValue     string `json:"encrypted_value"`      // Base64-encoded
-	EphemeralPublicKey string `json:"ephemeral_public_key"` // Base64-encoded
-	Nonce              string `json:"nonce"`                // Base64-encoded
+	EncryptedCredential   string `json:"encrypted_credential"`    // CEK-encrypted credential blob
+	EncryptedPasswordHash string `json:"encrypted_password_hash"` // Base64-encoded, UTK-encrypted
+	KeyID                 string `json:"key_id"`                  // UTK ID used for encryption
+	Name                  string `json:"name"`
+	Category              string `json:"category"`                // SEED_PHRASE, PRIVATE_KEY, etc.
+	Description           string `json:"description,omitempty"`
+	Value                 string `json:"value"`                   // Base64-encoded secret value (transport-encrypted via UTK)
 }
 
 // CredentialSecretAddResponse is the response for credential.secret.add
 type CredentialSecretAddResponse struct {
-	ID        string `json:"id"`
-	CreatedAt string `json:"created_at"` // ISO8601
+	ID                  string      `json:"id"`
+	CreatedAt           string      `json:"created_at"`           // ISO8601
+	EncryptedCredential string      `json:"encrypted_credential"` // Updated CEK-encrypted credential
+	NewUTKs             []UTKPublic `json:"new_utks,omitempty"`   // Replacement UTKs
 }
 
 // CredentialSecretGetRequest is the request for credential.secret.get
-// Requires password verification
+// Requires password verification and the encrypted credential blob
 type CredentialSecretGetRequest struct {
+	EncryptedCredential   string `json:"encrypted_credential"`    // CEK-encrypted credential blob
 	ID                    string `json:"id"`
 	EncryptedPasswordHash string `json:"encrypted_password_hash"` // Base64-encoded, UTK-encrypted
-	EphemeralPublicKey    string `json:"ephemeral_public_key"`    // Base64-encoded
-	Nonce                 string `json:"nonce"`                   // Base64-encoded
 	KeyID                 string `json:"key_id"`                  // UTK ID used for encryption
 }
 
 // CredentialSecretGetResponse is the response for credential.secret.get
 type CredentialSecretGetResponse struct {
-	ID                 string   `json:"id"`
-	Name               string   `json:"name"`
-	Category           string   `json:"category"`
-	EncryptedValue     string   `json:"encrypted_value"`      // Base64-encoded
-	EphemeralPublicKey string   `json:"ephemeral_public_key"` // Base64-encoded
-	Nonce              string   `json:"nonce"`                // Base64-encoded
-	NewUTKs            []string `json:"new_utks,omitempty"`   // Replacement UTKs after consumption
+	ID       string      `json:"id"`
+	Name     string      `json:"name"`
+	Category string      `json:"category"`
+	Value    string      `json:"value"`              // Base64-encoded plaintext secret value
+	NewUTKs  []UTKPublic `json:"new_utks,omitempty"` // Replacement UTKs after consumption
+}
+
+// CredentialSecretListRequest is the request for credential.secret.list
+// Password required for initial authentication
+type CredentialSecretListRequest struct {
+	EncryptedPasswordHash string `json:"encrypted_password_hash,omitempty"` // Optional: for first auth
+	KeyID                 string `json:"key_id,omitempty"`                  // UTK ID used for encryption
 }
 
 // CredentialSecretListResponse is the response for credential.secret.list
-// Returns metadata only, no encrypted values (no password required)
+// Returns metadata only, no secret values
 type CredentialSecretListResponse struct {
-	Secrets []CredentialSecretMetadata `json:"secrets"`
+	Secrets    []CredentialSecretMetadata `json:"secrets"`
+	CryptoKeys []CryptoKeyMetadata       `json:"crypto_keys,omitempty"`
+	Credential *CredentialInfoMetadata    `json:"credential,omitempty"`
 }
 
 // CredentialSecretMetadata is the metadata for a secret in list response
@@ -650,23 +664,55 @@ type CredentialSecretMetadata struct {
 	Name        string `json:"name"`
 	Category    string `json:"category"`
 	Description string `json:"description,omitempty"`
+	Owner       string `json:"owner,omitempty"`
 	CreatedAt   string `json:"created_at"` // ISO8601
 }
 
+// CryptoKeyMetadata is metadata for a crypto key (no private key data)
+type CryptoKeyMetadata struct {
+	ID             string `json:"id"`
+	Label          string `json:"label"`
+	Type           string `json:"type"`
+	PublicKey      string `json:"public_key,omitempty"`       // Base64-encoded (public, safe to show)
+	DerivationPath string `json:"derivation_path,omitempty"`
+	CreatedAt      string `json:"created_at"`                 // ISO8601
+}
+
+// CredentialInfoMetadata is metadata about the credential itself
+type CredentialInfoMetadata struct {
+	IdentityFingerprint string `json:"identity_fingerprint"` // Hex fingerprint of identity public key
+	VaultID             string `json:"vault_id,omitempty"`
+	BoundAt             string `json:"bound_at,omitempty"`   // ISO8601
+	Version             int    `json:"version"`
+	CreatedAt           string `json:"created_at"`           // ISO8601
+	LastModified        string `json:"last_modified"`        // ISO8601
+}
+
 // CredentialSecretDeleteRequest is the request for credential.secret.delete
-// Requires password verification
+// Requires password verification and the encrypted credential blob
 type CredentialSecretDeleteRequest struct {
+	EncryptedCredential   string `json:"encrypted_credential"`    // CEK-encrypted credential blob
 	ID                    string `json:"id"`
 	EncryptedPasswordHash string `json:"encrypted_password_hash"` // Base64-encoded, UTK-encrypted
-	EphemeralPublicKey    string `json:"ephemeral_public_key"`    // Base64-encoded
-	Nonce                 string `json:"nonce"`                   // Base64-encoded
 	KeyID                 string `json:"key_id"`                  // UTK ID used for encryption
 }
 
 // CredentialSecretDeleteResponse is the response for credential.secret.delete
 type CredentialSecretDeleteResponse struct {
-	Success bool     `json:"success"`
-	NewUTKs []string `json:"new_utks,omitempty"` // Replacement UTKs after consumption
+	Success             bool        `json:"success"`
+	EncryptedCredential string      `json:"encrypted_credential,omitempty"` // Updated CEK-encrypted credential
+	NewUTKs             []UTKPublic `json:"new_utks,omitempty"`             // Replacement UTKs after consumption
+}
+
+// SecretMetadataRecord is stored in vault SQLite for the metadata index
+// This allows listing secrets without needing the credential blob
+type SecretMetadataRecord struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Category    string `json:"category"`
+	Description string `json:"description,omitempty"`
+	Owner       string `json:"owner"`
+	CreatedAt   int64  `json:"created_at"`
 }
 
 // --- Personal Data Types ---

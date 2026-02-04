@@ -10,11 +10,13 @@ import {
   aws_events_targets as targets_events,
 } from 'aws-cdk-lib';
 import { InfrastructureStack } from './infrastructure-stack';
+import { NitroStack } from './nitro-stack';
 
 export interface ExtensibilityMonitoringStackProps extends cdk.StackProps {
   infrastructure: InfrastructureStack;
   httpApi: apigw.HttpApi;
   adminAuthorizer: apigw.IHttpRouteAuthorizer;
+  nitro?: NitroStack; // Optional to maintain backward compatibility
 }
 
 /**
@@ -366,6 +368,7 @@ export class ExtensibilityMonitoringStack extends cdk.Stack {
         TABLE_VAULT_INSTANCES: tables.vaultInstances.tableName,
         TABLE_REGISTRATIONS: tables.registrations.tableName,
         BACKUP_BUCKET: props.infrastructure.backupBucket.bucketName,
+        VAULT_DATA_BUCKET: props.nitro?.vaultDataBucket.bucketName || '',
         NATS_OPERATOR_SECRET_ARN: natsOperatorSecretForDecommission.secretArn,
         NATS_DOMAIN: 'nats.vettid.dev',
       },
@@ -383,6 +386,10 @@ export class ExtensibilityMonitoringStack extends cdk.Stack {
     tables.audit.grantReadWriteData(decommissionVault);
     // S3 permissions for backup cleanup
     props.infrastructure.backupBucket.grantReadWrite(decommissionVault);
+    // S3 permissions for vault data cleanup (sealed material, vault state, ECIES keys)
+    if (props.nitro) {
+      props.nitro.vaultDataBucket.grantReadWrite(decommissionVault);
+    }
     // Secrets Manager permissions for NATS operator key (to send enclave.vault.reset message)
     // Note: Using explicit IAM policy because fromSecretNameV2 grantRead may not properly resolve
     decommissionVault.addToRolePolicy(new iam.PolicyStatement({

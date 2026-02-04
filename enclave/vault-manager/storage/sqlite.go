@@ -5,8 +5,10 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -985,6 +987,15 @@ func (s *SQLiteStorage) importData(data []byte) error {
 		return fmt.Errorf("failed to unmarshal export: %w", err)
 	}
 
+	// BLOB columns per table - these are base64-encoded in JSON and need decoding
+	blobColumns := map[string]map[string]bool{
+		"handler_state":  {"state": true},
+		"cek_keypairs":   {"private_key": true, "public_key": true},
+		"transport_keys": {"private_key": true, "public_key": true},
+		"ledger_entries": {"payload": true},
+		"_metadata":      {},
+	}
+
 	// Clear existing data
 	tables := []string{"cek_keypairs", "transport_keys", "ledger_entries", "handler_state", "_metadata"}
 	for _, table := range tables {
@@ -993,9 +1004,56 @@ func (s *SQLiteStorage) importData(data []byte) error {
 		}
 	}
 
-	// Note: Full import implementation would need table-specific logic
-	// This is a simplified version - production would use prepared statements
-	// and handle type conversions properly
+	// Import rows for each table
+	for table, rows := range export {
+		tableBlobs := blobColumns[table]
+		if tableBlobs == nil {
+			tableBlobs = map[string]bool{}
+		}
+
+		for _, row := range rows {
+			if len(row) == 0 {
+				continue
+			}
+
+			cols := make([]string, 0, len(row))
+			vals := make([]interface{}, 0, len(row))
+			placeholders := make([]string, 0, len(row))
+
+			for col, val := range row {
+				cols = append(cols, col)
+				placeholders = append(placeholders, "?")
+
+				if tableBlobs[col] {
+					// BLOB columns: decode base64 string back to []byte
+					if strVal, ok := val.(string); ok {
+						decoded, err := base64.StdEncoding.DecodeString(strVal)
+						if err != nil {
+							return fmt.Errorf("failed to decode BLOB %s.%s: %w", table, col, err)
+						}
+						vals = append(vals, decoded)
+					} else {
+						vals = append(vals, val)
+					}
+				} else if numVal, ok := val.(float64); ok {
+					// JSON numbers become float64, convert to int64 for INTEGER columns
+					vals = append(vals, int64(numVal))
+				} else {
+					vals = append(vals, val)
+				}
+			}
+
+			query := fmt.Sprintf("INSERT OR REPLACE INTO %s (%s) VALUES (%s)",
+				table,
+				strings.Join(cols, ", "),
+				strings.Join(placeholders, ", "),
+			)
+
+			if _, err := s.db.Exec(query, vals...); err != nil {
+				return fmt.Errorf("failed to insert row into %s: %w", table, err)
+			}
+		}
+	}
 
 	return nil
 }

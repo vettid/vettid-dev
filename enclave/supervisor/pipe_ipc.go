@@ -60,6 +60,8 @@ func (pc *PipeConnection) WriteMessage(msg *Message) error {
 	log.Debug().
 		Int("length", len(data)).
 		Str("type", string(msg.Type)).
+		Str("subject", msg.Subject).
+		Str("owner_space", msg.OwnerSpace).
 		Msg("Wrote message to pipe")
 
 	return nil

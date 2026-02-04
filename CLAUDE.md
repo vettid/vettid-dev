@@ -2,6 +2,15 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## IMPORTANT: Always Use Scripts First
+
+**Before running individual AWS CLI, SSM, or infrastructure commands, ALWAYS check for existing scripts first.** Scripts are located in:
+- `enclave/scripts/` - Enclave build, deploy, verification
+- `cdk/scripts/` - CDK and infrastructure scripts
+- `../vettid-android/scripts/` - Android/vault operations
+
+Running individual commands (like `aws s3 rm`, direct SSM commands, or manual Lambda invocations) instead of using scripts can cause incomplete operations or data inconsistencies. Scripts handle proper sequencing, error handling, and cleanup.
+
 ## Project Overview
 
 VettID is a privacy-first digital identity platform using AWS Nitro Enclaves for hardware-secured user vaults. The backend cannot access plaintext user data - all sensitive operations happen inside cryptographically attested enclaves.

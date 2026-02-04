@@ -158,8 +158,9 @@ type EnclaveMessage struct {
 	OwnerSpace string             `json:"owner_space,omitempty"`
 	Subject    string             `json:"subject,omitempty"`
 	ReplyTo    string             `json:"reply_to,omitempty"`
-	StorageKey string             `json:"storage_key,omitempty"`
-	Payload    json.RawMessage    `json:"payload,omitempty"`
+	StorageKey   string             `json:"storage_key,omitempty"`
+	StorageValue []byte             `json:"storage_value,omitempty"` // Binary data for storage operations
+	Payload      json.RawMessage    `json:"payload,omitempty"`
 	Error      string             `json:"error,omitempty"`
 
 	// Attestation fields

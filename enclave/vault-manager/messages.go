@@ -1594,13 +1594,15 @@ func generateMessageID() string {
 
 // createEncryptedVaultState creates DEK-encrypted vault state for S3 storage.
 // Returns the encrypted bytes ready for S3 storage.
+// Includes both cryptographic state AND the SQLite database backup so that
+// all vault data (profile, secrets, personal data, etc.) survives cold restarts.
 func (mh *MessageHandler) createEncryptedVaultState(dek []byte) ([]byte, error) {
 	// Create DEK-encrypted vault state
 	mh.vaultState.mu.RLock()
 	persistedState := struct {
-		CEKPrivateKey []byte `json:"cek_private_key"`
-		CEKPublicKey  []byte `json:"cek_public_key"`
-		UTKPairs      []struct {
+		CEKPrivateKey  []byte `json:"cek_private_key"`
+		CEKPublicKey   []byte `json:"cek_public_key"`
+		UTKPairs       []struct {
 			ID        string `json:"id"`
 			UTK       []byte `json:"utk"`
 			LTK       []byte `json:"ltk"`
@@ -1609,6 +1611,7 @@ func (mh *MessageHandler) createEncryptedVaultState(dek []byte) ([]byte, error) 
 		} `json:"utk_pairs"`
 		Credential     *UnsealedCredential `json:"credential,omitempty"`
 		SealedMaterial []byte              `json:"sealed_material"`
+		DatabaseBackup json.RawMessage     `json:"database_backup,omitempty"`
 	}{
 		SealedMaterial: mh.vaultState.sealedMaterial,
 	}
@@ -1638,6 +1641,22 @@ func (mh *MessageHandler) createEncryptedVaultState(dek []byte) ([]byte, error) 
 		persistedState.Credential = mh.vaultState.credential
 	}
 	mh.vaultState.mu.RUnlock()
+
+	// Include SQLite database backup if storage is initialized
+	if mh.storage != nil {
+		backup, err := mh.storage.CreateBackup()
+		if err != nil {
+			log.Warn().Err(err).Str("owner_space", mh.ownerSpace).Msg("Failed to create database backup for vault state persistence")
+		} else {
+			backupBytes, err := json.Marshal(backup)
+			if err != nil {
+				log.Warn().Err(err).Str("owner_space", mh.ownerSpace).Msg("Failed to marshal database backup")
+			} else {
+				persistedState.DatabaseBackup = backupBytes
+				log.Debug().Str("owner_space", mh.ownerSpace).Int("backup_size", len(backupBytes)).Msg("Database backup included in vault state")
+			}
+		}
+	}
 
 	// Marshal and encrypt with DEK
 	stateData, err := json.Marshal(persistedState)

@@ -179,14 +179,16 @@ func (p *SealerProxy) UnsealCredential(sealedData []byte) ([]byte, error) {
 // NOTE: This is a synchronous call - the vault-manager message loop must handle
 // routing sealer responses back to this channel
 // SECURITY: Uses a timeout to prevent indefinite hangs
+// SECURITY: Matches request ID to prevent processing stale responses
 func (p *SealerProxy) sendRequest(req SealerRequest) (*SealerResponse, error) {
 	reqBytes, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal sealer request: %w", err)
 	}
 
+	requestID := generateMessageID()
 	msg := &OutgoingMessage{
-		RequestID: generateMessageID(),
+		RequestID: requestID,
 		Type:      MessageTypeSealerRequest,
 		Payload:   reqBytes,
 	}
@@ -194,6 +196,7 @@ func (p *SealerProxy) sendRequest(req SealerRequest) (*SealerResponse, error) {
 	log.Debug().
 		Str("operation", string(req.Operation)).
 		Str("owner_space", req.OwnerSpace).
+		Str("request_id", requestID).
 		Msg("Sending sealer request to supervisor")
 
 	if err := p.sendFn(msg); err != nil {
@@ -207,26 +210,59 @@ func (p *SealerProxy) sendRequest(req SealerRequest) (*SealerResponse, error) {
 	}
 
 	// SECURITY: Use timeout to prevent indefinite hangs
-	select {
-	case respMsg := <-p.responseCh:
-		if respMsg == nil {
-			return nil, fmt.Errorf("no response received (channel closed)")
+	// SECURITY: Match request ID to prevent processing stale responses from timed-out requests
+	deadline := time.Now().Add(sealerProxyTimeout)
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			log.Error().
+				Str("operation", string(req.Operation)).
+				Str("owner_space", req.OwnerSpace).
+				Str("request_id", requestID).
+				Dur("timeout", sealerProxyTimeout).
+				Msg("SECURITY: Sealer proxy timeout waiting for supervisor response")
+			return nil, fmt.Errorf("sealer proxy timeout after %v", sealerProxyTimeout)
 		}
 
-		var resp SealerResponse
-		if err := json.Unmarshal(respMsg.Payload, &resp); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal sealer response: %w", err)
+		select {
+		case respMsg := <-p.responseCh:
+			if respMsg == nil {
+				return nil, fmt.Errorf("no response received (channel closed)")
+			}
+
+			// SECURITY: Check if this response matches our request ID
+			// If not, it's a stale response from a previous timed-out request - discard it
+			if respMsg.RequestID != "" && respMsg.RequestID != requestID {
+				log.Warn().
+					Str("expected_id", requestID).
+					Str("received_id", respMsg.RequestID).
+					Str("operation", string(req.Operation)).
+					Msg("Discarding stale sealer response (request ID mismatch)")
+				continue // Keep waiting for our response
+			}
+
+			var resp SealerResponse
+			if err := json.Unmarshal(respMsg.Payload, &resp); err != nil {
+				return nil, fmt.Errorf("failed to unmarshal sealer response: %w", err)
+			}
+
+			log.Debug().
+				Str("operation", string(req.Operation)).
+				Str("request_id", requestID).
+				Bool("success", resp.Success).
+				Msg("Received matching sealer response")
+
+			return &resp, nil
+
+		case <-time.After(remaining):
+			log.Error().
+				Str("operation", string(req.Operation)).
+				Str("owner_space", req.OwnerSpace).
+				Str("request_id", requestID).
+				Dur("timeout", sealerProxyTimeout).
+				Msg("SECURITY: Sealer proxy timeout waiting for supervisor response")
+			return nil, fmt.Errorf("sealer proxy timeout after %v", sealerProxyTimeout)
 		}
-
-		return &resp, nil
-
-	case <-time.After(sealerProxyTimeout):
-		log.Error().
-			Str("operation", string(req.Operation)).
-			Str("owner_space", req.OwnerSpace).
-			Dur("timeout", sealerProxyTimeout).
-			Msg("SECURITY: Sealer proxy timeout waiting for supervisor response")
-		return nil, fmt.Errorf("sealer proxy timeout after %v", sealerProxyTimeout)
 	}
 }
 

@@ -60,6 +60,7 @@ const extensibilityMonitoring = new ExtensibilityMonitoringStack(app, 'VettID-Ex
   infrastructure,
   httpApi: core.httpApi,
   adminAuthorizer: core.adminAuthorizer,
+  nitro, // For vault data bucket cleanup during decommission
 });
 
 // 6. Deploy NATS infrastructure stack (VPC, EC2 cluster, NLB)

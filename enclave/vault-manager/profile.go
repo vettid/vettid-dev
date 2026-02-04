@@ -101,8 +101,11 @@ type SharingSettings struct {
 func (h *ProfileHandler) HandleGet(msg *IncomingMessage) (*OutgoingMessage, error) {
 	log.Info().Str("owner_space", h.ownerSpace).Msg("HandleGet called")
 
+	// Extract inner payload from envelope format if present
+	payload := h.extractInnerPayload(msg.Payload)
+
 	var req ProfileGetRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := json.Unmarshal(payload, &req); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -224,8 +227,11 @@ func (h *ProfileHandler) HandleGet(msg *IncomingMessage) (*OutgoingMessage, erro
 
 // HandleUpdate handles profile.update messages
 func (h *ProfileHandler) HandleUpdate(msg *IncomingMessage) (*OutgoingMessage, error) {
+	// Extract inner payload from envelope format if present
+	payload := h.extractInnerPayload(msg.Payload)
+
 	var req ProfileUpdateRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := json.Unmarshal(payload, &req); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -925,6 +931,15 @@ func (h *ProfileHandler) HandleGetPublished(msg *IncomingMessage) (*OutgoingMess
 		}
 	}
 
+	// Load profile photo if set
+	var photoBase64 string
+	if photoData, err := h.storage.Get("profile/_photo"); err == nil {
+		var photoEntry ProfileEntry
+		if err := json.Unmarshal(photoData, &photoEntry); err == nil {
+			photoBase64 = photoEntry.Value
+		}
+	}
+
 	// Wrap in response format
 	resp := map[string]interface{}{
 		"success":        true,
@@ -938,6 +953,7 @@ func (h *ProfileHandler) HandleGetPublished(msg *IncomingMessage) (*OutgoingMess
 		"profile_version": profile.Version,
 		"updated_at":     profile.UpdatedAt,
 		"published_at":   time.Unix(settings.PublishedAt, 0).Format(time.RFC3339),
+		"photo":          photoBase64,
 	}
 
 	log.Info().
@@ -945,6 +961,7 @@ func (h *ProfileHandler) HandleGetPublished(msg *IncomingMessage) (*OutgoingMess
 		Int("version", profile.Version).
 		Int("field_count", len(profile.Fields)).
 		Bool("has_published", settings.PublishedAt > 0).
+		Bool("has_photo", photoBase64 != "").
 		Msg("Returning published profile preview")
 
 	respBytes, _ := json.Marshal(resp)

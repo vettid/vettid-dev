@@ -218,6 +218,25 @@ func (s *Supervisor) processMessage(ctx context.Context, msg *Message) (*Message
 	case MessageTypeHealthCheck:
 		return s.handleHealthCheck(ctx, msg)
 
+	case MessageTypeStorageResponse:
+		// Storage responses should be handled by the sealer handler's synchronous S3 operations.
+		// If we receive one here, it means there was a race condition or message ordering issue.
+		// Log a warning and return nil to avoid propagating an error.
+		// The client should retry the operation.
+		log.Warn().
+			Str("type", string(msg.Type)).
+			Str("request_id", msg.RequestID).
+			Msg("Received storage_response in main loop - possible race condition with sealer handler")
+		return nil, nil
+
+	case MessageTypeKMSResponse:
+		// Similar to storage_response - KMS responses should be handled by the sealer.
+		log.Warn().
+			Str("type", string(msg.Type)).
+			Str("request_id", msg.RequestID).
+			Msg("Received KMS response in main loop - possible race condition with sealer")
+		return nil, nil
+
 	default:
 		return nil, fmt.Errorf("unknown message type: %s", msg.Type)
 	}

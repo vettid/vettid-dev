@@ -59,6 +59,7 @@ const TABLE_PROFILES = process.env.TABLE_PROFILES!;
 const TABLE_VAULT_INSTANCES = process.env.TABLE_VAULT_INSTANCES!;
 const TABLE_REGISTRATIONS = process.env.TABLE_REGISTRATIONS!;
 const BACKUP_BUCKET = process.env.BACKUP_BUCKET!;
+const VAULT_DATA_BUCKET = process.env.VAULT_DATA_BUCKET; // Optional - vault database storage
 
 interface DecommissionResult {
   nats_account_deleted: boolean;
@@ -69,6 +70,7 @@ interface DecommissionResult {
   vault_instance_deleted: boolean;
   registration_reset: boolean;
   s3_objects_deleted: number;
+  vault_data_deleted: number; // Vault database files from enclave storage
   enclave_credential_deleted: boolean;
   errors: string[];
 }
@@ -206,6 +208,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     vault_instance_deleted: false,
     registration_reset: false,
     s3_objects_deleted: 0,
+    vault_data_deleted: 0,
     enclave_credential_deleted: false,
     errors: [],
   };
@@ -348,9 +351,20 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       const s3Result = await deleteS3Objects(BACKUP_BUCKET, `${userGuid}/`);
       result.s3_objects_deleted = s3Result.count;
       if (s3Result.error) {
-        result.errors.push(`S3: ${s3Result.error}`);
+        result.errors.push(`S3 Backup: ${s3Result.error}`);
       }
-      console.log(`Deleted ${s3Result.count} S3 objects`);
+      console.log(`Deleted ${s3Result.count} S3 backup objects`);
+    }
+
+    // 9b. Delete vault data from enclave storage bucket
+    // This includes sealed_material.bin, vault_state.enc, sealed_ecies.bin
+    if (VAULT_DATA_BUCKET) {
+      const vaultDataResult = await deleteS3Objects(VAULT_DATA_BUCKET, `vaults/${userGuid}/`);
+      result.vault_data_deleted = vaultDataResult.count;
+      if (vaultDataResult.error) {
+        result.errors.push(`S3 Vault Data: ${vaultDataResult.error}`);
+      }
+      console.log(`Deleted ${vaultDataResult.count} vault data files`);
     }
 
     // 10. Delete credential from enclave via vault reset
@@ -385,6 +399,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         vault_instance_deleted: result.vault_instance_deleted,
         registration_reset: result.registration_reset,
         s3_objects_deleted: result.s3_objects_deleted,
+        vault_data_deleted: result.vault_data_deleted,
         enclave_credential_deleted: result.enclave_credential_deleted,
       },
       errors: result.errors,
@@ -400,6 +415,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       (result.vault_instance_deleted ? 1 : 0) +
       (result.registration_reset ? 1 : 0) +
       result.s3_objects_deleted +
+      result.vault_data_deleted +
       (result.enclave_credential_deleted ? 1 : 0);
 
     return ok({

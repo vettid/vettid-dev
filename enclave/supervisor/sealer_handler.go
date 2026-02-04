@@ -298,9 +298,9 @@ func (sh *SealerHandler) s3Put(key string, data []byte) error {
 	}
 
 	msg := &Message{
-		Type:       MessageTypeStoragePut,
-		StorageKey: key,
-		Payload:    data,
+		Type:         MessageTypeStoragePut,
+		StorageKey:   key,
+		StorageValue: data, // Use StorageValue ([]byte) instead of Payload (json.RawMessage) for binary data
 	}
 
 	if err := sh.parentConn.WriteMessage(msg); err != nil {
