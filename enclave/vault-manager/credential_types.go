@@ -609,7 +609,9 @@ const (
 // Requires the encrypted credential blob so the vault can add the secret to it
 type CredentialSecretAddRequest struct {
 	EncryptedCredential   string `json:"encrypted_credential"`    // CEK-encrypted credential blob
-	EncryptedPasswordHash string `json:"encrypted_password_hash"` // Base64-encoded, UTK-encrypted
+	EncryptedPasswordHash string `json:"encrypted_password_hash"` // Base64-encoded, UTK-encrypted ciphertext
+	EphemeralPublicKey    string `json:"ephemeral_public_key"`    // Base64-encoded X25519 ephemeral public key
+	Nonce                 string `json:"nonce"`                   // Base64-encoded XChaCha20 nonce
 	KeyID                 string `json:"key_id"`                  // UTK ID used for encryption
 	Name                  string `json:"name"`
 	Category              string `json:"category"`                // SEED_PHRASE, PRIVATE_KEY, etc.
@@ -630,7 +632,9 @@ type CredentialSecretAddResponse struct {
 type CredentialSecretGetRequest struct {
 	EncryptedCredential   string `json:"encrypted_credential"`    // CEK-encrypted credential blob
 	ID                    string `json:"id"`
-	EncryptedPasswordHash string `json:"encrypted_password_hash"` // Base64-encoded, UTK-encrypted
+	EncryptedPasswordHash string `json:"encrypted_password_hash"` // Base64-encoded, UTK-encrypted ciphertext
+	EphemeralPublicKey    string `json:"ephemeral_public_key"`    // Base64-encoded X25519 ephemeral public key
+	Nonce                 string `json:"nonce"`                   // Base64-encoded XChaCha20 nonce
 	KeyID                 string `json:"key_id"`                  // UTK ID used for encryption
 }
 
@@ -647,6 +651,8 @@ type CredentialSecretGetResponse struct {
 // Password required for initial authentication
 type CredentialSecretListRequest struct {
 	EncryptedPasswordHash string `json:"encrypted_password_hash,omitempty"` // Optional: for first auth
+	EphemeralPublicKey    string `json:"ephemeral_public_key,omitempty"`    // Base64-encoded X25519 ephemeral public key
+	Nonce                 string `json:"nonce,omitempty"`                   // Base64-encoded XChaCha20 nonce
 	KeyID                 string `json:"key_id,omitempty"`                  // UTK ID used for encryption
 }
 
@@ -693,7 +699,9 @@ type CredentialInfoMetadata struct {
 type CredentialSecretDeleteRequest struct {
 	EncryptedCredential   string `json:"encrypted_credential"`    // CEK-encrypted credential blob
 	ID                    string `json:"id"`
-	EncryptedPasswordHash string `json:"encrypted_password_hash"` // Base64-encoded, UTK-encrypted
+	EncryptedPasswordHash string `json:"encrypted_password_hash"` // Base64-encoded, UTK-encrypted ciphertext
+	EphemeralPublicKey    string `json:"ephemeral_public_key"`    // Base64-encoded X25519 ephemeral public key
+	Nonce                 string `json:"nonce"`                   // Base64-encoded XChaCha20 nonce
 	KeyID                 string `json:"key_id"`                  // UTK ID used for encryption
 }
 

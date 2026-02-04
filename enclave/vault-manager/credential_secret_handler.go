@@ -88,7 +88,7 @@ func (h *CredentialSecretHandler) HandleAdd(msg *IncomingMessage) (*OutgoingMess
 	defer credentialV2.SecureErase()
 
 	// Verify password against the credential's auth hash
-	if err := h.verifyPasswordAgainstCredential(req.EncryptedPasswordHash, req.KeyID, credentialV2); err != nil {
+	if err := h.verifyPasswordAgainstCredential(req.EncryptedPasswordHash, req.EphemeralPublicKey, req.Nonce, req.KeyID, credentialV2); err != nil {
 		log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("Password verification failed for secret add")
 		h.eventHandler.LogSecurityEvent(
 			context.Background(),
@@ -220,7 +220,7 @@ func (h *CredentialSecretHandler) HandleGet(msg *IncomingMessage) (*OutgoingMess
 	defer credentialV2.SecureErase()
 
 	// Verify password
-	if err := h.verifyPasswordAgainstCredential(req.EncryptedPasswordHash, req.KeyID, credentialV2); err != nil {
+	if err := h.verifyPasswordAgainstCredential(req.EncryptedPasswordHash, req.EphemeralPublicKey, req.Nonce, req.KeyID, credentialV2); err != nil {
 		log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("Password verification failed for secret access")
 		h.eventHandler.LogSecurityEvent(
 			context.Background(),
@@ -301,7 +301,7 @@ func (h *CredentialSecretHandler) HandleList(msg *IncomingMessage) (*OutgoingMes
 	// Verify password if provided (for enhanced metadata)
 	var passwordVerified bool
 	if req.EncryptedPasswordHash != "" && req.KeyID != "" {
-		if err := h.verifyPassword(req.EncryptedPasswordHash, req.KeyID); err != nil {
+		if err := h.verifyPassword(req.EncryptedPasswordHash, req.EphemeralPublicKey, req.Nonce, req.KeyID); err != nil {
 			log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("Password verification failed for secret list")
 			return h.errorResponse(msg.GetID(), "Password verification failed")
 		}
@@ -415,7 +415,7 @@ func (h *CredentialSecretHandler) HandleDelete(msg *IncomingMessage) (*OutgoingM
 	defer credentialV2.SecureErase()
 
 	// Verify password
-	if err := h.verifyPasswordAgainstCredential(req.EncryptedPasswordHash, req.KeyID, credentialV2); err != nil {
+	if err := h.verifyPasswordAgainstCredential(req.EncryptedPasswordHash, req.EphemeralPublicKey, req.Nonce, req.KeyID, credentialV2); err != nil {
 		log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("Password verification failed for secret deletion")
 		h.eventHandler.LogSecurityEvent(
 			context.Background(),
@@ -559,25 +559,52 @@ func (h *CredentialSecretHandler) encryptCredentialBlob(cred *ProteanCredentialV
 // --- Password verification ---
 
 // verifyPasswordAgainstCredential verifies the password against the credential's Auth.Hash
-func (h *CredentialSecretHandler) verifyPasswordAgainstCredential(encryptedPasswordHash, keyID string, cred *ProteanCredentialV2) error {
+// The app sends three separate base64-encoded components: ciphertext, ephemeral public key, and nonce.
+// These must be combined into the format expected by decryptWithUTK: [ephemeralPubKey(32) | nonce(24) | ciphertext]
+func (h *CredentialSecretHandler) verifyPasswordAgainstCredential(encryptedPasswordHash, ephemeralPublicKey, nonce, keyID string, cred *ProteanCredentialV2) error {
 	// Get the LTK for the provided UTK ID
 	ltk, found := h.bootstrap.GetLTKForUTK(keyID)
 	if !found {
 		return fmt.Errorf("invalid or expired UTK")
 	}
 
-	// Decode the encrypted password hash
-	encryptedBytes, err := base64.StdEncoding.DecodeString(encryptedPasswordHash)
+	// Decode the three separate base64-encoded components
+	ciphertext, err := base64.StdEncoding.DecodeString(encryptedPasswordHash)
 	if err != nil {
 		return fmt.Errorf("invalid encrypted_password_hash encoding")
 	}
 
+	ephPubKey, err := base64.StdEncoding.DecodeString(ephemeralPublicKey)
+	if err != nil {
+		return fmt.Errorf("invalid ephemeral_public_key encoding")
+	}
+
+	nonceBytes, err := base64.StdEncoding.DecodeString(nonce)
+	if err != nil {
+		return fmt.Errorf("invalid nonce encoding")
+	}
+
+	// Combine into format expected by decryptWithUTK: pubkey(32) || nonce(24) || ciphertext
+	combinedPayload := make([]byte, 0, len(ephPubKey)+len(nonceBytes)+len(ciphertext))
+	combinedPayload = append(combinedPayload, ephPubKey...)
+	combinedPayload = append(combinedPayload, nonceBytes...)
+	combinedPayload = append(combinedPayload, ciphertext...)
+
 	// Decrypt using the LTK
-	passwordBytes, err := decryptWithUTK(ltk, encryptedBytes)
+	passwordHashBytes, err := decryptWithUTK(ltk, combinedPayload)
 	if err != nil {
 		return fmt.Errorf("decryption failed: %w", err)
 	}
-	defer zeroBytes(passwordBytes)
+	defer zeroBytes(passwordHashBytes)
+
+	// Parse decrypted payload - the app sends a PHC string (may be raw or JSON-wrapped)
+	passwordHash := string(passwordHashBytes)
+	var payload struct {
+		PasswordHash string `json:"password_hash"`
+	}
+	if err := json.Unmarshal(passwordHashBytes, &payload); err == nil && payload.PasswordHash != "" {
+		passwordHash = payload.PasswordHash
+	}
 
 	// Verify against the credential's PHC hash
 	storedHash := cred.Auth.Hash
@@ -585,11 +612,8 @@ func (h *CredentialSecretHandler) verifyPasswordAgainstCredential(encryptedPassw
 		return fmt.Errorf("credential has no password hash")
 	}
 
-	valid, err := verifyPHCHash(passwordBytes, storedHash)
-	if err != nil {
-		return fmt.Errorf("password verification error: %w", err)
-	}
-	if !valid {
+	// Compare PHC strings directly (constant-time comparison)
+	if !timingSafeEqualStrings(passwordHash, storedHash) {
 		return fmt.Errorf("incorrect password")
 	}
 
@@ -600,25 +624,51 @@ func (h *CredentialSecretHandler) verifyPasswordAgainstCredential(encryptedPassw
 }
 
 // verifyPassword verifies the password against the in-memory credential (for list operation)
-func (h *CredentialSecretHandler) verifyPassword(encryptedPasswordHash, keyID string) error {
+// The app sends three separate base64-encoded components: ciphertext, ephemeral public key, and nonce.
+func (h *CredentialSecretHandler) verifyPassword(encryptedPasswordHash, ephemeralPublicKey, nonce, keyID string) error {
 	// Get the LTK for the provided UTK ID
 	ltk, found := h.bootstrap.GetLTKForUTK(keyID)
 	if !found {
 		return fmt.Errorf("invalid or expired UTK")
 	}
 
-	// Decode the encrypted password hash
-	encryptedBytes, err := base64.StdEncoding.DecodeString(encryptedPasswordHash)
+	// Decode the three separate base64-encoded components
+	ciphertext, err := base64.StdEncoding.DecodeString(encryptedPasswordHash)
 	if err != nil {
 		return fmt.Errorf("invalid encrypted_password_hash encoding")
 	}
 
+	ephPubKey, err := base64.StdEncoding.DecodeString(ephemeralPublicKey)
+	if err != nil {
+		return fmt.Errorf("invalid ephemeral_public_key encoding")
+	}
+
+	nonceBytes, err := base64.StdEncoding.DecodeString(nonce)
+	if err != nil {
+		return fmt.Errorf("invalid nonce encoding")
+	}
+
+	// Combine into format expected by decryptWithUTK: pubkey(32) || nonce(24) || ciphertext
+	combinedPayload := make([]byte, 0, len(ephPubKey)+len(nonceBytes)+len(ciphertext))
+	combinedPayload = append(combinedPayload, ephPubKey...)
+	combinedPayload = append(combinedPayload, nonceBytes...)
+	combinedPayload = append(combinedPayload, ciphertext...)
+
 	// Decrypt using the LTK
-	passwordBytes, err := decryptWithUTK(ltk, encryptedBytes)
+	passwordHashBytes, err := decryptWithUTK(ltk, combinedPayload)
 	if err != nil {
 		return fmt.Errorf("decryption failed: %w", err)
 	}
-	defer zeroBytes(passwordBytes)
+	defer zeroBytes(passwordHashBytes)
+
+	// Parse decrypted payload - the app sends a PHC string (may be raw or JSON-wrapped)
+	passwordHash := string(passwordHashBytes)
+	var payload struct {
+		PasswordHash string `json:"password_hash"`
+	}
+	if err := json.Unmarshal(passwordHashBytes, &payload); err == nil && payload.PasswordHash != "" {
+		passwordHash = payload.PasswordHash
+	}
 
 	// Get the stored credential's password hash
 	h.state.mu.RLock()
@@ -629,12 +679,8 @@ func (h *CredentialSecretHandler) verifyPassword(encryptedPasswordHash, keyID st
 		return fmt.Errorf("no credential available")
 	}
 
-	// Verify the password against the stored PHC hash
-	valid, err := verifyPHCHash(passwordBytes, credential.PasswordHash)
-	if err != nil {
-		return fmt.Errorf("password verification error: %w", err)
-	}
-	if !valid {
+	// Compare PHC strings directly (constant-time comparison)
+	if !timingSafeEqualStrings(passwordHash, credential.PasswordHash) {
 		return fmt.Errorf("incorrect password")
 	}
 
