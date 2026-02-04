@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -693,9 +694,51 @@ func (mh *MessageHandler) handleSecretsOperation(ctx context.Context, msg *Incom
 		return response, nil
 	case "list":
 		return mh.secretsHandler.HandleList(msg)
+	case "identity":
+		// Return the user's Ed25519 identity public key from the credential
+		return mh.handleGetIdentityPublicKey(msg)
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown secrets operation: %s", opType))
 	}
+}
+
+// handleGetIdentityPublicKey returns the user's Ed25519 identity public key
+// This is the user's permanent identity key generated during credential creation
+// API: secrets.datastore.identity
+func (mh *MessageHandler) handleGetIdentityPublicKey(msg *IncomingMessage) (*OutgoingMessage, error) {
+	mh.vaultState.mu.RLock()
+	credential := mh.vaultState.credential
+	mh.vaultState.mu.RUnlock()
+
+	if credential == nil {
+		log.Warn().Str("owner_space", mh.ownerSpace).Msg("Identity public key requested but no credential exists")
+		return mh.errorResponse(msg.GetID(), "credential not found - enrollment incomplete")
+	}
+
+	if len(credential.IdentityPublicKey) == 0 {
+		log.Error().Str("owner_space", mh.ownerSpace).Msg("Credential exists but identity public key is empty")
+		return mh.errorResponse(msg.GetID(), "identity public key not available")
+	}
+
+	// Return the identity public key in base64 format
+	response := map[string]interface{}{
+		"success":    true,
+		"public_key": base64.StdEncoding.EncodeToString(credential.IdentityPublicKey),
+		"key_type":   "Ed25519",
+		"is_system":  true,
+	}
+	responseBytes, _ := json.Marshal(response)
+
+	log.Debug().
+		Str("owner_space", mh.ownerSpace).
+		Int("key_len", len(credential.IdentityPublicKey)).
+		Msg("Identity public key retrieved")
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   responseBytes,
+	}, nil
 }
 
 // handleProfileOperation routes profile-related operations
