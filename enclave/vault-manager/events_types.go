@@ -91,6 +91,9 @@ const (
 	EventTypeFeedItemArchived EventType = "feed.item_archived"
 	EventTypeFeedItemDeleted  EventType = "feed.item_deleted"
 	EventTypeFeedActionTaken  EventType = "feed.action_taken"
+
+	// Guide events (tutorial/onboarding content)
+	EventTypeGuide EventType = "guide"
 )
 
 // FeedStatus controls visibility in the feed
@@ -286,6 +289,9 @@ var eventClassifications = map[EventType]EventClassification{
 
 	// Service notification events
 	EventTypeServiceNotification: {FeedStatusActive, ActionTypeView, PriorityNormal, RetentionStandard},
+
+	// Guide events
+	EventTypeGuide: {FeedStatusActive, ActionTypeView, PriorityNormal, RetentionPermanent},
 }
 
 // GetEventClassification returns the default classification for an event type

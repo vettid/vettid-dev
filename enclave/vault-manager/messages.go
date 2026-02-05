@@ -117,6 +117,9 @@ type MessageHandler struct {
 	combinedDatastoreHandler  *CombinedDatastoreHandler
 	datastoreAccessController *DatastoreAccessController
 	datastoreAuditHandler     *DatastoreAuditHandler
+
+	// Guide handler (welcome/tutorial events)
+	guideHandler *GuideHandler
 }
 
 // VsockPublisher implements CallPublisher using vsock to parent
@@ -288,6 +291,9 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 		combinedDatastoreHandler:  combinedDatastoreHandler,
 		datastoreAccessController: datastoreAccessController,
 		datastoreAuditHandler:     datastoreAuditHandler,
+
+		// Guide handler
+		guideHandler: NewGuideHandler(ownerSpace, storage, eventHandler),
 	}
 }
 
@@ -459,6 +465,9 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 	case "datastore":
 		// Combined datastore operations (Phase 4)
 		return mh.handleDatastoreOperation(ctx, msg, parts[opIndex+1:])
+	case "guide":
+		// Guide sync operations (welcome/tutorial events)
+		return mh.handleGuideOperation(ctx, msg, parts[opIndex+1:])
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown operation: %s", operation))
 	}
@@ -1195,6 +1204,22 @@ func (mh *MessageHandler) handleFeedOperation(ctx context.Context, msg *Incoming
 		}
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown feed operation: %s", opType))
+	}
+}
+
+// handleGuideOperation routes guide-related operations
+func (mh *MessageHandler) handleGuideOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
+	if len(opParts) < 2 {
+		return mh.errorResponse(msg.GetID(), "missing guide operation type")
+	}
+
+	opType := opParts[1]
+
+	switch opType {
+	case "sync":
+		return mh.guideHandler.HandleSync(ctx, msg)
+	default:
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown guide operation: %s", opType))
 	}
 }
 
