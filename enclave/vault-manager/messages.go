@@ -497,6 +497,9 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 	case "guide":
 		// Guide sync operations (welcome/tutorial events)
 		return mh.handleGuideOperation(ctx, msg, parts[opIndex+1:])
+	case "enrollment":
+		// Enrollment operations (identity mismatch reports)
+		return mh.handleEnrollmentOperation(ctx, msg, parts[opIndex+1:])
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown operation: %s", operation))
 	}
@@ -1587,6 +1590,64 @@ func (mh *MessageHandler) handleNotificationsDigestOperation(ctx context.Context
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown notifications operation: %s", opType))
 	}
+}
+
+// handleEnrollmentOperation routes enrollment-related operations
+func (mh *MessageHandler) handleEnrollmentOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
+	if len(opParts) < 2 {
+		return mh.errorResponse(msg.GetID(), "missing enrollment operation type")
+	}
+
+	opType := opParts[1]
+
+	switch opType {
+	case "identity-mismatch":
+		return mh.handleIdentityMismatch(ctx, msg)
+	default:
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown enrollment operation: %s", opType))
+	}
+}
+
+// handleIdentityMismatch processes identity mismatch reports from the app.
+// When a user reports "This is not my account" during enrollment, this logs
+// the event and publishes an admin alert.
+func (mh *MessageHandler) handleIdentityMismatch(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req struct {
+		UserGUID   string `json:"user_guid"`
+		ReportedAt string `json:"reported_at"`
+	}
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		req.UserGUID = "unknown"
+		req.ReportedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+
+	// SECURITY: Log the identity mismatch for audit
+	log.Warn().
+		Str("owner_space", mh.ownerSpace).
+		Str("user_guid", req.UserGUID).
+		Str("reported_at", req.ReportedAt).
+		Msg("SECURITY: Identity mismatch reported during enrollment")
+
+	// Publish admin alert via NATS
+	alertPayload, _ := json.Marshal(map[string]string{
+		"event":       "identity_mismatch",
+		"owner_space": mh.ownerSpace,
+		"user_guid":   req.UserGUID,
+		"reported_at": req.ReportedAt,
+		"timestamp":   time.Now().UTC().Format(time.RFC3339),
+	})
+
+	if err := mh.publisher.PublishRaw("Control.enclave.alerts.identity-mismatch", alertPayload); err != nil {
+		log.Error().Err(err).Msg("Failed to publish identity mismatch alert")
+		// Don't fail the response - the log entry is the primary record
+	}
+
+	// Return success to the app
+	respBytes, _ := json.Marshal(map[string]interface{}{
+		"success": true,
+		"message": "Identity mismatch reported",
+	})
+	return mh.successResponse(msg.GetID(), respBytes)
 }
 
 // Response helpers
