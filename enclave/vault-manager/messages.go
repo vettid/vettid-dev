@@ -1209,11 +1209,11 @@ func (mh *MessageHandler) handleFeedOperation(ctx context.Context, msg *Incoming
 
 // handleGuideOperation routes guide-related operations
 func (mh *MessageHandler) handleGuideOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
-	if len(opParts) < 1 {
+	if len(opParts) < 2 {
 		return mh.errorResponse(msg.GetID(), "missing guide operation type")
 	}
 
-	opType := opParts[0]
+	opType := opParts[1]
 
 	switch opType {
 	case "sync":
