@@ -56,21 +56,9 @@ type DecryptedCredentialBlob struct {
 //
 // Security: Password verification happens inside the enclave for maximum security.
 func (mh *MessageHandler) handleAuthenticate(msg *IncomingMessage) (*OutgoingMessage, error) {
-	// Parse the standard message envelope format from mobile apps
-	// Format: {"id": "...", "type": "app.authenticate", "payload": {...}, "timestamp": "..."}
-	var envelope struct {
-		ID        string          `json:"id"`
-		Type      string          `json:"type"`
-		Payload   json.RawMessage `json:"payload"`
-		Timestamp string          `json:"timestamp"`
-	}
-	if err := json.Unmarshal(msg.Payload, &envelope); err != nil {
-		return mh.authErrorResponse(msg.GetID(), "Invalid message envelope format")
-	}
-
-	// Extract the actual request from the payload field
+	// msg.Payload is already unwrapped by central unwrapPayload in handleVaultOp
 	var req AuthenticateRequest
-	if err := json.Unmarshal(envelope.Payload, &req); err != nil {
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
 		return mh.authErrorResponse(msg.GetID(), "Invalid request payload format")
 	}
 

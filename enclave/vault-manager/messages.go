@@ -38,6 +38,12 @@ type IncomingMessage struct {
 	ReplyTo    string          `json:"reply_to,omitempty"`
 	Payload    json.RawMessage `json:"payload,omitempty"`
 
+	// PayloadType holds the original message type from the app envelope.
+	// The parent process preserves the envelope: {"type":"X","payload":{...}}
+	// Central unwrapping in handleVaultOp extracts the type here and sets
+	// Payload to just the inner content, so handlers get flat data.
+	PayloadType string `json:"-"` // Not serialized — set by unwrapPayload
+
 	// Attestation private key for PIN decryption
 	// SECURITY: Only included for PIN operations, supervisor provides this
 	AttestationPrivateKey []byte `json:"attestation_private_key,omitempty"`
@@ -350,6 +356,24 @@ func (mh *MessageHandler) HandleMessage(ctx context.Context, msg *IncomingMessag
 	}
 }
 
+// unwrapPayload extracts the inner payload from the parent's envelope format.
+// Parent sends: {"type":"guide.sync","payload":{"guides":[...]}}
+// Returns: payloadType="guide.sync", innerPayload={"guides":[...]}
+// If not wrapped, returns empty type and original data unchanged.
+func unwrapPayload(data json.RawMessage) (string, json.RawMessage) {
+	if len(data) == 0 {
+		return "", data
+	}
+	var envelope struct {
+		Type    string          `json:"type"`
+		Payload json.RawMessage `json:"payload"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil || len(envelope.Payload) == 0 {
+		return "", data
+	}
+	return envelope.Type, envelope.Payload
+}
+
 // handleVaultOp routes vault operations based on subject
 func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	// Parse subject to determine operation type
@@ -389,6 +413,11 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 	}
 
 	operation := parts[opIndex+1]
+
+	// Unwrap payload envelope from parent process.
+	// Parent preserves: {"type":"X","payload":{actual data}}
+	// Handlers expect just the inner payload content.
+	msg.PayloadType, msg.Payload = unwrapPayload(msg.Payload)
 
 	switch operation {
 	case "call":
@@ -476,20 +505,18 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 // handlePinOperation routes PIN operations based on payload type
 // Supports mobile apps that use forVault.pin subject with type in payload
 func (mh *MessageHandler) handlePinOperation(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
-	// Parse payload to extract the operation type
-	var envelope struct {
-		Type string `json:"type"`
-	}
-	if err := json.Unmarshal(msg.Payload, &envelope); err != nil {
-		return mh.errorResponse(msg.GetID(), "invalid payload format")
+	// PayloadType was extracted by central unwrapPayload in handleVaultOp
+	pinOp := msg.PayloadType
+	if pinOp == "" {
+		return mh.errorResponse(msg.GetID(), "missing PIN operation type")
 	}
 
 	log.Debug().
 		Str("owner_space", mh.ownerSpace).
-		Str("pin_operation", envelope.Type).
+		Str("pin_operation", pinOp).
 		Msg("Routing PIN operation")
 
-	switch envelope.Type {
+	switch pinOp {
 	case "pin.setup":
 		return mh.pinHandler.HandlePINSetup(ctx, msg)
 	case "pin.unlock":
@@ -497,7 +524,7 @@ func (mh *MessageHandler) handlePinOperation(ctx context.Context, msg *IncomingM
 	case "pin.change":
 		return mh.pinHandler.HandlePINChange(ctx, msg)
 	default:
-		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown PIN operation type: %s", envelope.Type))
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown PIN operation type: %s", pinOp))
 	}
 }
 

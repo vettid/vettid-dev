@@ -75,11 +75,8 @@ type PersonalDataUpdateSortOrderRequest struct {
 func (h *PersonalDataHandler) HandleGet(msg *IncomingMessage) (*OutgoingMessage, error) {
 	log.Info().Str("owner_space", h.ownerSpace).Msg("PersonalDataHandler.HandleGet called")
 
-	// Extract inner payload from envelope format
-	payload := h.extractInnerPayload(msg.Payload)
-
 	var req PersonalDataGetRequest
-	if err := json.Unmarshal(payload, &req); err != nil {
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
 		// Allow empty payload - return all fields
 		req = PersonalDataGetRequest{}
 	}
@@ -178,13 +175,9 @@ func (h *PersonalDataHandler) HandleGet(msg *IncomingMessage) (*OutgoingMessage,
 func (h *PersonalDataHandler) HandleUpdate(msg *IncomingMessage) (*OutgoingMessage, error) {
 	log.Info().Str("owner_space", h.ownerSpace).Msg("PersonalDataHandler.HandleUpdate called")
 
-	// Extract inner payload from envelope format
-	// Android sends: {"type": "personal-data.update", "payload": {"fields": {...}}}
-	payload := h.extractInnerPayload(msg.Payload)
-
 	var req PersonalDataUpdateRequest
-	if err := json.Unmarshal(payload, &req); err != nil {
-		log.Warn().Err(err).Str("payload", string(payload)).Msg("Failed to unmarshal personal data update request")
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		log.Warn().Err(err).Str("payload", string(msg.Payload)).Msg("Failed to unmarshal personal data update request")
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -262,11 +255,8 @@ func (h *PersonalDataHandler) HandleUpdate(msg *IncomingMessage) (*OutgoingMessa
 // HandleDelete handles personal-data.delete messages
 // Removes personal data fields from the vault
 func (h *PersonalDataHandler) HandleDelete(msg *IncomingMessage) (*OutgoingMessage, error) {
-	// Extract inner payload from envelope format
-	payload := h.extractInnerPayload(msg.Payload)
-
 	var req PersonalDataDeleteRequest
-	if err := json.Unmarshal(payload, &req); err != nil {
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -318,12 +308,9 @@ func (h *PersonalDataHandler) HandleDelete(msg *IncomingMessage) (*OutgoingMessa
 func (h *PersonalDataHandler) HandleUpdateSortOrder(msg *IncomingMessage) (*OutgoingMessage, error) {
 	log.Info().Str("owner_space", h.ownerSpace).Msg("PersonalDataHandler.HandleUpdateSortOrder called")
 
-	// Extract inner payload from envelope format
-	payload := h.extractInnerPayload(msg.Payload)
-
 	var req PersonalDataUpdateSortOrderRequest
-	if err := json.Unmarshal(payload, &req); err != nil {
-		log.Warn().Err(err).Str("payload", string(payload)).Msg("Failed to unmarshal sort order update request")
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		log.Warn().Err(err).Str("payload", string(msg.Payload)).Msg("Failed to unmarshal sort order update request")
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -399,34 +386,3 @@ func (h *PersonalDataHandler) errorResponse(id string, message string) (*Outgoin
 	}, nil
 }
 
-// extractInnerPayload extracts the inner payload from the message envelope format.
-// Android sends: {"type": "...", "payload": {...}}
-// This function returns just the inner payload, or the original data if not in envelope format.
-func (h *PersonalDataHandler) extractInnerPayload(data json.RawMessage) json.RawMessage {
-	if len(data) == 0 {
-		return data
-	}
-
-	// Try to parse as envelope format
-	var envelope struct {
-		Type    string          `json:"type"`
-		Payload json.RawMessage `json:"payload"`
-	}
-
-	if err := json.Unmarshal(data, &envelope); err != nil {
-		// Not valid JSON or not envelope format - return original
-		return data
-	}
-
-	// If there's a nested payload, return it
-	if len(envelope.Payload) > 0 {
-		log.Debug().
-			Str("type", envelope.Type).
-			Int("payload_len", len(envelope.Payload)).
-			Msg("Extracted inner payload from envelope")
-		return envelope.Payload
-	}
-
-	// No nested payload - return original (flat format)
-	return data
-}

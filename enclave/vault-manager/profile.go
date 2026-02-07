@@ -101,11 +101,8 @@ type SharingSettings struct {
 func (h *ProfileHandler) HandleGet(msg *IncomingMessage) (*OutgoingMessage, error) {
 	log.Info().Str("owner_space", h.ownerSpace).Msg("HandleGet called")
 
-	// Extract inner payload from envelope format if present
-	payload := h.extractInnerPayload(msg.Payload)
-
 	var req ProfileGetRequest
-	if err := json.Unmarshal(payload, &req); err != nil {
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -227,11 +224,8 @@ func (h *ProfileHandler) HandleGet(msg *IncomingMessage) (*OutgoingMessage, erro
 
 // HandleUpdate handles profile.update messages
 func (h *ProfileHandler) HandleUpdate(msg *IncomingMessage) (*OutgoingMessage, error) {
-	// Extract inner payload from envelope format if present
-	payload := h.extractInnerPayload(msg.Payload)
-
 	var req ProfileUpdateRequest
-	if err := json.Unmarshal(payload, &req); err != nil {
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -627,13 +621,10 @@ func (h *ProfileHandler) HandleCategoriesUpdate(msg *IncomingMessage) (*Outgoing
 func (h *ProfileHandler) HandlePublish(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	log.Info().Str("owner_space", h.ownerSpace).Msg("HandlePublish called")
 
-	// Extract inner payload from envelope format (Android wraps in {"type":..., "payload":...})
-	payload := h.extractInnerPayload(msg.Payload)
-
 	var req ProfilePublishRequest
-	if err := json.Unmarshal(payload, &req); err != nil {
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
 		// Allow empty payload - use existing settings
-		log.Debug().Err(err).Str("payload", string(payload)).Msg("Empty or invalid payload, using existing settings")
+		log.Debug().Err(err).Str("payload", string(msg.Payload)).Msg("Empty or invalid payload, using existing settings")
 		req = ProfilePublishRequest{}
 	}
 
@@ -976,13 +967,10 @@ func (h *ProfileHandler) HandleGetPublished(msg *IncomingMessage) (*OutgoingMess
 // HandlePublicSettingsUpdate handles profile.public.update messages
 // Updates which fields are included in the public profile (without publishing)
 func (h *ProfileHandler) HandlePublicSettingsUpdate(msg *IncomingMessage) (*OutgoingMessage, error) {
-	// Extract inner payload from envelope format
-	payload := h.extractInnerPayload(msg.Payload)
-
 	var req struct {
 		Fields []string `json:"fields"`
 	}
-	if err := json.Unmarshal(payload, &req); err != nil {
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -1070,13 +1058,10 @@ func (h *ProfileHandler) HandlePhotoGet(msg *IncomingMessage) (*OutgoingMessage,
 func (h *ProfileHandler) HandlePhotoUpdate(msg *IncomingMessage) (*OutgoingMessage, error) {
 	log.Info().Str("owner_space", h.ownerSpace).Msg("HandlePhotoUpdate called")
 
-	// Extract inner payload from envelope format
-	payload := h.extractInnerPayload(msg.Payload)
-
 	var req struct {
 		Photo string `json:"photo"` // Base64-encoded JPEG
 	}
-	if err := json.Unmarshal(payload, &req); err != nil {
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -1147,34 +1132,3 @@ func (h *ProfileHandler) HandlePhotoDelete(msg *IncomingMessage) (*OutgoingMessa
 	}, nil
 }
 
-// extractInnerPayload extracts the inner payload from the message envelope format.
-// Android sends: {"type": "...", "payload": {...}}
-// This function returns just the inner payload, or the original data if not in envelope format.
-func (h *ProfileHandler) extractInnerPayload(data json.RawMessage) json.RawMessage {
-	if len(data) == 0 {
-		return data
-	}
-
-	// Try to parse as envelope format
-	var envelope struct {
-		Type    string          `json:"type"`
-		Payload json.RawMessage `json:"payload"`
-	}
-
-	if err := json.Unmarshal(data, &envelope); err != nil {
-		// Not valid JSON or not envelope format - return original
-		return data
-	}
-
-	// If there's a nested payload, return it
-	if len(envelope.Payload) > 0 {
-		log.Debug().
-			Str("type", envelope.Type).
-			Int("payload_len", len(envelope.Payload)).
-			Msg("Extracted inner payload from envelope")
-		return envelope.Payload
-	}
-
-	// No nested payload - return original (flat format)
-	return data
-}

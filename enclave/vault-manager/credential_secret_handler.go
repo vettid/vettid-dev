@@ -47,10 +47,8 @@ func NewCredentialSecretHandler(ownerSpace string, storage *EncryptedStorage, st
 //  4. Re-encrypt credential with CEK
 //  5. Return new encrypted credential blob + new UTKs
 func (h *CredentialSecretHandler) HandleAdd(msg *IncomingMessage) (*OutgoingMessage, error) {
-	payload := h.extractInnerPayload(msg.Payload)
-
 	var req CredentialSecretAddRequest
-	if err := json.Unmarshal(payload, &req); err != nil {
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -185,10 +183,8 @@ func (h *CredentialSecretHandler) HandleAdd(msg *IncomingMessage) (*OutgoingMess
 //  3. Find secret in credential.Secrets[] by ID
 //  4. Return the actual value + new UTKs
 func (h *CredentialSecretHandler) HandleGet(msg *IncomingMessage) (*OutgoingMessage, error) {
-	payload := h.extractInnerPayload(msg.Payload)
-
 	var req CredentialSecretGetRequest
-	if err := json.Unmarshal(payload, &req); err != nil {
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -292,11 +288,9 @@ func (h *CredentialSecretHandler) HandleGet(msg *IncomingMessage) (*OutgoingMess
 // Returns names, categories, owners, timestamps. Also returns crypto key metadata
 // and credential info if password is verified.
 func (h *CredentialSecretHandler) HandleList(msg *IncomingMessage) (*OutgoingMessage, error) {
-	payload := h.extractInnerPayload(msg.Payload)
-
 	var req CredentialSecretListRequest
 	// Allow empty payload
-	json.Unmarshal(payload, &req)
+	json.Unmarshal(msg.Payload, &req)
 
 	// Verify password if provided (for enhanced metadata)
 	var passwordVerified bool
@@ -380,10 +374,8 @@ func (h *CredentialSecretHandler) HandleList(msg *IncomingMessage) (*OutgoingMes
 //  4. Re-encrypt credential
 //  5. Return new encrypted credential blob + new UTKs
 func (h *CredentialSecretHandler) HandleDelete(msg *IncomingMessage) (*OutgoingMessage, error) {
-	payload := h.extractInnerPayload(msg.Payload)
-
 	var req CredentialSecretDeleteRequest
-	if err := json.Unmarshal(payload, &req); err != nil {
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -750,38 +742,6 @@ func (h *CredentialSecretHandler) getAllMetadataRecords() []SecretMetadataRecord
 func (h *CredentialSecretHandler) saveMetadataRecords(records []SecretMetadataRecord) {
 	data, _ := json.Marshal(records)
 	h.storage.Put("credential-secrets/_metadata", data)
-}
-
-// extractInnerPayload extracts the inner payload from the message envelope format.
-// Android sends: {"type": "...", "payload": {...}}
-// This function returns just the inner payload, or the original data if not in envelope format.
-func (h *CredentialSecretHandler) extractInnerPayload(data json.RawMessage) json.RawMessage {
-	if len(data) == 0 {
-		return data
-	}
-
-	// Try to parse as envelope format
-	var envelope struct {
-		Type    string          `json:"type"`
-		Payload json.RawMessage `json:"payload"`
-	}
-
-	if err := json.Unmarshal(data, &envelope); err != nil {
-		// Not valid JSON or not envelope format - return original
-		return data
-	}
-
-	// If there's a nested payload, return it
-	if len(envelope.Payload) > 0 {
-		log.Debug().
-			Str("type", envelope.Type).
-			Int("payload_len", len(envelope.Payload)).
-			Msg("Extracted inner payload from credential secret envelope")
-		return envelope.Payload
-	}
-
-	// No nested payload - return original (flat format)
-	return data
 }
 
 // isValidSecretCategory validates the secret category

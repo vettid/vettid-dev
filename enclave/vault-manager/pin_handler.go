@@ -31,38 +31,6 @@ func NewPINHandler(ownerSpace string, state *VaultState, bootstrap *BootstrapHan
 	}
 }
 
-// extractInnerPayload extracts the inner payload from the message envelope format.
-// Android sends: {"type": "...", "payload": {...}}
-// This function returns just the inner payload, or the original data if not in envelope format.
-func (h *PINHandler) extractInnerPayload(data json.RawMessage) json.RawMessage {
-	if len(data) == 0 {
-		return data
-	}
-
-	// Try to parse as envelope format
-	var envelope struct {
-		Type    string          `json:"type"`
-		Payload json.RawMessage `json:"payload"`
-	}
-
-	if err := json.Unmarshal(data, &envelope); err != nil {
-		// Not valid JSON or not envelope format - return original
-		return data
-	}
-
-	// If there's a nested payload, return it
-	if len(envelope.Payload) > 0 {
-		log.Debug().
-			Str("type", envelope.Type).
-			Int("payload_len", len(envelope.Payload)).
-			Msg("Extracted inner payload from envelope")
-		return envelope.Payload
-	}
-
-	// No nested payload - return original (flat format)
-	return data
-}
-
 // HandlePINSetup processes initial PIN setup (Phase 2 of enrollment)
 // Flow:
 // 1. Decrypt PIN using ECIES (with app's ephemeral key + our private key)
@@ -287,13 +255,9 @@ func (h *PINHandler) HandlePINSetup(ctx context.Context, msg *IncomingMessage) (
 func (h *PINHandler) HandlePINUnlock(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	log.Info().Str("owner_space", h.ownerSpace).Msg("PIN unlock requested")
 
-	// Extract inner payload from envelope format if present
-	// Android sends: {"type": "pin-unlock", "payload": {"utk_id": "...", ...}}
-	innerPayload := h.extractInnerPayload(msg.Payload)
-
 	var req PINUnlockRequest
-	if err := json.Unmarshal(innerPayload, &req); err != nil {
-		log.Error().Err(err).Str("payload", string(innerPayload)).Msg("Failed to unmarshal PIN unlock request")
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		log.Error().Err(err).Str("payload", string(msg.Payload)).Msg("Failed to unmarshal PIN unlock request")
 		return h.errorResponse(msg.GetID(), "invalid request format")
 	}
 
@@ -703,31 +667,27 @@ func (h *PINHandler) errorResponse(requestID string, errMsg string) (*OutgoingMe
 }
 
 // decryptMobileFormat handles the mobile app's attestation-based PIN encryption
-// Mobile format: {"type": "pin.setup", "payload": {"encrypted_pin": "...", "ephemeral_public_key": "...", "nonce": "..."}}
+// msg.Payload is already unwrapped by central unwrapPayload, so it contains:
+// {"encrypted_pin": "...", "ephemeral_public_key": "...", "nonce": "..."}
 func (h *PINHandler) decryptMobileFormat(msg *IncomingMessage) ([]byte, error) {
-	// Parse the outer envelope
-	var envelope struct {
-		Type    string `json:"type"`
-		Payload struct {
-			EncryptedPIN       string `json:"encrypted_pin"`
-			EphemeralPublicKey string `json:"ephemeral_public_key"`
-			Nonce              string `json:"nonce"`
-		} `json:"payload"`
+	var payload struct {
+		EncryptedPIN       string `json:"encrypted_pin"`
+		EphemeralPublicKey string `json:"ephemeral_public_key"`
+		Nonce              string `json:"nonce"`
 	}
-	if err := json.Unmarshal(msg.Payload, &envelope); err != nil {
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
 		return nil, fmt.Errorf("invalid mobile payload format: %w", err)
 	}
 
 	log.Debug().
 		Str("owner_space", h.ownerSpace).
-		Str("type", envelope.Type).
-		Int("encrypted_pin_len", len(envelope.Payload.EncryptedPIN)).
-		Int("ephemeral_key_len", len(envelope.Payload.EphemeralPublicKey)).
-		Int("nonce_len", len(envelope.Payload.Nonce)).
+		Int("encrypted_pin_len", len(payload.EncryptedPIN)).
+		Int("ephemeral_key_len", len(payload.EphemeralPublicKey)).
+		Int("nonce_len", len(payload.Nonce)).
 		Msg("Decrypting mobile PIN format")
 
 	// Decode components
-	ephemeralPub, err := base64.StdEncoding.DecodeString(envelope.Payload.EphemeralPublicKey)
+	ephemeralPub, err := base64.StdEncoding.DecodeString(payload.EphemeralPublicKey)
 	if err != nil {
 		return nil, fmt.Errorf("invalid ephemeral public key encoding: %w", err)
 	}
@@ -735,7 +695,7 @@ func (h *PINHandler) decryptMobileFormat(msg *IncomingMessage) ([]byte, error) {
 		return nil, fmt.Errorf("invalid ephemeral public key length: %d", len(ephemeralPub))
 	}
 
-	nonce, err := base64.StdEncoding.DecodeString(envelope.Payload.Nonce)
+	nonce, err := base64.StdEncoding.DecodeString(payload.Nonce)
 	if err != nil {
 		return nil, fmt.Errorf("invalid nonce encoding: %w", err)
 	}
@@ -743,7 +703,7 @@ func (h *PINHandler) decryptMobileFormat(msg *IncomingMessage) ([]byte, error) {
 		return nil, fmt.Errorf("invalid nonce length: %d", len(nonce))
 	}
 
-	ciphertext, err := base64.StdEncoding.DecodeString(envelope.Payload.EncryptedPIN)
+	ciphertext, err := base64.StdEncoding.DecodeString(payload.EncryptedPIN)
 	if err != nil {
 		return nil, fmt.Errorf("invalid encrypted PIN encoding: %w", err)
 	}
