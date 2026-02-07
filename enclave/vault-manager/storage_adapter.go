@@ -168,11 +168,11 @@ func (s *EncryptedStorage) QueryAuditEvents(eventTypes []string, startTime, endT
 }
 
 // GetEventsSince returns events with sync_sequence > lastSeq for sync
-func (s *EncryptedStorage) GetEventsSince(lastSeq int64, limit int) ([]storage.EventRecord, error) {
+func (s *EncryptedStorage) GetEventsSince(lastSeq int64, limit int, includeHidden bool) ([]storage.EventRecord, error) {
 	if s.sqlite == nil {
 		return nil, ErrStorageNotInitialized
 	}
-	return s.sqlite.GetEventsSince(lastSeq, limit)
+	return s.sqlite.GetEventsSince(lastSeq, limit, includeHidden)
 }
 
 // UpdateEventStatus updates the feed_status and related timestamps

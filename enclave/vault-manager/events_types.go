@@ -326,8 +326,9 @@ type FeedListResponse struct {
 
 // FeedSyncRequest is the payload for feed.sync
 type FeedSyncRequest struct {
-	LastSequence int64 `json:"last_sequence"` // Last known sync sequence
-	Limit        int   `json:"limit"`         // Max events to return (default: 100)
+	LastSequence  int64 `json:"last_sequence"`            // Last known sync sequence
+	Limit         int   `json:"limit"`                    // Max events to return (default: 100)
+	IncludeHidden bool  `json:"include_hidden,omitempty"` // Include audit-only (hidden) events
 }
 
 // FeedSyncResponse is the response for feed.sync

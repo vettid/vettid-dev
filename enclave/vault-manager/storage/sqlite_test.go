@@ -879,8 +879,8 @@ func TestGetEventsSince(t *testing.T) {
 		}
 	}
 
-	// Get events since sequence 2
-	events, err := storage.GetEventsSince(2, 10)
+	// Get events since sequence 2 (include hidden)
+	events, err := storage.GetEventsSince(2, 10, true)
 	if err != nil {
 		t.Fatalf("Failed to get events since: %v", err)
 	}
@@ -897,7 +897,7 @@ func TestGetEventsSince(t *testing.T) {
 	}
 
 	// Test limit
-	events, err = storage.GetEventsSince(0, 2)
+	events, err = storage.GetEventsSince(0, 2, true)
 	if err != nil {
 		t.Fatalf("Failed to get events with limit: %v", err)
 	}

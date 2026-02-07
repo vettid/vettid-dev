@@ -1479,13 +1479,19 @@ func (s *SQLiteStorage) QueryAuditEvents(eventTypes []string, startTime, endTime
 	return events, total, nil
 }
 
-// GetEventsSince returns events with sync_sequence > lastSeq for sync
-func (s *SQLiteStorage) GetEventsSince(lastSeq int64, limit int) ([]EventRecord, error) {
+// GetEventsSince returns events with sync_sequence > lastSeq for sync.
+// If includeHidden is false, events with feed_status='hidden' (audit-only) are excluded.
+func (s *SQLiteStorage) GetEventsSince(lastSeq int64, limit int, includeHidden bool) ([]EventRecord, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	if limit <= 0 {
 		limit = 100
+	}
+
+	var hiddenFlag int
+	if includeHidden {
+		hiddenFlag = 1
 	}
 
 	rows, err := s.db.Query(`
@@ -1495,9 +1501,10 @@ func (s *SQLiteStorage) GetEventsSince(lastSeq int64, limit int) ([]EventRecord,
 		       sync_sequence, retention_class
 		FROM events
 		WHERE sync_sequence > ? AND feed_status != 'deleted'
+		      AND (feed_status != 'hidden' OR ? = 1)
 		ORDER BY sync_sequence ASC
 		LIMIT ?
-	`, lastSeq, limit)
+	`, lastSeq, hiddenFlag, limit)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get events since sequence: %w", err)
 	}

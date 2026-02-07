@@ -407,7 +407,7 @@ func (h *EventHandler) Sync(ctx context.Context, req *FeedSyncRequest) (*FeedSyn
 	}
 
 	// Get events since sequence (request 1 more than limit to check hasMore)
-	records, err := h.storage.SQLite().GetEventsSince(req.LastSequence, limit+1)
+	records, err := h.storage.SQLite().GetEventsSince(req.LastSequence, limit+1, req.IncludeHidden)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sync events: %w", err)
 	}
