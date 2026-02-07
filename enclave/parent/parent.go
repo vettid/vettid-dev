@@ -115,17 +115,12 @@ func (p *ParentProcess) Run(ctx context.Context) error {
 
 	// Route Enclave → NATS/S3 (Disabled by design)
 	//
-	// The routeEnclaveToExternal goroutine is intentionally disabled because:
-	// 1. Current architecture uses request-response pattern only (NATS→Enclave→NATS)
-	// 2. The enclave doesn't need to initiate messages - it only responds to requests
-	// 3. Enabling it causes a mutex conflict: it blocks on read while holding readMu,
-	//    which prevents sendWithHandlerSupport from reading responses
+	// The routeEnclaveToExternal goroutine is intentionally disabled because
+	// enabling it causes a mutex conflict: it blocks on read while holding readMu,
+	// which prevents sendWithHandlerSupport from reading responses.
 	//
-	// If enclave-initiated messages are needed in the future (e.g., push notifications,
-	// async events), this requires architectural changes:
-	// - Separate channels for request-response vs event streams
-	// - Non-blocking vsock read with message type discrimination
-	// - Consider using NATS JetStream for durable event delivery instead
+	// Instead, enclave-initiated messages (nats_publish, log) are handled inline
+	// within sendWithHandlerSupport's response loop alongside KMS and storage requests.
 	//
 	// go func() {
 	// 	err := p.routeEnclaveToExternal(ctx)
@@ -580,6 +575,21 @@ func (p *ParentProcess) sendWithHandlerSupport(ctx context.Context, msg *Enclave
 					log.Error().Err(err).Msg("Failed to send storage PUT response")
 				}
 				p.vsockClient.writeMu.Unlock()
+			}
+			continue // Wait for next response
+		}
+
+		// Check if this is a NATS publish request from vault-manager
+		// (e.g., feed event notifications, profile updates)
+		// The supervisor forwards these fire-and-forget; no response is expected.
+		if response.Type == EnclaveMessageTypeNATSPublish {
+			log.Debug().
+				Str("subject", response.Subject).
+				Int("payload_len", len(response.Payload)).
+				Msg("Vault-manager requested NATS publish during operation")
+
+			if err := p.natsClient.Publish(response.Subject, response.Payload); err != nil {
+				log.Error().Err(err).Str("subject", response.Subject).Msg("Failed to publish NATS message from enclave")
 			}
 			continue // Wait for next response
 		}
