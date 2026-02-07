@@ -573,18 +573,31 @@ func (h *PINHandler) HandlePINChange(ctx context.Context, msg *IncomingMessage) 
 
 	// Verify old PIN
 	// SECURITY: payload.OldPIN is already []byte (SensitiveBytes)
-	if !verifyAuthHash(payload.OldPIN, credential.AuthSalt, credential.AuthHash) {
-		return h.errorResponse(msg.GetID(), "invalid current PIN")
-	}
-
-	// Derive old DEK to verify (optional additional check)
-	if sealedMaterial != nil {
-		// SECURITY: Pass PIN as []byte so both ends can zero it
+	if len(credential.AuthHash) == 0 || len(credential.AuthSalt) == 0 {
+		// AuthHash was never set (pre-existing vaults enrolled before auth hash was added).
+		// Verify old PIN by attempting DEK derivation (same as pin-unlock cold path).
+		if sealedMaterial == nil {
+			return h.errorResponse(msg.GetID(), "vault not initialized - no sealed material")
+		}
 		oldDEK, err := h.sealerProxy.DeriveDEKFromPIN(sealedMaterial, []byte(payload.OldPIN))
 		if err != nil {
-			return h.errorResponse(msg.GetID(), "verification failed")
+			return h.errorResponse(msg.GetID(), "invalid current PIN")
 		}
 		zeroBytes(oldDEK)
+		log.Debug().Str("owner_space", h.ownerSpace).Msg("Old PIN verified via DEK derivation (no auth hash)")
+	} else {
+		if !verifyAuthHash(payload.OldPIN, credential.AuthSalt, credential.AuthHash) {
+			return h.errorResponse(msg.GetID(), "invalid current PIN")
+		}
+		// Additional DEK derivation check
+		if sealedMaterial != nil {
+			// SECURITY: Pass PIN as []byte so both ends can zero it
+			oldDEK, err := h.sealerProxy.DeriveDEKFromPIN(sealedMaterial, []byte(payload.OldPIN))
+			if err != nil {
+				return h.errorResponse(msg.GetID(), "verification failed")
+			}
+			zeroBytes(oldDEK)
+		}
 	}
 
 	// Generate new sealed material for new PIN
