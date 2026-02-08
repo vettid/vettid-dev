@@ -631,6 +631,15 @@ func (h *PINHandler) HandlePINChange(ctx context.Context, msg *IncomingMessage) 
 	h.state.sealedMaterial = newSealedMaterial
 	h.state.mu.Unlock()
 
+	// Persist new sealed material to S3 for cold vault recovery
+	// SECURITY: Without this, a cold vault restart would still use the old sealed material
+	// and the new PIN would not work
+	if err := h.sealerProxy.StoreSealedMaterial(newSealedMaterial); err != nil {
+		log.Error().Err(err).Str("owner_space", h.ownerSpace).Msg("Failed to store new sealed material to S3 - cold vault PIN change will be lost!")
+		return h.errorResponse(msg.GetID(), "failed to persist PIN change - please try again")
+	}
+	log.Info().Str("owner_space", h.ownerSpace).Msg("New sealed material stored to S3 for cold vault recovery")
+
 	// Re-encrypt credential with new DEK
 	credBytes, err := json.Marshal(credential)
 	if err != nil {

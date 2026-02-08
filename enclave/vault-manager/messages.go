@@ -440,7 +440,13 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 	case "pin-unlock":
 		return mh.pinHandler.HandlePINUnlock(ctx, msg)
 	case "pin-change":
-		return mh.pinHandler.HandlePINChange(ctx, msg)
+		response, err := mh.pinHandler.HandlePINChange(ctx, msg)
+		if err != nil {
+			return response, err
+		}
+		// Persist vault state to S3 so cold vault recovery uses updated credential/auth
+		mh.persistVaultStateToS3()
+		return response, nil
 	case "unseal":
 		return mh.handleUnseal(ctx, msg)
 	case "sign":
