@@ -518,6 +518,9 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 	case "enrollment":
 		// Enrollment operations (identity mismatch reports)
 		return mh.handleEnrollmentOperation(ctx, msg, parts[opIndex+1:])
+	case "handlers":
+		// Handler listing (read-only introspection of vault capabilities)
+		return mh.handleHandlersOperation(ctx, msg, parts[opIndex+1:])
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown operation: %s", operation))
 	}
@@ -1770,6 +1773,52 @@ func (mh *MessageHandler) handleIdentityMismatch(ctx context.Context, msg *Incom
 		"success": true,
 		"message": "Identity mismatch reported",
 	})
+	return mh.successResponse(msg.GetID(), respBytes)
+}
+
+// handleHandlersOperation returns a static list of vault handler categories and their operations.
+// This is read-only introspection — no DB access needed — it describes the vault-manager's own capabilities.
+func (mh *MessageHandler) handleHandlersOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
+	if len(opParts) < 2 {
+		return mh.errorResponse(msg.GetID(), "missing handlers operation type")
+	}
+	if opParts[1] != "list" {
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown handlers operation: %s", opParts[1]))
+	}
+
+	type handlerInfo struct {
+		ID          string   `json:"id"`
+		Name        string   `json:"name"`
+		Description string   `json:"description"`
+		Operations  []string `json:"operations"`
+	}
+
+	handlers := []handlerInfo{
+		{ID: "profile", Name: "Profile", Description: "Manage vault profile, sharing settings, and photos", Operations: []string{"get", "update", "delete", "get-shared", "sharing-settings", "categories", "public", "publish", "photo"}},
+		{ID: "personal-data", Name: "Personal Data", Description: "Store and manage personal identity data", Operations: []string{"get", "update", "delete", "update-sort-order", "get-sort-order"}},
+		{ID: "secrets", Name: "Secrets", Description: "Encrypted secret storage and identity keys", Operations: []string{"add", "update", "retrieve", "delete", "list", "identity"}},
+		{ID: "credential", Name: "Credentials", Description: "Credential lifecycle management", Operations: []string{"create", "store", "sync", "get", "delete", "password-change", "secret", "version"}},
+		{ID: "connection", Name: "Connections", Description: "Peer connection management", Operations: []string{"create-invite", "initiate", "respond", "revoke", "list", "get", "update", "rotate", "get-credentials", "get-capabilities", "activity-summary"}},
+		{ID: "message", Name: "Messaging", Description: "Encrypted peer messaging", Operations: []string{"send", "read-receipt"}},
+		{ID: "feed", Name: "Event Feed", Description: "Activity feed and event management", Operations: []string{"list", "get", "read", "archive", "delete", "sync", "settings", "action"}},
+		{ID: "location", Name: "Location", Description: "Location tracking and sharing", Operations: []string{"add", "list", "delete", "delete-all"}},
+		{ID: "vote", Name: "Voting", Description: "Vault-signed governance voting", Operations: []string{"cast"}},
+		{ID: "audit", Name: "Audit", Description: "Audit log queries and export", Operations: []string{"query", "export"}},
+		{ID: "call", Name: "Calls", Description: "Voice and video call management", Operations: []string{"start", "accept", "reject", "end", "signal", "history"}},
+		{ID: "block", Name: "Call Blocking", Description: "Manage blocked callers", Operations: []string{"add", "remove"}},
+		{ID: "invitation", Name: "Invitations", Description: "Connection invitation lifecycle", Operations: []string{"list", "cancel", "resend", "viewed"}},
+		{ID: "capability", Name: "Capabilities", Description: "Peer capability negotiation", Operations: []string{"request", "respond", "get", "list"}},
+		{ID: "settings", Name: "Settings", Description: "Notification preferences", Operations: []string{"notifications"}},
+		{ID: "notification", Name: "Notifications", Description: "Push notification routing", Operations: []string{"profile-broadcast", "revoke-notify"}},
+		{ID: "service", Name: "Services", Description: "B2C service connections and contracts", Operations: []string{"connection", "contract", "data", "request", "profile", "activity", "notifications", "trust"}},
+		{ID: "datastore", Name: "Data Stores", Description: "Shared collaborative data stores", Operations: []string{"create", "join", "read", "write", "delete", "subscribe", "audit"}},
+		{ID: "pin", Name: "Security", Description: "PIN and vault access management", Operations: []string{"setup", "unlock", "change"}},
+	}
+
+	respBytes, err := json.Marshal(map[string]interface{}{"handlers": handlers})
+	if err != nil {
+		return mh.errorResponse(msg.GetID(), "failed to marshal handlers list")
+	}
 	return mh.successResponse(msg.GetID(), respBytes)
 }
 
