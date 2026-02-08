@@ -305,7 +305,7 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 		guideHandler: NewGuideHandler(ownerSpace, storage, eventHandler),
 
 		// Location handler
-		locationHandler: NewLocationHandler(ownerSpace, storage),
+		locationHandler: NewLocationHandler(ownerSpace, storage, publisher),
 	}
 }
 
@@ -473,6 +473,9 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 	case "read-receipt":
 		// Incoming read receipt from peer vault
 		return mh.handleIncomingReadReceipt(ctx, msg)
+	case "location-update":
+		// Incoming location update from peer vault
+		return mh.handleIncomingLocationUpdate(ctx, msg)
 	case "vote":
 		// Vault-signed voting operation
 		return mh.handleVoteOperation(ctx, msg, parts[opIndex+1:])
@@ -1322,6 +1325,30 @@ func (mh *MessageHandler) handleLocationOperation(ctx context.Context, msg *Inco
 		default:
 			return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown location settings operation: %s", opParts[2]))
 		}
+	case "sharing":
+		if len(opParts) < 3 {
+			return mh.errorResponse(msg.GetID(), "missing sharing operation")
+		}
+		switch opParts[2] {
+		case "toggle":
+			response, err := mh.locationHandler.HandleSharingToggle(msg)
+			if err != nil {
+				return response, err
+			}
+			mh.persistVaultStateToS3()
+			return response, nil
+		case "list":
+			return mh.locationHandler.HandleSharingList(msg)
+		case "push":
+			response, err := mh.locationHandler.HandleSharingPush(msg)
+			if err != nil {
+				return response, err
+			}
+			mh.persistVaultStateToS3()
+			return response, nil
+		default:
+			return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown location sharing operation: %s", opParts[2]))
+		}
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown location operation: %s", opType))
 	}
@@ -1569,6 +1596,14 @@ func (mh *MessageHandler) handleIncomingPeerMessage(ctx context.Context, msg *In
 func (mh *MessageHandler) handleIncomingReadReceipt(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	if err := mh.messagingHandler.HandleIncomingReadReceipt(ctx, msg.Payload); err != nil {
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("failed to handle read receipt: %v", err))
+	}
+	return mh.successResponse(msg.GetID(), nil)
+}
+
+// handleIncomingLocationUpdate handles location updates from peer vaults
+func (mh *MessageHandler) handleIncomingLocationUpdate(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	if err := mh.locationHandler.HandleIncomingLocationUpdate(ctx, msg.Payload); err != nil {
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("failed to handle location update: %v", err))
 	}
 	return mh.successResponse(msg.GetID(), nil)
 }

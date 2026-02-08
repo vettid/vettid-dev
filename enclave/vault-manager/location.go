@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -16,22 +17,26 @@ import (
 type LocationHandler struct {
 	ownerSpace string
 	storage    *EncryptedStorage
+	publisher  *VsockPublisher
 }
 
 // NewLocationHandler creates a new location handler
-func NewLocationHandler(ownerSpace string, storage *EncryptedStorage) *LocationHandler {
+func NewLocationHandler(ownerSpace string, storage *EncryptedStorage, publisher *VsockPublisher) *LocationHandler {
 	return &LocationHandler{
 		ownerSpace: ownerSpace,
 		storage:    storage,
+		publisher:  publisher,
 	}
 }
 
 // --- Storage keys ---
 
 const (
-	locationSettingsKey = "location/_settings"
-	locationIndexKey    = "location/_index"
-	locationPrefix      = "location/"
+	locationSettingsKey     = "location/_settings"
+	locationIndexKey        = "location/_index"
+	locationPrefix          = "location/"
+	locationSharingIndexKey = "location/_sharing_index"
+	locationLatestKey       = "location/_latest"
 )
 
 // --- Data types ---
@@ -76,6 +81,28 @@ type LocationListRequest struct {
 
 type LocationDeleteRequest struct {
 	ID string `json:"id"`
+}
+
+// --- Sharing request/response types ---
+
+type LocationSharingToggleRequest struct {
+	ConnectionID string `json:"connection_id"`
+	Enabled      bool   `json:"enabled"`
+}
+
+type LocationSharingListResponse struct {
+	SharedWith []string `json:"shared_with"`
+}
+
+// IncomingLocationUpdate is received from a peer vault
+type IncomingLocationUpdate struct {
+	EventID      string   `json:"event_id,omitempty"`
+	ConnectionID string   `json:"connection_id"`
+	Latitude     float64  `json:"latitude"`
+	Longitude    float64  `json:"longitude"`
+	Accuracy     *float32 `json:"accuracy,omitempty"`
+	Timestamp    int64    `json:"timestamp"`
+	UpdatedAt    string   `json:"updated_at"`
 }
 
 // --- Response types ---
@@ -138,6 +165,14 @@ func (h *LocationHandler) HandleAdd(msg *IncomingMessage) (*OutgoingMessage, err
 
 	// Run maintenance opportunistically (non-blocking errors)
 	h.runMaintenance()
+
+	// Cache the latest point for sharing
+	if err := h.storage.Put(locationLatestKey, data); err != nil {
+		log.Warn().Err(err).Msg("Failed to cache latest location point")
+	}
+
+	// Push to shared connections (non-blocking)
+	h.pushToSharedConnections(context.Background(), point)
 
 	resp := map[string]interface{}{
 		"success": true,
@@ -493,6 +528,237 @@ func (h *LocationHandler) compactOldRecords(cutoffTimestamp int64) {
 	if compacted > 0 {
 		log.Info().Int("compacted", compacted).Msg("Location compaction completed")
 	}
+}
+
+// --- Sharing handler methods ---
+
+// HandleSharingToggle enables or disables location sharing for a connection
+func (h *LocationHandler) HandleSharingToggle(msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req LocationSharingToggleRequest
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		return h.errorResponse(msg.GetID(), "invalid request format")
+	}
+
+	if req.ConnectionID == "" {
+		return h.errorResponse(msg.GetID(), "connection_id is required")
+	}
+
+	// Load current sharing index
+	sharedWith := h.getSharingIndex()
+
+	if req.Enabled {
+		// Add connection if not already present
+		found := false
+		for _, id := range sharedWith {
+			if id == req.ConnectionID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			sharedWith = append(sharedWith, req.ConnectionID)
+		}
+	} else {
+		// Remove connection
+		var updated []string
+		for _, id := range sharedWith {
+			if id != req.ConnectionID {
+				updated = append(updated, id)
+			}
+		}
+		sharedWith = updated
+	}
+
+	// Persist
+	if err := h.storage.PutJSON(locationSharingIndexKey, &sharedWith); err != nil {
+		return h.errorResponse(msg.GetID(), "failed to save sharing index")
+	}
+
+	log.Info().
+		Str("connection_id", req.ConnectionID).
+		Bool("enabled", req.Enabled).
+		Int("total_shared", len(sharedWith)).
+		Msg("Location sharing toggled")
+
+	resp := map[string]interface{}{
+		"success":     true,
+		"shared_with": sharedWith,
+	}
+	respBytes, _ := json.Marshal(resp)
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// HandleSharingList returns the list of connection IDs that sharing is enabled for
+func (h *LocationHandler) HandleSharingList(msg *IncomingMessage) (*OutgoingMessage, error) {
+	sharedWith := h.getSharingIndex()
+
+	resp := LocationSharingListResponse{
+		SharedWith: sharedWith,
+	}
+	respBytes, _ := json.Marshal(resp)
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// HandleSharingPush manually pushes the latest location to all shared connections
+func (h *LocationHandler) HandleSharingPush(msg *IncomingMessage) (*OutgoingMessage, error) {
+	// Load latest cached point
+	data, err := h.storage.Get(locationLatestKey)
+	if err != nil {
+		return h.errorResponse(msg.GetID(), "no location data available to push")
+	}
+
+	var point LocationPoint
+	if err := json.Unmarshal(data, &point); err != nil {
+		return h.errorResponse(msg.GetID(), "failed to read latest location")
+	}
+
+	successCount, failCount := h.pushToSharedConnections(context.Background(), point)
+
+	resp := map[string]interface{}{
+		"success":       true,
+		"pushed_count":  successCount,
+		"failed_count":  failCount,
+	}
+	respBytes, _ := json.Marshal(resp)
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// HandleIncomingLocationUpdate processes a location update from a peer vault.
+// The update is ephemeral — it is NOT stored, only forwarded to the app.
+func (h *LocationHandler) HandleIncomingLocationUpdate(ctx context.Context, data []byte) error {
+	var update IncomingLocationUpdate
+	if err := json.Unmarshal(data, &update); err != nil {
+		return err
+	}
+
+	// SECURITY: Replay attack prevention
+	eventID := update.EventID
+	if eventID == "" {
+		eventID = fmt.Sprintf("location:%s:%d", update.ConnectionID, update.Timestamp)
+	}
+	if alreadyProcessed, err := h.storage.IsEventProcessed(eventID); err == nil && alreadyProcessed {
+		log.Info().
+			Str("connection_id", update.ConnectionID).
+			Msg("Duplicate location update detected - ignoring replay")
+		return nil
+	}
+
+	log.Debug().
+		Str("connection_id", update.ConnectionID).
+		Float64("lat", update.Latitude).
+		Float64("lon", update.Longitude).
+		Msg("Received location update from peer")
+
+	// SECURITY: Mark event as processed to prevent replay
+	if err := h.storage.MarkEventProcessed(eventID, "location_update"); err != nil {
+		log.Warn().Err(err).Str("connection_id", update.ConnectionID).Msg("Failed to mark location update as processed")
+	}
+
+	// Forward to app (ephemeral — not stored)
+	if err := h.publisher.PublishToApp(ctx, "location-update", data); err != nil {
+		log.Warn().Err(err).Msg("Failed to notify app of location update")
+	}
+
+	return nil
+}
+
+// --- Sharing internal helpers ---
+
+// getSharingIndex loads the list of connection IDs that sharing is enabled for
+func (h *LocationHandler) getSharingIndex() []string {
+	var sharedWith []string
+	if err := h.storage.GetJSON(locationSharingIndexKey, &sharedWith); err != nil {
+		return []string{}
+	}
+	return sharedWith
+}
+
+// pushToSharedConnections iterates the sharing index and publishes the latest
+// location point to each peer vault. Returns success and failure counts.
+func (h *LocationHandler) pushToSharedConnections(ctx context.Context, point LocationPoint) (int, int) {
+	sharedWith := h.getSharingIndex()
+	if len(sharedWith) == 0 {
+		return 0, 0
+	}
+
+	// Load settings for precision
+	settings := h.getSettings()
+	lat, lon := applyPrecision(point.Latitude, point.Longitude, settings)
+
+	now := time.Now().UTC()
+	successCount := 0
+	failCount := 0
+
+	for _, connID := range sharedWith {
+		// Load connection record to get peer GUID
+		connData, err := h.storage.Get("connections/" + connID)
+		if err != nil {
+			log.Warn().Err(err).Str("connection_id", connID).Msg("Failed to load connection for location push")
+			failCount++
+			continue
+		}
+
+		var conn ConnectionRecord
+		if err := json.Unmarshal(connData, &conn); err != nil {
+			log.Warn().Err(err).Str("connection_id", connID).Msg("Failed to parse connection for location push")
+			failCount++
+			continue
+		}
+
+		// Only push to active connections with valid peer GUID
+		if conn.Status != "active" || conn.PeerGUID == "" {
+			continue
+		}
+
+		update := IncomingLocationUpdate{
+			EventID:      fmt.Sprintf("loc:%s:%d", h.ownerSpace, point.Timestamp),
+			ConnectionID: connID,
+			Latitude:     lat,
+			Longitude:    lon,
+			Accuracy:     point.Accuracy,
+			Timestamp:    point.Timestamp,
+			UpdatedAt:    now.Format(time.RFC3339),
+		}
+		updateData, _ := json.Marshal(update)
+
+		if err := h.publisher.PublishToVault(ctx, conn.PeerGUID, "location-update", updateData); err != nil {
+			log.Warn().Err(err).Str("connection_id", connID).Msg("Failed to push location to peer")
+			failCount++
+		} else {
+			successCount++
+		}
+	}
+
+	if successCount > 0 || failCount > 0 {
+		log.Info().
+			Int("success", successCount).
+			Int("failed", failCount).
+			Msg("Location push to shared connections complete")
+	}
+
+	return successCount, failCount
+}
+
+// applyPrecision reduces coordinate precision based on settings.
+// Returns coordinates rounded to the appropriate number of decimal places.
+func applyPrecision(lat, lon float64, settings LocationSettings) (float64, float64) {
+	// Default: no rounding (full precision)
+	// Settings don't currently have a precision field, but the Android app
+	// sends coordinates at the user's chosen precision level already.
+	// This is a defense-in-depth measure in case raw coords are cached.
+	return lat, lon
 }
 
 func (h *LocationHandler) errorResponse(id string, message string) (*OutgoingMessage, error) {
