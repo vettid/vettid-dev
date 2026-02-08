@@ -70,6 +70,8 @@ export class InfrastructureStack extends cdk.Stack {
     commandIdempotency: dynamodb.Table;
     // Volunteer Help Requests
     helpRequests: dynamodb.Table;
+    // Agent Connector Shortlinks
+    agentShortlinks: dynamodb.Table;
   };
 
   // S3 Buckets
@@ -874,6 +876,26 @@ export class InfrastructureStack extends cdk.Stack {
       projectionType: dynamodb.ProjectionType.ALL,
     });
 
+    // ===== AGENT CONNECTOR SHORTLINKS =====
+    // Short-lived codes for agent invitation flow
+    // Schema:
+    //   code (PK): 6-char Base62 code
+    //   owner_guid: vault owner's user_guid
+    //   invitation_id: unique invitation identifier
+    //   invite_token: token for agent registration
+    //   messagespace_uri: NATS messagespace URI for the agent
+    //   vault_public_key: owner's vault public key
+    //   created_at: ISO timestamp
+    //   ttl: Unix timestamp for DynamoDB TTL (2 minutes)
+    const agentShortlinks = new dynamodb.Table(this, 'AgentShortlinks', {
+      partitionKey: { name: 'code', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      timeToLiveAttribute: 'ttl',
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: dynamoDbEncryptionKey,
+    });
+
     // ===== S3 BUCKETS =====
 
     // S3 bucket for membership terms PDFs (shared by VettIDStack and AdminStack)
@@ -994,6 +1016,8 @@ export class InfrastructureStack extends cdk.Stack {
       commandIdempotency,
       // Volunteer Help Requests
       helpRequests,
+      // Agent Connector Shortlinks
+      agentShortlinks,
     };
 
     this.termsBucket = termsBucket;

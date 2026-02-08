@@ -145,6 +145,13 @@ export const RATE_LIMIT_CONFIGS: Record<string, RateLimitConfig> = {
     perIpLimit: 120,
   },
 
+  // Agent connector shortlink resolution (strict - prevent brute force code guessing)
+  "agent:resolve_shortlink": {
+    maxRequests: 5,
+    windowSeconds: 30,
+    perIpLimit: 5,
+  },
+
   // Default fallback
   "default": {
     maxRequests: 100,

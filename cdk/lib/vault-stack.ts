@@ -138,6 +138,10 @@ export class VaultStack extends cdk.Stack {
 
   // Note: Ledger handlers removed - vault-manager uses JetStream storage
 
+  // Agent Connector Shortlinks
+  public readonly createAgentShortlink!: lambdaNode.NodejsFunction;
+  public readonly resolveAgentShortlink!: lambdaNode.NodejsFunction;
+
   // Test Automation Endpoints (for Android E2E testing)
   public readonly testHealth!: lambdaNode.NodejsFunction;
   public readonly testCreateInvitation!: lambdaNode.NodejsFunction;
@@ -1287,6 +1291,35 @@ export class VaultStack extends cdk.Stack {
     tables.audit.grantReadWriteData(this.updateByovVault);
     tables.audit.grantReadWriteData(this.deleteByovVault);
 
+    // ===== AGENT CONNECTOR SHORTLINKS =====
+
+    this.createAgentShortlink = new lambdaNode.NodejsFunction(this, 'CreateAgentShortlinkFn', {
+      entry: 'lambda/handlers/vault/createAgentShortlink.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+        TABLE_AGENT_SHORTLINKS: tables.agentShortlinks.tableName,
+        API_URL: 'https://api.vettid.dev',
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    this.resolveAgentShortlink = new lambdaNode.NodejsFunction(this, 'ResolveAgentShortlinkFn', {
+      entry: 'lambda/handlers/vault/resolveAgentShortlink.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+        TABLE_AGENT_SHORTLINKS: tables.agentShortlinks.tableName,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    // Grant permissions for agent shortlink functions
+    tables.agentShortlinks.grantReadWriteData(this.createAgentShortlink);
+    tables.audit.grantWriteData(this.createAgentShortlink);
+    tables.agentShortlinks.grantReadWriteData(this.resolveAgentShortlink);
+    tables.audit.grantWriteData(this.resolveAgentShortlink);
+
     // ===== TEST AUTOMATION ENDPOINTS =====
     // These endpoints enable automated E2E testing for Android app
     // SECURITY: Protected by TEST_API_KEY - endpoints disabled if key not configured
@@ -1577,6 +1610,20 @@ export class VaultStack extends cdk.Stack {
     this.route('DeleteByovVault', httpApi, '/vault/byov', apigw.HttpMethod.DELETE, this.deleteByovVault, memberAuthorizer);
 
     // Note: Ledger routes removed - vault-manager uses JetStream storage
+
+    // ===== AGENT CONNECTOR SHORTLINKS =====
+    new apigw.HttpRoute(this, 'CreateAgentShortlink', {
+      httpApi,
+      routeKey: apigw.HttpRouteKey.with('/vault/agent/shortlink', apigw.HttpMethod.POST),
+      integration: new integrations.HttpLambdaIntegration('CreateAgentShortlinkInt', this.createAgentShortlink),
+      // No authorizer - internal (vault-manager via parent process)
+    });
+    new apigw.HttpRoute(this, 'ResolveAgentShortlink', {
+      httpApi,
+      routeKey: apigw.HttpRouteKey.with('/vault/agent/shortlink/{code}', apigw.HttpMethod.GET),
+      integration: new integrations.HttpLambdaIntegration('ResolveAgentShortlinkInt', this.resolveAgentShortlink),
+      // No authorizer - public (agent connector binary, rate-limited in handler)
+    });
 
     // ===== TEST AUTOMATION ENDPOINTS =====
     // Public endpoints protected by TEST_API_KEY header (validated in handler)
