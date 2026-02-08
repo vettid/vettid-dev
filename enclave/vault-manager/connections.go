@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -300,6 +301,21 @@ type ActivitySummaryResponse struct {
 	LastActivityType string `json:"last_activity_type,omitempty"`
 }
 
+// CreateAgentInviteRequest is the payload for connection.agent.create-invite
+type CreateAgentInviteRequest struct {
+	Label string `json:"label"` // Optional name for this agent slot
+}
+
+// CreateAgentInviteResponse returns data the app needs to call POST /vault/agent/shortlink
+type CreateAgentInviteResponse struct {
+	ConnectionID   string `json:"connection_id"`
+	InvitationID   string `json:"invitation_id"`
+	InviteToken    string `json:"invite_token"`     // 32 bytes, base64url
+	OwnerGUID      string `json:"owner_guid"`
+	VaultPublicKey string `json:"vault_public_key"` // Hex X25519 public key
+	ExpiresAt      string `json:"expires_at"`
+}
+
 // --- Handler methods ---
 
 // HandleCreateInvite handles connection.create-invite messages
@@ -383,6 +399,152 @@ func (h *ConnectionsHandler) HandleCreateInvite(msg *IncomingMessage) (*Outgoing
 		Type:      MessageTypeResponse,
 		Payload:   respBytes,
 	}, nil
+}
+
+// HandleCreateAgentInvite handles connection.agent.create-invite messages.
+// Creates a connection + invitation for an AI agent connector and returns
+// the details the app needs to call POST /vault/agent/shortlink.
+func (h *ConnectionsHandler) HandleCreateAgentInvite(msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req CreateAgentInviteRequest
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		return h.errorResponse(msg.GetID(), "Invalid request format")
+	}
+
+	label := req.Label
+	if label == "" {
+		label = "Agent"
+	}
+
+	// Generate connection ID
+	idBytes := make([]byte, 16)
+	rand.Read(idBytes)
+	connectionID := fmt.Sprintf("conn-%x", idBytes)
+
+	// Agent invitations expire in 24 hours (shorter than peer's 30 days)
+	expiresAt := time.Now().Add(24 * time.Hour)
+
+	// Generate X25519 key pair for E2E encryption
+	localPrivate := make([]byte, 32)
+	rand.Read(localPrivate)
+
+	localPublic, err := curve25519.X25519(localPrivate, curve25519.Basepoint)
+	if err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to derive public key")
+	}
+
+	// Generate invite token (32 bytes, base64url-encoded)
+	tokenBytes := make([]byte, 32)
+	rand.Read(tokenBytes)
+	inviteToken := base64.RawURLEncoding.EncodeToString(tokenBytes)
+
+	// Store the outbound agent connection record
+	record := ConnectionRecord{
+		ConnectionID:      connectionID,
+		ConnectionType:    ConnectionTypeAgent,
+		PeerAlias:         label,
+		CredentialsType:   "outbound",
+		MessageSpaceTopic: fmt.Sprintf("MessageSpace.%s.forOwner.>", h.ownerSpace),
+		Status:            "invited",
+		CreatedAt:         time.Now(),
+		ExpiresAt:         expiresAt,
+		LocalPublicKey:    localPublic,
+		LocalPrivateKey:   localPrivate,
+	}
+
+	data, err := json.Marshal(record)
+	if err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to marshal connection")
+	}
+
+	storageKey := "connections/" + connectionID
+	if err := h.storage.Put(storageKey, data); err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to store connection")
+	}
+
+	h.addToConnectionIndex(connectionID)
+
+	// Create invitation record
+	invitationID, err := h.createAgentInvitation(connectionID, label, inviteToken, expiresAt)
+	if err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to create invitation")
+	}
+
+	// Log connection created event for audit
+	if h.eventHandler != nil {
+		h.eventHandler.LogConnectionEvent(context.Background(), EventTypeConnectionCreated, connectionID, "", "Agent invitation created")
+	}
+
+	log.Info().
+		Str("connection_id", connectionID).
+		Str("invitation_id", invitationID).
+		Msg("Agent invitation created")
+
+	resp := CreateAgentInviteResponse{
+		ConnectionID:   connectionID,
+		InvitationID:   invitationID,
+		InviteToken:    inviteToken,
+		OwnerGUID:      h.ownerSpace,
+		VaultPublicKey: fmt.Sprintf("%x", localPublic),
+		ExpiresAt:      expiresAt.Format(time.RFC3339),
+	}
+	respBytes, _ := json.Marshal(resp)
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// createAgentInvitation creates an invitation record for an agent connection.
+func (h *ConnectionsHandler) createAgentInvitation(connectionID, label, inviteToken string, expiresAt time.Time) (string, error) {
+	idBytes := make([]byte, 16)
+	rand.Read(idBytes)
+	invitationID := fmt.Sprintf("inv-%x", idBytes)
+
+	record := InvitationRecord{
+		InvitationID:   invitationID,
+		ConnectionID:   connectionID,
+		Status:         "pending",
+		DeliveryMethod: "shortlink",
+		Label:          label,
+		InviteToken:    inviteToken,
+		CreatedAt:      time.Now(),
+		ExpiresAt:      expiresAt,
+	}
+
+	data, err := json.Marshal(record)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal invitation: %w", err)
+	}
+
+	if err := h.storage.Put("invitations/"+invitationID, data); err != nil {
+		return "", fmt.Errorf("failed to store invitation: %w", err)
+	}
+
+	// Add to invitation index
+	var index []string
+	indexData, err := h.storage.Get("invitations/_index")
+	if err == nil {
+		json.Unmarshal(indexData, &index)
+	}
+
+	for _, id := range index {
+		if id == invitationID {
+			return invitationID, nil
+		}
+	}
+
+	index = append(index, invitationID)
+	newIndexData, _ := json.Marshal(index)
+	h.storage.Put("invitations/_index", newIndexData)
+
+	log.Info().
+		Str("invitation_id", invitationID).
+		Str("connection_id", connectionID).
+		Msg("Agent invitation record created")
+
+	return invitationID, nil
 }
 
 // HandleStoreCredentials handles connection.store-credentials messages

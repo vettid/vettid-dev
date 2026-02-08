@@ -1196,6 +1196,21 @@ func (mh *MessageHandler) handleConnectionOperation(ctx context.Context, msg *In
 		return response, nil
 	case "get-credentials":
 		return mh.connectionsHandler.HandleGetCredentials(msg)
+	case "agent":
+		if len(opParts) < 3 {
+			return mh.errorResponse(msg.GetID(), "missing agent connection operation")
+		}
+		switch opParts[2] {
+		case "create-invite":
+			response, err := mh.connectionsHandler.HandleCreateAgentInvite(msg)
+			if err != nil {
+				return response, err
+			}
+			mh.persistVaultStateToS3()
+			return response, nil
+		default:
+			return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown agent operation: %s", opParts[2]))
+		}
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown connection operation: %s", opType))
 	}

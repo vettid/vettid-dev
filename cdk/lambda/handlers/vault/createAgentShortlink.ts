@@ -5,10 +5,12 @@ import { marshall } from '@aws-sdk/util-dynamodb';
 import {
   ok,
   badRequest,
+  unauthorized,
   internalError,
   parseJsonBody,
   getRequestId,
   putAudit,
+  requireUserClaims,
 } from '../../common/util';
 
 const ddb = new DynamoDBClient({});
@@ -39,8 +41,8 @@ interface CreateShortlinkRequest {
 /**
  * POST /vault/agent/shortlink
  *
- * Internal endpoint (no auth) — called by vault-manager via parent process
- * when a vault owner creates an agent invitation.
+ * Authenticated endpoint (Cognito JWT) — called by the mobile app after
+ * receiving agent invitation details from the vault-manager via NATS.
  *
  * Creates a short-lived (2-minute) shortlink code that an agent connector
  * can resolve to obtain invitation parameters for registration.
@@ -50,6 +52,13 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
   const origin = event.headers?.origin;
 
   try {
+    // SECURITY: Validate authenticated user identity
+    const claimsResult = requireUserClaims(event, origin);
+    if ('error' in claimsResult) {
+      return claimsResult.error;
+    }
+    const { claims } = claimsResult;
+
     const body = parseJsonBody<CreateShortlinkRequest>(event);
 
     // Validate required fields
@@ -67,6 +76,17 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     }
     if (!body.vault_public_key || typeof body.vault_public_key !== 'string') {
       return badRequest('vault_public_key is required', origin);
+    }
+
+    // SECURITY: Verify the caller owns this vault
+    if (body.owner_guid !== claims.user_guid) {
+      await putAudit({
+        type: 'agent_shortlink_create_rejected',
+        reason: 'owner_guid_mismatch',
+        claimed_owner: body.owner_guid.substring(0, 8) + '...',
+        actual_user: claims.user_guid.substring(0, 8) + '...',
+      }, requestId);
+      return unauthorized('Not authorized to create shortlinks for this vault', origin);
     }
 
     // SECURITY: 2-minute TTL — shortlinks are ephemeral

@@ -31,8 +31,9 @@ type InvitationRecord struct {
 	InvitationID   string     `json:"invitation_id"`
 	ConnectionID   string     `json:"connection_id"`
 	Status         string     `json:"status"` // "pending", "accepted", "rejected", "expired", "cancelled"
-	DeliveryMethod string     `json:"delivery_method,omitempty"` // "qr_code", "link", "sms", "email"
+	DeliveryMethod string     `json:"delivery_method,omitempty"` // "qr_code", "link", "sms", "email", "shortlink"
 	Label          string     `json:"label,omitempty"`
+	InviteToken    string     `json:"invite_token,omitempty"` // Agent invite token (base64url)
 	CreatedAt      time.Time  `json:"created_at"`
 	ExpiresAt      time.Time  `json:"expires_at"`
 	ViewedAt       *time.Time `json:"viewed_at,omitempty"`

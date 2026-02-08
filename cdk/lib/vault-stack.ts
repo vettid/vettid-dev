@@ -1612,12 +1612,8 @@ export class VaultStack extends cdk.Stack {
     // Note: Ledger routes removed - vault-manager uses JetStream storage
 
     // ===== AGENT CONNECTOR SHORTLINKS =====
-    new apigw.HttpRoute(this, 'CreateAgentShortlink', {
-      httpApi,
-      routeKey: apigw.HttpRouteKey.with('/vault/agent/shortlink', apigw.HttpMethod.POST),
-      integration: new integrations.HttpLambdaIntegration('CreateAgentShortlinkInt', this.createAgentShortlink),
-      // No authorizer - internal (vault-manager via parent process)
-    });
+    // SECURITY: Create endpoint requires Cognito auth — app calls this after receiving invitation details from vault
+    this.route('CreateAgentShortlink', httpApi, '/vault/agent/shortlink', apigw.HttpMethod.POST, this.createAgentShortlink, memberAuthorizer);
     new apigw.HttpRoute(this, 'ResolveAgentShortlink', {
       httpApi,
       routeKey: apigw.HttpRouteKey.with('/vault/agent/shortlink/{code}', apigw.HttpMethod.GET),
