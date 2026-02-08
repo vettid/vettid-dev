@@ -327,7 +327,14 @@ func (p *ParentProcess) forwardToEnclave(ctx context.Context, msg *NATSMessage) 
 		// Extract inner payload from message envelope format.
 		// Android clients send: {"id": "...", "type": "...", "payload": {...}, "timestamp": "..."}
 		// Vault handlers expect just the inner payload content.
-		enclaveMsg.Payload = p.extractInnerPayload(msg.Data)
+		//
+		// IMPORTANT: Skip for agent messages (forOwner routing). Agent envelopes contain
+		// key_id, timestamp, and sequence fields that extractInnerPayload would strip.
+		// The vault-manager's AgentHandler needs the full envelope to identify the
+		// connection and decrypt the payload.
+		if !isForOwnerSubject(msg.Subject) {
+			enclaveMsg.Payload = p.extractInnerPayload(msg.Data)
+		}
 
 		// For attestation requests from mobile apps, parse the JSON payload to extract nonce
 		if msgType == EnclaveMessageTypeAttestationRequest {
@@ -1043,6 +1050,18 @@ func mapSubjectToMessageType(subject string) EnclaveMessageType {
 
 	// Default to vault operation - includes credential.create/unseal for mobile apps
 	return EnclaveMessageTypeVaultOp
+}
+
+// isForOwnerSubject checks if a NATS subject contains ".forOwner." routing segment.
+// Agent messages use this format: MessageSpace.{guid}.forOwner.agent
+func isForOwnerSubject(subject string) bool {
+	searchStr := ".forOwner."
+	for i := 0; i <= len(subject)-len(searchStr); i++ {
+		if subject[i:i+len(searchStr)] == searchStr {
+			return true
+		}
+	}
+	return false
 }
 
 // hasSubjectSuffix checks if a NATS subject ends with a given suffix

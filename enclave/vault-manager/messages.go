@@ -427,8 +427,19 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 	// Format: MessageSpace.{ownerSpace}.forOwner.agent
 	for _, part := range parts {
 		if part == "forOwner" {
-			// Agent messages: envelope contains type and encrypted payload
-			return mh.agentHandler.HandleAgentMessage(ctx, msg)
+			// Agent messages: envelope contains type and encrypted payload.
+			// The agent handler publishes responses directly via nats_publish and returns nil.
+			resp, err := mh.agentHandler.HandleAgentMessage(ctx, msg)
+			if resp == nil && err == nil {
+				// Return a minimal ack response so the supervisor's ProcessMessage loop
+				// terminates. Without this, the supervisor would timeout after 30s waiting
+				// for a final response that never comes.
+				return &OutgoingMessage{
+					Type:    MessageTypeResponse,
+					Payload: json.RawMessage(`{"ack":true}`),
+				}, nil
+			}
+			return resp, err
 		}
 	}
 

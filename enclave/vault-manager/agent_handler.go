@@ -566,7 +566,21 @@ func (h *AgentHandler) handleConnectionRequest(ctx context.Context, msg *Incomin
 	log.Info().Msg("Processing agent connection request")
 
 	// The payload is ECIES-encrypted — delegate to connections handler
-	return h.connHandler.HandleAcceptAgentConnection(ctx, msg, envelope)
+	resp, err := h.connHandler.HandleAcceptAgentConnection(ctx, msg, envelope)
+
+	// HandleAcceptAgentConnection returns a nats_publish OutgoingMessage on success.
+	// Publish it directly via the publisher so it becomes an intermediate message,
+	// not the final response (which would cause the supervisor to hang).
+	if resp != nil && resp.Type == MessageTypeNATSPublish {
+		if pubErr := h.publisher.PublishRaw(resp.Subject, resp.Payload); pubErr != nil {
+			log.Error().Err(pubErr).
+				Str("subject", resp.Subject).
+				Msg("Failed to publish agent connection response")
+		}
+		return nil, nil
+	}
+
+	return resp, err
 }
 
 // --- Action execution ---
