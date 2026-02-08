@@ -135,7 +135,6 @@
       .card{overflow:visible;}
 
       /* Mobile Modal Improvements */
-      #proposalResultsModal > div,
       #pinDisableModal > div {
         width: 95% !important;
         max-width: 95% !important;
@@ -143,23 +142,19 @@
         transform: translate(-50%, -50%) !important;
       }
 
-      #proposalResultsModal > div > div:first-child,
       #pinDisableModal > div > div:first-child {
         padding: 16px !important;
       }
 
-      #proposalResultsModal > div > div:nth-child(2),
       #pinDisableModal > div > div:nth-child(2) {
         padding: 16px !important;
       }
 
-      #proposalResultsModal > div > div:last-child,
       #pinDisableModal > div > div:last-child {
         padding: 12px 16px !important;
         flex-direction: column;
       }
 
-      #proposalResultsModal > div > div:last-child button,
       #pinDisableModal > div > div:last-child button {
         width: 100%;
         padding: 14px 24px !important;
@@ -173,12 +168,10 @@
         min-height: 48px;
       }
 
-      #proposalResultsModal h3,
       #pinDisableModal h3 {
         font-size: 1.1rem !important;
       }
 
-      #proposalResultsModal button[data-action="closeProposalResultsModal"],
       #pinDisableModal button[data-action="closePinDisableModal"] {
         font-size: 1.8rem !important;
         width: 40px !important;
@@ -396,17 +389,13 @@
     [data-theme="light"] #vault-byov div[style*="background:#050505"],
     [data-theme="light"] #vault-backup div[style*="background:#050505"] { background: var(--bg-hover) !important; border-color: var(--border-color) !important; }
 
-    /* Voting tab light theme */
-    [data-theme="light"] #proposalsContainer > div { background: var(--bg-card) !important; border-color: var(--border-color) !important; }
-
     /* Modal light theme */
     [data-theme="light"] #enablePinModal > div,
     [data-theme="light"] #updatePinModal > div,
     [data-theme="light"] #pinDisableModal > div > div,
     [data-theme="light"] #confirmModal > div > div,
     [data-theme="light"] #alertModal > div > div,
-    [data-theme="light"] #membershipConfirmModal > div > div,
-    [data-theme="light"] #proposalResultsModal > div > div { background: var(--bg-card) !important; }
+    [data-theme="light"] #membershipConfirmModal > div > div { background: var(--bg-card) !important; }
     [data-theme="light"] #enablePinModal input,
     [data-theme="light"] #updatePinModal input,
     [data-theme="light"] #pinDisableModal input { background: var(--bg-input) !important; color: var(--text-primary) !important; border-color: var(--border-color) !important; }
@@ -505,7 +494,7 @@
         <button class="tab tab-child" data-tab="account" data-sub-tab="account-actions">Account Actions</button>
       </div>
       <button class="tab" data-tab="subscription" style="display:none;">Subscription</button>
-      <button class="tab" data-tab="voting" style="display:none;">Voting<span id="votingBadge" class="sidebar-badge pulse" style="display:none;"></span></button>
+      <!-- Voting tab removed - voting is done through the mobile app -->
       <!-- Vault Services - simplified to single tab (no sub-navigation) -->
       <button class="tab" id="vaultParent" data-tab="deploy-vault" style="display:none;">Vault Services</button>
       <!-- Hidden sub-tabs for backwards compatibility -->
@@ -1195,46 +1184,12 @@
   </div>
 </div>
 
-<div id="voting" class="tab-content">
-  <h3>Voting</h3>
-  <p class="muted">Participate in VettID community voting and governance.</p>
-
-  <!-- Filter Buttons -->
-  <div style="display:flex;gap:12px;margin-top:24px;margin-bottom:20px;flex-wrap:wrap;">
-    <button id="filterActiveProposals" class="btn proposal-filter active" data-filter="active" style="background:linear-gradient(135deg,#10b981 0%,#059669 100%);padding:10px 20px;font-weight:600;">
-      Active <span id="activeProposalsCount" style="background:#065f46;color:#fff;border-radius:12px;padding:2px 8px;margin-left:8px;font-size:0.75rem;">0</span>
-    </button>
-    <button id="filterCompletedProposals" class="btn proposal-filter" data-filter="completed" style="background:linear-gradient(135deg,#6366f1 0%,#4f46e5 100%);padding:10px 20px;font-weight:600;">
-      Completed <span id="completedProposalsCount" style="background:#4338ca;color:#fff;border-radius:12px;padding:2px 8px;margin-left:8px;font-size:0.75rem;">0</span>
-    </button>
-  </div>
-
-  <!-- Single Container for All Proposals -->
-  <div id="proposalsContainer" style="margin-top:16px;display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px;">
-    <p class="muted" style="grid-column:1/-1;">Loading proposals...</p>
-  </div>
-</div>
+<!-- Voting tab removed - voting is done through the mobile app -->
 
   </div><!-- end .wrap -->
 </div><!-- end .main-container -->
 
-<!-- Proposal Results Modal -->
-<div id="proposalResultsModal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.85);z-index:9999;backdrop-filter:blur(4px);">
-  <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:linear-gradient(135deg,#1a1a1a 0%,#0a0a0a 100%);border-radius:12px;border:2px solid var(--accent);box-shadow:0 10px 40px rgba(255,193,37,0.3);max-width:600px;width:90%;max-height:90vh;overflow-y:auto;">
-    <div style="padding:24px;border-bottom:2px solid #222;">
-      <div style="display:flex;justify-content:space-between;align-items:center;">
-        <h3 style="margin:0;color:var(--accent);">Proposal Results</h3>
-        <button data-action="closeProposalResultsModal" class="modal-close-btn">&times;</button>
-      </div>
-    </div>
-    <div id="proposalResultsContent" style="padding:24px;">
-      <p>Loading...</p>
-    </div>
-    <div style="padding:16px 24px;border-top:2px solid #222;text-align:right;">
-      <button data-action="closeProposalResultsModal" class="btn" style="padding:10px 24px;">Close</button>
-    </div>
-  </div>
-</div>
+<!-- Proposal Results Modal removed - voting is done through the mobile app -->
 
 <!-- PIN Disable Confirmation Modal -->
 <div id="pinDisableModal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.85);z-index:9999;backdrop-filter:blur(4px);">

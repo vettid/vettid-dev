@@ -46,7 +46,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     const result = await ddb.send(new ScanCommand({
       TableName: TABLE_PROPOSALS,
       FilterExpression: 'attribute_exists(results_published_at) AND attribute_exists(merkle_root)',
-      ProjectionExpression: 'proposal_id, proposal_number, proposal_title, proposal_description, #s, opens_at, closes_at, results_published_at, merkle_root, vote_counts',
+      ProjectionExpression: 'proposal_id, proposal_number, proposal_title, proposal_description, #s, opens_at, closes_at, results_published_at, merkle_root, vote_counts, choices',
       ExpressionAttributeNames: {
         '#s': 'status',
       },
@@ -88,6 +88,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
         results_published_at: p.results_published_at,
         merkle_root: p.merkle_root,
         vote_counts: p.vote_counts,
+        choices: p.choices || null,
         total_votes: p.vote_counts?.total ??
           (p.vote_counts?.counts
             ? Object.values(p.vote_counts.counts as Record<string, number>).reduce((a: number, b: number) => a + b, 0)

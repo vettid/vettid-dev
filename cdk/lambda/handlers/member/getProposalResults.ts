@@ -57,19 +57,29 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       }),
     }));
 
-    // Aggregate vote counts
-    const results = {
-      yes: 0,
-      no: 0,
-      abstain: 0,
-    };
+    // Extract choices from proposal (fall back to default yes/no/abstain)
+    const defaultChoices = [
+      { id: 'yes', label: 'Yes' },
+      { id: 'no', label: 'No' },
+      { id: 'abstain', label: 'Abstain' },
+    ];
+    const choices: Array<{ id: string; label: string }> = Array.isArray(proposal.choices) && proposal.choices.length >= 2
+      ? proposal.choices
+      : defaultChoices;
+
+    // Aggregate vote counts dynamically from choices
+    const validChoiceIds = new Set(choices.map(c => c.id));
+    const results: Record<string, number> = {};
+    for (const choice of choices) {
+      results[choice.id] = 0;
+    }
 
     if (votesResult.Items) {
       votesResult.Items.forEach((item) => {
         const vote = unmarshall(item);
-        if (vote.vote === 'yes') results.yes++;
-        else if (vote.vote === 'no') results.no++;
-        else if (vote.vote === 'abstain') results.abstain++;
+        if (validChoiceIds.has(vote.vote)) {
+          results[vote.vote]++;
+        }
       });
     }
 
@@ -83,6 +93,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
         closes_at: proposal.closes_at,
       },
       results,
+      choices,
     });
   } catch (error: any) {
     console.error('Error getting proposal results:', error);

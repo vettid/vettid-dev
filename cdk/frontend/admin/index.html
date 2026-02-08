@@ -2282,6 +2282,24 @@
           <option value="other" selected>Other</option>
         </select>
       </div>
+      <!-- Voting Choices -->
+      <div style="margin-bottom:16px;">
+        <label style="display:block;margin-bottom:8px;font-weight:600;">Voting Choices</label>
+        <div style="display:flex;gap:12px;margin-bottom:8px;">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+            <input type="radio" name="proposalChoiceType" value="default" checked onchange="window.toggleChoiceType && window.toggleChoiceType()"> Default (Yes / No / Abstain)
+          </label>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+            <input type="radio" name="proposalChoiceType" value="custom" onchange="window.toggleChoiceType && window.toggleChoiceType()"> Custom Choices
+          </label>
+        </div>
+        <div id="customChoicesContainer" style="display:none;">
+          <div id="customChoicesList"></div>
+          <button type="button" id="addChoiceBtn" class="btn" style="margin-top:8px;padding:6px 12px;font-size:0.8rem;background:var(--bg-tertiary);border:1px solid var(--border);">+ Add Choice</button>
+          <div style="margin-top:4px;font-size:0.75rem;color:var(--gray);">Minimum 2 choices, maximum 20. IDs are auto-generated from labels.</div>
+        </div>
+      </div>
+
       <div style="margin-bottom:16px;">
         <label style="display:block;margin-bottom:8px;font-weight:600;">Quorum Requirement</label>
         <div style="display:flex;gap:12px;flex-wrap:wrap;">
@@ -2348,42 +2366,9 @@
         </div>
       </div>
 
-      <!-- Vote Breakdown -->
-      <div style="padding:20px;background:var(--bg-input);border-radius:8px;border:1px solid var(--border);margin-bottom:20px;">
+      <!-- Vote Breakdown (dynamically rendered) -->
+      <div id="analyticsVoteBreakdown" style="padding:20px;background:var(--bg-input);border-radius:8px;border:1px solid var(--border);margin-bottom:20px;">
         <h4 style="margin:0 0 16px 0;color:var(--accent);font-size:0.95rem;">Vote Breakdown</h4>
-
-        <!-- Yes Votes -->
-        <div style="margin-bottom:12px;">
-          <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
-            <span style="font-size:0.85rem;color:#10b981;font-weight:600;">Yes</span>
-            <span id="analyticsYesCount" style="font-size:0.85rem;font-weight:600;">0 (0%)</span>
-          </div>
-          <div id="analyticsYesBar" style="height:8px;background:var(--bg-tertiary);border-radius:4px;overflow:hidden;">
-            <div style="height:100%;width:0%;background:linear-gradient(90deg,#10b981,#059669);transition:width 0.3s;"></div>
-          </div>
-        </div>
-
-        <!-- No Votes -->
-        <div style="margin-bottom:12px;">
-          <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
-            <span style="font-size:0.85rem;color:#ef4444;font-weight:600;">No</span>
-            <span id="analyticsNoCount" style="font-size:0.85rem;font-weight:600;">0 (0%)</span>
-          </div>
-          <div id="analyticsNoBar" style="height:8px;background:var(--bg-tertiary);border-radius:4px;overflow:hidden;">
-            <div style="height:100%;width:0%;background:linear-gradient(90deg,#ef4444,#dc2626);transition:width 0.3s;"></div>
-          </div>
-        </div>
-
-        <!-- Abstain Votes -->
-        <div style="margin-bottom:0;">
-          <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
-            <span style="font-size:0.85rem;color:#6b7280;font-weight:600;">Abstain</span>
-            <span id="analyticsAbstainCount" style="font-size:0.85rem;font-weight:600;">0 (0%)</span>
-          </div>
-          <div id="analyticsAbstainBar" style="height:8px;background:var(--bg-tertiary);border-radius:4px;overflow:hidden;">
-            <div style="height:100%;width:0%;background:linear-gradient(90deg,#6b7280,#4b5563);transition:width 0.3s;"></div>
-          </div>
-        </div>
       </div>
 
       <!-- Close Button -->

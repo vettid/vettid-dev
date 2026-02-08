@@ -195,6 +195,15 @@ function createActiveTile(p) {
   }
   tile.appendChild(badgesDiv);
 
+  // Show custom choices if not default
+  if (Array.isArray(p.choices) && p.choices.length >= 2
+    && !(p.choices.length === 3 && p.choices[0].id === 'yes' && p.choices[1].id === 'no' && p.choices[2].id === 'abstain')) {
+    const choicesDiv = document.createElement('div');
+    choicesDiv.style.cssText = 'margin-bottom:8px;font-size:0.75rem;color:var(--gray);';
+    choicesDiv.textContent = 'Choices: ' + p.choices.map(c => c.label).join(', ');
+    tile.appendChild(choicesDiv);
+  }
+
   // Dates
   const datesDiv = document.createElement('div');
   datesDiv.style.cssText = 'margin-bottom:8px;font-size:0.8rem;color:var(--gray);';
@@ -302,6 +311,15 @@ function createUpcomingTile(p) {
   }
   tile.appendChild(badgesDiv);
 
+  // Show custom choices if not default
+  if (Array.isArray(p.choices) && p.choices.length >= 2
+    && !(p.choices.length === 3 && p.choices[0].id === 'yes' && p.choices[1].id === 'no' && p.choices[2].id === 'abstain')) {
+    const choicesDiv = document.createElement('div');
+    choicesDiv.style.cssText = 'margin-bottom:8px;font-size:0.75rem;color:var(--gray);';
+    choicesDiv.textContent = 'Choices: ' + p.choices.map(c => c.label).join(', ');
+    tile.appendChild(choicesDiv);
+  }
+
   // Dates
   const datesDiv = document.createElement('div');
   datesDiv.style.cssText = 'margin-bottom:8px;font-size:0.8rem;color:var(--gray);';
@@ -368,14 +386,32 @@ async function createClosedTile(p) {
   const categoryColors = { governance: '#8b5cf6', policy: '#3b82f6', budget: '#10b981', funding: '#ec4899', operational: '#f59e0b', other: '#6b7280' };
   const categoryColor = categoryColors[category] || '#6b7280';
 
+  // Determine if this proposal uses default choices
+  const isDefaultChoices = !Array.isArray(p.choices) || p.choices.length < 2
+    || (p.choices.length === 3 && p.choices[0].id === 'yes' && p.choices[1].id === 'no' && p.choices[2].id === 'abstain');
+
   // Get pass/fail status
   let passed = p.passed;
+  let winnerLabel = null;
   if (passed === undefined) {
     try {
       const data = await api(`/admin/proposals/${p.proposal_id}/vote-counts`);
-      const yes = data.results?.yes || 0;
-      const no = data.results?.no || 0;
-      passed = yes > no;
+      if (isDefaultChoices) {
+        const yes = data.results?.yes || 0;
+        const no = data.results?.no || 0;
+        passed = yes > no;
+      } else {
+        // For custom choices, find the winner
+        const choices = data.choices || p.choices || [];
+        let maxCount = 0;
+        for (const choice of choices) {
+          const count = data.results?.[choice.id] || 0;
+          if (count > maxCount) {
+            maxCount = count;
+            winnerLabel = choice.label;
+          }
+        }
+      }
     } catch (e) {
       console.error('Error fetching vote counts:', e);
     }
@@ -400,10 +436,15 @@ async function createClosedTile(p) {
   title.textContent = p.proposal_title || 'Untitled Proposal';
   titleRow.appendChild(title);
 
-  if (passed !== undefined) {
+  if (passed !== undefined && isDefaultChoices) {
     const resultBadge = document.createElement('span');
     resultBadge.style.cssText = `display:inline-block;background:linear-gradient(135deg,${passed ? '#10b981 0%,#059669' : '#ef4444 0%,#dc2626'} 100%);color:#fff;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;`;
     resultBadge.textContent = passed ? 'PASSED' : 'FAILED';
+    titleRow.appendChild(resultBadge);
+  } else if (winnerLabel) {
+    const resultBadge = document.createElement('span');
+    resultBadge.style.cssText = 'display:inline-block;background:linear-gradient(135deg,#3b82f6 0%,#2563eb 100%);color:#fff;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;';
+    resultBadge.textContent = 'Winner: ' + winnerLabel;
     titleRow.appendChild(resultBadge);
   }
   tile.appendChild(titleRow);
@@ -596,13 +637,19 @@ export async function loadProposalAnalytics(proposalId, status) {
 
     const voteData = await res.json();
     const total = voteData.totalVotes || 0;
-    const yes = voteData.results.yes || 0;
-    const no = voteData.results.no || 0;
-    const abstain = voteData.results.abstain || 0;
 
-    const yesPercent = total > 0 ? Math.round((yes / total) * 100) : 0;
-    const noPercent = total > 0 ? Math.round((no / total) * 100) : 0;
-    const abstainPercent = total > 0 ? Math.round((abstain / total) * 100) : 0;
+    // Use choices from API response, fall back to default
+    const defaultChoices = [
+      { id: 'yes', label: 'Yes' },
+      { id: 'no', label: 'No' },
+      { id: 'abstain', label: 'Abstain' },
+    ];
+    const choices = Array.isArray(voteData.choices) && voteData.choices.length >= 2
+      ? voteData.choices
+      : defaultChoices;
+    const isDefaultChoices = choices.length === 3
+      && choices[0].id === 'yes' && choices[1].id === 'no' && choices[2].id === 'abstain';
+
     const turnout = totalActiveSubscribers > 0 ? Math.round((total / totalActiveSubscribers) * 100) : 0;
 
     // Update stats
@@ -615,29 +662,78 @@ export async function loadProposalAnalytics(proposalId, status) {
     const resultCard = document.getElementById('analyticsResultCard');
     const resultText = document.getElementById('analyticsResult');
     if (status === 'closed' && resultCard && resultText) {
-      const passed = yes > no;
       resultCard.style.display = 'block';
-      resultText.textContent = passed ? 'PASSED' : 'FAILED';
-      resultText.style.color = passed ? '#10b981' : '#ef4444';
+      if (isDefaultChoices) {
+        const yes = voteData.results.yes || 0;
+        const no = voteData.results.no || 0;
+        const passed = yes > no;
+        resultText.textContent = passed ? 'PASSED' : 'FAILED';
+        resultText.style.color = passed ? '#10b981' : '#ef4444';
+      } else {
+        // For custom choices, show the winning choice
+        let maxCount = 0;
+        let winnerLabel = 'No votes';
+        for (const choice of choices) {
+          const count = voteData.results[choice.id] || 0;
+          if (count > maxCount) {
+            maxCount = count;
+            winnerLabel = choice.label;
+          }
+        }
+        resultText.textContent = total > 0 ? 'Most votes: ' + winnerLabel : 'No votes cast';
+        resultText.style.color = '#3b82f6';
+      }
     } else if (resultCard) {
       resultCard.style.display = 'none';
     }
 
-    // Update vote counts
-    const yesCountEl = document.getElementById('analyticsYesCount');
-    const noCountEl = document.getElementById('analyticsNoCount');
-    const abstainCountEl = document.getElementById('analyticsAbstainCount');
-    if (yesCountEl) yesCountEl.textContent = `${yes} (${yesPercent}%)`;
-    if (noCountEl) noCountEl.textContent = `${no} (${noPercent}%)`;
-    if (abstainCountEl) abstainCountEl.textContent = `${abstain} (${abstainPercent}%)`;
+    // Dynamically render vote breakdown bars
+    const barColors = [
+      ['#10b981', '#059669'], ['#ef4444', '#dc2626'], ['#6b7280', '#4b5563'],
+      ['#3b82f6', '#2563eb'], ['#8b5cf6', '#7c3aed'], ['#f59e0b', '#d97706'],
+      ['#ec4899', '#db2777'], ['#14b8a6', '#0d9488'], ['#f97316', '#ea580c'],
+      ['#06b6d4', '#0891b2'],
+    ];
+    const breakdownContainer = document.getElementById('analyticsVoteBreakdown');
+    if (breakdownContainer) {
+      // Keep the heading, remove old bars
+      const heading = breakdownContainer.querySelector('h4');
+      breakdownContainer.replaceChildren();
+      if (heading) breakdownContainer.appendChild(heading);
 
-    // Update progress bars
-    const yesBar = document.querySelector('#analyticsYesBar > div');
-    const noBar = document.querySelector('#analyticsNoBar > div');
-    const abstainBar = document.querySelector('#analyticsAbstainBar > div');
-    if (yesBar) yesBar.style.width = `${yesPercent}%`;
-    if (noBar) noBar.style.width = `${noPercent}%`;
-    if (abstainBar) abstainBar.style.width = `${abstainPercent}%`;
+      for (let i = 0; i < choices.length; i++) {
+        const choice = choices[i];
+        const count = voteData.results[choice.id] || 0;
+        const percent = total > 0 ? Math.round((count / total) * 100) : 0;
+        const [colorStart, colorEnd] = barColors[i % barColors.length];
+
+        const row = document.createElement('div');
+        row.style.cssText = i < choices.length - 1 ? 'margin-bottom:12px;' : '';
+
+        const labelRow = document.createElement('div');
+        labelRow.style.cssText = 'display:flex;justify-content:space-between;margin-bottom:4px;';
+
+        const labelSpan = document.createElement('span');
+        labelSpan.style.cssText = `font-size:0.85rem;color:${colorStart};font-weight:600;`;
+        labelSpan.textContent = choice.label;
+
+        const countSpan = document.createElement('span');
+        countSpan.style.cssText = 'font-size:0.85rem;font-weight:600;';
+        countSpan.textContent = `${count} (${percent}%)`;
+
+        labelRow.append(labelSpan, countSpan);
+
+        const barOuter = document.createElement('div');
+        barOuter.style.cssText = 'height:8px;background:var(--bg-tertiary);border-radius:4px;overflow:hidden;';
+
+        const barInner = document.createElement('div');
+        barInner.style.cssText = `height:100%;width:${percent}%;background:linear-gradient(90deg,${colorStart},${colorEnd});transition:width 0.3s;`;
+
+        barOuter.appendChild(barInner);
+        row.append(labelRow, barOuter);
+        breakdownContainer.appendChild(row);
+      }
+    }
 
     // Handle Merkle verification section for closed proposals
     const merkleSection = document.getElementById('analyticsMerkleSection');
@@ -833,18 +929,52 @@ export async function createProposal() {
     return;
   }
 
+  // Build choices if custom type selected
+  const choiceType = document.querySelector('input[name="proposalChoiceType"]:checked')?.value || 'default';
+  let choices = undefined;
+  if (choiceType === 'custom') {
+    const choiceInputs = document.querySelectorAll('#customChoicesList input[type="text"]');
+    choices = [];
+    const seenIds = new Set();
+    for (const input of choiceInputs) {
+      const label = input.value.trim();
+      if (!label) {
+        showFieldError(msgEl, 'All choice labels must be filled in');
+        return;
+      }
+      const id = label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+      if (!id) {
+        showFieldError(msgEl, 'Choice label "' + label + '" produces an invalid ID');
+        return;
+      }
+      if (seenIds.has(id)) {
+        showFieldError(msgEl, 'Duplicate choice ID "' + id + '" — use distinct labels');
+        return;
+      }
+      seenIds.add(id);
+      choices.push({ id, label });
+    }
+    if (choices.length < 2) {
+      showFieldError(msgEl, 'Custom choices require at least 2 options');
+      return;
+    }
+  }
+
+  const body = {
+    proposal_title: title,
+    proposal_text: text,
+    opens_at: openDateTime.toISOString(),
+    closes_at: closeDateTime.toISOString(),
+    category: category,
+    quorum_type: quorumType,
+    quorum_value: quorumValue
+  };
+  if (choices) body.choices = choices;
+
   try {
     await api('/admin/proposals', {
       method: 'POST',
-      body: JSON.stringify({
-        proposal_title: title,
-        proposal_text: text,
-        opens_at: openDateTime.toISOString(),
-        closes_at: closeDateTime.toISOString(),
-        category: category,
-        quorum_type: quorumType,
-        quorum_value: quorumValue
-      })
+      body: JSON.stringify(body)
     });
     showToast('Proposal created successfully!', 'success');
 
@@ -857,6 +987,7 @@ export async function createProposal() {
     document.getElementById('proposalQuorumType').value = 'none';
     document.getElementById('proposalQuorumValue').value = '';
     toggleQuorumValue();
+    resetChoiceEditor();
 
     closeCreateProposalModal();
     await loadAllProposalsAdmin();
@@ -886,6 +1017,69 @@ export function toggleQuorumValue() {
       valueLabel.textContent = quorumType === 'percentage' ? '% of members' : 'votes required';
     }
   }
+}
+
+// ============================================
+// Choice Editor
+// ============================================
+
+export function toggleChoiceType() {
+  const choiceType = document.querySelector('input[name="proposalChoiceType"]:checked')?.value || 'default';
+  const container = document.getElementById('customChoicesContainer');
+  if (!container) return;
+
+  if (choiceType === 'custom') {
+    container.style.display = 'block';
+    // Add two initial rows if empty
+    const list = document.getElementById('customChoicesList');
+    if (list && list.children.length === 0) {
+      addChoiceRow();
+      addChoiceRow();
+    }
+  } else {
+    container.style.display = 'none';
+  }
+}
+
+export function addChoiceRow(value) {
+  const list = document.getElementById('customChoicesList');
+  if (!list) return;
+  if (list.children.length >= 20) return;
+
+  const row = document.createElement('div');
+  row.style.cssText = 'display:flex;gap:8px;align-items:center;margin-bottom:6px;';
+
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.placeholder = 'Choice label (e.g., "Approve")';
+  input.value = value || '';
+  input.maxLength = 100;
+  input.style.cssText = 'flex:1;padding:8px;border-radius:4px;border:1px solid var(--border);background:var(--bg-input);color:var(--text);font-size:0.85rem;';
+
+  const removeBtn = document.createElement('button');
+  removeBtn.type = 'button';
+  removeBtn.textContent = 'X';
+  removeBtn.style.cssText = 'padding:6px 10px;border-radius:4px;border:1px solid #ef4444;background:transparent;color:#ef4444;cursor:pointer;font-weight:600;font-size:0.8rem;';
+  removeBtn.onclick = () => {
+    row.remove();
+  };
+
+  row.append(input, removeBtn);
+  list.appendChild(row);
+}
+
+function resetChoiceEditor() {
+  // Reset radio to default
+  const defaultRadio = document.querySelector('input[name="proposalChoiceType"][value="default"]');
+  if (defaultRadio) defaultRadio.checked = true;
+
+  // Clear custom choices list
+  const list = document.getElementById('customChoicesList');
+  if (list) list.replaceChildren();
+
+  // Hide custom container
+  const container = document.getElementById('customChoicesContainer');
+  if (container) container.style.display = 'none';
 }
 
 export function setProposalFilter(filter) {
@@ -958,6 +1152,9 @@ export function openCreateProposalModal() {
 
     // Reset quorum value input visibility
     toggleQuorumValue();
+
+    // Reset choice editor
+    resetChoiceEditor();
 
     // Initialize flatpickr date pickers if not already done
     initProposalDatePickers();
@@ -1034,4 +1231,13 @@ export function setupProposalEventHandlers() {
   if (quorumTypeSelect) {
     quorumTypeSelect.onchange = () => toggleQuorumValue();
   }
+
+  // Add Choice button handler
+  const addChoiceBtn = document.getElementById('addChoiceBtn');
+  if (addChoiceBtn) {
+    addChoiceBtn.onclick = () => addChoiceRow();
+  }
+
+  // Expose toggleChoiceType for inline onchange handlers
+  window.toggleChoiceType = toggleChoiceType;
 }

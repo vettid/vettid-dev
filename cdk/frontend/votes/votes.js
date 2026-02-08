@@ -84,14 +84,22 @@
 
     // Vote summary
     const voteSummary = createEl('div', 'vote-summary');
-    const counts = proposal.vote_counts || {};
+    const voteCounts = proposal.vote_counts || {};
+    const countsObj = voteCounts.counts || voteCounts;
+    const choices = proposal.choices || null;
 
-    const stats = [
-      { cls: 'yes', label: 'Yes', value: counts.yes || 0 },
-      { cls: 'no', label: 'No', value: counts.no || 0 },
-      { cls: 'abstain', label: 'Abstain', value: counts.abstain || 0 },
-      { cls: 'total', label: 'Total', value: proposal.total_votes || 0 }
-    ];
+    // Build stats dynamically from choices or fall back to yes/no/abstain
+    var stats = [];
+    if (choices && choices.length >= 2) {
+      choices.forEach(function(c) {
+        stats.push({ cls: c.id, label: c.label, value: countsObj[c.id] || 0 });
+      });
+    } else {
+      stats.push({ cls: 'yes', label: 'Yes', value: countsObj.yes || 0 });
+      stats.push({ cls: 'no', label: 'No', value: countsObj.no || 0 });
+      stats.push({ cls: 'abstain', label: 'Abstain', value: countsObj.abstain || 0 });
+    }
+    stats.push({ cls: 'total', label: 'Total', value: proposal.total_votes || 0 });
 
     stats.forEach(function(s) {
       const stat = createEl('div', 'vote-stat ' + s.cls);
@@ -187,19 +195,38 @@
     const resultsTitle = createEl('h3', '', 'Voting Results');
     resultsSection.appendChild(resultsTitle);
 
-    const counts = proposal.vote_counts || {};
-    const total = proposal.total_votes || (counts.yes || 0) + (counts.no || 0) + (counts.abstain || 0);
+    var detailVoteCounts = proposal.vote_counts || {};
+    var detailCountsObj = detailVoteCounts.counts || detailVoteCounts;
+    var detailChoices = proposal.choices || null;
+    var total = proposal.total_votes || 0;
+    if (!total && detailCountsObj) {
+      var keys = Object.keys(detailCountsObj);
+      for (var k = 0; k < keys.length; k++) {
+        total += (detailCountsObj[keys[k]] || 0);
+      }
+    }
 
-    const bars = [
-      { cls: 'yes', label: 'Yes', count: counts.yes || 0 },
-      { cls: 'no', label: 'No', count: counts.no || 0 },
-      { cls: 'abstain', label: 'Abstain', count: counts.abstain || 0 }
+    // Build bars dynamically from choices or fall back to yes/no/abstain
+    var detailBarColors = [
+      '#10b981', '#ef4444', '#6b7280', '#3b82f6', '#8b5cf6',
+      '#f59e0b', '#ec4899', '#14b8a6', '#f97316', '#06b6d4'
     ];
+    var bars = [];
+    if (detailChoices && detailChoices.length >= 2) {
+      detailChoices.forEach(function(c, i) {
+        bars.push({ cls: c.id, label: c.label, count: detailCountsObj[c.id] || 0, color: detailBarColors[i % detailBarColors.length] });
+      });
+    } else {
+      bars.push({ cls: 'yes', label: 'Yes', count: detailCountsObj.yes || 0, color: null });
+      bars.push({ cls: 'no', label: 'No', count: detailCountsObj.no || 0, color: null });
+      bars.push({ cls: 'abstain', label: 'Abstain', count: detailCountsObj.abstain || 0, color: null });
+    }
 
     bars.forEach(function(b) {
       const container = createEl('div', 'vote-bar-container');
       const labelDiv = createEl('div', 'vote-bar-label');
       const labelSpan = createEl('span', '', b.label);
+      if (b.color) labelSpan.style.color = b.color;
       const pct = total > 0 ? Math.round((b.count / total) * 100) : 0;
       const valueSpan = createEl('span', '', b.count + ' (' + pct + '%)');
       labelDiv.appendChild(labelSpan);
@@ -208,6 +235,7 @@
 
       const bar = createEl('div', 'vote-bar');
       const fill = createEl('div', 'vote-bar-fill ' + b.cls);
+      if (b.color) fill.style.background = b.color;
       fill.style.width = pct + '%';
       bar.appendChild(fill);
       container.appendChild(bar);

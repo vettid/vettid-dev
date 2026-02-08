@@ -38,10 +38,6 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       return badRequest('Missing required fields: proposal_id, vote');
     }
 
-    if (!['yes', 'no', 'abstain'].includes(vote)) {
-      return badRequest('Vote must be "yes", "no", or "abstain"');
-    }
-
     // Check if proposal exists and is active
     const proposalResult = await ddb.send(new GetItemCommand({
       TableName: TABLE_PROPOSALS,
@@ -53,6 +49,16 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     }
 
     const proposal = unmarshall(proposalResult.Item);
+
+    // Validate vote against proposal's choices (default: yes/no/abstain)
+    const defaultChoiceIds = ['yes', 'no', 'abstain'];
+    const validChoiceIds = Array.isArray(proposal.choices) && proposal.choices.length >= 2
+      ? proposal.choices.map((c: { id: string }) => c.id)
+      : defaultChoiceIds;
+
+    if (!validChoiceIds.includes(vote)) {
+      return badRequest(`Vote must be one of: ${validChoiceIds.join(', ')}`);
+    }
 
     if (proposal.status !== 'active') {
       return badRequest('Proposal is not active for voting');

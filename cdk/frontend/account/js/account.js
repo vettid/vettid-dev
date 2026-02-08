@@ -135,34 +135,11 @@ function showToast(message, type = 'info') {
   }, 4000);
 }
 
-// ---- Proposal Results Modal ----
-function showProposalResultsModal(htmlContent) {
-  const modal = getElement('proposalResultsModal');
-  const content = getElement('proposalResultsContent');
-  content.innerHTML = htmlContent;
-  modal.style.display = 'block';
-  document.body.style.overflow = 'hidden';
-}
-
-function closeProposalResultsModal() {
-  const modal = getElement('proposalResultsModal');
-  modal.style.display = 'none';
-  document.body.style.overflow = '';
-}
-
-// Close modal on overlay click
+// Close modal on Escape key and overlay click
 document.addEventListener('DOMContentLoaded', () => {
-  const modal = document.getElementById('proposalResultsModal');
-  modal?.addEventListener('click', (e) => {
-    if (e.target === modal) closeProposalResultsModal();
-  });
-
   // Close modal on Escape key
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
-      if (modal?.style.display === 'block') {
-        closeProposalResultsModal();
-      }
       const pinModal = document.getElementById('pinDisableModal');
       if (pinModal?.style.display === 'block') {
         closePinDisableModal();
@@ -499,22 +476,6 @@ function setLoading(button, loading = true) {
   }
 }
 
-function showGridLoadingSkeleton(containerId, count = 3) {
-  const container = document.getElementById(containerId);
-  let skeletonHTML = '';
-  for (let i = 0; i < count; i++) {
-    skeletonHTML += `
-      <div style="padding:20px;background:#0a0a0a;border-radius:8px;border:1px solid var(--border);">
-        <div class="skeleton" style="height:24px;margin-bottom:12px;border-radius:4px;width:60%;"></div>
-        <div class="skeleton" style="height:16px;margin-bottom:8px;border-radius:4px;width:80%;"></div>
-        <div class="skeleton" style="height:16px;margin-bottom:8px;border-radius:4px;width:70%;"></div>
-        <div class="skeleton" style="height:36px;margin-top:16px;border-radius:4px;width:100%;"></div>
-      </div>
-    `;
-  }
-  container.innerHTML = skeletonHTML;
-}
-
 // ---- JWT helpers ----
 function b64urlDecode(str) {
   str = str.replace(/-/g, '+').replace(/_/g, '/');
@@ -739,11 +700,7 @@ document.querySelectorAll('.tab').forEach(tab => {
     tab.classList.add('active');
     document.getElementById(target)?.classList.add('active');
 
-    // Load voting data when voting tab is clicked
-    if (target === 'voting' && signedIn()) {
-      loadAllProposals();
-    }
-  };
+};
 });
 
 // Helper function to activate sub-tab content
@@ -1689,673 +1646,6 @@ document.getElementById('updatePinModal').onclick = (e) => {
   if (e.target === e.currentTarget) hideUpdatePinModal();
 };
 
-// ---- Voting Functions ----
-let userVotesCache = null;
-let allProposalsData = { active: [], upcoming: [], completed: [] };
-let currentProposalFilter = 'active';
-
-async function loadAllProposals() {
-  // Show skeleton loading
-  showGridLoadingSkeleton('proposalsContainer', 3);
-
-  try {
-    const token = idToken();
-    if (!token) throw new Error('No authentication token');
-
-    const res = await fetch(API_URL + '/proposals', {
-      method: 'GET',
-      headers: { 'Authorization': 'Bearer ' + token }
-    });
-
-    if (!res.ok) throw new Error('Failed to load proposals');
-    const data = await res.json();
-
-    // Store proposals data
-    allProposalsData = {
-      active: data.active || [],
-      upcoming: data.upcoming || [],
-      completed: data.closed || []  // Using closed data as completed
-    };
-
-    // Load user's existing votes
-    await loadUserVotes();
-
-    // Update all count badges
-    updateProposalCounts();
-
-    // Render proposals based on current filter
-    renderProposals(currentProposalFilter);
-
-    // Set up filter button handlers
-    setupProposalFilters();
-
-  } catch (error) {
-    console.error('Error loading proposals:', error);
-    document.getElementById('proposalsContainer').innerHTML = '<p style="color:#f44336;text-align:center;padding:20px;grid-column:1/-1;">Failed to load proposals</p>';
-  }
-}
-
-function updateProposalCounts() {
-  document.getElementById('activeProposalsCount').textContent = allProposalsData.active.length;
-  document.getElementById('completedProposalsCount').textContent = allProposalsData.completed.length;
-
-  // Update voting badge with count of active proposals user hasn't voted on
-  updateVotingBadge();
-}
-
-function updateVotingBadge() {
-  const badge = document.getElementById('votingBadge');
-  if (!badge) return;
-
-  // Count active proposals the user hasn't voted on
-  const unvotedCount = allProposalsData.active.filter(proposal => {
-    const hasVoted = userVotesCache && userVotesCache.some(v => v.proposal_id === proposal.proposal_id);
-    return !hasVoted;
-  }).length;
-
-  if (unvotedCount > 0) {
-    badge.textContent = unvotedCount;
-    badge.style.display = 'inline-flex';
-  } else {
-    badge.style.display = 'none';
-  }
-}
-
-function setupProposalFilters() {
-  const filters = document.querySelectorAll('.proposal-filter');
-  filters.forEach(filter => {
-    filter.addEventListener('click', () => {
-      const filterType = filter.dataset.filter;
-      currentProposalFilter = filterType;
-
-      // Update active state
-      filters.forEach(f => f.classList.remove('active'));
-      filter.classList.add('active');
-
-      // Render filtered proposals
-      renderProposals(filterType);
-    });
-  });
-}
-
-async function renderProposals(filter) {
-  const container = document.getElementById('proposalsContainer');
-
-  let proposalsToRender = [];
-
-  if (filter === 'active') {
-    proposalsToRender = [...allProposalsData.active].sort((a, b) => new Date(a.closes_at) - new Date(b.closes_at));
-
-    if (proposalsToRender.length === 0) {
-      container.innerHTML = `
-        <div style="grid-column:1/-1;text-align:center;padding:60px 20px;">
-          <div style="background:linear-gradient(135deg,#1a1a1a 0%,#0a0a0a 100%);border-radius:12px;border:2px solid #222;padding:40px 20px;max-width:500px;margin:0 auto;">
-            <div style="width:80px;height:80px;margin:0 auto 20px;background:rgba(16,185,129,0.1);border-radius:50%;display:flex;align-items:center;justify-content:center;">
-              <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2">
-                <path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
-                <path d="M9 12l2 2 4-4"/>
-              </svg>
-            </div>
-            <h4 style="color:var(--accent);margin:0 0 12px 0;font-size:1.2rem;">No Active Proposals</h4>
-            <p style="color:var(--gray);margin:0 0 20px 0;line-height:1.6;">There are no proposals currently open for voting. Check back soon for new community proposals.</p>
-            <button class="btn proposal-filter" data-action="filterProposals" data-filter="completed" style="background:linear-gradient(135deg,#6366f1 0%,#4f46e5 100%);padding:10px 24px;font-weight:600;">
-              View Completed Proposals
-            </button>
-          </div>
-        </div>
-      `;
-      return;
-    }
-  } else if (filter === 'completed') {
-    proposalsToRender = [...allProposalsData.completed].sort((a, b) => new Date(b.closes_at) - new Date(a.closes_at));
-
-    if (proposalsToRender.length === 0) {
-      container.innerHTML = `
-        <div style="grid-column:1/-1;text-align:center;padding:60px 20px;">
-          <div style="background:linear-gradient(135deg,#1a1a1a 0%,#0a0a0a 100%);border-radius:12px;border:2px solid #222;padding:40px 20px;max-width:500px;margin:0 auto;">
-            <div style="width:80px;height:80px;margin:0 auto 20px;background:rgba(99,102,241,0.1);border-radius:50%;display:flex;align-items:center;justify-content:center;">
-              <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#6366f1" stroke-width="2">
-                <path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
-              </svg>
-            </div>
-            <h4 style="color:var(--accent);margin:0 0 12px 0;font-size:1.2rem;">No Completed Proposals</h4>
-            <p style="color:var(--gray);margin:0 0 20px 0;line-height:1.6;">No proposals have been completed yet. Completed proposals will appear here after voting closes.</p>
-            <button class="btn proposal-filter" data-action="filterProposals" data-filter="active" style="background:linear-gradient(135deg,#10b981 0%,#059669 100%);padding:10px 24px;font-weight:600;">
-              View Active Proposals
-            </button>
-          </div>
-        </div>
-      `;
-      return;
-    }
-
-    // Render completed proposals in tiled grid
-    renderCompletedProposals(proposalsToRender);
-    return;
-  }
-
-  container.innerHTML = proposalsToRender.map(proposal => {
-    const proposalId = proposal.proposal_id;
-    const hasVoted = userVotesCache && userVotesCache.some(v => v.proposal_id === proposalId);
-    const userVote = userVotesCache && userVotesCache.find(v => v.proposal_id === proposalId);
-
-    // Render active proposal
-      const closesAt = new Date(proposal.closes_at);
-      const now = new Date();
-      const diff = closesAt - now;
-      const days = Math.floor(diff / (1000 * 60 * 60 * 24));
-      const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
-      const timeRemaining = days > 0 ? `${days}d ${hours}h` : hours > 0 ? `${hours}h` : 'Closing soon';
-
-      return `
-        <div style="background:#0a0a0a;border:1px solid #333;border-radius:8px;padding:12px;">
-          ${proposal.proposal_number ? `<div style="margin-bottom:4px;"><span style="font-family:monospace;font-size:0.7rem;color:#6b7280;background:#1f2937;padding:2px 6px;border-radius:4px;">${escapeHtml(proposal.proposal_number)}</span></div>` : ''}
-          <h4 style="margin:0 0 6px 0;font-weight:700;font-size:0.95rem;">${escapeHtml(proposal.proposal_title) || 'Untitled Proposal'}</h4>
-          <div style="margin-bottom:8px;">
-            <span style="display:inline-block;background:linear-gradient(135deg,#10b981 0%,#059669 100%);color:#fff;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;">Active</span>
-          </div>
-          <div style="margin-bottom:8px;padding:8px;background:#1a1a1a;border-radius:6px;text-align:center;">
-            <span style="font-size:0.85rem;color:var(--accent);font-weight:600;">Closes in ${timeRemaining}</span>
-          </div>
-          <button data-action="toggleProposalText" data-target="proposal-text-${proposalId}" class="btn" style="width:100%;padding:8px 12px;font-size:0.8rem;background:linear-gradient(135deg,#ffd93d 0%,#ffc125 100%);color:#000;font-weight:600;margin-bottom:8px;">View Proposal</button>
-          <div id="proposal-text-${proposalId}" style="display:none;padding:10px;background:#050505;border-left:3px solid var(--accent);border-radius:4px;margin-bottom:8px;line-height:1.6;font-size:0.85rem;white-space:pre-wrap;">${escapeHtml(proposal.proposal_text)}</div>
-          ${hasVoted ? `
-            <div style="margin-bottom:8px;padding:10px;background:#050505;border-left:3px solid ${userVote && userVote.vote ? (userVote.vote.toLowerCase() === 'yes' ? '#10b981' : userVote.vote.toLowerCase() === 'no' ? '#ef4444' : '#6b7280') : '#4caf50'};border-radius:4px;">
-              <div style="display:flex;justify-content:space-between;align-items:center;">
-                <span style="font-size:0.8rem;color:var(--gray);">Your vote:</span>
-                <span style="font-size:0.85rem;font-weight:700;color:${userVote && userVote.vote ? (userVote.vote.toLowerCase() === 'yes' ? '#10b981' : userVote.vote.toLowerCase() === 'no' ? '#ef4444' : '#6b7280') : '#4caf50'};text-transform:uppercase;">${userVote && userVote.vote ? userVote.vote : 'UNKNOWN'}</span>
-              </div>
-            </div>
-          ` : `
-            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:8px;">
-              <button class="btn" data-action="selectVote" data-proposal-id="${proposalId}" data-vote="yes" id="vote-${proposalId}-yes" style="padding:10px 8px;font-size:0.8rem;background:#16a34a;color:#fff;border:2px solid transparent;font-weight:600;">Yes</button>
-              <button class="btn" data-action="selectVote" data-proposal-id="${proposalId}" data-vote="no" id="vote-${proposalId}-no" style="padding:10px 8px;font-size:0.8rem;background:#dc2626;color:#fff;border:2px solid transparent;font-weight:600;">No</button>
-              <button class="btn" data-action="selectVote" data-proposal-id="${proposalId}" data-vote="abstain" id="vote-${proposalId}-abstain" style="padding:10px 8px;font-size:0.8rem;background:#6b7280;color:#fff;border:2px solid transparent;font-weight:600;">Abstain</button>
-            </div>
-            <button class="btn" data-action="submitVote" data-proposal-id="${proposalId}" id="submit-${proposalId}" style="width:100%;display:none;padding:10px;font-size:0.85rem;background:var(--accent);color:#000;font-weight:600;">Submit Vote</button>
-          `}
-          <div id="results-${proposalId}" style="margin-top:8px;"></div>
-        </div>
-      `;
-  }).join('');
-
-  // Load results for active proposals
-  for (const proposal of proposalsToRender) {
-    const proposalId = proposal.proposal_id;
-    await loadCompactVoteResults(proposalId, 'results-' + proposalId);
-  }
-}
-
-let selectedVotes = {};
-
-function selectVote(proposalId, choice) {
-  selectedVotes[proposalId] = choice;
-
-  // Update button styles
-  ['yes', 'no', 'abstain'].forEach(c => {
-    const btn = document.getElementById(`vote-${proposalId}-${c}`);
-    if (c === choice) {
-      btn.style.borderColor = 'var(--accent)';
-      btn.style.fontWeight = '600';
-    } else {
-      btn.style.borderColor = 'transparent';
-      btn.style.fontWeight = '400';
-    }
-  });
-
-  // Show submit button
-  document.getElementById(`submit-${proposalId}`).style.display = 'block';
-}
-
-async function submitVote(proposalId) {
-  const choice = selectedVotes[proposalId];
-  if (!choice) return;
-
-  const confirmed = await showConfirmModal({
-    title: 'Confirm Vote Submission',
-    message: '<strong style="color:#ff9800;">WARNING:</strong> Your vote is permanent and cannot be changed once submitted.<br><br>Are you sure you want to submit your vote?',
-    confirmText: 'Submit Vote',
-    cancelText: 'Cancel',
-    type: 'warning'
-  });
-  if (!confirmed) return;
-
-  try {
-    const token = idToken();
-    if (!token) throw new Error('No authentication token');
-
-    const res = await fetch(API_URL + '/votes', {
-      method: 'POST',
-      headers: {
-        'Authorization': 'Bearer ' + token,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        proposal_id: proposalId,
-        vote: choice
-      })
-    });
-
-    if (!res.ok) {
-      const error = await res.json();
-      throw new Error(error.message || 'Failed to submit vote');
-    }
-
-    await showAlertModal({
-      type: 'success',
-      title: 'Vote Recorded',
-      message: 'Your vote has been recorded successfully!'
-    });
-
-    // Clear cache and reload
-    userVotesCache = null;
-    delete selectedVotes[proposalId];
-    await loadAllProposals();
-  } catch (error) {
-    console.error('Error submitting vote:', error);
-    await showAlertModal({
-      type: 'error',
-      title: 'Vote Failed',
-      message: 'Failed to submit vote: ' + error.message
-    });
-  }
-}
-
-async function loadUserVotes() {
-  if (userVotesCache) return;
-
-  try {
-    const token = idToken();
-    if (!token) throw new Error('No authentication token');
-
-    const res = await fetch(API_URL + '/votes/history', {
-      method: 'GET',
-      headers: { 'Authorization': 'Bearer ' + token }
-    });
-
-    // Handle 400/404 as "no votes yet" (valid state for new users)
-    if (res.status === 400 || res.status === 404) {
-      userVotesCache = [];
-      return;
-    }
-
-    if (!res.ok) throw new Error('Failed to load vote history');
-    const data = await res.json();
-
-    userVotesCache = data.votes || [];
-  } catch (error) {
-    console.error('Error loading user votes:', error);
-    userVotesCache = [];
-  }
-}
-
-// Render completed proposals in a tiled grid
-async function renderCompletedProposals(proposals) {
-  const container = document.getElementById('proposalsContainer');
-
-  container.innerHTML = proposals.map(proposal => {
-    const proposalId = proposal.proposal_id;
-    const userVote = userVotesCache && userVotesCache.find(v => v.proposal_id === proposalId);
-
-    // Prepare vote badge colors
-    const voteColors = {
-      yes: '#10b981',
-      no: '#ef4444',
-      abstain: '#6b7280'
-    };
-
-    const userVoteText = userVote ? userVote.vote : 'Not Voted';
-    const userVoteColor = userVote && voteColors[userVote.vote.toLowerCase()] ? voteColors[userVote.vote.toLowerCase()] : '#6b7280';
-
-    return `
-      <div id="completed-${proposalId}" style="background:#0a0a0a;border:1px solid #333;border-radius:8px;padding:16px;display:flex;flex-direction:column;position:relative;min-height:280px;">
-        ${proposal.proposal_number ? `<div style="margin-bottom:4px;"><span style="font-family:monospace;font-size:0.7rem;color:#6b7280;background:#1f2937;padding:2px 6px;border-radius:4px;">${escapeHtml(proposal.proposal_number)}</span></div>` : ''}
-        <h4 style="margin:0 0 12px 0;font-weight:700;font-size:1rem;line-height:1.4;">${escapeHtml(proposal.proposal_title) || 'Untitled Proposal'}</h4>
-
-        <!-- Pass/Fail Badge -->
-        <div id="result-badge-${proposalId}" style="margin-bottom:12px;height:24px;">
-          <div class="skeleton" style="height:24px;width:80px;border-radius:12px;"></div>
-        </div>
-
-        <!-- User Vote -->
-        <div style="margin-bottom:16px;padding:10px;background:#050505;border-left:3px solid ${userVoteColor};border-radius:4px;">
-          <div style="display:flex;justify-content:space-between;align-items:center;">
-            <span style="font-size:0.8rem;color:var(--gray);">Your vote:</span>
-            <span style="font-size:0.85rem;font-weight:700;color:${userVoteColor};text-transform:uppercase;">${userVoteText}</span>
-          </div>
-        </div>
-
-        <!-- Vote Results -->
-        <div id="results-${proposalId}" style="flex:1;min-height:140px;">
-          <div style="padding:10px;background:#050505;border-radius:6px;">
-            <div class="skeleton" style="height:16px;margin-bottom:12px;border-radius:4px;width:40%;"></div>
-            <div class="skeleton" style="height:12px;margin-bottom:8px;border-radius:4px;width:100%;"></div>
-            <div class="skeleton" style="height:4px;margin-bottom:16px;border-radius:4px;width:100%;"></div>
-            <div class="skeleton" style="height:12px;margin-bottom:8px;border-radius:4px;width:100%;"></div>
-            <div class="skeleton" style="height:4px;margin-bottom:16px;border-radius:4px;width:100%;"></div>
-            <div class="skeleton" style="height:12px;margin-bottom:8px;border-radius:4px;width:100%;"></div>
-            <div class="skeleton" style="height:4px;border-radius:4px;width:100%;"></div>
-          </div>
-        </div>
-      </div>
-    `;
-  }).join('');
-
-  // Load results for each completed proposal in parallel
-  await Promise.all(proposals.map(proposal => loadCompletedProposalResults(proposal.proposal_id)));
-}
-
-// Load results for completed proposals
-async function loadCompletedProposalResults(proposalId) {
-  try {
-    const token = idToken();
-    if (!token) throw new Error('No authentication token');
-
-    const res = await fetch(API_URL + '/proposals/' + proposalId + '/results', {
-      method: 'GET',
-      headers: { 'Authorization': 'Bearer ' + token }
-    });
-
-    if (!res.ok) throw new Error('Failed to load results');
-    const data = await res.json();
-
-    const yes = data.results.yes || 0;
-    const no = data.results.no || 0;
-    const abstain = data.results.abstain || 0;
-    const total = yes + no + abstain;
-
-    const yesPercent = total > 0 ? Math.round((yes / total) * 100) : 0;
-    const noPercent = total > 0 ? Math.round((no / total) * 100) : 0;
-    const abstainPercent = total > 0 ? Math.round((abstain / total) * 100) : 0;
-
-    const passed = yes > no;
-
-    // Update result badge
-    const badgeEl = document.getElementById('result-badge-' + proposalId);
-    if (badgeEl) {
-      badgeEl.innerHTML = passed
-        ? '<span style="display:inline-block;background:linear-gradient(135deg,#10b981 0%,#059669 100%);color:#fff;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;">✅ PASSED</span>'
-        : '<span style="display:inline-block;background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);color:#fff;padding:4px 10px;border-radius:12px;font-size:0.7rem;font-weight:600;">❌ FAILED</span>';
-    }
-
-    // Update card border color
-    const cardEl = document.getElementById('completed-' + proposalId);
-    if (cardEl) {
-      cardEl.style.borderColor = passed ? '#10b981' : '#ef4444';
-      cardEl.style.borderWidth = '2px';
-    }
-
-    // Update results
-    const resultsEl = document.getElementById('results-' + proposalId);
-    if (resultsEl) {
-      resultsEl.innerHTML = `
-        <div style="padding:10px;background:#050505;border-radius:6px;">
-          <div style="margin-bottom:6px;font-size:0.75rem;color:var(--gray);">
-            Total votes: ${total}
-          </div>
-          <div style="margin-bottom:8px;">
-            <div style="display:flex;justify-content:space-between;margin-bottom:2px;">
-              <span style="font-size:0.7rem;color:#10b981;font-weight:600;">Yes</span>
-              <span style="font-size:0.7rem;font-weight:600;">${yes} (${yesPercent}%)</span>
-            </div>
-            <div style="background:#1a1a1a;border-radius:4px;height:4px;overflow:hidden;">
-              <div style="background:#10b981;height:100%;width:${yesPercent}%;"></div>
-            </div>
-          </div>
-          <div style="margin-bottom:8px;">
-            <div style="display:flex;justify-content:space-between;margin-bottom:2px;">
-              <span style="font-size:0.7rem;color:#ef4444;font-weight:600;">No</span>
-              <span style="font-size:0.7rem;font-weight:600;">${no} (${noPercent}%)</span>
-            </div>
-            <div style="background:#1a1a1a;border-radius:4px;height:4px;overflow:hidden;">
-              <div style="background:#ef4444;height:100%;width:${noPercent}%;"></div>
-            </div>
-          </div>
-          <div>
-            <div style="display:flex;justify-content:space-between;margin-bottom:2px;">
-              <span style="font-size:0.7rem;color:#6b7280;font-weight:600;">Abstain</span>
-              <span style="font-size:0.7rem;font-weight:600;">${abstain} (${abstainPercent}%)</span>
-            </div>
-            <div style="background:#1a1a1a;border-radius:4px;height:4px;overflow:hidden;">
-              <div style="background:#6b7280;height:100%;width:${abstainPercent}%;"></div>
-            </div>
-          </div>
-        </div>
-      `;
-    }
-  } catch (error) {
-    console.error('Error loading results for proposal', proposalId, error);
-    const resultsEl = document.getElementById('results-' + proposalId);
-    if (resultsEl) {
-      resultsEl.innerHTML = '<p class="muted" style="font-size:0.8rem;text-align:center;">Failed to load results</p>';
-    }
-  }
-}
-
-// Load compact live results for active proposals
-async function loadCompactVoteResults(proposalId, containerId) {
-  try {
-    const token = idToken();
-    if (!token) return;
-
-    const res = await fetch(API_URL + '/proposals/' + proposalId + '/vote-counts', {
-      method: 'GET',
-      headers: { 'Authorization': 'Bearer ' + token }
-    });
-
-    if (!res.ok) return;
-    const data = await res.json();
-
-    const total = data.yes + data.no + data.abstain;
-    const yesPercent = total > 0 ? Math.round((data.yes / total) * 100) : 0;
-    const noPercent = total > 0 ? Math.round((data.no / total) * 100) : 0;
-    const abstainPercent = total > 0 ? Math.round((data.abstain / total) * 100) : 0;
-
-    const resultsContainer = document.getElementById(containerId);
-    if (resultsContainer) {
-      resultsContainer.innerHTML = `
-        <div style="padding:12px;background:#050505;border-radius:4px;border:1px solid #333;">
-          <p style="margin:0 0 8px 0;font-size:0.85rem;color:#999;font-weight:600;">Live Results (${total} votes)</p>
-          <div style="display:flex;flex-direction:column;gap:8px;">
-            <div>
-              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px;">
-                <span style="color:#4caf50;font-size:0.8rem;font-weight:600;">Yes</span>
-                <span style="color:#4caf50;font-size:0.8rem;font-weight:600;">${data.yes} (${yesPercent}%)</span>
-              </div>
-              <div style="background:#1a1a1a;border-radius:3px;height:6px;overflow:hidden;">
-                <div style="background:linear-gradient(90deg,#4caf50 0%,#66bb6a 100%);height:100%;width:${yesPercent}%;"></div>
-              </div>
-            </div>
-            <div>
-              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px;">
-                <span style="color:#f44336;font-size:0.8rem;font-weight:600;">No</span>
-                <span style="color:#f44336;font-size:0.8rem;font-weight:600;">${data.no} (${noPercent}%)</span>
-              </div>
-              <div style="background:#1a1a1a;border-radius:3px;height:6px;overflow:hidden;">
-                <div style="background:linear-gradient(90deg,#f44336 0%,#ef5350 100%);height:100%;width:${noPercent}%;"></div>
-              </div>
-            </div>
-            <div>
-              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px;">
-                <span style="color:#999;font-size:0.8rem;font-weight:600;">Abstain</span>
-                <span style="color:#999;font-size:0.8rem;font-weight:600;">${data.abstain} (${abstainPercent}%)</span>
-              </div>
-              <div style="background:#1a1a1a;border-radius:3px;height:6px;overflow:hidden;">
-                <div style="background:linear-gradient(90deg,#999 0%,#aaa 100%);height:100%;width:${abstainPercent}%;"></div>
-              </div>
-            </div>
-          </div>
-        </div>
-      `;
-    }
-  } catch (error) {
-    // Silently fail for live results
-    console.error('Error loading compact vote results:', error);
-  }
-}
-
-function toggleProposalText(elementId) {
-  const element = document.getElementById(elementId);
-  const button = element.previousElementSibling;
-  if (element.style.display === 'none') {
-    element.style.display = 'block';
-    button.textContent = 'Hide Proposal';
-  } else {
-    element.style.display = 'none';
-    button.textContent = 'View Proposal';
-  }
-}
-
-async function loadProposalResultsInline(proposalId) {
-  try {
-    const token = idToken();
-    if (!token) throw new Error('No authentication token');
-
-    const res = await fetch(API_URL + '/proposals/' + proposalId + '/results', {
-      method: 'GET',
-      headers: { 'Authorization': 'Bearer ' + token }
-    });
-
-    if (!res.ok) throw new Error('Failed to load proposal results');
-    const data = await res.json();
-
-    const total = data.results.yes + data.results.no + data.results.abstain;
-    const yesPercent = total > 0 ? Math.round((data.results.yes / total) * 100) : 0;
-    const noPercent = total > 0 ? Math.round((data.results.no / total) * 100) : 0;
-    const abstainPercent = total > 0 ? Math.round((data.results.abstain / total) * 100) : 0;
-
-    const resultsContainer = document.getElementById(`results-${proposalId}`);
-    if (resultsContainer) {
-      resultsContainer.innerHTML = `
-        <div style="margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid #333;">
-          <p style="margin:0 0 4px 0;font-weight:600;font-size:0.9rem;">Voting Results</p>
-          <p class="muted" style="margin:0;font-size:0.85rem;">Total Votes: ${total}</p>
-        </div>
-        <div style="display:flex;flex-direction:column;gap:12px;">
-          <div>
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
-              <span style="color:#4caf50;font-weight:600;font-size:0.9rem;">Yes</span>
-              <span style="color:#4caf50;font-weight:600;font-size:0.9rem;">${data.results.yes} (${yesPercent}%)</span>
-            </div>
-            <div style="background:#1a1a1a;border-radius:4px;height:8px;overflow:hidden;">
-              <div style="background:linear-gradient(90deg,#4caf50 0%,#66bb6a 100%);height:100%;width:${yesPercent}%;transition:width 0.3s;"></div>
-            </div>
-          </div>
-          <div>
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
-              <span style="color:#f44336;font-weight:600;font-size:0.9rem;">No</span>
-              <span style="color:#f44336;font-weight:600;font-size:0.9rem;">${data.results.no} (${noPercent}%)</span>
-            </div>
-            <div style="background:#1a1a1a;border-radius:4px;height:8px;overflow:hidden;">
-              <div style="background:linear-gradient(90deg,#f44336 0%,#ef5350 100%);height:100%;width:${noPercent}%;transition:width 0.3s;"></div>
-            </div>
-          </div>
-          <div>
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
-              <span style="color:#999;font-weight:600;font-size:0.9rem;">Abstain</span>
-              <span style="color:#999;font-weight:600;font-size:0.9rem;">${data.results.abstain} (${abstainPercent}%)</span>
-            </div>
-            <div style="background:#1a1a1a;border-radius:4px;height:8px;overflow:hidden;">
-              <div style="background:linear-gradient(90deg,#999 0%,#aaa 100%);height:100%;width:${abstainPercent}%;transition:width 0.3s;"></div>
-            </div>
-          </div>
-        </div>
-      `;
-    }
-  } catch (error) {
-    console.error('Error loading proposal results:', error);
-    const resultsContainer = document.getElementById(`results-${proposalId}`);
-    if (resultsContainer) {
-      resultsContainer.innerHTML = '<p style="margin:0;color:#f44336;text-align:center;font-size:0.9rem;">Failed to load results</p>';
-    }
-  }
-}
-
-async function viewProposalResults(proposalId) {
-  try {
-    const token = idToken();
-    if (!token) throw new Error('No authentication token');
-
-    const res = await fetch(API_URL + '/proposals/' + proposalId + '/results', {
-      method: 'GET',
-      headers: { 'Authorization': 'Bearer ' + token }
-    });
-
-    if (!res.ok) throw new Error('Failed to load proposal results');
-    const data = await res.json();
-
-    const total = data.results.yes + data.results.no + data.results.abstain;
-    const yesPercent = total > 0 ? Math.round((data.results.yes / total) * 100) : 0;
-    const noPercent = total > 0 ? Math.round((data.results.no / total) * 100) : 0;
-    const abstainPercent = total > 0 ? Math.round((data.results.abstain / total) * 100) : 0;
-
-    const htmlContent = `
-      <div style="margin-bottom:20px;">
-        <h4 style="margin:0 0 12px 0;color:var(--accent);font-size:1.1rem;">${escapeHtml(data.proposal.proposal_title) || 'Untitled'}</h4>
-        <p style="color:var(--gray);margin-bottom:16px;line-height:1.6;white-space:pre-wrap;">${escapeHtml(data.proposal.proposal_text)}</p>
-
-        <div style="display:flex;gap:20px;margin-bottom:20px;flex-wrap:wrap;">
-          <div>
-            <span style="color:var(--gray);font-size:0.9rem;">Status:</span>
-            <span style="color:var(--text);margin-left:8px;font-weight:600;">${escapeHtml(data.proposal.status)}</span>
-          </div>
-          <div>
-            <span style="color:var(--gray);font-size:0.9rem;">Closed:</span>
-            <span style="color:var(--text);margin-left:8px;font-weight:600;">${new Date(data.proposal.closes_at).toLocaleDateString()}</span>
-          </div>
-        </div>
-      </div>
-
-      <div style="background:#050505;border-radius:8px;padding:20px;border:1px solid #222;">
-        <h5 style="margin:0 0 16px 0;color:var(--accent);font-size:1rem;">Results</h5>
-        <div style="margin-bottom:16px;">
-          <div style="display:flex;justify-content:space-between;margin-bottom:8px;">
-            <span style="color:var(--gray);">Total Votes</span>
-            <span style="color:var(--text);font-weight:600;">${total}</span>
-          </div>
-        </div>
-
-        <div style="display:flex;flex-direction:column;gap:12px;">
-          <div>
-            <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
-              <span style="color:#4caf50;font-weight:600;">Yes</span>
-              <span style="color:var(--text);">${data.results.yes} (${yesPercent}%)</span>
-            </div>
-            <div style="background:#1a1a1a;border-radius:4px;height:8px;overflow:hidden;">
-              <div style="background:linear-gradient(90deg,#4caf50 0%,#2e7d32 100%);height:100%;width:${yesPercent}%;transition:width 0.5s ease;"></div>
-            </div>
-          </div>
-
-          <div>
-            <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
-              <span style="color:#f44336;font-weight:600;">No</span>
-              <span style="color:var(--text);">${data.results.no} (${noPercent}%)</span>
-            </div>
-            <div style="background:#1a1a1a;border-radius:4px;height:8px;overflow:hidden;">
-              <div style="background:linear-gradient(90deg,#f44336 0%,#c62828 100%);height:100%;width:${noPercent}%;transition:width 0.5s ease;"></div>
-            </div>
-          </div>
-
-          <div>
-            <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
-              <span style="color:#9e9e9e;font-weight:600;">Abstain</span>
-              <span style="color:var(--text);">${data.results.abstain} (${abstainPercent}%)</span>
-            </div>
-            <div style="background:#1a1a1a;border-radius:4px;height:8px;overflow:hidden;">
-              <div style="background:linear-gradient(90deg,#9e9e9e 0%,#616161 100%);height:100%;width:${abstainPercent}%;transition:width 0.5s ease;"></div>
-            </div>
-          </div>
-        </div>
-      </div>
-    `;
-
-    showProposalResultsModal(htmlContent);
-  } catch (error) {
-    console.error('Error loading proposal results:', error);
-    showToast('Failed to load proposal results: ' + error.message, 'error');
-  }
-}
-
 // Update tab visibility based on membership status and subscription status
 function updateTabVisibility() {
   if (!signedIn()) return;
@@ -2365,21 +1655,14 @@ function updateTabVisibility() {
   const hasSubscription = isSubscriber();
   const hasPaidSubscription = isPaidSubscriber();
 
-  // Show subscription tab to members (but voting only to paid subscribers, vault to any subscriber)
+  // Show subscription tab to members, vault to subscribers
   const subscriptionTab = document.querySelector('.tab[data-tab="subscription"]');
-  const votingTab = document.querySelector('.tab[data-tab="voting"]');
+  // Voting tab removed - voting is done through the mobile app
   const deployVaultTab = document.querySelector('.tab[data-tab="deploy-vault"]');
 
   if (isMember) {
     // Show subscription tab to all members
     if (subscriptionTab) subscriptionTab.style.display = 'inline-block';
-
-    // Show voting tab only to paid subscribers
-    if (hasPaidSubscription) {
-      if (votingTab) votingTab.style.display = 'inline-block';
-    } else {
-      if (votingTab) votingTab.style.display = 'none';
-    }
 
     // Show vault tab to any active subscriber (free or paid)
     if (hasSubscription) {
@@ -2390,7 +1673,6 @@ function updateTabVisibility() {
   } else {
     // Hide all tabs for non-members
     if (subscriptionTab) subscriptionTab.style.display = 'none';
-    if (votingTab) votingTab.style.display = 'none';
     if (deployVaultTab) deployVaultTab.style.display = 'none';
   }
 }
@@ -2494,12 +1776,6 @@ function switchToTab(tabName, subTabName) {
     }
   }
 
-  // Load voting data if switching to voting tab
-  if (tabName === 'voting' && signedIn()) {
-    loadAllProposals();
-    loadVotingHistory();
-  }
-
   // Load vault status if switching to deploy-vault tab
   if (tabName === 'deploy-vault' && signedIn()) {
     startVaultStatusPolling();
@@ -2566,26 +1842,6 @@ async function preloadVaultStatus() {
     }
   } catch (e) {
     console.error('Error preloading vault status:', e);
-  }
-}
-
-// Preload voting history for caching (non-blocking, used by Getting Started)
-async function preloadVotingHistory() {
-  if (votingHistoryData !== null) return; // Already cached
-  try {
-    const token = idToken();
-    if (!token) return;
-    const res = await fetch(API_URL + '/votes/history', {
-      method: 'GET',
-      headers: { 'Authorization': 'Bearer ' + token }
-    });
-    if (res.status === 400 || res.status === 404) {
-      votingHistoryData = { votes: [] };
-    } else if (res.ok) {
-      votingHistoryData = await res.json();
-    }
-  } catch (e) {
-    console.error('Error preloading voting history:', e);
   }
 }
 
@@ -5483,8 +4739,7 @@ document.addEventListener('DOMContentLoaded', () => {
       loadSubscriptionTypes(),
       loadPinStatus(),
       loadEmailPreferences(),
-      preloadVaultStatus(),    // Preload for Getting Started (cached)
-      preloadVotingHistory()   // Preload for Getting Started (cached)
+      preloadVaultStatus()     // Preload for Getting Started (cached)
     ]);
 
     updateTabVisibility();
@@ -5575,7 +4830,6 @@ document.addEventListener('click', (e) => {
     'downloadRecoveryPhrase': downloadRecoveryPhrase,
     'acknowledgeRecoveryPhrase': acknowledgeRecoveryPhrase,
     'recoverCredentials': recoverCredentials,
-    'closeProposalResultsModal': closeProposalResultsModal,
     'closePinDisableModal': closePinDisableModal,
     'submitPinDisable': submitPinDisable,
     'submitPinVerification': submitPinVerification,
@@ -5620,34 +4874,6 @@ document.addEventListener('click', (e) => {
 
   // Handle parameterized actions
   switch (action) {
-    case 'filterProposals': {
-      const filter = target.dataset.filter;
-      if (filter) {
-        const filterInput = document.getElementById(filter === 'completed' ? 'filterCompletedProposals' : 'filterActiveProposals');
-        if (filterInput) filterInput.click();
-      }
-      e.preventDefault();
-      break;
-    }
-    case 'toggleProposalText': {
-      const targetId = target.dataset.target;
-      if (targetId) toggleProposalText(targetId);
-      e.preventDefault();
-      break;
-    }
-    case 'selectVote': {
-      const proposalId = target.dataset.proposalId;
-      const vote = target.dataset.vote;
-      if (proposalId && vote) selectVote(proposalId, vote);
-      e.preventDefault();
-      break;
-    }
-    case 'submitVote': {
-      const proposalId = target.dataset.proposalId;
-      if (proposalId) submitVote(proposalId);
-      e.preventDefault();
-      break;
-    }
     case 'switchTab': {
       const tab = target.dataset.tab;
       if (tab) switchToTab(tab);
