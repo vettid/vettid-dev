@@ -126,6 +126,9 @@ type MessageHandler struct {
 
 	// Guide handler (welcome/tutorial events)
 	guideHandler *GuideHandler
+
+	// Location handler (location tracking)
+	locationHandler *LocationHandler
 }
 
 // VsockPublisher implements CallPublisher using vsock to parent
@@ -300,6 +303,9 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 
 		// Guide handler
 		guideHandler: NewGuideHandler(ownerSpace, storage, eventHandler),
+
+		// Location handler
+		locationHandler: NewLocationHandler(ownerSpace, storage),
 	}
 }
 
@@ -497,6 +503,9 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 	case "guide":
 		// Guide sync operations (welcome/tutorial events)
 		return mh.handleGuideOperation(ctx, msg, parts[opIndex+1:])
+	case "location":
+		// Location tracking operations
+		return mh.handleLocationOperation(ctx, msg, parts[opIndex+1:])
 	case "enrollment":
 		// Enrollment operations (identity mismatch reports)
 		return mh.handleEnrollmentOperation(ctx, msg, parts[opIndex+1:])
@@ -1259,6 +1268,62 @@ func (mh *MessageHandler) handleGuideOperation(ctx context.Context, msg *Incomin
 		return mh.guideHandler.HandleSync(ctx, msg)
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown guide operation: %s", opType))
+	}
+}
+
+// handleLocationOperation routes location-related operations
+func (mh *MessageHandler) handleLocationOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
+	if len(opParts) < 2 {
+		return mh.errorResponse(msg.GetID(), "missing location operation type")
+	}
+
+	opType := opParts[1]
+
+	switch opType {
+	case "add":
+		response, err := mh.locationHandler.HandleAdd(msg)
+		if err != nil {
+			return response, err
+		}
+		mh.persistVaultStateToS3()
+		return response, nil
+	case "list":
+		return mh.locationHandler.HandleList(msg)
+	case "delete":
+		response, err := mh.locationHandler.HandleDelete(msg)
+		if err != nil {
+			return response, err
+		}
+		mh.persistVaultStateToS3()
+		return response, nil
+	case "delete-all":
+		response, err := mh.locationHandler.HandleDeleteAll(msg)
+		if err != nil {
+			return response, err
+		}
+		mh.persistVaultStateToS3()
+		return response, nil
+	case "stats":
+		return mh.locationHandler.HandleStats(msg)
+	case "settings":
+		if len(opParts) < 3 {
+			return mh.errorResponse(msg.GetID(), "missing settings operation")
+		}
+		switch opParts[2] {
+		case "get":
+			return mh.locationHandler.HandleSettingsGet(msg)
+		case "update":
+			response, err := mh.locationHandler.HandleSettingsUpdate(msg)
+			if err != nil {
+				return response, err
+			}
+			mh.persistVaultStateToS3()
+			return response, nil
+		default:
+			return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown location settings operation: %s", opParts[2]))
+		}
+	default:
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown location operation: %s", opType))
 	}
 }
 
