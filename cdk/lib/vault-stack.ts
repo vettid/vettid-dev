@@ -45,6 +45,7 @@ export class VaultStack extends cdk.Stack {
   public readonly createEnrollmentSession!: lambdaNode.NodejsFunction;
   public readonly cancelEnrollmentSession!: lambdaNode.NodejsFunction;
   public readonly authenticateEnrollment!: lambdaNode.NodejsFunction;
+  public readonly resolveEnrollmentCode!: lambdaNode.NodejsFunction;
   public readonly enrollUpdateStatus!: lambdaNode.NodejsFunction;
   public readonly getEnrollmentStatus!: lambdaNode.NodejsFunction;
   public readonly enrollNatsBootstrap!: lambdaNode.NodejsFunction;
@@ -278,6 +279,18 @@ export class VaultStack extends cdk.Stack {
       actions: ['secretsmanager:GetSecretValue'],
       resources: [props.infrastructure.enrollmentJwtSecretArn],
     }));
+
+    // Resolve enrollment code (public endpoint for mobile to resolve short code to enrollment data)
+    this.resolveEnrollmentCode = new lambdaNode.NodejsFunction(this, 'ResolveEnrollmentCodeFn', {
+      entry: 'lambda/handlers/vault/resolveEnrollmentCode.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+        TABLE_AUDIT: tables.audit.tableName,
+        API_URL: 'https://api.vettid.dev',
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
 
     // Update enrollment status (app reports progress through NATS-based phases)
     this.enrollUpdateStatus = new lambdaNode.NodejsFunction(this, 'EnrollUpdateStatusFn', {
@@ -564,6 +577,10 @@ export class VaultStack extends cdk.Stack {
     // Authenticate enrollment permissions
     tables.enrollmentSessions.grantReadWriteData(this.authenticateEnrollment);
     tables.audit.grantReadWriteData(this.authenticateEnrollment);
+
+    // Resolve enrollment code permissions
+    tables.enrollmentSessions.grantReadData(this.resolveEnrollmentCode);
+    tables.audit.grantReadWriteData(this.resolveEnrollmentCode);
 
     // Enrollment status update permissions (app reports progress)
     tables.enrollmentSessions.grantReadWriteData(this.enrollUpdateStatus);
@@ -1388,6 +1405,14 @@ export class VaultStack extends cdk.Stack {
       httpApi,
       routeKey: apigw.HttpRouteKey.with('/vault/enroll/authenticate', apigw.HttpMethod.POST),
       integration: new integrations.HttpLambdaIntegration('AuthenticateEnrollmentInt', this.authenticateEnrollment),
+      // No authorizer - this is a public endpoint
+    });
+
+    // Public endpoint: Mobile resolves short enrollment code to full enrollment data (no auth required)
+    new apigw.HttpRoute(this, 'ResolveEnrollmentCode', {
+      httpApi,
+      routeKey: apigw.HttpRouteKey.with('/vault/enroll/resolve-code', apigw.HttpMethod.POST),
+      integration: new integrations.HttpLambdaIntegration('ResolveEnrollmentCodeInt', this.resolveEnrollmentCode),
       // No authorizer - this is a public endpoint
     });
 

@@ -4421,15 +4421,22 @@ function showEnrollmentModal(session) {
         </div>
       </div>
 
+      ${session.enrollment_code ? `
+      <div style="margin-bottom:20px;">
+        <p style="color:var(--gray);font-size:0.85rem;margin-bottom:8px;">Or enter this code in the VettID app:</p>
+        <div style="font-family:'Courier New',monospace;font-size:1.8rem;font-weight:700;letter-spacing:0.15em;color:var(--accent);margin-bottom:12px;user-select:all;">${session.enrollment_code}</div>
+        <button id="copyEnrollCode" style="padding:10px 20px;background:#333;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:0.9rem;" title="Copy code">
+          Copy Code
+        </button>
+      </div>
+      ` : ''}
+
       ${deepLinkUrl ? `
       <div style="margin-bottom:20px;">
         <p style="color:var(--gray);font-size:0.85rem;margin-bottom:8px;">Or tap the link on your mobile device:</p>
         <a href="${deepLinkUrl}" target="_blank" style="display:inline-block;padding:12px 20px;background:var(--accent);color:#000;text-decoration:none;border-radius:6px;font-weight:600;font-size:0.9rem;">
           Open in VettID App
         </a>
-        <button id="copyEnrollLink" style="margin-left:8px;padding:12px 16px;background:#333;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:0.9rem;" title="Copy link">
-          Copy Link
-        </button>
       </div>
       ` : ''}
 
@@ -4462,24 +4469,24 @@ function showEnrollmentModal(session) {
   document.body.appendChild(modal);
   modal.onclick = (e) => { if (e.target === modal) closeEnrollmentModal(); };
 
-  // Add copy link handler
-  const copyBtn = document.getElementById('copyEnrollLink');
-  if (copyBtn && deepLinkUrl) {
+  // Add copy code handler
+  const copyBtn = document.getElementById('copyEnrollCode');
+  if (copyBtn && session.enrollment_code) {
     copyBtn.onclick = async () => {
       try {
-        await navigator.clipboard.writeText(deepLinkUrl);
+        await navigator.clipboard.writeText(session.enrollment_code);
         copyBtn.textContent = 'Copied!';
-        setTimeout(() => { copyBtn.textContent = 'Copy Link'; }, 2000);
+        setTimeout(() => { copyBtn.textContent = 'Copy Code'; }, 2000);
       } catch (err) {
         // Fallback for older browsers
         const textArea = document.createElement('textarea');
-        textArea.value = deepLinkUrl;
+        textArea.value = session.enrollment_code;
         document.body.appendChild(textArea);
         textArea.select();
         document.execCommand('copy');
         document.body.removeChild(textArea);
         copyBtn.textContent = 'Copied!';
-        setTimeout(() => { copyBtn.textContent = 'Copy Link'; }, 2000);
+        setTimeout(() => { copyBtn.textContent = 'Copy Code'; }, 2000);
       }
     };
   }

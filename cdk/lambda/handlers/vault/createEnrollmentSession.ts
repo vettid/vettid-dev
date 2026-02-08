@@ -1,5 +1,6 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { DynamoDBClient, PutItemCommand, QueryCommand, GetItemCommand } from '@aws-sdk/client-dynamodb';
+import { randomBytes } from 'crypto';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import {
   ok,
@@ -25,6 +26,16 @@ function generateDeepLinkUrl(qrData: object): string {
   const jsonString = JSON.stringify(qrData);
   const base64Encoded = Buffer.from(jsonString, 'utf-8').toString('base64url');
   return `${DEEP_LINK_BASE_URL}?data=${base64Encoded}`;
+}
+
+/**
+ * Generate a short enrollment code for manual entry (8 chars, formatted XXXX-XXXX).
+ * Uses uppercase alphanumeric excluding ambiguous chars (0/O, 1/I/L).
+ */
+function generateEnrollmentCode(): string {
+  const SAFE_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+  const codeChars = Array.from(randomBytes(8), (b) => SAFE_CHARS[b % SAFE_CHARS.length]);
+  return codeChars.slice(0, 4).join('') + '-' + codeChars.slice(4).join('');
 }
 
 /**
@@ -98,6 +109,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       return ok({
         session_id: session.session_id,
         session_token: session.session_token,
+        enrollment_code: session.enrollment_code,
         expires_at: session.expires_at,
         qr_data: qrData,
         deep_link_url: generateDeepLinkUrl(qrData),
@@ -107,6 +119,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     // Generate new enrollment session
     const sessionId = generateSecureId('enroll', 32);
     const sessionToken = generateSecureId('est', 48); // Enrollment Session Token
+    const enrollmentCode = generateEnrollmentCode(); // Short code for manual entry (XXXX-XXXX)
     const nowMs = Date.now();
     const expiresAtMs = nowMs + 5 * 60 * 1000; // 5 minutes
 
@@ -117,6 +130,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       Item: marshall({
         session_id: sessionId,
         session_token: sessionToken,
+        enrollment_code: enrollmentCode,
         user_guid: userGuid,
         user_email: userEmail,
         status: 'WEB_INITIATED',
@@ -148,6 +162,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     return ok({
       session_id: sessionId,
       session_token: sessionToken,
+      enrollment_code: enrollmentCode,
       expires_at: new Date(expiresAtMs).toISOString(),
       qr_data: qrData,
       deep_link_url: generateDeepLinkUrl(qrData),

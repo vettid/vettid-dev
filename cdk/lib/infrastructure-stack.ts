@@ -422,6 +422,13 @@ export class InfrastructureStack extends cdk.Stack {
       projectionType: dynamodb.ProjectionType.ALL,
     });
 
+    // GSI for looking up sessions by short enrollment code (used by mobile resolve-code endpoint)
+    enrollmentSessions.addGlobalSecondaryIndex({
+      indexName: 'code-index',
+      partitionKey: { name: 'enrollment_code', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
     // Notification Preferences table
     const notificationPreferences = new dynamodb.Table(this, 'NotificationPreferences', {
       partitionKey: { name: 'notification_type', type: dynamodb.AttributeType.STRING },
