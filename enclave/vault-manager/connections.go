@@ -1595,6 +1595,243 @@ func (h *ConnectionsHandler) addToConnectionIndex(connectionID string) {
 	h.storage.Put("connections/_index", newIndexData)
 }
 
+// HandleAcceptAgentConnection processes an agent connection request (registration completion).
+//
+// The agent sends a ConnectionRequest ECIES-encrypted with the vault's X25519 public key.
+// This handler:
+//  1. Finds the invitation by ID from the decrypted request
+//  2. Validates the invitation (exists, not expired, status "pending")
+//  3. Computes X25519 shared secret from vault private key + agent public key
+//  4. Updates the connection record with agent metadata, shared secret, and "active" status
+//  5. Publishes an approval response to the invitation-specific topic
+//
+// The envelope.Payload is ECIES-encrypted with the vault's connection public key
+// using DomainAgent domain separation.
+func (h *ConnectionsHandler) HandleAcceptAgentConnection(ctx context.Context, msg *IncomingMessage, envelope *AgentEnvelope) (*OutgoingMessage, error) {
+	// Extract encrypted bytes from envelope payload
+	encryptedPayload, err := extractPayloadBytes(envelope.Payload)
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to extract agent connection request payload")
+		return nil, nil
+	}
+
+	// We need to find the invitation first to get the connection record's private key.
+	// The key_id in the envelope isn't set for connection requests (agent doesn't know
+	// connection ID yet). Instead we try all pending agent invitations.
+	invRecord, connRecord, err := h.findPendingAgentInvitationForECIES(encryptedPayload)
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to find matching agent invitation")
+		return nil, nil
+	}
+
+	// ECIES-decrypt with the connection's local private key using agent domain
+	plaintext, err := decryptECIESAgentDomain(connRecord.LocalPrivateKey, encryptedPayload)
+	if err != nil {
+		log.Warn().Err(err).
+			Str("connection_id", connRecord.ConnectionID).
+			Msg("Failed to decrypt agent connection request")
+		return nil, nil
+	}
+	defer zeroBytes(plaintext)
+
+	// Parse the connection request
+	var connReq struct {
+		InvitationID   string    `json:"invitation_id"`
+		AgentPublicKey []byte    `json:"agent_public_key"`
+		Registration   AgentMetadata `json:"registration"`
+		Timestamp      time.Time `json:"timestamp"`
+	}
+	if err := json.Unmarshal(plaintext, &connReq); err != nil {
+		log.Warn().Err(err).Msg("Failed to parse agent connection request")
+		return nil, nil
+	}
+
+	// Verify invitation ID matches
+	if connReq.InvitationID != invRecord.InvitationID {
+		log.Warn().
+			Str("expected", invRecord.InvitationID).
+			Str("got", connReq.InvitationID).
+			Msg("Agent connection request invitation ID mismatch")
+		return nil, nil
+	}
+
+	// Validate invitation
+	if invRecord.Status != "pending" {
+		log.Warn().Str("status", invRecord.Status).Msg("Agent invitation not pending")
+		return nil, nil
+	}
+	if time.Now().After(invRecord.ExpiresAt) {
+		log.Warn().Msg("Agent invitation expired")
+		return nil, nil
+	}
+
+	// Validate agent public key
+	if len(connReq.AgentPublicKey) != 32 {
+		log.Warn().Int("len", len(connReq.AgentPublicKey)).Msg("Invalid agent public key length")
+		return nil, nil
+	}
+
+	// Compute X25519 shared secret
+	sharedSecret, err := curve25519.X25519(connRecord.LocalPrivateKey, connReq.AgentPublicKey)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to compute shared secret")
+		return nil, nil
+	}
+
+	// Update connection record
+	connRecord.PeerPublicKey = connReq.AgentPublicKey
+	connRecord.SharedSecret = sharedSecret
+	connRecord.Status = "active"
+	connRecord.KeyExchangeAt = time.Now()
+	connRecord.AgentMetadata = &connReq.Registration
+
+	// Set default contract (owner can update later)
+	if connRecord.Contract == nil {
+		connRecord.Contract = &ConnectionContract{
+			AgentName:    connRecord.PeerAlias,
+			Scope:        []string{}, // Empty = all categories allowed
+			ApprovalMode: "always_ask",
+			RateLimit:    RateLimit{Max: 60, Per: "hour"},
+		}
+	}
+
+	// Save updated connection
+	connData, err := json.Marshal(connRecord)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to marshal updated connection")
+		return nil, nil
+	}
+	if err := h.storage.Put("connections/"+connRecord.ConnectionID, connData); err != nil {
+		log.Error().Err(err).Msg("Failed to store updated connection")
+		return nil, nil
+	}
+
+	// Update invitation status
+	now := time.Now()
+	invRecord.Status = "accepted"
+	invRecord.RespondedAt = &now
+	invData, _ := json.Marshal(invRecord)
+	h.storage.Put("invitations/"+invRecord.InvitationID, invData)
+
+	// Log event
+	if h.eventHandler != nil {
+		h.eventHandler.LogConnectionEvent(ctx, EventTypeAgentConnectionApproved, connRecord.ConnectionID, "",
+			fmt.Sprintf("Agent connection accepted: %s", connRecord.PeerAlias))
+	}
+
+	log.Info().
+		Str("connection_id", connRecord.ConnectionID).
+		Str("invitation_id", invRecord.InvitationID).
+		Str("agent_type", connReq.Registration.AgentType).
+		Msg("Agent connection accepted")
+
+	// Derive connection key to encrypt the approval response
+	connKey, err := deriveConnectionKey(sharedSecret)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to derive connection key for approval response")
+		return nil, nil
+	}
+	defer zeroBytes(connKey)
+
+	// Build approval payload
+	approval := struct {
+		ConnectionID string             `json:"connection_id"`
+		KeyID        string             `json:"key_id"`
+		Contract     *ConnectionContract `json:"contract"`
+	}{
+		ConnectionID: connRecord.ConnectionID,
+		KeyID:        connRecord.ConnectionID,
+		Contract:     connRecord.Contract,
+	}
+	approvalBytes, _ := json.Marshal(approval)
+
+	// Encrypt with connection key
+	encryptedApproval, err := encryptXChaCha20(connKey, approvalBytes)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to encrypt approval response")
+		return nil, nil
+	}
+	zeroBytes(approvalBytes)
+
+	// Build response envelope
+	encPayloadJSON, _ := json.Marshal(encryptedApproval)
+	envBytes, err := json.Marshal(AgentEnvelope{
+		Type:      AgentMsgConnectionApproved,
+		KeyID:     connRecord.ConnectionID,
+		Payload:   encPayloadJSON,
+		Timestamp: time.Now().UTC(),
+	})
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to marshal approval envelope")
+		return nil, nil
+	}
+
+	// Publish to invitation-specific topic so the agent can receive it
+	responseTopic := fmt.Sprintf("MessageSpace.%s.forOwner.agent.invitation.%s", h.ownerSpace, invRecord.InvitationID)
+	log.Debug().Str("topic", responseTopic).Msg("Publishing agent connection approval")
+
+	return &OutgoingMessage{
+		ID:      generateMessageID(),
+		Type:    MessageTypeNATSPublish,
+		Subject: responseTopic,
+		Payload: envBytes,
+	}, nil
+}
+
+// findPendingAgentInvitationForECIES finds the pending agent invitation
+// that can successfully decrypt the ECIES payload.
+// This is needed because the agent doesn't know the connection ID before registration.
+func (h *ConnectionsHandler) findPendingAgentInvitationForECIES(encryptedPayload []byte) (*InvitationRecord, *ConnectionRecord, error) {
+	// Get invitation index
+	var invIndex []string
+	indexData, err := h.storage.Get("invitations/_index")
+	if err != nil {
+		return nil, nil, fmt.Errorf("no invitations found")
+	}
+	json.Unmarshal(indexData, &invIndex)
+
+	for _, invID := range invIndex {
+		invData, err := h.storage.Get("invitations/" + invID)
+		if err != nil {
+			continue
+		}
+
+		var inv InvitationRecord
+		if err := json.Unmarshal(invData, &inv); err != nil {
+			continue
+		}
+
+		// Only check pending, non-expired invitations
+		if inv.Status != "pending" || time.Now().After(inv.ExpiresAt) {
+			continue
+		}
+
+		// Look up the connection for this invitation
+		connData, err := h.storage.Get("connections/" + inv.ConnectionID)
+		if err != nil {
+			continue
+		}
+
+		var conn ConnectionRecord
+		if err := json.Unmarshal(connData, &conn); err != nil {
+			continue
+		}
+
+		// Must be an agent connection with a private key
+		if !conn.IsAgent() || len(conn.LocalPrivateKey) == 0 {
+			continue
+		}
+
+		// Try to decrypt — if it works, this is the right invitation
+		_, err = decryptECIESAgentDomain(conn.LocalPrivateKey, encryptedPayload)
+		if err == nil {
+			return &inv, &conn, nil
+		}
+	}
+
+	return nil, nil, fmt.Errorf("no matching pending agent invitation found")
+}
+
 func (h *ConnectionsHandler) errorResponse(id string, message string) (*OutgoingMessage, error) {
 	resp := map[string]interface{}{
 		"success": false,

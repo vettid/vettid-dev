@@ -99,6 +99,11 @@ const (
 	EventTypeAgentSecretAutoApproved EventType = "agent.secret.auto_approved"
 	EventTypeAgentSecretDenied       EventType = "agent.secret.denied"
 
+	// Agent action events (use-in-enclave operations)
+	EventTypeAgentActionRequested EventType = "agent.action.requested"
+	EventTypeAgentActionCompleted EventType = "agent.action.completed"
+	EventTypeAgentActionDenied    EventType = "agent.action.denied"
+
 	// Feed interaction events (audit-only, tracks user actions on feed items)
 	EventTypeFeedItemRead     EventType = "feed.item_read"
 	EventTypeFeedItemArchived EventType = "feed.item_archived"
@@ -315,6 +320,11 @@ var eventClassifications = map[EventType]EventClassification{
 	EventTypeAgentSecretApproved:     {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionPermanent},
 	EventTypeAgentSecretAutoApproved: {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionPermanent},
 	EventTypeAgentSecretDenied:       {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionPermanent},
+
+	// Agent action events (use-in-enclave)
+	EventTypeAgentActionRequested: {FeedStatusActive, ActionTypeAcceptDecline, PriorityHigh, RetentionPermanent},
+	EventTypeAgentActionCompleted: {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionPermanent},
+	EventTypeAgentActionDenied:    {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionPermanent},
 
 	// Guide events
 	EventTypeGuide: {FeedStatusActive, ActionTypeView, PriorityNormal, RetentionPermanent},

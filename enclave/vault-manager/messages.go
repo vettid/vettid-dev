@@ -129,6 +129,10 @@ type MessageHandler struct {
 
 	// Location handler (location tracking)
 	locationHandler *LocationHandler
+
+	// Agent handlers (AI agent connections)
+	agentHandler        *AgentHandler
+	agentSecretsHandler *AgentSecretsHandler
 }
 
 // VsockPublisher implements CallPublisher using vsock to parent
@@ -253,6 +257,15 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 	datastoreAccessController := NewDatastoreAccessController(ownerSpace, storage, eventHandler, combinedDatastoreHandler, publisher)
 	datastoreAuditHandler := NewDatastoreAuditHandler(ownerSpace, storage, combinedDatastoreHandler)
 
+	// Create agent secrets handler
+	agentSecretsHandler := NewAgentSecretsHandler(ownerSpace, storage, eventHandler)
+
+	// Create connections handler (needed for agent handler)
+	connectionsHandler := NewConnectionsHandler(ownerSpace, storage, eventHandler)
+
+	// Create agent handler
+	agentHandler := NewAgentHandler(ownerSpace, storage, publisher, eventHandler, connectionsHandler, agentSecretsHandler)
+
 	return &MessageHandler{
 		ownerSpace:           ownerSpace,
 		storage:              storage,
@@ -262,7 +275,7 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 		personalDataHandler:  personalDataHandler,
 		credentialHandler:    NewCredentialHandler(ownerSpace, storage),
 		messagingHandler:     NewMessagingHandler(ownerSpace, storage, publisher, eventHandler),
-		connectionsHandler:      NewConnectionsHandler(ownerSpace, storage, eventHandler),
+		connectionsHandler:      connectionsHandler,
 		notificationsHandler:    NewNotificationsHandler(ownerSpace, storage, publisher),
 		credentialSecretHandler: credentialSecretHandler,
 		eventHandler:            eventHandler,
@@ -306,6 +319,10 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 
 		// Location handler
 		locationHandler: NewLocationHandler(ownerSpace, storage, publisher),
+
+		// Agent handlers
+		agentHandler:        agentHandler,
+		agentSecretsHandler: agentSecretsHandler,
 	}
 }
 
@@ -404,6 +421,15 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 		// This is a message from a service
 		serviceID := parts[serviceIndex+1]
 		return mh.handleFromServiceOperation(ctx, msg, serviceID, parts[serviceIndex+2:])
+	}
+
+	// Check for agent messages (forOwner routing)
+	// Format: MessageSpace.{ownerSpace}.forOwner.agent
+	for _, part := range parts {
+		if part == "forOwner" {
+			// Agent messages: envelope contains type and encrypted payload
+			return mh.agentHandler.HandleAgentMessage(ctx, msg)
+		}
 	}
 
 	// Extract operation path (everything after forVault)
@@ -518,6 +544,9 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 	case "enrollment":
 		// Enrollment operations (identity mismatch reports)
 		return mh.handleEnrollmentOperation(ctx, msg, parts[opIndex+1:])
+	case "agent-secrets":
+		// Agent-shared secret management (from mobile app)
+		return mh.handleAgentSecretsOperation(ctx, msg, parts[opIndex+1:])
 	case "handlers":
 		// Handler listing (read-only introspection of vault capabilities)
 		return mh.handleHandlersOperation(ctx, msg, parts[opIndex+1:])
@@ -1828,6 +1857,7 @@ func (mh *MessageHandler) handleHandlersOperation(ctx context.Context, msg *Inco
 		{ID: "service", Name: "Services", Description: "B2C service connections and contracts", Operations: []string{"connection", "contract", "data", "request", "profile", "activity", "notifications", "trust"}},
 		{ID: "datastore", Name: "Data Stores", Description: "Shared collaborative data stores", Operations: []string{"create", "join", "read", "write", "delete", "subscribe", "audit"}},
 		{ID: "pin", Name: "Security", Description: "PIN and vault access management", Operations: []string{"setup", "unlock", "change"}},
+		{ID: "agent-secrets", Name: "Agent Secrets", Description: "Manage secrets shared with AI agents", Operations: []string{"share", "update", "revoke", "list"}},
 	}
 
 	respBytes, err := json.Marshal(map[string]interface{}{"handlers": handlers})
@@ -1835,6 +1865,44 @@ func (mh *MessageHandler) handleHandlersOperation(ctx context.Context, msg *Inco
 		return mh.errorResponse(msg.GetID(), "failed to marshal handlers list")
 	}
 	return mh.successResponse(msg.GetID(), respBytes)
+}
+
+// handleAgentSecretsOperation routes agent-secrets operations from the mobile app.
+// These are vault owner operations to share/update/revoke secrets for agent access.
+func (mh *MessageHandler) handleAgentSecretsOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
+	if len(opParts) < 2 {
+		return mh.errorResponse(msg.GetID(), "missing agent-secrets operation type")
+	}
+
+	opType := opParts[1]
+
+	switch opType {
+	case "share":
+		response, err := mh.agentSecretsHandler.HandleShareSecret(msg)
+		if err != nil {
+			return response, err
+		}
+		mh.persistVaultStateToS3()
+		return response, nil
+	case "update":
+		response, err := mh.agentSecretsHandler.HandleUpdateSharedSecret(msg)
+		if err != nil {
+			return response, err
+		}
+		mh.persistVaultStateToS3()
+		return response, nil
+	case "revoke":
+		response, err := mh.agentSecretsHandler.HandleRevokeSharedSecret(msg)
+		if err != nil {
+			return response, err
+		}
+		mh.persistVaultStateToS3()
+		return response, nil
+	case "list":
+		return mh.agentSecretsHandler.HandleListSharedSecrets(msg)
+	default:
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown agent-secrets operation: %s", opType))
+	}
 }
 
 // Response helpers
