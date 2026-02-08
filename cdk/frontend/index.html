@@ -1093,6 +1093,7 @@
   <a href="/donate" style="display:block;color:#d4d4d4;text-decoration:none;padding:12px 16px;font-size:1rem;">Donate</a>
   <a href="/pcr" style="display:block;color:#d4d4d4;text-decoration:none;padding:12px 16px;font-size:1rem;">PCR</a>
   <a href="/votes" style="display:block;color:#d4d4d4;text-decoration:none;padding:12px 16px;font-size:1rem;">Votes</a>
+  <a href="https://github.com/vettid/vettid-agent" target="_blank" rel="noopener noreferrer" style="display:block;color:#d4d4d4;text-decoration:none;padding:12px 16px;font-size:1rem;">Agents</a>
   <a href="/signin" style="display:block;color:#d4d4d4;text-decoration:none;padding:12px 16px;font-size:1rem;">Sign In</a>
   <a href="/register" style="display:block;background:#ffc125;color:#000;text-decoration:none;padding:12px 16px;font-size:1rem;text-align:center;margin-top:16px;border-radius:6px;">Register</a>
 </div>
@@ -1142,7 +1143,7 @@
   <img src="/assets/logo.jpg" alt="VettID" class="hero-logo">
   <h1>VettID</h1>
   <p class="tagline">Secure. Private. Trusted.</p>
-  <p class="subtitle">Your digital vault, protected by hardware-level security. A member-owned cooperative where even we can't access your data.</p>
+  <p class="subtitle">Your personal security platform &mdash; protecting your identity, your connections, and your AI agents. A member-owned cooperative where even we can't access your data.</p>
   <div class="hero-buttons">
     <a href="/register" class="btn btn-primary">Register with Invite</a>
     <a href="/register#waitlist" class="btn btn-outline">Join Waitlist</a>
@@ -1245,6 +1246,23 @@
       <h3>Encrypted Backup</h3>
       <p>Back up your vault with encryption only you can unlock. Recover your digital life on a new device without exposing your secrets.</p>
     </div>
+
+    <div class="use-case-card">
+      <div class="use-case-icon">
+        <svg viewBox="0 0 64 64" fill="none">
+          <!-- Brain/circuit icon representing AI agent -->
+          <circle cx="32" cy="28" r="14" stroke="#ffc125" stroke-width="2"/>
+          <path d="M24 28h4M36 28h4M28 22v4M36 22v4" stroke="#ffc125" stroke-width="2"/>
+          <circle cx="32" cy="28" r="4" fill="#ffc125" opacity="0.3"/>
+          <path d="M22 42h20" stroke="#ffc125" stroke-width="2"/>
+          <path d="M26 42v8M38 42v8" stroke="#ffc125" stroke-width="2"/>
+          <rect x="22" y="50" width="20" height="6" rx="2" stroke="#ffc125" stroke-width="2"/>
+          <path d="M32 42v-2" stroke="#ffc125" stroke-width="2" stroke-dasharray="2"/>
+        </svg>
+      </div>
+      <h3>AI Agent Access</h3>
+      <p>Give your AI agents secure access to vault secrets &mdash; API keys, tokens, and credentials &mdash; without ever exposing them. You approve every connection and control exactly what each agent can see.</p>
+    </div>
   </div>
 
   <div class="service-highlight">
@@ -1257,6 +1275,21 @@
         <li><svg width="16" height="16" viewBox="0 0 16 16" fill="#ffc125"><path d="M6 10.8L3.2 8l-.9.9L6 12.6l8-8-.9-.9L6 10.8z"/></svg> No data caching &mdash; access on-demand with clear consent</li>
         <li><svg width="16" height="16" viewBox="0 0 16 16" fill="#ffc125"><path d="M6 10.8L3.2 8l-.9.9L6 12.6l8-8-.9-.9L6 10.8z"/></svg> Customers revoke access instantly when they choose</li>
         <li><svg width="16" height="16" viewBox="0 0 16 16" fill="#ffc125"><path d="M6 10.8L3.2 8l-.9.9L6 12.6l8-8-.9-.9L6 10.8z"/></svg> Build customer trust through verified privacy practices</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="service-highlight" style="margin-top: 32px;">
+    <div class="service-highlight-content">
+      <h3>For Developers: Agent Connector</h3>
+      <p>The VettID Agent Connector is an open-source sidecar binary that gives AI agents secure, owner-controlled access to vault secrets. A single command connects your agent to a vault &mdash; the owner defines exactly what it can access, and revocation is instant. The agent never touches encryption keys or credentials.</p>
+      <ul class="service-features">
+        <li><svg width="16" height="16" viewBox="0 0 16 16" fill="#ffc125"><path d="M6 10.8L3.2 8l-.9.9L6 12.6l8-8-.9-.9L6 10.8z"/></svg> Zero-trust for the agent &mdash; never holds keys or NATS credentials</li>
+        <li><svg width="16" height="16" viewBox="0 0 16 16" fill="#ffc125"><path d="M6 10.8L3.2 8l-.9.9L6 12.6l8-8-.9-.9L6 10.8z"/></svg> Owner approves scope, rate limits, and auto-approval rules from their phone</li>
+        <li><svg width="16" height="16" viewBox="0 0 16 16" fill="#ffc125"><path d="M6 10.8L3.2 8l-.9.9L6 12.6l8-8-.9-.9L6 10.8z"/></svg> Secrets pass through, never cached &mdash; revocation is instant</li>
+        <li><svg width="16" height="16" viewBox="0 0 16 16" fill="#ffc125"><path d="M6 10.8L3.2 8l-.9.9L6 12.6l8-8-.9-.9L6 10.8z"/></svg> Single Go binary with local-only REST and WebSocket API</li>
+        <li><svg width="16" height="16" viewBox="0 0 16 16" fill="#ffc125"><path d="M6 10.8L3.2 8l-.9.9L6 12.6l8-8-.9-.9L6 10.8z"/></svg> Platform-bound credentials &mdash; undecryptable on a different machine</li>
+        <li><svg width="16" height="16" viewBox="0 0 16 16" fill="#ffc125"><path d="M6 10.8L3.2 8l-.9.9L6 12.6l8-8-.9-.9L6 10.8z"/></svg> Open source (AGPL-3.0) &mdash; <a href="https://github.com/vettid/vettid-agent" target="_blank" rel="noopener noreferrer" style="color: var(--accent); text-decoration: underline;">view on GitHub</a></li>
       </ul>
     </div>
   </div>
@@ -1354,6 +1387,10 @@
           <div class="diagram-box trusted">
             <h4>Nitro Enclave</h4>
             <p>Decrypts and processes</p>
+          </div>
+          <div class="diagram-box trusted">
+            <h4>Agent Connector</h4>
+            <p>E2E encrypted sidecar</p>
           </div>
         </div>
 
