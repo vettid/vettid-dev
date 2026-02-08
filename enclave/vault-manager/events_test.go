@@ -320,10 +320,10 @@ func TestEventHandler_Sync(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Log multiple events
+	// Log multiple events (use active event type so they appear in feed sync)
 	for i := 0; i < 5; i++ {
 		handler.LogEvent(ctx, &Event{
-			EventType: EventTypeCallOutgoing,
+			EventType: EventTypeCallIncoming,
 			Title:     "Call " + string(rune('1'+i)),
 		})
 	}

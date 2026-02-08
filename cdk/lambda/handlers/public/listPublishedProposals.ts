@@ -88,9 +88,10 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
         results_published_at: p.results_published_at,
         merkle_root: p.merkle_root,
         vote_counts: p.vote_counts,
-        total_votes: p.vote_counts ?
-          (p.vote_counts.yes || 0) + (p.vote_counts.no || 0) + (p.vote_counts.abstain || 0) :
-          0,
+        total_votes: p.vote_counts?.total ??
+          (p.vote_counts?.counts
+            ? Object.values(p.vote_counts.counts as Record<string, number>).reduce((a: number, b: number) => a + b, 0)
+            : 0),
       }));
 
     return {

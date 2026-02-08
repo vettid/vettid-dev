@@ -265,19 +265,14 @@ func TestAuthenticateHandler_MissingFields(t *testing.T) {
 			expectedError: "encrypted_credential is required",
 		},
 		{
-			name:          "missing password_hash",
-			request:       AuthenticateRequest{DeviceID: "x", EncryptedCredential: "x", Nonce: "x", BackupKey: "x"},
-			expectedError: "password_hash is required",
+			name:          "missing auth fields",
+			request:       AuthenticateRequest{DeviceID: "x", EncryptedCredential: "x"},
+			expectedError: "Either UTK fields (key_id, encrypted_password_hash) or restore fields (backup_key, password_hash) required",
 		},
 		{
-			name:          "missing nonce",
+			name:          "restore missing nonce",
 			request:       AuthenticateRequest{DeviceID: "x", EncryptedCredential: "x", PasswordHash: "x", BackupKey: "x"},
-			expectedError: "nonce is required",
-		},
-		{
-			name:          "missing backup_key",
-			request:       AuthenticateRequest{DeviceID: "x", EncryptedCredential: "x", PasswordHash: "x", Nonce: "x"},
-			expectedError: "backup_key is required",
+			expectedError: "nonce is required for restore",
 		},
 	}
 

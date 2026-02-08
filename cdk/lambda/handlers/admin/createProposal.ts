@@ -39,19 +39,38 @@ async function getNextProposalNumber(): Promise<string> {
 }
 
 /**
+ * A proposal choice with an ID and display label.
+ */
+interface ProposalChoice {
+  id: string;
+  label: string;
+  description?: string;
+}
+
+/** Default choices when none are specified */
+const DEFAULT_CHOICES: ProposalChoice[] = [
+  { id: 'yes', label: 'Yes' },
+  { id: 'no', label: 'No' },
+  { id: 'abstain', label: 'Abstain' },
+];
+
+/**
  * Create a canonical signing payload for a proposal
- * Format: proposal_id|proposal_title|opens_at|closes_at
+ * Format: proposal_id|proposal_title|opens_at|closes_at|choiceId1,choiceId2,...
  * This payload is signed by VettID's KMS key to prove proposal authenticity
  */
 function createSigningPayload(
   proposalId: string,
   proposalTitle: string | undefined,
   opensAt: string,
-  closesAt: string
+  closesAt: string,
+  choices: ProposalChoice[]
 ): string {
   // Use empty string for title if not provided (consistent with verification)
   const title = proposalTitle || '';
-  return `${proposalId}|${title}|${opensAt}|${closesAt}`;
+  // Sort choice IDs for deterministic signing
+  const sortedChoiceIds = choices.map(c => c.id).sort().join(',');
+  return `${proposalId}|${title}|${opensAt}|${closesAt}|${sortedChoiceIds}`;
 }
 
 /**
@@ -62,9 +81,10 @@ async function signProposal(
   proposalId: string,
   proposalTitle: string | undefined,
   opensAt: string,
-  closesAt: string
+  closesAt: string,
+  choices: ProposalChoice[]
 ): Promise<{ signature: string; signingPayload: string }> {
-  const signingPayload = createSigningPayload(proposalId, proposalTitle, opensAt, closesAt);
+  const signingPayload = createSigningPayload(proposalId, proposalTitle, opensAt, closesAt, choices);
 
   // Hash the payload with SHA-256 (KMS ECDSA_SHA_256 expects pre-hashed message)
   const messageHash = createHash('sha256').update(signingPayload).digest();
@@ -109,10 +129,47 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
 
     // Parse request body
     const body = parseJsonBody(event);
-    const { proposal_title, proposal_text, opens_at, closes_at, quorum_type, quorum_value, category } = body;
+    const { proposal_title, proposal_text, opens_at, closes_at, quorum_type, quorum_value, category, choices: rawChoices } = body;
 
     if (!proposal_text || !opens_at || !closes_at) {
       return badRequest('Missing required fields: proposal_text, opens_at, closes_at');
+    }
+
+    // Validate and normalize choices
+    let effectiveChoices: ProposalChoice[] = DEFAULT_CHOICES;
+    if (rawChoices !== undefined && rawChoices !== null) {
+      if (!Array.isArray(rawChoices)) {
+        return badRequest('choices must be an array');
+      }
+      if (rawChoices.length < 2) {
+        return badRequest('choices must have at least 2 options');
+      }
+      if (rawChoices.length > 20) {
+        return badRequest('choices must not exceed 20 options');
+      }
+      // Validate each choice
+      const choiceIds = new Set<string>();
+      const choiceIdPattern = /^[a-zA-Z0-9_-]{1,50}$/;
+      for (const choice of rawChoices) {
+        if (!choice.id || typeof choice.id !== 'string' || !choice.label || typeof choice.label !== 'string') {
+          return badRequest('Each choice must have an id (string) and label (string)');
+        }
+        if (!choiceIdPattern.test(choice.id)) {
+          return badRequest(`Choice id "${choice.id}" must be alphanumeric/hyphens/underscores, max 50 chars`);
+        }
+        if (choice.label.length > 200) {
+          return badRequest('Choice label must not exceed 200 characters');
+        }
+        if (choiceIds.has(choice.id)) {
+          return badRequest(`Duplicate choice id: ${choice.id}`);
+        }
+        choiceIds.add(choice.id);
+      }
+      effectiveChoices = rawChoices.map((c: any) => ({
+        id: c.id,
+        label: c.label,
+        ...(c.description ? { description: c.description } : {}),
+      }));
     }
 
     // Validate quorum settings
@@ -193,7 +250,8 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       proposalId,
       proposal_title,
       opensAtIso,
-      closesAtIso
+      closesAtIso,
+      effectiveChoices
     );
 
     const proposal: any = {
@@ -208,6 +266,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       quorum_type: effectiveQuorumType,
       quorum_value: effectiveQuorumValue,
       category: effectiveCategory,
+      choices: effectiveChoices,
       // Vault-based voting fields
       kms_signature: kmsSignature,
       kms_key_id: VOTING_KEY_ID,
@@ -236,6 +295,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       quorum_type: effectiveQuorumType,
       quorum_value: effectiveQuorumValue,
       category: effectiveCategory,
+      choices_count: effectiveChoices.length,
       kms_signed: true,
     };
     if (proposal_title) {

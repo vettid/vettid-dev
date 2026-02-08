@@ -59,7 +59,7 @@ function verifyEd25519Signature(publicKey: string, signature: string, message: s
  * POST /member/votes/signed
  * Body: {
  *   proposal_id: string,
- *   vote: 'yes' | 'no' | 'abstain',
+ *   vote: string (choice ID matching proposal's choices),
  *   voting_public_key: string (base64),
  *   vote_signature: string (base64),
  *   signed_payload: string
@@ -86,10 +86,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       return badRequest('Missing required fields: proposal_id, vote, voting_public_key, vote_signature, signed_payload');
     }
 
-    // Validate vote value
-    if (!['yes', 'no', 'abstain'].includes(vote)) {
-      return badRequest('Vote must be "yes", "no", or "abstain"');
-    }
+    // Vote value is validated after proposal fetch (dynamic choices)
 
     // Validate signed_payload format: proposal_id|vote|timestamp
     const payloadParts = signed_payload.split('|');
@@ -141,6 +138,14 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     }
 
     const proposal = unmarshall(proposalResult.Item);
+
+    // Validate vote value against proposal's choices
+    const validChoiceIds: string[] = proposal.choices
+      ? proposal.choices.map((c: any) => c.id)
+      : ['yes', 'no', 'abstain'];
+    if (!validChoiceIds.includes(vote)) {
+      return badRequest(`Vote must be one of: ${validChoiceIds.join(', ')}`);
+    }
 
     if (proposal.status !== 'active') {
       return badRequest('Proposal is not active for voting');

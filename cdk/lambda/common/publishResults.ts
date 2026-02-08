@@ -22,12 +22,10 @@ export interface AnonymizedVote {
 }
 
 /**
- * Vote counts structure
+ * Vote counts structure — dynamic per choice
  */
 export interface VoteCounts {
-  yes: number;
-  no: number;
-  abstain: number;
+  counts: Record<string, number>;
   total: number;
   web_votes: number;
 }
@@ -206,11 +204,13 @@ export async function publishVoteResults(
     // Build Merkle tree
     const merkleResult = buildMerkleTree(anonymizedVotes);
 
-    // Calculate vote counts
+    // Calculate vote counts dynamically by choice
+    const counts: Record<string, number> = {};
+    for (const v of anonymizedVotes) {
+      counts[v.vote] = (counts[v.vote] || 0) + 1;
+    }
     const voteCounts: VoteCounts = {
-      yes: anonymizedVotes.filter(v => v.vote === 'yes').length,
-      no: anonymizedVotes.filter(v => v.vote === 'no').length,
-      abstain: anonymizedVotes.filter(v => v.vote === 'abstain').length,
+      counts,
       total: anonymizedVotes.length,
       web_votes: allVotes.filter(v => v.vote_source !== 'vault').length,
     };

@@ -215,7 +215,7 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 	proteanCredentialHandler := NewProteanCredentialHandler(ownerSpace, vaultState, bootstrapHandler)
 
 	// Create vote handler for vault-signed voting
-	voteHandler := NewVoteHandler(ownerSpace, vaultState)
+	voteHandler := NewVoteHandler(ownerSpace, vaultState, bootstrapHandler)
 
 	// Create event handler for unified audit logging and feed
 	// NOTE: Must be created before handlers that depend on it for logging
