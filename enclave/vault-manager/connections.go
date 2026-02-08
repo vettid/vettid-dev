@@ -84,6 +84,8 @@ type CreateInviteRequest struct {
 // CreateInviteResponse is the response for connection.create-invite
 type CreateInviteResponse struct {
 	ConnectionID      string `json:"connection_id"`
+	OwnerSpace        string `json:"owner_space"`
+	Credentials       string `json:"credentials"`
 	MessageSpaceTopic string `json:"message_space_topic"`
 	ExpiresAt         string `json:"expires_at"`
 	E2EPublicKey      string `json:"e2e_public_key"`
@@ -91,12 +93,16 @@ type CreateInviteResponse struct {
 
 // StoreCredentialsRequest is the payload for connection.store-credentials
 type StoreCredentialsRequest struct {
-	ConnectionID      string `json:"connection_id"`
-	PeerAlias         string `json:"peer_alias"`
-	PeerGUID          string `json:"peer_guid"`
-	Credentials       string `json:"credentials"`
-	MessageSpaceTopic string `json:"message_space_topic"`
-	PeerE2EPublicKey  string `json:"peer_e2e_public_key"`
+	ConnectionID       string `json:"connection_id"`
+	PeerAlias          string `json:"peer_alias"`
+	Label              string `json:"label"`
+	PeerGUID           string `json:"peer_guid"`
+	Credentials        string `json:"credentials"`
+	NATSCredentials    string `json:"nats_credentials"`
+	MessageSpaceTopic  string `json:"message_space_topic"`
+	PeerMessageSpaceID string `json:"peer_message_space_id"`
+	PeerOwnerSpaceID   string `json:"peer_owner_space_id"`
+	PeerE2EPublicKey   string `json:"peer_e2e_public_key"`
 }
 
 // StoreCredentialsResponse is the response for connection.store-credentials
@@ -307,6 +313,8 @@ func (h *ConnectionsHandler) HandleCreateInvite(msg *IncomingMessage) (*Outgoing
 
 	resp := CreateInviteResponse{
 		ConnectionID:      connectionID,
+		OwnerSpace:        h.ownerSpace,
+		Credentials:       "", // Phase 2: Lambda-generated scoped NATS JWTs
 		MessageSpaceTopic: record.MessageSpaceTopic,
 		ExpiresAt:         expiresAt.Format(time.RFC3339),
 		E2EPublicKey:      fmt.Sprintf("%x", localPublic),
@@ -327,12 +335,21 @@ func (h *ConnectionsHandler) HandleStoreCredentials(msg *IncomingMessage) (*Outg
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
+	// Normalize alternate field names from Android client
+	if req.PeerAlias == "" && req.Label != "" {
+		req.PeerAlias = req.Label
+	}
+	if req.Credentials == "" && req.NATSCredentials != "" {
+		req.Credentials = req.NATSCredentials
+	}
+	if req.MessageSpaceTopic == "" && req.PeerMessageSpaceID != "" {
+		req.MessageSpaceTopic = req.PeerMessageSpaceID
+	}
+
 	if req.ConnectionID == "" {
 		return h.errorResponse(msg.GetID(), "connection_id is required")
 	}
-	if req.Credentials == "" {
-		return h.errorResponse(msg.GetID(), "credentials are required")
-	}
+	// Credentials are optional in Phase 1 (no scoped NATS JWTs yet)
 	if req.MessageSpaceTopic == "" {
 		return h.errorResponse(msg.GetID(), "message_space_topic is required")
 	}
@@ -340,11 +357,12 @@ func (h *ConnectionsHandler) HandleStoreCredentials(msg *IncomingMessage) (*Outg
 	// Generate our X25519 key pair
 	localPrivate := make([]byte, 32)
 	rand.Read(localPrivate)
-	localPrivate[0] &= 248
-	localPrivate[31] &= 127
-	localPrivate[31] |= 64
-	localPublic := make([]byte, 32)
-	copy(localPublic, localPrivate) // Placeholder
+
+	// Derive public key from private key using X25519 scalar multiplication
+	localPublic, err := curve25519.X25519(localPrivate, curve25519.Basepoint)
+	if err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to derive public key")
+	}
 
 	// Store the inbound connection record
 	record := ConnectionRecord{
@@ -380,10 +398,15 @@ func (h *ConnectionsHandler) HandleStoreCredentials(msg *IncomingMessage) (*Outg
 
 	log.Info().Str("connection_id", req.ConnectionID).Msg("Connection credentials stored")
 
-	resp := StoreCredentialsResponse{
-		Success:      true,
-		ConnectionID: req.ConnectionID,
-		E2EPublicKey: fmt.Sprintf("%x", localPublic),
+	resp := map[string]interface{}{
+		"success":       true,
+		"connection_id": req.ConnectionID,
+		"e2e_public_key": fmt.Sprintf("%x", localPublic),
+		"label":         record.PeerAlias,
+		"peer_guid":     record.PeerGUID,
+		"status":        record.Status,
+		"direction":     record.CredentialsType,
+		"created_at":    record.CreatedAt.Format(time.RFC3339),
 	}
 	respBytes, _ := json.Marshal(resp)
 
@@ -1044,6 +1067,128 @@ func (h *ConnectionsHandler) HandleUpdate(msg *IncomingMessage) (*OutgoingMessag
 	resp := ConnectionUpdateResponse{
 		Success:      true,
 		ConnectionID: req.ConnectionID,
+	}
+	respBytes, _ := json.Marshal(resp)
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// HandleRotate handles connection.rotate messages
+// Generates a new X25519 keypair for an active connection
+func (h *ConnectionsHandler) HandleRotate(msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req struct {
+		ConnectionID string `json:"connection_id"`
+	}
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		return h.errorResponse(msg.GetID(), "Invalid request format")
+	}
+
+	if req.ConnectionID == "" {
+		return h.errorResponse(msg.GetID(), "connection_id is required")
+	}
+
+	storageKey := "connections/" + req.ConnectionID
+	data, err := h.storage.Get(storageKey)
+	if err != nil {
+		return h.errorResponse(msg.GetID(), "Connection not found")
+	}
+
+	var record ConnectionRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to read connection")
+	}
+
+	if record.Status != "active" {
+		return h.errorResponse(msg.GetID(), fmt.Sprintf("Cannot rotate keys for connection with status: %s", record.Status))
+	}
+
+	// Generate new X25519 keypair
+	localPrivate := make([]byte, 32)
+	rand.Read(localPrivate)
+
+	localPublic, err := curve25519.X25519(localPrivate, curve25519.Basepoint)
+	if err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to derive public key")
+	}
+
+	// Update connection record
+	record.LocalPrivateKey = localPrivate
+	record.LocalPublicKey = localPublic
+	record.SharedSecret = nil // Clear shared secret until peer exchanges new key
+	record.LastRotatedAt = time.Now()
+	record.KeyRotationCount++
+
+	newData, err := json.Marshal(record)
+	if err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to marshal connection")
+	}
+
+	if err := h.storage.Put(storageKey, newData); err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to update connection")
+	}
+
+	// Log rotation event
+	if h.eventHandler != nil {
+		h.eventHandler.LogConnectionEvent(context.Background(), EventTypeConnectionRotated, req.ConnectionID, record.PeerGUID, "Keys rotated")
+	}
+
+	log.Info().Str("connection_id", req.ConnectionID).Int("rotation_count", record.KeyRotationCount).Msg("Connection keys rotated")
+
+	resp := map[string]interface{}{
+		"connection_id":      record.ConnectionID,
+		"peer_guid":          record.PeerGUID,
+		"label":              record.PeerAlias,
+		"status":             record.Status,
+		"direction":          record.CredentialsType,
+		"created_at":         record.CreatedAt.Format(time.RFC3339),
+		"last_rotated_at":    record.LastRotatedAt.Format(time.RFC3339),
+		"key_rotation_count": record.KeyRotationCount,
+		"e2e_public_key":     fmt.Sprintf("%x", localPublic),
+	}
+	respBytes, _ := json.Marshal(resp)
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// HandleGetCredentials handles connection.get-credentials messages
+// Returns NATS credentials for communicating with a peer
+func (h *ConnectionsHandler) HandleGetCredentials(msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req struct {
+		ConnectionID string `json:"connection_id"`
+	}
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		return h.errorResponse(msg.GetID(), "Invalid request format")
+	}
+
+	if req.ConnectionID == "" {
+		return h.errorResponse(msg.GetID(), "connection_id is required")
+	}
+
+	data, err := h.storage.Get("connections/" + req.ConnectionID)
+	if err != nil {
+		return h.errorResponse(msg.GetID(), "Connection not found")
+	}
+
+	var record ConnectionRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to read connection")
+	}
+
+	resp := map[string]interface{}{
+		"connection_id":        record.ConnectionID,
+		"nats_credentials":     record.Credentials,
+		"peer_message_space_id": record.MessageSpaceTopic,
+	}
+	if record.CredentialsExpireAt != nil {
+		resp["expires_at"] = record.CredentialsExpireAt.Format(time.RFC3339)
 	}
 	respBytes, _ := json.Marshal(resp)
 

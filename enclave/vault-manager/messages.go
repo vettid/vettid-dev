@@ -1158,6 +1158,15 @@ func (mh *MessageHandler) handleConnectionOperation(ctx context.Context, msg *In
 		return mh.connectionsHandler.HandleGetCapabilities(msg)
 	case "activity-summary":
 		return mh.connectionsHandler.HandleActivitySummary(msg)
+	case "rotate":
+		response, err := mh.connectionsHandler.HandleRotate(msg)
+		if err != nil {
+			return response, err
+		}
+		mh.persistVaultStateToS3()
+		return response, nil
+	case "get-credentials":
+		return mh.connectionsHandler.HandleGetCredentials(msg)
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown connection operation: %s", opType))
 	}

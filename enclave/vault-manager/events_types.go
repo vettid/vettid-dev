@@ -26,6 +26,7 @@ const (
 	EventTypeConnectionRejected  EventType = "connection.rejected"
 	EventTypeConnectionRevoked   EventType = "connection.revoked"
 	EventTypeConnectionCreated   EventType = "connection.created"
+	EventTypeConnectionRotated   EventType = "connection.rotated"
 
 	// Message events
 	EventTypeMessageReceived EventType = "message.received"
@@ -224,6 +225,7 @@ var eventClassifications = map[EventType]EventClassification{
 	EventTypeConnectionRejected:  {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
 	EventTypeConnectionRevoked:   {FeedStatusActive, ActionTypeAcknowledge, PriorityLow, RetentionStandard},
 	EventTypeConnectionCreated:   {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
+	EventTypeConnectionRotated:   {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
 
 	// Message events
 	EventTypeMessageReceived: {FeedStatusActive, ActionTypeReply, PriorityLow, RetentionStandard},
