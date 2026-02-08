@@ -201,6 +201,146 @@ func (h *ProteanCredentialHandler) HandleCredentialCreate(ctx context.Context, m
 	}, nil
 }
 
+// HandlePasswordChange processes credential password change requests
+// Flow:
+// 1. Decrypt payload containing old and new password hashes using UTK
+// 2. Verify old password hash matches credential's stored PasswordHash
+// 3. Update credential PasswordHash to new value
+// 4. Re-encrypt credential with CEK for app storage
+// 5. Return updated encrypted credential + new UTKs
+//
+// SECURITY: Password hashes are in PHC format (Argon2id), hashed by the app before sending.
+// Both old and new hashes are transported encrypted via UTK.
+func (h *ProteanCredentialHandler) HandlePasswordChange(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	log.Info().Str("owner_space", h.ownerSpace).Msg("Credential password change requested")
+
+	// Parse request
+	var req PasswordChangeRequest
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		return h.errorResponse(msg.GetID(), "invalid request format")
+	}
+
+	// Validate UTK
+	ltk, found := h.bootstrap.GetLTKForUTK(req.UTKID)
+	if !found {
+		return h.errorResponse(msg.GetID(), "invalid or expired UTK")
+	}
+
+	// Check vault state
+	h.state.mu.RLock()
+	credential := h.state.credential
+	cekPair := h.state.cekPair
+	h.state.mu.RUnlock()
+
+	if credential == nil {
+		return h.errorResponse(msg.GetID(), "credential not loaded - unlock vault first")
+	}
+	if cekPair == nil {
+		return h.errorResponse(msg.GetID(), "CEK not available")
+	}
+
+	// Decode and decrypt payload using UTK's corresponding LTK
+	encryptedPayload, err := base64.StdEncoding.DecodeString(req.EncryptedPayload)
+	if err != nil {
+		return h.errorResponse(msg.GetID(), "invalid payload encoding")
+	}
+
+	payloadBytes, err := decryptWithUTK(ltk, encryptedPayload)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to decrypt password change payload")
+		return h.errorResponse(msg.GetID(), "decryption failed")
+	}
+	defer zeroBytes(payloadBytes) // SECURITY: Clear plaintext after use
+
+	// Parse decrypted payload
+	var payload PasswordChangePayload
+	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
+		return h.errorResponse(msg.GetID(), "invalid payload format")
+	}
+
+	// Validate both password hashes are in PHC format
+	if payload.OldPasswordHash == "" {
+		return h.errorResponse(msg.GetID(), "old_password_hash is required")
+	}
+	if payload.NewPasswordHash == "" {
+		return h.errorResponse(msg.GetID(), "new_password_hash is required")
+	}
+	if err := validatePHCString(payload.OldPasswordHash); err != nil {
+		return h.errorResponse(msg.GetID(), "invalid old password hash format")
+	}
+	if err := validatePHCString(payload.NewPasswordHash); err != nil {
+		return h.errorResponse(msg.GetID(), "invalid new password hash format")
+	}
+
+	// Mark UTK as used (single-use for security)
+	h.bootstrap.MarkUTKUsed(req.UTKID)
+
+	// SECURITY: Verify old password hash matches stored credential
+	if !timingSafeEqualStrings(payload.OldPasswordHash, credential.PasswordHash) {
+		log.Warn().Str("owner_space", h.ownerSpace).Msg("Password change failed - old password mismatch")
+		return h.errorResponse(msg.GetID(), "current password is incorrect")
+	}
+
+	// Update credential with new password hash
+	h.state.mu.Lock()
+	h.state.credential.PasswordHash = payload.NewPasswordHash
+	h.state.credential.Version++
+	h.state.mu.Unlock()
+
+	// Serialize updated credential for encryption
+	credentialBytes, err := json.Marshal(credential)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to serialize credential")
+		return h.errorResponse(msg.GetID(), "serialization failed")
+	}
+	defer zeroBytes(credentialBytes) // SECURITY: Clear after encryption
+
+	// Re-encrypt credential with CEK for app storage
+	encryptedCredential, err := encryptWithCEK(cekPair.PublicKey, credentialBytes)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to encrypt credential with CEK")
+		return h.errorResponse(msg.GetID(), "encryption failed")
+	}
+
+	// Generate fresh UTKs for future operations
+	if err := h.bootstrap.GenerateMoreUTKs(5); err != nil {
+		log.Warn().Err(err).Msg("Failed to generate new UTKs")
+	}
+
+	// Build response with new UTKs
+	utks := h.bootstrap.GetUnusedUTKPairs()
+	utkPublics := make([]UTKPublic, len(utks))
+	for i, utk := range utks {
+		utkPublics[i] = UTKPublic{
+			ID:        utk.ID,
+			PublicKey: base64.StdEncoding.EncodeToString(utk.UTK),
+		}
+	}
+
+	response := PasswordChangeResponse{
+		Status:              "password_changed",
+		EncryptedCredential: base64.StdEncoding.EncodeToString(encryptedCredential),
+		NewUTKs:             utkPublics,
+	}
+
+	responseBytes, err := json.Marshal(response)
+	if err != nil {
+		return h.errorResponse(msg.GetID(), "response serialization failed")
+	}
+
+	log.Info().
+		Str("owner_space", h.ownerSpace).
+		Int("credential_version", credential.Version).
+		Int("utk_count", len(utkPublics)).
+		Msg("Credential password changed successfully")
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   responseBytes,
+	}, nil
+}
+
 func (h *ProteanCredentialHandler) errorResponse(requestID string, errMsg string) (*OutgoingMessage, error) {
 	return &OutgoingMessage{
 		RequestID: requestID,

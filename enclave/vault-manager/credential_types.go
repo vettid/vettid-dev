@@ -482,6 +482,27 @@ type PINChangeResponse struct {
 	NewUTKs             []string `json:"new_utks"`
 }
 
+// PasswordChangeRequest is the request to change the credential password
+// Uses UTK encryption (same as credential.create) for transport security
+type PasswordChangeRequest struct {
+	UTKID            string `json:"utk_id"`
+	EncryptedPayload string `json:"encrypted_payload"` // UTK-encrypted old + new password hashes
+}
+
+// PasswordChangePayload is the decrypted payload for password change
+// Both hashes are in PHC format: $argon2id$v=19$m=65536,t=3,p=4$<salt>$<hash>
+type PasswordChangePayload struct {
+	OldPasswordHash string `json:"old_password_hash"` // Current password hash (PHC format)
+	NewPasswordHash string `json:"new_password_hash"` // New password hash (PHC format)
+}
+
+// PasswordChangeResponse is returned after successful password change
+type PasswordChangeResponse struct {
+	Status              string      `json:"status"`               // "password_changed"
+	EncryptedCredential string      `json:"encrypted_credential"` // Re-encrypted credential with updated password
+	NewUTKs             []UTKPublic `json:"new_utks"`             // Fresh UTKs
+}
+
 // NewVaultState creates a new vault state
 func NewVaultState() *VaultState {
 	return &VaultState{

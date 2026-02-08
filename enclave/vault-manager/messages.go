@@ -1038,6 +1038,14 @@ func (mh *MessageHandler) handleCredentialOperation(ctx context.Context, msg *In
 		// First clear in-memory state, then delete from storage
 		mh.proteanCredentialHandler.ClearCredential()
 		return mh.credentialHandler.HandleDelete(msg)
+	case "password-change":
+		// Change the credential password (Argon2id PHC hash)
+		response, err := mh.proteanCredentialHandler.HandlePasswordChange(ctx, msg)
+		if err != nil {
+			return response, err
+		}
+		mh.persistVaultStateToS3()
+		return response, nil
 	case "secret":
 		// Critical secrets stored within Protean Credential
 		return mh.handleCredentialSecretOperation(ctx, msg, opParts[1:])
