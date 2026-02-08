@@ -87,6 +87,18 @@ const (
 	// Service notification events
 	EventTypeServiceNotification EventType = "service.notification"
 
+	// Agent connection events
+	EventTypeAgentConnectionRequest  EventType = "agent.connection.request"
+	EventTypeAgentConnectionApproved EventType = "agent.connection.approved"
+	EventTypeAgentConnectionDenied   EventType = "agent.connection.denied"
+	EventTypeAgentConnectionRevoked  EventType = "agent.connection.revoked"
+
+	// Agent secret request events
+	EventTypeAgentSecretRequested    EventType = "agent.secret.requested"
+	EventTypeAgentSecretApproved     EventType = "agent.secret.approved"
+	EventTypeAgentSecretAutoApproved EventType = "agent.secret.auto_approved"
+	EventTypeAgentSecretDenied       EventType = "agent.secret.denied"
+
 	// Feed interaction events (audit-only, tracks user actions on feed items)
 	EventTypeFeedItemRead     EventType = "feed.item_read"
 	EventTypeFeedItemArchived EventType = "feed.item_archived"
@@ -291,6 +303,18 @@ var eventClassifications = map[EventType]EventClassification{
 
 	// Service notification events
 	EventTypeServiceNotification: {FeedStatusActive, ActionTypeView, PriorityNormal, RetentionStandard},
+
+	// Agent connection events
+	EventTypeAgentConnectionRequest:  {FeedStatusActive, ActionTypeAcceptDecline, PriorityHigh, RetentionStandard},
+	EventTypeAgentConnectionApproved: {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
+	EventTypeAgentConnectionDenied:   {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
+	EventTypeAgentConnectionRevoked:  {FeedStatusActive, ActionTypeAcknowledge, PriorityNormal, RetentionStandard},
+
+	// Agent secret request events
+	EventTypeAgentSecretRequested:    {FeedStatusActive, ActionTypeAcceptDecline, PriorityHigh, RetentionPermanent},
+	EventTypeAgentSecretApproved:     {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionPermanent},
+	EventTypeAgentSecretAutoApproved: {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionPermanent},
+	EventTypeAgentSecretDenied:       {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionPermanent},
 
 	// Guide events
 	EventTypeGuide: {FeedStatusActive, ActionTypeView, PriorityNormal, RetentionPermanent},

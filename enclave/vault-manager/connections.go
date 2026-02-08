@@ -31,9 +31,16 @@ func NewConnectionsHandler(ownerSpace string, storage *EncryptedStorage, eventHa
 
 // --- Storage types ---
 
+// Connection type constants
+const (
+	ConnectionTypePeer  = "peer"  // Human-to-human connection (default)
+	ConnectionTypeAgent = "agent" // AI agent connection via Agent Connector
+)
+
 // ConnectionRecord represents a stored connection
 type ConnectionRecord struct {
 	ConnectionID      string    `json:"connection_id"`
+	ConnectionType    string    `json:"connection_type,omitempty"` // "peer" (default) or "agent"
 	PeerAlias         string    `json:"peer_alias"`
 	PeerGUID          string    `json:"peer_guid,omitempty"`
 	CredentialsType   string    `json:"credentials_type"` // "outbound" or "inbound"
@@ -69,6 +76,50 @@ type ConnectionRecord struct {
 	// Peer verifications and capabilities
 	PeerVerifications []string          `json:"peer_verifications,omitempty"`
 	PeerCapabilities  map[string]string `json:"peer_capabilities,omitempty"`
+
+	// Agent-specific fields (only set when ConnectionType == "agent")
+	AgentMetadata *AgentMetadata      `json:"agent_metadata,omitempty"`
+	Contract      *ConnectionContract `json:"contract,omitempty"`
+}
+
+// AgentMetadata holds registration details for an AI agent connection.
+// Collected by the Agent Connector during registration and sent to the vault.
+type AgentMetadata struct {
+	AgentType          string `json:"agent_type"`           // coding_assistant, data_pipeline, etc.
+	BinaryFingerprint  string `json:"binary_fingerprint"`   // SHA-256 of connector binary
+	MachineFingerprint string `json:"machine_fingerprint"`  // HMAC-SHA256 of machine attributes
+	IPAddress          string `json:"ip_address"`
+	Hostname           string `json:"hostname"`
+	Platform           string `json:"platform"`             // linux/amd64, darwin/arm64, etc.
+}
+
+// ConnectionContract defines the permissions and limits for an agent connection.
+// Set by the vault owner when approving an agent connection request.
+type ConnectionContract struct {
+	AgentName    string    `json:"agent_name"`              // Owner-defined name for this agent
+	Scope        []string  `json:"scope"`                   // api_keys, ssh_keys, etc.
+	ApprovalMode string    `json:"approval_mode"`           // always_ask, auto_within_contract, auto_all
+	RateLimit    RateLimit `json:"rate_limit"`
+}
+
+// RateLimit defines request frequency limits for an agent connection.
+type RateLimit struct {
+	Max int    `json:"max"` // e.g. 60
+	Per string `json:"per"` // "hour", "minute"
+}
+
+// GetConnectionType returns the effective connection type, defaulting to "peer"
+// for connections created before the type field was added.
+func (r *ConnectionRecord) GetConnectionType() string {
+	if r.ConnectionType == "" {
+		return ConnectionTypePeer
+	}
+	return r.ConnectionType
+}
+
+// IsAgent returns true if this is an agent connection.
+func (r *ConnectionRecord) IsAgent() bool {
+	return r.GetConnectionType() == ConnectionTypeAgent
 }
 
 // --- Request/Response types ---
@@ -155,20 +206,22 @@ type RespondConnectionResponse struct {
 
 // ListConnectionsRequest is the payload for connection.list
 type ListConnectionsRequest struct {
-	Status     string   `json:"status,omitempty"`
-	Tags       []string `json:"tags,omitempty"`
-	IsFavorite *bool    `json:"is_favorite,omitempty"`
-	IsArchived *bool    `json:"is_archived,omitempty"`
-	Search     string   `json:"search,omitempty"`
-	SortBy     string   `json:"sort_by,omitempty"` // "recent_activity", "alphabetical", "created_at"
-	SortOrder  string   `json:"sort_order,omitempty"` // "asc", "desc"
-	Limit      int      `json:"limit,omitempty"`
-	Offset     int      `json:"offset,omitempty"`
+	ConnectionType string   `json:"connection_type,omitempty"` // "peer", "agent", or "" for all
+	Status         string   `json:"status,omitempty"`
+	Tags           []string `json:"tags,omitempty"`
+	IsFavorite     *bool    `json:"is_favorite,omitempty"`
+	IsArchived     *bool    `json:"is_archived,omitempty"`
+	Search         string   `json:"search,omitempty"`
+	SortBy         string   `json:"sort_by,omitempty"` // "recent_activity", "alphabetical", "created_at"
+	SortOrder      string   `json:"sort_order,omitempty"` // "asc", "desc"
+	Limit          int      `json:"limit,omitempty"`
+	Offset         int      `json:"offset,omitempty"`
 }
 
 // ConnectionInfo represents connection info in list response
 type ConnectionInfo struct {
 	ConnectionID     string `json:"connection_id"`
+	ConnectionType   string `json:"connection_type"` // "peer" or "agent"
 	PeerAlias        string `json:"peer_alias"`
 	PeerGUID         string `json:"peer_guid,omitempty"`
 	Status           string `json:"status"`
@@ -189,6 +242,10 @@ type ConnectionInfo struct {
 	CredentialsExpireAt string   `json:"credentials_expire_at,omitempty"`
 	PeerProfileVersion  int      `json:"peer_profile_version,omitempty"`
 	PeerVerifications   []string `json:"peer_verifications,omitempty"`
+
+	// Agent-specific fields (only present for agent connections)
+	AgentMetadata *AgentMetadata      `json:"agent_metadata,omitempty"`
+	Contract      *ConnectionContract `json:"contract,omitempty"`
 }
 
 // ListConnectionsResponse is the response for connection.list
@@ -748,6 +805,11 @@ func (h *ConnectionsHandler) HandleList(msg *IncomingMessage) (*OutgoingMessage,
 			continue
 		}
 
+		// Filter by connection type if specified
+		if req.ConnectionType != "" && record.GetConnectionType() != req.ConnectionType {
+			continue
+		}
+
 		// Filter by status if specified
 		if req.Status != "" && record.Status != req.Status {
 			continue
@@ -782,10 +844,12 @@ func (h *ConnectionsHandler) HandleList(msg *IncomingMessage) (*OutgoingMessage,
 			continue
 		}
 
-		// Filter by search term (case-insensitive substring match on alias)
+		// Filter by search term (case-insensitive substring match on alias or agent name)
 		if req.Search != "" {
 			searchLower := strings.ToLower(req.Search)
-			if !strings.Contains(strings.ToLower(record.PeerAlias), searchLower) {
+			matchAlias := strings.Contains(strings.ToLower(record.PeerAlias), searchLower)
+			matchAgent := record.Contract != nil && strings.Contains(strings.ToLower(record.Contract.AgentName), searchLower)
+			if !matchAlias && !matchAgent {
 				continue
 			}
 		}
@@ -795,6 +859,7 @@ func (h *ConnectionsHandler) HandleList(msg *IncomingMessage) (*OutgoingMessage,
 
 		info := ConnectionInfo{
 			ConnectionID:       record.ConnectionID,
+			ConnectionType:     record.GetConnectionType(),
 			PeerAlias:          record.PeerAlias,
 			PeerGUID:           record.PeerGUID,
 			Status:             record.Status,
@@ -809,6 +874,8 @@ func (h *ConnectionsHandler) HandleList(msg *IncomingMessage) (*OutgoingMessage,
 			NeedsAttention:     needsAttention,
 			PeerProfileVersion: record.PeerProfileVersion,
 			PeerVerifications:  record.PeerVerifications,
+			AgentMetadata:      record.AgentMetadata,
+			Contract:           record.Contract,
 		}
 
 		if !record.LastRotatedAt.IsZero() {
@@ -978,6 +1045,7 @@ func (h *ConnectionsHandler) HandleGet(msg *IncomingMessage) (*OutgoingMessage, 
 
 	info := ConnectionInfo{
 		ConnectionID:       record.ConnectionID,
+		ConnectionType:     record.GetConnectionType(),
 		PeerAlias:          record.PeerAlias,
 		PeerGUID:           record.PeerGUID,
 		Status:             record.Status,
@@ -992,6 +1060,8 @@ func (h *ConnectionsHandler) HandleGet(msg *IncomingMessage) (*OutgoingMessage, 
 		NeedsAttention:     needsAttention,
 		PeerProfileVersion: record.PeerProfileVersion,
 		PeerVerifications:  record.PeerVerifications,
+		AgentMetadata:      record.AgentMetadata,
+		Contract:           record.Contract,
 	}
 
 	if !record.LastRotatedAt.IsZero() {
