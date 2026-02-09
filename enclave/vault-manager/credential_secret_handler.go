@@ -493,7 +493,9 @@ func (h *CredentialSecretHandler) HandleDelete(msg *IncomingMessage) (*OutgoingM
 
 // --- Credential blob operations ---
 
-// decryptCredentialBlob decrypts a CEK-encrypted credential blob and returns V2 format
+// decryptCredentialBlob decrypts a CEK-encrypted credential blob and returns V2 format.
+// Supports both V1 (UnsealedCredential) and V2 (ProteanCredentialV2) blobs.
+// V1 credentials are auto-migrated to V2 using MigrateV1ToV2.
 func (h *CredentialSecretHandler) decryptCredentialBlob(encryptedBase64 string) (*ProteanCredentialV2, error) {
 	encryptedBytes, err := base64.StdEncoding.DecodeString(encryptedBase64)
 	if err != nil {
@@ -514,14 +516,27 @@ func (h *CredentialSecretHandler) decryptCredentialBlob(encryptedBase64 string) 
 	}
 	defer zeroBytes(plaintext)
 
+	// Try V2 format first
 	var credV2 ProteanCredentialV2
 	if err := json.Unmarshal(plaintext, &credV2); err != nil {
 		return nil, fmt.Errorf("failed to parse credential: %w", err)
 	}
-	if credV2.FormatVersion < 2 {
-		return nil, fmt.Errorf("unsupported credential format version %d (expected >= 2)", credV2.FormatVersion)
+
+	if credV2.FormatVersion >= 2 {
+		return &credV2, nil
 	}
-	return &credV2, nil
+
+	// V1 credential (format_version 0 or 1) - auto-migrate to V2
+	log.Info().Int("format_version", credV2.FormatVersion).Str("owner_space", h.ownerSpace).
+		Msg("Auto-migrating V1 credential to V2 format")
+
+	var credV1 UnsealedCredential
+	if err := json.Unmarshal(plaintext, &credV1); err != nil {
+		return nil, fmt.Errorf("failed to parse V1 credential: %w", err)
+	}
+
+	migrated := MigrateV1ToV2(&credV1, h.ownerSpace)
+	return migrated, nil
 }
 
 // encryptCredentialBlob encrypts a V2 credential with CEK and returns base64
