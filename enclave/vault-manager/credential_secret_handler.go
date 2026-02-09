@@ -131,6 +131,12 @@ func (h *CredentialSecretHandler) HandleAdd(msg *IncomingMessage) (*OutgoingMess
 		return h.errorResponse(msg.GetID(), "Failed to re-encrypt credential")
 	}
 
+	// Store sealed credential blob in vault storage for backup inclusion.
+	// This ensures the backup system automatically includes the latest credential.
+	if err := h.storage.Put("credential/sealed_blob", []byte(encryptedCredential)); err != nil {
+		log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("Failed to store credential blob for backup (non-fatal)")
+	}
+
 	// Store metadata in vault SQLite (NO values - just metadata for listing)
 	metadataRecord := SecretMetadataRecord{
 		ID:          secretID,
@@ -445,6 +451,11 @@ func (h *CredentialSecretHandler) HandleDelete(msg *IncomingMessage) (*OutgoingM
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to re-encrypt credential after secret delete")
 		return h.errorResponse(msg.GetID(), "Failed to re-encrypt credential")
+	}
+
+	// Store sealed credential blob in vault storage for backup inclusion
+	if err := h.storage.Put("credential/sealed_blob", []byte(encryptedCredential)); err != nil {
+		log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("Failed to store credential blob for backup (non-fatal)")
 	}
 
 	// Remove from vault SQLite metadata index
