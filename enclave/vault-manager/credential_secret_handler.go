@@ -74,7 +74,7 @@ func (h *CredentialSecretHandler) HandleAdd(msg *IncomingMessage) (*OutgoingMess
 
 	// Validate category
 	if !isValidSecretCategory(req.Category) {
-		return h.errorResponse(msg.GetID(), "invalid category: must be SEED_PHRASE, PRIVATE_KEY, SIGNING_KEY, MASTER_PASSWORD, or OTHER")
+		return h.errorResponse(msg.GetID(), "invalid category: must be SEED_PHRASE, PRIVATE_KEY, SIGNING_KEY, MASTER_PASSWORD, RECOVERY_KEY, or OTHER")
 	}
 
 	// Decrypt the credential blob using CEK
@@ -751,6 +751,7 @@ func isValidSecretCategory(category string) bool {
 		SecretCategoryPrivateKey,
 		SecretCategorySigningKey,
 		SecretCategoryMasterPassword,
+		SecretCategoryRecoveryKey,
 		SecretCategoryOther:
 		return true
 	default:

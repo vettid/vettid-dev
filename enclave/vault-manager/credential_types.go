@@ -621,6 +621,7 @@ const (
 	SecretCategoryPrivateKey     SecretCategory = "PRIVATE_KEY"
 	SecretCategorySigningKey     SecretCategory = "SIGNING_KEY"
 	SecretCategoryMasterPassword SecretCategory = "MASTER_PASSWORD"
+	SecretCategoryRecoveryKey    SecretCategory = "RECOVERY_KEY"
 	SecretCategoryOther          SecretCategory = "OTHER"
 )
 
