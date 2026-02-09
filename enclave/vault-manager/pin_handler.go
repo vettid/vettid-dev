@@ -614,31 +614,49 @@ func (h *PINHandler) HandlePINChange(ctx context.Context, msg *IncomingMessage) 
 		log.Error().Err(err).Msg("Failed to derive new DEK")
 		return h.errorResponse(msg.GetID(), "key derivation failed")
 	}
-	defer zeroBytes(newDEK)
 
 	// Update credential auth hash
 	newSalt, err := generateSalt()
 	if err != nil {
+		zeroBytes(newDEK)
 		return h.errorResponse(msg.GetID(), "salt generation failed")
 	}
 	// SECURITY: payload.NewPIN is already []byte (SensitiveBytes)
 	newAuthHash := hashAuthInput(payload.NewPIN, newSalt)
 
+	// SECURITY: Persist sealed material to S3 BEFORE updating in-memory state.
+	// This ensures that if the persist fails, the in-memory DEK stays consistent
+	// with the sealed material in S3 (both still use old PIN). Otherwise,
+	// persistVaultStateToS3() would encrypt with the new DEK while S3 still has
+	// old sealed material, making the vault unrecoverable on cold restart.
+	if err := h.sealerProxy.StoreSealedMaterial(newSealedMaterial); err != nil {
+		log.Error().Err(err).Str("owner_space", h.ownerSpace).Msg("Failed to store new sealed material to S3 - PIN change aborted")
+		zeroBytes(newDEK)
+		return h.errorResponse(msg.GetID(), "failed to persist PIN change - please try again")
+	}
+	log.Info().Str("owner_space", h.ownerSpace).Msg("New sealed material stored to S3 for cold vault recovery")
+
+	// SECURITY: Update DEK, sealed material, and credential atomically.
+	// The DEK must be updated so that persistVaultStateToS3() encrypts with the
+	// new DEK matching the new sealed material. Without this, cold vault recovery
+	// would fail because the vault state would be encrypted with the old DEK while
+	// the sealed material expects the new PIN.
+	newDEKCopy := make([]byte, len(newDEK))
+	copy(newDEKCopy, newDEK)
+
 	h.state.mu.Lock()
+	oldDEKRef := h.state.dek
 	h.state.credential.AuthHash = newAuthHash
 	h.state.credential.AuthSalt = newSalt
 	h.state.credential.Version++
 	h.state.sealedMaterial = newSealedMaterial
+	h.state.dek = newDEKCopy
 	h.state.mu.Unlock()
 
-	// Persist new sealed material to S3 for cold vault recovery
-	// SECURITY: Without this, a cold vault restart would still use the old sealed material
-	// and the new PIN would not work
-	if err := h.sealerProxy.StoreSealedMaterial(newSealedMaterial); err != nil {
-		log.Error().Err(err).Str("owner_space", h.ownerSpace).Msg("Failed to store new sealed material to S3 - cold vault PIN change will be lost!")
-		return h.errorResponse(msg.GetID(), "failed to persist PIN change - please try again")
+	// Zero the old DEK after replacing it
+	if oldDEKRef != nil {
+		zeroBytes(oldDEKRef)
 	}
-	log.Info().Str("owner_space", h.ownerSpace).Msg("New sealed material stored to S3 for cold vault recovery")
 
 	// Re-encrypt credential with new DEK
 	credBytes, err := json.Marshal(credential)
@@ -648,6 +666,9 @@ func (h *PINHandler) HandlePINChange(ctx context.Context, msg *IncomingMessage) 
 	defer zeroBytes(credBytes)
 
 	encryptedCred, err := encryptWithDEK(newDEK, credBytes)
+	// SECURITY: Zero the local newDEK copy now that encryption is done.
+	// The DEK remains stored in h.state.dek (as newDEKCopy) for vault state persistence.
+	zeroBytes(newDEK)
 	if err != nil {
 		return h.errorResponse(msg.GetID(), "encryption failed")
 	}
