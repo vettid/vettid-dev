@@ -23,6 +23,17 @@ const (
 	DomainAgent      = "vettid-agent-v1"
 )
 
+// PendingApproval tracks an agent request awaiting owner approval.
+type PendingApproval struct {
+	RequestID    string          `json:"request_id"`
+	ConnectionID string          `json:"connection_id"`
+	SecretID     string          `json:"secret_id"`
+	Action       string          `json:"action"` // "retrieve", "http_request", "sign"
+	Purpose      string          `json:"purpose"`
+	Params       json.RawMessage `json:"params,omitempty"` // for action requests
+	CreatedAt    time.Time       `json:"created_at"`
+}
+
 // AgentHandler processes messages from AI agent connectors.
 //
 // Agent messages arrive via NATS on MessageSpace.{guid}.forOwner.agent,
@@ -38,12 +49,13 @@ const (
 // Responses are published directly via VsockPublisher to the agent's
 // response topic, not through the standard reply path.
 type AgentHandler struct {
-	ownerSpace     string
-	storage        *EncryptedStorage
-	publisher      *VsockPublisher
-	eventHandler   *EventHandler
-	connHandler    *ConnectionsHandler
-	secretsHandler *AgentSecretsHandler
+	ownerSpace       string
+	storage          *EncryptedStorage
+	publisher        *VsockPublisher
+	eventHandler     *EventHandler
+	connHandler      *ConnectionsHandler
+	secretsHandler   *AgentSecretsHandler
+	pendingApprovals map[string]*PendingApproval // keyed by request_id
 }
 
 // NewAgentHandler creates a new agent handler.
@@ -56,12 +68,13 @@ func NewAgentHandler(
 	secretsHandler *AgentSecretsHandler,
 ) *AgentHandler {
 	return &AgentHandler{
-		ownerSpace:     ownerSpace,
-		storage:        storage,
-		publisher:      publisher,
-		eventHandler:   eventHandler,
-		connHandler:    connHandler,
-		secretsHandler: secretsHandler,
+		ownerSpace:       ownerSpace,
+		storage:          storage,
+		publisher:        publisher,
+		eventHandler:     eventHandler,
+		connHandler:      connHandler,
+		secretsHandler:   secretsHandler,
+		pendingApprovals: make(map[string]*PendingApproval),
 	}
 }
 
@@ -394,6 +407,16 @@ func (h *AgentHandler) handleSecretRequest(ctx context.Context, conn *Connection
 		return data, AgentMsgSecretResponse, nil
 
 	default: // "always_ask"
+		// Store pending approval so we can fulfill it when the app responds
+		h.pendingApprovals[req.RequestID] = &PendingApproval{
+			RequestID:    req.RequestID,
+			ConnectionID: conn.ConnectionID,
+			SecretID:     secret.SecretID,
+			Action:       "retrieve",
+			Purpose:      req.Purpose,
+			CreatedAt:    time.Now(),
+		}
+
 		// Send approval request to mobile app
 		approvalPayload, _ := json.Marshal(map[string]interface{}{
 			"request_id":    req.RequestID,
@@ -479,6 +502,17 @@ func (h *AgentHandler) handleActionRequest(ctx context.Context, conn *Connection
 	}
 
 	if approvalMode == "always_ask" {
+		// Store pending approval so we can fulfill it when the app responds
+		h.pendingApprovals[req.RequestID] = &PendingApproval{
+			RequestID:    req.RequestID,
+			ConnectionID: conn.ConnectionID,
+			SecretID:     req.SecretID,
+			Action:       req.Action,
+			Purpose:      req.Purpose,
+			Params:       req.Params,
+			CreatedAt:    time.Now(),
+		}
+
 		// Send approval request to mobile app
 		approvalPayload, _ := json.Marshal(map[string]interface{}{
 			"request_id":    req.RequestID,
@@ -558,6 +592,200 @@ func (h *AgentHandler) handleCatalogRequest(ctx context.Context, conn *Connectio
 	}
 
 	return data, AgentMsgCatalogResponse, nil
+}
+
+// HandleAppApprovalResponse processes an approval/denial from the mobile app
+// for a pending agent request. It looks up the pending request, fulfills it
+// by sending the response to the agent, and cleans up.
+func (h *AgentHandler) HandleAppApprovalResponse(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	var payload struct {
+		RequestID string `json:"request_id"`
+		Response  string `json:"response"` // "approve" or "deny"
+		Reason    string `json:"reason,omitempty"`
+	}
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+		log.Warn().Err(err).Msg("Failed to parse approval response payload")
+		return createSuccessResponse(msg.GetID(), false, "invalid payload")
+	}
+
+	if payload.RequestID == "" {
+		return createSuccessResponse(msg.GetID(), false, "missing request_id")
+	}
+
+	// Look up pending approval
+	pending, ok := h.pendingApprovals[payload.RequestID]
+	if !ok {
+		log.Warn().Str("request_id", payload.RequestID).Msg("No pending approval found")
+		return createSuccessResponse(msg.GetID(), false, "no pending request found")
+	}
+
+	// Clean up regardless of outcome
+	delete(h.pendingApprovals, payload.RequestID)
+
+	// Look up connection
+	conn, err := h.getConnection(pending.ConnectionID)
+	if err != nil {
+		log.Warn().Str("connection_id", pending.ConnectionID).Msg("Connection not found for pending approval")
+		return createSuccessResponse(msg.GetID(), false, "connection not found")
+	}
+
+	// Derive connection key
+	connKey, err := deriveConnectionKey(conn.SharedSecret)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to derive connection key for approval response")
+		return createSuccessResponse(msg.GetID(), false, "internal error")
+	}
+	defer zeroBytes(connKey)
+
+	responseTopic := fmt.Sprintf("MessageSpace.%s.forOwner.agent.%s", h.ownerSpace, conn.ConnectionID)
+
+	if payload.Response == "deny" {
+		// Denied
+		h.eventHandler.LogConnectionEvent(ctx, EventTypeAgentSecretDenied, conn.ConnectionID, "",
+			fmt.Sprintf("Owner denied request %s: %s", pending.RequestID, payload.Reason))
+
+		var respBytes []byte
+		var respType string
+
+		if pending.Action == "retrieve" {
+			resp := AgentSecretResponse{
+				RequestID: pending.RequestID,
+				Status:    "denied",
+				Reason:    "Owner denied the request",
+			}
+			if payload.Reason != "" {
+				resp.Reason = payload.Reason
+			}
+			respBytes, _ = json.Marshal(resp)
+			respType = AgentMsgSecretResponse
+		} else {
+			resp := AgentActionResponse{
+				RequestID: pending.RequestID,
+				Status:    "denied",
+				Reason:    "Owner denied the request",
+			}
+			if payload.Reason != "" {
+				resp.Reason = payload.Reason
+			}
+			respBytes, _ = json.Marshal(resp)
+			respType = AgentMsgActionResponse
+		}
+
+		h.publishAgentResponse(connKey, conn.ConnectionID, respType, respBytes, responseTopic)
+		return createSuccessResponse(msg.GetID(), true, "denied")
+	}
+
+	// Approved — fulfill the request
+	if pending.Action == "retrieve" {
+		// Retrieve secret
+		secret, err := h.secretsHandler.GetSecret(pending.SecretID)
+		if err != nil {
+			log.Error().Err(err).Str("secret_id", pending.SecretID).Msg("Secret not found for approved request")
+			return createSuccessResponse(msg.GetID(), false, "secret no longer available")
+		}
+
+		h.eventHandler.LogConnectionEvent(ctx, EventTypeAgentSecretAutoApproved, conn.ConnectionID, "",
+			fmt.Sprintf("Owner approved secret %s for agent %s", secret.Name, conn.PeerAlias))
+
+		resp := AgentSecretResponse{
+			RequestID:   pending.RequestID,
+			Status:      "approved",
+			SecretValue: secret.Value,
+		}
+		respBytes, _ := json.Marshal(resp)
+		h.publishAgentResponse(connKey, conn.ConnectionID, AgentMsgSecretResponse, respBytes, responseTopic)
+		zeroBytes(respBytes)
+	} else {
+		// Execute action
+		secret, err := h.secretsHandler.GetSecret(pending.SecretID)
+		if err != nil {
+			log.Error().Err(err).Str("secret_id", pending.SecretID).Msg("Secret not found for approved action")
+			return createSuccessResponse(msg.GetID(), false, "secret no longer available")
+		}
+
+		h.eventHandler.LogConnectionEvent(ctx, EventTypeAgentActionCompleted, conn.ConnectionID, "",
+			fmt.Sprintf("Owner approved action %s on %s for %s", pending.Action, secret.Name, conn.PeerAlias))
+
+		actionReq := AgentActionRequest{
+			RequestID: pending.RequestID,
+			SecretID:  pending.SecretID,
+			Action:    pending.Action,
+			Purpose:   pending.Purpose,
+			Params:    pending.Params,
+		}
+
+		result, err := h.executeAction(actionReq, secret)
+		if err != nil {
+			resp := AgentActionResponse{
+				RequestID: pending.RequestID,
+				Status:    "error",
+				Reason:    "Action execution failed",
+			}
+			respBytes, _ := json.Marshal(resp)
+			h.publishAgentResponse(connKey, conn.ConnectionID, AgentMsgActionResponse, respBytes, responseTopic)
+			return createSuccessResponse(msg.GetID(), true, "approved but action failed")
+		}
+
+		resp := AgentActionResponse{
+			RequestID: pending.RequestID,
+			Status:    "completed",
+			Result:    result,
+		}
+		respBytes, _ := json.Marshal(resp)
+		h.publishAgentResponse(connKey, conn.ConnectionID, AgentMsgActionResponse, respBytes, responseTopic)
+	}
+
+	return createSuccessResponse(msg.GetID(), true, "approved")
+}
+
+// publishAgentResponse encrypts and publishes a response to an agent.
+func (h *AgentHandler) publishAgentResponse(connKey []byte, connectionID, responseType string, responseBytes []byte, topic string) {
+	encrypted, err := encryptXChaCha20(connKey, responseBytes)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to encrypt agent approval response")
+		return
+	}
+
+	encPayloadJSON, _ := json.Marshal(encrypted)
+	envBytes, err := json.Marshal(AgentEnvelope{
+		Type:      responseType,
+		KeyID:     connectionID,
+		Payload:   encPayloadJSON,
+		Timestamp: time.Now().UTC(),
+	})
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to marshal agent approval response envelope")
+		return
+	}
+
+	if err := h.publisher.PublishRaw(topic, envBytes); err != nil {
+		log.Error().Err(err).Str("topic", topic).Msg("Failed to publish agent approval response")
+	}
+}
+
+// createSuccessResponse builds a standard success/error response for app-to-vault operations.
+func createSuccessResponse(requestID string, success bool, message string) (*OutgoingMessage, error) {
+	resp := map[string]interface{}{
+		"success": success,
+		"message": message,
+	}
+	respBytes, _ := json.Marshal(resp)
+	return &OutgoingMessage{
+		RequestID: requestID,
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// CleanExpiredApprovals removes pending approvals older than the given duration.
+func (h *AgentHandler) CleanExpiredApprovals(maxAge time.Duration) {
+	cutoff := time.Now().Add(-maxAge)
+	for id, pending := range h.pendingApprovals {
+		if pending.CreatedAt.Before(cutoff) {
+			delete(h.pendingApprovals, id)
+			log.Debug().Str("request_id", id).Msg("Cleaned expired pending approval")
+		}
+	}
 }
 
 // handleConnectionRequest processes an agent connection request (registration completion).

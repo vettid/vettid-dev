@@ -561,6 +561,9 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 	case "handlers":
 		// Handler listing (read-only introspection of vault capabilities)
 		return mh.handleHandlersOperation(ctx, msg, parts[opIndex+1:])
+	case "agent":
+		// Agent management operations (from mobile app)
+		return mh.handleAgentOperation(ctx, msg, parts[opIndex+1:])
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown operation: %s", operation))
 	}
@@ -589,6 +592,41 @@ func (mh *MessageHandler) handlePinOperation(ctx context.Context, msg *IncomingM
 		return mh.pinHandler.HandlePINChange(ctx, msg)
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown PIN operation type: %s", pinOp))
+	}
+}
+
+// handleAgentOperation routes agent management operations from the mobile app.
+// Format: forVault.agent.{sub-operation}
+func (mh *MessageHandler) handleAgentOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
+	if len(opParts) < 2 {
+		return mh.errorResponse(msg.GetID(), "missing agent operation type")
+	}
+
+	opType := opParts[1]
+
+	log.Debug().
+		Str("owner_space", mh.ownerSpace).
+		Str("agent_operation", opType).
+		Msg("Routing agent operation")
+
+	switch opType {
+	case "approval":
+		// App approves or denies a pending agent request
+		return mh.agentHandler.HandleAppApprovalResponse(ctx, msg)
+	case "list":
+		// List active agent connections
+		return mh.connectionsHandler.HandleListAgentConnections(ctx, msg)
+	case "revoke":
+		// Revoke an agent connection
+		return mh.connectionsHandler.HandleRevokeAgent(ctx, msg)
+	case "update-contract":
+		// Update an agent's contract (scope, approval mode, rate limit)
+		return mh.connectionsHandler.HandleUpdateAgentContract(ctx, msg)
+	case "create-invitation":
+		// Create an invitation for a new agent (already exists in connections handler)
+		return mh.connectionsHandler.HandleCreateAgentInvite(msg)
+	default:
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown agent operation: %s", opType))
 	}
 }
 

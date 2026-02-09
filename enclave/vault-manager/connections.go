@@ -1832,6 +1832,219 @@ func (h *ConnectionsHandler) findPendingAgentInvitationForECIES(encryptedPayload
 	return nil, nil, fmt.Errorf("no matching pending agent invitation found")
 }
 
+// HandleListAgentConnections returns all agent connections with metadata.
+func (h *ConnectionsHandler) HandleListAgentConnections(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	indexData, err := h.storage.Get("connections/_index")
+	var connectionIDs []string
+	if err == nil {
+		json.Unmarshal(indexData, &connectionIDs)
+	}
+
+	type AgentInfo struct {
+		ConnectionID string             `json:"connection_id"`
+		AgentName    string             `json:"agent_name"`
+		AgentType    string             `json:"agent_type"`
+		Status       string             `json:"status"`
+		ApprovalMode string             `json:"approval_mode"`
+		Scope        []string           `json:"scope"`
+		ConnectedAt  string             `json:"connected_at"`
+		LastActiveAt string             `json:"last_active_at,omitempty"`
+		Hostname     string             `json:"hostname,omitempty"`
+		Platform     string             `json:"platform,omitempty"`
+	}
+
+	agents := make([]AgentInfo, 0)
+	for _, connID := range connectionIDs {
+		data, err := h.storage.Get("connections/" + connID)
+		if err != nil {
+			continue
+		}
+
+		var record ConnectionRecord
+		if json.Unmarshal(data, &record) != nil {
+			continue
+		}
+
+		if !record.IsAgent() {
+			continue
+		}
+
+		info := AgentInfo{
+			ConnectionID: record.ConnectionID,
+			AgentName:    record.PeerAlias,
+			Status:       record.Status,
+			ConnectedAt:  record.CreatedAt.UTC().Format(time.RFC3339),
+		}
+
+		if record.Contract != nil {
+			info.ApprovalMode = record.Contract.ApprovalMode
+			info.Scope = record.Contract.Scope
+		}
+
+		if record.AgentMetadata != nil {
+			info.AgentType = record.AgentMetadata.AgentType
+			info.Hostname = record.AgentMetadata.Hostname
+			info.Platform = record.AgentMetadata.Platform
+		}
+
+		if record.LastActiveAt != nil {
+			info.LastActiveAt = record.LastActiveAt.UTC().Format(time.RFC3339)
+		}
+
+		agents = append(agents, info)
+	}
+
+	resp := map[string]interface{}{
+		"success": true,
+		"agents":  agents,
+	}
+	respBytes, _ := json.Marshal(resp)
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// HandleRevokeAgent revokes an agent connection and clears its shared secret.
+func (h *ConnectionsHandler) HandleRevokeAgent(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req struct {
+		ConnectionID string `json:"connection_id"`
+	}
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		return h.errorResponse(msg.GetID(), "Invalid request format")
+	}
+
+	if req.ConnectionID == "" {
+		return h.errorResponse(msg.GetID(), "connection_id is required")
+	}
+
+	storageKey := "connections/" + req.ConnectionID
+	data, err := h.storage.Get(storageKey)
+	if err != nil {
+		return h.errorResponse(msg.GetID(), "Connection not found")
+	}
+
+	var record ConnectionRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to read connection")
+	}
+
+	if !record.IsAgent() {
+		return h.errorResponse(msg.GetID(), "Not an agent connection")
+	}
+
+	// SECURITY: Zero shared secret before saving
+	zeroBytes(record.SharedSecret)
+	record.SharedSecret = nil
+	record.Status = "revoked"
+
+	newData, _ := json.Marshal(record)
+	if err := h.storage.Put(storageKey, newData); err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to revoke agent")
+	}
+
+	if h.eventHandler != nil {
+		h.eventHandler.LogConnectionEvent(ctx, EventTypeConnectionRevoked, req.ConnectionID, "",
+			fmt.Sprintf("Agent connection revoked: %s", record.PeerAlias))
+	}
+
+	log.Info().Str("connection_id", req.ConnectionID).Str("agent", record.PeerAlias).Msg("Agent connection revoked")
+
+	resp := map[string]interface{}{
+		"success":       true,
+		"connection_id": req.ConnectionID,
+	}
+	respBytes, _ := json.Marshal(resp)
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// HandleUpdateAgentContract updates an agent connection's contract (scope, approval mode, rate limit).
+func (h *ConnectionsHandler) HandleUpdateAgentContract(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req struct {
+		ConnectionID string    `json:"connection_id"`
+		Scope        []string  `json:"scope,omitempty"`
+		ApprovalMode string    `json:"approval_mode,omitempty"`
+		RateLimit    *RateLimit `json:"rate_limit,omitempty"`
+	}
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		return h.errorResponse(msg.GetID(), "Invalid request format")
+	}
+
+	if req.ConnectionID == "" {
+		return h.errorResponse(msg.GetID(), "connection_id is required")
+	}
+
+	storageKey := "connections/" + req.ConnectionID
+	data, err := h.storage.Get(storageKey)
+	if err != nil {
+		return h.errorResponse(msg.GetID(), "Connection not found")
+	}
+
+	var record ConnectionRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to read connection")
+	}
+
+	if !record.IsAgent() {
+		return h.errorResponse(msg.GetID(), "Not an agent connection")
+	}
+
+	if record.Contract == nil {
+		record.Contract = &ConnectionContract{
+			AgentName:    record.PeerAlias,
+			ApprovalMode: "always_ask",
+			RateLimit:    RateLimit{Max: 60, Per: "hour"},
+		}
+	}
+
+	// Apply updates
+	if req.Scope != nil {
+		record.Contract.Scope = req.Scope
+	}
+	if req.ApprovalMode != "" {
+		// Validate approval mode
+		switch req.ApprovalMode {
+		case "always_ask", "auto_within_contract", "auto_all":
+			record.Contract.ApprovalMode = req.ApprovalMode
+		default:
+			return h.errorResponse(msg.GetID(), "Invalid approval_mode")
+		}
+	}
+	if req.RateLimit != nil {
+		record.Contract.RateLimit = *req.RateLimit
+	}
+
+	newData, _ := json.Marshal(record)
+	if err := h.storage.Put(storageKey, newData); err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to update contract")
+	}
+
+	log.Info().
+		Str("connection_id", req.ConnectionID).
+		Str("approval_mode", record.Contract.ApprovalMode).
+		Msg("Agent contract updated")
+
+	resp := map[string]interface{}{
+		"success":       true,
+		"connection_id": req.ConnectionID,
+		"contract":      record.Contract,
+	}
+	respBytes, _ := json.Marshal(resp)
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
 func (h *ConnectionsHandler) errorResponse(id string, message string) (*OutgoingMessage, error) {
 	resp := map[string]interface{}{
 		"success": false,
