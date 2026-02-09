@@ -373,24 +373,23 @@ func (h *EventHandler) notifyStatusChange(ctx context.Context, eventID string, n
 	h.publisher.PublishToApp(ctx, "feed.updated", data)
 }
 
-// logStatusChange logs a feed status change for audit trail
+// logStatusChange logs a feed status change for audit trail.
+// This is synchronous so the audit event is written to SQLite before the
+// response goes back to mobile (ensures the next sync picks it up).
 func (h *EventHandler) logStatusChange(ctx context.Context, eventID string, eventType EventType, newStatus string) {
-	// Log status change as a separate audit event (non-blocking)
-	go func() {
-		err := h.LogEvent(ctx, &Event{
-			EventType:  eventType,
-			SourceType: "feed",
-			SourceID:   eventID,
-			Title:      fmt.Sprintf("Feed item %s", newStatus),
-			Metadata: map[string]string{
-				"target_event_id": eventID,
-				"new_status":      newStatus,
-			},
-		})
-		if err != nil {
-			log.Warn().Err(err).Str("event_id", eventID).Msg("Failed to log status change")
-		}
-	}()
+	err := h.LogEvent(ctx, &Event{
+		EventType:  eventType,
+		SourceType: "feed",
+		SourceID:   eventID,
+		Title:      fmt.Sprintf("Feed item %s", newStatus),
+		Metadata: map[string]string{
+			"target_event_id": eventID,
+			"new_status":      newStatus,
+		},
+	})
+	if err != nil {
+		log.Warn().Err(err).Str("event_id", eventID).Msg("Failed to log status change")
+	}
 }
 
 // --- Sync Operations ---
