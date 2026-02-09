@@ -636,11 +636,11 @@ func (mh *MessageHandler) handleAgentOperation(ctx context.Context, msg *Incomin
 // handleVaultLifecycleOperation routes vault lifecycle operations from the mobile app.
 // Format: forVault.vault.{sub-operation}
 func (mh *MessageHandler) handleVaultLifecycleOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
-	if len(opParts) < 1 {
+	if len(opParts) < 2 {
 		return mh.errorResponse(msg.GetID(), "missing vault lifecycle operation type")
 	}
 
-	opType := opParts[0]
+	opType := opParts[1]
 
 	switch opType {
 	case "save":
