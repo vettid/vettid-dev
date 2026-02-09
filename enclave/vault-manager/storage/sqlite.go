@@ -1550,6 +1550,25 @@ func (s *SQLiteStorage) UpdateEventStatus(eventID string, newStatus string, time
 	return nil
 }
 
+// UpdateEventPriority updates the priority of an event
+func (s *SQLiteStorage) UpdateEventPriority(eventID string, priority int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	result, err := s.db.Exec(`UPDATE events SET priority = ? WHERE event_id = ?`, priority, eventID)
+	if err != nil {
+		return fmt.Errorf("failed to update event priority: %w", err)
+	}
+
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("event not found: %s", eventID)
+	}
+
+	s.incrementRollbackCounter()
+	return nil
+}
+
 // UpdateEventActioned marks an event as actioned
 func (s *SQLiteStorage) UpdateEventActioned(eventID string, timestamp int64) error {
 	s.mu.Lock()

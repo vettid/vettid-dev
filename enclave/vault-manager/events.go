@@ -201,6 +201,17 @@ func (h *EventHandler) notifyApp(ctx context.Context, eventType string, e *Event
 	}
 }
 
+// SetEventPriority updates the priority of a feed event
+func (h *EventHandler) SetEventPriority(ctx context.Context, eventID string, priority Priority) error {
+	if !h.storageReady() {
+		return ErrStorageNotReady
+	}
+	if err := h.storage.SQLite().UpdateEventPriority(eventID, int(priority)); err != nil {
+		return fmt.Errorf("failed to set event priority: %w", err)
+	}
+	return nil
+}
+
 // --- Feed Operations ---
 
 // ListFeed returns feed events for the user

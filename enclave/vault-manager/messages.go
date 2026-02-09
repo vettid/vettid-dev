@@ -1347,6 +1347,8 @@ func (mh *MessageHandler) handleFeedOperation(ctx context.Context, msg *Incoming
 		return mh.handleFeedArchive(ctx, msg)
 	case "delete":
 		return mh.handleFeedDelete(ctx, msg)
+	case "set-priority":
+		return mh.handleFeedSetPriority(ctx, msg)
 	case "action":
 		return mh.handleFeedAction(ctx, msg)
 	case "sync":
@@ -1576,6 +1578,33 @@ func (mh *MessageHandler) handleFeedDelete(ctx context.Context, msg *IncomingMes
 	}
 
 	resp := map[string]interface{}{"success": true, "event_id": req.EventID}
+	respBytes, _ := json.Marshal(resp)
+	return mh.successResponse(msg.GetID(), respBytes)
+}
+
+func (mh *MessageHandler) handleFeedSetPriority(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req struct {
+		EventID  string `json:"event_id"`
+		Priority int    `json:"priority"`
+	}
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		return mh.errorResponse(msg.GetID(), "invalid request format")
+	}
+
+	if req.EventID == "" {
+		return mh.errorResponse(msg.GetID(), "event_id is required")
+	}
+
+	// Clamp priority to valid range: -1 (LOW) to 2 (URGENT)
+	if req.Priority < -1 || req.Priority > 2 {
+		return mh.errorResponse(msg.GetID(), "priority must be between -1 and 2")
+	}
+
+	if err := mh.eventHandler.SetEventPriority(ctx, req.EventID, Priority(req.Priority)); err != nil {
+		return mh.errorResponse(msg.GetID(), err.Error())
+	}
+
+	resp := map[string]interface{}{"success": true, "event_id": req.EventID, "priority": req.Priority}
 	respBytes, _ := json.Marshal(resp)
 	return mh.successResponse(msg.GetID(), respBytes)
 }
