@@ -65,7 +65,7 @@ func nitroKMSUnseal(ciphertext []byte) ([]byte, error) {
 // Development mode encryption/decryption
 // Uses a fixed key for development only - NOT SECURE FOR PRODUCTION
 
-var devModeKey = []byte("vettid-dev-mode-key-32-bytes!!!") // Must be 32 bytes
+var devModeKey = []byte("vettid-dev-mode-key-32-bytes!!XX") // Must be 32 bytes (exactly 32 chars)
 
 // devModeSeal encrypts data for development mode
 func devModeSeal(plaintext []byte) ([]byte, error) {

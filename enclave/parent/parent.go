@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -1205,8 +1206,26 @@ func (p *ParentProcess) handleEnclaveRequest(ctx context.Context, msg *EnclaveMe
 	}
 }
 
+// validateStorageKey checks that a storage key does not contain path traversal sequences
+func validateStorageKey(key string) error {
+	if strings.Contains(key, "..") {
+		return fmt.Errorf("storage key contains path traversal sequence")
+	}
+	if strings.HasPrefix(key, "/") {
+		return fmt.Errorf("storage key must not be an absolute path")
+	}
+	if strings.Contains(key, "\\") {
+		return fmt.Errorf("storage key contains backslash")
+	}
+	return nil
+}
+
 // handleStorageGet retrieves data from S3
 func (p *ParentProcess) handleStorageGet(ctx context.Context, msg *EnclaveMessage) (*EnclaveMessage, error) {
+	// SECURITY: Validate storage key to prevent path traversal
+	if err := validateStorageKey(msg.StorageKey); err != nil {
+		return nil, fmt.Errorf("invalid storage key: %w", err)
+	}
 	key := p.config.S3.KeyPrefix + msg.StorageKey
 
 	data, err := p.s3Client.Get(ctx, key)
@@ -1222,6 +1241,10 @@ func (p *ParentProcess) handleStorageGet(ctx context.Context, msg *EnclaveMessag
 
 // handleStoragePut writes data to S3
 func (p *ParentProcess) handleStoragePut(ctx context.Context, msg *EnclaveMessage) (*EnclaveMessage, error) {
+	// SECURITY: Validate storage key to prevent path traversal
+	if err := validateStorageKey(msg.StorageKey); err != nil {
+		return nil, fmt.Errorf("invalid storage key: %w", err)
+	}
 	key := p.config.S3.KeyPrefix + msg.StorageKey
 
 	// Use StorageValue for binary data (falls back to Payload for backwards compatibility)

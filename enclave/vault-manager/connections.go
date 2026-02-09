@@ -913,6 +913,11 @@ func (h *ConnectionsHandler) HandleRevoke(msg *IncomingMessage) (*OutgoingMessag
 		return h.errorResponse(msg.GetID(), "Failed to read connection")
 	}
 
+	// SECURITY: Zero key material before storing revoked connection
+	zeroBytes(record.SharedSecret)
+	record.SharedSecret = nil
+	zeroBytes(record.LocalPrivateKey)
+	record.LocalPrivateKey = nil
 	record.Status = "revoked"
 
 	newData, _ := json.Marshal(record)

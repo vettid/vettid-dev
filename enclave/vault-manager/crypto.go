@@ -111,16 +111,11 @@ func zeroBytes(b []byte) {
 	}
 }
 
-// timingSafeEqual performs a constant-time comparison of two byte slices
+// timingSafeEqual performs a constant-time comparison of two byte slices.
+// Uses crypto/subtle.ConstantTimeCompare which safely handles different-length inputs
+// without leaking length information through timing.
 func timingSafeEqual(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	var result byte
-	for i := 0; i < len(a); i++ {
-		result |= a[i] ^ b[i]
-	}
-	return result == 0
+	return subtle.ConstantTimeCompare(a, b) == 1
 }
 
 // currentTimestamp returns the current Unix timestamp

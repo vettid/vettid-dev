@@ -94,7 +94,7 @@ const vault = new VaultStack(app, 'VettID-Vault', {
 // Optional: pass alarmEmail to receive alert notifications
 const monitoring = new MonitoringStack(app, 'VettID-Monitoring', {
   env,
-  // alarmEmail: 'alerts@vettid.dev',  // Uncomment to enable email alerts
+  alarmEmail: 'alerts@vettid.dev',
 
   // Stack integration - pass resources from other stacks for enhanced monitoring
   httpApi: core.httpApi,

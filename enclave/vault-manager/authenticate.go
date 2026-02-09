@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -129,10 +130,8 @@ func (mh *MessageHandler) handleUTKAuthenticate(requestID string, req *Authentic
 	// Decrypt using the LTK
 	passwordHashBytes, err := decryptWithUTK(ltk, combinedPayload)
 	if err != nil {
-		log.Warn().Err(err).Msg("Failed to decrypt password hash")
-		debugErr := fmt.Sprintf("DEBUG decrypt_pwd: err=%v ltk_len=%d ephPub_len=%d nonce_len=%d cipher_len=%d combined_len=%d",
-			err, len(ltk), len(ephemeralPubKey), len(nonce), len(ciphertext), len(combinedPayload))
-		return mh.authErrorResponse(requestID, debugErr)
+		log.Warn().Msg("Failed to decrypt password hash")
+		return mh.authErrorResponse(requestID, "Authentication failed")
 	}
 	defer zeroBytes(passwordHashBytes)
 
@@ -143,18 +142,12 @@ func (mh *MessageHandler) handleUTKAuthenticate(requestID string, req *Authentic
 	if err := json.Unmarshal(passwordHashBytes, &payload); err != nil {
 		// Try interpreting as raw PHC string
 		payload.PasswordHash = string(passwordHashBytes)
-		log.Debug().
-			Int("raw_bytes_len", len(passwordHashBytes)).
-			Str("raw_string_preview", string(passwordHashBytes[:min(50, len(passwordHashBytes))])).
-			Msg("JSON unmarshal failed, using raw string")
-	} else {
-		log.Debug().Msg("JSON unmarshal succeeded for password payload")
+		log.Debug().Msg("JSON unmarshal failed, using raw string")
 	}
 
-	log.Info().
+	log.Debug().
 		Int("payload_hash_len", len(payload.PasswordHash)).
-		Str("payload_hash_prefix", payload.PasswordHash[:min(40, len(payload.PasswordHash))]).
-		Msg("DEBUG: Decrypted password hash from app")
+		Msg("Decrypted password hash from app")
 
 	// Get the stored credential to verify against
 	// First decrypt the encrypted_credential using CEK
@@ -173,16 +166,12 @@ func (mh *MessageHandler) handleUTKAuthenticate(requestID string, req *Authentic
 	// Decrypt credential with CEK
 	credentialBytes, err := mh.decryptCredentialWithCEK(encryptedCred)
 	if err != nil {
-		log.Warn().Err(err).Msg("Failed to decrypt credential")
-		debugErr := fmt.Sprintf("DEBUG decrypt_cred: err=%v cred_len=%d has_cek=%v", err, len(encryptedCred), hasCEK)
-		return mh.authErrorResponse(requestID, debugErr)
+		log.Warn().Msg("Failed to decrypt credential")
+		return mh.authErrorResponse(requestID, "Authentication failed")
 	}
 	defer zeroBytes(credentialBytes)
 
-	log.Debug().
-		Int("credential_bytes_len", len(credentialBytes)).
-		Str("credential_preview", string(credentialBytes[:min(100, len(credentialBytes))])).
-		Msg("Decrypted credential")
+	log.Debug().Int("credential_bytes_len", len(credentialBytes)).Msg("Decrypted credential")
 
 	// Parse the credential
 	var credential struct {
@@ -194,26 +183,16 @@ func (mh *MessageHandler) handleUTKAuthenticate(requestID string, req *Authentic
 		return mh.authErrorResponse(requestID, "Invalid credential format")
 	}
 
-	log.Info().
-		Int("stored_hash_len", len(credential.PasswordHash)).
-		Str("stored_hash_prefix", credential.PasswordHash[:min(40, len(credential.PasswordHash))]).
-		Msg("DEBUG: Stored password hash from credential")
+	log.Debug().
+		Bool("has_stored_hash", len(credential.PasswordHash) > 0).
+		Msg("Retrieved stored credential for verification")
 
 	// Verify the password hash matches (constant-time for PHC strings)
 	if !timingSafeEqualStrings(payload.PasswordHash, credential.PasswordHash) {
 		log.Warn().
 			Str("device_id", req.DeviceID).
-			Int("payload_len", len(payload.PasswordHash)).
-			Int("stored_len", len(credential.PasswordHash)).
-			Bool("lengths_match", len(payload.PasswordHash) == len(credential.PasswordHash)).
-			Msg("Password verification failed - hash mismatch")
-		// DEBUG: Include comparison details in error message
-		debugMsg := fmt.Sprintf("DEBUG: payload_len=%d stored_len=%d payload_prefix=%s stored_prefix=%s",
-			len(payload.PasswordHash),
-			len(credential.PasswordHash),
-			payload.PasswordHash[:min(30, len(payload.PasswordHash))],
-			credential.PasswordHash[:min(30, len(credential.PasswordHash))])
-		return mh.authErrorResponse(requestID, debugMsg)
+			Msg("Password verification failed")
+		return mh.authErrorResponse(requestID, "Authentication failed")
 	}
 
 	// Mark UTK as used
@@ -360,12 +339,11 @@ func (mh *MessageHandler) decryptCredentialWithCEK(encryptedCred []byte) ([]byte
 	return decryptWithCEK(mh.vaultState.cekPair.PrivateKey, encryptedCred)
 }
 
-// timingSafeEqualStrings compares two strings in constant time
+// timingSafeEqualStrings compares two strings in constant time.
+// SECURITY: Uses crypto/subtle.ConstantTimeCompare which does not leak
+// length information through timing (returns 0 for different-length inputs).
 func timingSafeEqualStrings(a, b string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	return timingSafeEqual([]byte(a), []byte(b))
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
 // authErrorResponse creates an authentication error response
