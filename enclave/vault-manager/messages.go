@@ -564,6 +564,9 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 	case "agent":
 		// Agent management operations (from mobile app)
 		return mh.handleAgentOperation(ctx, msg, parts[opIndex+1:])
+	case "vault":
+		// Vault lifecycle operations (save state, etc.)
+		return mh.handleVaultLifecycleOperation(ctx, msg, parts[opIndex+1:])
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown operation: %s", operation))
 	}
@@ -627,6 +630,27 @@ func (mh *MessageHandler) handleAgentOperation(ctx context.Context, msg *Incomin
 		return mh.connectionsHandler.HandleCreateAgentInvite(msg)
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown agent operation: %s", opType))
+	}
+}
+
+// handleVaultLifecycleOperation routes vault lifecycle operations from the mobile app.
+// Format: forVault.vault.{sub-operation}
+func (mh *MessageHandler) handleVaultLifecycleOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
+	if len(opParts) < 1 {
+		return mh.errorResponse(msg.GetID(), "missing vault lifecycle operation type")
+	}
+
+	opType := opParts[0]
+
+	switch opType {
+	case "save":
+		// Persist vault state (SQLite + vault state) to S3
+		mh.persistVaultStateToS3()
+		resp := map[string]interface{}{"success": true, "message": "Vault state saved to S3"}
+		respBytes, _ := json.Marshal(resp)
+		return mh.successResponse(msg.GetID(), respBytes)
+	default:
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown vault lifecycle operation: %s", opType))
 	}
 }
 
