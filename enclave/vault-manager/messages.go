@@ -1951,7 +1951,6 @@ func (mh *MessageHandler) handleHandlersOperation(ctx context.Context, msg *Inco
 		{ID: "vote", Name: "Voting", Description: "Vault-signed governance voting", Operations: []string{"cast"}},
 		{ID: "audit", Name: "Audit", Description: "Audit log queries and export", Operations: []string{"query", "export"}},
 		{ID: "call", Name: "Calls", Description: "Voice and video call management", Operations: []string{"start", "accept", "reject", "end", "signal", "history"}},
-		{ID: "block", Name: "Call Blocking", Description: "Manage blocked callers", Operations: []string{"add", "remove"}},
 		{ID: "invitation", Name: "Invitations", Description: "Connection invitation lifecycle", Operations: []string{"list", "cancel", "resend", "viewed"}},
 		{ID: "capability", Name: "Capabilities", Description: "Peer capability negotiation", Operations: []string{"request", "respond", "get", "list"}},
 		{ID: "settings", Name: "Settings", Description: "Notification preferences", Operations: []string{"notifications"}},
