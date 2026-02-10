@@ -132,6 +132,8 @@ npm run test:e2e      # End-to-end tests
 - [vettid-android](https://github.com/vettid/vettid-android) - Android app (Kotlin/Jetpack Compose)
 - [vettid-ios](https://github.com/vettid/vettid-ios) - iOS app (Swift/SwiftUI)
 - [vettid-desktop](https://github.com/vettid/vettid-desktop) - Desktop app (Tauri/Rust/Svelte)
+- [vettid-agent](https://github.com/vettid/vettid-agent) - Agent connector (Go sidecar)
+- [vettid-service-vault](https://github.com/vettid/vettid-service-vault) - Service integration layer
 - [vettid-test-harness](https://github.com/vettid/vettid-test-harness) - E2E test suite
 
 ## Security
