@@ -912,6 +912,82 @@
     padding-top: 160px;
   }
 
+  /* LEASH Banner */
+  .leash-banner {
+    padding: 80px 24px;
+    text-align: center;
+    background: linear-gradient(180deg, var(--bg-dark) 0%, #0a0908 50%, var(--bg-dark) 100%);
+    position: relative;
+    overflow: hidden;
+    border-top: 1px solid var(--border-accent);
+    border-bottom: 1px solid var(--border-accent);
+  }
+
+  .leash-banner::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 500px;
+    height: 500px;
+    background: radial-gradient(circle, rgba(255,193,37,0.08) 0%, transparent 60%);
+    animation: pulse-glow 4s ease-in-out infinite;
+    pointer-events: none;
+  }
+
+  .leash-banner-content {
+    position: relative;
+    z-index: 1;
+    max-width: 700px;
+    margin: 0 auto;
+  }
+
+  .leash-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(255,193,37,0.1);
+    border: 1px solid rgba(255,193,37,0.4);
+    border-radius: 100px;
+    padding: 6px 18px;
+    margin-bottom: 24px;
+    font-size: 0.75rem;
+    font-weight: 700;
+    color: var(--accent);
+    letter-spacing: 3px;
+    text-transform: uppercase;
+  }
+
+  .leash-banner h2 {
+    font-size: 3.5rem;
+    font-weight: 800;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, #fff 0%, #ffc125 50%, #fff 100%);
+    background-size: 200% auto;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    animation: shimmer 3s linear infinite;
+    letter-spacing: 6px;
+  }
+
+  .leash-subtitle {
+    font-family: 'Plus Jakarta Sans', sans-serif;
+    font-size: 1.2rem;
+    font-weight: 600;
+    color: var(--accent);
+    margin-bottom: 20px;
+    letter-spacing: 1px;
+  }
+
+  .leash-desc {
+    color: var(--text-muted);
+    font-size: 1.05rem;
+    line-height: 1.7;
+    margin-bottom: 32px;
+  }
+
   /* Responsive */
   @media (max-width: 768px) {
     .hero h1 { font-size: 2.5rem; }
@@ -970,6 +1046,9 @@
     .intro-banner h2 { font-size: 2.5rem; }
     .intro-banner .highlight { font-size: 1.2rem; }
     .intro-banner::after { width: 300px; height: 300px; }
+    .leash-banner h2 { font-size: 2.5rem; }
+    .leash-subtitle { font-size: 1rem; }
+    .leash-desc { font-size: 0.95rem; }
   }
 
   /* Introducing Banner */
@@ -1293,6 +1372,21 @@
       </ul>
     </div>
   </div>
+
+  <div class="service-highlight" style="margin-top: 32px;">
+    <div class="service-highlight-content">
+      <h3>Everywhere You Work: Desktop Client</h3>
+      <p>VettID Desktop extends your vault to macOS, Windows, and Linux. Sessions are time-limited and capability-scoped &mdash; your phone stays in control. Browse connections, read feeds, and view audit logs independently. Sensitive operations like retrieving secrets or updating credentials require real-time phone approval.</p>
+      <ul class="service-features">
+        <li><svg width="16" height="16" viewBox="0 0 16 16" fill="#ffc125"><path d="M6 10.8L3.2 8l-.9.9L6 12.6l8-8-.9-.9L6 10.8z"/></svg> Time-bounded sessions with automatic expiry and phone-controlled renewal</li>
+        <li><svg width="16" height="16" viewBox="0 0 16 16" fill="#ffc125"><path d="M6 10.8L3.2 8l-.9.9L6 12.6l8-8-.9-.9L6 10.8z"/></svg> Independent access to connections, feeds, messages, and audit logs</li>
+        <li><svg width="16" height="16" viewBox="0 0 16 16" fill="#ffc125"><path d="M6 10.8L3.2 8l-.9.9L6 12.6l8-8-.9-.9L6 10.8z"/></svg> Sensitive operations require real-time phone approval</li>
+        <li><svg width="16" height="16" viewBox="0 0 16 16" fill="#ffc125"><path d="M6 10.8L3.2 8l-.9.9L6 12.6l8-8-.9-.9L6 10.8z"/></svg> Machine fingerprinting binds credentials to a specific device</li>
+        <li><svg width="16" height="16" viewBox="0 0 16 16" fill="#ffc125"><path d="M6 10.8L3.2 8l-.9.9L6 12.6l8-8-.9-.9L6 10.8z"/></svg> E2E encrypted &mdash; desktop never holds the vault master key</li>
+        <li><svg width="16" height="16" viewBox="0 0 16 16" fill="#ffc125"><path d="M6 10.8L3.2 8l-.9.9L6 12.6l8-8-.9-.9L6 10.8z"/></svg> Open source (AGPL-3.0) &mdash; <a href="https://github.com/vettid/vettid-desktop" target="_blank" rel="noopener noreferrer" style="color: var(--accent); text-decoration: underline;">view on GitHub</a></li>
+      </ul>
+    </div>
+  </div>
 </section>
 
 <!-- Security Section -->
@@ -1387,6 +1481,10 @@
           <div class="diagram-box trusted">
             <h4>Nitro Enclave</h4>
             <p>Decrypts and processes</p>
+          </div>
+          <div class="diagram-box trusted">
+            <h4>Desktop Client</h4>
+            <p>Phone-approved sessions</p>
           </div>
           <div class="diagram-box trusted">
             <h4>Agent Connector</h4>
@@ -1564,6 +1662,17 @@
         <p>Built by privacy advocates, for people who value their digital freedom.</p>
       </div>
     </div>
+  </div>
+</section>
+
+<!-- LEASH Announcement -->
+<section class="leash-banner">
+  <div class="leash-banner-content">
+    <div class="leash-badge">New &mdash; Position Paper</div>
+    <h2>LEASH</h2>
+    <p class="leash-subtitle">Lightweight Encrypted Agent Secret Handling</p>
+    <p class="leash-desc">MCP has become the universal standard for connecting AI agents to tools, but it has no native mechanism for secure secret management. We're proposing one. LEASH is a companion protocol where secrets never leave the vault, humans approve every access, and every operation is auditable.</p>
+    <a href="https://github.com/vettid/LEASH" target="_blank" rel="noopener noreferrer" class="btn btn-outline">Read the Position Paper &rarr;</a>
   </div>
 </section>
 
