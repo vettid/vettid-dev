@@ -34,8 +34,9 @@ func NewConnectionsHandler(ownerSpace string, storage *EncryptedStorage, eventHa
 
 // Connection type constants
 const (
-	ConnectionTypePeer  = "peer"  // Human-to-human connection (default)
-	ConnectionTypeAgent = "agent" // AI agent connection via Agent Connector
+	ConnectionTypePeer   = "peer"   // Human-to-human connection (default)
+	ConnectionTypeAgent  = "agent"  // AI agent connection via Agent Connector
+	ConnectionTypeDevice = "device" // Desktop device connection via session
 )
 
 // ConnectionRecord represents a stored connection
@@ -81,6 +82,39 @@ type ConnectionRecord struct {
 	// Agent-specific fields (only set when ConnectionType == "agent")
 	AgentMetadata *AgentMetadata      `json:"agent_metadata,omitempty"`
 	Contract      *ConnectionContract `json:"contract,omitempty"`
+
+	// Device-specific fields (only set when ConnectionType == "device")
+	DeviceMetadata *DeviceMetadata `json:"device_metadata,omitempty"`
+	DeviceSession  *DeviceSession  `json:"device_session,omitempty"`
+}
+
+// DeviceMetadata holds registration details for a desktop device connection.
+// Collected by the desktop app during registration and sent to the vault.
+type DeviceMetadata struct {
+	DeviceType         string `json:"device_type"`          // "desktop", "laptop", etc.
+	BinaryFingerprint  string `json:"binary_fingerprint"`   // SHA-256 of desktop binary
+	MachineFingerprint string `json:"machine_fingerprint"`  // HMAC-SHA256 of machine attributes
+	IPAddress          string `json:"ip_address"`
+	Hostname           string `json:"hostname"`
+	Platform           string `json:"platform"`             // linux/amd64, darwin/arm64, etc.
+	AppVersion         string `json:"app_version,omitempty"`
+	OSVersion          string `json:"os_version,omitempty"`
+}
+
+// DeviceSession tracks the time-limited session for a device connection.
+// Sessions require periodic phone heartbeats to remain active.
+type DeviceSession struct {
+	SessionID          string   `json:"session_id"`
+	Status             string   `json:"status"`              // "active", "expired", "revoked", "suspended"
+	CreatedAt          int64    `json:"created_at"`
+	ExpiresAt          int64    `json:"expires_at"`
+	LastActiveAt       int64    `json:"last_active_at"`
+	LastPhoneHeartbeat int64    `json:"last_phone_heartbeat"`
+	ExtendedCount      int      `json:"extended_count"`
+	MaxExtensions      int      `json:"max_extensions"`      // default 3
+	TTLHours           int      `json:"ttl_hours"`           // default 8
+	Capabilities       []string `json:"capabilities,omitempty"`
+	RequiresPhone      []string `json:"requires_phone,omitempty"`
 }
 
 // AgentMetadata holds registration details for an AI agent connection.
@@ -121,6 +155,11 @@ func (r *ConnectionRecord) GetConnectionType() string {
 // IsAgent returns true if this is an agent connection.
 func (r *ConnectionRecord) IsAgent() bool {
 	return r.GetConnectionType() == ConnectionTypeAgent
+}
+
+// IsDevice returns true if this is a desktop device connection.
+func (r *ConnectionRecord) IsDevice() bool {
+	return r.GetConnectionType() == ConnectionTypeDevice
 }
 
 // --- Request/Response types ---
@@ -308,6 +347,21 @@ type CreateAgentInviteRequest struct {
 
 // CreateAgentInviteResponse returns data the app needs to call POST /vault/agent/shortlink
 type CreateAgentInviteResponse struct {
+	ConnectionID   string `json:"connection_id"`
+	InvitationID   string `json:"invitation_id"`
+	InviteToken    string `json:"invite_token"`     // 32 bytes, base64url
+	OwnerGUID      string `json:"owner_guid"`
+	VaultPublicKey string `json:"vault_public_key"` // Hex X25519 public key
+	ExpiresAt      string `json:"expires_at"`
+}
+
+// CreateDeviceInviteRequest is the payload for connection.device.create-invite
+type CreateDeviceInviteRequest struct {
+	Label string `json:"label"` // Optional name for this device slot
+}
+
+// CreateDeviceInviteResponse returns data the app needs to call POST /vault/agent/shortlink
+type CreateDeviceInviteResponse struct {
 	ConnectionID   string `json:"connection_id"`
 	InvitationID   string `json:"invitation_id"`
 	InviteToken    string `json:"invite_token"`     // 32 bytes, base64url
@@ -1835,6 +1889,655 @@ func (h *ConnectionsHandler) findPendingAgentInvitationForECIES(encryptedPayload
 	}
 
 	return nil, nil, fmt.Errorf("no matching pending agent invitation found")
+}
+
+// HandleCreateDeviceInvite handles connection.device.create-invite messages.
+// Creates a connection + invitation for a desktop device and returns
+// the details the app needs to call POST /vault/agent/shortlink.
+// Mirrors HandleCreateAgentInvite but uses ConnectionTypeDevice.
+func (h *ConnectionsHandler) HandleCreateDeviceInvite(msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req CreateDeviceInviteRequest
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		return h.errorResponse(msg.GetID(), "Invalid request format")
+	}
+
+	label := req.Label
+	if label == "" {
+		label = "Desktop"
+	}
+
+	// Generate connection ID
+	idBytes := make([]byte, 16)
+	rand.Read(idBytes)
+	connectionID := fmt.Sprintf("conn-%x", idBytes)
+
+	// Device invitations expire in 24 hours
+	expiresAt := time.Now().Add(24 * time.Hour)
+
+	// Generate X25519 key pair for E2E encryption
+	localPrivate := make([]byte, 32)
+	rand.Read(localPrivate)
+
+	localPublic, err := curve25519.X25519(localPrivate, curve25519.Basepoint)
+	if err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to derive public key")
+	}
+
+	// Generate invite token (32 bytes, base64url-encoded)
+	tokenBytes := make([]byte, 32)
+	rand.Read(tokenBytes)
+	inviteToken := base64.RawURLEncoding.EncodeToString(tokenBytes)
+
+	// Store the outbound device connection record
+	record := ConnectionRecord{
+		ConnectionID:      connectionID,
+		ConnectionType:    ConnectionTypeDevice,
+		PeerAlias:         label,
+		CredentialsType:   "outbound",
+		MessageSpaceTopic: fmt.Sprintf("MessageSpace.%s.forOwner.>", h.ownerSpace),
+		Status:            "invited",
+		CreatedAt:         time.Now(),
+		ExpiresAt:         expiresAt,
+		LocalPublicKey:    localPublic,
+		LocalPrivateKey:   localPrivate,
+	}
+
+	data, err := json.Marshal(record)
+	if err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to marshal connection")
+	}
+
+	storageKey := "connections/" + connectionID
+	if err := h.storage.Put(storageKey, data); err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to store connection")
+	}
+
+	h.addToConnectionIndex(connectionID)
+
+	// Create invitation record (reuses agent invitation infrastructure)
+	invitationID, err := h.createDeviceInvitation(connectionID, label, inviteToken, expiresAt)
+	if err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to create invitation")
+	}
+
+	// Log event
+	if h.eventHandler != nil {
+		h.eventHandler.LogConnectionEvent(context.Background(), EventTypeDeviceConnectionRequest, connectionID, "", "Device invitation created")
+	}
+
+	log.Info().
+		Str("connection_id", connectionID).
+		Str("invitation_id", invitationID).
+		Msg("Device invitation created")
+
+	resp := CreateDeviceInviteResponse{
+		ConnectionID:   connectionID,
+		InvitationID:   invitationID,
+		InviteToken:    inviteToken,
+		OwnerGUID:      h.ownerSpace,
+		VaultPublicKey: fmt.Sprintf("%x", localPublic),
+		ExpiresAt:      expiresAt.Format(time.RFC3339),
+	}
+	respBytes, _ := json.Marshal(resp)
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// createDeviceInvitation creates an invitation record for a device connection.
+func (h *ConnectionsHandler) createDeviceInvitation(connectionID, label, inviteToken string, expiresAt time.Time) (string, error) {
+	idBytes := make([]byte, 16)
+	rand.Read(idBytes)
+	invitationID := fmt.Sprintf("inv-%x", idBytes)
+
+	record := InvitationRecord{
+		InvitationID:   invitationID,
+		ConnectionID:   connectionID,
+		Status:         "pending",
+		DeliveryMethod: "shortlink",
+		Label:          label,
+		InviteToken:    inviteToken,
+		CreatedAt:      time.Now(),
+		ExpiresAt:      expiresAt,
+	}
+
+	data, err := json.Marshal(record)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal invitation: %w", err)
+	}
+
+	if err := h.storage.Put("invitations/"+invitationID, data); err != nil {
+		return "", fmt.Errorf("failed to store invitation: %w", err)
+	}
+
+	// Add to invitation index
+	var index []string
+	indexData, err := h.storage.Get("invitations/_index")
+	if err == nil {
+		json.Unmarshal(indexData, &index)
+	}
+
+	for _, id := range index {
+		if id == invitationID {
+			return invitationID, nil
+		}
+	}
+
+	index = append(index, invitationID)
+	newIndexData, _ := json.Marshal(index)
+	h.storage.Put("invitations/_index", newIndexData)
+
+	log.Info().
+		Str("invitation_id", invitationID).
+		Str("connection_id", connectionID).
+		Msg("Device invitation record created")
+
+	return invitationID, nil
+}
+
+// HandleAcceptDeviceConnection processes a device connection request (registration completion).
+//
+// The desktop sends a ConnectionRequest ECIES-encrypted with the vault's X25519 public key.
+// Uses DomainDevice domain separation ("vettid-device-v1") distinct from agent's DomainAgent.
+// On acceptance, creates an initial DeviceSession with configured TTL.
+func (h *ConnectionsHandler) HandleAcceptDeviceConnection(ctx context.Context, msg *IncomingMessage, envelope *AgentEnvelope) (*OutgoingMessage, error) {
+	// Extract encrypted bytes from envelope payload
+	encryptedPayload, err := extractPayloadBytes(envelope.Payload)
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to extract device connection request payload")
+		return nil, nil
+	}
+
+	// Find matching pending device invitation via ECIES decryption trial
+	invRecord, connRecord, err := h.findPendingDeviceInvitationForECIES(encryptedPayload)
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to find matching device invitation")
+		return nil, nil
+	}
+
+	// ECIES-decrypt with the connection's local private key using device domain
+	plaintext, err := decryptECIESDeviceDomain(connRecord.LocalPrivateKey, encryptedPayload)
+	if err != nil {
+		log.Warn().Err(err).
+			Str("connection_id", connRecord.ConnectionID).
+			Msg("Failed to decrypt device connection request")
+		return nil, nil
+	}
+	defer zeroBytes(plaintext)
+
+	// Parse the connection request
+	var connReq struct {
+		InvitationID    string         `json:"invitation_id"`
+		DevicePublicKey []byte         `json:"device_public_key"`
+		Registration    DeviceMetadata `json:"registration"`
+		Timestamp       time.Time      `json:"timestamp"`
+	}
+	if err := json.Unmarshal(plaintext, &connReq); err != nil {
+		log.Warn().Err(err).Msg("Failed to parse device connection request")
+		return nil, nil
+	}
+
+	// Verify invitation ID matches
+	if connReq.InvitationID != invRecord.InvitationID {
+		log.Warn().
+			Str("expected", invRecord.InvitationID).
+			Str("got", connReq.InvitationID).
+			Msg("Device connection request invitation ID mismatch")
+		return nil, nil
+	}
+
+	// Validate invitation
+	if invRecord.Status != "pending" {
+		log.Warn().Str("status", invRecord.Status).Msg("Device invitation not pending")
+		return nil, nil
+	}
+	if time.Now().After(invRecord.ExpiresAt) {
+		log.Warn().Msg("Device invitation expired")
+		return nil, nil
+	}
+
+	// Validate device public key
+	if len(connReq.DevicePublicKey) != 32 {
+		log.Warn().Int("len", len(connReq.DevicePublicKey)).Msg("Invalid device public key length")
+		return nil, nil
+	}
+
+	// Compute X25519 shared secret
+	sharedSecret, err := curve25519.X25519(connRecord.LocalPrivateKey, connReq.DevicePublicKey)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to compute shared secret")
+		return nil, nil
+	}
+
+	// Create initial device session
+	sessionIDBytes := make([]byte, 16)
+	rand.Read(sessionIDBytes)
+	now := time.Now()
+	ttlHours := 8
+	session := &DeviceSession{
+		SessionID:          fmt.Sprintf("sess-%x", sessionIDBytes),
+		Status:             "active",
+		CreatedAt:          now.Unix(),
+		ExpiresAt:          now.Add(time.Duration(ttlHours) * time.Hour).Unix(),
+		LastActiveAt:       now.Unix(),
+		LastPhoneHeartbeat: now.Unix(),
+		ExtendedCount:      0,
+		MaxExtensions:      3,
+		TTLHours:           ttlHours,
+		Capabilities:       DeviceIndependentCapabilities(),
+		RequiresPhone:      DevicePhoneRequiredCapabilities(),
+	}
+
+	// Update connection record
+	connRecord.PeerPublicKey = connReq.DevicePublicKey
+	connRecord.SharedSecret = sharedSecret
+	connRecord.Status = "active"
+	connRecord.KeyExchangeAt = time.Now()
+	connRecord.DeviceMetadata = &connReq.Registration
+	connRecord.DeviceSession = session
+
+	// Save updated connection
+	connData, err := json.Marshal(connRecord)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to marshal updated device connection")
+		return nil, nil
+	}
+	if err := h.storage.Put("connections/"+connRecord.ConnectionID, connData); err != nil {
+		log.Error().Err(err).Msg("Failed to store updated device connection")
+		return nil, nil
+	}
+
+	// Update invitation status
+	invNow := time.Now()
+	invRecord.Status = "accepted"
+	invRecord.RespondedAt = &invNow
+	invData, _ := json.Marshal(invRecord)
+	h.storage.Put("invitations/"+invRecord.InvitationID, invData)
+
+	// Log event
+	if h.eventHandler != nil {
+		h.eventHandler.LogConnectionEvent(ctx, EventTypeDeviceConnectionApproved, connRecord.ConnectionID, "",
+			fmt.Sprintf("Device connection accepted: %s (%s)", connRecord.PeerAlias, connReq.Registration.Hostname))
+	}
+
+	log.Info().
+		Str("connection_id", connRecord.ConnectionID).
+		Str("invitation_id", invRecord.InvitationID).
+		Str("hostname", connReq.Registration.Hostname).
+		Str("session_id", session.SessionID).
+		Msg("Device connection accepted")
+
+	// Derive connection key to encrypt the approval response
+	connKey, err := deriveConnectionKey(sharedSecret)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to derive connection key for device approval response")
+		return nil, nil
+	}
+	defer zeroBytes(connKey)
+
+	// Build approval payload
+	approval := struct {
+		ConnectionID string         `json:"connection_id"`
+		KeyID        string         `json:"key_id"`
+		Session      *DeviceSession `json:"session"`
+	}{
+		ConnectionID: connRecord.ConnectionID,
+		KeyID:        connRecord.ConnectionID,
+		Session:      session,
+	}
+	approvalBytes, _ := json.Marshal(approval)
+
+	// Encrypt with connection key
+	encryptedApproval, err := encryptXChaCha20(connKey, approvalBytes)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to encrypt device approval response")
+		return nil, nil
+	}
+	zeroBytes(approvalBytes)
+
+	// Build response envelope
+	encPayloadJSON, _ := json.Marshal(encryptedApproval)
+	envBytes, err := json.Marshal(AgentEnvelope{
+		Type:      DeviceMsgConnectionApproved,
+		KeyID:     connRecord.ConnectionID,
+		Payload:   encPayloadJSON,
+		Timestamp: time.Now().UTC(),
+	})
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to marshal device approval envelope")
+		return nil, nil
+	}
+
+	// Publish to invitation-specific topic so the desktop can receive it
+	responseTopic := fmt.Sprintf("MessageSpace.%s.forOwner.device.invitation.%s", h.ownerSpace, invRecord.InvitationID)
+	log.Debug().Str("topic", responseTopic).Msg("Publishing device connection approval")
+
+	return &OutgoingMessage{
+		ID:      generateMessageID(),
+		Type:    MessageTypeNATSPublish,
+		Subject: responseTopic,
+		Payload: envBytes,
+	}, nil
+}
+
+// findPendingDeviceInvitationForECIES finds the pending device invitation
+// that can successfully decrypt the ECIES payload using device domain separation.
+func (h *ConnectionsHandler) findPendingDeviceInvitationForECIES(encryptedPayload []byte) (*InvitationRecord, *ConnectionRecord, error) {
+	var invIndex []string
+	indexData, err := h.storage.Get("invitations/_index")
+	if err != nil {
+		return nil, nil, fmt.Errorf("no invitations found")
+	}
+	json.Unmarshal(indexData, &invIndex)
+
+	for _, invID := range invIndex {
+		invData, err := h.storage.Get("invitations/" + invID)
+		if err != nil {
+			continue
+		}
+
+		var inv InvitationRecord
+		if err := json.Unmarshal(invData, &inv); err != nil {
+			continue
+		}
+
+		if inv.Status != "pending" || time.Now().After(inv.ExpiresAt) {
+			continue
+		}
+
+		connData, err := h.storage.Get("connections/" + inv.ConnectionID)
+		if err != nil {
+			continue
+		}
+
+		var conn ConnectionRecord
+		if err := json.Unmarshal(connData, &conn); err != nil {
+			continue
+		}
+
+		// Must be a device connection with a private key
+		if !conn.IsDevice() || len(conn.LocalPrivateKey) == 0 {
+			continue
+		}
+
+		// Try to decrypt — if it works, this is the right invitation
+		_, err = decryptECIESDeviceDomain(conn.LocalPrivateKey, encryptedPayload)
+		if err == nil {
+			return &inv, &conn, nil
+		}
+	}
+
+	return nil, nil, fmt.Errorf("no matching pending device invitation found")
+}
+
+// HandleListDeviceConnections returns all device connections with session status.
+func (h *ConnectionsHandler) HandleListDeviceConnections(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	indexData, err := h.storage.Get("connections/_index")
+	var connectionIDs []string
+	if err == nil {
+		json.Unmarshal(indexData, &connectionIDs)
+	}
+
+	type DeviceInfo struct {
+		ConnectionID string `json:"connection_id"`
+		DeviceName   string `json:"device_name"`
+		Hostname     string `json:"hostname,omitempty"`
+		Platform     string `json:"platform,omitempty"`
+		Status       string `json:"status"`
+		SessionID    string `json:"session_id,omitempty"`
+		SessionStatus string `json:"session_status,omitempty"`
+		SessionExpires int64 `json:"session_expires,omitempty"`
+		ConnectedAt  string `json:"connected_at"`
+		LastActiveAt string `json:"last_active_at,omitempty"`
+	}
+
+	devices := make([]DeviceInfo, 0)
+	for _, connID := range connectionIDs {
+		data, err := h.storage.Get("connections/" + connID)
+		if err != nil {
+			continue
+		}
+
+		var record ConnectionRecord
+		if json.Unmarshal(data, &record) != nil {
+			continue
+		}
+
+		if !record.IsDevice() {
+			continue
+		}
+
+		info := DeviceInfo{
+			ConnectionID: record.ConnectionID,
+			DeviceName:   record.PeerAlias,
+			Status:       record.Status,
+			ConnectedAt:  record.CreatedAt.Format(time.RFC3339),
+		}
+
+		if record.DeviceMetadata != nil {
+			info.Hostname = record.DeviceMetadata.Hostname
+			info.Platform = record.DeviceMetadata.Platform
+		}
+
+		if record.DeviceSession != nil {
+			info.SessionID = record.DeviceSession.SessionID
+			info.SessionStatus = record.DeviceSession.Status
+			info.SessionExpires = record.DeviceSession.ExpiresAt
+		}
+
+		if record.LastActiveAt != nil {
+			info.LastActiveAt = record.LastActiveAt.Format(time.RFC3339)
+		}
+
+		devices = append(devices, info)
+	}
+
+	resp := struct {
+		Devices []DeviceInfo `json:"devices"`
+		Count   int          `json:"count"`
+	}{
+		Devices: devices,
+		Count:   len(devices),
+	}
+	respBytes, _ := json.Marshal(resp)
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// HandleRevokeDevice revokes a device connection and its session.
+func (h *ConnectionsHandler) HandleRevokeDevice(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req struct {
+		ConnectionID string `json:"connection_id"`
+	}
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		return h.errorResponse(msg.GetID(), "Invalid request format")
+	}
+
+	if req.ConnectionID == "" {
+		return h.errorResponse(msg.GetID(), "connection_id is required")
+	}
+
+	data, err := h.storage.Get("connections/" + req.ConnectionID)
+	if err != nil {
+		return h.errorResponse(msg.GetID(), "Connection not found")
+	}
+
+	var record ConnectionRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to read connection")
+	}
+
+	if !record.IsDevice() {
+		return h.errorResponse(msg.GetID(), "Connection is not a device")
+	}
+
+	// Revoke connection
+	record.Status = "revoked"
+
+	// Revoke session and zero sensitive material
+	if record.DeviceSession != nil {
+		record.DeviceSession.Status = "revoked"
+	}
+	zeroBytes(record.SharedSecret)
+	record.SharedSecret = nil
+
+	connData, _ := json.Marshal(record)
+	h.storage.Put("connections/"+record.ConnectionID, connData)
+
+	if h.eventHandler != nil {
+		h.eventHandler.LogConnectionEvent(ctx, EventTypeDeviceConnectionRevoked, record.ConnectionID, "",
+			fmt.Sprintf("Device connection revoked: %s", record.PeerAlias))
+	}
+
+	log.Info().
+		Str("connection_id", record.ConnectionID).
+		Msg("Device connection revoked")
+
+	resp := struct {
+		Success      bool   `json:"success"`
+		ConnectionID string `json:"connection_id"`
+	}{
+		Success:      true,
+		ConnectionID: record.ConnectionID,
+	}
+	respBytes, _ := json.Marshal(resp)
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// HandleExtendDeviceSession extends an active device session (phone-initiated only).
+func (h *ConnectionsHandler) HandleExtendDeviceSession(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req struct {
+		ConnectionID string `json:"connection_id"`
+	}
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		return h.errorResponse(msg.GetID(), "Invalid request format")
+	}
+
+	data, err := h.storage.Get("connections/" + req.ConnectionID)
+	if err != nil {
+		return h.errorResponse(msg.GetID(), "Connection not found")
+	}
+
+	var record ConnectionRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to read connection")
+	}
+
+	if !record.IsDevice() || record.DeviceSession == nil {
+		return h.errorResponse(msg.GetID(), "No active device session")
+	}
+
+	session := record.DeviceSession
+	if session.Status != "active" {
+		return h.errorResponse(msg.GetID(), fmt.Sprintf("Session is %s, cannot extend", session.Status))
+	}
+	if session.ExtendedCount >= session.MaxExtensions {
+		return h.errorResponse(msg.GetID(), "Maximum session extensions reached")
+	}
+
+	// Extend the session
+	now := time.Now()
+	session.ExpiresAt = now.Add(time.Duration(session.TTLHours) * time.Hour).Unix()
+	session.ExtendedCount++
+	session.LastActiveAt = now.Unix()
+
+	connData, _ := json.Marshal(record)
+	h.storage.Put("connections/"+record.ConnectionID, connData)
+
+	if h.eventHandler != nil {
+		h.eventHandler.LogConnectionEvent(ctx, EventTypeDeviceSessionExtended, record.ConnectionID, "",
+			fmt.Sprintf("Device session extended (%d/%d)", session.ExtendedCount, session.MaxExtensions))
+	}
+
+	log.Info().
+		Str("connection_id", record.ConnectionID).
+		Str("session_id", session.SessionID).
+		Int("extended_count", session.ExtendedCount).
+		Msg("Device session extended")
+
+	resp := struct {
+		Success   bool           `json:"success"`
+		Session   *DeviceSession `json:"session"`
+	}{
+		Success: true,
+		Session: session,
+	}
+	respBytes, _ := json.Marshal(resp)
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// HandleDeviceHeartbeat updates the phone heartbeat timestamp on active device sessions.
+func (h *ConnectionsHandler) HandleDeviceHeartbeat(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	// Update heartbeat on all active device sessions
+	indexData, err := h.storage.Get("connections/_index")
+	var connectionIDs []string
+	if err == nil {
+		json.Unmarshal(indexData, &connectionIDs)
+	}
+
+	now := time.Now().Unix()
+	updated := 0
+	for _, connID := range connectionIDs {
+		data, err := h.storage.Get("connections/" + connID)
+		if err != nil {
+			continue
+		}
+
+		var record ConnectionRecord
+		if json.Unmarshal(data, &record) != nil {
+			continue
+		}
+
+		if !record.IsDevice() || record.DeviceSession == nil || record.DeviceSession.Status != "active" {
+			continue
+		}
+
+		// Check if session was suspended and resume it
+		record.DeviceSession.LastPhoneHeartbeat = now
+		if record.DeviceSession.Status == "suspended" {
+			record.DeviceSession.Status = "active"
+			if h.eventHandler != nil {
+				h.eventHandler.LogConnectionEvent(ctx, EventTypeDeviceSessionCreated, record.ConnectionID, "",
+					"Device session resumed after heartbeat")
+			}
+		}
+
+		connData, _ := json.Marshal(record)
+		h.storage.Put("connections/"+record.ConnectionID, connData)
+		updated++
+	}
+
+	resp := struct {
+		Success bool `json:"success"`
+		Updated int  `json:"updated"`
+	}{
+		Success: true,
+		Updated: updated,
+	}
+	respBytes, _ := json.Marshal(resp)
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
 }
 
 // HandleListAgentConnections returns all agent connections with metadata.

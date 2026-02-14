@@ -36,6 +36,7 @@ interface CreateShortlinkRequest {
   invite_token: string;
   messagespace_uri: string;
   vault_public_key: string;
+  connection_type?: string; // "agent" (default) or "device"
 }
 
 /**
@@ -99,6 +100,9 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     for (let attempt = 0; attempt < 3; attempt++) {
       const candidateCode = generateShortCode();
       try {
+        // connection_type defaults to "agent" for backward compatibility
+        const connectionType = body.connection_type === 'device' ? 'device' : 'agent';
+
         await ddb.send(new PutItemCommand({
           TableName: TABLE_AGENT_SHORTLINKS,
           Item: marshall({
@@ -108,6 +112,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
             invite_token: body.invite_token,
             messagespace_uri: body.messagespace_uri,
             vault_public_key: body.vault_public_key,
+            connection_type: connectionType,
             created_at: new Date(now).toISOString(),
             ttl: ttlSeconds,
           }),

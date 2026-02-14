@@ -105,13 +105,14 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       code_prefix: code.substring(0, 2) + '****',
     }, requestId);
 
-    // Return payload matching agent connector's ShortlinkPayload struct
+    // Return payload matching agent/device connector's ShortlinkPayload struct
     return ok({
       messagespace_uri: item.messagespace_uri,
       invite_token: item.invite_token,
       invitation_id: item.invitation_id,
       vault_public_key: item.vault_public_key,
       owner_guid: item.owner_guid,
+      connection_type: item.connection_type || 'agent', // default for pre-existing items
     }, origin);
 
   } catch (error: any) {

@@ -104,6 +104,24 @@ const (
 	EventTypeAgentActionCompleted EventType = "agent.action.completed"
 	EventTypeAgentActionDenied    EventType = "agent.action.denied"
 
+	// Device connection events
+	EventTypeDeviceConnectionRequest  EventType = "device.connection.request"
+	EventTypeDeviceConnectionApproved EventType = "device.connection.approved"
+	EventTypeDeviceConnectionDenied   EventType = "device.connection.denied"
+	EventTypeDeviceConnectionRevoked  EventType = "device.connection.revoked"
+
+	// Device session events
+	EventTypeDeviceSessionCreated  EventType = "device.session.created"
+	EventTypeDeviceSessionExtended EventType = "device.session.extended"
+	EventTypeDeviceSessionExpired  EventType = "device.session.expired"
+	EventTypeDeviceSessionRevoked  EventType = "device.session.revoked"
+	EventTypeDeviceSessionSuspended EventType = "device.session.suspended"
+
+	// Device approval events (operations delegated to phone)
+	EventTypeDeviceApprovalRequested EventType = "device.approval.requested"
+	EventTypeDeviceApprovalGranted   EventType = "device.approval.granted"
+	EventTypeDeviceApprovalDenied    EventType = "device.approval.denied"
+
 	// Feed interaction events (audit-only, tracks user actions on feed items)
 	EventTypeFeedItemRead     EventType = "feed.item_read"
 	EventTypeFeedItemArchived EventType = "feed.item_archived"
@@ -325,6 +343,24 @@ var eventClassifications = map[EventType]EventClassification{
 	EventTypeAgentActionRequested: {FeedStatusActive, ActionTypeAcceptDecline, PriorityHigh, RetentionPermanent},
 	EventTypeAgentActionCompleted: {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionPermanent},
 	EventTypeAgentActionDenied:    {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionPermanent},
+
+	// Device connection events
+	EventTypeDeviceConnectionRequest:  {FeedStatusActive, ActionTypeAcceptDecline, PriorityHigh, RetentionStandard},
+	EventTypeDeviceConnectionApproved: {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
+	EventTypeDeviceConnectionDenied:   {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
+	EventTypeDeviceConnectionRevoked:  {FeedStatusActive, ActionTypeAcknowledge, PriorityNormal, RetentionStandard},
+
+	// Device session events
+	EventTypeDeviceSessionCreated:   {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
+	EventTypeDeviceSessionExtended:  {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
+	EventTypeDeviceSessionExpired:   {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
+	EventTypeDeviceSessionRevoked:   {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
+	EventTypeDeviceSessionSuspended: {FeedStatusActive, ActionTypeAcknowledge, PriorityNormal, RetentionStandard},
+
+	// Device approval events
+	EventTypeDeviceApprovalRequested: {FeedStatusActive, ActionTypeAcceptDecline, PriorityHigh, RetentionPermanent},
+	EventTypeDeviceApprovalGranted:   {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionPermanent},
+	EventTypeDeviceApprovalDenied:    {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionPermanent},
 
 	// Guide events
 	EventTypeGuide: {FeedStatusActive, ActionTypeView, PriorityNormal, RetentionPermanent},

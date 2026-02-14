@@ -133,6 +133,9 @@ type MessageHandler struct {
 	// Agent handlers (AI agent connections)
 	agentHandler        *AgentHandler
 	agentSecretsHandler *AgentSecretsHandler
+
+	// Device handler (desktop device connections)
+	deviceHandler *DeviceHandler
 }
 
 // VsockPublisher implements CallPublisher using vsock to parent
@@ -266,6 +269,9 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 	// Create agent handler
 	agentHandler := NewAgentHandler(ownerSpace, storage, publisher, eventHandler, connectionsHandler, agentSecretsHandler)
 
+	// Create device handler
+	deviceHandler := NewDeviceHandler(ownerSpace, storage, publisher, eventHandler, connectionsHandler)
+
 	return &MessageHandler{
 		ownerSpace:           ownerSpace,
 		storage:              storage,
@@ -323,6 +329,9 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 		// Agent handlers
 		agentHandler:        agentHandler,
 		agentSecretsHandler: agentSecretsHandler,
+
+		// Device handler
+		deviceHandler: deviceHandler,
 	}
 }
 
@@ -423,13 +432,22 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 		return mh.handleFromServiceOperation(ctx, msg, serviceID, parts[serviceIndex+2:])
 	}
 
-	// Check for agent messages (forOwner routing)
-	// Format: MessageSpace.{ownerSpace}.forOwner.agent
-	for _, part := range parts {
+	// Check for agent/device messages (forOwner routing)
+	// Format: MessageSpace.{ownerSpace}.forOwner.agent  OR  ...forOwner.device
+	for i, part := range parts {
 		if part == "forOwner" {
-			// Agent messages: envelope contains type and encrypted payload.
-			// The agent handler publishes responses directly via nats_publish and returns nil.
-			resp, err := mh.agentHandler.HandleAgentMessage(ctx, msg)
+			// Determine if this is an agent or device message
+			var resp *OutgoingMessage
+			var err error
+
+			if i+1 < len(parts) && parts[i+1] == "device" {
+				// Device messages: routed to deviceHandler
+				resp, err = mh.deviceHandler.HandleDeviceMessage(ctx, msg)
+			} else {
+				// Agent messages (default forOwner routing)
+				resp, err = mh.agentHandler.HandleAgentMessage(ctx, msg)
+			}
+
 			if resp == nil && err == nil {
 				// Return a minimal ack response so the supervisor's ProcessMessage loop
 				// terminates. Without this, the supervisor would timeout after 30s waiting
@@ -564,6 +582,9 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 	case "agent":
 		// Agent management operations (from mobile app)
 		return mh.handleAgentOperation(ctx, msg, parts[opIndex+1:])
+	case "device":
+		// Device management operations (from mobile app)
+		return mh.handleDeviceOperation(ctx, msg, parts[opIndex+1:])
 	case "vault":
 		// Vault lifecycle operations (save state, etc.)
 		return mh.handleVaultLifecycleOperation(ctx, msg, parts[opIndex+1:])
@@ -630,6 +651,44 @@ func (mh *MessageHandler) handleAgentOperation(ctx context.Context, msg *Incomin
 		return mh.connectionsHandler.HandleCreateAgentInvite(msg)
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown agent operation: %s", opType))
+	}
+}
+
+// handleDeviceOperation routes device management operations from the mobile app.
+// Format: forVault.device.{sub-operation}
+func (mh *MessageHandler) handleDeviceOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
+	if len(opParts) < 2 {
+		return mh.errorResponse(msg.GetID(), "missing device operation type")
+	}
+
+	opType := opParts[1]
+
+	log.Debug().
+		Str("owner_space", mh.ownerSpace).
+		Str("device_operation", opType).
+		Msg("Routing device operation")
+
+	switch opType {
+	case "create-invite":
+		// Create an invitation for a new device
+		return mh.connectionsHandler.HandleCreateDeviceInvite(msg)
+	case "list":
+		// List device connections
+		return mh.connectionsHandler.HandleListDeviceConnections(ctx, msg)
+	case "revoke":
+		// Revoke a device connection
+		return mh.connectionsHandler.HandleRevokeDevice(ctx, msg)
+	case "extend-session":
+		// Extend an active device session
+		return mh.connectionsHandler.HandleExtendDeviceSession(ctx, msg)
+	case "approval":
+		// Phone responds to a pending device approval request
+		return mh.deviceHandler.HandlePhoneApprovalResponse(ctx, msg)
+	case "heartbeat":
+		// Update phone heartbeat on active device sessions
+		return mh.connectionsHandler.HandleDeviceHeartbeat(ctx, msg)
+	default:
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown device operation: %s", opType))
 	}
 }
 
