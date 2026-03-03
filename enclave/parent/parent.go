@@ -602,7 +602,22 @@ func (p *ParentProcess) sendWithHandlerSupport(ctx context.Context, msg *Enclave
 			continue // Wait for next response
 		}
 
-		// Got the final response
+		// Verify this is a known final response type before returning
+		knownFinalTypes := map[EnclaveMessageType]bool{
+			EnclaveMessageTypeVaultResponse:       true,
+			EnclaveMessageTypeHandlerResponse:     true,
+			EnclaveMessageTypeAttestationResponse: true,
+			EnclaveMessageTypeCredentialResponse:  true,
+			EnclaveMessageTypeHealthResponse:      true,
+			EnclaveMessageTypeError:               true,
+			EnclaveMessageTypeOK:                  true,
+		}
+		if !knownFinalTypes[response.Type] {
+			log.Error().Str("type", string(response.Type)).
+				Msg("CRITICAL: Unrecognized message type - possible misrouted intermediate message")
+			return nil, fmt.Errorf("unrecognized vsock message type: %s", response.Type)
+		}
+
 		return response, nil
 	}
 }

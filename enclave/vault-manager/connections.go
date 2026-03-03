@@ -911,6 +911,8 @@ func (h *ConnectionsHandler) HandleRespond(msg *IncomingMessage) (*OutgoingMessa
 			if h.eventHandler != nil {
 				h.eventHandler.LogConnectionEvent(context.Background(), EventTypeConnectionAccepted, req.ConnectionID, record.PeerGUID, "Bidirectional consent complete")
 			}
+		default:
+			return h.errorResponse(msg.GetID(), fmt.Sprintf("Unexpected status for acceptance: %s", record.Status))
 		}
 	}
 

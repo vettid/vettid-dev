@@ -603,7 +603,7 @@ func (dh *DeviceHandler) publishDeviceResponse(conn *ConnectionRecord, connKey [
 	})
 
 	topic := fmt.Sprintf("MessageSpace.%s.forOwner.device.%s", dh.ownerSpace, conn.ConnectionID)
-	dh.publisher.Publish(topic, envBytes)
+	dh.publisher.PublishRaw(topic, envBytes)
 }
 
 // Stop shuts down the background cleanup goroutine.
