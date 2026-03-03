@@ -611,6 +611,7 @@ func (p *ParentProcess) sendWithHandlerSupport(ctx context.Context, msg *Enclave
 			EnclaveMessageTypeHealthResponse:      true,
 			EnclaveMessageTypeError:               true,
 			EnclaveMessageTypeOK:                  true,
+			"response":                            true, // vault-manager generic response type
 		}
 		if !knownFinalTypes[response.Type] {
 			log.Error().Str("type", string(response.Type)).
