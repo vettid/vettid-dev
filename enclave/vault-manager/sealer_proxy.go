@@ -53,6 +53,8 @@ const (
 	SealerOpLoadVaultState      SealerOperation = "load_vault_state"
 	SealerOpStoreSealedECIES    SealerOperation = "store_sealed_ecies"
 	SealerOpLoadSealedECIES     SealerOperation = "load_sealed_ecies"
+	// NATS account seed (fetched from DynamoDB via parent)
+	SealerOpLoadAccountSeed SealerOperation = "load_account_seed"
 )
 
 // SealerRequest is sent from vault-manager to supervisor
@@ -84,6 +86,9 @@ type SealerResponse struct {
 
 	// For unseal_credential
 	UnsealedData []byte `json:"unsealed_data,omitempty"`
+
+	// For load_account_seed
+	AccountSeed string `json:"account_seed,omitempty"`
 }
 
 // GenerateSealedMaterial requests the supervisor to generate PCR-bound sealed material
@@ -367,6 +372,30 @@ func (p *SealerProxy) StoreVaultState(encryptedState []byte) error {
 	}
 
 	return nil
+}
+
+// LoadAccountSeed fetches the NATS account seed via the parent process.
+// The parent reads the encrypted seed from DynamoDB and decrypts via KMS.
+func (p *SealerProxy) LoadAccountSeed() (string, error) {
+	req := SealerRequest{
+		Operation:  SealerOpLoadAccountSeed,
+		OwnerSpace: p.ownerSpace,
+	}
+
+	resp, err := p.sendRequest(req)
+	if err != nil {
+		return "", err
+	}
+
+	if !resp.Success {
+		return "", fmt.Errorf("account seed error: %s", resp.Error)
+	}
+
+	if resp.AccountSeed == "" {
+		return "", fmt.Errorf("empty account seed returned")
+	}
+
+	return resp.AccountSeed, nil
 }
 
 // LoadVaultState loads DEK-encrypted vault state from S3 for cold vault recovery

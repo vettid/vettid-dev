@@ -57,6 +57,8 @@ const (
 	SealerOpLoadVaultState      SealerOperation = "load_vault_state"
 	SealerOpStoreSealedECIES    SealerOperation = "store_sealed_ecies"
 	SealerOpLoadSealedECIES     SealerOperation = "load_sealed_ecies"
+	// NATS account seed (fetched from DynamoDB via parent)
+	SealerOpLoadAccountSeed SealerOperation = "load_account_seed"
 )
 
 // SealerRequest is received from vault-manager
@@ -88,6 +90,9 @@ type SealerResponse struct {
 
 	// For unseal_credential
 	UnsealedData []byte `json:"unsealed_data,omitempty"`
+
+	// For load_account_seed
+	AccountSeed string `json:"account_seed,omitempty"`
 }
 
 // HandleSealerRequest processes a sealer request from vault-manager
@@ -126,6 +131,8 @@ func (sh *SealerHandler) HandleSealerRequest(msg *Message) *Message {
 		resp = sh.storeSealedECIES(req)
 	case SealerOpLoadSealedECIES:
 		resp = sh.loadSealedECIES(req)
+	case SealerOpLoadAccountSeed:
+		resp = sh.loadAccountSeed(req)
 	default:
 		resp = SealerResponse{
 			Success: false,
@@ -451,4 +458,61 @@ func (sh *SealerHandler) loadSealedECIES(req SealerRequest) SealerResponse {
 	log.Info().Str("owner_space", req.OwnerSpace).Int("data_len", len(data)).Msg("Sealed ECIES keys loaded from S3 successfully")
 	// Return in SealedData field (reusing existing field)
 	return SealerResponse{Success: true, SealedData: data}
+}
+
+// loadAccountSeed fetches the NATS account seed from the parent process.
+// The parent reads it from DynamoDB and decrypts via KMS.
+func (sh *SealerHandler) loadAccountSeed(req SealerRequest) SealerResponse {
+	sh.connMu.Lock()
+	defer sh.connMu.Unlock()
+
+	if sh.parentConn == nil {
+		log.Warn().Str("owner_space", req.OwnerSpace).Msg("No parent connection for account seed - dev mode")
+		return SealerResponse{Success: false, Error: "no parent connection available"}
+	}
+
+	log.Info().Str("owner_space", req.OwnerSpace).Msg("Requesting NATS account seed from parent")
+
+	msg := &Message{
+		Type:       MessageTypeNATSAccountSeedGet,
+		OwnerSpace: req.OwnerSpace,
+	}
+
+	if err := sh.parentConn.WriteMessage(msg); err != nil {
+		return SealerResponse{Success: false, Error: fmt.Sprintf("failed to send account seed request: %v", err)}
+	}
+
+	// Wait for response from parent
+	response, err := sh.parentConn.ReadMessage()
+	if err != nil {
+		return SealerResponse{Success: false, Error: fmt.Sprintf("failed to read account seed response: %v", err)}
+	}
+
+	if response.Type == MessageTypeError {
+		return SealerResponse{Success: false, Error: fmt.Sprintf("parent error: %s", response.Error)}
+	}
+
+	if response.Type != MessageTypeNATSAccountSeedResponse {
+		return SealerResponse{Success: false, Error: fmt.Sprintf("unexpected response type: %s", response.Type)}
+	}
+
+	// Parse the account seed from the response payload
+	var seedResp struct {
+		AccountSeed string `json:"account_seed"`
+		Error       string `json:"error,omitempty"`
+	}
+	if err := json.Unmarshal(response.Payload, &seedResp); err != nil {
+		return SealerResponse{Success: false, Error: fmt.Sprintf("failed to parse seed response: %v", err)}
+	}
+
+	if seedResp.Error != "" {
+		return SealerResponse{Success: false, Error: seedResp.Error}
+	}
+
+	if seedResp.AccountSeed == "" {
+		return SealerResponse{Success: false, Error: "empty account seed from parent"}
+	}
+
+	log.Info().Str("owner_space", req.OwnerSpace).Msg("NATS account seed received from parent")
+	return SealerResponse{Success: true, AccountSeed: seedResp.AccountSeed}
 }

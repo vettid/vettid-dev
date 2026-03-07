@@ -24,6 +24,18 @@ func NewSettingsHandler(ownerSpace string, storage *EncryptedStorage) *SettingsH
 
 // --- Storage types ---
 
+// CredentialSettings controls credential-level security settings.
+// These are persisted in the vault and require authentication to change.
+type CredentialSettings struct {
+	SessionTtlSeconds int   `json:"session_ttl_seconds"` // Time before re-authentication required (in seconds)
+	UpdatedAt         int64 `json:"updated_at"`
+}
+
+// CredentialSettingsUpdateRequest is the payload for settings.credential.update
+type CredentialSettingsUpdateRequest struct {
+	SessionTtlSeconds *int `json:"session_ttl_seconds,omitempty"`
+}
+
 // NotificationSettings controls notification preferences
 type NotificationSettings struct {
 	GlobalEnabled       bool              `json:"global_enabled"`
@@ -349,6 +361,87 @@ func (h *SettingsHandler) ShouldNotify(connectionID string) bool {
 	}
 
 	return true
+}
+
+// --- Credential settings handlers ---
+
+// HandleCredentialSettingsGet handles settings.credential.get messages
+func (h *SettingsHandler) HandleCredentialSettingsGet(msg *IncomingMessage) (*OutgoingMessage, error) {
+	settings := h.loadCredentialSettings()
+
+	resp := map[string]interface{}{
+		"success":  true,
+		"settings": settings,
+	}
+	respBytes, _ := json.Marshal(resp)
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// HandleCredentialSettingsUpdate handles settings.credential.update messages
+func (h *SettingsHandler) HandleCredentialSettingsUpdate(msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req CredentialSettingsUpdateRequest
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		return h.errorResponse(msg.GetID(), "Invalid request format")
+	}
+
+	settings := h.loadCredentialSettings()
+
+	if req.SessionTtlSeconds != nil {
+		ttl := *req.SessionTtlSeconds
+		// Validate TTL range: 30 seconds to 60 minutes
+		if ttl < 30 || ttl > 3600 {
+			return h.errorResponse(msg.GetID(), "session_ttl_seconds must be between 30 and 3600")
+		}
+		settings.SessionTtlSeconds = ttl
+	}
+
+	settings.UpdatedAt = time.Now().Unix()
+
+	data, err := json.Marshal(settings)
+	if err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to marshal settings")
+	}
+
+	if err := h.storage.Put("settings/credential", data); err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to save settings")
+	}
+
+	log.Info().Int("session_ttl_seconds", settings.SessionTtlSeconds).Msg("Credential settings updated")
+
+	resp := map[string]interface{}{
+		"success":  true,
+		"settings": settings,
+	}
+	respBytes, _ := json.Marshal(resp)
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+func (h *SettingsHandler) loadCredentialSettings() *CredentialSettings {
+	data, err := h.storage.Get("settings/credential")
+	if err != nil {
+		return &CredentialSettings{
+			SessionTtlSeconds: 900, // Default: 15 minutes
+		}
+	}
+
+	var settings CredentialSettings
+	if err := json.Unmarshal(data, &settings); err != nil {
+		return &CredentialSettings{
+			SessionTtlSeconds: 900,
+		}
+	}
+
+	return &settings
 }
 
 // --- Helper methods ---

@@ -91,6 +91,9 @@ type MessageHandler struct {
 	eventHandler             *EventHandler
 	publisher                *VsockPublisher
 
+	// NATS proxy for connection credential generation
+	natsProxy *NATSProxy
+
 	// Cryptographic state and handlers for Phase 4
 	vaultState               *VaultState
 	bootstrapHandler         *BootstrapHandler
@@ -263,8 +266,12 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 	// Create agent secrets handler
 	agentSecretsHandler := NewAgentSecretsHandler(ownerSpace, storage, eventHandler)
 
+	// Create NATS proxy for connection credential generation
+	natsProxy := NewNATSProxy(ownerSpace)
+
 	// Create connections handler (needed for agent handler)
-	connectionsHandler := NewConnectionsHandler(ownerSpace, storage, eventHandler)
+	connectionsHandler := NewConnectionsHandler(ownerSpace, storage, eventHandler, natsProxy)
+	connectionsHandler.SetSealerProxy(sealerProxy)
 
 	// Create agent handler
 	agentHandler := NewAgentHandler(ownerSpace, storage, publisher, eventHandler, connectionsHandler, agentSecretsHandler)
@@ -286,6 +293,9 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 		credentialSecretHandler: credentialSecretHandler,
 		eventHandler:            eventHandler,
 		publisher:               publisher,
+
+		// NATS proxy
+		natsProxy: natsProxy,
 
 		// Cryptographic components
 		vaultState:               vaultState,
@@ -1901,6 +1911,19 @@ func (mh *MessageHandler) handleSettingsOperation(ctx context.Context, msg *Inco
 			return mh.settingsHandler.HandleNotificationsUpdate(msg)
 		default:
 			return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown notifications operation: %s", opParts[2]))
+		}
+	case "credential":
+		// Handle credential settings (session TTL, etc.)
+		if len(opParts) < 3 {
+			return mh.errorResponse(msg.GetID(), "missing credential settings operation")
+		}
+		switch opParts[2] {
+		case "get":
+			return mh.settingsHandler.HandleCredentialSettingsGet(msg)
+		case "update":
+			return mh.settingsHandler.HandleCredentialSettingsUpdate(msg)
+		default:
+			return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown credential settings operation: %s", opParts[2]))
 		}
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown settings operation: %s", opType))

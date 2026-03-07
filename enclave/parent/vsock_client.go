@@ -144,6 +144,10 @@ const (
 
 	// Log forwarding (enclave sends logs to parent for CloudWatch)
 	EnclaveMessageTypeLog EnclaveMessageType = "log"
+
+	// NATS account seed operations (enclave -> parent)
+	EnclaveMessageTypeNATSAccountSeedGet      EnclaveMessageType = "nats_account_seed_get"
+	EnclaveMessageTypeNATSAccountSeedResponse EnclaveMessageType = "nats_account_seed_response"
 )
 
 // Attestation holds a Nitro attestation document

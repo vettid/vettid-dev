@@ -19,15 +19,23 @@ type ConnectionsHandler struct {
 	ownerSpace   string
 	storage      *EncryptedStorage
 	eventHandler *EventHandler
+	natsProxy    *NATSProxy
+	sealerProxy  *SealerProxy
 }
 
 // NewConnectionsHandler creates a new connections handler
-func NewConnectionsHandler(ownerSpace string, storage *EncryptedStorage, eventHandler *EventHandler) *ConnectionsHandler {
+func NewConnectionsHandler(ownerSpace string, storage *EncryptedStorage, eventHandler *EventHandler, natsProxy *NATSProxy) *ConnectionsHandler {
 	return &ConnectionsHandler{
 		ownerSpace:   ownerSpace,
 		storage:      storage,
 		eventHandler: eventHandler,
+		natsProxy:    natsProxy,
 	}
+}
+
+// SetSealerProxy sets the sealer proxy for account seed loading
+func (h *ConnectionsHandler) SetSealerProxy(sp *SealerProxy) {
+	h.sealerProxy = sp
 }
 
 // --- Storage types ---
@@ -166,20 +174,23 @@ func (r *ConnectionRecord) IsDevice() bool {
 
 // CreateInviteRequest is the payload for connection.create-invite
 type CreateInviteRequest struct {
-	ConnectionID   string `json:"connection_id,omitempty"`
-	PeerGUID       string `json:"peer_guid,omitempty"`
-	Label          string `json:"label"`
-	ExpiresInHours int    `json:"expires_in_hours"`
+	ConnectionID     string `json:"connection_id,omitempty"`
+	PeerGUID         string `json:"peer_guid,omitempty"`
+	Label            string `json:"label"`
+	ExpiresInHours   int    `json:"expires_in_hours"`
+	ExpiresInMinutes int    `json:"expires_in_minutes"`
 }
 
 // CreateInviteResponse is the response for connection.create-invite
 type CreateInviteResponse struct {
-	ConnectionID      string `json:"connection_id"`
-	OwnerSpace        string `json:"owner_space"`
-	Credentials       string `json:"credentials"`
-	MessageSpaceTopic string `json:"message_space_topic"`
-	ExpiresAt         string `json:"expires_at"`
-	E2EPublicKey      string `json:"e2e_public_key"`
+	ConnectionID      string            `json:"connection_id"`
+	OwnerSpace        string            `json:"owner_space"`
+	Credentials       string            `json:"credentials"`
+	MessageSpaceTopic string            `json:"message_space_topic"`
+	ExpiresAt         string            `json:"expires_at"`
+	E2EPublicKey      string            `json:"e2e_public_key"`
+	Label             string            `json:"label"`
+	InviterProfile    map[string]string `json:"inviter_profile,omitempty"`
 }
 
 // StoreCredentialsRequest is the payload for connection.store-credentials
@@ -387,12 +398,15 @@ func (h *ConnectionsHandler) HandleCreateInvite(msg *IncomingMessage) (*Outgoing
 		connectionID = fmt.Sprintf("conn-%x", idBytes)
 	}
 
-	expiresInHours := req.ExpiresInHours
-	if expiresInHours <= 0 {
-		expiresInHours = 24 * 30 // Default 30 days
+	// Support expires_in_minutes (preferred) or expires_in_hours (legacy)
+	var expiresAt time.Time
+	if req.ExpiresInMinutes > 0 {
+		expiresAt = time.Now().Add(time.Duration(req.ExpiresInMinutes) * time.Minute)
+	} else if req.ExpiresInHours > 0 {
+		expiresAt = time.Now().Add(time.Duration(req.ExpiresInHours) * time.Hour)
+	} else {
+		expiresAt = time.Now().Add(24 * 30 * time.Hour) // Default 30 days
 	}
-
-	expiresAt := time.Now().Add(time.Duration(expiresInHours) * time.Hour)
 
 	// Generate X25519 key pair for E2E encryption
 	localPrivate := make([]byte, 32)
@@ -438,13 +452,43 @@ func (h *ConnectionsHandler) HandleCreateInvite(msg *IncomingMessage) (*Outgoing
 
 	log.Info().Str("connection_id", connectionID).Msg("Connection invite created")
 
+	// Generate scoped NATS credentials for the invitation
+	// These allow the peer to connect and read this vault's published profile
+	invitationCreds := ""
+	if h.natsProxy != nil {
+		creds, err := h.generateInvitationCredentials(expiresAt)
+		if err != nil {
+			log.Warn().Err(err).Msg("Failed to generate invitation NATS credentials (non-fatal)")
+		} else {
+			invitationCreds = creds
+		}
+	}
+
+	// Load inviter's profile for the response
+	inviterProfile := h.loadInviterProfile()
+
+	// Use profile name as label if label was generic
+	if req.Label == "" || strings.HasPrefix(req.Label, "user-") {
+		if firstName, ok := inviterProfile["_system_first_name"]; ok {
+			label := firstName
+			if lastName, ok := inviterProfile["_system_last_name"]; ok {
+				label += " " + lastName
+			}
+			if label != "" {
+				req.Label = strings.TrimSpace(label)
+			}
+		}
+	}
+
 	resp := CreateInviteResponse{
 		ConnectionID:      connectionID,
 		OwnerSpace:        h.ownerSpace,
-		Credentials:       "", // Phase 2: Lambda-generated scoped NATS JWTs
+		Credentials:       invitationCreds,
 		MessageSpaceTopic: record.MessageSpaceTopic,
 		ExpiresAt:         expiresAt.Format(time.RFC3339),
 		E2EPublicKey:      fmt.Sprintf("%x", localPublic),
+		Label:             req.Label,
+		InviterProfile:    inviterProfile,
 	}
 	respBytes, _ := json.Marshal(resp)
 
@@ -2753,6 +2797,56 @@ func (h *ConnectionsHandler) HandleUpdateAgentContract(ctx context.Context, msg 
 		Type:      MessageTypeResponse,
 		Payload:   respBytes,
 	}, nil
+}
+
+// loadInviterProfile reads the vault owner's profile for inclusion in invite responses.
+func (h *ConnectionsHandler) loadInviterProfile() map[string]string {
+	profile := make(map[string]string)
+
+	systemFields := []string{"_system_first_name", "_system_last_name", "_system_email"}
+	for _, field := range systemFields {
+		data, err := h.storage.Get("profile/" + field)
+		if err != nil {
+			continue
+		}
+		var entry struct {
+			Value string `json:"value"`
+		}
+		if json.Unmarshal(data, &entry) == nil && entry.Value != "" {
+			profile[field] = entry.Value
+		}
+	}
+
+	return profile
+}
+
+// generateInvitationCredentials creates scoped NATS credentials for an invitation.
+// Lazy-loads the account seed via sealer proxy if not cached.
+func (h *ConnectionsHandler) generateInvitationCredentials(expiresAt time.Time) (string, error) {
+	if h.natsProxy == nil {
+		return "", fmt.Errorf("NATS proxy not available")
+	}
+
+	// Lazy-load account seed if not cached
+	if !h.natsProxy.HasAccountSeed() {
+		if h.sealerProxy == nil {
+			return "", fmt.Errorf("sealer proxy not available for account seed loading")
+		}
+
+		log.Info().Str("owner_space", h.ownerSpace).Msg("Loading NATS account seed via sealer proxy")
+		seed, err := h.sealerProxy.LoadAccountSeed()
+		if err != nil {
+			return "", fmt.Errorf("failed to load account seed: %w", err)
+		}
+		h.natsProxy.SetAccountSeed(seed)
+	}
+
+	accountSeed := h.natsProxy.GetAccountSeed()
+	if accountSeed == "" {
+		return "", fmt.Errorf("account seed not available after loading")
+	}
+
+	return GenerateInvitationCredentials(accountSeed, h.ownerSpace, expiresAt)
 }
 
 func (h *ConnectionsHandler) errorResponse(id string, message string) (*OutgoingMessage, error) {

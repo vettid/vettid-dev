@@ -14,14 +14,15 @@ import (
 
 // ParentProcess bridges the enclave to external services
 type ParentProcess struct {
-	config      *Config
-	enclaveID   string // Unique identifier for this enclave instance
-	natsClient  *NATSClient
-	s3Client    *S3Client
-	vsockClient *VsockClient
-	healthSrv   *HealthServer
-	kmsClient   *KMSClient
-	mu          sync.RWMutex
+	config         *Config
+	enclaveID      string // Unique identifier for this enclave instance
+	natsClient     *NATSClient
+	s3Client       *S3Client
+	vsockClient    *VsockClient
+	healthSrv      *HealthServer
+	kmsClient      *KMSClient
+	dynamoDBClient *DynamoDBClient
+	mu             sync.RWMutex
 }
 
 // NewParentProcess creates a new parent process
@@ -85,6 +86,19 @@ func (p *ParentProcess) Run(ctx context.Context) error {
 		log.Info().Str("key_arn", p.config.KMS.SealingKeyARN).Msg("KMS client initialized")
 	} else {
 		log.Warn().Msg("KMS sealing key not configured - enclave sealing will use dev mode")
+	}
+
+	// Create DynamoDB client for NATS account seed access
+	if p.config.DynamoDB.NatsAccountsTable != "" {
+		dynamoDBClient, err := NewDynamoDBClient(p.config.DynamoDB, p.config.KMS)
+		if err != nil {
+			log.Warn().Err(err).Msg("Failed to create DynamoDB client - account seed operations will fail")
+		} else {
+			p.dynamoDBClient = dynamoDBClient
+			log.Info().Str("table", p.config.DynamoDB.NatsAccountsTable).Msg("DynamoDB client initialized")
+		}
+	} else {
+		log.Warn().Msg("DynamoDB NATS accounts table not configured - invitation credentials will not be available")
 	}
 
 	// Connect to enclave via vsock
@@ -599,6 +613,21 @@ func (p *ParentProcess) sendWithHandlerSupport(ctx context.Context, msg *Enclave
 			if err := p.natsClient.Publish(response.Subject, response.Payload); err != nil {
 				log.Error().Err(err).Str("subject", response.Subject).Msg("Failed to publish NATS message from enclave")
 			}
+			continue // Wait for next response
+		}
+
+		// Check if this is a NATS account seed request from the enclave
+		if response.Type == EnclaveMessageTypeNATSAccountSeedGet {
+			log.Debug().
+				Str("owner_space", response.OwnerSpace).
+				Msg("Enclave requested NATS account seed during operation")
+
+			seedResp := p.handleAccountSeedGet(ctx, response)
+			p.vsockClient.writeMu.Lock()
+			if err := p.vsockClient.writeMessage(seedResp); err != nil {
+				log.Error().Err(err).Msg("Failed to send account seed response")
+			}
+			p.vsockClient.writeMu.Unlock()
 			continue // Wait for next response
 		}
 
@@ -1287,6 +1316,35 @@ func (p *ParentProcess) handleNATSPublish(ctx context.Context, msg *EnclaveMessa
 	return &EnclaveMessage{
 		Type: EnclaveMessageTypeOK,
 	}, nil
+}
+
+// handleAccountSeedGet fetches the NATS account seed from DynamoDB and decrypts via KMS.
+// This is called as an intermediate message during vault operations.
+func (p *ParentProcess) handleAccountSeedGet(ctx context.Context, msg *EnclaveMessage) *EnclaveMessage {
+	if p.dynamoDBClient == nil {
+		log.Error().Msg("DynamoDB client not configured for account seed operations")
+		resp, _ := json.Marshal(map[string]string{"error": "DynamoDB not configured"})
+		return &EnclaveMessage{
+			Type:    EnclaveMessageTypeNATSAccountSeedResponse,
+			Payload: resp,
+		}
+	}
+
+	seed, err := p.dynamoDBClient.GetAccountSeed(ctx, msg.OwnerSpace)
+	if err != nil {
+		log.Error().Err(err).Str("owner_space", msg.OwnerSpace).Msg("Failed to get account seed")
+		resp, _ := json.Marshal(map[string]string{"error": err.Error()})
+		return &EnclaveMessage{
+			Type:    EnclaveMessageTypeNATSAccountSeedResponse,
+			Payload: resp,
+		}
+	}
+
+	resp, _ := json.Marshal(map[string]string{"account_seed": seed})
+	return &EnclaveMessage{
+		Type:    EnclaveMessageTypeNATSAccountSeedResponse,
+		Payload: resp,
+	}
 }
 
 // handleHealthCheck returns health status

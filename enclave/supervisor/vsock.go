@@ -68,6 +68,10 @@ const (
 
 	// Log forwarding (enclave sends logs to parent for CloudWatch)
 	MessageTypeLog MessageType = "log"
+
+	// NATS account seed operations (supervisor -> parent)
+	MessageTypeNATSAccountSeedGet      MessageType = "nats_account_seed_get"
+	MessageTypeNATSAccountSeedResponse MessageType = "nats_account_seed_response"
 )
 
 // SECURITY: Handshake constants

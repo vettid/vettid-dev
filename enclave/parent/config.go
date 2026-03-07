@@ -31,13 +31,26 @@ type Config struct {
 
 	// KMS configuration for Nitro attestation-based sealing
 	KMS KMSConfig `yaml:"kms"`
+
+	// DynamoDB configuration for NATS account seed access
+	DynamoDB DynamoDBConfig `yaml:"dynamodb"`
 }
 
 // KMSConfig holds KMS settings for Nitro sealing
 type KMSConfig struct {
 	// KMS key ARN for sealing (must have attestation-based policy)
 	SealingKeyARN string `yaml:"sealing_key_arn"`
+	// KMS key ARN for NATS seed encryption/decryption
+	NatsSeedKeyARN string `yaml:"nats_seed_key_arn"`
 	// AWS region
+	Region string `yaml:"region"`
+}
+
+// DynamoDBConfig holds DynamoDB settings
+type DynamoDBConfig struct {
+	// Table name for NATS accounts
+	NatsAccountsTable string `yaml:"nats_accounts_table"`
+	// AWS region (defaults to KMS region if not set)
 	Region string `yaml:"region"`
 }
 

@@ -763,7 +763,9 @@ func (h *ProfileHandler) HandlePublish(ctx context.Context, msg *IncomingMessage
 		if err != nil {
 			log.Error().Err(err).Msg("Failed to serialize public profile")
 		} else {
-			subject := fmt.Sprintf("%s.profile.public", h.ownerSpace)
+			// Publish to JetStream-retained subject so profile can be read by invitation holders
+			// This matches the ENROLLMENT stream pattern: OwnerSpace.*.forApp.>
+			subject := fmt.Sprintf("OwnerSpace.%s.forApp.profile.public", h.ownerSpace)
 			if err := h.publisher.PublishRaw(subject, profileBytes); err != nil {
 				log.Error().Err(err).Str("subject", subject).Msg("Failed to publish public profile")
 				// Don't fail the request if NATS publish fails
@@ -772,7 +774,7 @@ func (h *ProfileHandler) HandlePublish(ctx context.Context, msg *IncomingMessage
 					Str("owner_space", h.ownerSpace).
 					Int("version", settings.Version).
 					Int("field_count", len(profile.Fields)).
-					Msg("Public profile published to NATS")
+					Msg("Public profile published to NATS (JetStream retained)")
 			}
 		}
 	}
