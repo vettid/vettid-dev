@@ -70,10 +70,12 @@ func GenerateInvitationCredentials(accountSeed string, ownerSpace string, expire
 		"$JS.API.STREAM.INFO.ENROLLMENT",
 	}
 
-	// SECURITY: Minimal publish permissions (JetStream consumer ops only)
+	// SECURITY: Minimal publish permissions (JetStream consumer ops + connection acceptance)
 	claims.Pub.Allow = jwt.StringList{
 		"$JS.API.CONSUMER.CREATE.ENROLLMENT",
 		"$JS.API.CONSUMER.MSG.NEXT.ENROLLMENT.>",
+		// Allow accepter to notify this vault when they accept the connection
+		fmt.Sprintf("MessageSpace.%s.forOwner.connection.accepted", ownerSpace),
 	}
 
 	// SECURITY: Explicit denies to prevent abuse

@@ -446,13 +446,16 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 	// Format: MessageSpace.{ownerSpace}.forOwner.agent  OR  ...forOwner.device
 	for i, part := range parts {
 		if part == "forOwner" {
-			// Determine if this is an agent or device message
+			// Determine if this is an agent, device, or connection message
 			var resp *OutgoingMessage
 			var err error
 
 			if i+1 < len(parts) && parts[i+1] == "device" {
 				// Device messages: routed to deviceHandler
 				resp, err = mh.deviceHandler.HandleDeviceMessage(ctx, msg)
+			} else if i+1 < len(parts) && parts[i+1] == "connection" {
+				// Connection notifications from peers (e.g., acceptance)
+				resp, err = mh.connectionsHandler.HandlePeerConnectionNotification(ctx, msg)
 			} else {
 				// Agent messages (default forOwner routing)
 				resp, err = mh.agentHandler.HandleAgentMessage(ctx, msg)

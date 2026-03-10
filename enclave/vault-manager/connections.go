@@ -467,16 +467,15 @@ func (h *ConnectionsHandler) HandleCreateInvite(msg *IncomingMessage) (*Outgoing
 	// Load inviter's profile for the response
 	inviterProfile := h.loadInviterProfile()
 
-	// Use profile name as label if label was generic
-	if req.Label == "" || strings.HasPrefix(req.Label, "user-") {
-		if firstName, ok := inviterProfile["_system_first_name"]; ok {
-			label := firstName
-			if lastName, ok := inviterProfile["_system_last_name"]; ok {
-				label += " " + lastName
-			}
-			if label != "" {
-				req.Label = strings.TrimSpace(label)
-			}
+	// Always use profile name when available, overriding generic/GUID-based labels
+	if firstName, ok := inviterProfile["_system_first_name"]; ok && firstName != "" {
+		profileLabel := firstName
+		if lastName, ok := inviterProfile["_system_last_name"]; ok && lastName != "" {
+			profileLabel += " " + lastName
+		}
+		profileLabel = strings.TrimSpace(profileLabel)
+		if profileLabel != "" {
+			req.Label = profileLabel
 		}
 	}
 
@@ -988,6 +987,124 @@ func (h *ConnectionsHandler) HandleRespond(msg *IncomingMessage) (*OutgoingMessa
 		RequestID: msg.GetID(),
 		Type:      MessageTypeResponse,
 		Payload:   respBytes,
+	}, nil
+}
+
+// HandlePeerConnectionNotification handles incoming connection acceptance notifications
+// from peers. When User B accepts an invitation, they publish a notification to User A's
+// MessageSpace.{ownerSpace}.forOwner.connection.accepted topic. This handler updates
+// User A's outbound connection record with User B's details.
+func (h *ConnectionsHandler) HandlePeerConnectionNotification(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	var notification struct {
+		ConnectionID string            `json:"connection_id"`
+		PeerGUID     string            `json:"peer_guid"`
+		PeerProfile  map[string]string `json:"peer_profile"`
+		E2EPublicKey string            `json:"e2e_public_key"`
+	}
+
+	if err := json.Unmarshal(msg.Payload, &notification); err != nil {
+		log.Warn().Err(err).Msg("Failed to parse peer connection notification")
+		return &OutgoingMessage{
+			Type:    MessageTypeResponse,
+			Payload: json.RawMessage(`{"ack":true}`),
+		}, nil
+	}
+
+	if notification.ConnectionID == "" {
+		log.Warn().Msg("Peer connection notification missing connection_id")
+		return &OutgoingMessage{
+			Type:    MessageTypeResponse,
+			Payload: json.RawMessage(`{"ack":true}`),
+		}, nil
+	}
+
+	log.Info().
+		Str("connection_id", notification.ConnectionID).
+		Str("peer_guid", notification.PeerGUID).
+		Msg("Received peer connection acceptance notification")
+
+	// Load the outbound connection record
+	storageKey := "connections/" + notification.ConnectionID
+	connData, err := h.storage.Get(storageKey)
+	if err != nil {
+		log.Warn().Str("connection_id", notification.ConnectionID).Msg("Connection not found for peer notification")
+		return &OutgoingMessage{
+			Type:    MessageTypeResponse,
+			Payload: json.RawMessage(`{"ack":true}`),
+		}, nil
+	}
+
+	var record ConnectionRecord
+	if err := json.Unmarshal(connData, &record); err != nil {
+		log.Warn().Err(err).Msg("Failed to read connection for peer notification")
+		return &OutgoingMessage{
+			Type:    MessageTypeResponse,
+			Payload: json.RawMessage(`{"ack":true}`),
+		}, nil
+	}
+
+	// Update the connection with peer's details
+	if notification.PeerGUID != "" {
+		record.PeerGUID = notification.PeerGUID
+	}
+
+	// Build display name from peer profile
+	if notification.PeerProfile != nil {
+		firstName := notification.PeerProfile["_system_first_name"]
+		lastName := notification.PeerProfile["_system_last_name"]
+		displayName := strings.TrimSpace(firstName + " " + lastName)
+		if displayName != "" {
+			record.PeerAlias = displayName
+		}
+	}
+
+	// Store peer's E2E public key and compute shared secret
+	if notification.E2EPublicKey != "" {
+		peerPublicKey, err := decodeHexKey(notification.E2EPublicKey)
+		if err == nil {
+			record.PeerPublicKey = peerPublicKey
+			// Compute shared secret using X25519
+			if len(record.LocalPrivateKey) > 0 {
+				sharedSecret, err := curve25519.X25519(record.LocalPrivateKey, peerPublicKey)
+				if err == nil {
+					record.SharedSecret = sharedSecret
+					record.KeyExchangeAt = time.Now()
+				}
+			}
+		}
+	}
+
+	// Save updated connection record
+	newData, err := json.Marshal(record)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to marshal updated connection")
+		return &OutgoingMessage{
+			Type:    MessageTypeResponse,
+			Payload: json.RawMessage(`{"ack":true}`),
+		}, nil
+	}
+	if err := h.storage.Put(storageKey, newData); err != nil {
+		log.Error().Err(err).Msg("Failed to store updated connection")
+		return &OutgoingMessage{
+			Type:    MessageTypeResponse,
+			Payload: json.RawMessage(`{"ack":true}`),
+		}, nil
+	}
+
+	// Log the acceptance event
+	if h.eventHandler != nil {
+		h.eventHandler.LogConnectionEvent(ctx, EventTypeConnectionAccepted, notification.ConnectionID, notification.PeerGUID, "Peer accepted connection invitation")
+	}
+
+	log.Info().
+		Str("connection_id", notification.ConnectionID).
+		Str("peer_guid", notification.PeerGUID).
+		Str("peer_alias", record.PeerAlias).
+		Msg("Connection updated with peer details from acceptance notification")
+
+	return &OutgoingMessage{
+		Type:    MessageTypeResponse,
+		Payload: json.RawMessage(`{"ack":true}`),
 	}, nil
 }
 
