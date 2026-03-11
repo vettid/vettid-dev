@@ -270,7 +270,7 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 	natsProxy := NewNATSProxy(ownerSpace)
 
 	// Create connections handler (needed for agent handler)
-	connectionsHandler := NewConnectionsHandler(ownerSpace, storage, eventHandler, natsProxy)
+	connectionsHandler := NewConnectionsHandler(ownerSpace, storage, eventHandler, natsProxy, publisher)
 	connectionsHandler.SetSealerProxy(sealerProxy)
 
 	// Create agent handler

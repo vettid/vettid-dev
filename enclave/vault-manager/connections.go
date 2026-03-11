@@ -21,15 +21,17 @@ type ConnectionsHandler struct {
 	eventHandler *EventHandler
 	natsProxy    *NATSProxy
 	sealerProxy  *SealerProxy
+	publisher    *VsockPublisher
 }
 
 // NewConnectionsHandler creates a new connections handler
-func NewConnectionsHandler(ownerSpace string, storage *EncryptedStorage, eventHandler *EventHandler, natsProxy *NATSProxy) *ConnectionsHandler {
+func NewConnectionsHandler(ownerSpace string, storage *EncryptedStorage, eventHandler *EventHandler, natsProxy *NATSProxy, publisher *VsockPublisher) *ConnectionsHandler {
 	return &ConnectionsHandler{
 		ownerSpace:   ownerSpace,
 		storage:      storage,
 		eventHandler: eventHandler,
 		natsProxy:    natsProxy,
+		publisher:    publisher,
 	}
 }
 
@@ -1101,6 +1103,22 @@ func (h *ConnectionsHandler) HandlePeerConnectionNotification(ctx context.Contex
 		Str("peer_guid", notification.PeerGUID).
 		Str("peer_alias", record.PeerAlias).
 		Msg("Connection updated with peer details from acceptance notification")
+
+	// Notify the owner's app that a peer accepted their connection invitation.
+	// This allows the app to prompt the owner to review the peer's profile.
+	if h.publisher != nil {
+		appNotification := map[string]interface{}{
+			"type":          "connection.peer-accepted",
+			"connection_id": notification.ConnectionID,
+			"peer_guid":     notification.PeerGUID,
+			"peer_alias":    record.PeerAlias,
+			"peer_profile":  notification.PeerProfile,
+		}
+		notifBytes, _ := json.Marshal(appNotification)
+		if err := h.publisher.PublishToApp(ctx, "connection.peer-accepted", notifBytes); err != nil {
+			log.Warn().Err(err).Msg("Failed to notify app of peer acceptance")
+		}
+	}
 
 	return &OutgoingMessage{
 		Type:    MessageTypeResponse,

@@ -740,22 +740,26 @@ func (l *vsockListener) Close() error {
 }
 
 // vsockConnection implements Connection for vsock
-// SECURITY: Uses mutex to prevent concurrent read/write corruption
+// SECURITY: Uses a single mutex for ALL operations to prevent data corruption.
+// The Nitro enclave's vsock implementation has a race condition where concurrent
+// read() and write() syscalls on the same fd corrupt data. This manifests as
+// random byte corruption in messages >32KB (the only time reads take long enough
+// for a concurrent write to overlap). Using separate readMu/writeMu allowed
+// concurrent reads and writes, which triggered the kernel bug.
 type vsockConnection struct {
-	conn    net.Conn
-	readMu  sync.Mutex // Protects concurrent reads
-	writeMu sync.Mutex // Protects concurrent writes (critical for async log messages)
+	conn net.Conn
+	mu   sync.Mutex // Single mutex serializes ALL vsock operations (reads AND writes)
 }
 
 func (c *vsockConnection) ReadMessage() (*Message, error) {
-	c.readMu.Lock()
-	defer c.readMu.Unlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return readMessage(c.conn)
 }
 
 func (c *vsockConnection) WriteMessage(msg *Message) error {
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return writeMessage(c.conn, msg)
 }
 
@@ -850,6 +854,37 @@ func readMessage(r io.Reader) (*Message, error) {
 	// Unmarshal JSON
 	var msg Message
 	if err := json.Unmarshal(data, &msg); err != nil {
+		// DIAGNOSTIC: Log details about the corrupt message to identify vsock data corruption
+		first := data
+		if len(first) > 200 {
+			first = first[:200]
+		}
+		last := data
+		if len(data) > 200 {
+			last = data[len(data)-200:]
+		}
+		// Find the position of the first invalid byte (control char < 0x20 excluding \t \n \r)
+		invalidPos := -1
+		var invalidByte byte
+		inString := false
+		for i, b := range data {
+			if b == '"' && (i == 0 || data[i-1] != '\\') {
+				inString = !inString
+			}
+			if inString && b < 0x20 && b != '\t' && b != '\n' && b != '\r' {
+				invalidPos = i
+				invalidByte = b
+				break
+			}
+		}
+		log.Error().
+			Uint32("length", length).
+			Str("first_200_hex", hex.EncodeToString(first)).
+			Str("last_200_hex", hex.EncodeToString(last)).
+			Int("invalid_pos", invalidPos).
+			Int("invalid_byte", int(invalidByte)).
+			Bool("json_valid", json.Valid(data)).
+			Msg("DIAGNOSTIC: vsock message failed JSON unmarshal - possible data corruption")
 		return nil, fmt.Errorf("failed to unmarshal message: %w", err)
 	}
 
@@ -869,7 +904,18 @@ func writeMessage(w io.Writer, msg *Message) error {
 		return err
 	}
 
-	// Write message body
-	_, err = w.Write(data)
-	return err
+	// Write message body in chunks to work around Nitro vsock 32KB boundary bug.
+	// The Nitro hypervisor's vsock implementation zeros data beyond 32768 bytes
+	// in a single write. Chunking at 16KB keeps us safely under the limit.
+	const vsockChunkSize = 16384
+	for offset := 0; offset < len(data); offset += vsockChunkSize {
+		end := offset + vsockChunkSize
+		if end > len(data) {
+			end = len(data)
+		}
+		if _, err := w.Write(data[offset:end]); err != nil {
+			return err
+		}
+	}
+	return nil
 }
