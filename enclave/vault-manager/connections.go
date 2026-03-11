@@ -2956,13 +2956,26 @@ func (h *ConnectionsHandler) loadInviterProfile() map[string]string {
 }
 
 // generateInvitationCredentials creates scoped NATS credentials for an invitation.
-// Lazy-loads the account seed via sealer proxy if not cached.
+// Loads the account seed from vault storage first (fast path), falling back to
+// sealer proxy (DynamoDB via parent) for initial fetch, then caches in vault storage.
 func (h *ConnectionsHandler) generateInvitationCredentials(expiresAt time.Time) (string, error) {
 	if h.natsProxy == nil {
 		return "", fmt.Errorf("NATS proxy not available")
 	}
 
-	// Lazy-load account seed if not cached
+	// Fast path: already cached in memory
+	if !h.natsProxy.HasAccountSeed() {
+		// Try loading from vault's own encrypted storage first
+		if h.storage != nil {
+			seedData, err := h.storage.Get("nats_account_seed")
+			if err == nil && len(seedData) > 0 {
+				log.Info().Str("owner_space", h.ownerSpace).Msg("Loaded NATS account seed from vault storage")
+				h.natsProxy.SetAccountSeed(string(seedData))
+			}
+		}
+	}
+
+	// Fallback: fetch via sealer proxy (parent → DynamoDB → KMS) and cache in vault storage
 	if !h.natsProxy.HasAccountSeed() {
 		if h.sealerProxy == nil {
 			return "", fmt.Errorf("sealer proxy not available for account seed loading")
@@ -2974,6 +2987,15 @@ func (h *ConnectionsHandler) generateInvitationCredentials(expiresAt time.Time) 
 			return "", fmt.Errorf("failed to load account seed: %w", err)
 		}
 		h.natsProxy.SetAccountSeed(seed)
+
+		// Cache in vault storage so future loads don't need DynamoDB
+		if h.storage != nil {
+			if storeErr := h.storage.Put("nats_account_seed", []byte(seed)); storeErr != nil {
+				log.Warn().Err(storeErr).Msg("Failed to cache account seed in vault storage (non-fatal)")
+			} else {
+				log.Info().Str("owner_space", h.ownerSpace).Msg("Cached NATS account seed in vault storage")
+			}
+		}
 	}
 
 	accountSeed := h.natsProxy.GetAccountSeed()

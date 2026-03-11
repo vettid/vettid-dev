@@ -547,6 +547,28 @@ export class NitroStack extends cdk.Stack {
         actions: ['secretsmanager:GetSecretValue'],
         resources: [props.infrastructure.handlerSigningKeySecretArn],
       }));
+
+      // ===== NATS ACCOUNT SEED ACCESS =====
+      // Grant DynamoDB read access for NATS account seed lookup
+      // and KMS decrypt for seed decryption (parent fetches on behalf of vault)
+      props.infrastructure.tables.natsAccounts.grantReadData(this.enclaveInstanceRole);
+      props.infrastructure.natsSeedEncryptionKey.grantDecrypt(this.enclaveInstanceRole);
+
+      // Store NATS accounts table name in SSM for parent process configuration
+      new ssm.StringParameter(this, 'NatsAccountsTableParameter', {
+        parameterName: '/vettid/nitro/nats-accounts-table',
+        description: 'DynamoDB table name for NATS account seed lookup by parent process',
+        stringValue: props.infrastructure.tables.natsAccounts.tableName,
+        tier: ssm.ParameterTier.STANDARD,
+      });
+
+      // Store NATS seed KMS key ARN in SSM for parent process configuration
+      new ssm.StringParameter(this, 'NatsSeedKeyArnParameter', {
+        parameterName: '/vettid/nitro/nats-seed-key-arn',
+        description: 'KMS key ARN for NATS account seed decryption by parent process',
+        stringValue: props.infrastructure.natsSeedEncryptionKey.keyArn,
+        tier: ssm.ParameterTier.STANDARD,
+      });
     }
 
     // ===== AMI FROM SSM PARAMETER =====
@@ -1045,6 +1067,13 @@ export class NitroStack extends cdk.Stack {
       'VAULT_DATA_BUCKET=$(aws ssm get-parameter --name /vettid/nitro/vault-data-bucket --region $REGION --query Parameter.Value --output text 2>/dev/null || echo "")',
       'echo "Vault data bucket: $VAULT_DATA_BUCKET"',
       '',
+      '# Fetch NATS accounts table name and seed KMS key ARN from SSM',
+      'echo "Fetching NATS account seed config from SSM..."',
+      'NATS_ACCOUNTS_TABLE=$(aws ssm get-parameter --name /vettid/nitro/nats-accounts-table --region $REGION --query Parameter.Value --output text 2>/dev/null || echo "")',
+      'NATS_SEED_KEY_ARN=$(aws ssm get-parameter --name /vettid/nitro/nats-seed-key-arn --region $REGION --query Parameter.Value --output text 2>/dev/null || echo "")',
+      'echo "NATS accounts table: $NATS_ACCOUNTS_TABLE"',
+      'echo "NATS seed key ARN: $NATS_SEED_KEY_ARN"',
+      '',
       '# Update parent config to use NATS credentials and KMS',
       'cat > /etc/vettid/parent.yaml << EOF',
       '# VettID Nitro Enclave Parent Configuration',
@@ -1078,6 +1107,11 @@ export class NitroStack extends cdk.Stack {
       '',
       'kms:',
       '  sealing_key_arn: $KMS_SEALING_KEY_ARN',
+      '  nats_seed_key_arn: $NATS_SEED_KEY_ARN',
+      '  region: $REGION',
+      '',
+      'dynamodb:',
+      '  nats_accounts_table: $NATS_ACCOUNTS_TABLE',
       '  region: $REGION',
       '',
       'logging:',
