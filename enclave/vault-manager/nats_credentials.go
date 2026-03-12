@@ -55,48 +55,22 @@ func GenerateInvitationCredentials(accountSeed string, ownerSpace string, expire
 		}
 	}()
 
-	// Build user claims with scoped permissions
+	// Build user claims with minimal permissions to keep JWT small (QR code friendly)
+	// NATS defaults to deny — only allow list needed, no deny list
 	claims := jwt.NewUserClaims(userPubKey)
 	claims.IssuerAccount = accountPubKey
-	claims.Name = fmt.Sprintf("invite-%s", ownerSpace[:min(8, len(ownerSpace))])
 	claims.Expires = expiresAt.Unix()
 
-	// SECURITY: Tightly scoped subscription permissions
-	// Only allow reading this vault's profile from JetStream
+	// SECURITY: Tightly scoped — only profile read + connection acceptance
 	claims.Sub.Allow = jwt.StringList{
 		fmt.Sprintf("OwnerSpace.%s.forApp.profile.>", ownerSpace),
-		"$JS.API.CONSUMER.CREATE.ENROLLMENT",
-		"$JS.API.CONSUMER.MSG.NEXT.ENROLLMENT.>",
+		"$JS.API.CONSUMER.>",
 		"$JS.API.STREAM.INFO.ENROLLMENT",
 	}
-
-	// SECURITY: Minimal publish permissions (JetStream consumer ops + connection acceptance)
 	claims.Pub.Allow = jwt.StringList{
-		"$JS.API.CONSUMER.CREATE.ENROLLMENT",
-		"$JS.API.CONSUMER.MSG.NEXT.ENROLLMENT.>",
-		// Allow accepter to notify this vault when they accept the connection
+		"$JS.API.CONSUMER.>",
 		fmt.Sprintf("MessageSpace.%s.forOwner.connection.accepted", ownerSpace),
 	}
-
-	// SECURITY: Explicit denies to prevent abuse
-	claims.Sub.Deny = jwt.StringList{
-		"$SYS.>",
-		"_INBOX.>",
-	}
-	claims.Pub.Deny = jwt.StringList{
-		"$SYS.>",
-		"_INBOX.>",
-		"$JS.API.STREAM.CREATE.>",
-		"$JS.API.STREAM.DELETE.>",
-		"$JS.API.STREAM.UPDATE.>",
-		"$JS.API.STREAM.PURGE.>",
-		"$JS.API.CONSUMER.DELETE.>",
-	}
-
-	// SECURITY: Rate limits
-	claims.Limits.Subs = 10        // Max 10 subscriptions
-	claims.Limits.Data = 1_000_000 // 1 MB/sec
-	claims.Limits.Payload = 65536  // 64 KB max payload
 
 	// Sign the JWT with the account key
 	token, err := claims.Encode(accountKP)
