@@ -779,6 +779,33 @@ func (h *ConnectionsHandler) HandleStoreCredentials(msg *IncomingMessage) (*Outg
 
 	log.Info().Str("connection_id", req.ConnectionID).Msg("Connection credentials stored")
 
+	// Notify the inviter's vault that we accepted the connection.
+	// Published via parent (backend account) so the parent's MessageSpace subscription receives it.
+	if h.publisher != nil && req.PeerOwnerSpaceID != "" {
+		ourProfile := h.loadInviterProfile()
+		notification := map[string]interface{}{
+			"connection_id":  req.ConnectionID,
+			"peer_guid":      h.ownerSpace,
+			"e2e_public_key": fmt.Sprintf("%x", localPublic),
+			"owner_space":    h.ownerSpace,
+			"message_space":  fmt.Sprintf("MessageSpace.%s.forOwner.>", h.ownerSpace),
+		}
+		if len(ourProfile) > 0 {
+			notification["peer_profile"] = ourProfile
+		}
+
+		notifBytes, _ := json.Marshal(notification)
+		subject := fmt.Sprintf("MessageSpace.%s.forOwner.connection.accepted", req.PeerOwnerSpaceID)
+		if err := h.publisher.PublishRaw(subject, notifBytes); err != nil {
+			log.Warn().Err(err).Str("subject", subject).Msg("Failed to notify peer of acceptance (non-fatal)")
+		} else {
+			log.Info().
+				Str("connection_id", req.ConnectionID).
+				Str("peer_owner_space", req.PeerOwnerSpaceID).
+				Msg("Published acceptance notification to peer's vault")
+		}
+	}
+
 	resp := map[string]interface{}{
 		"success":       true,
 		"connection_id": req.ConnectionID,
