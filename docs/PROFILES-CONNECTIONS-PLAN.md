@@ -210,154 +210,217 @@ interface CachedPeerProfile {
 
 ## Connection Flow (Bidirectional Consent)
 
+### Overview
+
+VettID connections are peer-to-peer, established via QR code scanning with bidirectional
+consent. The connection process uses a **NATS invitation broker** to keep QR codes compact
+(~65 characters) while the full NATS credentials are stored server-side in a JetStream stream.
+
+### Architecture
+
 ```
-┌─────────────────┐                                    ┌─────────────────┐
-│     User A      │                                    │     User B      │
-│    (Inviter)    │                                    │   (Invitee)     │
-└────────┬────────┘                                    └────────┬────────┘
-         │                                                      │
-         │ 1. CREATE INVITATION                                 │
-         │    - Generate temp NATS creds for B                  │
-         │    - Creds scoped to A's message space               │
-         │    - Set invitation expiry (default: 24h)            │
-         ▼                                                      │
-    ┌─────────┐                                                 │
-    │ Invite  │──── Share via QR/Message/Email/Link ───────────▶│
-    │  Data   │                                                 │
-    └─────────┘                                                 │
-         │                                                      ▼
-         │                                    2. INITIATE CONNECTION
-         │                                       - Connect to A's message space
-         │                                       - Retrieve A's shared profile
-         │                                       - Send B's shared profile to A
-         │                                       - Generate reciprocal NATS creds
-         │◀──────────────── Profile Exchange ────────────────────│
-         │                                                      │
-         │                                                      ▼
-         │                                    3. REVIEW & DECIDE (User B)
-         │                                       - Display A's profile
-         │                                       - Show verification status
-         │                                       - [ACCEPT] or [REJECT]
-         │                                                      │
-         │                        ┌─────────────────────────────┤
-         │                        │                             │
-         │                   [REJECT]                      [ACCEPT]
-         │                        │                             │
-         │                        ▼                             ▼
-         │              Revoke A's temp creds         Notify A of acceptance
-         │              Connection terminated         A must now review B
-         │                                                      │
-         ▼                                                      │
-    4. REVIEW & DECIDE (User A)◀────────────────────────────────┘
-       - Display B's profile
-       - Show verification status
-       - [ACCEPT] or [REJECT]
-         │
-         ├──────────[REJECT]────────▶ Revoke B's creds, notify B
-         │
-         └──────────[ACCEPT]────────▶ 5. ESTABLISH SECURE CONNECTION
-                                         │
-                                         ▼
-                                    ┌─────────────────────────────┐
-                                    │  BIDIRECTIONAL CONNECTION   │
-                                    │  - Exchange permanent keys  │
-                                    │  - Rotate NATS credentials  │
-                                    │  - Cache peer profiles      │
-                                    │  - Subscribe to updates     │
-                                    └─────────────────────────────┘
-                                                │
-                                    ┌───────────┴───────────┐
-                                    │                       │
-                                    ▼                       ▼
-                              User A's Vault          User B's Vault
-                              stores B's profile      stores A's profile
-                              + capabilities          + capabilities
+                     NATS Cluster
+                    ┌─────────────────────────────────┐
+                    │  INVITATIONS stream              │
+                    │  (invite.<code>, 5-min TTL,      │
+                    │   memory storage)                │
+                    │                                  │
+                    │  ENROLLMENT stream               │
+                    │  (OwnerSpace.*.forApp.profile.>) │
+                    └──────────┬──────────────────────┘
+                               │
+              ┌────────────────┼────────────────┐
+              │                │                │
+         User A's          User B's        Published
+         Parent            Parent          Profiles
+```
+
+### Flow Diagram
+
+```
+User A (Inviter)                                    User B (Scanner)
+─────────────────                                   ─────────────────
+
+1. CREATE INVITATION
+   App → Vault: connection.create-invite
+   Vault generates:
+     - Connection record (X25519 keypair)
+     - Scoped NATS JWT (profile read + accept notify)
+     - 16-char random invite code
+   Vault → Parent: publish to invite.<code>
+   Parent publishes to INVITATIONS stream
+   Vault → App: invite_code
+   App builds QR: {"c":"<code>","e":"<endpoint>"}
+        │
+        │  QR Code (~65 chars)
+        │  ─────────────────────────────────────────▶
+        │                                            │
+        │                                     2. SCAN & RESOLVE
+        │                                        App scans QR, extracts code
+        │                                        App → Vault: connection.resolve-invite
+        │                                        Vault → Parent: invite_resolve
+        │                                        Parent reads invite.<code> from JetStream
+        │                                        Parent → Vault: invitation data
+        │                                        Vault → App: full invitation
+        │                                            │
+        │                                     3. FETCH PEER PROFILE
+        │                                        App → Vault: use invitation creds
+        │                                        to fetch A's published profile
+        │                                        from ENROLLMENT stream via
+        │                                        OwnerSpace.<A>.forApp.profile.public
+        │                                            │
+        │                                     4. REVIEW & DECIDE (User B)
+        │                                        App shows A's profile
+        │                                        [ACCEPT] or [REJECT]
+        │                                            │
+        │                              ┌─────────────┤
+        │                         [REJECT]      [ACCEPT]
+        │                              │             │
+        │                         Connection    B's vault stores A's creds
+        │                         terminated    Notifies A via:
+        │                                       MessageSpace.<A>.forOwner
+        │                                       .connection.accepted
+        │                                            │
+        │◀───────── acceptance notification ─────────┘
+        │
+5. REVIEW & DECIDE (User A)
+   A sees B's profile (sent in acceptance)
+   [ACCEPT] or [REJECT]
+        │
+   [ACCEPT] ──▶ 6. ESTABLISH CONNECTION
+                   - X25519 key exchange
+                   - Long-lived NATS credentials
+                   - Credential rotation schedule
+                   - Bidirectional messaging enabled
+
+   [REJECT] ──▶ Revoke B's access, notify B
 ```
 
 ### Step-by-Step Protocol
 
 #### Step 1: Create Invitation (User A)
-```typescript
-// Request
+
+User A taps "Create Invitation" in the app. The vault generates credentials and
+publishes them to the NATS invitation broker.
+
+```
+App → Vault (NATS): connection.create-invite
 {
-  action: "connection.create-invite",
-  label: "Connection with Bob",           // A's label for this connection
-  expiry_hours: 24,                        // Optional, default 24h
-  share_fields: ["phone", "organization"] // Optional per-invite overrides
+  "peer_guid": "pending",
+  "label": "",                              // Vault uses profile name
+  "expires_in_minutes": 30
 }
 
-// Response
+Vault → Parent (vsock): nats_publish
+  Subject: invite.<16-char-random-code>
+  Payload: {
+    "type": "vettid_connection",
+    "connection_id": "conn-<hex>",
+    "jwt": "<scoped NATS user JWT>",        // Profile read + accept notify
+    "seed": "<NATS user seed>",
+    "owner_space": "<A's owner space>",
+    "message_space": "MessageSpace.<A>.forOwner.>",
+    "expires_at": "<ISO8601>"
+  }
+
+Vault → App (NATS): response
 {
-  invitation_id: string,
-  invitation_code: string,                // Short code for manual entry
-  invitation_url: string,                 // Deep link
-  qr_data: string,                        // For QR code generation
-  temp_nats_credentials: string,          // Encrypted, for B to use
-  expires_at: string
+  "connection_id": "conn-<hex>",
+  "owner_space": "<A's owner space>",
+  "invite_code": "<16-char code>",          // For QR
+  "message_space_topic": "MessageSpace.<A>.forOwner.>",
+  "expires_at": "<ISO8601>",
+  "e2e_public_key": "<X25519 hex>",
+  "label": "Alice Liebl"                    // From vault profile
 }
 ```
 
-#### Step 2: Initiate Connection (User B)
-```typescript
-// B decodes invitation and connects to A's message space
-
-// Request to A's vault
-{
-  action: "connection.initiate",
-  invitation_id: string,
-  requester_profile: SharedProfile,       // B's profile to share with A
-  requester_capabilities: VaultCapabilities,
-  requester_nats_credentials: string      // Reciprocal creds for A
-}
-
-// Response from A's vault
-{
-  connection_id: string,
-  inviter_profile: SharedProfile,         // A's profile
-  inviter_capabilities: VaultCapabilities,
-  status: "pending_their_review"          // B needs to review A
-}
+The app builds the QR code with just:
+```json
+{"c":"A7xK9mP2wQ4rBz8t","e":"tls://nats.vettid.dev:443"}
 ```
 
-#### Step 3: Review & Accept/Reject (User B)
-```typescript
-// Request
+This is ~65 characters — easily scannable as a QR code.
+
+#### Step 2: Resolve Invitation (User B)
+
+User B scans the QR code. The app sends the invite code to B's vault,
+which asks the parent to fetch the full invitation from the NATS broker.
+
+```
+App → Vault (NATS): connection.resolve-invite
 {
-  action: "connection.respond",
-  connection_id: string,
-  response: "accept" | "reject",
-  rejection_reason?: string               // Optional, for A's information
+  "invite_code": "A7xK9mP2wQ4rBz8t"
 }
 
-// If accepted, A's vault transitions to "pending_our_accept"
-// If rejected, temp credentials are revoked
-```
+Vault → Supervisor → Parent (vsock): invite_resolve
+  Subject: "A7xK9mP2wQ4rBz8t"
 
-#### Step 4: Review & Accept/Reject (User A)
-```typescript
-// A receives notification that B accepted
-// A reviews B's profile
+Parent reads from JetStream:
+  Stream: INVITATIONS
+  Subject: invite.A7xK9mP2wQ4rBz8t
+  Policy: last message
 
-// Request
+Parent → Supervisor → Vault (vsock): invite_response
+  Payload: <full invitation JSON>
+
+Vault → App (NATS): response
 {
-  action: "connection.respond",
-  connection_id: string,
-  response: "accept" | "reject"
+  "type": "vettid_connection",
+  "connection_id": "conn-<hex>",
+  "jwt": "<NATS JWT>",
+  "seed": "<NATS seed>",
+  "owner_space": "<A's owner space>",
+  "message_space": "MessageSpace.<A>.forOwner.>",
+  "expires_at": "<ISO8601>"
 }
 ```
 
-#### Step 5: Finalize Connection
-```typescript
-// Automatically triggered when both accept
+#### Step 3: Fetch Peer Profile (User B)
 
-// Both vaults:
-// 1. Generate permanent NATS credentials for peer
-// 2. Rotate encryption keys
-// 3. Cache peer profile and capabilities
-// 4. Subscribe to peer's profile.updated topic
+Using the retrieved NATS credentials, B's app connects to A's message space
+and reads A's published profile from the ENROLLMENT JetStream stream.
 
-// Connection status changes to "active"
 ```
+B's App → NATS (using invitation JWT+seed):
+  Create consumer on ENROLLMENT stream
+  Filter: OwnerSpace.<A>.forApp.profile.public
+  Deliver policy: last
+
+Response: A's PublishedProfile {
+  "first_name": "Alice",
+  "last_name": "Liebl",
+  "email": "alice@example.com",
+  "fields": { ... },                       // Public personal data
+  "photo": "<base64>",                     // Profile photo
+  "public_key": "<Ed25519 base64>"
+}
+```
+
+#### Step 4: Review & Accept/Reject (User B)
+
+The app shows A's profile to B for review. B decides to accept or reject.
+
+On **accept**, B's vault:
+1. Stores A's credentials via `connection.store-credentials`
+2. Notifies A's vault via the invitation NATS creds:
+   - Subject: `MessageSpace.<A>.forOwner.connection.accepted`
+   - Payload includes B's profile and owner space for reciprocal access
+
+On **reject**, the invitation credentials are discarded.
+
+#### Step 5: Review & Accept/Reject (User A)
+
+A receives the acceptance notification (pushed to A's app). A reviews B's profile
+and accepts or rejects.
+
+#### Step 6: Finalize Connection
+
+When both accept:
+- X25519 key exchange for end-to-end encrypted messaging
+- Long-lived NATS credentials issued (with periodic rotation)
+- Both vaults cache peer profiles
+- Bidirectional messaging enabled
 
 ---
 
@@ -393,29 +456,33 @@ When a user updates their profile:
 
 ---
 
-## NATS Topics
+## NATS Topics & Streams
+
+### JetStream Streams
+
+| Stream | Subjects | Retention | Storage | Purpose |
+|--------|----------|-----------|---------|---------|
+| `ENROLLMENT` | `OwnerSpace.*.forApp.>`, `OwnerSpace.*.forVault.>` | 30 min | File | App responses, published profiles |
+| `INVITATIONS` | `invite.>` | 5 min | Memory | Invitation broker (QR code payloads) |
+
+### Message Topics
 
 | Topic | Direction | Description |
 |-------|-----------|-------------|
-| `{space}.forVault.profile.get` | → Vault | Get own profile |
-| `{space}.forVault.profile.update` | → Vault | Update own profile |
-| `{space}.forVault.profile.get-shared` | → Vault | Get profile to share (applies sharing settings) |
-| `{space}.forVault.capabilities.get` | → Vault | Get own capabilities |
-| `{space}.forVault.capabilities.update` | → Vault | Update capabilities |
-| `{space}.forVault.connection.create-invite` | → Vault | Create invitation |
-| `{space}.forVault.connection.initiate` | → Vault | Initiate connection (invitee) |
-| `{space}.forVault.connection.respond` | → Vault | Accept/reject connection |
-| `{space}.forVault.connection.list` | → Vault | List connections |
-| `{space}.forVault.connection.get` | → Vault | Get connection details |
-| `{space}.forVault.connection.get-profile` | → Vault | Get peer's cached profile |
-| `{space}.forVault.connection.rotate` | → Vault | Rotate credentials |
-| `{space}.forVault.connection.revoke` | → Vault | Revoke connection |
-| `{space}.forVault.connection.block` | → Vault | Block peer |
-| `{peer_message_space}.profile.updated` | Vault → Vault | Profile update notification |
-| `{peer_message_space}.capabilities.updated` | Vault → Vault | Capabilities update notification |
-| `{peer_message_space}.connection.request` | Vault → Vault | New connection request |
-| `{peer_message_space}.connection.accepted` | Vault → Vault | Connection accepted |
-| `{peer_message_space}.connection.rejected` | Vault → Vault | Connection rejected |
+| `invite.<code>` | Parent → Stream | Invitation broker publish (16-char code) |
+| `{space}.forVault.connection.create-invite` | App → Vault | Create invitation (returns invite_code) |
+| `{space}.forVault.connection.resolve-invite` | App → Vault | Resolve invite code from broker |
+| `{space}.forVault.connection.store-credentials` | App → Vault | Store peer's credentials after accept |
+| `{space}.forVault.connection.list` | App → Vault | List connections |
+| `{space}.forVault.connection.get` | App → Vault | Get connection details |
+| `{space}.forVault.connection.rotate` | App → Vault | Rotate credentials |
+| `{space}.forVault.connection.revoke` | App → Vault | Revoke connection |
+| `{space}.forVault.profile.get` | App → Vault | Get own profile |
+| `{space}.forVault.profile.update` | App → Vault | Update own profile |
+| `{space}.forVault.profile.publish` | App → Vault | Publish profile to NATS |
+| `{space}.forVault.profile.get-published` | App → Vault | Get published profile preview |
+| `OwnerSpace.<guid>.forApp.profile.public` | Vault → Stream | Published profile (JetStream retained) |
+| `MessageSpace.<guid>.forOwner.connection.accepted` | Peer → Vault | Connection acceptance notification |
 
 ---
 
@@ -454,10 +521,15 @@ When a user updates their profile:
 - Limit connection requests per day
 - Block feature prevents repeated requests from blocked users
 
-### 7. Invitation Security
-- Invitation codes are single-use
-- Expired invitations cannot be used
-- QR codes should include checksum for tampering detection
+### 7. Invitation Broker Security
+- Invitations stored in NATS JetStream INVITATIONS stream with **5-minute TTL**
+- Memory storage only — no disk persistence of invitation credentials
+- 16-character alphanumeric codes (62^16 ~ 4.7x10^28 combinations)
+- Codes are unguessable within the 5-minute window
+- Invitation NATS JWTs are tightly scoped: profile read + connection accept only
+- No deny lists needed — NATS defaults to deny
+- Even if harvested, credentials are time-limited and read-only
+- Cross-environment support planned via guest NATS account
 
 ### 8. Forward Secrecy
 - Use X25519 for ephemeral session keys (rotated frequently)
