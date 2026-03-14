@@ -87,6 +87,11 @@ func NewNATSClient(cfg NATSConfig, stateCallback ConnectionStateCallback) (*NATS
 		if err := client.ensureEnrollmentStream(); err != nil {
 			log.Warn().Err(err).Msg("Failed to create enrollment stream, JetStream publish may fail")
 		}
+
+		// Ensure invitations stream exists for connection invitation broker
+		if err := client.ensureInvitationsStream(); err != nil {
+			log.Warn().Err(err).Msg("Failed to create invitations stream")
+		}
 	}
 
 	return client, nil
@@ -135,6 +140,44 @@ func (c *NATSClient) ensureEnrollmentStream() error {
 	}
 
 	log.Info().Str("stream", streamName).Strs("subjects", subjects).Msg("Created enrollment stream")
+	return nil
+}
+
+// ensureInvitationsStream creates the stream for connection invitation broker.
+// Invitations are published here by the parent when a vault creates an invite.
+// Scanners fetch invitation data using a guest NATS account with just the short code.
+func (c *NATSClient) ensureInvitationsStream() error {
+	if c.js == nil {
+		return fmt.Errorf("JetStream not available")
+	}
+
+	streamName := "INVITATIONS"
+	subjects := []string{"invite.>"}
+
+	// Check if stream exists
+	stream, err := c.js.StreamInfo(streamName)
+	if err == nil {
+		log.Debug().Str("stream", streamName).Int64("messages", int64(stream.State.Msgs)).Msg("Invitations stream exists")
+		return nil
+	}
+
+	_, err = c.js.AddStream(&nats.StreamConfig{
+		Name:       streamName,
+		Subjects:   subjects,
+		Retention:  nats.LimitsPolicy,
+		MaxAge:     5 * time.Minute,         // Short-lived — scan the QR promptly
+		Storage:    nats.MemoryStorage,       // Ephemeral, no disk persistence needed
+		Replicas:   1,
+		Discard:    nats.DiscardOld,
+		MaxMsgs:    10000,
+		MaxBytes:   50 * 1024 * 1024,        // 50MB
+		Duplicates: 1 * time.Minute,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create invitations stream: %w", err)
+	}
+
+	log.Info().Str("stream", streamName).Strs("subjects", subjects).Msg("Created invitations stream")
 	return nil
 }
 

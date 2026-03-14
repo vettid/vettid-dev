@@ -631,6 +631,21 @@ func (p *ParentProcess) sendWithHandlerSupport(ctx context.Context, msg *Enclave
 			continue // Wait for next response
 		}
 
+		// Check if this is an invitation resolve request from the enclave
+		if response.Type == EnclaveMessageTypeInviteResolve {
+			log.Debug().
+				Str("subject", response.Subject).
+				Msg("Enclave requested invitation resolve")
+
+			inviteResp := p.handleInviteResolve(response)
+			p.vsockClient.writeMu.Lock()
+			if err := p.vsockClient.writeMessage(inviteResp); err != nil {
+				log.Error().Err(err).Msg("Failed to send invite resolve response")
+			}
+			p.vsockClient.writeMu.Unlock()
+			continue // Wait for next response
+		}
+
 		// Verify this is a known final response type before returning
 		knownFinalTypes := map[EnclaveMessageType]bool{
 			EnclaveMessageTypeVaultResponse:       true,
@@ -1344,6 +1359,54 @@ func (p *ParentProcess) handleAccountSeedGet(ctx context.Context, msg *EnclaveMe
 	return &EnclaveMessage{
 		Type:    EnclaveMessageTypeNATSAccountSeedResponse,
 		Payload: resp,
+	}
+}
+
+// handleInviteResolve fetches invitation data from the INVITATIONS JetStream stream.
+// The vault-manager sends an invite_resolve request with the invite code in the Subject field.
+// The parent reads the last message from invite.<code> and returns it.
+func (p *ParentProcess) handleInviteResolve(msg *EnclaveMessage) *EnclaveMessage {
+	if p.natsClient == nil || p.natsClient.js == nil {
+		log.Error().Msg("JetStream not available for invite resolve")
+		resp, _ := json.Marshal(map[string]string{"error": "JetStream not available"})
+		return &EnclaveMessage{
+			Type:    EnclaveMessageTypeInviteResponse,
+			Payload: resp,
+		}
+	}
+
+	inviteCode := msg.Subject
+	if inviteCode == "" {
+		resp, _ := json.Marshal(map[string]string{"error": "invite code is required"})
+		return &EnclaveMessage{
+			Type:    EnclaveMessageTypeInviteResponse,
+			Payload: resp,
+		}
+	}
+
+	subject := fmt.Sprintf("invite.%s", inviteCode)
+	log.Debug().Str("subject", subject).Msg("Resolving invitation from JetStream")
+
+	// Fetch the last message on this subject from the INVITATIONS stream
+	// Using direct get for simplicity — the message is retained in the stream
+	streamMsg, err := p.natsClient.js.GetLastMsg("INVITATIONS", subject)
+	if err != nil {
+		log.Warn().Err(err).Str("subject", subject).Msg("Invitation not found in stream")
+		resp, _ := json.Marshal(map[string]string{"error": "invitation not found or expired"})
+		return &EnclaveMessage{
+			Type:    EnclaveMessageTypeInviteResponse,
+			Payload: resp,
+		}
+	}
+
+	log.Info().
+		Str("invite_code", inviteCode).
+		Int("payload_len", len(streamMsg.Data)).
+		Msg("Invitation resolved from broker stream")
+
+	return &EnclaveMessage{
+		Type:    EnclaveMessageTypeInviteResponse,
+		Payload: streamMsg.Data,
 	}
 }
 

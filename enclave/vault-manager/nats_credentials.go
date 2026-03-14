@@ -1,13 +1,48 @@
 package main
 
 import (
+	"crypto/rand"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nkeys"
 	"github.com/rs/zerolog/log"
 )
+
+const inviteCodeAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+
+// generateInviteCode creates a 16-character random alphanumeric code.
+// 62^16 ≈ 4.7×10^28 combinations — unguessable within the 5-minute TTL.
+func generateInviteCode() string {
+	code := make([]byte, 16)
+	randomBytes := make([]byte, 16)
+	rand.Read(randomBytes)
+	for i := range code {
+		code[i] = inviteCodeAlphabet[int(randomBytes[i])%len(inviteCodeAlphabet)]
+	}
+	return string(code)
+}
+
+// extractCredsComponents extracts the JWT and seed from a NATS .creds file.
+func extractCredsComponents(creds string) (jwt string, seed string) {
+	// Extract JWT between markers
+	if start := strings.Index(creds, "-----BEGIN NATS USER JWT-----"); start != -1 {
+		after := creds[start+len("-----BEGIN NATS USER JWT-----"):]
+		if end := strings.Index(after, "------END NATS USER JWT------"); end != -1 {
+			jwt = strings.TrimSpace(after[:end])
+		}
+	}
+	// Extract seed between markers
+	if start := strings.Index(creds, "-----BEGIN USER NKEY SEED-----"); start != -1 {
+		after := creds[start+len("-----BEGIN USER NKEY SEED-----"):]
+		if end := strings.Index(after, "------END USER NKEY SEED------"); end != -1 {
+			seed = strings.TrimSpace(after[:end])
+		}
+	}
+	return
+}
 
 // GenerateInvitationCredentials creates scoped NATS credentials for a connection invitation.
 // The credentials allow the peer to subscribe to this vault's published profile.

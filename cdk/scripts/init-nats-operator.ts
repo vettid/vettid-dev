@@ -198,6 +198,129 @@ function createBackendAccountJwt(
   return encodeJwt(header, claims, operatorKeyPair);
 }
 
+/**
+ * Create a guest account JWT (signed by operator)
+ * This account is used by invitation scanners to fetch invitation data
+ * from the INVITATIONS JetStream stream. Minimal permissions — subscribe only.
+ */
+function createGuestAccountJwt(
+  operatorKeyPair: nkeys.KeyPair,
+  operatorPublicKey: string,
+  guestAccountPublicKey: string
+): string {
+  const now = Math.floor(Date.now() / 1000);
+  const jti = createHash('sha256')
+    .update(`${guestAccountPublicKey}:${now}:${randomUUID()}`)
+    .digest('hex')
+    .substring(0, 22);
+
+  const claims = {
+    jti,
+    iat: now,
+    iss: operatorPublicKey,
+    sub: guestAccountPublicKey,
+    name: 'GUEST',
+    nats: {
+      limits: {
+        subs: 10,
+        data: 1_000_000,      // 1 MB/sec
+        payload: 65536,        // 64 KB max message
+        imports: 0,
+        exports: 0,
+        wildcards: false,      // No wildcard subscriptions
+        conn: 100,             // Allow many concurrent scanners
+        leaf: 0,
+        mem_storage: -1,
+        disk_storage: 0,
+        streams: 0,            // Cannot create streams
+        consumer: 10,          // Can create ephemeral consumers to read invitations
+      },
+      default_permissions: {
+        pub: {
+          allow: [
+            // JetStream consumer API for INVITATIONS stream only
+            '$JS.API.CONSUMER.CREATE.INVITATIONS',
+            '$JS.API.CONSUMER.MSG.NEXT.INVITATIONS.>',
+          ],
+        },
+        sub: {
+          allow: [
+            // JetStream consumer API for INVITATIONS stream only
+            '$JS.API.CONSUMER.CREATE.INVITATIONS',
+            '$JS.API.CONSUMER.MSG.NEXT.INVITATIONS.>',
+            '$JS.API.STREAM.INFO.INVITATIONS',
+          ],
+        },
+      },
+      type: 'account',
+      version: 2,
+    },
+  };
+
+  const header = {
+    typ: 'JWT',
+    alg: 'ed25519-nkey',
+  };
+
+  return encodeJwt(header, claims, operatorKeyPair);
+}
+
+/**
+ * Generate a guest user JWT + seed for embedding in the app.
+ * This user has minimal permissions to read invitation data.
+ */
+function generateGuestUserCredentials(
+  guestAccountSeed: string,
+  guestAccountPublicKey: string
+): { jwt: string; seed: string } {
+  const accountKeyPair = nkeys.fromSeed(new TextEncoder().encode(guestAccountSeed));
+  const userKeyPair = nkeys.createUser();
+  const userPublicKey = userKeyPair.getPublicKey();
+  const userSeed = new TextDecoder().decode(userKeyPair.getSeed());
+
+  const now = Math.floor(Date.now() / 1000);
+  const LIFETIME_DAYS = 365; // Long-lived — rotated with operator rotation
+  const exp = now + LIFETIME_DAYS * 24 * 60 * 60;
+  const jti = createHash('sha256')
+    .update(`guest-user-${userPublicKey}:${now}:${randomUUID()}`)
+    .digest('hex')
+    .substring(0, 22);
+
+  const claims = {
+    jti,
+    iat: now,
+    exp,
+    iss: guestAccountPublicKey,
+    sub: userPublicKey,
+    name: 'guest-scanner',
+    nats: {
+      pub: {
+        allow: [
+          '$JS.API.CONSUMER.CREATE.INVITATIONS',
+          '$JS.API.CONSUMER.MSG.NEXT.INVITATIONS.>',
+        ],
+      },
+      sub: {
+        allow: [
+          '$JS.API.CONSUMER.CREATE.INVITATIONS',
+          '$JS.API.CONSUMER.MSG.NEXT.INVITATIONS.>',
+          '$JS.API.STREAM.INFO.INVITATIONS',
+        ],
+      },
+      subs: 5,
+      data: 1_000_000,
+      payload: 65536,
+      type: 'user',
+      version: 2,
+    },
+  };
+
+  const header = { typ: 'JWT', alg: 'ed25519-nkey' };
+  const jwt = encodeJwt(header, claims, accountKeyPair);
+
+  return { jwt, seed: userSeed };
+}
+
 async function main() {
   console.log('Initializing NATS operator keys...');
   console.log(`Region: ${REGION}`);
@@ -216,8 +339,9 @@ async function main() {
         // Force regenerate JWTs if --regenerate flag passed or JWTs missing
         const forceRegenerate = process.argv.includes('--regenerate');
         const needsBackendAccount = !data.backend_account_seed || !data.backend_account_jwt;
+        const needsGuestAccount = !data.guest_account_seed || !data.guest_account_jwt;
 
-        if (!data.operator_jwt || !data.system_account_jwt || needsBackendAccount || forceRegenerate) {
+        if (!data.operator_jwt || !data.system_account_jwt || needsBackendAccount || needsGuestAccount || forceRegenerate) {
           console.log('\nRegenerating JWTs with updated claims...');
           const operatorKeyPair = nkeys.fromSeed(new TextEncoder().encode(data.operator_seed));
           const operatorJwt = createOperatorJwt(operatorKeyPair, data.operator_public_key, data.system_account_public_key);
@@ -236,6 +360,20 @@ async function main() {
 
           const backendAccountJwt = createBackendAccountJwt(operatorKeyPair, data.operator_public_key, backendAccountPublicKey);
 
+          // Generate guest account if it doesn't exist
+          let guestAccountSeed = data.guest_account_seed;
+          let guestAccountPublicKey = data.guest_account_public_key;
+
+          if (!guestAccountSeed) {
+            console.log('Generating new guest account key pair...');
+            const guestAccountKeyPair = nkeys.createAccount();
+            guestAccountSeed = new TextDecoder().decode(guestAccountKeyPair.getSeed());
+            guestAccountPublicKey = guestAccountKeyPair.getPublicKey();
+          }
+
+          const guestAccountJwt = createGuestAccountJwt(operatorKeyPair, data.operator_public_key, guestAccountPublicKey);
+          const guestUserCreds = generateGuestUserCredentials(guestAccountSeed, guestAccountPublicKey);
+
           // Update secret with JWTs
           const updatedValue = {
             ...data,
@@ -244,6 +382,11 @@ async function main() {
             backend_account_seed: backendAccountSeed,
             backend_account_public_key: backendAccountPublicKey,
             backend_account_jwt: backendAccountJwt,
+            guest_account_seed: guestAccountSeed,
+            guest_account_public_key: guestAccountPublicKey,
+            guest_account_jwt: guestAccountJwt,
+            guest_user_jwt: guestUserCreds.jwt,
+            guest_user_seed: guestUserCreds.seed,
             updated_at: new Date().toISOString(),
           };
 
@@ -256,6 +399,10 @@ async function main() {
           console.log(`Operator Public Key: ${data.operator_public_key}`);
           console.log(`System Account Public Key: ${data.system_account_public_key}`);
           console.log(`Backend Account Public Key: ${backendAccountPublicKey}`);
+          console.log(`Guest Account Public Key: ${guestAccountPublicKey}`);
+          console.log(`\nGuest user JWT (for app embedding):`);
+          console.log(`  JWT: ${guestUserCreds.jwt.substring(0, 50)}...`);
+          console.log(`  Seed: ${guestUserCreds.seed}`);
           console.log('\nJWTs have been added to the existing secret.');
           return;
         }
@@ -306,6 +453,20 @@ async function main() {
   console.log('Generating backend account JWT...');
   const backendAccountJwt = createBackendAccountJwt(operatorKeyPair, operatorPublicKey, backendAccountPublicKey);
 
+  // Generate guest account key pair (for invitation scanner access)
+  console.log('Generating guest account key pair...');
+  const guestAccountKeyPair = nkeys.createAccount();
+  const guestAccountSeed = new TextDecoder().decode(guestAccountKeyPair.getSeed());
+  const guestAccountPublicKey = guestAccountKeyPair.getPublicKey();
+
+  // Generate guest account JWT
+  console.log('Generating guest account JWT...');
+  const guestAccountJwt = createGuestAccountJwt(operatorKeyPair, operatorPublicKey, guestAccountPublicKey);
+
+  // Generate guest user credentials (for embedding in the app)
+  console.log('Generating guest user credentials...');
+  const guestUserCreds = generateGuestUserCredentials(guestAccountSeed, guestAccountPublicKey);
+
   // Store in Secrets Manager
   const secretValue = {
     operator_seed: operatorSeed,
@@ -317,6 +478,11 @@ async function main() {
     backend_account_seed: backendAccountSeed,
     backend_account_public_key: backendAccountPublicKey,
     backend_account_jwt: backendAccountJwt,
+    guest_account_seed: guestAccountSeed,
+    guest_account_public_key: guestAccountPublicKey,
+    guest_account_jwt: guestAccountJwt,
+    guest_user_jwt: guestUserCreds.jwt,
+    guest_user_seed: guestUserCreds.seed,
     created_at: new Date().toISOString(),
   };
 
@@ -330,6 +496,10 @@ async function main() {
   console.log(`Operator Public Key: ${operatorPublicKey}`);
   console.log(`System Account Public Key: ${systemAccountPublicKey}`);
   console.log(`Backend Account Public Key: ${backendAccountPublicKey}`);
+  console.log(`Guest Account Public Key: ${guestAccountPublicKey}`);
+  console.log(`\nGuest user credentials (embed in app):`);
+  console.log(`  JWT: ${guestUserCreds.jwt.substring(0, 50)}...`);
+  console.log(`  Seed: ${guestUserCreds.seed}`);
   console.log('\nThese keys are now stored in AWS Secrets Manager.');
   console.log('The Lambda functions will use them to sign NATS JWTs.');
 

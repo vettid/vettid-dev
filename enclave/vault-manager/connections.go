@@ -187,7 +187,8 @@ type CreateInviteRequest struct {
 type CreateInviteResponse struct {
 	ConnectionID      string            `json:"connection_id"`
 	OwnerSpace        string            `json:"owner_space"`
-	Credentials       string            `json:"credentials"`
+	Credentials       string            `json:"credentials,omitempty"`
+	InviteCode        string            `json:"invite_code,omitempty"`
 	MessageSpaceTopic string            `json:"message_space_topic"`
 	ExpiresAt         string            `json:"expires_at"`
 	E2EPublicKey      string            `json:"e2e_public_key"`
@@ -481,10 +482,40 @@ func (h *ConnectionsHandler) HandleCreateInvite(msg *IncomingMessage) (*Outgoing
 		}
 	}
 
+	// Publish invitation to NATS broker stream so QR code only needs a short code.
+	// The scanner fetches the full invitation data from the stream using guest credentials.
+	inviteCode := ""
+	if h.publisher != nil && invitationCreds != "" {
+		inviteCode = generateInviteCode()
+
+		// Extract JWT and seed from .creds format for compact storage
+		jwt, seed := extractCredsComponents(invitationCreds)
+
+		brokerPayload := map[string]interface{}{
+			"type":          "vettid_connection",
+			"connection_id": connectionID,
+			"jwt":           jwt,
+			"seed":          seed,
+			"owner_space":   h.ownerSpace,
+			"message_space": record.MessageSpaceTopic,
+			"expires_at":    expiresAt.Format(time.RFC3339),
+		}
+		payloadBytes, _ := json.Marshal(brokerPayload)
+
+		subject := fmt.Sprintf("invite.%s", inviteCode)
+		if err := h.publisher.PublishRaw(subject, payloadBytes); err != nil {
+			log.Warn().Err(err).Str("subject", subject).Msg("Failed to publish invitation to broker (falling back to inline creds)")
+			inviteCode = "" // Fall back to inline credentials
+		} else {
+			log.Info().Str("invite_code", inviteCode).Str("connection_id", connectionID).Msg("Invitation published to broker stream")
+		}
+	}
+
 	resp := CreateInviteResponse{
 		ConnectionID:      connectionID,
 		OwnerSpace:        h.ownerSpace,
 		Credentials:       invitationCreds,
+		InviteCode:        inviteCode,
 		MessageSpaceTopic: record.MessageSpaceTopic,
 		ExpiresAt:         expiresAt.Format(time.RFC3339),
 		E2EPublicKey:      fmt.Sprintf("%x", localPublic),
@@ -497,6 +528,37 @@ func (h *ConnectionsHandler) HandleCreateInvite(msg *IncomingMessage) (*Outgoing
 		RequestID: msg.GetID(),
 		Type:      MessageTypeResponse,
 		Payload:   respBytes,
+	}, nil
+}
+
+// HandleResolveInvite handles connection.resolve-invite messages.
+// Fetches invitation data from the NATS INVITATIONS stream via the parent process.
+// The app sends the invite code from a scanned QR; the vault resolves it.
+func (h *ConnectionsHandler) HandleResolveInvite(msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req struct {
+		InviteCode string `json:"invite_code"`
+	}
+	if err := json.Unmarshal(msg.Payload, &req); err != nil || req.InviteCode == "" {
+		return h.errorResponse(msg.GetID(), "invite_code is required")
+	}
+
+	if h.sealerProxy == nil {
+		return h.errorResponse(msg.GetID(), "sealer proxy not available")
+	}
+
+	log.Info().Str("invite_code", req.InviteCode).Msg("Resolving invitation from broker")
+
+	inviteData, err := h.sealerProxy.ResolveInvite(req.InviteCode)
+	if err != nil {
+		log.Warn().Err(err).Str("invite_code", req.InviteCode).Msg("Failed to resolve invitation")
+		return h.errorResponse(msg.GetID(), fmt.Sprintf("invitation not found or expired: %v", err))
+	}
+
+	// Return the raw invitation data — it contains connection_id, jwt, seed, owner_space, etc.
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   inviteData,
 	}, nil
 }
 

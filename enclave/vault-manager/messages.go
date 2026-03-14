@@ -1318,6 +1318,8 @@ func (mh *MessageHandler) handleConnectionOperation(ctx context.Context, msg *In
 		}
 		mh.persistVaultStateToS3()
 		return response, nil
+	case "resolve-invite":
+		return mh.connectionsHandler.HandleResolveInvite(msg)
 	case "store-credentials":
 		response, err := mh.connectionsHandler.HandleStoreCredentials(msg)
 		if err != nil {

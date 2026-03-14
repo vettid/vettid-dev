@@ -59,6 +59,8 @@ const (
 	SealerOpLoadSealedECIES     SealerOperation = "load_sealed_ecies"
 	// NATS account seed (fetched from DynamoDB via parent)
 	SealerOpLoadAccountSeed SealerOperation = "load_account_seed"
+	// Invitation broker (resolved from NATS JetStream via parent)
+	SealerOpResolveInvite SealerOperation = "resolve_invite"
 )
 
 // SealerRequest is received from vault-manager
@@ -72,6 +74,9 @@ type SealerRequest struct {
 
 	// For seal_credential / unseal_credential
 	Data []byte `json:"data,omitempty"`
+
+	// For resolve_invite
+	InviteCode string `json:"invite_code,omitempty"`
 }
 
 // SealerResponse is sent back to vault-manager
@@ -93,6 +98,9 @@ type SealerResponse struct {
 
 	// For load_account_seed
 	AccountSeed string `json:"account_seed,omitempty"`
+
+	// For resolve_invite
+	InviteData []byte `json:"invite_data,omitempty"`
 }
 
 // HandleSealerRequest processes a sealer request from vault-manager
@@ -133,6 +141,8 @@ func (sh *SealerHandler) HandleSealerRequest(msg *Message) *Message {
 		resp = sh.loadSealedECIES(req)
 	case SealerOpLoadAccountSeed:
 		resp = sh.loadAccountSeed(req)
+	case SealerOpResolveInvite:
+		resp = sh.resolveInvite(req)
 	default:
 		resp = SealerResponse{
 			Success: false,
@@ -515,4 +525,49 @@ func (sh *SealerHandler) loadAccountSeed(req SealerRequest) SealerResponse {
 
 	log.Info().Str("owner_space", req.OwnerSpace).Msg("NATS account seed received from parent")
 	return SealerResponse{Success: true, AccountSeed: seedResp.AccountSeed}
+}
+
+// resolveInvite fetches invitation data from the parent's NATS JetStream INVITATIONS stream.
+func (sh *SealerHandler) resolveInvite(req SealerRequest) SealerResponse {
+	sh.connMu.Lock()
+	defer sh.connMu.Unlock()
+
+	if sh.parentConn == nil {
+		return SealerResponse{Success: false, Error: "no parent connection available"}
+	}
+
+	log.Info().Str("invite_code", req.InviteCode).Msg("Resolving invitation via parent")
+
+	msg := &Message{
+		Type:    MessageTypeInviteResolve,
+		Subject: req.InviteCode,
+	}
+
+	if err := sh.parentConn.WriteMessage(msg); err != nil {
+		return SealerResponse{Success: false, Error: fmt.Sprintf("failed to send invite resolve request: %v", err)}
+	}
+
+	response, err := sh.parentConn.ReadMessage()
+	if err != nil {
+		return SealerResponse{Success: false, Error: fmt.Sprintf("failed to read invite resolve response: %v", err)}
+	}
+
+	if response.Type == MessageTypeError {
+		return SealerResponse{Success: false, Error: fmt.Sprintf("parent error: %s", response.Error)}
+	}
+
+	if response.Type != MessageTypeInviteResponse {
+		return SealerResponse{Success: false, Error: fmt.Sprintf("unexpected response type: %s", response.Type)}
+	}
+
+	// Check for error in payload
+	var check struct {
+		Error string `json:"error,omitempty"`
+	}
+	if json.Unmarshal(response.Payload, &check) == nil && check.Error != "" {
+		return SealerResponse{Success: false, Error: check.Error}
+	}
+
+	log.Info().Str("invite_code", req.InviteCode).Int("payload_len", len(response.Payload)).Msg("Invitation resolved from parent")
+	return SealerResponse{Success: true, InviteData: response.Payload}
 }

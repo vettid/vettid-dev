@@ -146,6 +146,8 @@ async function generateParentCredentials(): Promise<{ creds: string; expiresAt: 
           // Publish to MessageSpace for connections
           'MessageSpace.*.forOwner.>',
           'MessageSpace.*.ownerProfile',
+          // Publish invitations to shared broker stream
+          'invite.>',
           // Health/metrics to backend services
           'OwnerSpace.*.forServices.>',
           // Request-reply inbox subjects (for NATS request pattern)

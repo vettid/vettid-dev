@@ -148,6 +148,10 @@ const (
 	// NATS account seed operations (enclave -> parent)
 	EnclaveMessageTypeNATSAccountSeedGet      EnclaveMessageType = "nats_account_seed_get"
 	EnclaveMessageTypeNATSAccountSeedResponse EnclaveMessageType = "nats_account_seed_response"
+
+	// Invitation broker operations (enclave -> parent)
+	EnclaveMessageTypeInviteResolve  EnclaveMessageType = "invite_resolve"
+	EnclaveMessageTypeInviteResponse EnclaveMessageType = "invite_response"
 )
 
 // Attestation holds a Nitro attestation document

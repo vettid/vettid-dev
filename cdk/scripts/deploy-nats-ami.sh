@@ -251,6 +251,8 @@ ACCOUNT_RESOLVER_URL=$(aws ssm get-parameter \
     --region "$REGION" 2>/dev/null || echo "")
 
 SYSTEM_ACCOUNT_JWT=""
+GUEST_ACCOUNT_JWT=""
+GUEST_ACCOUNT_PK=""
 if [ -n "$ACCOUNT_RESOLVER_URL" ]; then
     # Get system account public key
     SYS_ACCOUNT_PK=$(aws ssm get-parameter \
@@ -261,6 +263,17 @@ if [ -n "$ACCOUNT_RESOLVER_URL" ]; then
 
     if [ -n "$SYS_ACCOUNT_PK" ]; then
         SYSTEM_ACCOUNT_JWT=$(curl -sf "${ACCOUNT_RESOLVER_URL}${SYS_ACCOUNT_PK}" 2>/dev/null || echo "")
+    fi
+
+    # Get guest account for invitation broker
+    GUEST_ACCOUNT_PK=$(aws ssm get-parameter \
+        --name /vettid/nats/guest-account-pk \
+        --query Parameter.Value \
+        --output text \
+        --region "$REGION" 2>/dev/null || echo "")
+
+    if [ -n "$GUEST_ACCOUNT_PK" ]; then
+        GUEST_ACCOUNT_JWT=$(curl -sf "${ACCOUNT_RESOLVER_URL}${GUEST_ACCOUNT_PK}" 2>/dev/null || echo "")
     fi
 fi
 
@@ -329,9 +342,10 @@ resolver: {
     limit: 1000
 }
 
-# Pre-load system account
+# Pre-load system and guest accounts
 resolver_preload: {
     ${SYS_ACCOUNT_PK:-SYS}: ${SYSTEM_ACCOUNT_JWT:-""}
+    ${GUEST_ACCOUNT_PK:+$GUEST_ACCOUNT_PK: $GUEST_ACCOUNT_JWT}
 }
 AUTHEOF
 

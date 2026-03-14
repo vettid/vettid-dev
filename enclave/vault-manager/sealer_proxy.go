@@ -55,6 +55,8 @@ const (
 	SealerOpLoadSealedECIES     SealerOperation = "load_sealed_ecies"
 	// NATS account seed (fetched from DynamoDB via parent)
 	SealerOpLoadAccountSeed SealerOperation = "load_account_seed"
+	// Invitation broker (resolved from NATS JetStream via parent)
+	SealerOpResolveInvite SealerOperation = "resolve_invite"
 )
 
 // SealerRequest is sent from vault-manager to supervisor
@@ -68,6 +70,9 @@ type SealerRequest struct {
 
 	// For seal_credential / unseal_credential
 	Data []byte `json:"data,omitempty"`
+
+	// For resolve_invite
+	InviteCode string `json:"invite_code,omitempty"`
 }
 
 // SealerResponse is returned from supervisor to vault-manager
@@ -89,6 +94,9 @@ type SealerResponse struct {
 
 	// For load_account_seed
 	AccountSeed string `json:"account_seed,omitempty"`
+
+	// For resolve_invite
+	InviteData []byte `json:"invite_data,omitempty"`
 }
 
 // GenerateSealedMaterial requests the supervisor to generate PCR-bound sealed material
@@ -396,6 +404,30 @@ func (p *SealerProxy) LoadAccountSeed() (string, error) {
 	}
 
 	return resp.AccountSeed, nil
+}
+
+// ResolveInvite fetches invitation data from the NATS INVITATIONS stream via the parent.
+func (p *SealerProxy) ResolveInvite(inviteCode string) ([]byte, error) {
+	req := SealerRequest{
+		Operation:  SealerOpResolveInvite,
+		OwnerSpace: p.ownerSpace,
+		InviteCode: inviteCode,
+	}
+
+	resp, err := p.sendRequest(req)
+	if err != nil {
+		return nil, err
+	}
+
+	if !resp.Success {
+		return nil, fmt.Errorf("invite resolve error: %s", resp.Error)
+	}
+
+	if len(resp.InviteData) == 0 {
+		return nil, fmt.Errorf("empty invite data returned")
+	}
+
+	return resp.InviteData, nil
 }
 
 // LoadVaultState loads DEK-encrypted vault state from S3 for cold vault recovery

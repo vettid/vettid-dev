@@ -72,6 +72,10 @@ const (
 	// NATS account seed operations (supervisor -> parent)
 	MessageTypeNATSAccountSeedGet      MessageType = "nats_account_seed_get"
 	MessageTypeNATSAccountSeedResponse MessageType = "nats_account_seed_response"
+
+	// Invitation broker operations (vault-manager -> parent)
+	MessageTypeInviteResolve  MessageType = "invite_resolve"
+	MessageTypeInviteResponse MessageType = "invite_response"
 )
 
 // SECURITY: Handshake constants
