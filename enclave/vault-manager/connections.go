@@ -499,6 +499,7 @@ func (h *ConnectionsHandler) HandleCreateInvite(msg *IncomingMessage) (*Outgoing
 			"owner_space":   h.ownerSpace,
 			"message_space": record.MessageSpaceTopic,
 			"expires_at":    expiresAt.Format(time.RFC3339),
+			"label":         req.Label,
 		}
 		payloadBytes, _ := json.Marshal(brokerPayload)
 
