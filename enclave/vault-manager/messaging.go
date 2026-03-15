@@ -205,8 +205,8 @@ func (h *MessagingHandler) HandleSend(msg *IncomingMessage) (*OutgoingMessage, e
 
 	peerMsgData, _ := json.Marshal(peerMsg)
 
-	// Publish to peer via supervisor
-	if err := h.publisher.PublishToVault(context.Background(), conn.PeerGUID, "message", peerMsgData); err != nil {
+	// Publish to peer's vault as an incoming message
+	if err := h.publisher.PublishToVault(context.Background(), conn.PeerGUID, "message.incoming", peerMsgData); err != nil {
 		// Update local status to failed
 		localMsg.Status = MessageStatusFailed
 		msgData, _ = json.Marshal(localMsg)
@@ -230,6 +230,87 @@ func (h *MessagingHandler) HandleSend(msg *IncomingMessage) (*OutgoingMessage, e
 		ConnectionID: req.ConnectionID,
 		SentAt:       sentAt,
 		Status:       "sent",
+	}
+	respBytes, _ := json.Marshal(resp)
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// HandleIncomingPeerMessage processes an encrypted message from a peer's vault.
+// The peer's vault encrypted it with the shared secret and published to our forVault.message.incoming.
+// We store it locally and notify our app.
+func (h *MessagingHandler) HandleIncomingPeerMessage(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	var peerMsg PeerMessage
+	if err := json.Unmarshal(msg.Payload, &peerMsg); err != nil {
+		log.Warn().Err(err).Msg("Failed to parse incoming peer message")
+		return h.errorResponse(msg.GetID(), "Invalid peer message format")
+	}
+
+	if peerMsg.ConnectionID == "" || peerMsg.MessageID == "" {
+		return h.errorResponse(msg.GetID(), "Missing connection_id or message_id")
+	}
+
+	log.Info().
+		Str("message_id", peerMsg.MessageID).
+		Str("connection_id", peerMsg.ConnectionID).
+		Str("sender", peerMsg.SenderGUID).
+		Msg("Received peer message")
+
+	// Verify connection exists
+	connData, err := h.storage.Get("connections/" + peerMsg.ConnectionID)
+	if err != nil {
+		return h.errorResponse(msg.GetID(), "Connection not found for incoming message")
+	}
+
+	var conn ConnectionRecord
+	if err := json.Unmarshal(connData, &conn); err != nil {
+		return h.errorResponse(msg.GetID(), "Invalid connection data")
+	}
+
+	// Store incoming message
+	localMsg := MessageRecord{
+		MessageID:        peerMsg.MessageID,
+		ConnectionID:     peerMsg.ConnectionID,
+		Direction:        MessageDirectionIncoming,
+		ContentType:      peerMsg.ContentType,
+		Status:           MessageStatusDelivered,
+		EncryptedContent: peerMsg.EncryptedContent,
+		Nonce:            peerMsg.Nonce,
+		CreatedAt:        time.Now(),
+	}
+
+	msgData, _ := json.Marshal(localMsg)
+	storageKey := fmt.Sprintf("messages/%s/%s", peerMsg.ConnectionID, peerMsg.MessageID)
+	if err := h.storage.Put(storageKey, msgData); err != nil {
+		log.Warn().Err(err).Msg("Failed to store incoming message")
+	}
+
+	// Notify the app of the incoming message
+	if h.publisher != nil {
+		appNotification := map[string]interface{}{
+			"type":              "message.received",
+			"message_id":        peerMsg.MessageID,
+			"connection_id":     peerMsg.ConnectionID,
+			"sender_guid":       peerMsg.SenderGUID,
+			"encrypted_content": peerMsg.EncryptedContent,
+			"nonce":             peerMsg.Nonce,
+			"content_type":      peerMsg.ContentType,
+			"sent_at":           peerMsg.SentAt,
+		}
+		notifBytes, _ := json.Marshal(appNotification)
+		if err := h.publisher.PublishToApp(ctx, "new-message", notifBytes); err != nil {
+			log.Warn().Err(err).Msg("Failed to notify app of incoming message")
+		}
+	}
+
+	resp := map[string]interface{}{
+		"success":    true,
+		"message_id": peerMsg.MessageID,
+		"status":     "delivered",
 	}
 	respBytes, _ := json.Marshal(resp)
 
