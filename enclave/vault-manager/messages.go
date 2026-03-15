@@ -454,8 +454,23 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 				// Device messages: routed to deviceHandler
 				resp, err = mh.deviceHandler.HandleDeviceMessage(ctx, msg)
 			} else if i+1 < len(parts) && parts[i+1] == "connection" {
-				// Connection notifications from peers (e.g., acceptance)
-				resp, err = mh.connectionsHandler.HandlePeerConnectionNotification(ctx, msg)
+				// Connection notifications from peers — route by operation
+				if i+2 < len(parts) {
+					switch parts[i+2] {
+					case "accepted":
+						resp, err = mh.connectionsHandler.HandlePeerConnectionNotification(ctx, msg)
+					case "key-exchange":
+						resp, err = mh.connectionsHandler.HandlePeerKeyExchange(ctx, msg)
+					case "activated":
+						resp, err = mh.connectionsHandler.HandlePeerConnectionActivated(ctx, msg)
+					case "rejected":
+						resp, err = mh.connectionsHandler.HandlePeerConnectionRejected(ctx, msg)
+					default:
+						resp, err = mh.connectionsHandler.HandlePeerConnectionNotification(ctx, msg)
+					}
+				} else {
+					resp, err = mh.connectionsHandler.HandlePeerConnectionNotification(ctx, msg)
+				}
 			} else {
 				// Agent messages (default forOwner routing)
 				resp, err = mh.agentHandler.HandleAgentMessage(ctx, msg)

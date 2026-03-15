@@ -64,6 +64,10 @@ type ConnectionRecord struct {
 	LastRotatedAt     time.Time `json:"last_rotated_at,omitempty"`
 	KeyExchangeAt     time.Time `json:"key_exchange_at,omitempty"`
 	KeyRotationCount  int       `json:"key_rotation_count"`
+	// Peer routing (for sending notifications back)
+	PeerOwnerSpace   string `json:"peer_owner_space,omitempty"`
+	PeerMessageSpace string `json:"peer_message_space,omitempty"`
+
 	// E2E encryption fields
 	LocalPublicKey  []byte `json:"local_public_key,omitempty"`
 	LocalPrivateKey []byte `json:"local_private_key,omitempty"`
@@ -563,6 +567,169 @@ func (h *ConnectionsHandler) HandleResolveInvite(msg *IncomingMessage) (*Outgoin
 	}, nil
 }
 
+// HandlePeerKeyExchange handles incoming key exchange replies from peers.
+// When A's vault processes B's acceptance, it sends A's public key back to B.
+// This handler on B's vault stores A's public key and computes the shared secret.
+func (h *ConnectionsHandler) HandlePeerKeyExchange(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	var keyExchange struct {
+		ConnectionID string `json:"connection_id"`
+		PeerGUID     string `json:"peer_guid"`
+		E2EPublicKey string `json:"e2e_public_key"`
+	}
+
+	if err := json.Unmarshal(msg.Payload, &keyExchange); err != nil {
+		log.Warn().Err(err).Msg("Failed to parse key exchange message")
+		return &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}, nil
+	}
+
+	if keyExchange.ConnectionID == "" || keyExchange.E2EPublicKey == "" {
+		log.Warn().Msg("Key exchange missing connection_id or e2e_public_key")
+		return &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}, nil
+	}
+
+	log.Info().Str("connection_id", keyExchange.ConnectionID).Msg("Received key exchange from peer")
+
+	// Load our connection record
+	storageKey := "connections/" + keyExchange.ConnectionID
+	connData, err := h.storage.Get(storageKey)
+	if err != nil {
+		log.Warn().Str("connection_id", keyExchange.ConnectionID).Msg("Connection not found for key exchange")
+		return &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}, nil
+	}
+
+	var record ConnectionRecord
+	if err := json.Unmarshal(connData, &record); err != nil {
+		log.Warn().Err(err).Msg("Failed to read connection for key exchange")
+		return &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}, nil
+	}
+
+	// Store peer's public key and compute shared secret
+	peerPublicKey, err := decodeHexKey(keyExchange.E2EPublicKey)
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to decode peer public key in key exchange")
+		return &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}, nil
+	}
+
+	record.PeerPublicKey = peerPublicKey
+	if len(record.LocalPrivateKey) > 0 {
+		sharedSecret, err := curve25519.X25519(record.LocalPrivateKey, peerPublicKey)
+		if err == nil {
+			record.SharedSecret = sharedSecret
+			record.KeyExchangeAt = time.Now()
+			log.Info().Str("connection_id", keyExchange.ConnectionID).Msg("Computed shared secret (B side)")
+		} else {
+			log.Error().Err(err).Msg("Failed to compute shared secret")
+		}
+	}
+
+	// Save updated record
+	newData, _ := json.Marshal(record)
+	if err := h.storage.Put(storageKey, newData); err != nil {
+		log.Error().Err(err).Msg("Failed to store connection after key exchange")
+	}
+
+	// Notify app that key exchange is complete
+	if h.publisher != nil {
+		notif := map[string]interface{}{
+			"type":          "connection.key-exchanged",
+			"connection_id": keyExchange.ConnectionID,
+			"peer_guid":     keyExchange.PeerGUID,
+		}
+		notifBytes, _ := json.Marshal(notif)
+		h.publisher.PublishToApp(ctx, "connection.key-exchanged", notifBytes)
+	}
+
+	return &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}, nil
+}
+
+// HandlePeerConnectionActivated handles activation notifications from peers.
+// When A reviews and accepts, A's vault publishes this to B's MessageSpace.
+func (h *ConnectionsHandler) HandlePeerConnectionActivated(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	var activation struct {
+		ConnectionID string `json:"connection_id"`
+		PeerGUID     string `json:"peer_guid"`
+	}
+
+	if err := json.Unmarshal(msg.Payload, &activation); err != nil || activation.ConnectionID == "" {
+		return &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}, nil
+	}
+
+	log.Info().Str("connection_id", activation.ConnectionID).Msg("Peer activated connection")
+
+	storageKey := "connections/" + activation.ConnectionID
+	connData, err := h.storage.Get(storageKey)
+	if err != nil {
+		return &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}, nil
+	}
+
+	var record ConnectionRecord
+	if err := json.Unmarshal(connData, &record); err != nil {
+		return &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}, nil
+	}
+
+	record.Status = "active"
+	newData, _ := json.Marshal(record)
+	h.storage.Put(storageKey, newData)
+
+	if h.publisher != nil {
+		notif := map[string]interface{}{
+			"type":          "connection.activated",
+			"connection_id": activation.ConnectionID,
+			"peer_guid":     activation.PeerGUID,
+			"peer_alias":    record.PeerAlias,
+		}
+		notifBytes, _ := json.Marshal(notif)
+		h.publisher.PublishToApp(ctx, "connection.activated", notifBytes)
+	}
+
+	return &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}, nil
+}
+
+// HandlePeerConnectionRejected handles rejection notifications from peers.
+func (h *ConnectionsHandler) HandlePeerConnectionRejected(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	var rejection struct {
+		ConnectionID string `json:"connection_id"`
+		PeerGUID     string `json:"peer_guid"`
+	}
+
+	if err := json.Unmarshal(msg.Payload, &rejection); err != nil || rejection.ConnectionID == "" {
+		return &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}, nil
+	}
+
+	log.Info().Str("connection_id", rejection.ConnectionID).Msg("Peer rejected connection")
+
+	storageKey := "connections/" + rejection.ConnectionID
+	connData, err := h.storage.Get(storageKey)
+	if err != nil {
+		return &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}, nil
+	}
+
+	var record ConnectionRecord
+	if err := json.Unmarshal(connData, &record); err != nil {
+		return &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}, nil
+	}
+
+	record.Status = "rejected"
+	zeroBytes(record.SharedSecret)
+	record.SharedSecret = nil
+	zeroBytes(record.LocalPrivateKey)
+	record.LocalPrivateKey = nil
+	newData, _ := json.Marshal(record)
+	h.storage.Put(storageKey, newData)
+
+	if h.publisher != nil {
+		notif := map[string]interface{}{
+			"type":          "connection.rejected",
+			"connection_id": rejection.ConnectionID,
+			"peer_guid":     rejection.PeerGUID,
+		}
+		notifBytes, _ := json.Marshal(notif)
+		h.publisher.PublishToApp(ctx, "connection.rejected", notifBytes)
+	}
+
+	return &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}, nil
+}
+
 // HandleCreateAgentInvite handles connection.agent.create-invite messages.
 // Creates a connection + invitation for an AI agent connector and returns
 // the details the app needs to call POST /vault/agent/shortlink.
@@ -753,11 +920,11 @@ func (h *ConnectionsHandler) HandleStoreCredentials(msg *IncomingMessage) (*Outg
 		CredentialsType:   "inbound",
 		Credentials:       req.Credentials,
 		MessageSpaceTopic: req.MessageSpaceTopic,
-		Status:            "active",
+		PeerOwnerSpace:    req.PeerOwnerSpaceID,
+		Status:            "pending",
 		CreatedAt:         time.Now(),
 		LocalPublicKey:    localPublic,
 		LocalPrivateKey:   localPrivate,
-		KeyExchangeAt:     time.Now(),
 	}
 
 	data, err := json.Marshal(record)
@@ -1011,8 +1178,9 @@ func (h *ConnectionsHandler) HandleRespond(msg *IncomingMessage) (*OutgoingMessa
 
 	// Validate current status allows a response
 	validStatuses := map[string]bool{
-		"pending_our_review":   true, // We need to review and respond
-		"pending_their_accept": true, // They reviewed, now we confirm
+		"pending":              true, // Inviter reviewing peer's profile
+		"pending_our_review":   true, // Legacy status
+		"pending_their_accept": true, // Legacy status
 	}
 	if !validStatuses[record.Status] {
 		return h.errorResponse(msg.GetID(), fmt.Sprintf("Connection is not awaiting response (status: %s)", record.Status))
@@ -1022,32 +1190,49 @@ func (h *ConnectionsHandler) HandleRespond(msg *IncomingMessage) (*OutgoingMessa
 	var message string
 
 	if req.Response == "reject" {
-		// Rejection ends the connection flow
 		newStatus = "rejected"
 		message = "Connection rejected"
+
+		// Zero key material
+		zeroBytes(record.SharedSecret)
+		record.SharedSecret = nil
+		zeroBytes(record.LocalPrivateKey)
+		record.LocalPrivateKey = nil
 
 		// Log rejection event
 		if h.eventHandler != nil {
 			h.eventHandler.LogConnectionEvent(context.Background(), EventTypeConnectionRejected, req.ConnectionID, record.PeerGUID, req.RejectionReason)
 		}
-	} else {
-		// Acceptance - determine next status based on current state
-		switch record.Status {
-		case "pending_our_review":
-			// We reviewed and accepted, now waiting for peer to accept
-			newStatus = "pending_their_accept"
-			message = "Accepted, waiting for peer confirmation"
-		case "pending_their_accept":
-			// Both parties have now accepted - connection is active!
-			newStatus = "active"
-			message = "Connection established"
 
-			// Log acceptance event
-			if h.eventHandler != nil {
-				h.eventHandler.LogConnectionEvent(context.Background(), EventTypeConnectionAccepted, req.ConnectionID, record.PeerGUID, "Bidirectional consent complete")
+		// Notify peer of rejection
+		if h.publisher != nil && record.PeerOwnerSpace != "" {
+			notif := map[string]interface{}{
+				"connection_id": req.ConnectionID,
+				"peer_guid":     h.ownerSpace,
 			}
-		default:
-			return h.errorResponse(msg.GetID(), fmt.Sprintf("Unexpected status for acceptance: %s", record.Status))
+			notifBytes, _ := json.Marshal(notif)
+			subject := fmt.Sprintf("MessageSpace.%s.forOwner.connection.rejected", record.PeerOwnerSpace)
+			h.publisher.PublishRaw(subject, notifBytes)
+		}
+	} else {
+		// Accept — connection is now active (key exchange already happened)
+		newStatus = "active"
+		message = "Connection established"
+
+		// Log acceptance event
+		if h.eventHandler != nil {
+			h.eventHandler.LogConnectionEvent(context.Background(), EventTypeConnectionAccepted, req.ConnectionID, record.PeerGUID, "Bidirectional consent complete")
+		}
+
+		// Notify peer that connection is now active
+		if h.publisher != nil && record.PeerOwnerSpace != "" {
+			notif := map[string]interface{}{
+				"connection_id": req.ConnectionID,
+				"peer_guid":     h.ownerSpace,
+			}
+			notifBytes, _ := json.Marshal(notif)
+			subject := fmt.Sprintf("MessageSpace.%s.forOwner.connection.activated", record.PeerOwnerSpace)
+			h.publisher.PublishRaw(subject, notifBytes)
 		}
 	}
 
@@ -1092,6 +1277,8 @@ func (h *ConnectionsHandler) HandlePeerConnectionNotification(ctx context.Contex
 		PeerGUID     string            `json:"peer_guid"`
 		PeerProfile  map[string]string `json:"peer_profile"`
 		E2EPublicKey string            `json:"e2e_public_key"`
+		OwnerSpace   string            `json:"owner_space"`
+		MessageSpace string            `json:"message_space"`
 	}
 
 	if err := json.Unmarshal(msg.Payload, &notification); err != nil {
@@ -1139,6 +1326,12 @@ func (h *ConnectionsHandler) HandlePeerConnectionNotification(ctx context.Contex
 	if notification.PeerGUID != "" {
 		record.PeerGUID = notification.PeerGUID
 	}
+	if notification.OwnerSpace != "" {
+		record.PeerOwnerSpace = notification.OwnerSpace
+	}
+	if notification.MessageSpace != "" {
+		record.PeerMessageSpace = notification.MessageSpace
+	}
 
 	// Build display name from peer profile
 	if notification.PeerProfile != nil {
@@ -1161,10 +1354,14 @@ func (h *ConnectionsHandler) HandlePeerConnectionNotification(ctx context.Contex
 				if err == nil {
 					record.SharedSecret = sharedSecret
 					record.KeyExchangeAt = time.Now()
+					log.Info().Str("connection_id", notification.ConnectionID).Msg("Computed shared secret (A side)")
 				}
 			}
 		}
 	}
+
+	// Set status to pending — inviter needs to review peer's profile
+	record.Status = "pending"
 
 	// Save updated connection record
 	newData, err := json.Marshal(record)
@@ -1192,10 +1389,26 @@ func (h *ConnectionsHandler) HandlePeerConnectionNotification(ctx context.Contex
 		Str("connection_id", notification.ConnectionID).
 		Str("peer_guid", notification.PeerGUID).
 		Str("peer_alias", record.PeerAlias).
-		Msg("Connection updated with peer details from acceptance notification")
+		Msg("Connection updated with peer details, status set to pending")
 
-	// Notify the owner's app that a peer accepted their connection invitation.
-	// This allows the app to prompt the owner to review the peer's profile.
+	// Send key exchange reply to peer's vault with our public key
+	// This allows B to compute the same shared secret
+	if h.publisher != nil && notification.OwnerSpace != "" && len(record.LocalPublicKey) > 0 {
+		keyExchangeReply := map[string]interface{}{
+			"connection_id":  notification.ConnectionID,
+			"peer_guid":      h.ownerSpace,
+			"e2e_public_key": fmt.Sprintf("%x", record.LocalPublicKey),
+		}
+		replyBytes, _ := json.Marshal(keyExchangeReply)
+		subject := fmt.Sprintf("MessageSpace.%s.forOwner.connection.key-exchange", notification.OwnerSpace)
+		if err := h.publisher.PublishRaw(subject, replyBytes); err != nil {
+			log.Warn().Err(err).Str("subject", subject).Msg("Failed to send key exchange reply")
+		} else {
+			log.Info().Str("connection_id", notification.ConnectionID).Msg("Published key exchange reply to peer")
+		}
+	}
+
+	// Notify the owner's app that a peer accepted — show review UI
 	if h.publisher != nil {
 		appNotification := map[string]interface{}{
 			"type":          "connection.peer-accepted",
@@ -1203,6 +1416,7 @@ func (h *ConnectionsHandler) HandlePeerConnectionNotification(ctx context.Contex
 			"peer_guid":     notification.PeerGUID,
 			"peer_alias":    record.PeerAlias,
 			"peer_profile":  notification.PeerProfile,
+			"status":        "pending",
 		}
 		notifBytes, _ := json.Marshal(appNotification)
 		if err := h.publisher.PublishToApp(ctx, "connection.peer-accepted", notifBytes); err != nil {
