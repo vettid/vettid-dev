@@ -629,21 +629,12 @@ func (c *VsockClient) writeMessage(msg *EnclaveMessage) error {
 		return fmt.Errorf("failed to marshal message: %w", err)
 	}
 
-	// DIAGNOSTIC: Validate JSON before sending to detect pre-vsock corruption
+	// Validate JSON before sending
 	if !json.Valid(data) {
-		log.Error().
+		log.Warn().
 			Int("length", len(data)).
 			Str("type", string(msg.Type)).
-			Msg("DIAGNOSTIC: json.Marshal produced invalid JSON before vsock write")
-	}
-
-	// DIAGNOSTIC: Log details for large messages to correlate with supervisor-side errors
-	if len(data) > 10000 {
-		log.Debug().
-			Int("length", len(data)).
-			Str("type", string(msg.Type)).
-			Str("first_50_hex", hex.EncodeToString(data[:min(50, len(data))])).
-			Msg("DIAGNOSTIC: Writing large message to vsock")
+			Msg("json.Marshal produced invalid JSON before vsock write")
 	}
 
 	// Write 4-byte length prefix (big-endian)

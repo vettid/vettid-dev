@@ -481,8 +481,9 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 				// terminates. Without this, the supervisor would timeout after 30s waiting
 				// for a final response that never comes.
 				return &OutgoingMessage{
-					Type:    MessageTypeResponse,
-					Payload: json.RawMessage(`{"ack":true}`),
+					RequestID: msg.GetID(),
+					Type:      MessageTypeResponse,
+					Payload:   json.RawMessage(`{"ack":true}`),
 				}, nil
 			}
 			return resp, err

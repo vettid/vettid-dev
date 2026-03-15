@@ -858,7 +858,7 @@ func readMessage(r io.Reader) (*Message, error) {
 	// Unmarshal JSON
 	var msg Message
 	if err := json.Unmarshal(data, &msg); err != nil {
-		// DIAGNOSTIC: Log details about the corrupt message to identify vsock data corruption
+		// Log details about the corrupt message for debugging
 		first := data
 		if len(first) > 200 {
 			first = first[:200]
@@ -888,7 +888,7 @@ func readMessage(r io.Reader) (*Message, error) {
 			Int("invalid_pos", invalidPos).
 			Int("invalid_byte", int(invalidByte)).
 			Bool("json_valid", json.Valid(data)).
-			Msg("DIAGNOSTIC: vsock message failed JSON unmarshal - possible data corruption")
+			Msg("vsock message failed JSON unmarshal - possible data corruption")
 		return nil, fmt.Errorf("failed to unmarshal message: %w", err)
 	}
 
