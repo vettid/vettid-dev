@@ -202,16 +202,17 @@ type CreateInviteResponse struct {
 
 // StoreCredentialsRequest is the payload for connection.store-credentials
 type StoreCredentialsRequest struct {
-	ConnectionID       string `json:"connection_id"`
-	PeerAlias          string `json:"peer_alias"`
-	Label              string `json:"label"`
-	PeerGUID           string `json:"peer_guid"`
-	Credentials        string `json:"credentials"`
-	NATSCredentials    string `json:"nats_credentials"`
-	MessageSpaceTopic  string `json:"message_space_topic"`
-	PeerMessageSpaceID string `json:"peer_message_space_id"`
-	PeerOwnerSpaceID   string `json:"peer_owner_space_id"`
-	PeerE2EPublicKey   string `json:"peer_e2e_public_key"`
+	ConnectionID       string                 `json:"connection_id"`
+	PeerAlias          string                 `json:"peer_alias"`
+	Label              string                 `json:"label"`
+	PeerGUID           string                 `json:"peer_guid"`
+	Credentials        string                 `json:"credentials"`
+	NATSCredentials    string                 `json:"nats_credentials"`
+	MessageSpaceTopic  string                 `json:"message_space_topic"`
+	PeerMessageSpaceID string                 `json:"peer_message_space_id"`
+	PeerOwnerSpaceID   string                 `json:"peer_owner_space_id"`
+	PeerE2EPublicKey   string                 `json:"peer_e2e_public_key"`
+	PeerProfile        map[string]interface{} `json:"peer_profile,omitempty"`
 }
 
 // StoreCredentialsResponse is the response for connection.store-credentials
@@ -941,6 +942,14 @@ func (h *ConnectionsHandler) HandleStoreCredentials(msg *IncomingMessage) (*Outg
 	}
 
 	h.addToConnectionIndex(req.ConnectionID)
+
+	// Cache the peer's profile (from the scanner's profile fetch) for the app
+	if len(req.PeerProfile) > 0 {
+		profileBytes, _ := json.Marshal(req.PeerProfile)
+		if err := h.storage.Put("connections/"+req.ConnectionID+"/_peer_profile", profileBytes); err != nil {
+			log.Warn().Err(err).Msg("Failed to cache peer profile on inbound connection")
+		}
+	}
 
 	// Log connection accepted event for audit (storing credentials means accepting the connection)
 	if h.eventHandler != nil {
