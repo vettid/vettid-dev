@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -68,8 +69,9 @@ type MessageRecord struct {
 // SendMessageRequest is the payload for message.send
 type SendMessageRequest struct {
 	ConnectionID     string `json:"connection_id"`
-	EncryptedContent string `json:"encrypted_content"`
-	Nonce            string `json:"nonce"`
+	Content          string `json:"content,omitempty"`           // Plaintext — vault encrypts
+	EncryptedContent string `json:"encrypted_content,omitempty"` // Pre-encrypted (legacy)
+	Nonce            string `json:"nonce,omitempty"`
 	ContentType      string `json:"content_type"` // "text", "image", "file"
 }
 
@@ -124,11 +126,8 @@ func (h *MessagingHandler) HandleSend(msg *IncomingMessage) (*OutgoingMessage, e
 	if req.ConnectionID == "" {
 		return h.errorResponse(msg.GetID(), "connection_id is required")
 	}
-	if req.EncryptedContent == "" {
-		return h.errorResponse(msg.GetID(), "encrypted_content is required")
-	}
-	if req.Nonce == "" {
-		return h.errorResponse(msg.GetID(), "nonce is required")
+	if req.Content == "" && req.EncryptedContent == "" {
+		return h.errorResponse(msg.GetID(), "content or encrypted_content is required")
 	}
 
 	contentType := req.ContentType
@@ -148,7 +147,26 @@ func (h *MessagingHandler) HandleSend(msg *IncomingMessage) (*OutgoingMessage, e
 	}
 
 	if conn.Status != "active" {
-		return h.errorResponse(msg.GetID(), "Cannot send to a revoked connection")
+		return h.errorResponse(msg.GetID(), fmt.Sprintf("Connection is not active (status: %s)", conn.Status))
+	}
+
+	// If plaintext content provided, encrypt with the connection's shared secret
+	if req.Content != "" && req.EncryptedContent == "" {
+		if len(conn.SharedSecret) == 0 {
+			return h.errorResponse(msg.GetID(), "No encryption keys — key exchange not complete")
+		}
+		connKey, err := deriveConnectionKey(conn.SharedSecret)
+		if err != nil {
+			return h.errorResponse(msg.GetID(), "Failed to derive encryption key")
+		}
+		ciphertext, err := encryptXChaCha20(connKey, []byte(req.Content))
+		if err != nil {
+			return h.errorResponse(msg.GetID(), "Failed to encrypt message")
+		}
+		// encryptXChaCha20 returns nonce || ciphertext+tag
+		// Split: first 24 bytes are nonce, rest is ciphertext
+		req.Nonce = base64.StdEncoding.EncodeToString(ciphertext[:24])
+		req.EncryptedContent = base64.StdEncoding.EncodeToString(ciphertext[24:])
 	}
 
 	// Generate message ID and timestamp
