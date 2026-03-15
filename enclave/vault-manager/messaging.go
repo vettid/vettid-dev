@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -191,6 +192,7 @@ func (h *MessagingHandler) HandleSend(msg *IncomingMessage) (*OutgoingMessage, e
 	if err := h.storage.Put(storageKey, msgData); err != nil {
 		log.Warn().Err(err).Msg("Failed to store outgoing message locally")
 	}
+	h.addToMessageIndex(req.ConnectionID, messageID)
 
 	// Build message for peer
 	peerMsg := PeerMessage{
@@ -288,6 +290,7 @@ func (h *MessagingHandler) HandleIncomingPeerMessage(ctx context.Context, msg *I
 	if err := h.storage.Put(storageKey, msgData); err != nil {
 		log.Warn().Err(err).Msg("Failed to store incoming message")
 	}
+	h.addToMessageIndex(peerMsg.ConnectionID, peerMsg.MessageID)
 
 	// Decrypt the message content before sending to the app
 	var plaintextContent string
@@ -339,6 +342,135 @@ func (h *MessagingHandler) HandleIncomingPeerMessage(ctx context.Context, msg *I
 		Type:      MessageTypeResponse,
 		Payload:   respBytes,
 	}, nil
+}
+
+// HandleList returns stored messages for a connection, decrypted.
+func (h *MessagingHandler) HandleList(msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req struct {
+		ConnectionID string `json:"connection_id"`
+		Limit        int    `json:"limit,omitempty"`
+		Before       string `json:"before,omitempty"` // message_id for pagination
+	}
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		return h.errorResponse(msg.GetID(), "Invalid request format")
+	}
+	if req.ConnectionID == "" {
+		return h.errorResponse(msg.GetID(), "connection_id is required")
+	}
+	if req.Limit <= 0 || req.Limit > 100 {
+		req.Limit = 50
+	}
+
+	// Load connection for decryption key
+	connData, err := h.storage.Get("connections/" + req.ConnectionID)
+	if err != nil {
+		return h.errorResponse(msg.GetID(), "Connection not found")
+	}
+	var conn ConnectionRecord
+	json.Unmarshal(connData, &conn)
+
+	var connKey []byte
+	if len(conn.SharedSecret) > 0 {
+		connKey, _ = deriveConnectionKey(conn.SharedSecret)
+	}
+
+	// Load message index for this connection
+	indexKey := fmt.Sprintf("messages/%s/_index", req.ConnectionID)
+	var messageIDs []string
+	indexData, err := h.storage.Get(indexKey)
+	if err == nil {
+		json.Unmarshal(indexData, &messageIDs)
+	}
+
+	type messageItem struct {
+		MessageID   string `json:"message_id"`
+		Direction   string `json:"direction"`
+		Content     string `json:"content"`
+		ContentType string `json:"content_type"`
+		Status      string `json:"status"`
+		SentAt      string `json:"sent_at"`
+		SenderGUID  string `json:"sender_guid,omitempty"`
+	}
+
+	messages := make([]messageItem, 0)
+	for _, msgID := range messageIDs {
+		key := fmt.Sprintf("messages/%s/%s", req.ConnectionID, msgID)
+		data, err := h.storage.Get(key)
+		if err != nil {
+			continue
+		}
+		var record MessageRecord
+		if json.Unmarshal(data, &record) != nil {
+			continue
+		}
+
+		// Decrypt content
+		content := ""
+		if connKey != nil && record.EncryptedContent != "" && record.Nonce != "" {
+			nonceBytes, err1 := base64.StdEncoding.DecodeString(record.Nonce)
+			cipherBytes, err2 := base64.StdEncoding.DecodeString(record.EncryptedContent)
+			if err1 == nil && err2 == nil {
+				combined := append(nonceBytes, cipherBytes...)
+				if plaintext, err := decryptXChaCha20(connKey, combined); err == nil {
+					content = string(plaintext)
+				}
+			}
+		}
+
+		senderGUID := ""
+		if record.Direction == MessageDirectionIncoming {
+			senderGUID = record.PeerGUID
+		} else {
+			senderGUID = h.ownerSpace
+		}
+
+		messages = append(messages, messageItem{
+			MessageID:   record.MessageID,
+			Direction:   string(record.Direction),
+			Content:     content,
+			ContentType: record.ContentType,
+			Status:      string(record.Status),
+			SentAt:      record.CreatedAt.Format(time.RFC3339),
+			SenderGUID:  senderGUID,
+		})
+	}
+
+	// Sort by time (newest last)
+	sort.Slice(messages, func(i, j int) bool {
+		return messages[i].SentAt < messages[j].SentAt
+	})
+
+	// Apply limit (return latest N)
+	if len(messages) > req.Limit {
+		messages = messages[len(messages)-req.Limit:]
+	}
+
+	resp := map[string]interface{}{
+		"success":       true,
+		"connection_id": req.ConnectionID,
+		"messages":      messages,
+		"total":         len(messages),
+	}
+	respBytes, _ := json.Marshal(resp)
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// addToMessageIndex adds a message ID to the connection's message index.
+func (h *MessagingHandler) addToMessageIndex(connectionID, messageID string) {
+	indexKey := fmt.Sprintf("messages/%s/_index", connectionID)
+	var index []string
+	if data, err := h.storage.Get(indexKey); err == nil {
+		json.Unmarshal(data, &index)
+	}
+	index = append(index, messageID)
+	if data, err := json.Marshal(index); err == nil {
+		h.storage.Put(indexKey, data)
+	}
 }
 
 // HandleReadReceipt processes message.read-receipt from the app

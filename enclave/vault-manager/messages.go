@@ -1310,6 +1310,8 @@ func (mh *MessageHandler) handleMessageOperation(ctx context.Context, msg *Incom
 	switch opType {
 	case "send":
 		return mh.messagingHandler.HandleSend(msg)
+	case "list":
+		return mh.messagingHandler.HandleList(msg)
 	case "incoming":
 		return mh.messagingHandler.HandleIncomingPeerMessage(ctx, msg)
 	case "read-receipt":
