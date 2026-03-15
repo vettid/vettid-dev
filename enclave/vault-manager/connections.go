@@ -290,6 +290,9 @@ type ConnectionInfo struct {
 	KeyExchangeAt    string `json:"key_exchange_at,omitempty"`
 	KeyRotationCount int    `json:"key_rotation_count,omitempty"`
 
+	// Cached peer profile (loaded from vault storage)
+	PeerProfile json.RawMessage `json:"peer_profile,omitempty"`
+
 	// Enhanced fields
 	LastActiveAt        string   `json:"last_active_at,omitempty"`
 	ActivityCount       int      `json:"activity_count,omitempty"`
@@ -947,18 +950,17 @@ func (h *ConnectionsHandler) HandleStoreCredentials(msg *IncomingMessage) (*Outg
 	log.Info().Str("connection_id", req.ConnectionID).Msg("Connection credentials stored")
 
 	// Notify the inviter's vault that we accepted the connection.
+	// Include our full published profile (with photo) so the inviter can review it.
 	// Published via parent (backend account) so the parent's MessageSpace subscription receives it.
 	if h.publisher != nil && req.PeerOwnerSpaceID != "" {
-		ourProfile := h.loadInviterProfile()
+		fullProfile := h.loadPublishedProfileForPeer()
 		notification := map[string]interface{}{
 			"connection_id":  req.ConnectionID,
 			"peer_guid":      h.ownerSpace,
 			"e2e_public_key": fmt.Sprintf("%x", localPublic),
 			"owner_space":    h.ownerSpace,
 			"message_space":  fmt.Sprintf("MessageSpace.%s.forOwner.>", h.ownerSpace),
-		}
-		if len(ourProfile) > 0 {
-			notification["peer_profile"] = ourProfile
+			"peer_profile":   fullProfile,
 		}
 
 		notifBytes, _ := json.Marshal(notification)
@@ -1273,12 +1275,12 @@ func (h *ConnectionsHandler) HandleRespond(msg *IncomingMessage) (*OutgoingMessa
 // User A's outbound connection record with User B's details.
 func (h *ConnectionsHandler) HandlePeerConnectionNotification(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	var notification struct {
-		ConnectionID string            `json:"connection_id"`
-		PeerGUID     string            `json:"peer_guid"`
-		PeerProfile  map[string]string `json:"peer_profile"`
-		E2EPublicKey string            `json:"e2e_public_key"`
-		OwnerSpace   string            `json:"owner_space"`
-		MessageSpace string            `json:"message_space"`
+		ConnectionID string                 `json:"connection_id"`
+		PeerGUID     string                 `json:"peer_guid"`
+		PeerProfile  map[string]interface{} `json:"peer_profile"`
+		E2EPublicKey string                 `json:"e2e_public_key"`
+		OwnerSpace   string                 `json:"owner_space"`
+		MessageSpace string                 `json:"message_space"`
 	}
 
 	if err := json.Unmarshal(msg.Payload, &notification); err != nil {
@@ -1335,11 +1337,17 @@ func (h *ConnectionsHandler) HandlePeerConnectionNotification(ctx context.Contex
 
 	// Build display name from peer profile
 	if notification.PeerProfile != nil {
-		firstName := notification.PeerProfile["_system_first_name"]
-		lastName := notification.PeerProfile["_system_last_name"]
+		firstName, _ := notification.PeerProfile["_system_first_name"].(string)
+		lastName, _ := notification.PeerProfile["_system_last_name"].(string)
 		displayName := strings.TrimSpace(firstName + " " + lastName)
 		if displayName != "" {
 			record.PeerAlias = displayName
+		}
+
+		// Cache the peer's full profile in vault storage for the app
+		profileBytes, _ := json.Marshal(notification.PeerProfile)
+		if err := h.storage.Put("connections/"+notification.ConnectionID+"/_peer_profile", profileBytes); err != nil {
+			log.Warn().Err(err).Msg("Failed to cache peer profile")
 		}
 	}
 
@@ -1595,6 +1603,12 @@ func (h *ConnectionsHandler) HandleList(msg *IncomingMessage) (*OutgoingMessage,
 		}
 		if record.CredentialsExpireAt != nil {
 			info.CredentialsExpireAt = record.CredentialsExpireAt.Format(time.RFC3339)
+		}
+
+		// Load cached peer profile if available
+		profileData, err := h.storage.Get("connections/" + connID + "/_peer_profile")
+		if err == nil && len(profileData) > 0 {
+			info.PeerProfile = json.RawMessage(profileData)
 		}
 
 		connections = append(connections, info)
@@ -3253,6 +3267,70 @@ func (h *ConnectionsHandler) loadInviterProfile() map[string]string {
 		}
 		if json.Unmarshal(data, &entry) == nil && entry.Value != "" {
 			profile[field] = entry.Value
+		}
+	}
+
+	return profile
+}
+
+// loadPublishedProfileForPeer loads the full published profile (including photo and fields)
+// for sending to a connection peer. Returns a JSON-serializable map.
+func (h *ConnectionsHandler) loadPublishedProfileForPeer() map[string]interface{} {
+	profile := make(map[string]interface{})
+
+	// System fields
+	for _, field := range []string{"_system_first_name", "_system_last_name", "_system_email"} {
+		data, err := h.storage.Get("profile/" + field)
+		if err != nil {
+			continue
+		}
+		var entry struct{ Value string `json:"value"` }
+		if json.Unmarshal(data, &entry) == nil && entry.Value != "" {
+			profile[field] = entry.Value
+		}
+	}
+
+	// Photo
+	photoData, err := h.storage.Get("profile/_photo")
+	if err == nil {
+		var photoEntry struct{ Value string `json:"value"` }
+		if json.Unmarshal(photoData, &photoEntry) == nil && photoEntry.Value != "" {
+			profile["photo"] = photoEntry.Value
+		}
+	}
+
+	// Published fields from public profile settings
+	settingsData, err := h.storage.Get("profile/_public")
+	if err == nil {
+		var settings struct{ Fields []string `json:"fields"` }
+		if json.Unmarshal(settingsData, &settings) == nil {
+			fields := make(map[string]interface{})
+			for _, fieldName := range settings.Fields {
+				data, err := h.storage.Get("profile/" + fieldName)
+				if err != nil {
+					data, err = h.storage.Get("personal-data/" + fieldName)
+					if err != nil {
+						continue
+					}
+				}
+				var field struct {
+					Value       string `json:"value"`
+					DisplayName string `json:"display_name"`
+				}
+				if json.Unmarshal(data, &field) == nil && field.Value != "" {
+					displayName := field.DisplayName
+					if displayName == "" {
+						displayName = displayNameFromNamespace(fieldName)
+					}
+					fields[fieldName] = map[string]string{
+						"display_name": displayName,
+						"value":        field.Value,
+					}
+				}
+			}
+			if len(fields) > 0 {
+				profile["fields"] = fields
+			}
 		}
 	}
 
