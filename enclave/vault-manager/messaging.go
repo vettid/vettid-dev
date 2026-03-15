@@ -289,17 +289,37 @@ func (h *MessagingHandler) HandleIncomingPeerMessage(ctx context.Context, msg *I
 		log.Warn().Err(err).Msg("Failed to store incoming message")
 	}
 
-	// Notify the app of the incoming message
+	// Decrypt the message content before sending to the app
+	var plaintextContent string
+	if len(conn.SharedSecret) > 0 && peerMsg.EncryptedContent != "" && peerMsg.Nonce != "" {
+		connKey, err := deriveConnectionKey(conn.SharedSecret)
+		if err == nil {
+			nonceBytes, err1 := base64.StdEncoding.DecodeString(peerMsg.Nonce)
+			cipherBytes, err2 := base64.StdEncoding.DecodeString(peerMsg.EncryptedContent)
+			if err1 == nil && err2 == nil {
+				// Reassemble nonce || ciphertext for decryptXChaCha20
+				combined := append(nonceBytes, cipherBytes...)
+				plaintext, err := decryptXChaCha20(connKey, combined)
+				if err == nil {
+					plaintextContent = string(plaintext)
+				} else {
+					log.Warn().Err(err).Msg("Failed to decrypt incoming peer message")
+					plaintextContent = "[Unable to decrypt]"
+				}
+			}
+		}
+	}
+
+	// Notify the app with decrypted content
 	if h.publisher != nil {
 		appNotification := map[string]interface{}{
-			"type":              "message.received",
-			"message_id":        peerMsg.MessageID,
-			"connection_id":     peerMsg.ConnectionID,
-			"sender_guid":       peerMsg.SenderGUID,
-			"encrypted_content": peerMsg.EncryptedContent,
-			"nonce":             peerMsg.Nonce,
-			"content_type":      peerMsg.ContentType,
-			"sent_at":           peerMsg.SentAt,
+			"type":          "message.received",
+			"message_id":    peerMsg.MessageID,
+			"connection_id": peerMsg.ConnectionID,
+			"sender_guid":   peerMsg.SenderGUID,
+			"content":       plaintextContent,
+			"content_type":  peerMsg.ContentType,
+			"sent_at":       peerMsg.SentAt,
 		}
 		notifBytes, _ := json.Marshal(appNotification)
 		if err := h.publisher.PublishToApp(ctx, "new-message", notifBytes); err != nil {
