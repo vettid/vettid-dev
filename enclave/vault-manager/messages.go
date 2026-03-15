@@ -1312,6 +1312,8 @@ func (mh *MessageHandler) handleMessageOperation(ctx context.Context, msg *Incom
 		return mh.messagingHandler.HandleSend(msg)
 	case "list":
 		return mh.messagingHandler.HandleList(msg)
+	case "get-transport-key":
+		return mh.messagingHandler.HandleGetTransportKey(msg)
 	case "incoming":
 		return mh.messagingHandler.HandleIncomingPeerMessage(ctx, msg)
 	case "read-receipt":

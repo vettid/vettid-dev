@@ -2,13 +2,16 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"sort"
 	"time"
 
 	"github.com/rs/zerolog/log"
+	"golang.org/x/crypto/hkdf"
 )
 
 // MessagingHandler handles vault-to-vault messaging operations.
@@ -149,6 +152,25 @@ func (h *MessagingHandler) HandleSend(msg *IncomingMessage) (*OutgoingMessage, e
 
 	if conn.Status != "active" {
 		return h.errorResponse(msg.GetID(), fmt.Sprintf("Connection is not active (status: %s)", conn.Status))
+	}
+
+	// If app sent transport-encrypted content, decrypt it first
+	if req.Content == "" && req.EncryptedContent != "" && req.Nonce != "" {
+		if len(conn.SharedSecret) > 0 {
+			transportKey, err := deriveTransportKey(conn.SharedSecret)
+			if err == nil {
+				nonceBytes, err1 := base64.StdEncoding.DecodeString(req.Nonce)
+				cipherBytes, err2 := base64.StdEncoding.DecodeString(req.EncryptedContent)
+				if err1 == nil && err2 == nil {
+					combined := append(nonceBytes, cipherBytes...)
+					if plaintext, err := decryptXChaCha20(transportKey, combined); err == nil {
+						req.Content = string(plaintext)
+						req.EncryptedContent = ""
+						req.Nonce = ""
+					}
+				}
+			}
+		}
 	}
 
 	// If plaintext content provided, encrypt with the connection's shared secret
@@ -450,6 +472,65 @@ func (h *MessagingHandler) HandleList(msg *IncomingMessage) (*OutgoingMessage, e
 		"connection_id": req.ConnectionID,
 		"messages":      messages,
 		"total":         len(messages),
+	}
+	respBytes, _ := json.Marshal(resp)
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+const domainTransport = "vettid-app-transport-v1"
+
+// deriveTransportKey derives a key for app-vault transport encryption.
+// Uses a different HKDF domain than the connection key so they're independent.
+func deriveTransportKey(sharedSecret []byte) ([]byte, error) {
+	if len(sharedSecret) == 0 {
+		return nil, fmt.Errorf("shared secret must not be empty")
+	}
+	r := hkdf.New(sha256.New, sharedSecret, []byte(domainTransport), nil)
+	key := make([]byte, 32)
+	if _, err := io.ReadFull(r, key); err != nil {
+		return nil, fmt.Errorf("HKDF expand: %w", err)
+	}
+	return key, nil
+}
+
+// HandleGetTransportKey returns a derived transport key for app-vault encryption.
+// The app uses this to encrypt messages before sending to the vault.
+func (h *MessagingHandler) HandleGetTransportKey(msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req struct {
+		ConnectionID string `json:"connection_id"`
+	}
+	if err := json.Unmarshal(msg.Payload, &req); err != nil || req.ConnectionID == "" {
+		return h.errorResponse(msg.GetID(), "connection_id is required")
+	}
+
+	connData, err := h.storage.Get("connections/" + req.ConnectionID)
+	if err != nil {
+		return h.errorResponse(msg.GetID(), "Connection not found")
+	}
+
+	var conn ConnectionRecord
+	if err := json.Unmarshal(connData, &conn); err != nil {
+		return h.errorResponse(msg.GetID(), "Invalid connection data")
+	}
+
+	if len(conn.SharedSecret) == 0 {
+		return h.errorResponse(msg.GetID(), "Key exchange not complete")
+	}
+
+	transportKey, err := deriveTransportKey(conn.SharedSecret)
+	if err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to derive transport key")
+	}
+
+	resp := map[string]interface{}{
+		"success":       true,
+		"connection_id": req.ConnectionID,
+		"transport_key": base64.StdEncoding.EncodeToString(transportKey),
 	}
 	respBytes, _ := json.Marshal(resp)
 
