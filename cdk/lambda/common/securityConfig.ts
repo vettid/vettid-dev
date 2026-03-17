@@ -93,7 +93,6 @@ export const CORS_CONFIG = {
     "https://vettid.dev",
     "https://www.vettid.dev",
     "https://admin.vettid.dev",
-    "https://account.vettid.dev",
     "https://register.vettid.dev",
   ],
   // Development origins (should be disabled in production)

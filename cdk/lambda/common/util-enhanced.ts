@@ -161,7 +161,6 @@ export function internalError(message: string = "Internal server error"): APIGat
  */
 const ALLOWED_ORIGINS = [
   'https://admin.vettid.dev',
-  'https://account.vettid.dev',
   'https://register.vettid.dev',
   'https://vettid.dev',
   'https://www.vettid.dev',

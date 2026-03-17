@@ -30,7 +30,6 @@ type SendBulkEmailRequest = {
 const ALLOWED_LINK_DOMAINS = [
   'vettid.dev',
   'www.vettid.dev',
-  'account.vettid.dev',
   'admin.vettid.dev',
   'register.vettid.dev',
 ];

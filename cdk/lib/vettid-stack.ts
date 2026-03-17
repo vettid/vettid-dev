@@ -90,7 +90,6 @@ export class VettIdStack extends cdk.Stack {
           'https://vettid.dev',
           'https://www.vettid.dev',
           'https://admin.vettid.dev',
-          'https://account.vettid.dev',
           'https://register.vettid.dev',
         ],
         allowedMethods: [s3.HttpMethods.GET, s3.HttpMethods.HEAD],
@@ -398,7 +397,6 @@ const webAcl = new wafv2.CfnWebACL(this, 'WebAcl', {
           'https://vettid.dev',
           'https://www.vettid.dev',
           'https://admin.vettid.dev',
-          'https://account.vettid.dev',
           'https://register.vettid.dev'
         ],
         allowHeaders: ['Authorization', 'Content-Type', 'X-Amz-Date', 'X-Api-Key', 'X-Amz-Security-Token'],
@@ -541,7 +539,7 @@ function handler(event) {
   var headers = response.headers;
 
   // CORS: Allow cross-origin requests from vettid.dev subdomains
-  // This enables admin.vettid.dev, account.vettid.dev, etc. to load fonts/styles from vettid.dev
+  // This enables admin.vettid.dev, register.vettid.dev, etc. to load fonts/styles from vettid.dev
   var origin = request.headers.origin ? request.headers.origin.value : '';
   if (origin.endsWith('.vettid.dev') || origin === 'https://vettid.dev') {
     headers['access-control-allow-origin'] = { value: origin };
@@ -859,8 +857,8 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       TERMS_BUCKET: termsBucket.bucketName,
       SES_FROM: sesFromAuthEmail,
       STAGE: 'prod',  // SECURITY: Ensures CORS excludes localhost origins
-      CORS_ORIGIN: 'https://vettid.dev,https://www.vettid.dev,https://admin.vettid.dev,https://account.vettid.dev,https://register.vettid.dev',
-      ALLOWED_ORIGINS: 'https://vettid.dev,https://www.vettid.dev,https://admin.vettid.dev,https://account.vettid.dev,https://register.vettid.dev',
+      CORS_ORIGIN: 'https://vettid.dev,https://www.vettid.dev,https://admin.vettid.dev,https://register.vettid.dev',
+      ALLOWED_ORIGINS: 'https://vettid.dev,https://www.vettid.dev,https://admin.vettid.dev,https://register.vettid.dev',
     };
 
     // Lambdas

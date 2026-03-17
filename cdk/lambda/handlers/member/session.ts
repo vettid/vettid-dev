@@ -52,7 +52,6 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
   const origin = event.headers.origin || '';
   const allowedOrigins = [
     'https://vettid.dev',
-    'https://account.vettid.dev',
     'https://admin.vettid.dev'
   ];
 

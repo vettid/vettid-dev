@@ -196,7 +196,7 @@ async function sendExpiryNotification(
       timeZone: 'UTC'
     }),
     hours_remaining: '48',
-    renewal_link: 'https://account.vettid.dev' // Link to account page where they can renew
+    renewal_link: 'https://vettid.dev/account' // Link to account page where they can renew
   };
 
   await ses.send(new SendTemplatedEmailCommand({

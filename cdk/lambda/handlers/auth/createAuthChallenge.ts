@@ -17,7 +17,7 @@ const ses = new SESClient({});
 
 const MAGIC_LINK_TABLE = process.env.MAGIC_LINK_TABLE!;
 const REGISTRATIONS_TABLE = process.env.REGISTRATIONS_TABLE!;
-const MAGIC_LINK_URL = process.env.MAGIC_LINK_URL || 'https://account.vettid.dev/auth';
+const MAGIC_LINK_URL = process.env.MAGIC_LINK_URL || 'https://vettid.dev/account/auth';
 const SES_FROM = process.env.SES_FROM!;
 // Configurable token expiry (default 15 minutes, max 60 minutes for security)
 const TOKEN_EXPIRY_MINUTES = Math.min(

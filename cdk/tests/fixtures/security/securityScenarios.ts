@@ -943,7 +943,7 @@ export interface CORSConfig {
 }
 
 export const SECURE_CORS_CONFIG: CORSConfig = {
-  allowedOrigins: ['https://vettid.dev', 'https://admin.vettid.dev', 'https://account.vettid.dev'],
+  allowedOrigins: ['https://vettid.dev', 'https://admin.vettid.dev'],
   allowedMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-ID'],
   allowCredentials: true,

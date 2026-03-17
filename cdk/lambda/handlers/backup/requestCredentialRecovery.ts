@@ -156,7 +156,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
           email: claims.email,
           recovery_id: recoveryId.substring(0, 16) + '...',
           available_at: availableAt.toISOString(),
-          cancel_url: `https://account.vettid.dev/recovery/cancel?id=${recoveryId}`,
+          cancel_url: `https://vettid.dev/account/recovery/cancel?id=${recoveryId}`,
         }),
       }));
     } catch (emailError) {

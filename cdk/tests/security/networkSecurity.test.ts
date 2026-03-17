@@ -413,7 +413,6 @@ describe('Network Security Tests', () => {
         allowedOrigins: [
           'https://vettid.dev',
           'https://admin.vettid.dev',
-          'https://account.vettid.dev',
         ],
         allowCredentials: true,
       });
@@ -728,7 +727,7 @@ describe('Network Security Tests', () => {
       it('should accept configured hosts', () => {
         expect(hostValidator.validate('vettid.dev')).toBe(true);
         expect(hostValidator.validate('admin.vettid.dev')).toBe(true);
-        expect(hostValidator.validate('account.vettid.dev')).toBe(true);
+        expect(hostValidator.validate('register.vettid.dev')).toBe(true);
       });
 
       it('should accept hosts with ports', () => {
