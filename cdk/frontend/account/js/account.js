@@ -3130,6 +3130,7 @@ function base64ToUint8Array(base64) {
  */
 async function loadCredentialBackupStatus() {
   const statusContent = document.getElementById('credentialBackupStatusContent');
+  console.log('[Backup] Loading credential backup status...');
 
   try {
     const token = idToken();
@@ -3141,10 +3142,11 @@ async function loadCredentialBackupStatus() {
     });
 
     if (!res.ok) {
-      throw new Error('Failed to load credential backup status');
+      throw new Error('Failed to load credential backup status: ' + res.status);
     }
 
     const status = await res.json();
+    console.log('[Backup] Status received:', JSON.stringify(status));
     renderCredentialBackupStatus(status);
 
   } catch (error) {

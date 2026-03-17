@@ -106,20 +106,22 @@ fi
 
 # Upload to S3
 echo -e "${YELLOW}Uploading to S3...${NC}"
+# HTML files: no-cache (always revalidate)
 aws s3 sync "$TEMP_DIR" "s3://$S3_BUCKET" \
     --delete \
     --exclude ".git/*" \
     --exclude "*.md" \
-    --cache-control "max-age=31536000" \
+    --cache-control "no-cache, must-revalidate" \
     --content-type "text/html" \
     --exclude "*" \
     --include "*.html"
 
+# JS/CSS/assets: 1 hour cache (revalidates frequently)
 aws s3 sync "$TEMP_DIR" "s3://$S3_BUCKET" \
     --exclude ".git/*" \
     --exclude "*.md" \
     --exclude "*.html" \
-    --cache-control "max-age=86400"
+    --cache-control "max-age=3600"
 
 # Set correct content types
 aws s3 cp "s3://$S3_BUCKET/shared/config.js" "s3://$S3_BUCKET/shared/config.js" \
