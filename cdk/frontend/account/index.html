@@ -497,11 +497,9 @@
       <!-- Voting tab removed - voting is done through the mobile app -->
       <!-- Vault Services - simplified to single tab (no sub-navigation) -->
       <button class="tab" id="vaultParent" data-tab="deploy-vault" style="display:none;">Vault Services</button>
-      <!-- Hidden sub-tabs for backwards compatibility -->
+      <!-- Vault Services (no sub-tabs) -->
       <div class="tab-children" id="vaultChildren" style="display:none;">
-        <button class="tab tab-child" data-tab="deploy-vault" data-sub-tab="deploy">My Vault</button>
-        <button class="tab tab-child" data-tab="deploy-vault" data-sub-tab="byov" style="display:none;">Bring Your Own Vault</button>
-        <button class="tab tab-child" data-tab="deploy-vault" data-sub-tab="credential-backup" style="display:none;">Credential Backup</button>
+        <button class="tab tab-child" data-tab="deploy-vault" data-sub-tab="deploy" style="display:none;">My Vault</button>
       </div>
     </div>
   </div>
@@ -1058,8 +1056,8 @@
     </div>
   </div>
 
-  <!-- Credential Backup Sub-tab -->
-  <div id="vault-credential-backup" class="sub-tab-content">
+  <!-- Credential Backup (always visible on Vault Services page) -->
+  <div id="vault-credential-backup">
     <!-- Backup Settings Card (read-only - settings managed in mobile app) -->
     <div class="card" id="backupSettingsCard">
       <h3 style="margin:0 0 16px 0;">Backup Settings</h3>
