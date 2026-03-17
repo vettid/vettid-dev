@@ -1,6 +1,5 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda";
-import { DynamoDBClient, GetItemCommand } from "@aws-sdk/client-dynamodb";
-import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
+import { S3Client, HeadObjectCommand } from "@aws-sdk/client-s3";
 import {
   ok,
   badRequest,
@@ -9,8 +8,8 @@ import {
   ValidationError,
 } from "../../common/util";
 
-const ddb = new DynamoDBClient({});
-const TABLE_CREDENTIAL_BACKUPS = process.env.TABLE_CREDENTIAL_BACKUPS!;
+const s3 = new S3Client({});
+const VAULT_DATA_BUCKET = process.env.VAULT_DATA_BUCKET || "vettid-vault-data-449757308783";
 
 export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
   const origin = event.headers?.origin;
@@ -23,31 +22,33 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     }
     const { claims } = claimsResult;
 
-    // Get credential backup metadata
-    const result = await ddb.send(new GetItemCommand({
-      TableName: TABLE_CREDENTIAL_BACKUPS,
-      Key: marshall({ member_guid: claims.user_guid }),
-    }));
+    // Check for vault state backup in S3
+    const vaultStateKey = `vaults/${claims.user_guid}/vault_state.enc`;
 
-    if (!result.Item) {
+    try {
+      const head = await s3.send(new HeadObjectCommand({
+        Bucket: VAULT_DATA_BUCKET,
+        Key: vaultStateKey,
+      }));
+
       return ok({
-        exists: false,
-        created_at: null,
-        last_verified_at: null,
+        exists: true,
+        enabled: true,
+        last_backup: head.LastModified?.toISOString() || null,
+        size_bytes: head.ContentLength || 0,
       }, origin);
+
+    } catch (s3Error: any) {
+      if (s3Error.name === "NotFound" || s3Error.$metadata?.httpStatusCode === 404) {
+        // No vault state backup exists
+        return ok({
+          exists: false,
+          enabled: false,
+          last_backup: null,
+        }, origin);
+      }
+      throw s3Error;
     }
-
-    const backup = unmarshall(result.Item);
-
-    return ok({
-      exists: true,
-      created_at: backup.created_at,
-      updated_at: backup.updated_at,
-      last_verified_at: backup.last_verified_at || null,
-      size_bytes: backup.size_bytes,
-      encryption_method: backup.encryption_method,
-      key_derivation: backup.key_derivation,
-    }, origin);
 
   } catch (error) {
     console.error("Error getting credential backup status:", error);

@@ -875,7 +875,7 @@ export class VaultStack extends cdk.Stack {
       entry: 'lambda/handlers/backup/getCredentialBackupStatus.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
       environment: {
-        TABLE_CREDENTIAL_BACKUPS: tables.credentialBackups.tableName,
+        VAULT_DATA_BUCKET: props.nitro?.vaultDataBucket.bucketName || '',
       },
       timeout: cdk.Duration.seconds(30),
     });
@@ -1256,7 +1256,9 @@ export class VaultStack extends cdk.Stack {
 
     // Credential backups table permissions
     tables.credentialBackups.grantReadWriteData(this.createCredentialBackup);
-    tables.credentialBackups.grantReadData(this.getCredentialBackupStatus);
+    if (props.nitro) {
+      props.nitro.vaultDataBucket.grantRead(this.getCredentialBackupStatus, 'vaults/*/vault_state.enc');
+    }
     tables.credentialBackups.grantReadWriteData(this.downloadCredentialBackup);
 
     // Backup settings table permissions

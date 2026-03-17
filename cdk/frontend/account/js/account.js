@@ -3166,9 +3166,8 @@ function renderCredentialBackupStatus(status) {
   const createCard = document.getElementById('credentialBackupCreateCard');
 
   if (status.exists) {
-    const createdDate = new Date(status.created_at).toLocaleDateString();
-    const updatedDate = status.updated_at ? new Date(status.updated_at).toLocaleDateString() : createdDate;
-    const sizeKB = Math.round(status.size_bytes / 1024 * 10) / 10;
+    const lastBackup = status.last_backup ? new Date(status.last_backup).toLocaleString() : 'Unknown';
+    const sizeKB = status.size_bytes ? Math.round(status.size_bytes / 1024 * 10) / 10 : 0;
 
     statusContent.innerHTML = `
       <div style="display:grid;gap:16px;">
@@ -3179,27 +3178,19 @@ function renderCredentialBackupStatus(status) {
             </svg>
           </div>
           <div>
-            <p style="margin:0;color:#10b981;font-weight:600;">Backup Active</p>
-            <p style="margin:4px 0 0 0;color:var(--gray);font-size:0.85rem;">Your credentials are securely backed up</p>
+            <p style="margin:0;color:#10b981;font-weight:600;">Backup Enabled</p>
+            <p style="margin:4px 0 0 0;color:var(--gray);font-size:0.85rem;">Your vault is automatically backed up</p>
           </div>
         </div>
 
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
           <div style="padding:12px;background:#0a0a0a;border-radius:6px;border:1px solid #222;">
-            <p style="margin:0;color:var(--gray);font-size:0.75rem;text-transform:uppercase;">Created</p>
-            <p style="margin:4px 0 0 0;color:var(--text);font-weight:600;">${createdDate}</p>
-          </div>
-          <div style="padding:12px;background:#0a0a0a;border-radius:6px;border:1px solid #222;">
-            <p style="margin:0;color:var(--gray);font-size:0.75rem;text-transform:uppercase;">Last Updated</p>
-            <p style="margin:4px 0 0 0;color:var(--text);font-weight:600;">${updatedDate}</p>
+            <p style="margin:0;color:var(--gray);font-size:0.75rem;text-transform:uppercase;">Last Backup</p>
+            <p style="margin:4px 0 0 0;color:var(--text);font-weight:600;">${lastBackup}</p>
           </div>
           <div style="padding:12px;background:#0a0a0a;border-radius:6px;border:1px solid #222;">
             <p style="margin:0;color:var(--gray);font-size:0.75rem;text-transform:uppercase;">Size</p>
             <p style="margin:4px 0 0 0;color:var(--text);font-weight:600;">${sizeKB} KB</p>
-          </div>
-          <div style="padding:12px;background:#0a0a0a;border-radius:6px;border:1px solid #222;">
-            <p style="margin:0;color:var(--gray);font-size:0.75rem;text-transform:uppercase;">Encryption</p>
-            <p style="margin:4px 0 0 0;color:var(--text);font-weight:600;">${status.encryption_method || 'AES-256-GCM'}</p>
           </div>
         </div>
       </div>
@@ -3218,8 +3209,8 @@ function renderCredentialBackupStatus(status) {
     // Update inline backup status in vault deploy view
     const inlineStatus = document.getElementById('backupStatusValueInline');
     const inlineLastBackup = document.getElementById('lastBackupValueInline');
-    if (inlineStatus) inlineStatus.textContent = 'Active';
-    if (inlineLastBackup) inlineLastBackup.textContent = updatedDate;
+    if (inlineStatus) inlineStatus.textContent = 'Enabled';
+    if (inlineLastBackup) inlineLastBackup.textContent = lastBackup;
 
   } else {
     statusContent.innerHTML = `
@@ -3233,7 +3224,7 @@ function renderCredentialBackupStatus(status) {
         </div>
         <div>
           <p style="margin:0;color:var(--accent);font-weight:600;">No Backup Found</p>
-          <p style="margin:4px 0 0 0;color:var(--gray);font-size:0.85rem;">Create a backup to protect your credentials</p>
+          <p style="margin:4px 0 0 0;color:var(--gray);font-size:0.85rem;">Enroll a device and set up your vault to enable automatic backups</p>
         </div>
       </div>
     `;

@@ -7,6 +7,7 @@ import {
   aws_apigatewayv2_integrations as integrations,
   aws_iam as iam,
   aws_s3 as s3,
+  aws_ssm as ssm,
   aws_lambda_event_sources as lambdaEventSources,
   aws_cloudfront as cloudfront,
   aws_cloudfront_origins as origins,
@@ -1684,12 +1685,21 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       description: 'Download credential backup',
     });
 
+    // Import vault data bucket from Nitro stack via SSM parameter
+    const vaultDataBucketName = ssm.StringParameter.valueForStringParameter(
+      this, '/vettid/nitro/vault-data-bucket'
+    );
+    const vaultDataBucket = s3.Bucket.fromBucketName(this, 'ImportedVaultDataBucket', vaultDataBucketName);
+
     const getCredentialBackupStatus = new lambdaNode.NodejsFunction(this, 'GetCredentialBackupStatusFn', {
       entry: 'lambda/handlers/backup/getCredentialBackupStatus.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
-      environment: backupEnv,
+      environment: {
+        ...defaultEnv,
+        VAULT_DATA_BUCKET: vaultDataBucketName,
+      },
       timeout: cdk.Duration.seconds(10),
-      description: 'Get credential backup status',
+      description: 'Get credential backup status (checks S3 vault state)',
     });
 
     // Backup handler grants (connections/messages are vault-managed, not backed up via Lambda)
@@ -1715,7 +1725,7 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
     tables.credentialBackups.grantReadData(downloadCredentialBackup);
     props.infrastructure.backupBucket.grantRead(downloadCredentialBackup);
 
-    tables.credentialBackups.grantReadData(getCredentialBackupStatus);
+    vaultDataBucket.grantRead(getCredentialBackupStatus, 'vaults/*/vault_state.enc');
 
     // Backup API routes
     this.httpApi.addRoutes({
