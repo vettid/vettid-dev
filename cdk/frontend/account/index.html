@@ -777,127 +777,7 @@
       </div>
     </div>
 
-    <!-- Vault Deletion Card - Shown when vault is active -->
-    <div class="card" id="vaultDeletionCard" style="display:none;margin-top:20px;border-color:#f44336;">
-      <h3 style="margin:0 0 16px 0;color:#f44336;">Danger Zone</h3>
 
-      <!-- Normal state: No deletion pending -->
-      <div id="deletionNormalState">
-        <p class="muted" style="margin-bottom:16px;font-size:0.95rem;">
-          Permanently delete your vault and all associated data. This action cannot be undone.
-        </p>
-        <button data-action="requestVaultDeletion" class="btn" style="padding:10px 20px;background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);font-weight:600;">
-          Request Vault Deletion
-        </button>
-      </div>
-
-      <!-- Pending state: Deletion requested, waiting for 24hr -->
-      <div id="deletionPendingState" style="display:none;">
-        <div style="padding:20px;background:rgba(244,67,54,0.1);border-radius:8px;border:1px solid #f44336;">
-          <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
-            <div style="width:40px;height:40px;background:#f44336;border-radius:50%;display:flex;align-items:center;justify-content:center;">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                <circle cx="12" cy="12" r="10"></circle>
-                <line x1="12" y1="8" x2="12" y2="12"></line>
-                <line x1="12" y1="16" x2="12.01" y2="16"></line>
-              </svg>
-            </div>
-            <div>
-              <p style="margin:0;color:#f44336;font-weight:600;">Deletion Pending</p>
-              <p id="deletionTimeRemaining" style="margin:4px 0 0 0;color:var(--gray);font-size:0.9rem;">Time remaining: --</p>
-            </div>
-          </div>
-          <p style="margin:0 0 16px 0;color:var(--gray);font-size:0.9rem;">
-            Your vault deletion has been scheduled. You can cancel this request at any time before confirmation.
-          </p>
-          <button data-action="cancelVaultDeletion" class="btn" style="padding:10px 20px;background:#333;font-weight:600;">
-            Cancel Deletion Request
-          </button>
-        </div>
-      </div>
-
-      <!-- Ready state: 24hr passed, can confirm deletion -->
-      <div id="deletionReadyState" style="display:none;">
-        <div style="padding:20px;background:rgba(244,67,54,0.2);border-radius:8px;border:2px solid #f44336;">
-          <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
-            <div style="width:40px;height:40px;background:#f44336;border-radius:50%;display:flex;align-items:center;justify-content:center;">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M3 6h18"></path>
-                <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path>
-                <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path>
-              </svg>
-            </div>
-            <div>
-              <p style="margin:0;color:#f44336;font-weight:600;">Ready to Delete</p>
-              <p style="margin:4px 0 0 0;color:var(--gray);font-size:0.9rem;">The 24-hour waiting period has passed.</p>
-            </div>
-          </div>
-          <div style="padding:12px;background:rgba(0,0,0,0.3);border-radius:6px;margin-bottom:16px;">
-            <p style="margin:0;color:#f44336;font-weight:600;font-size:0.9rem;">⚠️ WARNING: This action is IRREVERSIBLE</p>
-            <ul style="margin:8px 0 0 0;padding-left:20px;color:var(--gray);font-size:0.85rem;line-height:1.6;">
-              <li>All vault data will be permanently deleted</li>
-              <li>Your credentials will no longer be accessible</li>
-              <li>You will need to re-enroll to use VettID again</li>
-            </ul>
-          </div>
-          <div style="display:flex;gap:12px;flex-wrap:wrap;">
-            <button data-action="confirmVaultDeletion" class="btn" style="padding:10px 20px;background:linear-gradient(135deg,#ef4444 0%,#b91c1c 100%);font-weight:600;">
-              Confirm Permanent Deletion
-            </button>
-            <button data-action="cancelVaultDeletion" class="btn" style="padding:10px 20px;background:#333;font-weight:600;">
-              Cancel
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Credential Backup Card (integrated into vault view) -->
-    <div class="card" id="credentialBackupCard" style="margin-top:20px;">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-        <h3 style="margin:0;">Credential Backup</h3>
-        <button data-action="loadCredentialBackupStatus" class="btn" style="padding:6px 12px;font-size:0.85rem;background:#333;" title="Refresh">↻ Refresh</button>
-      </div>
-
-      <!-- Backup Status (read-only - settings managed in mobile app) -->
-      <div style="display:flex;justify-content:space-between;align-items:center;padding:16px;background:#050505;border-radius:8px;border:1px solid var(--border);margin-bottom:16px;">
-        <div>
-          <p style="margin:0;color:var(--text);font-weight:600;">Automatic Backups</p>
-          <p style="margin:4px 0 0 0;color:var(--gray);font-size:0.85rem;">Encrypted credentials backed up automatically</p>
-        </div>
-        <div id="backupStatusBadgeInline" style="padding:6px 12px;background:#4caf50;color:#000;border-radius:16px;font-size:0.75rem;font-weight:700;">
-          ENABLED
-        </div>
-      </div>
-      <p style="margin:0 0 16px 0;color:var(--gray);font-size:0.8rem;font-style:italic;">
-        ℹ️ Backup settings can be managed in the VettID mobile app.
-      </p>
-
-      <!-- Backup Status Grid -->
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;">
-        <div style="padding:12px;background:#050505;border-radius:6px;border:1px solid var(--border);">
-          <p style="margin:0;color:var(--gray);font-size:0.75rem;text-transform:uppercase;">Status</p>
-          <p id="backupStatusValueInline" style="margin:6px 0 0 0;color:var(--text);font-weight:600;">--</p>
-        </div>
-        <div style="padding:12px;background:#050505;border-radius:6px;border:1px solid var(--border);">
-          <p style="margin:0;color:var(--gray);font-size:0.75rem;text-transform:uppercase;">Last Backup</p>
-          <p id="lastBackupValueInline" style="margin:6px 0 0 0;color:var(--text);font-weight:600;">--</p>
-        </div>
-      </div>
-
-      <!-- Recovery Options -->
-      <div style="padding:16px;background:#050505;border-radius:8px;border:1px solid var(--border);">
-        <p style="margin:0 0 12px 0;color:var(--gray);font-size:0.85rem;">Need to restore your credentials?</p>
-        <div style="display:flex;gap:12px;flex-wrap:wrap;">
-          <button data-action="requestTransfer" class="btn" style="padding:8px 16px;background:linear-gradient(135deg,#10b981 0%,#059669 100%);font-size:0.85rem;">
-            Transfer to New Device
-          </button>
-          <button data-action="requestRecovery" class="btn" style="padding:8px 16px;background:linear-gradient(135deg,#f59e0b 0%,#d97706 100%);color:#000;font-size:0.85rem;">
-            Recover Lost Credentials
-          </button>
-        </div>
-      </div>
-    </div>
   </div>
 
   <!-- Bring Your Own Vault Sub-tab (hidden) -->
@@ -1058,34 +938,23 @@
 
   <!-- Credential Backup (always visible on Vault Services page) -->
   <div id="vault-credential-backup">
-    <!-- Backup Settings Card (read-only - settings managed in mobile app) -->
-    <div class="card" id="backupSettingsCard">
-      <h3 style="margin:0 0 16px 0;">Backup Settings</h3>
-      <div style="display:flex;justify-content:space-between;align-items:center;padding:16px;background:#050505;border-radius:8px;border:1px solid var(--border);">
-        <div>
-          <p style="margin:0;color:var(--text);font-weight:600;">Automatic Credential Backups</p>
-          <p style="margin:4px 0 0 0;color:var(--gray);font-size:0.9rem;">Your encrypted credentials are backed up automatically for security.</p>
-        </div>
-        <div id="backupStatusBadge" style="padding:6px 12px;background:#4caf50;color:#000;border-radius:16px;font-size:0.75rem;font-weight:700;">
-          ENABLED
-        </div>
-      </div>
-      <div style="margin-top:16px;padding:16px;background:rgba(var(--accent-rgb),0.1);border:1px solid var(--accent);border-radius:8px;">
-        <p style="margin:0;color:var(--text);font-size:0.9rem;">
-          <strong>ℹ️ Mobile App Control</strong><br>
-          <span style="color:var(--gray);">Automatic backups are enabled by default to protect your credentials. To disable automatic backups, use the Settings menu in your VettID mobile app.</span>
-        </p>
-      </div>
-    </div>
-
-    <!-- Backup Status Card -->
-    <div class="card" style="margin-top:20px;" id="credentialBackupStatusCard">
+    <!-- Credential Backup -->
+    <div class="card" id="credentialBackupStatusCard">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-        <h3 style="margin:0;">Backup Status</h3>
+        <h3 style="margin:0;">Credential Backup</h3>
         <button data-action="loadCredentialBackupStatus" class="btn" style="padding:6px 12px;font-size:0.85rem;background:#333;" title="Refresh">↻ Refresh</button>
       </div>
       <div id="credentialBackupStatusContent">
-        <div style="text-align:center;padding:20px;color:var(--gray);">Loading backup status...</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+          <div style="padding:16px;background:#050505;border-radius:8px;border:1px solid var(--border);">
+            <p style="margin:0;color:var(--gray);font-size:0.85rem;">Status</p>
+            <p id="backupStatusValue" style="margin:8px 0 0 0;color:var(--text);font-weight:600;font-size:1.1rem;">Loading...</p>
+          </div>
+          <div style="padding:16px;background:#050505;border-radius:8px;border:1px solid var(--border);">
+            <p style="margin:0;color:var(--gray);font-size:0.85rem;">Last Backup</p>
+            <p id="lastBackupValue" style="margin:8px 0 0 0;color:var(--text);font-weight:600;font-size:1.1rem;">Loading...</p>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -1170,6 +1039,81 @@
       </div>
     </div>
 
+  </div>
+
+  <!-- Vault Deletion Card - Shown when vault is active -->
+  <div class="card" id="vaultDeletionCard" style="display:none;margin-top:20px;border-color:#f44336;">
+    <h3 style="margin:0 0 16px 0;color:#f44336;">Danger Zone</h3>
+
+    <!-- Normal state: No deletion pending -->
+    <div id="deletionNormalState">
+      <p class="muted" style="margin-bottom:16px;font-size:0.95rem;">
+        Permanently delete your vault and all associated data. This action cannot be undone.
+      </p>
+      <button data-action="requestVaultDeletion" class="btn" style="padding:10px 20px;background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);font-weight:600;">
+        Request Vault Deletion
+      </button>
+    </div>
+
+    <!-- Pending state: Deletion requested, waiting for 24hr -->
+    <div id="deletionPendingState" style="display:none;">
+      <div style="padding:20px;background:rgba(244,67,54,0.1);border-radius:8px;border:1px solid #f44336;">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+          <div style="width:40px;height:40px;background:#f44336;border-radius:50%;display:flex;align-items:center;justify-content:center;">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"></circle>
+              <line x1="12" y1="8" x2="12" y2="12"></line>
+              <line x1="12" y1="16" x2="12.01" y2="16"></line>
+            </svg>
+          </div>
+          <div>
+            <p style="margin:0;color:#f44336;font-weight:600;">Deletion Pending</p>
+            <p id="deletionTimeRemaining" style="margin:4px 0 0 0;color:var(--gray);font-size:0.9rem;">Time remaining: --</p>
+          </div>
+        </div>
+        <p style="margin:0 0 16px 0;color:var(--gray);font-size:0.9rem;">
+          Your vault deletion has been scheduled. You can cancel this request at any time before confirmation.
+        </p>
+        <button data-action="cancelVaultDeletion" class="btn" style="padding:10px 20px;background:#333;font-weight:600;">
+          Cancel Deletion Request
+        </button>
+      </div>
+    </div>
+
+    <!-- Ready state: 24hr passed, can confirm deletion -->
+    <div id="deletionReadyState" style="display:none;">
+      <div style="padding:20px;background:rgba(244,67,54,0.2);border-radius:8px;border:2px solid #f44336;">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+          <div style="width:40px;height:40px;background:#f44336;border-radius:50%;display:flex;align-items:center;justify-content:center;">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 6h18"></path>
+              <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path>
+              <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path>
+            </svg>
+          </div>
+          <div>
+            <p style="margin:0;color:#f44336;font-weight:600;">Ready to Delete</p>
+            <p style="margin:4px 0 0 0;color:var(--gray);font-size:0.9rem;">The 24-hour waiting period has passed.</p>
+          </div>
+        </div>
+        <div style="padding:12px;background:rgba(0,0,0,0.3);border-radius:6px;margin-bottom:16px;">
+          <p style="margin:0;color:#f44336;font-weight:600;font-size:0.9rem;">⚠️ WARNING: This action is IRREVERSIBLE</p>
+          <ul style="margin:8px 0 0 0;padding-left:20px;color:var(--gray);font-size:0.85rem;line-height:1.6;">
+            <li>All vault data will be permanently deleted</li>
+            <li>Your credentials will no longer be accessible</li>
+            <li>You will need to re-enroll to use VettID again</li>
+          </ul>
+        </div>
+        <div style="display:flex;gap:12px;flex-wrap:wrap;">
+          <button data-action="confirmVaultDeletion" class="btn" style="padding:10px 20px;background:linear-gradient(135deg,#ef4444 0%,#b91c1c 100%);font-weight:600;">
+            Confirm Permanent Deletion
+          </button>
+          <button data-action="cancelVaultDeletion" class="btn" style="padding:10px 20px;background:#333;font-weight:600;">
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </div>
 

@@ -3164,78 +3164,16 @@ async function loadCredentialBackupStatus() {
  * Render credential backup status
  */
 function renderCredentialBackupStatus(status) {
-  const statusContent = document.getElementById('credentialBackupStatusContent');
-  const createCard = document.getElementById('credentialBackupCreateCard');
+  const statusEl = document.getElementById('backupStatusValue');
+  const lastBackupEl = document.getElementById('lastBackupValue');
 
   if (status.exists) {
     const lastBackup = status.last_backup ? new Date(status.last_backup).toLocaleString() : 'Unknown';
-    const sizeKB = status.size_bytes ? Math.round(status.size_bytes / 1024 * 10) / 10 : 0;
-
-    statusContent.innerHTML = `
-      <div style="display:grid;gap:16px;">
-        <div style="display:flex;align-items:center;gap:12px;padding:16px;background:linear-gradient(135deg,rgba(16,185,129,0.1) 0%,rgba(5,150,105,0.05) 100%);border:1px solid #10b981;border-radius:8px;">
-          <div style="width:40px;height:40px;background:#10b981;border-radius:50%;display:flex;align-items:center;justify-content:center;">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="20 6 9 17 4 12"></polyline>
-            </svg>
-          </div>
-          <div>
-            <p style="margin:0;color:#10b981;font-weight:600;">Backup Enabled</p>
-            <p style="margin:4px 0 0 0;color:var(--gray);font-size:0.85rem;">Your vault is automatically backed up</p>
-          </div>
-        </div>
-
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
-          <div style="padding:12px;background:#0a0a0a;border-radius:6px;border:1px solid #222;">
-            <p style="margin:0;color:var(--gray);font-size:0.75rem;text-transform:uppercase;">Last Backup</p>
-            <p style="margin:4px 0 0 0;color:var(--text);font-weight:600;">${lastBackup}</p>
-          </div>
-          <div style="padding:12px;background:#0a0a0a;border-radius:6px;border:1px solid #222;">
-            <p style="margin:0;color:var(--gray);font-size:0.75rem;text-transform:uppercase;">Size</p>
-            <p style="margin:4px 0 0 0;color:var(--text);font-weight:600;">${sizeKB} KB</p>
-          </div>
-        </div>
-      </div>
-    `;
-
-    // Update create card to show "Update Backup" instead
-    const createCardTitle = createCard.querySelector('h3');
-    if (createCardTitle) {
-      createCardTitle.textContent = 'Update Credential Backup';
-    }
-    const createBtn = document.getElementById('createCredBackupBtn');
-    if (createBtn) {
-      createBtn.textContent = 'Update Encrypted Backup';
-    }
-
-    // Update inline backup status in vault deploy view
-    const inlineStatus = document.getElementById('backupStatusValueInline');
-    const inlineLastBackup = document.getElementById('lastBackupValueInline');
-    if (inlineStatus) inlineStatus.textContent = 'Enabled';
-    if (inlineLastBackup) inlineLastBackup.textContent = lastBackup;
-
+    if (statusEl) { statusEl.textContent = 'Enabled'; statusEl.style.color = '#10b981'; }
+    if (lastBackupEl) lastBackupEl.textContent = lastBackup;
   } else {
-    statusContent.innerHTML = `
-      <div style="display:flex;align-items:center;gap:12px;padding:16px;background:rgba(255,193,37,0.1);border:1px solid var(--accent);border-radius:8px;">
-        <div style="width:40px;height:40px;background:var(--accent);border-radius:50%;display:flex;align-items:center;justify-content:center;">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="12" cy="12" r="10"></circle>
-            <line x1="12" y1="8" x2="12" y2="12"></line>
-            <line x1="12" y1="16" x2="12.01" y2="16"></line>
-          </svg>
-        </div>
-        <div>
-          <p style="margin:0;color:var(--accent);font-weight:600;">No Backup Found</p>
-          <p style="margin:4px 0 0 0;color:var(--gray);font-size:0.85rem;">Enroll a device and set up your vault to enable automatic backups</p>
-        </div>
-      </div>
-    `;
-
-    // Update inline backup status in vault deploy view
-    const inlineStatus = document.getElementById('backupStatusValueInline');
-    const inlineLastBackup = document.getElementById('lastBackupValueInline');
-    if (inlineStatus) inlineStatus.textContent = 'Not configured';
-    if (inlineLastBackup) inlineLastBackup.textContent = 'Never';
+    if (statusEl) { statusEl.textContent = 'Not configured'; statusEl.style.color = 'var(--accent)'; }
+    if (lastBackupEl) lastBackupEl.textContent = 'Never';
   }
 }
 
