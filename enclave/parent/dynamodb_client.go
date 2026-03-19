@@ -174,7 +174,7 @@ func (d *DynamoDBClient) ListProposals(ctx context.Context) ([]byte, error) {
 						items = append(items, li.Value)
 					case *dynamodbtypes.AttributeValueMemberM:
 						m := make(map[string]interface{})
-						for mk, mv := range li.Member {
+						for mk, mv := range li.Value {
 							if sv, ok := mv.(*dynamodbtypes.AttributeValueMemberS); ok {
 								m[mk] = sv.Value
 							} else if nv, ok := mv.(*dynamodbtypes.AttributeValueMemberN); ok {
