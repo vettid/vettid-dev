@@ -149,6 +149,23 @@ function handler(event) {
   var request = event.request;
   var uri = request.uri;
 
+  // SECURITY: Block access to sensitive paths (.git, .env, etc.)
+  var lowerUri = uri.toLowerCase();
+  if (lowerUri.startsWith('/.git') ||
+      lowerUri.startsWith('/.env') ||
+      lowerUri.startsWith('/.aws') ||
+      lowerUri.startsWith('/.ssh') ||
+      lowerUri.startsWith('/.htaccess') ||
+      lowerUri.startsWith('/wp-admin') ||
+      lowerUri.startsWith('/wp-login')) {
+    return {
+      statusCode: 403,
+      statusDescription: 'Forbidden',
+      headers: { 'content-type': { value: 'text/plain' } },
+      body: { encoding: 'text', data: 'Forbidden' }
+    };
+  }
+
   // If URI ends with a slash, append index.html
   if (uri.endsWith('/')) {
     request.uri = uri + 'index.html';
