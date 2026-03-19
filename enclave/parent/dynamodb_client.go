@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"sync"
 
@@ -120,4 +121,87 @@ func (d *DynamoDBClient) GetAccountSeed(ctx context.Context, ownerSpace string) 
 
 	log.Info().Str("owner_space", ownerSpace).Msg("NATS account seed fetched and cached")
 	return seed, nil
+}
+
+// ListProposals scans the proposals table for active, upcoming, and published proposals.
+// Returns all matching proposals as JSON bytes in the format: {"proposals": [...], "total": N}
+func (d *DynamoDBClient) ListProposals(ctx context.Context) ([]byte, error) {
+	if d.config.ProposalsTable == "" {
+		return nil, fmt.Errorf("proposals table not configured")
+	}
+
+	// Filter for status IN (active, upcoming, published) - skip cancelled/draft
+	filterExpr := "#s IN (:s1, :s2, :s3)"
+	exprAttrNames := map[string]string{
+		"#s": "status", // "status" is a reserved word in DynamoDB
+	}
+	exprAttrValues := map[string]dynamodbtypes.AttributeValue{
+		":s1": &dynamodbtypes.AttributeValueMemberS{Value: "active"},
+		":s2": &dynamodbtypes.AttributeValueMemberS{Value: "upcoming"},
+		":s3": &dynamodbtypes.AttributeValueMemberS{Value: "published"},
+	}
+
+	// Project only the fields we need
+	projExpr := "proposal_id, proposal_number, proposal_title, proposal_text, #s, category, opens_at, closes_at, created_at, quorum_type, quorum_value, choices, signed_payload, org_signature"
+
+	result, err := d.client.Scan(ctx, &dynamodb.ScanInput{
+		TableName:                 aws.String(d.config.ProposalsTable),
+		FilterExpression:          aws.String(filterExpr),
+		ExpressionAttributeNames:  exprAttrNames,
+		ExpressionAttributeValues: exprAttrValues,
+		ProjectionExpression:      aws.String(projExpr),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to scan proposals table: %w", err)
+	}
+
+	// Convert DynamoDB items to generic maps for JSON serialization
+	proposals := make([]map[string]interface{}, 0, len(result.Items))
+	for _, item := range result.Items {
+		proposal := make(map[string]interface{})
+		for k, v := range item {
+			switch attr := v.(type) {
+			case *dynamodbtypes.AttributeValueMemberS:
+				proposal[k] = attr.Value
+			case *dynamodbtypes.AttributeValueMemberN:
+				proposal[k] = attr.Value // Keep as string - client can parse
+			case *dynamodbtypes.AttributeValueMemberL:
+				// Convert list items (e.g., choices) to string slice
+				items := make([]interface{}, 0, len(attr.Value))
+				for _, listItem := range attr.Value {
+					switch li := listItem.(type) {
+					case *dynamodbtypes.AttributeValueMemberS:
+						items = append(items, li.Value)
+					case *dynamodbtypes.AttributeValueMemberM:
+						m := make(map[string]interface{})
+						for mk, mv := range li.Member {
+							if sv, ok := mv.(*dynamodbtypes.AttributeValueMemberS); ok {
+								m[mk] = sv.Value
+							} else if nv, ok := mv.(*dynamodbtypes.AttributeValueMemberN); ok {
+								m[mk] = nv.Value
+							}
+						}
+						items = append(items, m)
+					}
+				}
+				proposal[k] = items
+			case *dynamodbtypes.AttributeValueMemberBOOL:
+				proposal[k] = attr.Value
+			}
+		}
+		proposals = append(proposals, proposal)
+	}
+
+	response := map[string]interface{}{
+		"proposals": proposals,
+		"total":     len(proposals),
+	}
+
+	data, err := json.Marshal(response)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal proposals response: %w", err)
+	}
+
+	log.Info().Int("count", len(proposals)).Msg("Listed proposals from DynamoDB")
+	return data, nil
 }

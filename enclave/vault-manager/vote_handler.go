@@ -21,9 +21,10 @@ const VotingKeyDerivationInfo = "vettid-vote-v1"
 // VoteHandler handles voting operations
 // Voting requires the vault to be unlocked (credential loaded in memory)
 type VoteHandler struct {
-	ownerSpace string
-	state      *VaultState
-	bootstrap  *BootstrapHandler
+	ownerSpace  string
+	state       *VaultState
+	bootstrap   *BootstrapHandler
+	sealerProxy *SealerProxy
 }
 
 // NewVoteHandler creates a new vote handler
@@ -33,6 +34,11 @@ func NewVoteHandler(ownerSpace string, state *VaultState, bootstrap *BootstrapHa
 		state:      state,
 		bootstrap:  bootstrap,
 	}
+}
+
+// SetSealerProxy sets the sealer proxy for proposals list access
+func (h *VoteHandler) SetSealerProxy(sp *SealerProxy) {
+	h.sealerProxy = sp
 }
 
 // CastVoteRequest is the request from the mobile app to cast a vote
@@ -280,6 +286,31 @@ func (h *VoteHandler) deriveVotingKeypair(identityPrivateKey []byte, proposalID 
 	votingPublicKey := votingPrivateKey.Public().(ed25519.PublicKey)
 
 	return votingPrivateKey, votingPublicKey, nil
+}
+
+// HandleListProposals fetches active/upcoming/published proposals from DynamoDB via the parent.
+func (h *VoteHandler) HandleListProposals(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	log.Info().Str("owner_space", h.ownerSpace).Msg("List proposals requested")
+
+	if h.state == nil {
+		return h.errorResponse(msg.GetID(), "vault not initialized")
+	}
+
+	if h.sealerProxy == nil {
+		return h.errorResponse(msg.GetID(), "sealer proxy not available")
+	}
+
+	data, err := h.sealerProxy.ListProposals()
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to list proposals")
+		return h.errorResponse(msg.GetID(), fmt.Sprintf("failed to list proposals: %v", err))
+	}
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   data,
+	}, nil
 }
 
 // errorResponse creates an error response

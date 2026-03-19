@@ -61,6 +61,8 @@ const (
 	SealerOpLoadAccountSeed SealerOperation = "load_account_seed"
 	// Invitation broker (resolved from NATS JetStream via parent)
 	SealerOpResolveInvite SealerOperation = "resolve_invite"
+	// Proposals list (fetched from DynamoDB via parent)
+	SealerOpListProposals SealerOperation = "list_proposals"
 )
 
 // SealerRequest is received from vault-manager
@@ -101,6 +103,9 @@ type SealerResponse struct {
 
 	// For resolve_invite
 	InviteData []byte `json:"invite_data,omitempty"`
+
+	// For list_proposals
+	ProposalsData []byte `json:"proposals_data,omitempty"`
 }
 
 // HandleSealerRequest processes a sealer request from vault-manager
@@ -143,6 +148,8 @@ func (sh *SealerHandler) HandleSealerRequest(msg *Message) *Message {
 		resp = sh.loadAccountSeed(req)
 	case SealerOpResolveInvite:
 		resp = sh.resolveInvite(req)
+	case SealerOpListProposals:
+		resp = sh.listProposals(req)
 	default:
 		resp = SealerResponse{
 			Success: false,
@@ -570,4 +577,37 @@ func (sh *SealerHandler) resolveInvite(req SealerRequest) SealerResponse {
 
 	log.Info().Str("invite_code", req.InviteCode).Int("payload_len", len(response.Payload)).Msg("Invitation resolved from parent")
 	return SealerResponse{Success: true, InviteData: response.Payload}
+}
+
+// listProposals fetches proposals from DynamoDB via the parent process.
+func (sh *SealerHandler) listProposals(req SealerRequest) SealerResponse {
+	sh.connMu.Lock()
+	defer sh.connMu.Unlock()
+
+	if sh.parentConn == nil {
+		return SealerResponse{Success: false, Error: "no parent connection available"}
+	}
+
+	log.Info().Msg("Listing proposals via parent")
+
+	msg := &Message{Type: MessageTypeProposalsList}
+
+	if err := sh.parentConn.WriteMessage(msg); err != nil {
+		return SealerResponse{Success: false, Error: fmt.Sprintf("failed to send proposals list request: %v", err)}
+	}
+
+	response, err := sh.parentConn.ReadMessage()
+	if err != nil {
+		return SealerResponse{Success: false, Error: fmt.Sprintf("failed to read proposals list response: %v", err)}
+	}
+
+	if response.Type == MessageTypeError {
+		return SealerResponse{Success: false, Error: fmt.Sprintf("parent error: %s", response.Error)}
+	}
+
+	if response.Type != MessageTypeProposalsResponse {
+		return SealerResponse{Success: false, Error: fmt.Sprintf("unexpected response type: %s", response.Type)}
+	}
+
+	return SealerResponse{Success: true, ProposalsData: response.Payload}
 }

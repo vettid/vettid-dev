@@ -57,6 +57,8 @@ const (
 	SealerOpLoadAccountSeed SealerOperation = "load_account_seed"
 	// Invitation broker (resolved from NATS JetStream via parent)
 	SealerOpResolveInvite SealerOperation = "resolve_invite"
+	// Proposals list (fetched from DynamoDB via parent)
+	SealerOpListProposals SealerOperation = "list_proposals"
 )
 
 // SealerRequest is sent from vault-manager to supervisor
@@ -97,6 +99,9 @@ type SealerResponse struct {
 
 	// For resolve_invite
 	InviteData []byte `json:"invite_data,omitempty"`
+
+	// For list_proposals
+	ProposalsData []byte `json:"proposals_data,omitempty"`
 }
 
 // GenerateSealedMaterial requests the supervisor to generate PCR-bound sealed material
@@ -447,4 +452,27 @@ func (p *SealerProxy) LoadVaultState() ([]byte, error) {
 	}
 
 	return resp.UnsealedData, nil
+}
+
+// ListProposals fetches active/upcoming/published proposals from DynamoDB via the parent.
+func (p *SealerProxy) ListProposals() ([]byte, error) {
+	req := SealerRequest{
+		Operation:  SealerOpListProposals,
+		OwnerSpace: p.ownerSpace,
+	}
+
+	resp, err := p.sendRequest(req)
+	if err != nil {
+		return nil, err
+	}
+
+	if !resp.Success {
+		return nil, fmt.Errorf("proposals list error: %s", resp.Error)
+	}
+
+	if len(resp.ProposalsData) == 0 {
+		return nil, fmt.Errorf("empty proposals data returned")
+	}
+
+	return resp.ProposalsData, nil
 }

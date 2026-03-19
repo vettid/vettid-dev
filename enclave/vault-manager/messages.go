@@ -229,6 +229,7 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 
 	// Create vote handler for vault-signed voting
 	voteHandler := NewVoteHandler(ownerSpace, vaultState, bootstrapHandler)
+	voteHandler.SetSealerProxy(sealerProxy)
 
 	// Create event handler for unified audit logging and feed
 	// NOTE: Must be created before handlers that depend on it for logging
@@ -1441,6 +1442,8 @@ func (mh *MessageHandler) handleVoteOperation(ctx context.Context, msg *Incoming
 	opType := opParts[1]
 
 	switch opType {
+	case "list":
+		return mh.voteHandler.HandleListProposals(ctx, msg)
 	case "cast":
 		return mh.voteHandler.HandleCastVote(ctx, msg)
 	default:
@@ -2057,7 +2060,7 @@ func (mh *MessageHandler) handleHandlersOperation(ctx context.Context, msg *Inco
 		{ID: "message", Name: "Messaging", Description: "Encrypted peer messaging", Operations: []string{"send", "read-receipt"}},
 		{ID: "feed", Name: "Event Feed", Description: "Activity feed and event management", Operations: []string{"list", "get", "read", "archive", "delete", "sync", "settings", "action"}},
 		{ID: "location", Name: "Location", Description: "Location tracking and sharing", Operations: []string{"add", "list", "delete", "delete-all"}},
-		{ID: "vote", Name: "Voting", Description: "Vault-signed governance voting", Operations: []string{"cast"}},
+		{ID: "vote", Name: "Voting", Description: "Vault-signed governance voting", Operations: []string{"cast", "list"}},
 		{ID: "audit", Name: "Audit", Description: "Audit log queries and export", Operations: []string{"query", "export"}},
 		{ID: "call", Name: "Calls", Description: "Voice and video call management", Operations: []string{"start", "accept", "reject", "end", "signal", "history"}},
 		{ID: "invitation", Name: "Invitations", Description: "Connection invitation lifecycle", Operations: []string{"list", "cancel", "resend", "viewed"}},

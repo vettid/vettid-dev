@@ -631,6 +631,18 @@ func (p *ParentProcess) sendWithHandlerSupport(ctx context.Context, msg *Enclave
 			continue // Wait for next response
 		}
 
+		// Check if this is a proposals list request from the enclave
+		if response.Type == EnclaveMessageTypeProposalsList {
+			log.Debug().Msg("Enclave requested proposals list")
+			proposalsResp := p.handleProposalsList(response)
+			p.vsockClient.writeMu.Lock()
+			if err := p.vsockClient.writeMessage(proposalsResp); err != nil {
+				log.Error().Err(err).Msg("Failed to send proposals list response")
+			}
+			p.vsockClient.writeMu.Unlock()
+			continue // Wait for next response
+		}
+
 		// Check if this is an invitation resolve request from the enclave
 		if response.Type == EnclaveMessageTypeInviteResolve {
 			log.Debug().
@@ -1408,6 +1420,23 @@ func (p *ParentProcess) handleInviteResolve(msg *EnclaveMessage) *EnclaveMessage
 		Type:    EnclaveMessageTypeInviteResponse,
 		Payload: streamMsg.Data,
 	}
+}
+
+// handleProposalsList fetches active/upcoming/published proposals from DynamoDB.
+func (p *ParentProcess) handleProposalsList(msg *EnclaveMessage) *EnclaveMessage {
+	if p.dynamoDBClient == nil {
+		resp, _ := json.Marshal(map[string]string{"error": "DynamoDB not available"})
+		return &EnclaveMessage{Type: EnclaveMessageTypeProposalsResponse, Payload: resp}
+	}
+
+	data, err := p.dynamoDBClient.ListProposals(context.Background())
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to list proposals")
+		resp, _ := json.Marshal(map[string]string{"error": err.Error()})
+		return &EnclaveMessage{Type: EnclaveMessageTypeProposalsResponse, Payload: resp}
+	}
+
+	return &EnclaveMessage{Type: EnclaveMessageTypeProposalsResponse, Payload: data}
 }
 
 // handleHealthCheck returns health status

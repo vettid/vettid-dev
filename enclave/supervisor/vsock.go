@@ -76,6 +76,10 @@ const (
 	// Invitation broker operations (vault-manager -> parent)
 	MessageTypeInviteResolve  MessageType = "invite_resolve"
 	MessageTypeInviteResponse MessageType = "invite_response"
+
+	// Proposals list operations (vault-manager -> parent)
+	MessageTypeProposalsList     MessageType = "proposals_list"
+	MessageTypeProposalsResponse MessageType = "proposals_response"
 )
 
 // SECURITY: Handshake constants

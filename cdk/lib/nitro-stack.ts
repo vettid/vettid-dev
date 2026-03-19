@@ -562,6 +562,18 @@ export class NitroStack extends cdk.Stack {
         tier: ssm.ParameterTier.STANDARD,
       });
 
+      // ===== PROPOSALS TABLE ACCESS =====
+      // Grant DynamoDB read access for proposals listing (voted through mobile app)
+      props.infrastructure.tables.proposals.grantReadData(this.enclaveInstanceRole);
+
+      // Store proposals table name in SSM for parent process configuration
+      new ssm.StringParameter(this, 'ProposalsTableParameter', {
+        parameterName: '/vettid/nitro/proposals-table',
+        description: 'DynamoDB table name for proposals listing by parent process',
+        stringValue: props.infrastructure.tables.proposals.tableName,
+        tier: ssm.ParameterTier.STANDARD,
+      });
+
       // Store NATS seed KMS key ARN in SSM for parent process configuration
       new ssm.StringParameter(this, 'NatsSeedKeyArnParameter', {
         parameterName: '/vettid/nitro/nats-seed-key-arn',
@@ -1071,8 +1083,10 @@ export class NitroStack extends cdk.Stack {
       'echo "Fetching NATS account seed config from SSM..."',
       'NATS_ACCOUNTS_TABLE=$(aws ssm get-parameter --name /vettid/nitro/nats-accounts-table --region $REGION --query Parameter.Value --output text 2>/dev/null || echo "")',
       'NATS_SEED_KEY_ARN=$(aws ssm get-parameter --name /vettid/nitro/nats-seed-key-arn --region $REGION --query Parameter.Value --output text 2>/dev/null || echo "")',
+      'PROPOSALS_TABLE=$(aws ssm get-parameter --name /vettid/nitro/proposals-table --region $REGION --query Parameter.Value --output text 2>/dev/null || echo "")',
       'echo "NATS accounts table: $NATS_ACCOUNTS_TABLE"',
       'echo "NATS seed key ARN: $NATS_SEED_KEY_ARN"',
+      'echo "Proposals table: $PROPOSALS_TABLE"',
       '',
       '# Update parent config to use NATS credentials and KMS',
       'cat > /etc/vettid/parent.yaml << EOF',
@@ -1112,6 +1126,7 @@ export class NitroStack extends cdk.Stack {
       '',
       'dynamodb:',
       '  nats_accounts_table: $NATS_ACCOUNTS_TABLE',
+      '  proposals_table: $PROPOSALS_TABLE',
       '  region: $REGION',
       '',
       'logging:',

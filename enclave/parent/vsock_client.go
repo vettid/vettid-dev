@@ -152,6 +152,10 @@ const (
 	// Invitation broker operations (enclave -> parent)
 	EnclaveMessageTypeInviteResolve  EnclaveMessageType = "invite_resolve"
 	EnclaveMessageTypeInviteResponse EnclaveMessageType = "invite_response"
+
+	// Proposals list operations (enclave -> parent)
+	EnclaveMessageTypeProposalsList     EnclaveMessageType = "proposals_list"
+	EnclaveMessageTypeProposalsResponse EnclaveMessageType = "proposals_response"
 )
 
 // Attestation holds a Nitro attestation document
