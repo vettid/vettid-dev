@@ -63,6 +63,8 @@ const (
 	SealerOpResolveInvite SealerOperation = "resolve_invite"
 	// Proposals list (fetched from DynamoDB via parent)
 	SealerOpListProposals SealerOperation = "list_proposals"
+	// Migration config (fetched from S3 via parent)
+	SealerOpFetchMigrationConfig SealerOperation = "fetch_migration_config"
 )
 
 // SealerRequest is received from vault-manager
@@ -106,6 +108,9 @@ type SealerResponse struct {
 
 	// For list_proposals
 	ProposalsData []byte `json:"proposals_data,omitempty"`
+
+	// For fetch_migration_config
+	MigrationConfig []byte `json:"migration_config,omitempty"`
 }
 
 // HandleSealerRequest processes a sealer request from vault-manager
@@ -150,6 +155,8 @@ func (sh *SealerHandler) HandleSealerRequest(msg *Message) *Message {
 		resp = sh.resolveInvite(req)
 	case SealerOpListProposals:
 		resp = sh.listProposals(req)
+	case SealerOpFetchMigrationConfig:
+		resp = sh.fetchMigrationConfig(req)
 	default:
 		resp = SealerResponse{
 			Success: false,
@@ -610,4 +617,21 @@ func (sh *SealerHandler) listProposals(req SealerRequest) SealerResponse {
 	}
 
 	return SealerResponse{Success: true, ProposalsData: response.Payload}
+}
+
+// fetchMigrationConfig loads the signed migration config from S3.
+// The config is published by deploy-with-migration.sh to _migration/config.json.
+func (sh *SealerHandler) fetchMigrationConfig(req SealerRequest) SealerResponse {
+	key := "_migration/config.json"
+	log.Info().Str("key", key).Msg("Fetching migration config from S3")
+
+	data, err := sh.s3Get(key)
+	if err != nil {
+		// No migration config is a normal case (no migration in progress)
+		log.Debug().Err(err).Msg("No migration config found in S3")
+		return SealerResponse{Success: true, MigrationConfig: nil}
+	}
+
+	log.Info().Int("config_len", len(data)).Msg("Migration config loaded from S3")
+	return SealerResponse{Success: true, MigrationConfig: data}
 }

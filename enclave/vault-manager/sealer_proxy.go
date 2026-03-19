@@ -59,6 +59,8 @@ const (
 	SealerOpResolveInvite SealerOperation = "resolve_invite"
 	// Proposals list (fetched from DynamoDB via parent)
 	SealerOpListProposals SealerOperation = "list_proposals"
+	// Migration config (fetched from S3 via parent)
+	SealerOpFetchMigrationConfig SealerOperation = "fetch_migration_config"
 )
 
 // SealerRequest is sent from vault-manager to supervisor
@@ -102,6 +104,9 @@ type SealerResponse struct {
 
 	// For list_proposals
 	ProposalsData []byte `json:"proposals_data,omitempty"`
+
+	// For fetch_migration_config
+	MigrationConfig []byte `json:"migration_config,omitempty"`
 }
 
 // GenerateSealedMaterial requests the supervisor to generate PCR-bound sealed material
@@ -475,4 +480,25 @@ func (p *SealerProxy) ListProposals() ([]byte, error) {
 	}
 
 	return resp.ProposalsData, nil
+}
+
+// FetchMigrationConfig loads the signed migration config from S3 via the supervisor.
+// Returns nil, nil if no migration config exists (normal case when no migration is in progress).
+func (p *SealerProxy) FetchMigrationConfig() ([]byte, error) {
+	req := SealerRequest{
+		Operation:  SealerOpFetchMigrationConfig,
+		OwnerSpace: p.ownerSpace,
+	}
+
+	resp, err := p.sendRequest(req)
+	if err != nil {
+		return nil, err
+	}
+
+	if !resp.Success {
+		return nil, fmt.Errorf("fetch migration config error: %s", resp.Error)
+	}
+
+	// nil config means no migration available (normal case)
+	return resp.MigrationConfig, nil
 }

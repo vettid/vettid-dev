@@ -1296,6 +1296,10 @@ func (mh *MessageHandler) handleCredentialMigrationOperation(ctx context.Context
 		return mh.migrationHandler.HandleStatus(ctx, msg)
 	case "acknowledge":
 		return mh.migrationHandler.HandleAcknowledge(ctx, msg)
+	case "config":
+		return mh.migrationHandler.HandleGetConfig(ctx, msg)
+	case "start":
+		return mh.migrationHandler.HandleStart(ctx, msg)
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown credential.migration operation: %s", opType))
 	}

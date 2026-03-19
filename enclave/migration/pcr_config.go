@@ -81,8 +81,20 @@ type SignedPCRConfig struct {
 	// ExpiresAt is when this config expires (optional, zero means no expiry)
 	ExpiresAt time.Time `json:"expires_at,omitempty"`
 
-	// Version identifier for this migration (e.g., "v2.1.0")
+	// Version identifier for this migration (e.g., "2026-03-19-v2")
 	Version string `json:"version"`
+
+	// Summary is a human-readable description of what changed
+	Summary string `json:"summary,omitempty"`
+
+	// DetailsURL links to a page with full release notes
+	DetailsURL string `json:"details_url,omitempty"`
+
+	// PublishedAt is when this config was published
+	PublishedAt time.Time `json:"published_at,omitempty"`
+
+	// MandatoryAfter is when the update becomes required (user can't defer)
+	MandatoryAfter time.Time `json:"mandatory_after,omitempty"`
 
 	// Signature is the Ed25519 signature over the config (base64-encoded)
 	Signature string `json:"signature"`
@@ -93,17 +105,25 @@ type SignedPCRConfig struct {
 func (c *SignedPCRConfig) signedPayload() ([]byte, error) {
 	// Create a copy without the signature for canonical serialization
 	payload := struct {
-		NewPCRs   PCRValues `json:"new_pcrs"`
-		OldPCRs   PCRValues `json:"old_pcrs"`
-		ValidFrom time.Time `json:"valid_from"`
-		ExpiresAt time.Time `json:"expires_at,omitempty"`
-		Version   string    `json:"version"`
+		NewPCRs        PCRValues `json:"new_pcrs"`
+		OldPCRs        PCRValues `json:"old_pcrs"`
+		ValidFrom      time.Time `json:"valid_from"`
+		ExpiresAt      time.Time `json:"expires_at,omitempty"`
+		Version        string    `json:"version"`
+		Summary        string    `json:"summary,omitempty"`
+		DetailsURL     string    `json:"details_url,omitempty"`
+		PublishedAt    time.Time `json:"published_at,omitempty"`
+		MandatoryAfter time.Time `json:"mandatory_after,omitempty"`
 	}{
-		NewPCRs:   c.NewPCRs,
-		OldPCRs:   c.OldPCRs,
-		ValidFrom: c.ValidFrom,
-		ExpiresAt: c.ExpiresAt,
-		Version:   c.Version,
+		NewPCRs:        c.NewPCRs,
+		OldPCRs:        c.OldPCRs,
+		ValidFrom:      c.ValidFrom,
+		ExpiresAt:      c.ExpiresAt,
+		Version:        c.Version,
+		Summary:        c.Summary,
+		DetailsURL:     c.DetailsURL,
+		PublishedAt:    c.PublishedAt,
+		MandatoryAfter: c.MandatoryAfter,
 	}
 
 	return json.Marshal(payload)

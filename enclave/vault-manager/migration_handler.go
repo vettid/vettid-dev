@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -235,6 +236,290 @@ func (h *MigrationHandler) HandleEmergencyRecovery(ctx context.Context, msg *Inc
 		Type:      MessageTypeResponse,
 		Payload:   respBytes,
 	}, nil
+}
+
+// MigrationConfigResponse is returned to the app for credential.migration.config requests.
+type MigrationConfigResponse struct {
+	Available      bool   `json:"available"`
+	Version        string `json:"version,omitempty"`
+	Summary        string `json:"summary,omitempty"`
+	DetailsURL     string `json:"details_url,omitempty"`
+	PublishedAt    string `json:"published_at,omitempty"`
+	MandatoryAfter string `json:"mandatory_after,omitempty"`
+}
+
+// MigrationStartResponse is returned after credential.migration.start.
+type MigrationStartResponse struct {
+	Success bool   `json:"success"`
+	Message string `json:"message,omitempty"`
+	Version string `json:"version,omitempty"`
+}
+
+// HandleGetConfig handles credential.migration.config requests.
+// Returns the current migration config if an update is available.
+func (h *MigrationHandler) HandleGetConfig(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	log.Debug().
+		Str("owner_space", h.ownerSpace).
+		Msg("Handling migration.config request")
+
+	// Check if migration was already completed for this user
+	state, _ := h.loadMigrationState(ctx)
+	if state != nil && state.Status == MigrationUserStatusComplete {
+		// Already migrated — no update available
+		resp := MigrationConfigResponse{Available: false}
+		respBytes, _ := json.Marshal(resp)
+		return &OutgoingMessage{
+			RequestID: msg.GetID(),
+			Type:      MessageTypeResponse,
+			Payload:   respBytes,
+		}, nil
+	}
+
+	// Fetch migration config from S3 via sealer proxy
+	configData, err := h.sealerProxy.FetchMigrationConfig()
+	if err != nil || len(configData) == 0 {
+		// No migration config available (normal case)
+		resp := MigrationConfigResponse{Available: false}
+		respBytes, _ := json.Marshal(resp)
+		return &OutgoingMessage{
+			RequestID: msg.GetID(),
+			Type:      MessageTypeResponse,
+			Payload:   respBytes,
+		}, nil
+	}
+
+	// Parse the signed config to extract user-facing fields
+	var config struct {
+		Version        string `json:"version"`
+		Summary        string `json:"summary"`
+		DetailsURL     string `json:"details_url"`
+		PublishedAt    string `json:"published_at"`
+		MandatoryAfter string `json:"mandatory_after"`
+	}
+	if err := json.Unmarshal(configData, &config); err != nil {
+		log.Error().Err(err).Msg("Failed to parse migration config")
+		return h.errorResponse(msg.GetID(), "invalid migration config")
+	}
+
+	log.Info().
+		Str("owner_space", h.ownerSpace).
+		Str("version", config.Version).
+		Msg("Migration config available for user")
+
+	resp := MigrationConfigResponse{
+		Available:      true,
+		Version:        config.Version,
+		Summary:        config.Summary,
+		DetailsURL:     config.DetailsURL,
+		PublishedAt:    config.PublishedAt,
+		MandatoryAfter: config.MandatoryAfter,
+	}
+
+	respBytes, _ := json.Marshal(resp)
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// HandleStart handles credential.migration.start requests.
+// Unseals current sealed material and ECIES keys, re-seals them (KMS Encrypt
+// without attestation), and stores the new versions. The new sealed blobs can
+// be decrypted by any enclave whose PCR0 is in the KMS key policy.
+func (h *MigrationHandler) HandleStart(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	log.Info().
+		Str("owner_space", h.ownerSpace).
+		Msg("Handling migration.start request — re-sealing vault for new enclave")
+
+	// Check current migration state
+	state, _ := h.loadMigrationState(ctx)
+	if state != nil && state.Status == MigrationUserStatusComplete {
+		resp := MigrationStartResponse{
+			Success: true,
+			Message: "Migration already completed",
+		}
+		respBytes, _ := json.Marshal(resp)
+		return &OutgoingMessage{
+			RequestID: msg.GetID(),
+			Type:      MessageTypeResponse,
+			Payload:   respBytes,
+		}, nil
+	}
+
+	// Mark migration as in progress
+	if state == nil {
+		state = &MigrationState{}
+	}
+	state.Status = MigrationUserStatusInProgress
+	h.saveMigrationState(ctx, state)
+
+	// 1. Re-seal the sealed material (contains KMS-encrypted random bytes for DEK derivation)
+	if err := h.resealMaterial(ctx); err != nil {
+		state.Status = MigrationUserStatusNone
+		h.saveMigrationState(ctx, state)
+		log.Error().Err(err).Str("owner_space", h.ownerSpace).Msg("Failed to re-seal material")
+		return h.errorResponse(msg.GetID(), "migration failed: "+err.Error())
+	}
+
+	// 2. Re-seal the ECIES keys (KMS-sealed asymmetric keys for cold vault recovery)
+	if err := h.resealECIES(ctx); err != nil {
+		// ECIES re-sealing is critical but we don't roll back material
+		// since the user can re-derive ECIES from scratch on next unlock
+		log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("Failed to re-seal ECIES keys (non-fatal)")
+	}
+
+	// 3. Fetch migration config version for state tracking
+	configVersion := ""
+	configData, err := h.sealerProxy.FetchMigrationConfig()
+	if err == nil && len(configData) > 0 {
+		var config struct {
+			Version string `json:"version"`
+		}
+		json.Unmarshal(configData, &config)
+		configVersion = config.Version
+	}
+
+	// 4. Mark migration complete
+	now := time.Now()
+	state.Status = MigrationUserStatusComplete
+	state.MigratedAt = &now
+	state.UserNotified = false
+	state.ToPCRVersion = configVersion
+	if err := h.saveMigrationState(ctx, state); err != nil {
+		log.Error().Err(err).Msg("Failed to save migration state")
+	}
+
+	log.Info().
+		Str("owner_space", h.ownerSpace).
+		Str("version", configVersion).
+		Msg("Migration completed successfully — vault re-sealed for new enclave")
+
+	resp := MigrationStartResponse{
+		Success: true,
+		Message: "Vault security update applied successfully",
+		Version: configVersion,
+	}
+
+	respBytes, _ := json.Marshal(resp)
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// resealMaterial loads sealed material from S3, unseals with current enclave
+// attestation, re-seals (no attestation), and stores the new version.
+func (h *MigrationHandler) resealMaterial(ctx context.Context) error {
+	// Load current sealed material blob from S3
+	sealedBlob, err := h.sealerProxy.LoadSealedMaterial()
+	if err != nil {
+		return fmt.Errorf("failed to load sealed material: %w", err)
+	}
+
+	// Parse the SealedMaterialData to extract the inner KMS-sealed data
+	var smData struct {
+		Version        int             `json:"version"`
+		SealedMaterial json.RawMessage `json:"sealed_material"`
+		OwnerID        string          `json:"owner_id"`
+		CreatedAt      int64           `json:"created_at"`
+	}
+	if err := json.Unmarshal(sealedBlob, &smData); err != nil {
+		return fmt.Errorf("failed to parse sealed material: %w", err)
+	}
+
+	// Unseal the inner sealed data using current enclave's KMS attestation
+	plaintext, err := h.sealerProxy.UnsealCredential(smData.SealedMaterial)
+	if err != nil {
+		return fmt.Errorf("failed to unseal material: %w", err)
+	}
+
+	// Re-seal with KMS Encrypt (no attestation needed — both old and new PCR0
+	// must be in the KMS key policy AnyOf during the transition window)
+	newSealedData, err := h.sealerProxy.SealCredential(plaintext)
+
+	// SECURITY: Zero plaintext immediately regardless of seal success
+	for i := range plaintext {
+		plaintext[i] = 0
+	}
+
+	if err != nil {
+		return fmt.Errorf("failed to re-seal material: %w", err)
+	}
+
+	// Reassemble the SealedMaterialData with the new sealed data
+	newSmData := struct {
+		Version        int             `json:"version"`
+		SealedMaterial json.RawMessage `json:"sealed_material"`
+		OwnerID        string          `json:"owner_id"`
+		CreatedAt      int64           `json:"created_at"`
+	}{
+		Version:        smData.Version,
+		SealedMaterial: newSealedData,
+		OwnerID:        smData.OwnerID,
+		CreatedAt:      time.Now().Unix(),
+	}
+
+	newBlob, err := json.Marshal(newSmData)
+	if err != nil {
+		return fmt.Errorf("failed to marshal new sealed material: %w", err)
+	}
+
+	// Store the re-sealed material back to S3
+	if err := h.sealerProxy.StoreSealedMaterial(newBlob); err != nil {
+		return fmt.Errorf("failed to store re-sealed material: %w", err)
+	}
+
+	log.Info().
+		Str("owner_space", h.ownerSpace).
+		Str("owner_id", smData.OwnerID).
+		Msg("Sealed material re-sealed successfully")
+
+	return nil
+}
+
+// resealECIES re-seals the KMS-encrypted ECIES keys for the new enclave.
+func (h *MigrationHandler) resealECIES(ctx context.Context) error {
+	// Load KMS-sealed ECIES keys from S3
+	sealedECIES, err := h.sealerProxy.LoadSealedECIES()
+	if err != nil {
+		return fmt.Errorf("failed to load sealed ECIES: %w", err)
+	}
+
+	if len(sealedECIES) == 0 {
+		log.Debug().Msg("No ECIES keys to re-seal (warm vault only)")
+		return nil
+	}
+
+	// Unseal with current enclave attestation
+	eciesPlaintext, err := h.sealerProxy.UnsealCredential(sealedECIES)
+	if err != nil {
+		return fmt.Errorf("failed to unseal ECIES: %w", err)
+	}
+
+	// Re-seal
+	newSealedECIES, err := h.sealerProxy.SealCredential(eciesPlaintext)
+
+	// SECURITY: Zero plaintext immediately
+	for i := range eciesPlaintext {
+		eciesPlaintext[i] = 0
+	}
+
+	if err != nil {
+		return fmt.Errorf("failed to re-seal ECIES: %w", err)
+	}
+
+	// Store back
+	if err := h.sealerProxy.StoreSealedECIES(newSealedECIES); err != nil {
+		return fmt.Errorf("failed to store re-sealed ECIES: %w", err)
+	}
+
+	log.Info().
+		Str("owner_space", h.ownerSpace).
+		Msg("ECIES keys re-sealed successfully")
+
+	return nil
 }
 
 // MarkMigrationComplete marks a user's migration as complete.

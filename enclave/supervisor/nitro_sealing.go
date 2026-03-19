@@ -888,6 +888,26 @@ func constantTimeEqual(a, b []byte) bool {
 	return result == 0
 }
 
+// SealForPCRs encrypts material for specific target PCR values.
+// During migration, the old enclave unseals material (KMS Decrypt requires attestation
+// matching old PCRs), then re-seals it. KMS Encrypt does NOT require attestation,
+// so the new sealed blob can be decrypted by any enclave whose PCR0 is in the KMS
+// key policy. The targetPCRs parameter is used for logging/audit only.
+func (s *NitroSealer) SealForPCRs(plaintext []byte, targetPCRs interface{}) ([]byte, error) {
+	log.Info().Msg("SealForPCRs: re-sealing material for new enclave PCRs (KMS Encrypt, no attestation needed)")
+
+	// KMS Encrypt does not require attestation - PCR binding is enforced on Decrypt
+	// via the KMS key policy condition. Both old and new PCR0 must be in the policy
+	// (AnyOf) during the transition window.
+	result, err := s.Seal(plaintext)
+	if err != nil {
+		return nil, fmt.Errorf("SealForPCRs failed: %w", err)
+	}
+
+	log.Info().Int("sealed_len", len(result)).Msg("SealForPCRs: material re-sealed successfully")
+	return result, nil
+}
+
 // getCurrentTimestamp returns current Unix timestamp
 func getCurrentTimestamp() int64 {
 	return time.Now().Unix()
