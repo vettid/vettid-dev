@@ -499,15 +499,19 @@ func (h *ConnectionsHandler) HandleCreateInvite(msg *IncomingMessage) (*Outgoing
 		// Extract JWT and seed from .creds format for compact storage
 		jwt, seed := extractCredsComponents(invitationCreds)
 
+		// Include inviter's published profile so scanner sees it immediately
+		inviterProfile := h.loadPublishedProfileForPeer()
+
 		brokerPayload := map[string]interface{}{
-			"type":          "vettid_connection",
-			"connection_id": connectionID,
-			"jwt":           jwt,
-			"seed":          seed,
-			"owner_space":   h.ownerSpace,
-			"message_space": record.MessageSpaceTopic,
-			"expires_at":    expiresAt.Format(time.RFC3339),
-			"label":         req.Label,
+			"type":            "vettid_connection",
+			"connection_id":   connectionID,
+			"jwt":             jwt,
+			"seed":            seed,
+			"owner_space":     h.ownerSpace,
+			"message_space":   record.MessageSpaceTopic,
+			"expires_at":      expiresAt.Format(time.RFC3339),
+			"label":           req.Label,
+			"inviter_profile": inviterProfile,
 		}
 		payloadBytes, _ := json.Marshal(brokerPayload)
 
