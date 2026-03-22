@@ -6,11 +6,16 @@
 package migration
 
 import (
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
+	"math/big"
 	"strings"
 	"time"
 
@@ -130,25 +135,21 @@ func (c *SignedPCRConfig) signedPayload() ([]byte, error) {
 }
 
 // PCRConfigVerifier verifies signed PCR configurations.
+// Supports both ECDSA P-256 (KMS) and Ed25519 (legacy) signatures.
 type PCRConfigVerifier struct {
-	// publicKey is the Ed25519 public key used to verify signatures.
-	// This key is embedded at build time from CI/CD.
-	publicKey ed25519.PublicKey
+	// ecdsaKey is the ECDSA P-256 public key (from KMS) — preferred
+	ecdsaKey *ecdsa.PublicKey
+
+	// ed25519Key is the legacy Ed25519 public key — fallback
+	ed25519Key ed25519.PublicKey
 
 	// currentPCRs are the PCR values of the currently running enclave.
-	// Used to validate that OldPCRs in the config match.
 	currentPCRs *PCRValues
 }
 
 // NewPCRConfigVerifier creates a new verifier with the given public key and current PCRs.
-//
-// The publicKey should be the deployment signing key's public key, embedded at build time.
-// The currentPCRs should be obtained from the enclave's attestation document.
-func NewPCRConfigVerifier(publicKey ed25519.PublicKey, currentPCRs *PCRValues) (*PCRConfigVerifier, error) {
-	if len(publicKey) != ed25519.PublicKeySize {
-		return nil, fmt.Errorf("invalid public key size: expected %d, got %d", ed25519.PublicKeySize, len(publicKey))
-	}
-
+// The publicKey can be either an ECDSA P-256 DER/PEM key or an Ed25519 raw key.
+func NewPCRConfigVerifier(publicKey []byte, currentPCRs *PCRValues) (*PCRConfigVerifier, error) {
 	if currentPCRs == nil {
 		return nil, fmt.Errorf("currentPCRs is required")
 	}
@@ -157,10 +158,33 @@ func NewPCRConfigVerifier(publicKey ed25519.PublicKey, currentPCRs *PCRValues) (
 		return nil, fmt.Errorf("invalid currentPCRs: %w", err)
 	}
 
-	return &PCRConfigVerifier{
-		publicKey:   publicKey,
-		currentPCRs: currentPCRs,
-	}, nil
+	v := &PCRConfigVerifier{currentPCRs: currentPCRs}
+
+	// Try parsing as DER-encoded ECDSA public key first
+	if parsed, err := x509.ParsePKIXPublicKey(publicKey); err == nil {
+		if ecKey, ok := parsed.(*ecdsa.PublicKey); ok {
+			v.ecdsaKey = ecKey
+			return v, nil
+		}
+	}
+
+	// Try parsing as PEM-encoded key
+	if block, _ := pem.Decode(publicKey); block != nil {
+		if parsed, err := x509.ParsePKIXPublicKey(block.Bytes); err == nil {
+			if ecKey, ok := parsed.(*ecdsa.PublicKey); ok {
+				v.ecdsaKey = ecKey
+				return v, nil
+			}
+		}
+	}
+
+	// Fallback: treat as raw Ed25519 public key
+	if len(publicKey) == ed25519.PublicKeySize {
+		v.ed25519Key = publicKey
+		return v, nil
+	}
+
+	return nil, fmt.Errorf("unsupported public key format (expected ECDSA P-256 or Ed25519, got %d bytes)", len(publicKey))
 }
 
 // Verify validates a signed PCR configuration.
@@ -203,16 +227,13 @@ func (v *PCRConfigVerifier) Verify(config *SignedPCRConfig) error {
 	return nil
 }
 
-// verifySignature verifies the Ed25519 signature on the config.
+// verifySignature verifies the signature on the config.
+// Supports ECDSA P-256 (KMS) and Ed25519 (legacy).
 func (v *PCRConfigVerifier) verifySignature(config *SignedPCRConfig) error {
 	// Decode base64 signature
 	signature, err := base64.StdEncoding.DecodeString(config.Signature)
 	if err != nil {
 		return fmt.Errorf("invalid signature encoding: %w", err)
-	}
-
-	if len(signature) != ed25519.SignatureSize {
-		return fmt.Errorf("invalid signature size: expected %d, got %d", ed25519.SignatureSize, len(signature))
 	}
 
 	// Get canonical payload bytes
@@ -221,12 +242,37 @@ func (v *PCRConfigVerifier) verifySignature(config *SignedPCRConfig) error {
 		return fmt.Errorf("failed to serialize payload: %w", err)
 	}
 
-	// Verify signature
-	if !ed25519.Verify(v.publicKey, payload, signature) {
-		return fmt.Errorf("signature does not match")
+	// ECDSA P-256 verification (KMS)
+	if v.ecdsaKey != nil {
+		hash := sha256.Sum256(payload)
+		// KMS returns DER-encoded ECDSA signature — parse r and s
+		if !ecdsa.VerifyASN1(v.ecdsaKey, hash[:], signature) {
+			// Try raw r||s format as fallback
+			if len(signature) == 64 {
+				r := new(big.Int).SetBytes(signature[:32])
+				s := new(big.Int).SetBytes(signature[32:])
+				if !ecdsa.Verify(v.ecdsaKey, hash[:], r, s) {
+					return fmt.Errorf("ECDSA signature does not match")
+				}
+			} else {
+				return fmt.Errorf("ECDSA signature does not match")
+			}
+		}
+		return nil
 	}
 
-	return nil
+	// Ed25519 verification (legacy)
+	if v.ed25519Key != nil {
+		if len(signature) != ed25519.SignatureSize {
+			return fmt.Errorf("invalid Ed25519 signature size: expected %d, got %d", ed25519.SignatureSize, len(signature))
+		}
+		if !ed25519.Verify(v.ed25519Key, payload, signature) {
+			return fmt.Errorf("Ed25519 signature does not match")
+		}
+		return nil
+	}
+
+	return fmt.Errorf("no public key configured for verification")
 }
 
 // ParseSignedPCRConfig parses a JSON-encoded signed PCR configuration.

@@ -32,7 +32,6 @@ ENCLAVE_DIR="$(dirname "$SCRIPT_DIR")"
 REGION="${AWS_REGION:-us-east-1}"
 ASG_NAME="VettID-Nitro-EnclaveASG"
 PCR0_SSM_PARAM="/vettid/enclave/pcr/pcr0"
-DEPLOY_KEY_PATH="${DEPLOY_KEY_PATH:-$HOME/.vettid/deploy-key.pem}"
 MIGRATION_CONFIG_S3_KEY="_migration/config.json"
 TRANSITION_HOURS=72
 
@@ -161,12 +160,6 @@ do_deploy() {
         exit 1
     fi
 
-    if [[ ! -f "$DEPLOY_KEY_PATH" ]]; then
-        log_error "Deployment signing key not found at: $DEPLOY_KEY_PATH"
-        log_error "Set DEPLOY_KEY_PATH or create the key with: openssl genpkey -algorithm ed25519 -out $DEPLOY_KEY_PATH"
-        exit 1
-    fi
-
     log_step "1/7 Capturing current PCR values (old enclave)"
     local old_pcrs_json old_pcr0
     old_pcrs_json=$(get_current_pcrs)
@@ -234,9 +227,9 @@ do_deploy() {
 }
 CONFIGEOF
 
-    # Sign the config
+    # Sign with KMS (ECDSA P-256, same key as PCR manifest)
     local signed_config
-    signed_config=$("$SCRIPT_DIR/sign-pcr-config.sh" "$config_file" "$DEPLOY_KEY_PATH")
+    signed_config=$("$SCRIPT_DIR/sign-pcr-config.sh" "$config_file")
     rm -f "$config_file"
 
     log_info "Migration config signed (version: $version)"

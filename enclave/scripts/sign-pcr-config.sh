@@ -2,39 +2,46 @@
 set -euo pipefail
 
 # sign-pcr-config.sh
-# Signs a PCR configuration with an Ed25519 deployment key.
-# The signature allows enclaves to verify the config is from a trusted source.
+# Signs a PCR migration config using AWS KMS (ECDSA P-256).
+# Uses the same PCR signing key as the PCR manifest (vettid-pcr-signing).
 #
 # Usage:
-#   ./sign-pcr-config.sh pcr-config.json deploy-key.pem > signed-config.json
+#   ./sign-pcr-config.sh pcr-config.json > signed-config.json
 #
-# Input format:
-#   {
-#     "new_pcrs": { "pcr0": "...", "pcr1": "...", "pcr2": "..." },
-#     "old_pcrs": { "pcr0": "...", "pcr1": "...", "pcr2": "..." },
-#     "valid_from": "2024-01-15T10:00:00Z",
-#     "version": "20240115120000-abc1234"
-#   }
-#
-# Output format adds "signature" field.
+# The signing key ID is fetched from CDK stack outputs automatically.
 
-if [[ $# -lt 2 ]]; then
-    echo "Usage: $0 <config.json> <private-key.pem>" >&2
+REGION="${AWS_REGION:-us-east-1}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+if [[ $# -lt 1 ]]; then
+    echo "Usage: $0 <config.json>" >&2
     exit 1
 fi
 
 CONFIG_FILE="$1"
-KEY_FILE="$2"
 
 if [[ ! -f "$CONFIG_FILE" ]]; then
     echo "Error: Config file not found: $CONFIG_FILE" >&2
     exit 1
 fi
 
-if [[ ! -f "$KEY_FILE" ]]; then
-    echo "Error: Key file not found: $KEY_FILE" >&2
+# Get signing key ID from CDK stack outputs or SSM
+KEY_ID=$(aws ssm get-parameter --name "/vettid/attestation/pcr-signing-key-id" \
+    --query 'Parameter.Value' --output text --region "$REGION" 2>/dev/null || echo "")
+
+if [[ -z "$KEY_ID" ]]; then
+    # Fallback: try CDK stack outputs
+    KEY_ID=$(aws cloudformation describe-stacks --stack-name VettID-Nitro \
+        --query 'Stacks[0].Outputs[?OutputKey==`PcrSigningKeyId`].OutputValue' \
+        --output text --region "$REGION" 2>/dev/null || echo "")
+fi
+
+if [[ -z "$KEY_ID" ]]; then
+    echo "Error: Could not find PCR signing key ID from SSM or CDK outputs" >&2
     exit 1
 fi
+
+echo "Using KMS key: $KEY_ID" >&2
 
 # Read the config
 CONFIG=$(cat "$CONFIG_FILE")
@@ -47,17 +54,28 @@ for field in new_pcrs valid_from version; do
     fi
 done
 
-# Create canonical JSON for signing (sorted keys, no extra whitespace)
+# Create canonical JSON for signing (sorted keys, no extra whitespace, without signature)
 CANONICAL=$(echo "$CONFIG" | jq -cS 'del(.signature)')
 
-# Sign with Ed25519
-# Note: OpenSSL ed25519 signing requires the private key in PEM format
-SIGNATURE=$(echo -n "$CANONICAL" | openssl pkeyutl -sign -inkey "$KEY_FILE" | base64 -w 0)
+# Hash the canonical JSON with SHA-256
+HASH=$(echo -n "$CANONICAL" | openssl dgst -sha256 -binary | base64 -w 0)
+
+# Sign with KMS ECDSA P-256 (same algorithm as PCR manifest signing)
+SIGNATURE=$(aws kms sign \
+    --key-id "$KEY_ID" \
+    --message "$HASH" \
+    --message-type DIGEST \
+    --signing-algorithm ECDSA_SHA_256 \
+    --query 'Signature' \
+    --output text \
+    --region "$REGION")
 
 if [[ -z "$SIGNATURE" ]]; then
-    echo "Error: Failed to generate signature" >&2
+    echo "Error: KMS signing failed" >&2
     exit 1
 fi
+
+echo "Config signed successfully with KMS ECDSA P-256" >&2
 
 # Add signature to config and output
 echo "$CONFIG" | jq --arg sig "$SIGNATURE" '. + {signature: $sig}'
