@@ -654,16 +654,25 @@ func (h *EventHandler) LogConnectionEvent(ctx context.Context, eventType EventTy
 }
 
 // LogMessageEvent logs a message-related event
-func (h *EventHandler) LogMessageEvent(ctx context.Context, eventType EventType, messageID, connectionID, preview string) error {
+func (h *EventHandler) LogMessageEvent(ctx context.Context, eventType EventType, messageID, connectionID, peerAlias, preview string) error {
+	title := "Message"
+	if peerAlias != "" {
+		if eventType == EventTypeMessageSent {
+			title = "To " + peerAlias
+		} else {
+			title = "From " + peerAlias
+		}
+	}
 	return h.LogEvent(ctx, &Event{
 		EventType:  eventType,
 		SourceType: "message",
 		SourceID:   connectionID,
-		Title:      "New Message",
+		Title:      title,
 		Message:    preview,
 		Metadata: map[string]string{
 			"message_id":    messageID,
 			"connection_id": connectionID,
+			"peer_alias":    peerAlias,
 		},
 	})
 }

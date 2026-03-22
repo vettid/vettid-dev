@@ -239,9 +239,9 @@ func (h *MessagingHandler) HandleSend(msg *IncomingMessage) (*OutgoingMessage, e
 		return h.errorResponse(msg.GetID(), "Failed to send message to peer")
 	}
 
-	// Log message sent event for audit
+	// Log message sent event for audit and feed
 	if h.eventHandler != nil {
-		h.eventHandler.LogMessageEvent(context.Background(), EventTypeMessageSent, messageID, req.ConnectionID, "")
+		h.eventHandler.LogMessageEvent(context.Background(), EventTypeMessageSent, messageID, req.ConnectionID, conn.PeerAlias, "")
 	}
 
 	log.Info().
@@ -677,7 +677,17 @@ func (h *MessagingHandler) HandleIncomingMessage(ctx context.Context, data []byt
 
 	// Log message received event for audit and feed
 	if h.eventHandler != nil {
-		h.eventHandler.LogMessageEvent(ctx, EventTypeMessageReceived, peerMsg.MessageID, peerMsg.ConnectionID, "New message")
+		// Look up peer alias from connection record
+		peerAlias := ""
+		if connData, err := h.storage.Get("connections/" + peerMsg.ConnectionID); err == nil {
+			var connRecord struct {
+				PeerAlias string `json:"peer_alias"`
+			}
+			if json.Unmarshal(connData, &connRecord) == nil {
+				peerAlias = connRecord.PeerAlias
+			}
+		}
+		h.eventHandler.LogMessageEvent(ctx, EventTypeMessageReceived, peerMsg.MessageID, peerMsg.ConnectionID, peerAlias, "New message")
 	}
 
 	// Notify app about new message

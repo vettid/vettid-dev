@@ -264,7 +264,7 @@ var eventClassifications = map[EventType]EventClassification{
 
 	// Message events
 	EventTypeMessageReceived: {FeedStatusActive, ActionTypeReply, PriorityLow, RetentionStandard},
-	EventTypeMessageSent:     {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
+	EventTypeMessageSent:     {FeedStatusActive, ActionTypeNone, PriorityLow, RetentionStandard},
 	EventTypeMessageRead:     {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionEphemeral},
 
 	// Secret events
