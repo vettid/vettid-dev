@@ -172,7 +172,7 @@ func (p *ParentProcess) routeNATSToEnclave(ctx context.Context) error {
 	//   - Enforce block lists
 	//   - Log call attempts
 
-	msgChan := make(chan *NATSMessage, 100)
+	msgChan := make(chan *NATSMessage, 1000) // Increased from 100 to prevent drops under load
 
 	// Subscribe to messages from mobile apps to vaults (includes call signaling)
 	if err := p.natsClient.Subscribe("OwnerSpace.*.forVault.>", msgChan); err != nil {

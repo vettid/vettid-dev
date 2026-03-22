@@ -3,8 +3,10 @@ package main
 import (
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
 	"github.com/rs/zerolog/log"
 )
@@ -26,6 +28,7 @@ type NATSClient struct {
 	config        NATSConfig
 	subs          []*nats.Subscription
 	stateCallback ConnectionStateCallback
+	publishMu     sync.Mutex // Serializes all publish operations to prevent interleaving
 }
 
 // NewNATSClient creates a new NATS client with optional connection state callback
@@ -203,11 +206,17 @@ func (c *NATSClient) Subscribe(subject string, msgChan chan *NATSMessage) error 
 	return nil
 }
 
-// Publish publishes a message to a subject using JetStream if available
+// Publish publishes a message to a subject using JetStream if available.
+// Thread-safe: serialized via publishMu to prevent concurrent publish interleaving.
 func (c *NATSClient) Publish(subject string, data []byte) error {
+	c.publishMu.Lock()
+	defer c.publishMu.Unlock()
+
 	// Use JetStream for guaranteed delivery if available
 	if c.js != nil {
-		ack, err := c.js.Publish(subject, data, nats.MsgId(fmt.Sprintf("%s-%d", subject, time.Now().UnixNano())))
+		// Use UUID for message ID to prevent collisions from concurrent publishes
+		msgID := fmt.Sprintf("%s-%s", subject, uuid.New().String()[:12])
+		ack, err := c.js.Publish(subject, data, nats.MsgId(msgID))
 		if err != nil {
 			log.Warn().Err(err).Str("subject", subject).Msg("JetStream publish failed, falling back to core NATS")
 			return c.conn.Publish(subject, data)
