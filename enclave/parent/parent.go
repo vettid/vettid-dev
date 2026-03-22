@@ -403,28 +403,33 @@ func (p *ParentProcess) forwardToEnclave(ctx context.Context, msg *NATSMessage) 
 		// IMPORTANT: Use enclaveMsg.Subject (copied at request start) instead of msg.Subject
 		// to ensure we use the correct subject even if there's any timing/state issues
 		if enclaveMsg.OwnerSpace != "" && enclaveMsg.Subject != "" {
-			appResponseSubject := buildAppResponseSubject(enclaveMsg.Subject, enclaveMsg.OwnerSpace)
-			if appResponseSubject != "" {
+			// Publish to BOTH the unique per-request subject (new) and the legacy subject (backward compat)
+			// The unique subject includes the requestID so each request has its own response channel
+			legacySubject := buildAppResponseSubject(enclaveMsg.Subject, enclaveMsg.OwnerSpace)
+			uniqueSubject := buildAppResponseSubjectWithID(enclaveMsg.Subject, enclaveMsg.OwnerSpace, response.RequestID)
+
+			if legacySubject != "" {
 				log.Info().
 					Str("msg_type", string(response.Type)).
 					Str("owner_space", enclaveMsg.OwnerSpace).
 					Str("enclave_msg_subject", enclaveMsg.Subject).
 					Str("nats_msg_subject", msg.Subject).
-					Str("response_subject", appResponseSubject).
+					Str("response_subject", legacySubject).
+					Str("unique_subject", uniqueSubject).
 					Int("response_bytes", len(responseData)).
 					Bool("has_attestation", response.Attestation != nil).
 					Msg("Publishing enclave response to mobile app via JetStream")
 
-				// Verify subjects match - log warning if they don't (debugging)
-				if enclaveMsg.Subject != msg.Subject {
-					log.Warn().
-						Str("enclave_msg_subject", enclaveMsg.Subject).
-						Str("nats_msg_subject", msg.Subject).
-						Msg("RACE CONDITION DETECTED: Subject mismatch between enclaveMsg and msg")
+				// Publish to unique per-request subject (new apps use this)
+				if uniqueSubject != "" {
+					if err := p.natsClient.Publish(uniqueSubject, responseData); err != nil {
+						log.Error().Err(err).Str("subject", uniqueSubject).Msg("Failed to publish to unique response subject")
+					}
 				}
 
-				if err := p.natsClient.Publish(appResponseSubject, responseData); err != nil {
-					log.Error().Err(err).Str("subject", appResponseSubject).Msg("Failed to publish to app response subject")
+				// Also publish to legacy subject (backward compat with old app versions)
+				if err := p.natsClient.Publish(legacySubject, responseData); err != nil {
+					log.Error().Err(err).Str("subject", legacySubject).Msg("Failed to publish to legacy response subject")
 				}
 			}
 		}
@@ -1173,6 +1178,18 @@ func buildAppResponseSubject(subject, ownerSpace string) string {
 	// Build: OwnerSpace.<guid>.forApp.<op>.response
 	// ownerSpace is just the GUID, so we need to prepend "OwnerSpace."
 	return "OwnerSpace." + ownerSpace + ".forApp." + opPart + ".response"
+}
+
+// buildAppResponseSubjectWithID creates a unique per-request response subject
+// by including the request ID: OwnerSpace.<guid>.forApp.<op>.<requestId>.response
+// This prevents JetStream consumers from picking up stale responses from previous requests.
+func buildAppResponseSubjectWithID(subject, ownerSpace, requestID string) string {
+	base := buildAppResponseSubject(subject, ownerSpace)
+	if base == "" || requestID == "" {
+		return base
+	}
+	// Insert requestID before ".response"
+	return base[:len(base)-len(".response")] + "." + requestID + ".response"
 }
 
 // extractRequestType extracts the request type from a NATS subject
