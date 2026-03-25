@@ -21,6 +21,10 @@ const (
 	MessageTypeStoragePut  MessageType = "storage_put"
 	MessageTypeNATSPublish MessageType = "nats_publish"
 
+	// HTTP proxy (vault-manager -> supervisor -> parent -> internet)
+	MessageTypeHTTPRequest  MessageType = "http_request"
+	MessageTypeHTTPResponse MessageType = "http_response"
+
 	// Responses
 	MessageTypeResponse        MessageType = "response"
 	MessageTypeError           MessageType = "error"
@@ -94,6 +98,9 @@ type MessageHandler struct {
 	// NATS proxy for connection credential generation
 	natsProxy *NATSProxy
 
+	// HTTP proxy for external HTTP requests through parent
+	httpProxy *HTTPProxy
+
 	// Cryptographic state and handlers for Phase 4
 	vaultState               *VaultState
 	bootstrapHandler         *BootstrapHandler
@@ -139,6 +146,9 @@ type MessageHandler struct {
 
 	// Device handler (desktop device connections)
 	deviceHandler *DeviceHandler
+
+	// Bitcoin wallet handler
+	walletHandler *WalletHandler
 }
 
 // VsockPublisher implements CallPublisher using vsock to parent
@@ -267,6 +277,9 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 	// Create agent secrets handler
 	agentSecretsHandler := NewAgentSecretsHandler(ownerSpace, storage, eventHandler)
 
+	// Create HTTP proxy for external HTTP requests through parent
+	httpProxy := NewHTTPProxy(ownerSpace, sendFn)
+
 	// Create NATS proxy for connection credential generation
 	natsProxy := NewNATSProxy(ownerSpace)
 
@@ -297,6 +310,9 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 
 		// NATS proxy
 		natsProxy: natsProxy,
+
+		// HTTP proxy
+		httpProxy: httpProxy,
 
 		// Cryptographic components
 		vaultState:               vaultState,
@@ -343,6 +359,9 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 
 		// Device handler
 		deviceHandler: deviceHandler,
+
+		// Bitcoin wallet handler
+		walletHandler: NewWalletHandler(ownerSpace, storage, vaultState, eventHandler, publisher, httpProxy),
 	}
 }
 
@@ -364,6 +383,22 @@ func (mh *MessageHandler) SetSealerResponseChannel(ch chan *IncomingMessage) {
 // GetSealerProxy returns the sealer proxy for routing sealer responses
 func (mh *MessageHandler) GetSealerProxy() *SealerProxy {
 	return mh.sealerProxy
+}
+
+// SetHTTPResponseChannel sets the channel for receiving HTTP proxy responses from parent
+// This must be called before any operations that require external HTTP access
+func (mh *MessageHandler) SetHTTPResponseChannel(ch chan *IncomingMessage) {
+	mh.httpProxy.SetResponseChannel(ch)
+}
+
+// GetHTTPProxy returns the HTTP proxy for routing HTTP responses
+func (mh *MessageHandler) GetHTTPProxy() *HTTPProxy {
+	return mh.httpProxy
+}
+
+// IsHTTPResponse checks if a message is an HTTP proxy response from the parent.
+func (mh *MessageHandler) IsHTTPResponse(msg *IncomingMessage) bool {
+	return msg.Type == MessageTypeHTTPResponse
 }
 
 // IsSealerResponse checks if a message is a sealer response from supervisor.
@@ -567,6 +602,36 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 	case "location-update":
 		// Incoming location update from peer vault
 		return mh.handleIncomingLocationUpdate(ctx, msg)
+	case "btc-address-request":
+		// Incoming BTC address request from peer vault — auto-respond
+		return mh.walletHandler.HandleIncomingAddressRequest(ctx, msg)
+	case "btc-payment-request":
+		// Incoming BTC payment request from peer vault — forward to app
+		if mh.publisher != nil {
+			_ = mh.publisher.PublishToApp(ctx, "message.btc-payment-request", msg.Payload)
+		}
+		if mh.eventHandler != nil {
+			mh.eventHandler.LogEvent(ctx, &Event{EventType: EventTypePaymentReceived})
+		}
+		ack, _ := json.Marshal(map[string]string{"status": "received"})
+		return mh.successResponse(msg.GetID(), ack)
+	case "btc-payment-receipt":
+		// Incoming BTC payment receipt from peer vault — forward to app
+		if mh.publisher != nil {
+			_ = mh.publisher.PublishToApp(ctx, "message.btc-payment-receipt", msg.Payload)
+		}
+		if mh.eventHandler != nil {
+			mh.eventHandler.LogEvent(ctx, &Event{EventType: EventTypeWalletTxReceived})
+		}
+		ack, _ := json.Marshal(map[string]string{"status": "received"})
+		return mh.successResponse(msg.GetID(), ack)
+	case "btc-address-response":
+		// Incoming BTC address response from peer vault — forward to app
+		if mh.publisher != nil {
+			_ = mh.publisher.PublishToApp(ctx, "message.btc-address-response", msg.Payload)
+		}
+		ack, _ := json.Marshal(map[string]string{"status": "received"})
+		return mh.successResponse(msg.GetID(), ack)
 	case "vote":
 		// Vault-signed voting operation
 		return mh.handleVoteOperation(ctx, msg, parts[opIndex+1:])
@@ -615,6 +680,15 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 	case "device":
 		// Device management operations (from mobile app)
 		return mh.handleDeviceOperation(ctx, msg, parts[opIndex+1:])
+	case "wallet":
+		// Bitcoin wallet operations
+		response, err := mh.handleWalletOperation(ctx, msg, parts[opIndex+1:])
+		if err != nil {
+			return response, err
+		}
+		// Persist state after wallet creation/modification
+		mh.persistVaultStateToS3()
+		return response, nil
 	case "vault":
 		// Vault lifecycle operations (save state, etc.)
 		return mh.handleVaultLifecycleOperation(ctx, msg, parts[opIndex+1:])
@@ -719,6 +793,41 @@ func (mh *MessageHandler) handleDeviceOperation(ctx context.Context, msg *Incomi
 		return mh.connectionsHandler.HandleDeviceHeartbeat(ctx, msg)
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown device operation: %s", opType))
+	}
+}
+
+// handleWalletOperation routes Bitcoin wallet operations from the mobile app.
+// Format: forVault.wallet.{sub-operation}
+func (mh *MessageHandler) handleWalletOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
+	if len(opParts) < 2 {
+		return mh.errorResponse(msg.GetID(), "missing wallet operation type")
+	}
+	opType := opParts[1]
+	switch opType {
+	case "create":
+		return mh.walletHandler.HandleCreate(ctx, msg)
+	case "list":
+		return mh.walletHandler.HandleList(ctx, msg)
+	case "get-address":
+		return mh.walletHandler.HandleGetAddress(ctx, msg)
+	case "get-balance":
+		return mh.walletHandler.HandleGetBalance(ctx, msg)
+	case "get-fees":
+		return mh.walletHandler.HandleGetFees(ctx, msg)
+	case "send":
+		return mh.walletHandler.HandleSend(ctx, msg)
+	case "send-to-connection":
+		return mh.walletHandler.HandleSendToConnection(ctx, msg)
+	case "request-payment":
+		return mh.walletHandler.HandleRequestPayment(ctx, msg)
+	case "get-history":
+		return mh.walletHandler.HandleGetHistory(ctx, msg)
+	case "delete":
+		return mh.walletHandler.HandleDelete(ctx, msg)
+	case "set-visibility":
+		return mh.walletHandler.HandleSetVisibility(ctx, msg)
+	default:
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown wallet operation: %s", opType))
 	}
 }
 

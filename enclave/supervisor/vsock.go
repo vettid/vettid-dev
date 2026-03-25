@@ -80,6 +80,10 @@ const (
 	// Proposals list operations (vault-manager -> parent)
 	MessageTypeProposalsList     MessageType = "proposals_list"
 	MessageTypeProposalsResponse MessageType = "proposals_response"
+
+	// HTTP proxy operations (vault-manager -> supervisor -> parent -> internet)
+	MessageTypeHTTPRequest  MessageType = "http_request"
+	MessageTypeHTTPResponse MessageType = "http_response"
 )
 
 // SECURITY: Handshake constants

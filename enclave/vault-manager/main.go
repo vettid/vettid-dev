@@ -161,9 +161,14 @@ func (vm *VaultManager) Run(ctx context.Context) error {
 	sealerResponseCh := make(chan *IncomingMessage, 5)
 	vm.messageHandler.SetSealerResponseChannel(sealerResponseCh)
 
+	// Channel for HTTP proxy responses from parent (via supervisor)
+	// Same pattern as sealer responses: routed directly to avoid deadlock
+	httpResponseCh := make(chan *IncomingMessage, 5)
+	vm.messageHandler.SetHTTPResponseChannel(httpResponseCh)
+
 	// Start message receiver (reads from parent FD)
-	// Pass sealerResponseCh so sealer responses can be routed directly, bypassing the main loop
-	go vm.receiveMessages(ctx, msgChan, sealerResponseCh)
+	// Pass response channels so proxy responses can be routed directly, bypassing the main loop
+	go vm.receiveMessages(ctx, msgChan, sealerResponseCh, httpResponseCh)
 
 	// SECURITY: Periodic cleanup of expired replay prevention events (every hour)
 	cleanupTicker := time.NewTicker(1 * time.Hour)
@@ -214,9 +219,10 @@ func (vm *VaultManager) Run(ctx context.Context) error {
 }
 
 // receiveMessages reads messages from the supervisor via stdin pipe.
-// Sealer responses (sealer_response type) are routed directly to sealerResponseCh
-// to avoid a deadlock with the main message processing loop.
-func (vm *VaultManager) receiveMessages(ctx context.Context, msgChan chan<- *IncomingMessage, sealerResponseCh chan<- *IncomingMessage) {
+// Sealer responses (sealer_response type) and HTTP responses (http_response type)
+// are routed directly to their respective channels to avoid a deadlock with the
+// main message processing loop.
+func (vm *VaultManager) receiveMessages(ctx context.Context, msgChan chan<- *IncomingMessage, sealerResponseCh chan<- *IncomingMessage, httpResponseCh chan<- *IncomingMessage) {
 	log.Debug().Msg("Message receiver started, reading from stdin")
 
 	for {
@@ -242,6 +248,18 @@ func (vm *VaultManager) receiveMessages(ctx context.Context, msgChan chan<- *Inc
 					log.Debug().Str("msg_id", msg.GetID()).Msg("Routed sealer response directly")
 				default:
 					log.Warn().Str("msg_id", msg.GetID()).Msg("Sealer response channel full, dropping")
+				}
+				continue
+			}
+
+			// Route HTTP proxy responses directly (same pattern as sealer responses).
+			// HandleMessage may block waiting for HTTP responses from parent.
+			if vm.messageHandler.IsHTTPResponse(msg) {
+				select {
+				case httpResponseCh <- msg:
+					log.Debug().Str("msg_id", msg.GetID()).Msg("Routed HTTP response directly")
+				default:
+					log.Warn().Str("msg_id", msg.GetID()).Msg("HTTP response channel full, dropping")
 				}
 				continue
 			}

@@ -156,6 +156,10 @@ const (
 	// Proposals list operations (enclave -> parent)
 	EnclaveMessageTypeProposalsList     EnclaveMessageType = "proposals_list"
 	EnclaveMessageTypeProposalsResponse EnclaveMessageType = "proposals_response"
+
+	// HTTP proxy operations (enclave -> parent -> internet)
+	EnclaveMessageTypeHTTPRequest  EnclaveMessageType = "http_request"
+	EnclaveMessageTypeHTTPResponse EnclaveMessageType = "http_response"
 )
 
 // Attestation holds a Nitro attestation document

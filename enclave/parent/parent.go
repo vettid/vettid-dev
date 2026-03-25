@@ -663,6 +663,21 @@ func (p *ParentProcess) sendWithHandlerSupport(ctx context.Context, msg *Enclave
 			continue // Wait for next response
 		}
 
+		// Check if this is an HTTP proxy request from the enclave
+		if response.Type == EnclaveMessageTypeHTTPRequest {
+			log.Debug().
+				Int("payload_len", len(response.Payload)).
+				Msg("Enclave requested HTTP proxy during operation")
+
+			httpResp := p.handleHTTPProxy(ctx, response)
+			p.vsockClient.writeMu.Lock()
+			if err := p.vsockClient.writeMessage(httpResp); err != nil {
+				log.Error().Err(err).Msg("Failed to send HTTP proxy response")
+			}
+			p.vsockClient.writeMu.Unlock()
+			continue // Wait for next response
+		}
+
 		// Verify this is a known final response type before returning
 		knownFinalTypes := map[EnclaveMessageType]bool{
 			EnclaveMessageTypeVaultResponse:       true,

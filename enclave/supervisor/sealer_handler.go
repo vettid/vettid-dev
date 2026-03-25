@@ -619,6 +619,79 @@ func (sh *SealerHandler) listProposals(req SealerRequest) SealerResponse {
 	return SealerResponse{Success: true, ProposalsData: response.Payload}
 }
 
+// ForwardHTTPRequest forwards an HTTP proxy request from vault-manager to the parent process.
+// The parent makes the actual HTTP call and returns the response.
+// This uses the same parentConn as other parent-proxied operations (account seed, invite resolve, etc).
+func (sh *SealerHandler) ForwardHTTPRequest(msg *Message) *Message {
+	sh.connMu.Lock()
+	defer sh.connMu.Unlock()
+
+	if sh.parentConn == nil {
+		log.Warn().Msg("No parent connection for HTTP proxy - dev mode")
+		return &Message{
+			RequestID: msg.RequestID,
+			Type:      MessageTypeHTTPResponse,
+			Payload:   []byte(`{"error":"no parent connection available"}`),
+		}
+	}
+
+	log.Debug().
+		Str("request_id", msg.RequestID).
+		Int("payload_len", len(msg.Payload)).
+		Msg("Forwarding HTTP request to parent")
+
+	// Forward the request to parent as-is (parent will parse the HTTP request payload)
+	fwdMsg := &Message{
+		Type:      MessageTypeHTTPRequest,
+		RequestID: msg.RequestID,
+		Payload:   msg.Payload,
+	}
+
+	if err := sh.parentConn.WriteMessage(fwdMsg); err != nil {
+		log.Error().Err(err).Msg("Failed to forward HTTP request to parent")
+		return &Message{
+			RequestID: msg.RequestID,
+			Type:      MessageTypeHTTPResponse,
+			Payload:   []byte(`{"error":"failed to send HTTP request to parent"}`),
+		}
+	}
+
+	// Wait for response from parent
+	response, err := sh.parentConn.ReadMessage()
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to read HTTP response from parent")
+		return &Message{
+			RequestID: msg.RequestID,
+			Type:      MessageTypeHTTPResponse,
+			Payload:   []byte(`{"error":"failed to read HTTP response from parent"}`),
+		}
+	}
+
+	if response.Type == MessageTypeError {
+		return &Message{
+			RequestID: msg.RequestID,
+			Type:      MessageTypeHTTPResponse,
+			Payload:   []byte(fmt.Sprintf(`{"error":"parent error: %s"}`, response.Error)),
+		}
+	}
+
+	if response.Type != MessageTypeHTTPResponse {
+		log.Warn().
+			Str("expected", string(MessageTypeHTTPResponse)).
+			Str("got", string(response.Type)).
+			Msg("Unexpected response type for HTTP proxy")
+		return &Message{
+			RequestID: msg.RequestID,
+			Type:      MessageTypeHTTPResponse,
+			Payload:   []byte(fmt.Sprintf(`{"error":"unexpected response type: %s"}`, response.Type)),
+		}
+	}
+
+	// Relay response back to vault-manager with correct request ID
+	response.RequestID = msg.RequestID
+	return response
+}
+
 // fetchMigrationConfig loads the signed migration config from S3.
 // The config is published by deploy-with-migration.sh to _migration/config.json.
 func (sh *SealerHandler) fetchMigrationConfig(req SealerRequest) SealerResponse {

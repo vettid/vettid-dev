@@ -51,7 +51,7 @@ func setupAgentHandler(t *testing.T) (*AgentHandler, *AgentSecretsHandler, *Encr
 	tp := &testPublisher{}
 	publisher := NewVsockPublisher("test-owner", tp.sendFn)
 	eventHandler := NewEventHandler("test-owner", encStorage, publisher)
-	connHandler := NewConnectionsHandler("test-owner", encStorage, eventHandler, nil)
+	connHandler := NewConnectionsHandler("test-owner", encStorage, eventHandler, nil, publisher)
 	secretsHandler := NewAgentSecretsHandler("test-owner", encStorage, eventHandler)
 
 	handler := NewAgentHandler("test-owner", encStorage, publisher, eventHandler, connHandler, secretsHandler)

@@ -130,6 +130,15 @@ const (
 
 	// Guide events (tutorial/onboarding content)
 	EventTypeGuide EventType = "guide"
+
+	// Wallet events (Bitcoin)
+	EventTypeWalletCreated        EventType = "wallet.created"
+	EventTypeWalletDeleted        EventType = "wallet.deleted"
+	EventTypeWalletTxSent         EventType = "wallet.tx.sent"
+	EventTypeWalletTxReceived     EventType = "wallet.tx.received"
+	EventTypeWalletTxBroadcast    EventType = "wallet.tx.broadcast"
+	EventTypePaymentRequested     EventType = "wallet.payment.requested"
+	EventTypePaymentReceived      EventType = "wallet.payment.received"
 )
 
 // FeedStatus controls visibility in the feed
@@ -364,6 +373,15 @@ var eventClassifications = map[EventType]EventClassification{
 
 	// Guide events
 	EventTypeGuide: {FeedStatusActive, ActionTypeView, PriorityNormal, RetentionPermanent},
+
+	// Wallet events
+	EventTypeWalletCreated:     {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionPermanent},
+	EventTypeWalletDeleted:     {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionPermanent},
+	EventTypeWalletTxSent:      {FeedStatusActive, ActionTypeView, PriorityHigh, RetentionPermanent},
+	EventTypeWalletTxReceived:  {FeedStatusActive, ActionTypeView, PriorityHigh, RetentionPermanent},
+	EventTypeWalletTxBroadcast: {FeedStatusActive, ActionTypeView, PriorityHigh, RetentionPermanent},
+	EventTypePaymentRequested:  {FeedStatusActive, ActionTypeAcceptDecline, PriorityHigh, RetentionStandard},
+	EventTypePaymentReceived:   {FeedStatusActive, ActionTypeView, PriorityHigh, RetentionPermanent},
 }
 
 // GetEventClassification returns the default classification for an event type

@@ -26,6 +26,7 @@ require (
 
 require (
 	github.com/aws/aws-sdk-go-v2/service/internal/endpoint-discovery v1.10.7 // indirect
+	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1 // indirect
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
 )
 

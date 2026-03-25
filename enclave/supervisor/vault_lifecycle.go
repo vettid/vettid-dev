@@ -404,6 +404,37 @@ func (vp *VaultProcess) ProcessMessage(ctx context.Context, msg *Message) (*Mess
 				// Continue waiting for the final response
 				continue
 
+			case MessageTypeHTTPRequest:
+				// Vault-manager needs to make an HTTP request through the parent
+				log.Debug().
+					Str("owner_space", vp.OwnerSpace).
+					Str("request_id", response.RequestID).
+					Msg("Forwarding HTTP request from vault-manager to parent")
+
+				var httpResp *Message
+				if vp.sealerHandler != nil {
+					httpResp = vp.sealerHandler.ForwardHTTPRequest(response)
+				} else {
+					log.Warn().Msg("Sealer handler not configured for HTTP proxy, returning error")
+					httpResp = &Message{
+						RequestID: response.RequestID,
+						Type:      MessageTypeHTTPResponse,
+						Payload:   []byte(`{"error":"HTTP proxy not available"}`),
+					}
+				}
+
+				// Send HTTP response back to vault-manager
+				if err := vp.process.Conn.WriteMessage(httpResp); err != nil {
+					log.Error().
+						Err(err).
+						Str("owner_space", vp.OwnerSpace).
+						Msg("Failed to send HTTP response to vault-manager")
+					return nil, fmt.Errorf("failed to send HTTP response: %w", err)
+				}
+
+				// Continue waiting for the final response
+				continue
+
 			default:
 				// Got the final response (response, error, etc.)
 				return response, nil

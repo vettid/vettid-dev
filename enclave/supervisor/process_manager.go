@@ -263,6 +263,16 @@ func (pm *ProcessManager) Send(ctx context.Context, ownerSpace string, msg *Mess
 			// Continue waiting for the final response
 			continue
 
+		case MessageTypeHTTPRequest:
+			// Handle HTTP proxy request: forward to parent and send response back
+			httpResp := pm.handleHTTPRequest(response)
+			if err := proc.Conn.WriteMessage(httpResp); err != nil {
+				pm.Kill(ownerSpace)
+				return nil, fmt.Errorf("failed to send HTTP response: %w", err)
+			}
+			// Continue waiting for the final response
+			continue
+
 		case MessageTypeNATSPublish, MessageTypeLog:
 			// These messages should be forwarded to parent, not returned as the response.
 			// In the process_manager context, we don't have direct access to forward them,
@@ -278,6 +288,19 @@ func (pm *ProcessManager) Send(ctx context.Context, ownerSpace string, msg *Mess
 			return response, nil
 		}
 	}
+}
+
+// handleHTTPRequest forwards an HTTP proxy request from vault-manager to the parent
+func (pm *ProcessManager) handleHTTPRequest(msg *Message) *Message {
+	if pm.sealerHandler == nil {
+		log.Warn().Msg("Sealer handler not configured for HTTP proxy, returning error")
+		return &Message{
+			RequestID: msg.RequestID,
+			Type:      MessageTypeHTTPResponse,
+			Payload:   []byte(`{"error":"HTTP proxy not available"}`),
+		}
+	}
+	return pm.sealerHandler.ForwardHTTPRequest(msg)
 }
 
 // handleSealerRequest processes a sealer request from vault-manager

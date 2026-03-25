@@ -518,7 +518,7 @@ func TestEventHandler_ConvenienceMethods(t *testing.T) {
 	}
 
 	// Test LogMessageEvent
-	err = handler.LogMessageEvent(ctx, EventTypeMessageReceived, "msg-1", "conn-1", "Hello!")
+	err = handler.LogMessageEvent(ctx, EventTypeMessageReceived, "msg-1", "conn-1", "peer-1", "Hello!")
 	if err != nil {
 		t.Fatalf("Failed to log message event: %v", err)
 	}
