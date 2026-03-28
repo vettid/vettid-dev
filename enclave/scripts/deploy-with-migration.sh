@@ -30,7 +30,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENCLAVE_DIR="$(dirname "$SCRIPT_DIR")"
 
 REGION="${AWS_REGION:-us-east-1}"
-ASG_NAME="VettID-Nitro-EnclaveASG"
+ASG_NAME=$(aws autoscaling describe-auto-scaling-groups \
+    --query 'AutoScalingGroups[?contains(AutoScalingGroupName, `VettID-Nitro-EnclaveASG`)].AutoScalingGroupName | [0]' \
+    --output text --region "${AWS_REGION:-us-east-1}" 2>/dev/null || echo "")
+if [[ -z "$ASG_NAME" || "$ASG_NAME" == "None" ]]; then
+    echo -e "${RED}[ERROR]${NC} Could not find enclave ASG"; exit 1
+fi
 PCR0_SSM_PARAM="/vettid/enclave/pcr/pcr0"
 MIGRATION_CONFIG_S3_KEY="_migration/config.json"
 TRANSITION_HOURS=72

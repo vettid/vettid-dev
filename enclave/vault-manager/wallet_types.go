@@ -104,6 +104,22 @@ type TxVout struct {
 // Wallet Handler Request Types
 // ============================================================================
 
+// WalletDetailRequest is the payload for wallet.detail
+type WalletDetailRequest struct {
+	WalletID string `json:"wallet_id"`
+}
+
+// WalletDetailResponse is the response for wallet.detail
+type WalletDetailResponse struct {
+	WalletID         string `json:"wallet_id"`
+	Label            string `json:"label"`
+	Address          string `json:"address"`
+	Network          string `json:"network"`
+	CachedBalanceSats int64 `json:"cached_balance_sats"`
+	BalanceUpdatedAt int64  `json:"balance_updated_at"`
+	IsPublic         bool   `json:"is_public"`
+}
+
 // WalletCreateRequest is the payload for wallet.create
 type WalletCreateRequest struct {
 	Label   string `json:"label"`

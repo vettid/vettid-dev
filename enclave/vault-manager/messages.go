@@ -804,6 +804,8 @@ func (mh *MessageHandler) handleWalletOperation(ctx context.Context, msg *Incomi
 	}
 	opType := opParts[1]
 	switch opType {
+	case "detail":
+		return mh.walletHandler.HandleDetail(ctx, msg)
 	case "create":
 		return mh.walletHandler.HandleCreate(ctx, msg)
 	case "list":
@@ -846,6 +848,22 @@ func (mh *MessageHandler) handleVaultLifecycleOperation(ctx context.Context, msg
 		mh.persistVaultStateToS3()
 		resp := map[string]interface{}{"success": true, "message": "Vault state saved to S3"}
 		respBytes, _ := json.Marshal(resp)
+		return mh.successResponse(msg.GetID(), respBytes)
+	case "info":
+		// Return vault info including handler operations
+		info := map[string]interface{}{
+			"owner_space":        mh.ownerSpace,
+			"has_wallet_handler": mh.walletHandler != nil,
+		}
+		// List available handler operations
+		handlerOps := []string{}
+		if mh.walletHandler != nil {
+			handlerOps = append(handlerOps, "wallet.create", "wallet.list", "wallet.detail",
+				"wallet.get-balance", "wallet.get-address", "wallet.send", "wallet.get-history",
+				"wallet.delete", "wallet.set-visibility")
+		}
+		info["handler_operations"] = handlerOps
+		respBytes, _ := json.Marshal(info)
 		return mh.successResponse(msg.GetID(), respBytes)
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown vault lifecycle operation: %s", opType))
@@ -2184,6 +2202,7 @@ func (mh *MessageHandler) handleHandlersOperation(ctx context.Context, msg *Inco
 		{ID: "datastore", Name: "Data Stores", Description: "Shared collaborative data stores", Operations: []string{"create", "join", "read", "write", "delete", "subscribe", "audit"}},
 		{ID: "pin", Name: "Security", Description: "PIN and vault access management", Operations: []string{"setup", "unlock", "change"}},
 		{ID: "agent-secrets", Name: "Agent Secrets", Description: "Manage secrets shared with AI agents", Operations: []string{"share", "update", "revoke", "list"}},
+		{ID: "wallet", Name: "Bitcoin Wallets", Description: "HD wallet management and BTC transactions", Operations: []string{"create", "list", "detail", "get-balance", "get-address", "get-fees", "send", "send-to-connection", "request-payment", "get-history", "delete", "set-visibility"}},
 	}
 
 	respBytes, err := json.Marshal(map[string]interface{}{"handlers": handlers})

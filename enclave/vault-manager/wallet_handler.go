@@ -170,6 +170,29 @@ func (h *WalletHandler) HandleCreate(ctx context.Context, msg *IncomingMessage) 
 	return successResponse(msg.GetID(), resp)
 }
 
+// HandleDetail returns details for a single wallet
+func (h *WalletHandler) HandleDetail(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req WalletDetailRequest
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		return errorResponse(msg.GetID(), "invalid request: "+err.Error()), nil
+	}
+
+	record, err := h.loadWallet(req.WalletID)
+	if err != nil {
+		return errorResponse(msg.GetID(), "wallet not found"), nil
+	}
+
+	return successResponse(msg.GetID(), WalletDetailResponse{
+		WalletID:          record.WalletID,
+		Label:             record.Label,
+		Address:           record.Address,
+		Network:           record.Network,
+		CachedBalanceSats: record.CachedBalance,
+		BalanceUpdatedAt:  record.BalanceUpdatedAt,
+		IsPublic:          record.IsPublic,
+	})
+}
+
 // HandleList returns all wallets for the user
 func (h *WalletHandler) HandleList(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	wallets, err := h.loadAllWallets()
