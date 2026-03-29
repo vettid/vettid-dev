@@ -418,25 +418,15 @@ func (h *MigrationHandler) resealMaterial(ctx context.Context) error {
 		return fmt.Errorf("failed to load sealed material: %w", err)
 	}
 
-	// Parse the SealedMaterialData to extract the inner KMS-sealed data
-	var smData struct {
-		Version        int             `json:"version"`
-		SealedMaterial json.RawMessage `json:"sealed_material"`
-		OwnerID        string          `json:"owner_id"`
-		CreatedAt      int64           `json:"created_at"`
-	}
-	if err := json.Unmarshal(sealedBlob, &smData); err != nil {
-		return fmt.Errorf("failed to parse sealed material: %w", err)
-	}
-
-	// Unseal the inner sealed data using current enclave's KMS attestation
-	plaintext, err := h.sealerProxy.UnsealCredential(smData.SealedMaterial)
+	// Unseal the inner sealed material using the new UnsealMaterial operation.
+	// This passes the full blob via SealedMaterial field (same path as DeriveDEKFromPIN)
+	// to avoid base64-encoding issues with the Data []byte field.
+	plaintext, err := h.sealerProxy.UnsealMaterial(sealedBlob)
 	if err != nil {
 		return fmt.Errorf("failed to unseal material: %w", err)
 	}
 
-	// Re-seal with KMS Encrypt (no attestation needed — both old and new PCR0
-	// must be in the KMS key policy AnyOf during the transition window)
+	// Re-seal with KMS Encrypt
 	newSealedData, err := h.sealerProxy.SealCredential(plaintext)
 
 	// SECURITY: Zero plaintext immediately regardless of seal success
@@ -448,12 +438,21 @@ func (h *MigrationHandler) resealMaterial(ctx context.Context) error {
 		return fmt.Errorf("failed to re-seal material: %w", err)
 	}
 
+	// Parse original blob to preserve owner_id and version
+	var smData struct {
+		Version int    `json:"version"`
+		OwnerID string `json:"owner_id"`
+	}
+	if err := json.Unmarshal(sealedBlob, &smData); err != nil {
+		return fmt.Errorf("failed to parse sealed material metadata: %w", err)
+	}
+
 	// Reassemble the SealedMaterialData with the new sealed data
 	newSmData := struct {
-		Version        int             `json:"version"`
-		SealedMaterial json.RawMessage `json:"sealed_material"`
-		OwnerID        string          `json:"owner_id"`
-		CreatedAt      int64           `json:"created_at"`
+		Version        int    `json:"version"`
+		SealedMaterial []byte `json:"sealed_material"`
+		OwnerID        string `json:"owner_id"`
+		CreatedAt      int64  `json:"created_at"`
 	}{
 		Version:        smData.Version,
 		SealedMaterial: newSealedData,

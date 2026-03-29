@@ -61,6 +61,8 @@ const (
 	SealerOpListProposals SealerOperation = "list_proposals"
 	// Migration config (fetched from S3 via parent)
 	SealerOpFetchMigrationConfig SealerOperation = "fetch_migration_config"
+	// Migration: unseal the inner sealed material from the full blob (no DEK derivation)
+	SealerOpUnsealMaterial SealerOperation = "unseal_material"
 )
 
 // SealerRequest is sent from vault-manager to supervisor
@@ -176,6 +178,28 @@ func (p *SealerProxy) SealCredential(data []byte) ([]byte, error) {
 	}
 
 	return resp.SealedData, nil
+}
+
+// UnsealMaterial unseals the inner sealed material from a full SealedMaterialData blob.
+// Unlike UnsealCredential, this passes the blob via the SealedMaterial field (same path
+// as DeriveDEKFromPIN) to avoid base64-encoding issues with the Data field.
+func (p *SealerProxy) UnsealMaterial(sealedMaterialBlob []byte) ([]byte, error) {
+	req := SealerRequest{
+		Operation:      SealerOpUnsealMaterial,
+		OwnerSpace:     p.ownerSpace,
+		SealedMaterial: sealedMaterialBlob,
+	}
+
+	resp, err := p.sendRequest(req)
+	if err != nil {
+		return nil, err
+	}
+
+	if !resp.Success {
+		return nil, fmt.Errorf("sealer error: %s", resp.Error)
+	}
+
+	return resp.UnsealedData, nil
 }
 
 // UnsealCredential requests the supervisor to unseal data using Nitro KMS

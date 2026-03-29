@@ -65,6 +65,7 @@ const (
 	SealerOpListProposals SealerOperation = "list_proposals"
 	// Migration config (fetched from S3 via parent)
 	SealerOpFetchMigrationConfig SealerOperation = "fetch_migration_config"
+	SealerOpUnsealMaterial       SealerOperation = "unseal_material"
 )
 
 // SealerRequest is received from vault-manager
@@ -157,6 +158,8 @@ func (sh *SealerHandler) HandleSealerRequest(msg *Message) *Message {
 		resp = sh.listProposals(req)
 	case SealerOpFetchMigrationConfig:
 		resp = sh.fetchMigrationConfig(req)
+	case SealerOpUnsealMaterial:
+		resp = sh.unsealMaterial(req)
 	default:
 		resp = SealerResponse{
 			Success: false,
@@ -267,6 +270,43 @@ func (sh *SealerHandler) sealCredential(req SealerRequest) SealerResponse {
 }
 
 // unsealCredential unseals data using Nitro KMS
+// unsealMaterial unseals the inner sealed material from a full SealedMaterialData blob.
+// Used by migration to re-seal without deriving DEK.
+func (sh *SealerHandler) unsealMaterial(req SealerRequest) SealerResponse {
+	if sh.sealer == nil {
+		log.Warn().Msg("No sealer available, returning data as-is")
+		return SealerResponse{
+			Success:      true,
+			UnsealedData: req.SealedMaterial,
+		}
+	}
+
+	// Parse the outer wrapper (same format as DeriveDEKFromPIN)
+	var smData SealedMaterialData
+	if err := json.Unmarshal(req.SealedMaterial, &smData); err != nil {
+		log.Error().Err(err).Msg("Failed to parse sealed material blob")
+		return SealerResponse{
+			Success: false,
+			Error:   "failed to parse sealed material blob",
+		}
+	}
+
+	// Unseal the inner sealed data using KMS attestation
+	unsealed, err := sh.sealer.Unseal(smData.SealedMaterial)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to unseal material")
+		return SealerResponse{
+			Success: false,
+			Error:   fmt.Sprintf("failed to unseal material: %v", err),
+		}
+	}
+
+	return SealerResponse{
+		Success:      true,
+		UnsealedData: unsealed,
+	}
+}
+
 func (sh *SealerHandler) unsealCredential(req SealerRequest) SealerResponse {
 	if sh.sealer == nil {
 		// Dev mode - return data as-is (no decryption)

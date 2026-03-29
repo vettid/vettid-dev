@@ -174,9 +174,10 @@ do_deploy() {
     old_pcr2=$(echo "$old_pcrs_json" | jq -r '.PCR2')
     log_info "Old PCR0: ${old_pcr0:0:16}..."
 
-    log_step "2/7 Building and deploying new enclave (via deploy-enclave.sh)"
-    # Run the existing deploy script which builds EIF, creates AMI, updates SSM, etc.
-    "$SCRIPT_DIR/deploy-enclave.sh"
+    log_step "2/7 Building new enclave (via deploy-enclave.sh --skip-refresh)"
+    # Build EIF, create AMI, update launch template — but DON'T replace the old instance.
+    # The old instance must stay alive to handle re-seal requests during migration.
+    "$SCRIPT_DIR/deploy-enclave.sh" --skip-refresh
 
     log_step "3/7 Getting new PCR values"
     # deploy-enclave.sh updates SSM with new PCR values

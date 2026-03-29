@@ -38,9 +38,11 @@ log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
 # Parse arguments
 SKIP_CLEANUP=false
+SKIP_REFRESH=false
 for arg in "$@"; do
     case $arg in
         --skip-cleanup) SKIP_CLEANUP=true ;;
+        --skip-refresh) SKIP_REFRESH=true ;;
         *) log_error "Unknown argument: $arg"; exit 1 ;;
     esac
 done
@@ -722,14 +724,18 @@ if [ -n "$ASG_NAME" ] && [ "$ASG_NAME" != "None" ]; then
         log_warn "No launch template found for ASG. Skipping launch template update."
     fi
 
-    log_info "Starting instance refresh..."
+    if [[ "$SKIP_REFRESH" == "true" ]]; then
+        log_info "Skipping instance refresh (--skip-refresh). Launch template updated for new instances."
+    else
+        log_info "Starting instance refresh..."
 
-    aws autoscaling start-instance-refresh \
-        --auto-scaling-group-name "$ASG_NAME" \
-        --preferences '{"MinHealthyPercentage": 0, "InstanceWarmup": 300}' \
-        --region "$REGION" || log_warn "Instance refresh may already be in progress"
+        aws autoscaling start-instance-refresh \
+            --auto-scaling-group-name "$ASG_NAME" \
+            --preferences '{"MinHealthyPercentage": 0, "InstanceWarmup": 300}' \
+            --region "$REGION" || log_warn "Instance refresh may already be in progress"
 
-    log_info "Instance refresh started. New instances will use AMI: $NEW_AMI_ID"
+        log_info "Instance refresh started. New instances will use AMI: $NEW_AMI_ID"
+    fi
 else
     log_warn "No enclave ASG found. You may need to manually update launch template."
 fi
