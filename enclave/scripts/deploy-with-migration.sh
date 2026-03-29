@@ -196,11 +196,24 @@ do_deploy() {
     fi
 
     log_step "4/7 Ensuring both PCR0 values are in KMS policy (AnyOf)"
-    # deploy-enclave.sh already adds the new PCR0. Verify old is still there.
-    # The update-kms-policy.sh adds to AnyOf, so both should be present.
-    log_info "KMS policy should have both old and new PCR0 in AnyOf"
-    log_info "Old: ${old_pcr0:0:16}..."
-    log_info "New: ${new_pcr0:0:16}..."
+    local kms_key_id
+    kms_key_id=$(aws kms list-aliases \
+        --query 'Aliases[?AliasName==`alias/vettid-enclave-sealing`].TargetKeyId' \
+        --output text --region "$REGION")
+    if [[ -z "$kms_key_id" || "$kms_key_id" == "None" ]]; then
+        log_error "Could not find KMS sealing key"
+        exit 1
+    fi
+    local current_policy new_policy
+    current_policy=$(aws kms get-key-policy --key-id "$kms_key_id" --policy-name default \
+        --query Policy --output text --region "$REGION")
+    new_policy=$(echo "$current_policy" | jq --arg old "$old_pcr0" --arg new "$new_pcr0" \
+        '(.Statement[] | select(.Sid == "AllowEnclaveDecrypt") | .Condition.StringEqualsIgnoreCase."kms:RecipientAttestation:PCR0") = [$old, $new]')
+    aws kms put-key-policy --key-id "$kms_key_id" --policy-name default \
+        --policy "$new_policy" --region "$REGION"
+    log_info "KMS policy updated with both PCR0 values:"
+    log_info "  Old: ${old_pcr0:0:16}..."
+    log_info "  New: ${new_pcr0:0:16}..."
 
     log_step "5/7 Creating and signing migration config"
     local published_at mandatory_after version
@@ -304,9 +317,26 @@ do_finalize() {
         exit 0
     fi
 
-    log_step "1/3 Removing old PCR0 from KMS policy"
-    "$SCRIPT_DIR/update-kms-policy.sh" --environment staging --remove-old-pcrs
-    log_info "Old PCR0 removed — only new enclave can unseal"
+    log_step "1/3 Updating KMS policy to keep only the current PCR0"
+    local current_pcr0
+    current_pcr0=$(get_current_pcr0)
+    local kms_key_id
+    kms_key_id=$(aws kms list-aliases \
+        --query 'Aliases[?AliasName==`alias/vettid-enclave-sealing`].TargetKeyId' \
+        --output text --region "$REGION")
+    if [[ -z "$kms_key_id" || "$kms_key_id" == "None" ]]; then
+        log_error "Could not find KMS sealing key"
+        exit 1
+    fi
+    # Get current policy, replace PCR0 array with single current value
+    local current_policy new_policy
+    current_policy=$(aws kms get-key-policy --key-id "$kms_key_id" --policy-name default \
+        --query Policy --output text --region "$REGION")
+    new_policy=$(echo "$current_policy" | jq --arg pcr "$current_pcr0" \
+        '(.Statement[] | select(.Sid == "AllowEnclaveDecrypt") | .Condition.StringEqualsIgnoreCase."kms:RecipientAttestation:PCR0") = $pcr')
+    aws kms put-key-policy --key-id "$kms_key_id" --policy-name default \
+        --policy "$new_policy" --region "$REGION"
+    log_info "KMS policy updated — only current PCR0: ${current_pcr0:0:16}..."
 
     log_step "2/3 Scaling ASG back to 1"
     aws autoscaling set-desired-capacity \
