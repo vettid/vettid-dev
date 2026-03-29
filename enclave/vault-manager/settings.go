@@ -430,14 +430,14 @@ func (h *SettingsHandler) loadCredentialSettings() *CredentialSettings {
 	data, err := h.storage.Get("settings/credential")
 	if err != nil {
 		return &CredentialSettings{
-			SessionTtlSeconds: 900, // Default: 15 minutes
+			SessionTtlSeconds: 300, // Default: 5 minutes
 		}
 	}
 
 	var settings CredentialSettings
 	if err := json.Unmarshal(data, &settings); err != nil {
 		return &CredentialSettings{
-			SessionTtlSeconds: 900,
+			SessionTtlSeconds: 300,
 		}
 	}
 
