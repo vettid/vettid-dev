@@ -16,6 +16,7 @@ type MigrationHandler struct {
 	storage     *EncryptedStorage
 	vaultState  *VaultState
 	sealerProxy *SealerProxy
+	persistFn   func() // callback to persist vault state after migration re-seal
 }
 
 // NewMigrationHandler creates a new migration handler.
@@ -31,6 +32,12 @@ func NewMigrationHandler(
 		vaultState:  vaultState,
 		sealerProxy: sealerProxy,
 	}
+}
+
+// SetPersistFn sets the callback used to persist vault state to S3.
+// This is called after successful migration re-seal to ensure durability.
+func (h *MigrationHandler) SetPersistFn(fn func()) {
+	h.persistFn = fn
 }
 
 // MigrationUserStatus represents the status of a user's migration.
@@ -388,6 +395,11 @@ func (h *MigrationHandler) HandleStart(ctx context.Context, msg *IncomingMessage
 	state.ToPCRVersion = configVersion
 	if err := h.saveMigrationState(ctx, state); err != nil {
 		log.Error().Err(err).Msg("Failed to save migration state")
+	}
+
+	// Persist vault state to S3 after successful re-seal for durability
+	if h.persistFn != nil {
+		h.persistFn()
 	}
 
 	log.Info().

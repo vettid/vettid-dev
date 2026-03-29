@@ -293,7 +293,7 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 	// Create device handler
 	deviceHandler := NewDeviceHandler(ownerSpace, storage, publisher, eventHandler, connectionsHandler)
 
-	return &MessageHandler{
+	mh := &MessageHandler{
 		ownerSpace:           ownerSpace,
 		storage:              storage,
 		callHandler:          NewCallHandler(ownerSpace, storage, publisher, eventHandler),
@@ -363,6 +363,11 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 		// Bitcoin wallet handler
 		walletHandler: NewWalletHandler(ownerSpace, storage, vaultState, eventHandler, publisher, httpProxy),
 	}
+
+	// Wire up migration handler's persist callback so it can save vault state after re-seal
+	migrationHandler.SetPersistFn(mh.persistVaultStateToS3)
+
+	return mh
 }
 
 // Initialize loads persistent state
@@ -1283,6 +1288,12 @@ func (mh *MessageHandler) handlePersonalDataOperation(ctx context.Context, msg *
 	}
 }
 
+// PersistVaultStateToS3 is the exported wrapper for persistVaultStateToS3.
+// Called by the auto-save ticker and graceful shutdown in main.go.
+func (mh *MessageHandler) PersistVaultStateToS3() {
+	mh.persistVaultStateToS3()
+}
+
 // persistVaultStateToS3 persists the current vault state to S3 for durability.
 // This ensures that data modifications are not lost if the vault-manager is restarted.
 func (mh *MessageHandler) persistVaultStateToS3() {
@@ -1297,14 +1308,14 @@ func (mh *MessageHandler) persistVaultStateToS3() {
 
 	encryptedState, err := mh.createEncryptedVaultState(dek)
 	if err != nil {
-		log.Warn().Err(err).Str("owner_space", mh.ownerSpace).Msg("Failed to create encrypted vault state for persistence")
+		log.Error().Err(err).Str("owner_space", mh.ownerSpace).Msg("Failed to create encrypted vault state for persistence")
 		return
 	}
 
 	if err := mh.sealerProxy.StoreVaultState(encryptedState); err != nil {
-		log.Warn().Err(err).Str("owner_space", mh.ownerSpace).Msg("Failed to persist vault state to S3")
+		log.Error().Err(err).Str("owner_space", mh.ownerSpace).Msg("Failed to persist vault state to S3")
 	} else {
-		log.Debug().Str("owner_space", mh.ownerSpace).Msg("Vault state persisted to S3 after data modification")
+		log.Info().Str("owner_space", mh.ownerSpace).Msg("Vault state persisted to S3")
 	}
 }
 

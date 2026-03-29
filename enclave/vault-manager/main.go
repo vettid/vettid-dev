@@ -174,11 +174,21 @@ func (vm *VaultManager) Run(ctx context.Context) error {
 	cleanupTicker := time.NewTicker(1 * time.Hour)
 	defer cleanupTicker.Stop()
 
+	// Periodic auto-save of vault state to S3 (every 5 minutes)
+	// Ensures in-memory changes are persisted even if no explicit save trigger fires
+	autoSaveTicker := time.NewTicker(5 * time.Minute)
+	defer autoSaveTicker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
 			log.Info().Msg("Vault manager shutting down")
+			// Persist vault state before shutdown to avoid data loss
+			vm.messageHandler.PersistVaultStateToS3()
 			return nil
+		case <-autoSaveTicker.C:
+			// Auto-save vault state to S3 for durability
+			vm.messageHandler.PersistVaultStateToS3()
 		case <-cleanupTicker.C:
 			// SECURITY: Clean up expired replay prevention events
 			if deleted, err := vm.storage.CleanupExpiredEvents(); err != nil {
