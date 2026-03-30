@@ -442,6 +442,14 @@ func (h *PINHandler) HandlePINUnlock(ctx context.Context, msg *IncomingMessage) 
 		log.Error().Err(err).Str("owner_space", h.ownerSpace).Msg("Failed to initialize storage with DEK on unlock")
 		return h.errorResponse(msg.GetID(), "storage initialization failed")
 	}
+
+	// Store DEK in vault state so persistVaultStateToS3 and vault_locked checks work
+	dekCopy := make([]byte, len(dek))
+	copy(dekCopy, dek)
+	h.state.mu.Lock()
+	h.state.dek = dekCopy
+	h.state.mu.Unlock()
+
 	log.Info().Str("owner_space", h.ownerSpace).Msg("Storage initialized with DEK on unlock")
 
 	// Restore database backup after storage initialization (cold vault only)
