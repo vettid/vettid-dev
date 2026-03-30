@@ -545,6 +545,32 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 
 	operation := parts[opIndex+1]
 
+	// Check if vault is locked (DEK not available) for operations that need it.
+	// After an enclave instance refresh, the vault-manager restarts with no DEK.
+	// The DEK is derived from PIN + sealed material during PIN unlock.
+	// Without it, data operations silently fail, causing data loss.
+	mh.vaultState.mu.RLock()
+	dek := mh.vaultState.dek
+	mh.vaultState.mu.RUnlock()
+
+	if dek == nil {
+		// These operations are allowed without DEK (they set it up or don't need it)
+		allowedWithoutDEK := map[string]bool{
+			"pin-unlock": true, "pin-setup": true, "pin-change": true, "pin": true,
+			"bootstrap": true, "app": true,
+			"credential": true,
+			"vault": true, "handlers": true,
+			"guide": true,
+		}
+		if !allowedWithoutDEK[operation] {
+			log.Warn().
+				Str("owner_space", mh.ownerSpace).
+				Str("operation", operation).
+				Msg("Vault locked — DEK not available, rejecting operation")
+			return mh.errorResponse(msg.GetID(), "vault_locked: PIN unlock required")
+		}
+	}
+
 	// Unwrap payload envelope from parent process.
 	// Parent preserves: {"type":"X","payload":{actual data}}
 	// Handlers expect just the inner payload content.
@@ -1302,7 +1328,7 @@ func (mh *MessageHandler) persistVaultStateToS3() {
 	mh.vaultState.mu.RUnlock()
 
 	if dek == nil || mh.sealerProxy == nil {
-		log.Debug().Str("owner_space", mh.ownerSpace).Msg("Cannot persist vault state - DEK or sealer not available")
+		log.Warn().Str("owner_space", mh.ownerSpace).Msg("Cannot persist vault state — DEK not available (vault locked)")
 		return
 	}
 
