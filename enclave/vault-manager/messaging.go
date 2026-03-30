@@ -352,6 +352,14 @@ func (h *MessagingHandler) HandleIncomingPeerMessage(ctx context.Context, msg *I
 		}
 	}
 
+	// Log message received event for audit and feed notification
+	if h.eventHandler != nil {
+		peerAlias := conn.PeerAlias
+		if err := h.eventHandler.LogMessageEvent(ctx, EventTypeMessageReceived, peerMsg.MessageID, peerMsg.ConnectionID, peerAlias, "New message"); err != nil {
+			log.Error().Err(err).Msg("Failed to log message.received event")
+		}
+	}
+
 	resp := map[string]interface{}{
 		"success":    true,
 		"message_id": peerMsg.MessageID,
