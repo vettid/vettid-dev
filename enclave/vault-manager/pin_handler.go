@@ -317,11 +317,12 @@ func (h *PINHandler) HandlePINUnlock(ctx context.Context, msg *IncomingMessage) 
 		sealedMaterial = sealedMaterialBytes
 	}
 
-	// Validate UTK (may fail for cold vault if UTKs aren't restored yet)
+	// Validate UTK — warn if not found but don't reject.
+	// After instance refresh, vault_state may have stale UTKs while the phone
+	// has newer ones. The real security check is DEK derivation from PIN + KMS-sealed material.
 	_, found := h.bootstrap.GetLTKForUTK(req.UTKID)
-	if !found && isWarmVault {
-		// Only fail for warm vault - cold vault may not have UTKs yet
-		return h.errorResponse(msg.GetID(), "invalid UTK")
+	if !found {
+		log.Warn().Str("utk_id", req.UTKID).Bool("warm_vault", isWarmVault).Str("owner_space", h.ownerSpace).Msg("UTK not found — proceeding with PIN unlock (DEK derivation is the real auth)")
 	}
 
 	// Decode and decrypt payload
