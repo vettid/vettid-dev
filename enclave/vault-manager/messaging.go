@@ -687,7 +687,16 @@ func (h *MessagingHandler) HandleIncomingMessage(ctx context.Context, data []byt
 				peerAlias = connRecord.PeerAlias
 			}
 		}
-		h.eventHandler.LogMessageEvent(ctx, EventTypeMessageReceived, peerMsg.MessageID, peerMsg.ConnectionID, peerAlias, "New message")
+		log.Info().
+			Str("message_id", peerMsg.MessageID).
+			Str("connection_id", peerMsg.ConnectionID).
+			Str("peer_alias", peerAlias).
+			Msg("Creating message.received feed event")
+		if err := h.eventHandler.LogMessageEvent(ctx, EventTypeMessageReceived, peerMsg.MessageID, peerMsg.ConnectionID, peerAlias, "New message"); err != nil {
+			log.Error().Err(err).Msg("Failed to log message.received event")
+		}
+	} else {
+		log.Warn().Msg("eventHandler is nil — cannot log message.received event")
 	}
 
 	// Notify app about new message
