@@ -398,8 +398,14 @@ func (vp *VaultProcess) ProcessMessage(ctx context.Context, msg *Message) (*Mess
 					Msg("Forwarding log from vault-manager")
 
 				if vp.parentSender != nil {
-					// Fire and forget
-					go vp.parentSender.SendToParent(response)
+					// Send synchronously to prevent concurrent writes to parentConn
+					// that race with sealer handler's S3 write/read pairs
+					if err := vp.parentSender.SendToParent(response); err != nil {
+						log.Warn().
+							Err(err).
+							Str("owner_space", vp.OwnerSpace).
+							Msg("Failed to forward log (non-fatal)")
+					}
 				}
 				// Continue waiting for the final response
 				continue

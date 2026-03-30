@@ -757,6 +757,29 @@ func (h *ProfileHandler) HandlePublish(ctx context.Context, msg *IncomingMessage
 		}
 	}
 
+	// Load public wallet addresses
+	if indexData, err := h.storage.Get(walletIndexKey); err == nil {
+		var walletIDs []string
+		if json.Unmarshal(indexData, &walletIDs) == nil {
+			for _, walletID := range walletIDs {
+				wData, err := h.storage.Get(walletStorageKey(walletID))
+				if err != nil {
+					continue
+				}
+				var wallet WalletRecord
+				if json.Unmarshal(wData, &wallet) != nil || !wallet.IsPublic || wallet.IsArchived {
+					continue
+				}
+				profile.Wallets = append(profile.Wallets, PublishedWallet{
+					WalletID: wallet.WalletID,
+					Label:    wallet.Label,
+					Address:  wallet.Address,
+					Network:  wallet.Network,
+				})
+			}
+		}
+	}
+
 	// Publish to NATS
 	if h.publisher != nil {
 		profileBytes, err := json.Marshal(profile)

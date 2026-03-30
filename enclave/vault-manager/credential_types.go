@@ -819,15 +819,24 @@ type PublishedField struct {
 
 // PublishedProfile is the structure published to NATS for connections to see
 // Published to topic: {ownerSpace}.profile.public
+// PublishedWallet is a wallet address included in the published profile
+type PublishedWallet struct {
+	WalletID string `json:"wallet_id"`
+	Label    string `json:"label"`
+	Address  string `json:"address"` // bech32 P2WPKH
+	Network  string `json:"network"` // "mainnet" or "testnet"
+}
+
 type PublishedProfile struct {
 	UserGUID      string                    `json:"user_guid"`
-	PublicKey     string                    `json:"public_key"`      // Ed25519 public key (base64)
-	FirstName     string                    `json:"first_name"`      // Always included from registration
-	LastName      string                    `json:"last_name"`       // Always included
-	Email         string                    `json:"email"`           // Always included
-	EmailVerified bool                      `json:"email_verified"`  // From registration
-	Photo         string                    `json:"photo,omitempty"` // Base64-encoded JPEG profile photo
-	Fields        map[string]PublishedField `json:"fields"`          // Selected personal data fields
+	PublicKey     string                    `json:"public_key"`                // Ed25519 public key (base64)
+	FirstName     string                    `json:"first_name"`                // Always included from registration
+	LastName      string                    `json:"last_name"`                 // Always included
+	Email         string                    `json:"email"`                     // Always included
+	EmailVerified bool                      `json:"email_verified"`            // From registration
+	Photo         string                    `json:"photo,omitempty"`           // Base64-encoded JPEG profile photo
+	Fields        map[string]PublishedField `json:"fields"`                    // Selected personal data fields
+	Wallets       []PublishedWallet         `json:"wallets,omitempty"`         // Public wallet addresses
 	Version       int                       `json:"profile_version"`
 	UpdatedAt     string                    `json:"updated_at"` // ISO8601
 }
