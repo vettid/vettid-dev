@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -178,11 +179,13 @@ func (r *ConnectionRecord) IsDevice() bool {
 
 // --- Request/Response types ---
 
-// CreateInviteRequest is the payload for connection.create-invite
+// CreateInviteRequest is the payload for connection.create-invite.
+// Supports all connection types: peer, agent, and device.
 type CreateInviteRequest struct {
 	ConnectionID     string `json:"connection_id,omitempty"`
 	PeerGUID         string `json:"peer_guid,omitempty"`
 	Label            string `json:"label"`
+	ConnectionType   string `json:"connection_type,omitempty"` // "peer" (default), "agent", or "device"
 	ExpiresInHours   int    `json:"expires_in_hours"`
 	ExpiresInMinutes int    `json:"expires_in_minutes"`
 }
@@ -200,7 +203,8 @@ type CreateInviteResponse struct {
 	InviterProfile    map[string]string `json:"inviter_profile,omitempty"`
 }
 
-// StoreCredentialsRequest is the payload for connection.store-credentials
+// StoreCredentialsRequest is the payload for connection.store-credentials.
+// Used by all connection types: peer, agent, and device.
 type StoreCredentialsRequest struct {
 	ConnectionID       string                 `json:"connection_id"`
 	PeerAlias          string                 `json:"peer_alias"`
@@ -212,6 +216,8 @@ type StoreCredentialsRequest struct {
 	PeerMessageSpaceID string                 `json:"peer_message_space_id"`
 	PeerOwnerSpaceID   string                 `json:"peer_owner_space_id"`
 	PeerE2EPublicKey   string                 `json:"peer_e2e_public_key"`
+	E2EPublicKey       string                 `json:"e2e_public_key"`          // Hex-encoded X25519 public key (used by agent/device)
+	ConnectionType     string                 `json:"connection_type,omitempty"` // "peer" (default), "agent", or "device"
 	PeerProfile        map[string]interface{} `json:"peer_profile,omitempty"`
 }
 
@@ -432,6 +438,7 @@ func (h *ConnectionsHandler) HandleCreateInvite(msg *IncomingMessage) (*Outgoing
 	// Store the outbound connection record
 	record := ConnectionRecord{
 		ConnectionID:      connectionID,
+		ConnectionType:    req.ConnectionType, // "peer", "agent", or "device" (empty defaults to peer)
 		PeerAlias:         req.Label,
 		PeerGUID:          req.PeerGUID,
 		CredentialsType:   "outbound",
@@ -920,9 +927,18 @@ func (h *ConnectionsHandler) HandleStoreCredentials(msg *IncomingMessage) (*Outg
 		return h.errorResponse(msg.GetID(), "Failed to derive public key")
 	}
 
+	// Determine connection type (default: peer)
+	connType := ConnectionTypePeer
+	if req.ConnectionType == ConnectionTypeAgent {
+		connType = ConnectionTypeAgent
+	} else if req.ConnectionType == ConnectionTypeDevice {
+		connType = ConnectionTypeDevice
+	}
+
 	// Store the inbound connection record
 	record := ConnectionRecord{
 		ConnectionID:      req.ConnectionID,
+		ConnectionType:    connType,
 		PeerAlias:         req.PeerAlias,
 		PeerGUID:          req.PeerGUID,
 		CredentialsType:   "inbound",
@@ -933,6 +949,55 @@ func (h *ConnectionsHandler) HandleStoreCredentials(msg *IncomingMessage) (*Outg
 		CreatedAt:         time.Now(),
 		LocalPublicKey:    localPublic,
 		LocalPrivateKey:   localPrivate,
+	}
+
+	// Agent connections get a default contract
+	if connType == ConnectionTypeAgent {
+		record.Contract = &ConnectionContract{
+			AgentName:    req.PeerAlias,
+			Scope:        []string{},
+			ApprovalMode: "always_ask",
+			RateLimit:    RateLimit{Max: 60, Per: "hour"},
+		}
+		// Extract agent metadata from peer_profile
+		if req.PeerProfile != nil {
+			record.AgentMetadata = &AgentMetadata{
+				AgentType:          getStringField(req.PeerProfile, "agent_type"),
+				Hostname:           getStringField(req.PeerProfile, "hostname"),
+				Platform:           getStringField(req.PeerProfile, "platform"),
+				BinaryFingerprint:  getStringField(req.PeerProfile, "binary_fingerprint"),
+				MachineFingerprint: getStringField(req.PeerProfile, "machine_fingerprint"),
+				IPAddress:          getStringField(req.PeerProfile, "ip_address"),
+			}
+		}
+	}
+
+	// Device connections get a default session config
+	if connType == ConnectionTypeDevice {
+		if req.PeerProfile != nil {
+			record.AgentMetadata = &AgentMetadata{
+				Hostname:           getStringField(req.PeerProfile, "hostname"),
+				Platform:           getStringField(req.PeerProfile, "platform"),
+				BinaryFingerprint:  getStringField(req.PeerProfile, "binary_fingerprint"),
+				MachineFingerprint: getStringField(req.PeerProfile, "machine_fingerprint"),
+			}
+		}
+	}
+
+	// If e2e_public_key was provided (agent/device pattern), store it directly
+	e2eKeyHex := req.E2EPublicKey
+	if e2eKeyHex == "" {
+		e2eKeyHex = req.PeerE2EPublicKey
+	}
+	if e2eKeyHex != "" {
+		if peerPubBytes, err := hex.DecodeString(e2eKeyHex); err == nil && len(peerPubBytes) == 32 {
+			record.PeerPublicKey = peerPubBytes
+			// Compute shared secret immediately if peer provided their public key
+			if sharedSecret, err := curve25519.X25519(localPrivate, peerPubBytes); err == nil {
+				record.SharedSecret = sharedSecret
+				record.KeyExchangeAt = time.Now()
+			}
+		}
 	}
 
 	data, err := json.Marshal(record)
@@ -3413,4 +3478,14 @@ func (h *ConnectionsHandler) errorResponse(id string, message string) (*Outgoing
 		Type:      MessageTypeResponse,
 		Payload:   respBytes,
 	}, nil
+}
+
+// getStringField safely extracts a string value from a map.
+func getStringField(m map[string]interface{}, key string) string {
+	if v, ok := m[key]; ok {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
 }

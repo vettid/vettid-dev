@@ -495,7 +495,7 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 				// Device messages: routed to deviceHandler
 				resp, err = mh.deviceHandler.HandleDeviceMessage(ctx, msg)
 			} else if i+1 < len(parts) && parts[i+1] == "connection" {
-				// Connection notifications from peers — route by operation
+				// Connection messages from peers, agents, and devices — route by operation
 				if i+2 < len(parts) {
 					switch parts[i+2] {
 					case "accepted":
@@ -506,6 +506,9 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 						resp, err = mh.connectionsHandler.HandlePeerConnectionActivated(ctx, msg)
 					case "rejected":
 						resp, err = mh.connectionsHandler.HandlePeerConnectionRejected(ctx, msg)
+					case "store-credentials":
+						// Agents and devices send store-credentials via MessageSpace
+						resp, err = mh.connectionsHandler.HandleStoreCredentials(msg)
 					default:
 						resp, err = mh.connectionsHandler.HandlePeerConnectionNotification(ctx, msg)
 					}
