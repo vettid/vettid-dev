@@ -477,6 +477,59 @@ export async function generateBootstrapCredentials(
 }
 
 /**
+ * Generate PIN-unlock bootstrap credentials for expired credential recovery.
+ *
+ * SECURITY: These credentials are intentionally narrow — they can only publish
+ * to the pin-unlock handler. Subscribe is broad (forApp.>) so the existing app
+ * subscription flow works, but without publish access to other handlers, an
+ * attacker can't trigger any vault operations except PIN unlock (which requires
+ * ECIES encryption + UTK). TTL is 5 minutes.
+ *
+ * The vault issues full credentials in the PIN unlock response, making the vault
+ * the sole authority for OwnerSpace/MessageSpace access.
+ */
+export async function generatePinUnlockBootstrapCredentials(
+  userGuid: string,
+  accountSeed: string,
+  ownerSpace: string
+): Promise<GeneratedCredentials> {
+  const userKeyPair = nkeys.createUser();
+  const seed = new TextDecoder().decode(userKeyPair.getSeed());
+  const publicKey = userKeyPair.getPublicKey();
+
+  // Publish: ONLY pin-unlock (can't trigger profile, connections, messaging, etc.)
+  const pubAllow = [`${ownerSpace}.forVault.pin-unlock`];
+  const pubDeny = ['$SYS.>', '_INBOX.>'];
+
+  // Subscribe: broad so existing OwnerSpaceClient.subscribeToVault() works
+  // This is safe because without publish access, no responses will be generated
+  const subAllow = [`${ownerSpace}.forApp.>`];
+  const subDeny = ['$SYS.>', '_INBOX.>'];
+
+  const userName = `pin-bootstrap-${userGuid.substring(0, 8)}`;
+
+  // Short-lived: 5 minutes
+  const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+
+  const jwt = await createUserJwt(
+    userName,
+    publicKey,
+    accountSeed,
+    {
+      pub: { allow: pubAllow, deny: pubDeny },
+      sub: { allow: subAllow, deny: subDeny },
+    },
+    expiresAt
+  );
+
+  return {
+    jwt,
+    seed,
+    publicKey,
+  };
+}
+
+/**
  * SECURITY: Service-specific resource limits
  * Services have publish-only access with stricter rate limits than user accounts.
  * This prevents services from overloading user vaults with messages.

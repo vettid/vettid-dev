@@ -1,21 +1,22 @@
 /**
- * NATS Credential Reissue
+ * NATS Credential Reissue (Bootstrap Only)
  *
- * Reissues NATS credentials for enrolled users whose credentials have expired.
- * This is a public endpoint (no Cognito auth) since the user's NATS connection
- * is down and they can't authenticate via NATS.
+ * Issues narrow-scope bootstrap credentials for enrolled users whose NATS
+ * credentials have expired. These credentials can ONLY publish to the
+ * pin-unlock handler — the vault issues full credentials after PIN verification.
  *
  * POST /vault/nats/reissue
  *
  * Security model:
  * - Requires user_guid of an enrolled user (account status = 'active')
- * - Credentials are scoped to the user's OwnerSpace (can only talk to their own vault)
- * - Vault still requires PIN verification before granting access
+ * - Bootstrap credentials: 5-minute TTL, publish only to forVault.pin-unlock
+ * - Subscribe to forApp.> (broad, but harmless without publish access to handlers)
+ * - Vault is the sole authority for full OwnerSpace/MessageSpace credentials
  * - Rate limited: 3 requests per user per 15 minutes
  * - Full audit logging
  *
- * This endpoint is called by the mobile app when stored NATS credentials have
- * expired (user offline > 7 days). It replaces the need to re-enroll.
+ * Flow: App calls this → gets bootstrap creds → connects → PIN unlock →
+ *       vault issues full 7-day creds → app reconnects with vault-issued creds
  */
 
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
@@ -37,7 +38,7 @@ import {
   checkRateLimit,
   hashIdentifier,
 } from '../../common/util';
-import { generateUserCredentials, formatCredsFile } from '../../common/nats-jwt';
+import { generatePinUnlockBootstrapCredentials, formatCredsFile } from '../../common/nats-jwt';
 
 const ddb = new DynamoDBClient({});
 const kms = new KMSClient({});
@@ -48,8 +49,10 @@ const TABLE_AUDIT = process.env.TABLE_AUDIT!;
 const NATS_DOMAIN = process.env.NATS_DOMAIN || 'nats.vettid.dev';
 const NATS_SEED_KMS_KEY_ARN = process.env.NATS_SEED_KMS_KEY_ARN!;
 
-// Credential validity: 7 days
-const CREDENTIAL_VALIDITY_MINUTES = 60 * 24 * 7;
+// Bootstrap credential validity: 5 minutes
+// SECURITY: These are narrow-scope credentials for PIN unlock only.
+// The vault issues full 7-day credentials after PIN verification.
+const CREDENTIAL_VALIDITY_MINUTES = 5;
 
 // Rate limiting: 3 reissues per user per 15 minutes
 const RATE_LIMIT_MAX_REQUESTS = 3;
@@ -118,20 +121,18 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     // Decrypt account seed with KMS
     const accountSeed = await decryptAccountSeed(account, userGuid);
 
-    // Generate fresh credentials (7-day TTL)
+    // Generate bootstrap credentials (5-min TTL, pin-unlock scope only)
+    // SECURITY: Vault issues full credentials after PIN verification
     const now = nowIso();
     const credExpiresAt = addMinutesIso(CREDENTIAL_VALIDITY_MINUTES);
     const tokenId = `nats_reissue_${randomUUID()}`;
     const ownerSpace = account.owner_space_id;
     const messageSpace = account.message_space_id;
 
-    const credentials = await generateUserCredentials(
+    const credentials = await generatePinUnlockBootstrapCredentials(
       userGuid,
       accountSeed,
-      'app',
-      ownerSpace,
-      messageSpace,
-      new Date(credExpiresAt)
+      ownerSpace
     );
 
     // Store token record for audit trail
@@ -140,13 +141,13 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       Item: marshall({
         token_id: tokenId,
         user_guid: userGuid,
-        client_type: 'app',
+        client_type: 'bootstrap',
         device_id: 'reissue',
         user_public_key: credentials.publicKey,
         issued_at: now,
         expires_at: credExpiresAt,
         status: 'active',
-        source: 'credential_reissue',
+        source: 'credential_reissue_bootstrap',
       }),
     }));
 
@@ -168,6 +169,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       expires_at: credExpiresAt,
       ttl_seconds: ttlSeconds,
       token_id: tokenId,
+      credential_type: 'bootstrap', // PIN unlock scope only — vault issues full creds after PIN
     }, origin);
 
   } catch (error: any) {
