@@ -49,6 +49,7 @@ export class VaultStack extends cdk.Stack {
   public readonly enrollUpdateStatus!: lambdaNode.NodejsFunction;
   public readonly getEnrollmentStatus!: lambdaNode.NodejsFunction;
   public readonly enrollNatsBootstrap!: lambdaNode.NodejsFunction;
+  public readonly natsCredentialReissue!: lambdaNode.NodejsFunction;
   // Legacy auth handlers removed - vault-manager handles auth via NATS
 
   // Device attestation handlers (Phase 2)
@@ -358,6 +359,30 @@ export class VaultStack extends cdk.Stack {
 
     // Note: Enrollment authorizer Lambda is defined in InfrastructureStack
     // to avoid cyclic dependencies between VettIDStack and VaultStack
+
+    // NATS credential reissue — public endpoint for expired credential recovery
+    // Called by mobile app when NATS credentials have expired (user offline > 7 days)
+    this.natsCredentialReissue = new lambdaNode.NodejsFunction(this, 'NatsCredentialReissueFn', {
+      entry: 'lambda/handlers/vault/natsCredentialReissue.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+        TABLE_NATS_ACCOUNTS: tables.natsAccounts.tableName,
+        TABLE_NATS_TOKENS: tables.natsTokens.tableName,
+        TABLE_AUDIT: tables.audit.tableName,
+        NATS_DOMAIN: 'nats.vettid.dev',
+        NATS_OPERATOR_SECRET_ARN: natsOperatorSecretRef.secretArn,
+        NATS_SEED_KMS_KEY_ARN: props.infrastructure.natsSeedEncryptionKey.keyArn,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    // Grant permissions for natsCredentialReissue
+    tables.natsAccounts.grantReadData(this.natsCredentialReissue);
+    tables.natsTokens.grantWriteData(this.natsCredentialReissue);
+    tables.audit.grantWriteData(this.natsCredentialReissue);
+    natsOperatorSecretRef.grantRead(this.natsCredentialReissue);
+    props.infrastructure.natsSeedEncryptionKey.grantDecrypt(this.natsCredentialReissue);
 
     // ===== DEVICE ATTESTATION (Phase 2) =====
 
@@ -1484,6 +1509,15 @@ export class VaultStack extends cdk.Stack {
     this.route('NatsGenerateToken', httpApi, '/vault/nats/token', apigw.HttpMethod.POST, this.natsGenerateToken, memberAuthorizer);
     this.route('NatsRevokeToken', httpApi, '/vault/nats/token/revoke', apigw.HttpMethod.POST, this.natsRevokeToken, memberAuthorizer);
     this.route('NatsGetStatus', httpApi, '/vault/nats/status', apigw.HttpMethod.GET, this.natsGetStatus, memberAuthorizer);
+
+    // NATS Credential Reissue (public - called by mobile app when NATS creds expired)
+    // SECURITY: Rate-limited, scoped to user's OwnerSpace, vault still requires PIN
+    new apigw.HttpRoute(this, 'NatsCredentialReissue', {
+      httpApi,
+      routeKey: apigw.HttpRouteKey.with('/vault/nats/reissue', apigw.HttpMethod.POST),
+      integration: new integrations.HttpLambdaIntegration('NatsCredentialReissueInt', this.natsCredentialReissue),
+      // No authorizer - public endpoint (user_guid + rate limiting)
+    });
 
     // NATS URL Resolver endpoint (public - called by NATS servers for account JWT lookup)
     new apigw.HttpRoute(this, 'NatsLookupAccountJwt', {

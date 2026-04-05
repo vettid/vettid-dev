@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -230,9 +231,14 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 	// Create bootstrap handler - generates CEK/UTK pairs
 	bootstrapHandler := NewBootstrapHandler(ownerSpace, vaultState)
 
+	// Create NATS proxy for credential generation (needed by PIN handler and connections handler)
+	natsEndpoint := os.Getenv("NATS_ENDPOINT")
+	natsProxy := NewNATSProxy(ownerSpace, natsEndpoint)
+
 	// Create PIN handler - handles PIN setup/unlock/change using the sealer proxy
 	// Storage is passed so DEK can initialize the encrypted SQLite database
-	pinHandler := NewPINHandler(ownerSpace, vaultState, bootstrapHandler, sealerProxy, storage)
+	// NATSProxy is passed so vault can issue full NATS credentials after PIN verification
+	pinHandler := NewPINHandler(ownerSpace, vaultState, bootstrapHandler, sealerProxy, storage, natsProxy)
 
 	// Create Protean Credential handler - handles credential creation (Phase 3)
 	proteanCredentialHandler := NewProteanCredentialHandler(ownerSpace, vaultState, bootstrapHandler)
@@ -279,9 +285,6 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 
 	// Create HTTP proxy for external HTTP requests through parent
 	httpProxy := NewHTTPProxy(ownerSpace, sendFn)
-
-	// Create NATS proxy for connection credential generation
-	natsProxy := NewNATSProxy(ownerSpace)
 
 	// Create connections handler (needed for agent handler)
 	connectionsHandler := NewConnectionsHandler(ownerSpace, storage, eventHandler, natsProxy, publisher)

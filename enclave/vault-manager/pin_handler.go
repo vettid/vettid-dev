@@ -5,9 +5,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"time"
 
-	"github.com/vettid/vettid-dev/enclave/vault-manager/storage"
 	"github.com/rs/zerolog/log"
+	"github.com/vettid/vettid-dev/enclave/vault-manager/storage"
 )
 
 // PINHandler handles PIN-related operations (setup, unlock, change)
@@ -18,16 +19,18 @@ type PINHandler struct {
 	bootstrap    *BootstrapHandler
 	sealerProxy  *SealerProxy
 	storage      *EncryptedStorage
+	natsProxy    *NATSProxy
 }
 
 // NewPINHandler creates a new PIN handler
-func NewPINHandler(ownerSpace string, state *VaultState, bootstrap *BootstrapHandler, sealerProxy *SealerProxy, storage *EncryptedStorage) *PINHandler {
+func NewPINHandler(ownerSpace string, state *VaultState, bootstrap *BootstrapHandler, sealerProxy *SealerProxy, storage *EncryptedStorage, natsProxy *NATSProxy) *PINHandler {
 	return &PINHandler{
 		ownerSpace:  ownerSpace,
 		state:       state,
 		bootstrap:   bootstrap,
 		sealerProxy: sealerProxy,
 		storage:     storage,
+		natsProxy:   natsProxy,
 	}
 }
 
@@ -492,6 +495,31 @@ func (h *PINHandler) HandlePINUnlock(ctx context.Context, msg *IncomingMessage) 
 		NewUTKs: h.bootstrap.GetUnusedUTKs(),
 	}
 
+	// SECURITY: Issue full NATS credentials from the vault.
+	// The vault is the sole authority for full OwnerSpace/MessageSpace access.
+	// Lambda can only issue narrow bootstrap credentials for PIN unlock.
+	accountSeed := h.loadAccountSeed()
+	if accountSeed != "" {
+		credsFile, err := GenerateFullAppCredentials(
+			accountSeed,
+			"OwnerSpace."+h.ownerSpace,
+			"MessageSpace."+h.ownerSpace,
+			time.Now().Add(7*24*time.Hour),
+		)
+		if err != nil {
+			log.Warn().Err(err).Msg("Failed to generate NATS credentials - continuing without")
+		} else {
+			response.NatsCredentials = credsFile
+			response.NatsEndpoint = h.natsProxy.GetNATSEndpoint()
+			response.OwnerSpace = "OwnerSpace." + h.ownerSpace
+			response.MessageSpace = "MessageSpace." + h.ownerSpace
+			response.CredentialsTTL = 7 * 24 * 3600 // 7 days
+			log.Info().Str("owner_space", h.ownerSpace).Msg("Vault-issued NATS credentials included in PIN unlock response")
+		}
+	} else {
+		log.Warn().Str("owner_space", h.ownerSpace).Msg("Account seed unavailable - PIN unlock response without NATS credentials")
+	}
+
 	// If credential exists, include encrypted version
 	if storedCredential != nil {
 		credBytes, err := json.Marshal(storedCredential)
@@ -516,6 +544,48 @@ func (h *PINHandler) HandlePINUnlock(ctx context.Context, msg *IncomingMessage) 
 		Type:      MessageTypeResponse,
 		Payload:   responseBytes,
 	}, nil
+}
+
+// loadAccountSeed loads the NATS account seed using a 3-tier strategy:
+// 1. In-memory cache (NATSProxy)
+// 2. Encrypted vault storage
+// 3. DynamoDB + KMS via sealer proxy (parent process)
+// Returns empty string if unavailable (credential generation will be skipped).
+func (h *PINHandler) loadAccountSeed() string {
+	// Tier 1: Check in-memory cache
+	if h.natsProxy.HasAccountSeed() {
+		return h.natsProxy.GetAccountSeed()
+	}
+
+	// Tier 2: Check encrypted vault storage (may fail on cold start before DEK init)
+	if h.storage != nil {
+		seedData, err := h.storage.Get("nats_account_seed")
+		if err == nil && len(seedData) > 0 {
+			h.natsProxy.SetAccountSeed(string(seedData))
+			return string(seedData)
+		}
+	}
+
+	// Tier 3: Load via sealer proxy (DynamoDB + KMS through parent)
+	seed, err := h.sealerProxy.LoadAccountSeed()
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to load account seed via sealer proxy")
+		return ""
+	}
+	if seed == "" {
+		log.Warn().Msg("Account seed not found in DynamoDB")
+		return ""
+	}
+
+	// Cache for future use
+	h.natsProxy.SetAccountSeed(seed)
+	if h.storage != nil {
+		if storeErr := h.storage.Put("nats_account_seed", []byte(seed)); storeErr != nil {
+			log.Warn().Err(storeErr).Msg("Failed to cache account seed in vault storage")
+		}
+	}
+
+	return seed
 }
 
 // HandlePINChange processes PIN change requests

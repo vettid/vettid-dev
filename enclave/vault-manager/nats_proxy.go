@@ -10,7 +10,8 @@ import (
 // The account seed is loaded via the sealer proxy (which routes through
 // the supervisor to the parent for DynamoDB + KMS decryption).
 type NATSProxy struct {
-	ownerSpace string
+	ownerSpace   string
+	natsEndpoint string
 
 	// Cache account seed after first fetch
 	accountSeedMu sync.Mutex
@@ -18,10 +19,19 @@ type NATSProxy struct {
 }
 
 // NewNATSProxy creates a new NATS proxy
-func NewNATSProxy(ownerSpace string) *NATSProxy {
-	return &NATSProxy{
-		ownerSpace: ownerSpace,
+func NewNATSProxy(ownerSpace, natsEndpoint string) *NATSProxy {
+	if natsEndpoint == "" {
+		natsEndpoint = "tls://nats.vettid.dev:443"
 	}
+	return &NATSProxy{
+		ownerSpace:   ownerSpace,
+		natsEndpoint: natsEndpoint,
+	}
+}
+
+// GetNATSEndpoint returns the NATS server endpoint URL
+func (p *NATSProxy) GetNATSEndpoint() string {
+	return p.natsEndpoint
 }
 
 // SetAccountSeed stores the account seed (called when loaded via sealer proxy)

@@ -458,8 +458,15 @@ type PINUnlockRequest struct {
 // PINUnlockResponse is returned after successful unlock
 type PINUnlockResponse struct {
 	Status              string   `json:"status"`
-	EncryptedCredential string   `json:"encrypted_credential"`
+	EncryptedCredential string   `json:"encrypted_credential,omitempty"`
 	NewUTKs             []string `json:"new_utks"`
+	// Vault-issued NATS credentials (full OwnerSpace/MessageSpace access)
+	// Only the vault can issue these — Lambda only issues narrow bootstrap creds
+	NatsCredentials string `json:"nats_credentials,omitempty"`
+	NatsEndpoint    string `json:"nats_endpoint,omitempty"`
+	OwnerSpace      string `json:"owner_space,omitempty"`
+	MessageSpace    string `json:"message_space,omitempty"`
+	CredentialsTTL  int    `json:"credentials_ttl_seconds,omitempty"`
 }
 
 // PINChangeRequest is the request to change PIN

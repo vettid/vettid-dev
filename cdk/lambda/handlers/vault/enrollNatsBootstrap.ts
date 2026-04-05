@@ -56,8 +56,8 @@ const NATS_SEED_KMS_KEY_ARN = process.env.NATS_SEED_KMS_KEY_ARN!;
 // Set to 'true' in production to enforce hardware-backed attestation
 const REQUIRE_DEVICE_ATTESTATION = process.env.REQUIRE_DEVICE_ATTESTATION === 'true';
 
-// Token validity for enrollment bootstrap (24 hours)
-const ENROLLMENT_TOKEN_VALIDITY_MINUTES = 60 * 24;
+// Token validity for enrollment bootstrap (7 days)
+const ENROLLMENT_TOKEN_VALIDITY_MINUTES = 60 * 24 * 7;
 
 // Rate limiting: 3 bootstrap attempts per session per 15 minutes
 const RATE_LIMIT_MAX_REQUESTS = 3;

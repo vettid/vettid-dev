@@ -125,6 +125,115 @@ func GenerateInvitationCredentials(accountSeed string, ownerSpace string, expire
 	return creds, nil
 }
 
+// GenerateFullAppCredentials creates NATS credentials with full app permissions.
+// These are the "real" credentials issued by the vault after PIN verification.
+// The vault is the sole authority for full OwnerSpace/MessageSpace access.
+//
+// Permissions match the Lambda's generateUserCredentials(clientType='app') exactly:
+// - Publish to vault handlers, JetStream consumer ops
+// - Subscribe to vault responses, event types, directory, JetStream
+// - Deny system topics, JetStream admin ops
+//
+// SECURITY: Only the vault can issue these credentials. Lambda can only issue
+// bootstrap credentials with narrow pin-unlock scope.
+func GenerateFullAppCredentials(accountSeed, ownerSpace, messageSpace string, expiresAt time.Time) (string, error) {
+	accountKP, err := nkeys.FromSeed([]byte(accountSeed))
+	if err != nil {
+		return "", fmt.Errorf("failed to parse account seed: %w", err)
+	}
+	defer accountKP.Wipe()
+
+	accountPubKey, err := accountKP.PublicKey()
+	if err != nil {
+		return "", fmt.Errorf("failed to get account public key: %w", err)
+	}
+
+	userKP, err := nkeys.CreateUser()
+	if err != nil {
+		return "", fmt.Errorf("failed to create user key pair: %w", err)
+	}
+
+	userPubKey, err := userKP.PublicKey()
+	if err != nil {
+		return "", fmt.Errorf("failed to get user public key: %w", err)
+	}
+
+	userSeed, err := userKP.Seed()
+	if err != nil {
+		return "", fmt.Errorf("failed to get user seed: %w", err)
+	}
+	defer func() {
+		for i := range userSeed {
+			userSeed[i] = 0
+		}
+	}()
+
+	claims := jwt.NewUserClaims(userPubKey)
+	claims.IssuerAccount = accountPubKey
+	claims.Expires = expiresAt.Unix()
+
+	// Publish allow: vault handlers + JetStream consumer ops
+	claims.Pub.Allow = jwt.StringList{
+		fmt.Sprintf("%s.forVault.>", ownerSpace),
+		"$JS.API.CONSUMER.CREATE.ENROLLMENT",
+		"$JS.API.CONSUMER.MSG.NEXT.ENROLLMENT.>",
+	}
+
+	// Publish deny: system topics + JetStream admin ops
+	claims.Pub.Deny = jwt.StringList{
+		"$SYS.>",
+		"_INBOX.>",
+		"Broadcast.>",
+		"$JS.API.STREAM.CREATE.>",
+		"$JS.API.STREAM.DELETE.>",
+		"$JS.API.STREAM.UPDATE.>",
+		"$JS.API.STREAM.PURGE.>",
+		"$JS.API.CONSUMER.DELETE.>",
+	}
+
+	// Subscribe allow: vault responses + event types + directory + JetStream
+	claims.Sub.Allow = jwt.StringList{
+		fmt.Sprintf("%s.forApp.>", ownerSpace),
+		fmt.Sprintf("%s.eventTypes", ownerSpace),
+		"Directory.>",
+		"$JS.API.CONSUMER.CREATE.ENROLLMENT",
+		"$JS.API.CONSUMER.MSG.NEXT.ENROLLMENT.>",
+		"$JS.API.STREAM.INFO.ENROLLMENT",
+	}
+
+	// Subscribe deny: system topics + JetStream admin ops (no Broadcast deny for subscribe)
+	claims.Sub.Deny = jwt.StringList{
+		"$SYS.>",
+		"_INBOX.>",
+		"$JS.API.STREAM.CREATE.>",
+		"$JS.API.STREAM.DELETE.>",
+		"$JS.API.STREAM.UPDATE.>",
+		"$JS.API.STREAM.PURGE.>",
+		"$JS.API.CONSUMER.DELETE.>",
+	}
+
+	// Resource limits matching Lambda-issued credentials
+	claims.Limits.Subs = 50
+	claims.Limits.Payload = 1048576  // 1 MB
+	claims.Limits.Data = 5000000     // 5 MB/sec
+
+	token, err := claims.Encode(accountKP)
+	if err != nil {
+		return "", fmt.Errorf("failed to encode user JWT: %w", err)
+	}
+
+	creds := formatNATSCredentials(token, userSeed)
+
+	log.Debug().
+		Str("owner_space", ownerSpace).
+		Str("message_space", messageSpace).
+		Str("user_pub", userPubKey).
+		Time("expires", expiresAt).
+		Msg("Generated full app NATS credentials")
+
+	return creds, nil
+}
+
 // formatNATSCredentials formats a JWT and seed as a NATS .creds file
 func formatNATSCredentials(jwt string, seed []byte) string {
 	return fmt.Sprintf("-----BEGIN NATS USER JWT-----\n%s\n------END NATS USER JWT------\n\n************************* IMPORTANT *************************\nNKEY Seed printed below can be used to sign and prove identity.\nNKEYs are sensitive and should be treated as secrets.\n\n-----BEGIN USER NKEY SEED-----\n%s\n------END USER NKEY SEED------\n\n*************************************************************\n", jwt, string(seed))
