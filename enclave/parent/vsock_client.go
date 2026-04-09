@@ -160,6 +160,9 @@ const (
 	// HTTP proxy operations (enclave -> parent -> internet)
 	EnclaveMessageTypeHTTPRequest  EnclaveMessageType = "http_request"
 	EnclaveMessageTypeHTTPResponse EnclaveMessageType = "http_response"
+
+	// Audit event (org-vault-manager -> parent -> DynamoDB + NATS)
+	EnclaveMessageTypeAuditEvent EnclaveMessageType = "audit_event"
 )
 
 // Attestation holds a Nitro attestation document

@@ -212,6 +212,12 @@ func (p *ParentProcess) routeNATSToEnclave(ctx context.Context) error {
 	}
 	log.Debug().Str("subject", "MessageSpace.*.forOwner.>").Msg("Subscribed to NATS")
 
+	// Subscribe to org vault messages (org-vault-manager)
+	if err := p.natsClient.Subscribe("OrgSpace.*.>", msgChan); err != nil {
+		return fmt.Errorf("failed to subscribe to OrgSpace.*.>: %w", err)
+	}
+	log.Debug().Str("subject", "OrgSpace.*.>").Msg("Subscribed to NATS")
+
 	// Subscribe to enclave control messages from Lambdas (attestation requests, etc.)
 	if err := p.natsClient.Subscribe("enclave.>", msgChan); err != nil {
 		return fmt.Errorf("failed to subscribe to enclave.>: %w", err)
@@ -660,6 +666,16 @@ func (p *ParentProcess) sendWithHandlerSupport(ctx context.Context, msg *Enclave
 				log.Error().Err(err).Msg("Failed to send invite resolve response")
 			}
 			p.vsockClient.writeMu.Unlock()
+			continue // Wait for next response
+		}
+
+		// Check if this is an audit event from the enclave (org-vault-manager)
+		if response.Type == EnclaveMessageTypeAuditEvent {
+			log.Debug().
+				Int("payload_len", len(response.Payload)).
+				Msg("Enclave emitted audit event during operation")
+
+			go p.persistAuditEvent(ctx, response)
 			continue // Wait for next response
 		}
 
@@ -1847,8 +1863,8 @@ func extractOwnerSpace(subject string) (string, error) {
 
 	// Validate prefix
 	prefix := parts[0]
-	if prefix != "OwnerSpace" && prefix != "MessageSpace" {
-		return "", fmt.Errorf("unknown subject prefix: %s (expected OwnerSpace or MessageSpace)", prefix)
+	if prefix != "OwnerSpace" && prefix != "MessageSpace" && prefix != "OrgSpace" {
+		return "", fmt.Errorf("unknown subject prefix: %s (expected OwnerSpace, MessageSpace, or OrgSpace)", prefix)
 	}
 
 	return parts[1], nil

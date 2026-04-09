@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -204,4 +205,75 @@ func (d *DynamoDBClient) ListProposals(ctx context.Context) ([]byte, error) {
 
 	log.Info().Int("count", len(proposals)).Msg("Listed proposals from DynamoDB")
 	return data, nil
+}
+
+// PutOrgAuditEvent writes an org vault audit event to the orgAudit table.
+//
+// SECURITY: Audit writes are non-blocking from the caller's perspective.
+// The originating credential proxy operation does not fail if this write fails;
+// failures are logged but the operation succeeds. Audit events are also
+// streamed via NATS as a redundant delivery channel.
+func (d *DynamoDBClient) PutOrgAuditEvent(ctx context.Context, event map[string]interface{}) error {
+	if d.config.OrgAuditTable == "" {
+		return fmt.Errorf("org_audit_table not configured")
+	}
+
+	item, err := marshalDynamoDBItem(event)
+	if err != nil {
+		return fmt.Errorf("failed to marshal audit event: %w", err)
+	}
+
+	_, err = d.client.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: aws.String(d.config.OrgAuditTable),
+		Item:      item,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to put audit event: %w", err)
+	}
+
+	if eventID, ok := event["event_id"].(string); ok {
+		log.Debug().Str("event_id", eventID).Msg("Audit event persisted to DynamoDB")
+	}
+	return nil
+}
+
+// marshalDynamoDBItem converts a generic map[string]interface{} to a DynamoDB
+// AttributeValue map. Supports the field types used in OrgAuditEvent:
+// strings, numbers (float64 from json decoding), and ints.
+func marshalDynamoDBItem(event map[string]interface{}) (map[string]dynamodbtypes.AttributeValue, error) {
+	item := make(map[string]dynamodbtypes.AttributeValue, len(event))
+	for k, v := range event {
+		if v == nil {
+			continue
+		}
+		switch val := v.(type) {
+		case string:
+			if val == "" {
+				continue
+			}
+			item[k] = &dynamodbtypes.AttributeValueMemberS{Value: val}
+		case float64:
+			// Use 'f' format with -1 precision to avoid scientific notation
+			// (timestamps would otherwise become "1.7449e+12")
+			if val == float64(int64(val)) {
+				item[k] = &dynamodbtypes.AttributeValueMemberN{Value: fmt.Sprintf("%d", int64(val))}
+			} else {
+				item[k] = &dynamodbtypes.AttributeValueMemberN{Value: strconv.FormatFloat(val, 'f', -1, 64)}
+			}
+		case int:
+			item[k] = &dynamodbtypes.AttributeValueMemberN{Value: fmt.Sprintf("%d", val)}
+		case int64:
+			item[k] = &dynamodbtypes.AttributeValueMemberN{Value: fmt.Sprintf("%d", val)}
+		case bool:
+			item[k] = &dynamodbtypes.AttributeValueMemberBOOL{Value: val}
+		default:
+			// Fall back to JSON-encoded string for complex types
+			b, err := json.Marshal(v)
+			if err != nil {
+				return nil, fmt.Errorf("failed to marshal field %s: %w", k, err)
+			}
+			item[k] = &dynamodbtypes.AttributeValueMemberS{Value: string(b)}
+		}
+	}
+	return item, nil
 }

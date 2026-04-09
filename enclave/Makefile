@@ -73,11 +73,26 @@ build-local:
 	cd supervisor && go build -o ../bin/supervisor .
 	@echo "Building vault-manager..."
 	cd vault-manager && go build -o ../bin/vault-manager .
+	@echo "Building org-vault-manager..."
+	cd org-vault-manager && go build -o ../bin/org-vault-manager .
+
+# Build org vault Docker image (separate from production enclave)
+build-org-docker:
+	@echo "Building Docker image for org vault enclave..."
+	docker build -f Dockerfile.org-enclave -t vettid-org-enclave:latest .
+
+# Build org vault EIF
+build-org-eif: build-org-docker
+	@echo "Converting org vault Docker image to EIF..."
+	nitro-cli build-enclave \
+		--docker-uri vettid-org-enclave:latest \
+		--output-file vettid-org-enclave.eif
 
 # Run tests
 test:
 	cd supervisor && go test -v ./...
 	cd vault-manager && go test -v ./...
+	cd org-vault-manager && go test -v ./...
 
 # Clean build artifacts
 clean:

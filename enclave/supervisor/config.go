@@ -20,6 +20,9 @@ type Config struct {
 	// VaultManagerPath is the path to the vault-manager binary
 	VaultManagerPath string
 
+	// OrgVaultManagerPath is the path to the org-vault-manager binary
+	OrgVaultManagerPath string
+
 	// StateDir is the directory for vault state (in-memory tmpfs in enclave)
 	StateDir string
 }
@@ -32,7 +35,8 @@ func DefaultConfig() *Config {
 		TCPPort:          5000,
 		MaxVaults:        160,
 		MaxMemoryMB:      5632, // 6GB - 512MB overhead
-		VaultManagerPath: "/usr/local/bin/vault-manager",
-		StateDir:         "/var/lib/enclave",
+		VaultManagerPath:    "/usr/local/bin/vault-manager",
+		OrgVaultManagerPath: "/usr/local/bin/org-vault-manager",
+		StateDir:            "/var/lib/enclave",
 	}
 }

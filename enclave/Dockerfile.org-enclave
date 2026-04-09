@@ -1,0 +1,60 @@
+# VettID Org Vault Enclave Image
+# This Dockerfile creates a SEPARATE enclave image for organizational vaults.
+# It includes supervisor + org-vault-manager ONLY (NOT vault-manager or service-vault-manager).
+# Deployed independently from the production enclave that handles user vaults.
+
+FROM amazonlinux:2023 AS builder
+
+# Install build dependencies
+RUN dnf install -y golang git make && dnf clean all
+
+# Set Go environment
+ENV GOPATH=/go
+ENV PATH=$PATH:/go/bin
+ENV CGO_ENABLED=0
+ENV GOOS=linux
+ENV GOARCH=amd64
+
+# Copy source code
+WORKDIR /build
+COPY supervisor/ ./supervisor/
+COPY org-vault-manager/ ./org-vault-manager/
+COPY parent/ ./parent/
+COPY go.mod go.sum ./
+
+# Build supervisor
+RUN cd supervisor && go build -ldflags="-s -w" -o /build/bin/supervisor .
+
+# Build org-vault-manager
+RUN cd org-vault-manager && go build -ldflags="-s -w" -o /build/bin/org-vault-manager .
+
+# Final enclave image - minimal footprint
+FROM amazonlinux:2023
+
+# Install minimal runtime dependencies and create non-root user
+RUN dnf install -y \
+    ca-certificates \
+    shadow-utils \
+    && useradd -r -s /sbin/nologin enclave \
+    && dnf clean all \
+    && rm -rf /var/cache/dnf
+
+# Copy binaries from builder
+COPY --from=builder /build/bin/supervisor /usr/local/bin/
+COPY --from=builder /build/bin/org-vault-manager /usr/local/bin/
+
+# Create directories for runtime and config
+RUN mkdir -p /var/lib/enclave /var/log/enclave /etc/vettid \
+    && chown -R enclave:enclave /var/lib/enclave /var/log/enclave
+
+# SECURITY: Copy vsock shared secret for mutual authentication with parent
+COPY vsock-secret.hex /etc/vettid/vsock-secret
+RUN chmod 400 /etc/vettid/vsock-secret \
+    && chown enclave:enclave /etc/vettid/vsock-secret
+
+# Set production mode
+ENV VETTID_PRODUCTION=true
+
+# The supervisor is the entry point - it manages org-vault-manager processes
+USER enclave
+ENTRYPOINT ["/usr/local/bin/supervisor"]

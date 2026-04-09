@@ -84,6 +84,9 @@ const (
 	// HTTP proxy operations (vault-manager -> supervisor -> parent -> internet)
 	MessageTypeHTTPRequest  MessageType = "http_request"
 	MessageTypeHTTPResponse MessageType = "http_response"
+
+	// Audit event (org-vault-manager -> supervisor -> parent -> DynamoDB + NATS)
+	MessageTypeAuditEvent MessageType = "audit_event"
 )
 
 // SECURITY: Handshake constants

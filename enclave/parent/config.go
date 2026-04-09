@@ -52,6 +52,8 @@ type DynamoDBConfig struct {
 	NatsAccountsTable string `yaml:"nats_accounts_table"`
 	// Table name for governance proposals
 	ProposalsTable string `yaml:"proposals_table"`
+	// Table name for org vault audit events
+	OrgAuditTable string `yaml:"org_audit_table"`
 	// AWS region (defaults to KMS region if not set)
 	Region string `yaml:"region"`
 }

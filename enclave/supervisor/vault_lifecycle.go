@@ -410,6 +410,24 @@ func (vp *VaultProcess) ProcessMessage(ctx context.Context, msg *Message) (*Mess
 				// Continue waiting for the final response
 				continue
 
+			case MessageTypeAuditEvent:
+				// Vault-manager emitting an audit event — forward to parent for DynamoDB persistence
+				log.Debug().
+					Str("owner_space", vp.OwnerSpace).
+					Str("request_id", response.RequestID).
+					Msg("Forwarding audit event from vault-manager to parent")
+
+				if vp.parentSender != nil {
+					if err := vp.parentSender.SendToParent(response); err != nil {
+						log.Warn().
+							Err(err).
+							Str("owner_space", vp.OwnerSpace).
+							Msg("Failed to forward audit event (non-fatal)")
+					}
+				}
+				// Continue waiting for the final response
+				continue
+
 			case MessageTypeHTTPRequest:
 				// Vault-manager needs to make an HTTP request through the parent
 				log.Debug().

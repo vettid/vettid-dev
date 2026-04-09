@@ -32,6 +32,7 @@ const (
 var httpProxyAllowedHosts = []string{
 	"mempool.space",     // Bitcoin blockchain API (balance, UTXOs, broadcast, fees)
 	"blockstream.info",  // Fallback Bitcoin blockchain API
+	"127.0.0.1",         // Localhost DB query bridge (org vault credential proxy)
 }
 
 // HTTPProxyRequest is the request payload from the enclave
@@ -132,13 +133,13 @@ func (p *ParentProcess) handleHTTPProxy(ctx context.Context, msg *EnclaveMessage
 		return httpProxyErrorResponse("invalid URL: " + err.Error())
 	}
 
-	// SECURITY: Only allow HTTPS (except in development)
-	if parsedURL.Scheme != "https" {
+	// SECURITY: Only allow HTTPS, except for localhost (DB bridge behind vsock boundary)
+	if parsedURL.Scheme != "https" && parsedURL.Hostname() != "127.0.0.1" && parsedURL.Hostname() != "localhost" {
 		log.Warn().
 			Str("url", req.URL).
 			Str("scheme", parsedURL.Scheme).
 			Msg("SECURITY: Rejected non-HTTPS URL")
-		return httpProxyErrorResponse("only HTTPS URLs are allowed")
+		return httpProxyErrorResponse("only HTTPS URLs are allowed (except localhost)")
 	}
 
 	// SECURITY: Validate against host allowlist

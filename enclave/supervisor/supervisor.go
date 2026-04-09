@@ -24,6 +24,7 @@ type AttestationKeyEntry struct {
 type Supervisor struct {
 	config        *Config
 	vaults        *VaultManager
+	orgVaults     *OrgVaultManager // Org vault manager for OrgSpace.* subjects
 	memoryManager *MemoryManager
 	sealer        *NitroSealer
 	vsock         Listener
@@ -63,6 +64,9 @@ func NewSupervisor(cfg *Config) (*Supervisor, error) {
 	// Create vault manager with reference to supervisor for outbound messages
 	// Pass log forwarder to enable CloudWatch log streaming
 	s.vaults = NewVaultManager(cfg, memMgr, s, sealer, s.SendLog)
+
+	// Create org vault manager for OrgSpace.* subjects
+	s.orgVaults = NewOrgVaultManager(cfg, memMgr, s, sealer, s.SendLog)
 
 	return s, nil
 }
@@ -148,6 +152,11 @@ func (s *Supervisor) handleConnection(ctx context.Context, rawConn Connection) {
 	// Set connection for sealer handler (for S3 storage operations)
 	// This allows vault-manager processes to store/load data via the parent
 	s.vaults.SetParentConnection(authConn)
+
+	// Set parent connection for org vault manager
+	if s.orgVaults != nil {
+		s.orgVaults.SetParentConnection(authConn)
+	}
 
 	log.Debug().Msg("New authenticated connection from parent process")
 
@@ -253,7 +262,7 @@ func extractOwnerSpaceFromSubject(subject string) (string, error) {
 	}
 
 	prefix := parts[0]
-	if prefix != "OwnerSpace" && prefix != "MessageSpace" {
+	if prefix != "OwnerSpace" && prefix != "MessageSpace" && prefix != "OrgSpace" {
 		return "", fmt.Errorf("unknown subject prefix: %s", prefix)
 	}
 
@@ -338,7 +347,19 @@ func (s *Supervisor) handleVaultOp(ctx context.Context, msg *Message) (*Message,
 		}
 	}
 
-	// Get or create vault for this owner
+	// Route based on subject prefix: OrgSpace goes to org vault manager
+	if msg.Subject != "" && strings.HasPrefix(msg.Subject, "OrgSpace.") {
+		if s.orgVaults == nil {
+			return nil, fmt.Errorf("org vault manager not available")
+		}
+		vault, err := s.orgVaults.GetOrCreate(ctx, ownerSpace)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get org vault: %w", err)
+		}
+		return vault.ProcessMessage(ctx, msg)
+	}
+
+	// Get or create vault for this owner (user vaults)
 	vault, err := s.vaults.GetOrCreate(ctx, ownerSpace)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get vault: %w", err)
