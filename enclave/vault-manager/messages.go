@@ -1916,6 +1916,31 @@ func (mh *MessageHandler) handleFeedAction(ctx context.Context, msg *IncomingMes
 		return mh.errorResponse(msg.GetID(), "event_id is required")
 	}
 
+	// Look up the event to determine if action needs special routing
+	event, err := mh.eventHandler.storage.SQLite().GetEvent(req.EventID)
+	if err == nil && event != nil {
+		// Route connection acceptance actions to the connection respond handler
+		if event.EventType == string(EventTypeConnectionAccepted) && (req.Action == "accept" || req.Action == "decline") {
+			connectionID := event.SourceID
+			if connectionID != "" {
+				response := req.Action
+				if response == "decline" {
+					response = "reject"
+				}
+				reviewPayload, _ := json.Marshal(map[string]string{
+					"connection_id": connectionID,
+					"response":      response,
+				})
+				reviewMsg := &IncomingMessage{
+					ID:      msg.GetID(),
+					Type:    msg.Type,
+					Payload: reviewPayload,
+				}
+				return mh.connectionsHandler.HandleRespond(reviewMsg)
+			}
+		}
+	}
+
 	if err := mh.eventHandler.ExecuteAction(ctx, req.EventID, req.Action); err != nil {
 		return mh.errorResponse(msg.GetID(), err.Error())
 	}

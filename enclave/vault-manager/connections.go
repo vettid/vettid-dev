@@ -1466,9 +1466,13 @@ func (h *ConnectionsHandler) HandlePeerConnectionNotification(ctx context.Contex
 		}, nil
 	}
 
-	// Log the acceptance event
+	// Log the acceptance event — include peer name so feed shows who wants to connect
 	if h.eventHandler != nil {
-		h.eventHandler.LogConnectionEvent(ctx, EventTypeConnectionAccepted, notification.ConnectionID, notification.PeerGUID, "Peer accepted connection invitation")
+		title := fmt.Sprintf("%s wants to connect", record.PeerAlias)
+		if record.PeerAlias == "" {
+			title = "New connection request"
+		}
+		h.eventHandler.LogConnectionEvent(ctx, EventTypeConnectionAccepted, notification.ConnectionID, notification.PeerGUID, title)
 	}
 
 	log.Info().

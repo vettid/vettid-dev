@@ -265,7 +265,7 @@ var eventClassifications = map[EventType]EventClassification{
 	// Connection events
 	EventTypeConnectionRequest:   {FeedStatusActive, ActionTypeAcceptDecline, PriorityNormal, RetentionStandard},
 	EventTypeConnectionInitiated: {FeedStatusActive, ActionTypeAcceptDecline, PriorityNormal, RetentionStandard},
-	EventTypeConnectionAccepted:  {FeedStatusActive, ActionTypeView, PriorityHigh, RetentionStandard},
+	EventTypeConnectionAccepted:  {FeedStatusActive, ActionTypeAcceptDecline, PriorityHigh, RetentionStandard},
 	EventTypeConnectionRejected:  {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
 	EventTypeConnectionRevoked:   {FeedStatusActive, ActionTypeAcknowledge, PriorityLow, RetentionStandard},
 	EventTypeConnectionCreated:   {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
