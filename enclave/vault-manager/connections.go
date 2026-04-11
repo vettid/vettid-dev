@@ -3412,6 +3412,33 @@ func (h *ConnectionsHandler) loadPublishedProfileForPeer() map[string]interface{
 		}
 	}
 
+	// Load public wallet addresses
+	if indexData, err := h.storage.Get(walletIndexKey); err == nil {
+		var walletIDs []string
+		if json.Unmarshal(indexData, &walletIDs) == nil {
+			var wallets []map[string]string
+			for _, walletID := range walletIDs {
+				wData, err := h.storage.Get(walletStorageKey(walletID))
+				if err != nil {
+					continue
+				}
+				var wallet WalletRecord
+				if json.Unmarshal(wData, &wallet) != nil || !wallet.IsPublic || wallet.IsArchived {
+					continue
+				}
+				wallets = append(wallets, map[string]string{
+					"wallet_id": wallet.WalletID,
+					"label":     wallet.Label,
+					"address":   wallet.Address,
+					"network":   wallet.Network,
+				})
+			}
+			if len(wallets) > 0 {
+				profile["wallets"] = wallets
+			}
+		}
+	}
+
 	return profile
 }
 

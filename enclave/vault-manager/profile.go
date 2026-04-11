@@ -956,6 +956,30 @@ func (h *ProfileHandler) HandleGetPublished(msg *IncomingMessage) (*OutgoingMess
 		}
 	}
 
+	// Load public wallet addresses
+	var wallets []PublishedWallet
+	if indexData, err := h.storage.Get(walletIndexKey); err == nil {
+		var walletIDs []string
+		if json.Unmarshal(indexData, &walletIDs) == nil {
+			for _, walletID := range walletIDs {
+				wData, err := h.storage.Get(walletStorageKey(walletID))
+				if err != nil {
+					continue
+				}
+				var wallet WalletRecord
+				if json.Unmarshal(wData, &wallet) != nil || !wallet.IsPublic || wallet.IsArchived {
+					continue
+				}
+				wallets = append(wallets, PublishedWallet{
+					WalletID: wallet.WalletID,
+					Label:    wallet.Label,
+					Address:  wallet.Address,
+					Network:  wallet.Network,
+				})
+			}
+		}
+	}
+
 	// Wrap in response format
 	resp := map[string]interface{}{
 		"success":        true,
@@ -966,6 +990,7 @@ func (h *ProfileHandler) HandleGetPublished(msg *IncomingMessage) (*OutgoingMess
 		"public_key":     profile.PublicKey,
 		"email_verified": profile.EmailVerified,
 		"fields":         profile.Fields,
+		"wallets":        wallets,
 		"profile_version": profile.Version,
 		"updated_at":     profile.UpdatedAt,
 		"published_at":   time.Unix(settings.PublishedAt, 0).Format(time.RFC3339),
