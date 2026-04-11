@@ -3372,6 +3372,15 @@ func (h *ConnectionsHandler) loadPublishedProfileForPeer() map[string]interface{
 		}
 	}
 
+	// Identity public key (Ed25519)
+	if h.vaultState != nil {
+		h.vaultState.mu.RLock()
+		if h.vaultState.credential != nil && h.vaultState.credential.IdentityPublicKey != nil {
+			profile["public_key"] = base64.StdEncoding.EncodeToString(h.vaultState.credential.IdentityPublicKey)
+		}
+		h.vaultState.mu.RUnlock()
+	}
+
 	// Photo
 	photoData, err := h.storage.Get("profile/_photo")
 	if err == nil {
