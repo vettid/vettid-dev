@@ -1,0 +1,686 @@
+#!/bin/bash
+# VettID Unified Enclave Deployment Script
+#
+# Single command for enclave deployments. Automatically detects PCR0 changes
+# and handles migration with user consent. Auto-finalizes when all users
+# have migrated or the deadline passes.
+#
+# Usage:
+#   ./deploy.sh --summary "Added wallet to profile"   # Full deploy
+#   ./deploy.sh --dry-run --summary "..."              # Preview changes
+#   ./deploy.sh --status                               # Check migration state
+#   ./deploy.sh --finalize                             # Manual finalize
+#
+# Flow (PCR0 changed):
+#   1. Build new enclave (calls deploy-enclave.sh --skip-refresh)
+#   2. Update KMS policy: single → AnyOf [old, new]
+#   3. Scale ASG to 2 (both old + new running)
+#   4. Wait for both instances healthy
+#   5. Publish signed migration config to S3
+#   6. Schedule auto-finalize (EventBridge rule, checks every 5 min)
+#   7. Done — operator walks away
+#
+# Flow (PCR0 unchanged):
+#   1. Build new enclave
+#   2. Instance refresh (simple replacement)
+#   3. Verify health
+#   4. Done
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENCLAVE_DIR="$(dirname "$SCRIPT_DIR")"
+
+REGION="${AWS_REGION:-us-east-1}"
+PCR0_SSM_PARAM="/vettid/enclave/pcr/pcr0"
+MIGRATION_CONFIG_S3_KEY="_migration/config.json"
+TRANSITION_HOURS=72
+FINALIZE_LAMBDA_NAME="vettid-migration-finalize"
+FINALIZE_RULE_NAME="vettid-migration-finalize-schedule"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+log_info()  { echo -e "${GREEN}[INFO]${NC} $1"; }
+log_warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
+log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+log_step()  { echo -e "${BLUE}[STEP]${NC} $1"; }
+
+# Parse arguments
+ACTION="deploy"
+SUMMARY=""
+DETAILS_URL=""
+DRY_RUN=false
+SKIP_KMS_FINALIZE=false
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --finalize) ACTION="finalize"; shift ;;
+        --status) ACTION="status"; shift ;;
+        --dry-run) DRY_RUN=true; shift ;;
+        --skip-kms-finalize) SKIP_KMS_FINALIZE=true; shift ;;
+        --summary) SUMMARY="$2"; shift 2 ;;
+        --summary=*) SUMMARY="${1#*=}"; shift ;;
+        --details-url) DETAILS_URL="$2"; shift 2 ;;
+        --details-url=*) DETAILS_URL="${1#*=}"; shift ;;
+        -h|--help) usage; exit 0 ;;
+        *) log_error "Unknown option: $1"; exit 1 ;;
+    esac
+done
+
+usage() {
+    cat <<EOF
+VettID Unified Enclave Deployment
+
+Usage: $0 [ACTION] [OPTIONS]
+
+Actions:
+  (default)         Deploy new enclave (auto-detects if migration needed)
+  --finalize        Manually finalize an active migration
+  --status          Show current deployment/migration state
+
+Options:
+  --summary TEXT        Change description (required for deploy)
+  --details-url URL     Link to release notes
+  --dry-run             Preview changes without executing
+  --skip-kms-finalize   Leave both PCR0s in KMS policy after deploy
+  -h, --help            Show this help
+EOF
+}
+
+# ============================================================================
+# Helpers
+# ============================================================================
+
+get_asg_name() {
+    aws autoscaling describe-auto-scaling-groups \
+        --query 'AutoScalingGroups[?contains(AutoScalingGroupName, `VettID-Nitro-EnclaveASG`)].AutoScalingGroupName | [0]' \
+        --output text --region "$REGION" 2>/dev/null
+}
+
+get_vault_bucket() {
+    aws ssm get-parameter --name "/vettid/nitro/vault-data-bucket" \
+        --query 'Parameter.Value' --output text --region "$REGION"
+}
+
+get_current_pcr0() {
+    aws ssm get-parameter --name "$PCR0_SSM_PARAM" \
+        --query 'Parameter.Value' --output text --region "$REGION"
+}
+
+get_current_pcrs() {
+    aws ssm get-parameter --name "/vettid/enclave/pcr/current" \
+        --query 'Parameter.Value' --output text --region "$REGION"
+}
+
+get_asg_desired() {
+    aws autoscaling describe-auto-scaling-groups \
+        --auto-scaling-group-names "$1" \
+        --query 'AutoScalingGroups[0].DesiredCapacity' \
+        --output text --region "$REGION"
+}
+
+get_kms_key_id() {
+    aws kms list-aliases \
+        --query 'Aliases[?AliasName==`alias/vettid-enclave-sealing`].TargetKeyId' \
+        --output text --region "$REGION"
+}
+
+get_kms_policy() {
+    aws kms get-key-policy --key-id "$1" --policy-name default \
+        --query Policy --output text --region "$REGION"
+}
+
+# Wait for ASG instance refresh to complete
+wait_for_refresh() {
+    local asg_name="$1"
+    local timeout=900  # 15 minutes
+    local elapsed=0
+    local interval=15
+
+    while [[ $elapsed -lt $timeout ]]; do
+        local status
+        status=$(aws autoscaling describe-instance-refreshes \
+            --auto-scaling-group-name "$asg_name" \
+            --query 'InstanceRefreshes[0].Status' \
+            --output text --region "$REGION" 2>/dev/null || echo "Unknown")
+
+        case "$status" in
+            Successful)
+                log_info "Instance refresh completed successfully"
+                return 0
+                ;;
+            Failed|Cancelled|RollbackFailed|RollbackSuccessful)
+                log_error "Instance refresh failed with status: $status"
+                return 1
+                ;;
+            *)
+                # InProgress, Pending, Cancelling
+                printf "."
+                sleep $interval
+                elapsed=$((elapsed + interval))
+                ;;
+        esac
+    done
+
+    log_error "Instance refresh timed out after ${timeout}s"
+    return 1
+}
+
+# Wait for ASG instances to be healthy
+wait_for_instances() {
+    local asg_name="$1"
+    local expected_count="$2"
+    local timeout=300  # 5 minutes
+    local elapsed=0
+
+    while [[ $elapsed -lt $timeout ]]; do
+        local healthy_count
+        healthy_count=$(aws autoscaling describe-auto-scaling-groups \
+            --auto-scaling-group-names "$asg_name" \
+            --query 'AutoScalingGroups[0].Instances[?LifecycleState==`InService` && HealthStatus==`Healthy`] | length(@)' \
+            --output text --region "$REGION" 2>/dev/null || echo "0")
+
+        if [[ "$healthy_count" -ge "$expected_count" ]]; then
+            log_info "$healthy_count healthy instance(s) running"
+            return 0
+        fi
+
+        printf "."
+        sleep 10
+        elapsed=$((elapsed + 10))
+    done
+
+    log_error "Timed out waiting for $expected_count healthy instances"
+    return 1
+}
+
+# Verify enclave health via SSM
+verify_enclave_health() {
+    local instance_id="$1"
+    local retries=3
+    local delay=30
+
+    for attempt in $(seq 1 $retries); do
+        # Check SSM agent is available
+        local ssm_status
+        ssm_status=$(aws ssm describe-instance-information \
+            --filters "Key=InstanceIds,Values=$instance_id" \
+            --query 'InstanceInformationList[0].PingStatus' \
+            --output text --region "$REGION" 2>/dev/null || echo "Unknown")
+
+        if [[ "$ssm_status" != "Online" ]]; then
+            log_warn "SSM not online for $instance_id (attempt $attempt/$retries)"
+            [[ $attempt -lt $retries ]] && sleep $delay
+            continue
+        fi
+
+        # Check parent health endpoint
+        local cmd_id
+        cmd_id=$(aws ssm send-command \
+            --instance-ids "$instance_id" \
+            --document-name "AWS-RunShellScript" \
+            --parameters 'commands=["curl -sf http://localhost:8080/health 2>/dev/null || echo HEALTH_FAIL"]' \
+            --query 'Command.CommandId' \
+            --output text --region "$REGION" 2>/dev/null || echo "")
+
+        if [[ -z "$cmd_id" ]]; then
+            log_warn "Failed to send SSM command (attempt $attempt/$retries)"
+            [[ $attempt -lt $retries ]] && sleep $delay
+            continue
+        fi
+
+        sleep 5
+        local health_output
+        health_output=$(aws ssm get-command-invocation \
+            --command-id "$cmd_id" \
+            --instance-id "$instance_id" \
+            --query 'StandardOutputContent' \
+            --output text --region "$REGION" 2>/dev/null || echo "HEALTH_FAIL")
+
+        if echo "$health_output" | grep -q '"Healthy":true\|"healthy":true'; then
+            log_info "Enclave health check passed for $instance_id"
+            return 0
+        fi
+
+        log_warn "Health check failed (attempt $attempt/$retries): ${health_output:0:100}"
+        [[ $attempt -lt $retries ]] && sleep $delay
+    done
+
+    log_error "Enclave health check failed after $retries attempts"
+    return 1
+}
+
+# ============================================================================
+# STATUS
+# ============================================================================
+do_status() {
+    echo -e "${BLUE}=== VettID Deployment Status ===${NC}"
+    echo ""
+
+    local asg_name
+    asg_name=$(get_asg_name)
+    if [[ -z "$asg_name" || "$asg_name" == "None" ]]; then
+        log_error "Could not find enclave ASG"
+        return 1
+    fi
+
+    # Current PCR0
+    local current_pcr0
+    current_pcr0=$(get_current_pcr0 2>/dev/null || echo "unknown")
+    echo -e "  Current PCR0: ${current_pcr0:0:32}..."
+
+    # ASG status
+    local desired
+    desired=$(get_asg_desired "$asg_name")
+    echo -e "  ASG Instances: $desired"
+
+    # KMS policy
+    local kms_key_id
+    kms_key_id=$(get_kms_key_id 2>/dev/null || echo "")
+    if [[ -n "$kms_key_id" && "$kms_key_id" != "None" ]]; then
+        local policy pcr_value
+        policy=$(get_kms_policy "$kms_key_id")
+        pcr_value=$(echo "$policy" | jq -r '.Statement[] | select(.Sid == "AllowEnclaveDecrypt") | .Condition.StringEqualsIgnoreCase."kms:RecipientAttestation:PCR0"')
+        if echo "$pcr_value" | jq -e 'type == "array"' >/dev/null 2>&1; then
+            local pcr_count
+            pcr_count=$(echo "$pcr_value" | jq 'length')
+            echo -e "  KMS Policy: ${YELLOW}AnyOf [$pcr_count PCR0 values]${NC} (migration active)"
+        else
+            echo -e "  KMS Policy: ${GREEN}Single PCR0${NC} (normal)"
+        fi
+    fi
+
+    # Migration config
+    local bucket
+    bucket=$(get_vault_bucket 2>/dev/null || echo "")
+    if [[ -n "$bucket" ]] && aws s3 ls "s3://${bucket}/${MIGRATION_CONFIG_S3_KEY}" --region "$REGION" >/dev/null 2>&1; then
+        echo ""
+        echo -e "  ${YELLOW}Migration: ACTIVE${NC}"
+        local config
+        config=$(aws s3 cp "s3://${bucket}/${MIGRATION_CONFIG_S3_KEY}" - --region "$REGION" 2>/dev/null)
+        echo "  Version:  $(echo "$config" | jq -r '.version')"
+        echo "  Summary:  $(echo "$config" | jq -r '.summary')"
+        echo "  Deadline: $(echo "$config" | jq -r '.mandatory_after')"
+    else
+        echo ""
+        echo -e "  Migration: ${GREEN}None${NC}"
+    fi
+
+    # Auto-finalize schedule
+    local rule_exists
+    rule_exists=$(aws events describe-rule --name "$FINALIZE_RULE_NAME" --region "$REGION" 2>/dev/null && echo "yes" || echo "no")
+    if [[ "$rule_exists" == "yes" ]]; then
+        echo -e "  Auto-finalize: ${GREEN}Scheduled (every 5 min)${NC}"
+    else
+        echo "  Auto-finalize: Not scheduled"
+    fi
+
+    echo ""
+}
+
+# ============================================================================
+# DEPLOY
+# ============================================================================
+do_deploy() {
+    if [[ -z "$SUMMARY" ]]; then
+        log_error "--summary is required for deploy"
+        log_error "Example: $0 --summary 'Improved message encryption'"
+        exit 1
+    fi
+
+    local asg_name
+    asg_name=$(get_asg_name)
+    if [[ -z "$asg_name" || "$asg_name" == "None" ]]; then
+        log_error "Could not find enclave ASG"
+        exit 1
+    fi
+
+    # Phase tracking for error handler
+    local PHASE="init"
+    local KMS_MODIFIED=false
+    local REFRESH_STARTED=false
+    local ORIGINAL_KMS_POLICY=""
+
+    trap 'on_error "$PHASE" "$KMS_MODIFIED" "$REFRESH_STARTED"' ERR
+
+    # ------------------------------------------------------------------
+    # Phase 1: Capture current state
+    # ------------------------------------------------------------------
+    PHASE="capture-state"
+    log_step "Phase 1: Capturing current state"
+
+    local old_pcrs_json old_pcr0 old_pcr1 old_pcr2
+    old_pcrs_json=$(get_current_pcrs)
+    old_pcr0=$(echo "$old_pcrs_json" | jq -r '.PCR0')
+    old_pcr1=$(echo "$old_pcrs_json" | jq -r '.PCR1')
+    old_pcr2=$(echo "$old_pcrs_json" | jq -r '.PCR2')
+    log_info "Old PCR0: ${old_pcr0:0:24}..."
+
+    local kms_key_id
+    kms_key_id=$(get_kms_key_id)
+    if [[ -z "$kms_key_id" || "$kms_key_id" == "None" ]]; then
+        log_error "Could not find KMS sealing key"
+        exit 1
+    fi
+    ORIGINAL_KMS_POLICY=$(get_kms_policy "$kms_key_id")
+
+    if $DRY_RUN; then
+        log_info "[DRY RUN] Would build new enclave and detect PCR0 change"
+        log_info "[DRY RUN] Current KMS policy PCR0: ${old_pcr0:0:24}..."
+        log_info "[DRY RUN] Summary: $SUMMARY"
+        log_info "[DRY RUN] No changes made"
+        exit 0
+    fi
+
+    # ------------------------------------------------------------------
+    # Phase 2: Build new enclave
+    # ------------------------------------------------------------------
+    PHASE="build"
+    log_step "Phase 2: Building new enclave (this takes ~15 minutes)"
+    "$SCRIPT_DIR/deploy-enclave.sh" --skip-refresh
+
+    local new_pcrs_json new_pcr0 new_pcr1 new_pcr2
+    new_pcrs_json=$(get_current_pcrs)
+    new_pcr0=$(echo "$new_pcrs_json" | jq -r '.PCR0')
+    new_pcr1=$(echo "$new_pcrs_json" | jq -r '.PCR1')
+    new_pcr2=$(echo "$new_pcrs_json" | jq -r '.PCR2')
+    log_info "New PCR0: ${new_pcr0:0:24}..."
+
+    # ------------------------------------------------------------------
+    # Check if PCR0 changed
+    # ------------------------------------------------------------------
+    if [[ "$old_pcr0" == "$new_pcr0" ]]; then
+        log_info "PCR0 unchanged — simple instance refresh (no migration needed)"
+        PHASE="simple-refresh"
+
+        # Start instance refresh
+        aws autoscaling start-instance-refresh \
+            --auto-scaling-group-name "$asg_name" \
+            --preferences '{"MinHealthyPercentage": 0, "InstanceWarmup": 300}' \
+            --region "$REGION" >/dev/null
+        REFRESH_STARTED=true
+
+        log_info "Waiting for instance refresh..."
+        wait_for_refresh "$asg_name"
+
+        log_info "Running verification..."
+        "$SCRIPT_DIR/verify-deployment.sh" --fix || true
+
+        log_info "=== Deploy Complete (no migration) ==="
+        exit 0
+    fi
+
+    log_warn "PCR0 CHANGED — migration required (user consent needed)"
+
+    # ------------------------------------------------------------------
+    # Phase 3: KMS transition
+    # ------------------------------------------------------------------
+    PHASE="kms-update"
+    log_step "Phase 3: Updating KMS policy (AnyOf [old, new])"
+
+    local new_policy
+    new_policy=$(echo "$ORIGINAL_KMS_POLICY" | jq --arg old "$old_pcr0" --arg new "$new_pcr0" \
+        '(.Statement[] | select(.Sid == "AllowEnclaveDecrypt") | .Condition.StringEqualsIgnoreCase."kms:RecipientAttestation:PCR0") = [$old, $new]')
+    aws kms put-key-policy --key-id "$kms_key_id" --policy-name default \
+        --policy "$new_policy" --region "$REGION"
+    KMS_MODIFIED=true
+    log_info "KMS policy now allows both PCR0 values"
+
+    # ------------------------------------------------------------------
+    # Phase 4: Scale to dual-enclave
+    # ------------------------------------------------------------------
+    PHASE="scale-up"
+    log_step "Phase 4: Scaling ASG to 2 (old + new enclave)"
+
+    # Update ASG max if needed
+    local current_max
+    current_max=$(aws autoscaling describe-auto-scaling-groups \
+        --auto-scaling-group-names "$asg_name" \
+        --query 'AutoScalingGroups[0].MaxSize' \
+        --output text --region "$REGION")
+    if [[ "$current_max" -lt 2 ]]; then
+        aws autoscaling update-auto-scaling-group \
+            --auto-scaling-group-name "$asg_name" \
+            --max-size 2 \
+            --region "$REGION"
+    fi
+
+    aws autoscaling set-desired-capacity \
+        --auto-scaling-group-name "$asg_name" \
+        --desired-capacity 2 \
+        --region "$REGION"
+
+    log_info "Waiting for both instances to be healthy..."
+    wait_for_instances "$asg_name" 2
+
+    # Verify new instance health
+    local new_instance_id
+    new_instance_id=$(aws autoscaling describe-auto-scaling-groups \
+        --auto-scaling-group-names "$asg_name" \
+        --query 'AutoScalingGroups[0].Instances[*].InstanceId' \
+        --output text --region "$REGION" | tr '\t' '\n' | tail -1)
+    log_info "Verifying new instance health ($new_instance_id)..."
+    verify_enclave_health "$new_instance_id" || log_warn "Health check inconclusive — continuing (both PCR0s in KMS)"
+
+    # ------------------------------------------------------------------
+    # Phase 5: Publish migration config
+    # ------------------------------------------------------------------
+    PHASE="publish-config"
+    log_step "Phase 5: Publishing migration config"
+
+    local published_at mandatory_after version
+    published_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    mandatory_after=$(date -u -d "+${TRANSITION_HOURS} hours" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || \
+                      date -u -v+${TRANSITION_HOURS}H +"%Y-%m-%dT%H:%M:%SZ")
+    version="$(date +%Y-%m-%d)-v$(date +%s | tail -c 5)"
+
+    local config_file
+    config_file=$(mktemp)
+    cat > "$config_file" <<CONFIGEOF
+{
+    "new_pcrs": { "pcr0": "$new_pcr0", "pcr1": "$new_pcr1", "pcr2": "$new_pcr2" },
+    "old_pcrs": { "pcr0": "$old_pcr0", "pcr1": "$old_pcr1", "pcr2": "$old_pcr2" },
+    "valid_from": "$published_at",
+    "version": "$version",
+    "summary": "$SUMMARY",
+    "details_url": "${DETAILS_URL:-}",
+    "published_at": "$published_at",
+    "mandatory_after": "$mandatory_after"
+}
+CONFIGEOF
+
+    # Sign with KMS if signing script exists
+    local signed_config
+    if [[ -x "$SCRIPT_DIR/sign-pcr-config.sh" ]]; then
+        signed_config=$("$SCRIPT_DIR/sign-pcr-config.sh" "$config_file")
+    else
+        signed_config=$(cat "$config_file")
+        log_warn "sign-pcr-config.sh not found — config published unsigned"
+    fi
+    rm -f "$config_file"
+
+    local bucket
+    bucket=$(get_vault_bucket)
+    echo "$signed_config" | aws s3 cp - "s3://${bucket}/${MIGRATION_CONFIG_S3_KEY}" \
+        --content-type application/json --region "$REGION"
+    log_info "Migration config published (version: $version, deadline: $mandatory_after)"
+
+    # ------------------------------------------------------------------
+    # Phase 6: Schedule auto-finalize
+    # ------------------------------------------------------------------
+    PHASE="schedule-finalize"
+    log_step "Phase 6: Scheduling auto-finalize"
+
+    # Check if Lambda exists
+    if aws lambda get-function --function-name "$FINALIZE_LAMBDA_NAME" --region "$REGION" >/dev/null 2>&1; then
+        # Create EventBridge rule (every 5 minutes)
+        aws events put-rule \
+            --name "$FINALIZE_RULE_NAME" \
+            --schedule-expression "rate(5 minutes)" \
+            --state ENABLED \
+            --description "Auto-finalize enclave migration when all users migrated or deadline passed" \
+            --region "$REGION" >/dev/null
+
+        # Get Lambda ARN
+        local lambda_arn
+        lambda_arn=$(aws lambda get-function --function-name "$FINALIZE_LAMBDA_NAME" \
+            --query 'Configuration.FunctionArn' --output text --region "$REGION")
+
+        # Add Lambda as target
+        aws events put-targets \
+            --rule "$FINALIZE_RULE_NAME" \
+            --targets "Id=migration-finalize,Arn=$lambda_arn" \
+            --region "$REGION" >/dev/null
+
+        # Ensure EventBridge can invoke the Lambda
+        aws lambda add-permission \
+            --function-name "$FINALIZE_LAMBDA_NAME" \
+            --statement-id "migration-finalize-schedule" \
+            --action "lambda:InvokeFunction" \
+            --principal "events.amazonaws.com" \
+            --source-arn "arn:aws:events:${REGION}:$(aws sts get-caller-identity --query Account --output text):rule/${FINALIZE_RULE_NAME}" \
+            --region "$REGION" 2>/dev/null || true  # Ignore if already exists
+
+        log_info "Auto-finalize scheduled (every 5 minutes)"
+        log_info "Lambda will finalize when all users migrate or deadline passes"
+    else
+        log_warn "Auto-finalize Lambda ($FINALIZE_LAMBDA_NAME) not found"
+        log_warn "Migration will need manual finalization: $0 --finalize"
+    fi
+
+    # ------------------------------------------------------------------
+    # Done
+    # ------------------------------------------------------------------
+    echo ""
+    log_info "=== Migration Deployment Complete ==="
+    echo ""
+    log_info "Summary: $SUMMARY"
+    log_info "Version: $version"
+    log_info "Deadline: $mandatory_after"
+    echo ""
+    log_info "Both old and new enclave instances are running."
+    log_info "Users will see 'Vault Security Update Available' in the app."
+    log_info "Auto-finalize will clean up when all users have migrated."
+    echo ""
+    log_info "Check status: $0 --status"
+}
+
+# ============================================================================
+# FINALIZE (manual override)
+# ============================================================================
+do_finalize() {
+    log_info "=== Finalizing Migration ==="
+
+    local asg_name
+    asg_name=$(get_asg_name)
+    if [[ -z "$asg_name" || "$asg_name" == "None" ]]; then
+        log_error "Could not find enclave ASG"
+        exit 1
+    fi
+
+    local bucket
+    bucket=$(get_vault_bucket)
+
+    if ! aws s3 ls "s3://${bucket}/${MIGRATION_CONFIG_S3_KEY}" --region "$REGION" >/dev/null 2>&1; then
+        log_warn "No active migration config — nothing to finalize"
+        exit 0
+    fi
+
+    # Show config
+    log_info "Active migration:"
+    aws s3 cp "s3://${bucket}/${MIGRATION_CONFIG_S3_KEY}" - --region "$REGION" | jq '{version, summary, mandatory_after}'
+
+    echo ""
+    read -p "Finalize migration? This removes old PCR0 from KMS and scales to 1 instance. (y/N) " -n 1 -r
+    echo ""
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        log_info "Aborted"
+        exit 0
+    fi
+
+    finalize_migration "$asg_name" "$bucket"
+}
+
+# Shared finalize logic (used by manual finalize and Lambda)
+finalize_migration() {
+    local asg_name="$1"
+    local bucket="$2"
+
+    log_step "1/4 Updating KMS policy (single PCR0)"
+    local current_pcr0 kms_key_id current_policy new_policy
+    current_pcr0=$(get_current_pcr0)
+    kms_key_id=$(get_kms_key_id)
+    current_policy=$(get_kms_policy "$kms_key_id")
+    new_policy=$(echo "$current_policy" | jq --arg pcr "$current_pcr0" \
+        '(.Statement[] | select(.Sid == "AllowEnclaveDecrypt") | .Condition.StringEqualsIgnoreCase."kms:RecipientAttestation:PCR0") = $pcr')
+    aws kms put-key-policy --key-id "$kms_key_id" --policy-name default \
+        --policy "$new_policy" --region "$REGION"
+    log_info "KMS policy updated — only current PCR0: ${current_pcr0:0:24}..."
+
+    log_step "2/4 Scaling ASG to 1"
+    aws autoscaling set-desired-capacity \
+        --auto-scaling-group-name "$asg_name" \
+        --desired-capacity 1 \
+        --region "$REGION"
+    # Restore max to 1
+    aws autoscaling update-auto-scaling-group \
+        --auto-scaling-group-name "$asg_name" \
+        --max-size 1 \
+        --region "$REGION" 2>/dev/null || true
+    log_info "ASG scaled to 1 instance"
+
+    log_step "3/4 Removing migration config"
+    aws s3 rm "s3://${bucket}/${MIGRATION_CONFIG_S3_KEY}" --region "$REGION"
+    log_info "Migration config deleted"
+
+    log_step "4/4 Cleaning up EventBridge rule"
+    # Remove targets then delete rule
+    aws events remove-targets --rule "$FINALIZE_RULE_NAME" --ids "migration-finalize" \
+        --region "$REGION" 2>/dev/null || true
+    aws events delete-rule --name "$FINALIZE_RULE_NAME" \
+        --region "$REGION" 2>/dev/null || true
+    log_info "Auto-finalize schedule removed"
+
+    echo ""
+    log_info "=== Migration Finalized ==="
+    log_info "Single enclave running with new PCR0."
+}
+
+# ============================================================================
+# Error handler
+# ============================================================================
+on_error() {
+    local phase="$1"
+    local kms_modified="$2"
+    local refresh_started="$3"
+
+    echo ""
+    log_error "Deploy failed during phase: $phase"
+    echo ""
+
+    if [[ "$kms_modified" == "true" ]]; then
+        log_warn "KMS policy was modified to allow both old and new PCR0."
+        log_warn "This is a SAFE state — both enclaves can decrypt."
+        log_warn "To finalize later: $0 --finalize"
+    fi
+
+    if [[ "$refresh_started" == "true" ]]; then
+        log_warn "ASG instance refresh was started."
+        log_warn "Check: aws autoscaling describe-instance-refreshes --auto-scaling-group-name \$(./deploy.sh --status 2>/dev/null | grep ASG)"
+    fi
+}
+
+# ============================================================================
+# Main
+# ============================================================================
+case "$ACTION" in
+    deploy)   do_deploy ;;
+    finalize) do_finalize ;;
+    status)   do_status ;;
+    *)        log_error "Unknown action: $ACTION"; exit 1 ;;
+esac

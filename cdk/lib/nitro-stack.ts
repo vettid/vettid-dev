@@ -1024,6 +1024,55 @@ export class NitroStack extends cdk.Stack {
       value: this.enclaveInstanceRole.roleArn,
       description: 'IAM role ARN for Nitro Enclave instances',
     });
+
+    // ===== MIGRATION AUTO-FINALIZE LAMBDA =====
+    // Checks every 5 min (when scheduled by deploy.sh) if migration can be finalized.
+    // Finalizes when all users have migrated or the 72-hour deadline passes.
+    // The EventBridge rule is created dynamically by deploy.sh (not here),
+    // but the Lambda and its permissions must exist in CDK.
+    const migrationFinalizeFn = new cdk.aws_lambda_nodejs.NodejsFunction(this, 'MigrationFinalizeFn', {
+      functionName: 'vettid-migration-finalize',
+      entry: 'lambda/handlers/scheduled/migrationFinalize.ts',
+      runtime: cdk.aws_lambda.Runtime.NODEJS_22_X,
+      environment: {
+        VAULT_BUCKET: this.vaultDataBucket.bucketName,
+        KMS_KEY_ALIAS: 'alias/vettid-enclave-sealing',
+        FINALIZE_RULE_NAME: 'vettid-migration-finalize-schedule',
+        TABLE_REGISTRATIONS: props?.infrastructure?.tables?.registrations?.tableName || '',
+      },
+      timeout: cdk.Duration.minutes(2),
+      memorySize: 256,
+      description: 'Auto-finalize enclave migration when users have migrated or deadline passed',
+    });
+
+    // Grant permissions
+    this.vaultDataBucket.grantReadWrite(migrationFinalizeFn);
+    sealingKey.grant(migrationFinalizeFn,
+      'kms:GetKeyPolicy', 'kms:PutKeyPolicy', 'kms:DescribeKey');
+    migrationFinalizeFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: [
+        'autoscaling:DescribeAutoScalingGroups',
+        'autoscaling:SetDesiredCapacity',
+        'autoscaling:UpdateAutoScalingGroup',
+      ],
+      resources: ['*'],
+    }));
+    migrationFinalizeFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['ssm:GetParameter'],
+      resources: [`arn:aws:ssm:${this.region}:${this.account}:parameter/vettid/enclave/*`],
+    }));
+    migrationFinalizeFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: [
+        'events:RemoveTargets',
+        'events:DeleteRule',
+      ],
+      resources: [`arn:aws:events:${this.region}:${this.account}:rule/vettid-migration-finalize-schedule`],
+    }));
+
+    // Grant access to registrations table if available (for checking migration progress)
+    if (props?.infrastructure?.tables?.registrations) {
+      props.infrastructure.tables.registrations.grantReadData(migrationFinalizeFn);
+    }
   }
 
   /**

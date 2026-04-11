@@ -46,6 +46,7 @@
     "@aws-sdk/client-dynamodb": "^3.958.0",
     "@aws-sdk/client-ec2": "^3.958.0",
     "@aws-sdk/client-elastic-load-balancing-v2": "^3.958.0",
+    "@aws-sdk/client-eventbridge": "^3.1029.0",
     "@aws-sdk/client-kms": "^3.964.0",
     "@aws-sdk/client-route-53": "^3.958.0",
     "@aws-sdk/client-secrets-manager": "^3.958.0",
