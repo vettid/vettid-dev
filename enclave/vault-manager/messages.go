@@ -790,6 +790,9 @@ func (mh *MessageHandler) handleAgentOperation(ctx context.Context, msg *Incomin
 	case "create-invitation":
 		// Create an invitation for a new agent (already exists in connections handler)
 		return mh.connectionsHandler.HandleCreateAgentInvite(msg)
+	case "message-reply":
+		// User replies to an agent message
+		return mh.agentHandler.HandleAgentMessageReply(ctx, msg)
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown agent operation: %s", opType))
 	}

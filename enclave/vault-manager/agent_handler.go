@@ -95,12 +95,14 @@ const (
 	AgentMsgSecretRequest     = "agent_secret_request"
 	AgentMsgActionRequest     = "agent_action_request"
 	AgentMsgCatalogRequest    = "agent_catalog_request"
+	AgentMsgMessage           = "agent_message"
 
 	AgentMsgSecretResponse     = "agent_secret_response"
 	AgentMsgActionResponse     = "agent_action_response"
 	AgentMsgCatalogResponse    = "agent_secret_catalog"
 	AgentMsgConnectionApproved = "agent_connection_approved"
 	AgentMsgConnectionDenied   = "agent_connection_denied"
+	AgentMsgMessageResponse    = "agent_message_response"
 )
 
 // --- Request/Response types (matching vettid-agent) ---
@@ -270,6 +272,8 @@ func (h *AgentHandler) HandleAgentMessage(ctx context.Context, msg *IncomingMess
 		responseBytes, responseType, err = h.handleActionRequest(ctx, conn, plaintext)
 	case AgentMsgCatalogRequest:
 		responseBytes, responseType, err = h.handleCatalogRequest(ctx, conn, plaintext)
+	case AgentMsgMessage:
+		responseBytes, responseType, err = h.handleAgentMessage(ctx, conn, plaintext)
 	default:
 		log.Warn().Str("type", envelope.Type).Msg("Unknown agent message type")
 		return nil, nil
@@ -592,6 +596,237 @@ func (h *AgentHandler) handleCatalogRequest(ctx context.Context, conn *Connectio
 	}
 
 	return data, AgentMsgCatalogResponse, nil
+}
+
+// handleAgentMessage processes a text message or approval request from an agent.
+// Stores the message, creates a feed event, and notifies the app.
+func (h *AgentHandler) handleAgentMessage(ctx context.Context, conn *ConnectionRecord, plaintext []byte) ([]byte, string, error) {
+	var msg struct {
+		MessageID   string          `json:"message_id"`
+		ContentType string          `json:"content_type"` // "text" or "approval_request"
+		Content     string          `json:"content"`
+		Approval    json.RawMessage `json:"approval,omitempty"`
+	}
+	if err := json.Unmarshal(plaintext, &msg); err != nil {
+		return nil, "", fmt.Errorf("invalid agent message: %w", err)
+	}
+
+	if msg.MessageID == "" {
+		msg.MessageID = fmt.Sprintf("amsg-%d", time.Now().UnixNano())
+	}
+
+	agentName := conn.PeerAlias
+	if agentName == "" {
+		agentName = "Agent"
+	}
+	agentType := ""
+	if conn.AgentMetadata != nil {
+		agentType = conn.AgentMetadata.AgentType
+	}
+
+	// Store message in the connection's message namespace
+	messageRecord := map[string]interface{}{
+		"message_id":    msg.MessageID,
+		"connection_id": conn.ConnectionID,
+		"direction":     "incoming",
+		"content":       msg.Content,
+		"content_type":  msg.ContentType,
+		"status":        "delivered",
+		"created_at":    time.Now().Unix(),
+	}
+	recordBytes, _ := json.Marshal(messageRecord)
+	storageKey := fmt.Sprintf("messages/%s/%s", conn.ConnectionID, msg.MessageID)
+	if err := h.storage.Put(storageKey, recordBytes); err != nil {
+		log.Warn().Err(err).Msg("Failed to store agent message")
+	}
+
+	// Create feed event based on content type
+	if msg.ContentType == "approval_request" {
+		// Parse approval details for the feed event
+		var approval struct {
+			Title       string `json:"title"`
+			Description string `json:"description"`
+		}
+		if msg.Approval != nil {
+			json.Unmarshal(msg.Approval, &approval)
+		}
+		title := approval.Title
+		if title == "" {
+			title = fmt.Sprintf("%s requests approval", agentName)
+		}
+
+		// Store as pending approval for the app to act on
+		h.pendingApprovals[msg.MessageID] = &PendingApproval{
+			RequestID:    msg.MessageID,
+			ConnectionID: conn.ConnectionID,
+			Action:       "approval_request",
+			Purpose:      approval.Description,
+			CreatedAt:    time.Now(),
+		}
+
+		if h.eventHandler != nil {
+			h.eventHandler.LogEvent(ctx, &Event{
+				EventType:  EventTypeAgentApprovalRequested,
+				SourceType: "agent",
+				SourceID:   conn.ConnectionID,
+				Title:      title,
+				Message:    approval.Description,
+				Metadata: map[string]string{
+					"message_id":    msg.MessageID,
+					"connection_id": conn.ConnectionID,
+					"agent_name":    agentName,
+					"agent_type":    agentType,
+					"content_type":  msg.ContentType,
+				},
+			})
+		}
+	} else {
+		// Text message — show in feed and notify app
+		preview := msg.Content
+		if len(preview) > 100 {
+			preview = preview[:100] + "..."
+		}
+
+		if h.eventHandler != nil {
+			h.eventHandler.LogEvent(ctx, &Event{
+				EventType:  EventTypeAgentMessageReceived,
+				SourceType: "agent",
+				SourceID:   conn.ConnectionID,
+				Title:      fmt.Sprintf("From %s", agentName),
+				Message:    preview,
+				Metadata: map[string]string{
+					"message_id":    msg.MessageID,
+					"connection_id": conn.ConnectionID,
+					"agent_name":    agentName,
+					"agent_type":    agentType,
+					"content_type":  "text",
+				},
+			})
+		}
+	}
+
+	// Notify the app in real-time
+	if h.publisher != nil {
+		notification := map[string]interface{}{
+			"message_id":    msg.MessageID,
+			"connection_id": conn.ConnectionID,
+			"agent_name":    agentName,
+			"agent_type":    agentType,
+			"content":       msg.Content,
+			"content_type":  msg.ContentType,
+			"sent_at":       time.Now().Unix(),
+		}
+		if msg.Approval != nil {
+			notification["approval"] = json.RawMessage(msg.Approval)
+		}
+		notifBytes, _ := json.Marshal(notification)
+		eventType := "agent.message.received"
+		if msg.ContentType == "approval_request" {
+			eventType = "agent.approval.request"
+		}
+		h.publisher.PublishToApp(ctx, eventType, notifBytes)
+	}
+
+	// Ack to agent
+	ack, _ := json.Marshal(map[string]interface{}{
+		"message_id": msg.MessageID,
+		"status":     "delivered",
+	})
+	return ack, AgentMsgMessageResponse, nil
+}
+
+// HandleAgentMessageReply processes a user's reply to an agent message.
+// Called from the app via forVault.agent.message-reply.
+// Encrypts the reply and publishes to the agent's NATS response topic.
+func (h *AgentHandler) HandleAgentMessageReply(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req struct {
+		ConnectionID string `json:"connection_id"`
+		Content      string `json:"content"`
+		MessageID    string `json:"message_id,omitempty"` // Optional: reply to specific message
+		Action       string `json:"action,omitempty"`     // For approval responses: "approve"/"deny"
+	}
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		return errorResponse(msg.GetID(), "invalid request"), nil
+	}
+
+	if req.ConnectionID == "" {
+		return errorResponse(msg.GetID(), "connection_id required"), nil
+	}
+
+	conn, err := h.getConnection(req.ConnectionID)
+	if err != nil {
+		return errorResponse(msg.GetID(), "connection not found"), nil
+	}
+
+	// Generate message ID
+	replyID := fmt.Sprintf("reply-%d", time.Now().UnixNano())
+
+	// Store outgoing message
+	messageRecord := map[string]interface{}{
+		"message_id":    replyID,
+		"connection_id": conn.ConnectionID,
+		"direction":     "outgoing",
+		"content":       req.Content,
+		"content_type":  "text",
+		"action":        req.Action,
+		"status":        "sent",
+		"created_at":    time.Now().Unix(),
+	}
+	if req.MessageID != "" {
+		messageRecord["reply_to"] = req.MessageID
+	}
+	recordBytes, _ := json.Marshal(messageRecord)
+	storageKey := fmt.Sprintf("messages/%s/%s", conn.ConnectionID, replyID)
+	h.storage.Put(storageKey, recordBytes)
+
+	// Build response for agent
+	agentResponse := map[string]interface{}{
+		"message_id": replyID,
+	}
+	if req.Action != "" {
+		agentResponse["action"] = req.Action
+	}
+	if req.Content != "" {
+		agentResponse["reply_content"] = req.Content
+	}
+	if req.MessageID != "" {
+		agentResponse["reply_to"] = req.MessageID
+	}
+
+	responseBytes, _ := json.Marshal(agentResponse)
+
+	// Derive connection key and encrypt
+	connKey, err2 := deriveConnectionKey(conn.SharedSecret)
+	if err2 != nil {
+		return errorResponse(msg.GetID(), "failed to derive key"), nil
+	}
+	topic := fmt.Sprintf("MessageSpace.%s.forOwner.agent.%s", h.ownerSpace, conn.ConnectionID)
+	h.publishAgentResponse(connKey, conn.ConnectionID, AgentMsgMessageResponse, responseBytes, topic)
+
+	// Log event
+	if h.eventHandler != nil {
+		h.eventHandler.LogEvent(ctx, &Event{
+			EventType:  EventTypeAgentMessageSent,
+			SourceType: "agent",
+			SourceID:   conn.ConnectionID,
+			Title:      "Reply sent",
+			Message:    req.Content,
+			Metadata: map[string]string{
+				"message_id":    replyID,
+				"connection_id": conn.ConnectionID,
+			},
+		})
+	}
+
+	resp, _ := json.Marshal(map[string]interface{}{
+		"success":    true,
+		"message_id": replyID,
+	})
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   resp,
+	}, nil
 }
 
 // HandleAppApprovalResponse processes an approval/denial from the mobile app

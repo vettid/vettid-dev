@@ -104,6 +104,12 @@ const (
 	EventTypeAgentActionCompleted EventType = "agent.action.completed"
 	EventTypeAgentActionDenied    EventType = "agent.action.denied"
 
+	// Agent messaging events
+	EventTypeAgentMessageReceived   EventType = "agent.message.received"
+	EventTypeAgentMessageSent       EventType = "agent.message.sent"
+	EventTypeAgentApprovalRequested EventType = "agent.approval.requested"
+	EventTypeAgentApprovalResponded EventType = "agent.approval.responded"
+
 	// Device connection events
 	EventTypeDeviceConnectionRequest  EventType = "device.connection.request"
 	EventTypeDeviceConnectionApproved EventType = "device.connection.approved"
@@ -352,6 +358,12 @@ var eventClassifications = map[EventType]EventClassification{
 	EventTypeAgentActionRequested: {FeedStatusActive, ActionTypeAcceptDecline, PriorityHigh, RetentionPermanent},
 	EventTypeAgentActionCompleted: {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionPermanent},
 	EventTypeAgentActionDenied:    {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionPermanent},
+
+	// Agent messaging events
+	EventTypeAgentMessageReceived:   {FeedStatusActive, ActionTypeReply, PriorityNormal, RetentionStandard},
+	EventTypeAgentMessageSent:       {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
+	EventTypeAgentApprovalRequested: {FeedStatusActive, ActionTypeAcceptDecline, PriorityHigh, RetentionStandard},
+	EventTypeAgentApprovalResponded: {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
 
 	// Device connection events
 	EventTypeDeviceConnectionRequest:  {FeedStatusActive, ActionTypeAcceptDecline, PriorityHigh, RetentionStandard},
