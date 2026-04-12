@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -314,112 +313,9 @@ func (h *WalletHandler) HandleSetVisibility(ctx context.Context, msg *IncomingMe
 }
 
 // republishProfile triggers a profile re-publish to update public wallet addresses.
-// Builds and publishes the profile directly via NATS (same as profile.publish handler).
+// Uses the shared BuildPublishedProfile function for consistency.
 func (h *WalletHandler) republishProfile() {
-	// Build published profile with current public wallets
-	profile := PublishedProfile{
-		UserGUID:      h.ownerSpace,
-		EmailVerified: true,
-		Fields:        make(map[string]PublishedField),
-		UpdatedAt:     time.Now().Format(time.RFC3339),
-	}
-
-	// Load profile version
-	var settings PublicProfileSettings
-	if settingsData, err := h.storage.Get("profile/_public"); err == nil {
-		json.Unmarshal(settingsData, &settings)
-	}
-	profile.Version = settings.Version
-
-	// Load identity key
-	if h.vaultState != nil {
-		h.vaultState.mu.RLock()
-		if h.vaultState.credential != nil && h.vaultState.credential.IdentityPublicKey != nil {
-			profile.PublicKey = base64.StdEncoding.EncodeToString(h.vaultState.credential.IdentityPublicKey)
-		}
-		h.vaultState.mu.RUnlock()
-	}
-
-	// Load system fields
-	for _, field := range []string{"_system_first_name", "_system_last_name", "_system_email"} {
-		data, err := h.storage.Get("profile/" + field)
-		if err != nil {
-			continue
-		}
-		var entry ProfileEntry
-		if json.Unmarshal(data, &entry) != nil {
-			continue
-		}
-		switch field {
-		case "_system_first_name":
-			profile.FirstName = entry.Value
-		case "_system_last_name":
-			profile.LastName = entry.Value
-		case "_system_email":
-			profile.Email = entry.Value
-		}
-	}
-
-	// Load photo
-	if photoData, err := h.storage.Get("profile/_photo"); err == nil {
-		var photoEntry ProfileEntry
-		if json.Unmarshal(photoData, &photoEntry) == nil && photoEntry.Value != "" {
-			profile.Photo = photoEntry.Value
-		}
-	}
-
-	// Load selected personal data fields
-	for _, fieldName := range settings.Fields {
-		data, err := h.storage.Get("profile/" + fieldName)
-		if err != nil {
-			data, err = h.storage.Get("personal-data/" + fieldName)
-			if err != nil {
-				continue
-			}
-		}
-		var field PersonalDataField
-		if err := json.Unmarshal(data, &field); err != nil {
-			var entry ProfileEntry
-			if json.Unmarshal(data, &entry) == nil {
-				profile.Fields[fieldName] = PublishedField{
-					DisplayName: displayNameFromNamespace(fieldName),
-					Value:       entry.Value,
-					FieldType:   string(FieldTypeText),
-				}
-			}
-			continue
-		}
-		if !field.IsSensitive {
-			profile.Fields[fieldName] = PublishedField{
-				DisplayName: field.DisplayName,
-				Value:       field.Value,
-				FieldType:   string(field.FieldType),
-			}
-		}
-	}
-
-	// Load public wallets
-	if indexData, err := h.storage.Get(walletIndexKey); err == nil {
-		var walletIDs []string
-		if json.Unmarshal(indexData, &walletIDs) == nil {
-			for _, walletID := range walletIDs {
-				wData, err := h.storage.Get(walletStorageKey(walletID))
-				if err != nil {
-					continue
-				}
-				var wallet WalletRecord
-				if json.Unmarshal(wData, &wallet) != nil || !wallet.IsPublic || wallet.IsArchived {
-					continue
-				}
-				profile.Wallets = append(profile.Wallets, PublishedWallet{
-					WalletID: wallet.WalletID,
-					Label:    wallet.Label,
-					Address:  wallet.Address,
-					Network:  wallet.Network,
-				})
-			}
-		}
-	}
+	profile := BuildPublishedProfile(h.ownerSpace, h.storage, h.vaultState)
 
 	profileBytes, err := json.Marshal(profile)
 	if err != nil {
