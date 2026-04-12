@@ -1355,6 +1355,22 @@
     </div>
   </div>
 
+  <div class="use-case">
+    <div class="icon">&#8383;</div>
+    <div>
+      <h3>Bitcoin Wallet</h3>
+      <p>Generate and manage Bitcoin wallets inside your hardware-isolated vault. Private keys never leave the enclave &mdash; transactions are signed in secure hardware. Publish your wallet address to connections, share it via QR code, and send BTC directly to peers.</p>
+    </div>
+  </div>
+
+  <div class="use-case">
+    <div class="icon">&#128172;</div>
+    <div>
+      <h3>Encrypted Agent Messaging</h3>
+      <p>Communicate with AI agents through end-to-end encrypted channels &mdash; not Telegram, not WhatsApp, not any third-party server. Agent messages and approval requests appear in your feed with verified identity. You reply from your vault, and the agent receives your encrypted response. No middleman sees the conversation.</p>
+    </div>
+  </div>
+
   <div class="service-highlight">
     <div class="service-highlight-content">
       <h3>For Businesses: Service Vaults</h3>
@@ -1372,11 +1388,12 @@
   <div class="service-highlight" style="margin-top: 32px;">
     <div class="service-highlight-content">
       <h3>For Developers: Agent Connector</h3>
-      <p>The VettID Agent Connector is an open-source sidecar binary that gives AI agents secure, owner-controlled access to vault secrets. A single command connects your agent to a vault &mdash; the owner defines exactly what it can access, and revocation is instant. The agent never touches encryption keys or credentials.</p>
+      <p>The VettID Agent Connector is an open-source sidecar binary that gives AI agents secure, owner-controlled access to vault secrets and encrypted messaging. A single command connects your agent to a vault &mdash; the owner defines exactly what it can access, and revocation is instant. The agent never touches encryption keys or credentials.</p>
       <ul class="service-features">
         <li><svg width="16" height="16" viewBox="0 0 16 16" fill="#ffc125"><path d="M6 10.8L3.2 8l-.9.9L6 12.6l8-8-.9-.9L6 10.8z"/></svg> Zero-trust for the agent &mdash; never holds keys or NATS credentials</li>
         <li><svg width="16" height="16" viewBox="0 0 16 16" fill="#ffc125"><path d="M6 10.8L3.2 8l-.9.9L6 12.6l8-8-.9-.9L6 10.8z"/></svg> Owner approves scope, rate limits, and auto-approval rules from their phone</li>
         <li><svg width="16" height="16" viewBox="0 0 16 16" fill="#ffc125"><path d="M6 10.8L3.2 8l-.9.9L6 12.6l8-8-.9-.9L6 10.8z"/></svg> Secrets pass through, never cached &mdash; revocation is instant</li>
+        <li><svg width="16" height="16" viewBox="0 0 16 16" fill="#ffc125"><path d="M6 10.8L3.2 8l-.9.9L6 12.6l8-8-.9-.9L6 10.8z"/></svg> E2E encrypted messaging &mdash; agents send messages and approval requests directly to user's feed</li>
         <li><svg width="16" height="16" viewBox="0 0 16 16" fill="#ffc125"><path d="M6 10.8L3.2 8l-.9.9L6 12.6l8-8-.9-.9L6 10.8z"/></svg> Single Go binary with local-only REST and WebSocket API</li>
         <li><svg width="16" height="16" viewBox="0 0 16 16" fill="#ffc125"><path d="M6 10.8L3.2 8l-.9.9L6 12.6l8-8-.9-.9L6 10.8z"/></svg> Platform-bound credentials &mdash; undecryptable on a different machine</li>
         <li><svg width="16" height="16" viewBox="0 0 16 16" fill="#ffc125"><path d="M6 10.8L3.2 8l-.9.9L6 12.6l8-8-.9-.9L6 10.8z"/></svg> Open source (AGPL-3.0) &mdash; <a href="https://github.com/vettid/vettid-agent" target="_blank" rel="noopener noreferrer" style="color: var(--accent); text-decoration: underline;">view on GitHub</a></li>
