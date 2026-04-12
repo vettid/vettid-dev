@@ -54,6 +54,7 @@ log_step()  { echo -e "${BLUE}[STEP]${NC} $1"; }
 ACTION="deploy"
 SUMMARY=""
 DETAILS_URL=""
+DEFAULT_DETAILS_URL="https://github.com/vettid/vettid-dev/commits/main"
 DRY_RUN=false
 SKIP_KMS_FINALIZE=false
 
@@ -488,7 +489,7 @@ do_deploy() {
     "valid_from": "$published_at",
     "version": "$version",
     "summary": "$SUMMARY",
-    "details_url": "${DETAILS_URL:-}",
+    "details_url": "${DETAILS_URL:-$DEFAULT_DETAILS_URL}",
     "published_at": "$published_at",
     "mandatory_after": "$mandatory_after"
 }
