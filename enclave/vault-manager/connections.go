@@ -1020,9 +1020,9 @@ func (h *ConnectionsHandler) HandleStoreCredentials(msg *IncomingMessage) (*Outg
 		}
 	}
 
-	// Log connection accepted event for audit (storing credentials means accepting the connection)
+	// Log connection event for audit (storing credentials means we accepted — audit only, no feed prompt needed)
 	if h.eventHandler != nil {
-		h.eventHandler.LogConnectionEvent(context.Background(), EventTypeConnectionAccepted, req.ConnectionID, req.PeerGUID, "Connection established")
+		h.eventHandler.LogConnectionEvent(context.Background(), EventTypeConnectionCreated, req.ConnectionID, req.PeerGUID, "Connection initiated")
 	}
 
 	log.Info().Str("connection_id", req.ConnectionID).Msg("Connection credentials stored")
@@ -1299,9 +1299,9 @@ func (h *ConnectionsHandler) HandleRespond(msg *IncomingMessage) (*OutgoingMessa
 		newStatus = "active"
 		message = "Connection established"
 
-		// Log acceptance event
+		// Log completion event (hidden — audit only, user already saw the accept prompt)
 		if h.eventHandler != nil {
-			h.eventHandler.LogConnectionEvent(context.Background(), EventTypeConnectionAccepted, req.ConnectionID, record.PeerGUID, "Bidirectional consent complete")
+			h.eventHandler.LogConnectionEvent(context.Background(), EventTypeConnectionCreated, req.ConnectionID, record.PeerGUID, "Connection established")
 		}
 
 		// Notify peer that connection is now active
