@@ -233,6 +233,15 @@ func (c *NATSClient) Publish(subject string, data []byte) error {
 	return c.conn.Publish(subject, data)
 }
 
+// PublishDirect publishes using core NATS only (no JetStream).
+// Use this for push notifications that need to reach raw NATS subscribers
+// immediately, without going through JetStream stream storage.
+func (c *NATSClient) PublishDirect(subject string, data []byte) error {
+	c.publishMu.Lock()
+	defer c.publishMu.Unlock()
+	return c.conn.Publish(subject, data)
+}
+
 // Request sends a request and waits for a response
 func (c *NATSClient) Request(subject string, data []byte, timeout time.Duration) ([]byte, error) {
 	msg, err := c.conn.Request(subject, data, timeout)

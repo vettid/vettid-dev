@@ -1382,15 +1382,58 @@ func (p *ParentProcess) handleStoragePut(ctx context.Context, msg *EnclaveMessag
 	}, nil
 }
 
-// handleNATSPublish publishes a message to NATS
+// handleNATSPublish publishes a message to NATS.
+// Push notifications use core NATS (PublishDirect) so they reach raw subscribers immediately.
+// Request-response messages use JetStream (Publish) for guaranteed delivery.
 func (p *ParentProcess) handleNATSPublish(ctx context.Context, msg *EnclaveMessage) (*EnclaveMessage, error) {
-	if err := p.natsClient.Publish(msg.Subject, msg.Payload); err != nil {
-		return nil, fmt.Errorf("NATS publish failed: %w", err)
+	var err error
+
+	// Push notifications need core NATS to reach the app's raw subscription.
+	// These subjects are NOT request-response patterns (no event_id in the subject).
+	if isPushNotification(msg.Subject) {
+		// Publish via BOTH core NATS (for real-time delivery) and JetStream (for persistence)
+		err = p.natsClient.PublishDirect(msg.Subject, msg.Payload)
+		if err != nil {
+			return nil, fmt.Errorf("NATS direct publish failed: %w", err)
+		}
+		// Also publish to JetStream for guaranteed delivery if the app reconnects later
+		_ = p.natsClient.Publish(msg.Subject, msg.Payload) // Ignore JetStream errors for push
+	} else {
+		err = p.natsClient.Publish(msg.Subject, msg.Payload)
+		if err != nil {
+			return nil, fmt.Errorf("NATS publish failed: %w", err)
+		}
 	}
 
 	return &EnclaveMessage{
 		Type: EnclaveMessageTypeOK,
 	}, nil
+}
+
+// isPushNotification returns true if the subject is a push notification
+// that needs to reach the app's raw NATS subscription immediately.
+func isPushNotification(subject string) bool {
+	pushPatterns := []string{
+		".forApp.new-message",
+		".forApp.read-receipt",
+		".forApp.profile-update",
+		".forApp.connection-revoked",
+		".forApp.connection.peer-accepted",
+		".forApp.connection.activated",
+		".forApp.connection.key-exchanged",
+		".forApp.connection.rejected",
+		".forApp.credentials.rotate",
+		".forApp.location-update",
+		".forApp.feed.new",
+		".forApp.feed.updated",
+		".forApp.agent.",
+	}
+	for _, pattern := range pushPatterns {
+		if strings.Contains(subject, pattern) {
+			return true
+		}
+	}
+	return false
 }
 
 // handleAccountSeedGet fetches the NATS account seed from DynamoDB and decrypts via KMS.
