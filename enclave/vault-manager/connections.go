@@ -947,7 +947,7 @@ func (h *ConnectionsHandler) HandleStoreCredentials(msg *IncomingMessage) (*Outg
 		Credentials:       req.Credentials,
 		MessageSpaceTopic: req.MessageSpaceTopic,
 		PeerOwnerSpace:    req.PeerOwnerSpaceID,
-		Status:            "pending",
+		Status:            "active", // Scanner already consented by accepting the invitation
 		CreatedAt:         time.Now(),
 		LocalPublicKey:    localPublic,
 		LocalPrivateKey:   localPrivate,
