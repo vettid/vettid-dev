@@ -313,6 +313,11 @@ type ConnectionInfo struct {
 	PeerProfileVersion  int      `json:"peer_profile_version,omitempty"`
 	PeerVerifications   []string `json:"peer_verifications,omitempty"`
 
+	// Message preview (for connection card display)
+	LastMessagePreview string `json:"last_message_preview,omitempty"`
+	LastMessageAt      string `json:"last_message_at,omitempty"`
+	UnreadCount        int    `json:"unread_count"`
+
 	// Agent-specific fields (only present for agent connections)
 	AgentMetadata *AgentMetadata      `json:"agent_metadata,omitempty"`
 	Contract      *ConnectionContract `json:"contract,omitempty"`
@@ -1694,6 +1699,9 @@ func (h *ConnectionsHandler) HandleList(msg *IncomingMessage) (*OutgoingMessage,
 		if err == nil && len(profileData) > 0 {
 			info.PeerProfile = json.RawMessage(profileData)
 		}
+
+		// Load message preview and unread count for this connection
+		info.LastMessagePreview, info.LastMessageAt, info.UnreadCount = h.getMessagePreview(connID)
 
 		connections = append(connections, info)
 	}
@@ -3363,6 +3371,62 @@ func (h *ConnectionsHandler) loadInviterProfile() map[string]string {
 func (h *ConnectionsHandler) loadPublishedProfileForPeer() map[string]interface{} {
 	profile := BuildPublishedProfile(h.ownerSpace, h.storage, h.vaultState)
 	return PublishedProfileToMap(profile)
+}
+
+// getMessagePreview loads the latest message preview, timestamp, and unread count
+// for a connection. Used by HandleList to populate connection cards.
+func (h *ConnectionsHandler) getMessagePreview(connectionID string) (preview string, lastAt string, unreadCount int) {
+	indexKey := fmt.Sprintf("messages/%s/_index", connectionID)
+	var messageIDs []string
+	indexData, err := h.storage.Get(indexKey)
+	if err != nil {
+		return "", "", 0
+	}
+	if json.Unmarshal(indexData, &messageIDs) != nil {
+		return "", "", 0
+	}
+
+	var latestTime time.Time
+	var latestContent string
+
+	for _, msgID := range messageIDs {
+		key := fmt.Sprintf("messages/%s/%s", connectionID, msgID)
+		data, err := h.storage.Get(key)
+		if err != nil {
+			continue
+		}
+		var record MessageRecord
+		if json.Unmarshal(data, &record) != nil {
+			continue
+		}
+
+		// Track latest message
+		if record.CreatedAt.After(latestTime) {
+			latestTime = record.CreatedAt
+			if record.Direction == MessageDirectionIncoming {
+				latestContent = "Received a message"
+			} else {
+				latestContent = "You sent a message"
+			}
+		}
+
+		// Count unread incoming messages
+		if record.Direction == MessageDirectionIncoming && record.Status != MessageStatusRead {
+			unreadCount++
+		}
+	}
+
+	if latestContent != "" {
+		// Truncate preview
+		if len(latestContent) > 100 {
+			preview = latestContent[:100] + "..."
+		} else {
+			preview = latestContent
+		}
+		lastAt = latestTime.Format(time.RFC3339)
+	}
+
+	return preview, lastAt, unreadCount
 }
 
 // generateInvitationCredentials creates scoped NATS credentials for an invitation.
