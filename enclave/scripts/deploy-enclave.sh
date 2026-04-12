@@ -664,12 +664,14 @@ CDK_DIR="$(dirname "$SCRIPT_DIR")/../cdk"
 if [ -f "$CDK_DIR/scripts/publish-pcr-set.ts" ]; then
     log_info "Publishing PCR values to public manifest..."
     cd "$CDK_DIR"
+    DETAILS_URL="${DEPLOY_DETAILS_URL:-https://github.com/vettid/vettid-dev/commits/main}"
     npx tsx scripts/publish-pcr-set.ts \
         --pcr0 "$PCR0_VALUE" \
         --pcr1 "$PCR1_VALUE" \
         --pcr2 "$PCR2_VALUE" \
         --id "$VERSION_ID" \
         --description "Production enclave $VERSION_ID" \
+        --details-url "$DETAILS_URL" \
         --current 2>&1 | while read line; do log_info "  $line"; done
 
     if [ ${PIPESTATUS[0]} -eq 0 ]; then

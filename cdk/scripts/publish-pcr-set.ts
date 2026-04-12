@@ -38,6 +38,7 @@ interface PcrSet {
   valid_until: string | null;
   is_current: boolean;
   description?: string;
+  details_url?: string;
 }
 
 interface PcrManifest {
@@ -128,6 +129,7 @@ async function main() {
       pcr2: { type: 'string' },
       id: { type: 'string' },
       description: { type: 'string' },
+      'details-url': { type: 'string' },
       current: { type: 'boolean', default: false },
       'valid-from': { type: 'string' },
       'valid-until': { type: 'string' },
@@ -247,6 +249,7 @@ Examples:
     valid_until: values['valid-until'] || null,
     is_current: values.current || false,
     description: values.description,
+    details_url: values['details-url'],
   };
 
   // If new set is_current, unset is_current on all others
