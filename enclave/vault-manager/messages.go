@@ -287,7 +287,7 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 	httpProxy := NewHTTPProxy(ownerSpace, sendFn)
 
 	// Create connections handler (needed for agent handler)
-	connectionsHandler := NewConnectionsHandler(ownerSpace, storage, eventHandler, natsProxy, publisher)
+	connectionsHandler := NewConnectionsHandler(ownerSpace, storage, eventHandler, natsProxy, publisher, vaultState)
 	connectionsHandler.SetSealerProxy(sealerProxy)
 
 	// Create agent handler

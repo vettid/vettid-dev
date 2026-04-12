@@ -23,16 +23,18 @@ type ConnectionsHandler struct {
 	natsProxy    *NATSProxy
 	sealerProxy  *SealerProxy
 	publisher    *VsockPublisher
+	vaultState   *VaultState
 }
 
 // NewConnectionsHandler creates a new connections handler
-func NewConnectionsHandler(ownerSpace string, storage *EncryptedStorage, eventHandler *EventHandler, natsProxy *NATSProxy, publisher *VsockPublisher) *ConnectionsHandler {
+func NewConnectionsHandler(ownerSpace string, storage *EncryptedStorage, eventHandler *EventHandler, natsProxy *NATSProxy, publisher *VsockPublisher, vaultState *VaultState) *ConnectionsHandler {
 	return &ConnectionsHandler{
 		ownerSpace:   ownerSpace,
 		storage:      storage,
 		eventHandler: eventHandler,
 		natsProxy:    natsProxy,
 		publisher:    publisher,
+		vaultState:   vaultState,
 	}
 }
 
@@ -3355,107 +3357,12 @@ func (h *ConnectionsHandler) loadInviterProfile() map[string]string {
 	return profile
 }
 
-// loadPublishedProfileForPeer loads the full published profile (including photo and fields)
-// for sending to a connection peer. Returns a JSON-serializable map.
+// loadPublishedProfileForPeer loads the full published profile for sending to
+// a connection peer. Uses the shared BuildPublishedProfile function to ensure
+// consistency with profile.get-published and profile.publish.
 func (h *ConnectionsHandler) loadPublishedProfileForPeer() map[string]interface{} {
-	profile := make(map[string]interface{})
-
-	// System fields
-	for _, field := range []string{"_system_first_name", "_system_last_name", "_system_email"} {
-		data, err := h.storage.Get("profile/" + field)
-		if err != nil {
-			continue
-		}
-		var entry struct{ Value string `json:"value"` }
-		if json.Unmarshal(data, &entry) == nil && entry.Value != "" {
-			profile[field] = entry.Value
-		}
-	}
-
-	// Identity public key — read from storage if available
-	if pkData, err := h.storage.Get("identity_public_key"); err == nil && len(pkData) > 0 {
-		// Stored as raw base64 string or JSON — try both
-		var pkStr string
-		if json.Unmarshal(pkData, &pkStr) != nil {
-			pkStr = string(pkData)
-		}
-		if pkStr != "" {
-			profile["public_key"] = pkStr
-		}
-	}
-
-	// Photo
-	photoData, err := h.storage.Get("profile/_photo")
-	if err == nil {
-		var photoEntry struct{ Value string `json:"value"` }
-		if json.Unmarshal(photoData, &photoEntry) == nil && photoEntry.Value != "" {
-			profile["photo"] = photoEntry.Value
-		}
-	}
-
-	// Published fields from public profile settings
-	settingsData, err := h.storage.Get("profile/_public")
-	if err == nil {
-		var settings struct{ Fields []string `json:"fields"` }
-		if json.Unmarshal(settingsData, &settings) == nil {
-			fields := make(map[string]interface{})
-			for _, fieldName := range settings.Fields {
-				data, err := h.storage.Get("profile/" + fieldName)
-				if err != nil {
-					data, err = h.storage.Get("personal-data/" + fieldName)
-					if err != nil {
-						continue
-					}
-				}
-				var field struct {
-					Value       string `json:"value"`
-					DisplayName string `json:"display_name"`
-				}
-				if json.Unmarshal(data, &field) == nil && field.Value != "" {
-					displayName := field.DisplayName
-					if displayName == "" {
-						displayName = displayNameFromNamespace(fieldName)
-					}
-					fields[fieldName] = map[string]string{
-						"display_name": displayName,
-						"value":        field.Value,
-					}
-				}
-			}
-			if len(fields) > 0 {
-				profile["fields"] = fields
-			}
-		}
-	}
-
-	// Load public wallet addresses
-	if indexData, err := h.storage.Get(walletIndexKey); err == nil {
-		var walletIDs []string
-		if json.Unmarshal(indexData, &walletIDs) == nil {
-			var wallets []map[string]string
-			for _, walletID := range walletIDs {
-				wData, err := h.storage.Get(walletStorageKey(walletID))
-				if err != nil {
-					continue
-				}
-				var wallet WalletRecord
-				if json.Unmarshal(wData, &wallet) != nil || !wallet.IsPublic || wallet.IsArchived {
-					continue
-				}
-				wallets = append(wallets, map[string]string{
-					"wallet_id": wallet.WalletID,
-					"label":     wallet.Label,
-					"address":   wallet.Address,
-					"network":   wallet.Network,
-				})
-			}
-			if len(wallets) > 0 {
-				profile["wallets"] = wallets
-			}
-		}
-	}
-
-	return profile
+	profile := BuildPublishedProfile(h.ownerSpace, h.storage, h.vaultState)
+	return PublishedProfileToMap(profile)
 }
 
 // generateInvitationCredentials creates scoped NATS credentials for an invitation.
