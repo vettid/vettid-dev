@@ -611,11 +611,21 @@ func (h *MessagingHandler) HandleReadReceipt(msg *IncomingMessage) (*OutgoingMes
 	}
 	receiptData, _ := json.Marshal(receipt)
 
-	// Send to peer
-	sent := true
-	if err := h.publisher.PublishToVault(context.Background(), conn.PeerGUID, "read-receipt", receiptData); err != nil {
-		log.Warn().Err(err).Str("message_id", req.MessageID).Msg("Failed to send read receipt to peer")
-		sent = false
+	// Send to peer with retry (read receipts are important for UX)
+	sent := false
+	for attempt := 0; attempt < 3; attempt++ {
+		if err := h.publisher.PublishToVault(context.Background(), conn.PeerGUID, "read-receipt", receiptData); err != nil {
+			log.Warn().Err(err).Int("attempt", attempt+1).Str("message_id", req.MessageID).Msg("Read receipt delivery failed, retrying")
+			if attempt < 2 {
+				time.Sleep(2 * time.Second)
+			}
+		} else {
+			sent = true
+			break
+		}
+	}
+	if !sent {
+		log.Error().Str("message_id", req.MessageID).Str("peer", conn.PeerGUID).Msg("Read receipt delivery failed after 3 attempts")
 	}
 
 	resp := ReadReceiptResponse{
