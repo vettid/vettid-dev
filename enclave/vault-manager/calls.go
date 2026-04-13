@@ -32,15 +32,22 @@ const (
 
 // CallEvent represents a call signaling event
 type CallEvent struct {
-	EventID     string            `json:"event_id"`
-	EventType   CallEventType     `json:"event_type"`
-	CallerID    string            `json:"caller_id"`              // OwnerSpace of caller
-	CalleeID    string            `json:"callee_id"`              // OwnerSpace of callee
-	CallID      string            `json:"call_id"`                // Unique call identifier
-	Payload     json.RawMessage   `json:"payload,omitempty"`      // WebRTC SDP/ICE data
-	Timestamp   int64             `json:"timestamp"`
-	Signature   []byte            `json:"signature,omitempty"`    // Caller's signature
-	Metadata    map[string]string `json:"metadata,omitempty"`
+	EventID            string            `json:"event_id"`
+	EventType          CallEventType     `json:"event_type"`
+	CallerID           string            `json:"caller_id"`                         // OwnerSpace of caller
+	CalleeID           string            `json:"callee_id"`                         // OwnerSpace of callee
+	CallID             string            `json:"call_id"`                           // Unique call identifier
+	CallerDisplayName  string            `json:"caller_display_name,omitempty"`     // Display name for UI
+	CallType           string            `json:"call_type,omitempty"`               // "voice" or "video"
+	SDPOffer           string            `json:"sdp_offer,omitempty"`               // WebRTC SDP offer
+	SDPAnswer          string            `json:"sdp_answer,omitempty"`              // WebRTC SDP answer
+	Candidate          string            `json:"candidate,omitempty"`               // ICE candidate
+	SDPMid             string            `json:"sdp_mid,omitempty"`                 // ICE candidate SDP mid
+	SDPMLineIndex      *int              `json:"sdp_m_line_index,omitempty"`        // ICE candidate SDP mline index
+	Payload            json.RawMessage   `json:"payload,omitempty"`                 // Additional payload data
+	Timestamp          int64             `json:"timestamp"`
+	Signature          []byte            `json:"signature,omitempty"`               // Caller's signature
+	Metadata           map[string]string `json:"metadata,omitempty"`
 }
 
 // CallRecord is stored in JetStream for call history

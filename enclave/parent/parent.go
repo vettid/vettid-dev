@@ -1427,6 +1427,10 @@ func isPushNotification(subject string) bool {
 		".forApp.feed.new",
 		".forApp.feed.updated",
 		".forApp.agent.",
+		".forApp.call.",
+		".forApp.transfer.",
+		".forApp.recovery.",
+		".forApp.security.",
 	}
 	for _, pattern := range pushPatterns {
 		if strings.Contains(subject, pattern) {

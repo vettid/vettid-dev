@@ -181,13 +181,15 @@ func (h *EventHandler) classifyEvent(e *Event) {
 // notifyApp sends a push notification to the app
 func (h *EventHandler) notifyApp(ctx context.Context, eventType string, e *Event) {
 	notification := map[string]interface{}{
-		"event_id":   e.EventID,
-		"event_type": e.EventType,
-		"title":      e.Title,
-		"message":    e.Message,
-		"priority":   e.Priority,
-		"action":     e.ActionType,
-		"created_at": e.CreatedAt,
+		"event_id":    e.EventID,
+		"event_type":  e.EventType,
+		"title":       e.Title,
+		"message":     e.Message,
+		"priority":    e.Priority,
+		"action":      e.ActionType,
+		"created_at":  e.CreatedAt,
+		"source_id":   e.SourceID,
+		"source_type": e.SourceType,
 	}
 
 	data, err := json.Marshal(notification)
