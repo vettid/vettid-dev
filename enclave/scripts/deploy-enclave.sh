@@ -639,24 +639,46 @@ VERIFY_CMD_ID=$(aws ssm send-command \
     --output text \
     --region "$REGION")
 
-sleep 5
-
-ACTUAL_PCR0=$(aws ssm get-command-invocation \
-    --command-id "$VERIFY_CMD_ID" \
-    --instance-id "$INSTANCE_ID" \
-    --query 'StandardOutputContent' \
-    --output text \
-    --region "$REGION" 2>/dev/null | tr -d '[:space:]')
+# Wait for SSM command to complete (retry up to 30 seconds)
+ACTUAL_PCR0=""
+for i in $(seq 1 6); do
+    sleep 5
+    CMD_STATUS=$(aws ssm get-command-invocation \
+        --command-id "$VERIFY_CMD_ID" \
+        --instance-id "$INSTANCE_ID" \
+        --query 'Status' \
+        --output text \
+        --region "$REGION" 2>/dev/null || echo "Pending")
+    if [ "$CMD_STATUS" = "Success" ]; then
+        ACTUAL_PCR0=$(aws ssm get-command-invocation \
+            --command-id "$VERIFY_CMD_ID" \
+            --instance-id "$INSTANCE_ID" \
+            --query 'StandardOutputContent' \
+            --output text \
+            --region "$REGION" 2>/dev/null | tr -d '[:space:]')
+        break
+    fi
+    log_info "Waiting for PCR0 verification (attempt $i/6, status=$CMD_STATUS)..."
+done
 
 SSM_PCR0=$(aws ssm get-parameter --name "/vettid/enclave/pcr/pcr0" --query 'Parameter.Value' --output text --region "$REGION")
 
-if [ "$ACTUAL_PCR0" != "$SSM_PCR0" ]; then
+if [ -z "$ACTUAL_PCR0" ] || [ ${#ACTUAL_PCR0} -lt 40 ]; then
+    log_warn "Could not read PCR0 from build instance — verify manually"
+    log_warn "  SSM parameter: $SSM_PCR0"
+elif [ "$ACTUAL_PCR0" != "$SSM_PCR0" ]; then
     log_warn "PCR0 MISMATCH DETECTED!"
     log_warn "  EIF on instance: $ACTUAL_PCR0"
     log_warn "  SSM parameter:   $SSM_PCR0"
-    log_info "Updating SSM parameter to match actual EIF..."
+    log_info "Updating SSM parameters to match actual EIF..."
     aws ssm put-parameter --name "/vettid/enclave/pcr/pcr0" --value "$ACTUAL_PCR0" --type String --overwrite --region "$REGION"
-    log_info "SSM parameter corrected"
+    # Also update the combined /current parameter
+    CURRENT_JSON=$(aws ssm get-parameter --name "/vettid/enclave/pcr/current" --query 'Parameter.Value' --output text --region "$REGION" 2>/dev/null || echo "{}")
+    UPDATED_JSON=$(echo "$CURRENT_JSON" | jq --arg pcr0 "$ACTUAL_PCR0" '.PCR0 = $pcr0' 2>/dev/null || echo "$CURRENT_JSON")
+    aws ssm put-parameter --name "/vettid/enclave/pcr/current" --value "$UPDATED_JSON" --type String --overwrite --region "$REGION"
+    log_info "SSM parameters corrected"
+else
+    log_info "PCR0 verified: build instance EIF matches SSM"
 fi
 
 # Get PCR values for verification and manifest publishing

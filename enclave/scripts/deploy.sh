@@ -459,7 +459,7 @@ do_deploy() {
     log_info "Waiting for both instances to be healthy..."
     wait_for_instances "$asg_name" 2
 
-    # Verify new instance health
+    # Verify new instance health and PCR0
     local new_instance_id
     new_instance_id=$(aws autoscaling describe-auto-scaling-groups \
         --auto-scaling-group-names "$asg_name" \
@@ -467,6 +467,62 @@ do_deploy() {
         --output text --region "$REGION" | tr '\t' '\n' | tail -1)
     log_info "Verifying new instance health ($new_instance_id)..."
     verify_enclave_health "$new_instance_id" || log_warn "Health check inconclusive — continuing (both PCR0s in KMS)"
+
+    # Post-launch PCR0 verification: read actual PCR0 from the running enclave
+    # and correct SSM/KMS if the build-time value doesn't match runtime
+    log_info "Verifying actual enclave PCR0 on $new_instance_id..."
+    local verify_pcr0_cmd actual_pcr0
+    verify_pcr0_cmd=$(aws ssm send-command \
+        --instance-ids "$new_instance_id" \
+        --document-name "AWS-RunShellScript" \
+        --parameters 'commands=["nitro-cli describe-enclaves 2>/dev/null | jq -r \".[0].Measurements.PCR0 // empty\" 2>/dev/null || nitro-cli describe-eif --eif-path /opt/vettid/enclave/vettid-vault-enclave.eif 2>/dev/null | jq -r \".Measurements.PCR0\""]' \
+        --query 'Command.CommandId' \
+        --output text \
+        --region "$REGION" 2>/dev/null || echo "")
+
+    if [[ -n "$verify_pcr0_cmd" ]]; then
+        sleep 10
+        actual_pcr0=$(aws ssm get-command-invocation \
+            --command-id "$verify_pcr0_cmd" \
+            --instance-id "$new_instance_id" \
+            --query 'StandardOutputContent' \
+            --output text \
+            --region "$REGION" 2>/dev/null | tr -d '[:space:]')
+
+        if [[ -n "$actual_pcr0" && ${#actual_pcr0} -gt 40 && "$actual_pcr0" != "$new_pcr0" ]]; then
+            log_warn "PCR0 MISMATCH: SSM has ${new_pcr0:0:16}... but actual enclave is ${actual_pcr0:0:16}..."
+            log_info "Correcting SSM and KMS to match actual enclave PCR0"
+
+            # Update SSM
+            aws ssm put-parameter --name "/vettid/enclave/pcr/pcr0" \
+                --value "$actual_pcr0" --type String --overwrite --region "$REGION"
+
+            # Update /vettid/enclave/pcr/current
+            local current_json
+            current_json=$(aws ssm get-parameter --name "/vettid/enclave/pcr/current" \
+                --query 'Parameter.Value' --output text --region "$REGION")
+            updated_json=$(echo "$current_json" | jq --arg pcr0 "$actual_pcr0" '.PCR0 = $pcr0')
+            aws ssm put-parameter --name "/vettid/enclave/pcr/current" \
+                --value "$updated_json" --type String --overwrite --region "$REGION"
+
+            # Update KMS policy to AnyOf [old, actual]
+            local corrected_policy
+            corrected_policy=$(echo "$ORIGINAL_KMS_POLICY" | jq \
+                --arg old "$old_pcr0" --arg new "$actual_pcr0" \
+                '(.Statement[] | select(.Sid == "AllowEnclaveDecrypt") | .Condition.StringEqualsIgnoreCase."kms:RecipientAttestation:PCR0") = [$old, $new]')
+            aws kms put-key-policy --key-id "$kms_key_id" --policy-name default \
+                --policy "$corrected_policy" --region "$REGION"
+
+            new_pcr0="$actual_pcr0"
+            log_info "Corrected: SSM and KMS now use actual PCR0 ${actual_pcr0:0:24}..."
+        elif [[ -n "$actual_pcr0" && ${#actual_pcr0} -gt 40 ]]; then
+            log_info "PCR0 verified: SSM matches actual enclave"
+        else
+            log_warn "Could not read actual PCR0 from instance — verify manually"
+        fi
+    else
+        log_warn "Could not send verification command to instance — verify PCR0 manually"
+    fi
 
     # ------------------------------------------------------------------
     # Phase 5: Publish migration config
