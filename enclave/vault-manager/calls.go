@@ -344,16 +344,37 @@ func (ch *CallHandler) HandleInitiateCall(ctx context.Context, msg *IncomingMess
 		log.Error().Err(err).Msg("Failed to store call record")
 	}
 
+	// Look up our display name from profile for the peer to show
+	callerDisplayName := ""
+	if profileData, err := ch.storage.Get("profile/published"); err == nil {
+		var profile struct {
+			DisplayName string `json:"display_name"`
+		}
+		if json.Unmarshal(profileData, &profile) == nil {
+			callerDisplayName = profile.DisplayName
+		}
+	}
+	if callerDisplayName == "" {
+		callerDisplayName = conn.PeerAlias // Fallback to what the peer calls us
+	}
+
+	callType := ""
+	if req.Metadata != nil {
+		callType = req.Metadata["call_type"]
+	}
+
 	// Send initiate event to peer vault
 	initiateEvent := &CallEvent{
-		EventID:   generateEventID(),
-		EventType: CallEventInitiate,
-		CallerID:  ch.ownerSpace,
-		CalleeID:  conn.PeerGUID,
-		CallID:    callID,
-		Timestamp: now.Unix(),
-		Metadata:  req.Metadata,
-		Payload:   json.RawMessage(fmt.Sprintf(`{"local_key_pub":"%s"}`, base64.StdEncoding.EncodeToString(localPubKey))),
+		EventID:           generateEventID(),
+		EventType:         CallEventInitiate,
+		CallerID:          ch.ownerSpace,
+		CalleeID:          conn.PeerGUID,
+		CallID:            callID,
+		CallerDisplayName: callerDisplayName,
+		CallType:          callType,
+		Timestamp:         now.Unix(),
+		Metadata:          req.Metadata,
+		Payload:           json.RawMessage(fmt.Sprintf(`{"local_key_pub":"%s"}`, base64.StdEncoding.EncodeToString(localPubKey))),
 	}
 
 	if err := ch.publishCallEventToVault(ctx, conn.PeerGUID, initiateEvent); err != nil {
