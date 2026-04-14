@@ -454,7 +454,13 @@ func unwrapPayload(data json.RawMessage) (string, json.RawMessage) {
 		Type    string          `json:"type"`
 		Payload json.RawMessage `json:"payload"`
 	}
-	if err := json.Unmarshal(data, &envelope); err != nil || len(envelope.Payload) == 0 {
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return "", data
+	}
+	// Only unwrap if BOTH type and payload are present.
+	// Vault-to-vault messages (e.g., CallEvent) may have a "payload" field
+	// for data like WebRTC SDP, but no "type" field — don't strip those.
+	if envelope.Type == "" || len(envelope.Payload) == 0 {
 		return "", data
 	}
 	return envelope.Type, envelope.Payload
