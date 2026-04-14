@@ -438,6 +438,43 @@ do_deploy() {
     PHASE="scale-up"
     log_step "Phase 4: Scaling ASG to 2 (old + new enclave)"
 
+    # First, check if existing instances are running an old AMI from a previous deploy.
+    # If so, refresh them first so we don't end up with stale instances.
+    local expected_ami current_instances stale_found
+    expected_ami=$(aws ec2 describe-launch-template-versions \
+        --launch-template-id "$(aws autoscaling describe-auto-scaling-groups \
+            --auto-scaling-group-names "$asg_name" \
+            --query 'AutoScalingGroups[0].LaunchTemplate.LaunchTemplateId' \
+            --output text --region "$REGION")" \
+        --versions '$Latest' \
+        --query 'LaunchTemplateVersions[0].LaunchTemplateData.ImageId' \
+        --output text --region "$REGION")
+
+    stale_found=false
+    current_instances=$(aws autoscaling describe-auto-scaling-groups \
+        --auto-scaling-group-names "$asg_name" \
+        --query 'AutoScalingGroups[0].Instances[*].InstanceId' \
+        --output text --region "$REGION")
+
+    for inst_id in $current_instances; do
+        inst_ami=$(aws ec2 describe-instances --instance-ids "$inst_id" \
+            --query 'Reservations[0].Instances[0].ImageId' --output text --region "$REGION" 2>/dev/null)
+        if [[ "$inst_ami" != "$expected_ami" ]]; then
+            log_warn "Instance $inst_id running stale AMI $inst_ami (expected $expected_ami)"
+            stale_found=true
+        fi
+    done
+
+    if $stale_found; then
+        log_info "Refreshing stale instances before scaling..."
+        aws autoscaling start-instance-refresh \
+            --auto-scaling-group-name "$asg_name" \
+            --preferences '{"MinHealthyPercentage": 0, "InstanceWarmup": 120}' \
+            --region "$REGION" >/dev/null 2>&1 || true
+        wait_for_refresh "$asg_name"
+        log_info "Stale instances replaced"
+    fi
+
     # Update ASG max if needed
     local current_max
     current_max=$(aws autoscaling describe-auto-scaling-groups \
