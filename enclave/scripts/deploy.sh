@@ -478,7 +478,11 @@ do_deploy() {
     published_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
     mandatory_after=$(date -u -d "+${TRANSITION_HOURS} hours" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || \
                       date -u -v+${TRANSITION_HOURS}H +"%Y-%m-%dT%H:%M:%SZ")
-    version="$(date +%Y-%m-%d)-v$(date +%s | tail -c 5)"
+    # Read version from SSM (set by deploy-enclave.sh with auto-increment)
+    version=$(aws ssm get-parameter --name "/vettid/enclave/pcr/current" --query 'Parameter.Value' --output text --region "$REGION" 2>/dev/null | jq -r '.version // empty' 2>/dev/null || echo "")
+    if [ -z "$version" ]; then
+        version="$(date +%Y-%m-%d)-v$(date +%H%M)"
+    fi
 
     local config_file
     config_file=$(mktemp)

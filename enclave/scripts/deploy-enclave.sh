@@ -341,7 +341,16 @@ aws ssm put-parameter --name "/vettid/enclave/pcr/pcr2" --value "$PCR2" --type S
 # Legacy /vettid/enclave/pcr0 path is deprecated
 
 # Store combined PCR values for /vault/pcrs/current API endpoint
-VERSION="$(date +%Y-%m-%d)-v1"
+# Auto-increment version: 2026-04-13-v1, 2026-04-13-v2, etc.
+TODAY="$(date +%Y-%m-%d)"
+EXISTING_VERSION=$(aws ssm get-parameter --name "/vettid/enclave/pcr/current" --query 'Parameter.Value' --output text --region "$REGION" 2>/dev/null | jq -r '.version // empty' 2>/dev/null || echo "")
+if echo "$EXISTING_VERSION" | grep -q "^${TODAY}-v"; then
+    CURRENT_NUM=$(echo "$EXISTING_VERSION" | sed "s/${TODAY}-v//")
+    NEXT_NUM=$((CURRENT_NUM + 1))
+    VERSION="${TODAY}-v${NEXT_NUM}"
+else
+    VERSION="${TODAY}-v1"
+fi
 PUBLISHED_AT="$(date -Iseconds)"
 PCR_JSON=$(cat <<PCRJSON
 {"PCR0":"$PCR0","PCR1":"$PCR1","PCR2":"$PCR2","version":"$VERSION","published_at":"$PUBLISHED_AT"}
