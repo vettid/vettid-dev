@@ -788,6 +788,11 @@ func (p *ParentProcess) extractRequestID(data []byte, msg *EnclaveMessage) {
 // Android clients send: {"id": "...", "type": "...", "payload": {...}, "timestamp": "..."}
 // Vault-manager handlers expect: {"type": "...", "payload": {...}}
 // This function strips id/timestamp but preserves the type+payload structure.
+//
+// Only unwrap when BOTH "type" and "payload" are present — that signals a real
+// client envelope. Vault-to-vault events (e.g. CallEvent) happen to have a
+// "payload" field in their schema but no "type" field; they must be passed
+// through untouched so the receiving vault sees the full struct.
 func (p *ParentProcess) extractInnerPayload(data []byte) []byte {
 	if len(data) == 0 {
 		return data
@@ -804,19 +809,9 @@ func (p *ParentProcess) extractInnerPayload(data []byte) []byte {
 		return data
 	}
 
-	// If there's no payload field, check if it's a flat payload (no envelope)
-	if len(envelope.Payload) == 0 {
-		// No nested payload - this might be a flat format, return as-is
+	// Not a client envelope (missing type and/or payload) - return as-is.
+	if envelope.Type == "" || len(envelope.Payload) == 0 {
 		return data
-	}
-
-	// If there's no type field, just return the inner payload as-is (legacy format)
-	if envelope.Type == "" {
-		log.Debug().
-			Int("original_len", len(data)).
-			Int("payload_len", len(envelope.Payload)).
-			Msg("Extracted inner payload from message envelope (no type)")
-		return envelope.Payload
 	}
 
 	// Reconstruct with just type + payload (stripping id, timestamp, etc.)
