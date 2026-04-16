@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -211,6 +212,13 @@ func (c *NATSClient) Subscribe(subject string, msgChan chan *NATSMessage) error 
 func (c *NATSClient) Publish(subject string, data []byte) error {
 	c.publishMu.Lock()
 	defer c.publishMu.Unlock()
+
+	// Reply subjects (_INBOX.*) aren't covered by any JetStream stream filter,
+	// so js.Publish would block waiting for an ACK that never arrives. Send
+	// these through core NATS only.
+	if strings.HasPrefix(subject, "_INBOX.") {
+		return c.conn.Publish(subject, data)
+	}
 
 	// Use JetStream for guaranteed delivery if available
 	if c.js != nil {
