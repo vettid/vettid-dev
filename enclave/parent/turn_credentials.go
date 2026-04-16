@@ -1,12 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/sha1"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"sync"
 	"time"
 
@@ -90,9 +90,21 @@ type turnIceServerJSON struct {
 	Credential string   `json:"credential,omitempty"`
 }
 
-// generateTurnCredentials builds a time-limited Cloudflare TURN credential
-// for the given user_guid using the standard "expiry:user_guid" + HMAC-SHA1
-// REST API format.
+// cfTurnAPIResponse mirrors Cloudflare's
+// POST /v1/turn/keys/{KEY_ID}/credentials/generate-ice-servers response.
+// `iceServers` is an array — typically one stun-only entry plus one turn entry.
+type cfTurnAPIResponse struct {
+	IceServers []struct {
+		URLs       []string `json:"urls"`
+		Username   string   `json:"username,omitempty"`
+		Credential string   `json:"credential,omitempty"`
+	} `json:"iceServers"`
+}
+
+// generateTurnCredentials calls Cloudflare's Calls TURN API to mint
+// short-lived credentials. Cloudflare's TURN Token Key requires a server-side
+// API call (not local HMAC); the previous implementation produced creds the
+// TURN server would reject silently, leaving callers with srflx-only ICE.
 func generateTurnCredentials(ctx context.Context, userGUID string) ([]byte, error) {
 	if userGUID == "" {
 		return nil, fmt.Errorf("user_guid required")
@@ -101,28 +113,48 @@ func generateTurnCredentials(ctx context.Context, userGUID string) ([]byte, erro
 	if err != nil {
 		return nil, err
 	}
-	expiry := time.Now().Add(time.Duration(turnTTLSeconds) * time.Second).Unix()
-	username := fmt.Sprintf("%d:%s", expiry, userGUID)
-	mac := hmac.New(sha1.New, []byte(secret.TokenSecret))
-	mac.Write([]byte(username))
-	credential := base64.StdEncoding.EncodeToString(mac.Sum(nil))
 
-	resp := turnCredentialsResponseJSON{
-		IceServers: []turnIceServerJSON{
-			{URLs: []string{"stun:stun.cloudflare.com:3478"}},
-			{
-				URLs: []string{
-					"turn:turn.cloudflare.com:3478?transport=udp",
-					"turn:turn.cloudflare.com:3478?transport=tcp",
-					"turns:turn.cloudflare.com:5349?transport=tcp",
-				},
-				Username:   username,
-				Credential: credential,
-			},
-		},
-		ExpiresAt: time.Unix(expiry, 0).UTC().Format(time.RFC3339),
+	url := fmt.Sprintf("https://rtc.live.cloudflare.com/v1/turn/keys/%s/credentials/generate-ice-servers", secret.TokenID)
+	body := bytes.NewBufferString(fmt.Sprintf(`{"ttl": %d}`, turnTTLSeconds))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, body)
+	if err != nil {
+		return nil, fmt.Errorf("build cf request: %w", err)
 	}
-	return json.Marshal(resp)
+	req.Header.Set("Authorization", "Bearer "+secret.TokenSecret)
+	req.Header.Set("Content-Type", "application/json")
+
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+	res, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("cf turn api: %w", err)
+	}
+	defer res.Body.Close()
+
+	respBody, _ := io.ReadAll(res.Body)
+	if res.StatusCode/100 != 2 {
+		return nil, fmt.Errorf("cf turn api status %d: %s", res.StatusCode, string(respBody))
+	}
+
+	var cfResp cfTurnAPIResponse
+	if err := json.Unmarshal(respBody, &cfResp); err != nil {
+		return nil, fmt.Errorf("cf turn api parse: %w", err)
+	}
+	if len(cfResp.IceServers) == 0 {
+		return nil, fmt.Errorf("cf turn api returned no ice servers: %s", string(respBody))
+	}
+
+	out := turnCredentialsResponseJSON{
+		ExpiresAt: time.Now().Add(time.Duration(turnTTLSeconds) * time.Second).UTC().Format(time.RFC3339),
+	}
+	for _, srv := range cfResp.IceServers {
+		out.IceServers = append(out.IceServers, turnIceServerJSON{
+			URLs:       srv.URLs,
+			Username:   srv.Username,
+			Credential: srv.Credential,
+		})
+	}
+	_ = userGUID // tagging by user_guid is done via Cloudflare's analytics, not in the credential
+	return json.Marshal(out)
 }
 
 // handleTurnCredentialsGet handles a TURN-credential request from the enclave.
