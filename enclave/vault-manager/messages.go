@@ -299,7 +299,7 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 	mh := &MessageHandler{
 		ownerSpace:           ownerSpace,
 		storage:              storage,
-		callHandler:          NewCallHandler(ownerSpace, storage, publisher, eventHandler),
+		callHandler:          NewCallHandler(ownerSpace, storage, publisher, eventHandler, vaultState),
 		secretsHandler:       NewSecretsHandler(ownerSpace, storage),
 		profileHandler:       profileHandler,
 		personalDataHandler:  personalDataHandler,

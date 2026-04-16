@@ -269,18 +269,7 @@ func (h *MigrationHandler) HandleGetConfig(ctx context.Context, msg *IncomingMes
 		Str("owner_space", h.ownerSpace).
 		Msg("Handling migration.config request")
 
-	// Check if migration was already completed for this user
 	state, _ := h.loadMigrationState(ctx)
-	if state != nil && state.Status == MigrationUserStatusComplete {
-		// Already migrated — no update available
-		resp := MigrationConfigResponse{Available: false}
-		respBytes, _ := json.Marshal(resp)
-		return &OutgoingMessage{
-			RequestID: msg.GetID(),
-			Type:      MessageTypeResponse,
-			Payload:   respBytes,
-		}, nil
-	}
 
 	// Fetch migration config from S3 via sealer proxy
 	configData, err := h.sealerProxy.FetchMigrationConfig()
@@ -306,6 +295,19 @@ func (h *MigrationHandler) HandleGetConfig(ctx context.Context, msg *IncomingMes
 	if err := json.Unmarshal(configData, &config); err != nil {
 		log.Error().Err(err).Msg("Failed to parse migration config")
 		return h.errorResponse(msg.GetID(), "invalid migration config")
+	}
+
+	// User already migrated to THIS published version — nothing to do.
+	// Previously this short-circuited on Status==Complete alone, which meant a
+	// prior migration blocked subsequent ones forever.
+	if state != nil && state.Status == MigrationUserStatusComplete && state.ToPCRVersion == config.Version {
+		resp := MigrationConfigResponse{Available: false}
+		respBytes, _ := json.Marshal(resp)
+		return &OutgoingMessage{
+			RequestID: msg.GetID(),
+			Type:      MessageTypeResponse,
+			Payload:   respBytes,
+		}, nil
 	}
 
 	log.Info().
@@ -339,9 +341,20 @@ func (h *MigrationHandler) HandleStart(ctx context.Context, msg *IncomingMessage
 		Str("owner_space", h.ownerSpace).
 		Msg("Handling migration.start request — re-sealing vault for new enclave")
 
-	// Check current migration state
+	// Check current migration state. Only short-circuit when the user already
+	// migrated to the CURRENTLY-published version; a new published version
+	// should re-run migration.
 	state, _ := h.loadMigrationState(ctx)
-	if state != nil && state.Status == MigrationUserStatusComplete {
+	currentVersion := ""
+	if cfg, err := h.sealerProxy.FetchMigrationConfig(); err == nil && len(cfg) > 0 {
+		var c struct {
+			Version string `json:"version"`
+		}
+		if json.Unmarshal(cfg, &c) == nil {
+			currentVersion = c.Version
+		}
+	}
+	if state != nil && state.Status == MigrationUserStatusComplete && currentVersion != "" && state.ToPCRVersion == currentVersion {
 		resp := MigrationStartResponse{
 			Success: true,
 			Message: "Migration already completed",

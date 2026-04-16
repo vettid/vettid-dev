@@ -164,6 +164,7 @@ type CallHandler struct {
 	activeCalls  map[string]*ActiveCall     // In-memory active call state
 	publisher    CallPublisher              // Interface to publish responses
 	eventHandler *EventHandler              // For audit logging
+	vaultState   *VaultState                // For reading own identity / profile
 }
 
 // CallPublisher interface for sending call events
@@ -175,7 +176,7 @@ type CallPublisher interface {
 }
 
 // NewCallHandler creates a new call handler
-func NewCallHandler(ownerSpace string, storage *EncryptedStorage, publisher CallPublisher, eventHandler *EventHandler) *CallHandler {
+func NewCallHandler(ownerSpace string, storage *EncryptedStorage, publisher CallPublisher, eventHandler *EventHandler, vaultState *VaultState) *CallHandler {
 	return &CallHandler{
 		ownerSpace:   ownerSpace,
 		storage:      storage,
@@ -183,6 +184,7 @@ func NewCallHandler(ownerSpace string, storage *EncryptedStorage, publisher Call
 		activeCalls:  make(map[string]*ActiveCall),
 		publisher:    publisher,
 		eventHandler: eventHandler,
+		vaultState:   vaultState,
 	}
 }
 
@@ -344,18 +346,22 @@ func (ch *CallHandler) HandleInitiateCall(ctx context.Context, msg *IncomingMess
 		log.Error().Err(err).Msg("Failed to store call record")
 	}
 
-	// Look up our display name from profile for the peer to show
+	// Look up our own display name for the peer to show.
+	// Source of truth is the published profile (first/last name from registration).
+	// NOTE: conn.PeerAlias is how WE label the peer — not our own name — so it
+	// must never be used here.
 	callerDisplayName := ""
-	if profileData, err := ch.storage.Get("profile/published"); err == nil {
-		var profile struct {
-			DisplayName string `json:"display_name"`
+	if ch.vaultState != nil {
+		ownProfile := BuildPublishedProfile(ch.ownerSpace, ch.storage, ch.vaultState)
+		full := ownProfile.FirstName
+		if ownProfile.LastName != "" {
+			if full != "" {
+				full = full + " " + ownProfile.LastName
+			} else {
+				full = ownProfile.LastName
+			}
 		}
-		if json.Unmarshal(profileData, &profile) == nil {
-			callerDisplayName = profile.DisplayName
-		}
-	}
-	if callerDisplayName == "" {
-		callerDisplayName = conn.PeerAlias // Fallback to what the peer calls us
+		callerDisplayName = full
 	}
 
 	callType := ""
@@ -1065,6 +1071,13 @@ func (ch *CallHandler) handleCallInitiate(ctx context.Context, event *CallEvent)
 		log.Error().Err(err).Msg("Failed to store call record")
 	}
 
+	// Override caller_display_name using our own cached peer profile rather than
+	// trusting what the caller sent. We already have this peer's name from the
+	// connection handshake — that's the name the user has seen and trusts.
+	if resolved := ch.resolveCallerDisplayName(event.CallerID); resolved != "" {
+		event.CallerDisplayName = resolved
+	}
+
 	// 4. Log incoming call event (will appear in feed with accept/decline action)
 	if ch.eventHandler != nil {
 		ch.eventHandler.LogCallEvent(ctx, EventTypeCallIncoming, event.CallID, event.CallerID, "Incoming call", nil)
@@ -1199,6 +1212,61 @@ func (ch *CallHandler) handleCallEnd(ctx context.Context, event *CallEvent) erro
 	}
 
 	return ch.publisher.PublishToApp(ctx, "call.ended", eventData)
+}
+
+// resolveCallerDisplayName looks up the caller's display name from the callee's
+// own connection cache. Returns "" if no connection is found. The callee should
+// prefer its cached peer profile over whatever the caller self-reports.
+func (ch *CallHandler) resolveCallerDisplayName(callerGUID string) string {
+	if callerGUID == "" {
+		return ""
+	}
+	indexData, err := ch.storage.Get("connections/_index")
+	if err != nil {
+		return ""
+	}
+	var connectionIDs []string
+	if err := json.Unmarshal(indexData, &connectionIDs); err != nil {
+		return ""
+	}
+	for _, connID := range connectionIDs {
+		data, err := ch.storage.Get("connections/" + connID)
+		if err != nil {
+			continue
+		}
+		var rec ConnectionRecord
+		if err := json.Unmarshal(data, &rec); err != nil {
+			continue
+		}
+		if rec.PeerGUID != callerGUID {
+			continue
+		}
+		// Try cached peer profile first — first_name + last_name.
+		if profileBytes, err := ch.storage.Get("connections/" + connID + "/_peer_profile"); err == nil {
+			var profile map[string]interface{}
+			if json.Unmarshal(profileBytes, &profile) == nil {
+				first, _ := profile["_system_first_name"].(string)
+				last, _ := profile["_system_last_name"].(string)
+				full := first
+				if last != "" {
+					if full != "" {
+						full = full + " " + last
+					} else {
+						full = last
+					}
+				}
+				if full != "" {
+					return full
+				}
+			}
+		}
+		// Fall back to the alias the user assigned to this connection.
+		if rec.PeerAlias != "" {
+			return rec.PeerAlias
+		}
+		return ""
+	}
+	return ""
 }
 
 // publishCallEventToVault sends a call event to another vault
