@@ -548,6 +548,16 @@ export class NitroStack extends cdk.Stack {
         resources: [props.infrastructure.handlerSigningKeySecretArn],
       }));
 
+      // Read Cloudflare TURN shared secret so the parent can mint short-lived
+      // HMAC credentials for the vault on behalf of the user.
+      this.enclaveInstanceRole.addToPolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['secretsmanager:GetSecretValue'],
+        resources: [
+          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:vettid/cloudflare-turn*`,
+        ],
+      }));
+
       // ===== NATS ACCOUNT SEED ACCESS =====
       // Grant DynamoDB read access for NATS account seed lookup
       // and KMS decrypt for seed decryption (parent fetches on behalf of vault)

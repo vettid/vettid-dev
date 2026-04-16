@@ -165,6 +165,7 @@ type CallHandler struct {
 	publisher    CallPublisher              // Interface to publish responses
 	eventHandler *EventHandler              // For audit logging
 	vaultState   *VaultState                // For reading own identity / profile
+	sealerProxy  *SealerProxy               // For fetching TURN credentials via parent
 }
 
 // CallPublisher interface for sending call events
@@ -176,7 +177,7 @@ type CallPublisher interface {
 }
 
 // NewCallHandler creates a new call handler
-func NewCallHandler(ownerSpace string, storage *EncryptedStorage, publisher CallPublisher, eventHandler *EventHandler, vaultState *VaultState) *CallHandler {
+func NewCallHandler(ownerSpace string, storage *EncryptedStorage, publisher CallPublisher, eventHandler *EventHandler, vaultState *VaultState, sealerProxy *SealerProxy) *CallHandler {
 	return &CallHandler{
 		ownerSpace:   ownerSpace,
 		storage:      storage,
@@ -185,7 +186,27 @@ func NewCallHandler(ownerSpace string, storage *EncryptedStorage, publisher Call
 		publisher:    publisher,
 		eventHandler: eventHandler,
 		vaultState:   vaultState,
+		sealerProxy:  sealerProxy,
 	}
+}
+
+// HandleGetTurnCredentials returns Cloudflare TURN credentials for the app.
+// Routes through the parent so the secret never enters the wire and the user's
+// already-authenticated NATS connection is the only auth surface.
+func (ch *CallHandler) HandleGetTurnCredentials(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	if ch.sealerProxy == nil {
+		return ch.errorResponse(msg.GetID(), "sealer proxy not configured")
+	}
+	body, err := ch.sealerProxy.GetTurnCredentials()
+	if err != nil {
+		log.Warn().Err(err).Str("owner_space", ch.ownerSpace).Msg("Failed to fetch TURN credentials")
+		return ch.errorResponse(msg.GetID(), err.Error())
+	}
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   body,
+	}, nil
 }
 
 // LoadBlockList loads the block list from storage

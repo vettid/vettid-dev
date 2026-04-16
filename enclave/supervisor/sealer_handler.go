@@ -67,7 +67,9 @@ const (
 	SealerOpFetchMigrationConfig SealerOperation = "fetch_migration_config"
 	// Migration marker (written to unencrypted S3 path after user migration completes)
 	SealerOpWriteMigrationMarker SealerOperation = "write_migration_marker"
-	SealerOpUnsealMaterial       SealerOperation = "unseal_material"
+	// TURN credentials (parent fetches Secrets Manager + generates HMAC creds)
+	SealerOpGetTurnCredentials SealerOperation = "get_turn_credentials"
+	SealerOpUnsealMaterial     SealerOperation = "unseal_material"
 )
 
 // SealerRequest is received from vault-manager
@@ -117,6 +119,9 @@ type SealerResponse struct {
 
 	// For fetch_migration_config
 	MigrationConfig []byte `json:"migration_config,omitempty"`
+
+	// For get_turn_credentials (opaque JSON returned by parent)
+	TurnCredentials []byte `json:"turn_credentials,omitempty"`
 }
 
 // HandleSealerRequest processes a sealer request from vault-manager
@@ -165,6 +170,8 @@ func (sh *SealerHandler) HandleSealerRequest(msg *Message) *Message {
 		resp = sh.fetchMigrationConfig(req)
 	case SealerOpWriteMigrationMarker:
 		resp = sh.writeMigrationMarker(req)
+	case SealerOpGetTurnCredentials:
+		resp = sh.getTurnCredentials(req)
 	case SealerOpUnsealMaterial:
 		resp = sh.unsealMaterial(req)
 	default:
@@ -754,6 +761,48 @@ func (sh *SealerHandler) fetchMigrationConfig(req SealerRequest) SealerResponse 
 
 	log.Info().Int("config_len", len(data)).Msg("Migration config loaded from S3")
 	return SealerResponse{Success: true, MigrationConfig: data}
+}
+
+// getTurnCredentials asks the parent for fresh Cloudflare TURN credentials.
+// The parent fetches the shared secret from Secrets Manager and computes
+// HMAC-signed REST API credentials scoped to the requesting vault's user_guid.
+// Returns the response body as opaque JSON in TurnCredentials.
+func (sh *SealerHandler) getTurnCredentials(req SealerRequest) SealerResponse {
+	sh.connMu.Lock()
+	defer sh.connMu.Unlock()
+
+	if sh.parentConn == nil {
+		return SealerResponse{Success: false, Error: "no parent connection available"}
+	}
+
+	msg := &Message{
+		Type:       MessageTypeTurnCredentialsGet,
+		OwnerSpace: req.OwnerSpace,
+	}
+	if err := sh.parentConn.WriteMessage(msg); err != nil {
+		return SealerResponse{Success: false, Error: fmt.Sprintf("failed to send turn request: %v", err)}
+	}
+
+	response, err := sh.parentConn.ReadMessage()
+	if err != nil {
+		return SealerResponse{Success: false, Error: fmt.Sprintf("failed to read turn response: %v", err)}
+	}
+	if response.Type == MessageTypeError {
+		return SealerResponse{Success: false, Error: fmt.Sprintf("parent error: %s", response.Error)}
+	}
+	if response.Type != MessageTypeTurnCredentialsResponse {
+		return SealerResponse{Success: false, Error: fmt.Sprintf("unexpected response type: %s", response.Type)}
+	}
+
+	// Surface inline {"error": "..."} payloads as failure rather than success.
+	var errPeek struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(response.Payload, &errPeek) == nil && errPeek.Error != "" {
+		return SealerResponse{Success: false, Error: errPeek.Error}
+	}
+
+	return SealerResponse{Success: true, TurnCredentials: response.Payload}
 }
 
 // writeMigrationMarker publishes an unencrypted "user migrated" signal to S3.

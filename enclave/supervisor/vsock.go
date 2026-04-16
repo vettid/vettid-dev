@@ -85,6 +85,10 @@ const (
 	MessageTypeHTTPRequest  MessageType = "http_request"
 	MessageTypeHTTPResponse MessageType = "http_response"
 
+	// TURN credential operations (vault-manager -> supervisor -> parent -> Secrets Manager)
+	MessageTypeTurnCredentialsGet      MessageType = "turn_credentials_get"
+	MessageTypeTurnCredentialsResponse MessageType = "turn_credentials_response"
+
 	// Audit event (org-vault-manager -> supervisor -> parent -> DynamoDB + NATS)
 	MessageTypeAuditEvent MessageType = "audit_event"
 )

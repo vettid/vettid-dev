@@ -299,7 +299,7 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 	mh := &MessageHandler{
 		ownerSpace:           ownerSpace,
 		storage:              storage,
-		callHandler:          NewCallHandler(ownerSpace, storage, publisher, eventHandler, vaultState),
+		callHandler:          NewCallHandler(ownerSpace, storage, publisher, eventHandler, vaultState, sealerProxy),
 		secretsHandler:       NewSecretsHandler(ownerSpace, storage),
 		profileHandler:       profileHandler,
 		personalDataHandler:  personalDataHandler,
@@ -963,6 +963,9 @@ func (mh *MessageHandler) handleCallOperation(ctx context.Context, msg *Incoming
 	case "history":
 		// App wants call history
 		return mh.callHandler.HandleGetCallHistory(ctx, msg)
+	case "turn-credentials":
+		// App wants short-lived TURN credentials for WebRTC NAT traversal
+		return mh.callHandler.HandleGetTurnCredentials(ctx, msg)
 	}
 
 	// Incoming events from other vaults (call.initiate, call.offer, etc.)

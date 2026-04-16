@@ -642,6 +642,21 @@ func (p *ParentProcess) sendWithHandlerSupport(ctx context.Context, msg *Enclave
 			continue // Wait for next response
 		}
 
+		// Check if this is a TURN credentials request from the enclave
+		if response.Type == EnclaveMessageTypeTurnCredentialsGet {
+			log.Debug().
+				Str("owner_space", response.OwnerSpace).
+				Msg("Enclave requested TURN credentials")
+
+			turnResp := p.handleTurnCredentialsGet(ctx, response)
+			p.vsockClient.writeMu.Lock()
+			if err := p.vsockClient.writeMessage(turnResp); err != nil {
+				log.Error().Err(err).Msg("Failed to send TURN credentials response")
+			}
+			p.vsockClient.writeMu.Unlock()
+			continue // Wait for next response
+		}
+
 		// Check if this is a proposals list request from the enclave
 		if response.Type == EnclaveMessageTypeProposalsList {
 			log.Debug().Msg("Enclave requested proposals list")

@@ -161,6 +161,10 @@ const (
 	EnclaveMessageTypeHTTPRequest  EnclaveMessageType = "http_request"
 	EnclaveMessageTypeHTTPResponse EnclaveMessageType = "http_response"
 
+	// TURN credentials (enclave -> parent -> Secrets Manager + HMAC)
+	EnclaveMessageTypeTurnCredentialsGet      EnclaveMessageType = "turn_credentials_get"
+	EnclaveMessageTypeTurnCredentialsResponse EnclaveMessageType = "turn_credentials_response"
+
 	// Audit event (org-vault-manager -> parent -> DynamoDB + NATS)
 	EnclaveMessageTypeAuditEvent EnclaveMessageType = "audit_event"
 )
