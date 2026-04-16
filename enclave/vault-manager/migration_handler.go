@@ -253,6 +253,11 @@ type MigrationConfigResponse struct {
 	DetailsURL     string `json:"details_url,omitempty"`
 	PublishedAt    string `json:"published_at,omitempty"`
 	MandatoryAfter string `json:"mandatory_after,omitempty"`
+	// NewPCR0 is the PCR0 of the enclave the user is being asked to approve.
+	// The app uses this to tell whether the user has already trusted this
+	// enclave via the pre-PIN consent dialog, so it can skip a redundant
+	// second prompt and auto-apply the migration.
+	NewPCR0 string `json:"new_pcr0,omitempty"`
 }
 
 // MigrationStartResponse is returned after credential.migration.start.
@@ -291,6 +296,9 @@ func (h *MigrationHandler) HandleGetConfig(ctx context.Context, msg *IncomingMes
 		DetailsURL     string `json:"details_url"`
 		PublishedAt    string `json:"published_at"`
 		MandatoryAfter string `json:"mandatory_after"`
+		NewPCRs        struct {
+			PCR0 string `json:"pcr0"`
+		} `json:"new_pcrs"`
 	}
 	if err := json.Unmarshal(configData, &config); err != nil {
 		log.Error().Err(err).Msg("Failed to parse migration config")
@@ -322,6 +330,7 @@ func (h *MigrationHandler) HandleGetConfig(ctx context.Context, msg *IncomingMes
 		DetailsURL:     config.DetailsURL,
 		PublishedAt:    config.PublishedAt,
 		MandatoryAfter: config.MandatoryAfter,
+		NewPCR0:        config.NewPCRs.PCR0,
 	}
 
 	respBytes, _ := json.Marshal(resp)
