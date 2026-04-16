@@ -15,6 +15,7 @@ import {
   GetObjectCommand,
   DeleteObjectCommand,
   HeadObjectCommand,
+  ListObjectsV2Command,
 } from '@aws-sdk/client-s3';
 import {
   SSMClient,
@@ -25,24 +26,17 @@ import {
   RemoveTargetsCommand,
   DeleteRuleCommand,
 } from '@aws-sdk/client-eventbridge';
-import {
-  DynamoDBClient,
-  ScanCommand,
-} from '@aws-sdk/client-dynamodb';
-import { unmarshall } from '@aws-sdk/util-dynamodb';
-
 const kms = new KMSClient({});
 const autoscaling = new AutoScalingClient({});
 const s3 = new S3Client({});
 const ssm = new SSMClient({});
 const events = new EventBridgeClient({});
-const ddb = new DynamoDBClient({});
 
 const VAULT_BUCKET = process.env.VAULT_BUCKET!;
 const KMS_KEY_ALIAS = process.env.KMS_KEY_ALIAS || 'alias/vettid-enclave-sealing';
 const MIGRATION_CONFIG_KEY = '_migration/config.json';
+const MIGRATION_MARKERS_PREFIX = '_migration/completed/';
 const FINALIZE_RULE_NAME = process.env.FINALIZE_RULE_NAME || 'vettid-migration-finalize-schedule';
-const TABLE_REGISTRATIONS = process.env.TABLE_REGISTRATIONS || '';
 
 interface MigrationConfig {
   new_pcrs: { pcr0: string; pcr1: string; pcr2: string };
@@ -94,8 +88,8 @@ export const handler = async (): Promise<void> => {
   const deadlinePassed = new Date(config.mandatory_after) <= new Date();
 
   if (!deadlinePassed) {
-    // Check if all users have migrated
-    const allMigrated = await checkAllUsersMigrated();
+    // Check if all enrolled users have posted migration markers.
+    const allMigrated = await checkAllUsersMigrated(config.version);
     if (!allMigrated) {
       console.log('Not all users migrated and deadline not yet passed — will check again');
       return;
@@ -149,7 +143,16 @@ export const handler = async (): Promise<void> => {
     console.error('Failed to delete migration config', err);
   }
 
-  // Step 7: Clean up EventBridge rule (self-cleanup)
+  // Step 7: Remove per-user migration markers for this version so the next
+  // migration starts with a clean slate.
+  try {
+    await deleteMigrationMarkers(config.version);
+    console.log(`Migration markers cleaned up for ${config.version}`);
+  } catch (err) {
+    console.error('Failed to clean up migration markers', err);
+  }
+
+  // Step 8: Clean up EventBridge rule (self-cleanup)
   await cleanupSchedule();
 
   console.log(`Migration finalized successfully (version: ${config.version})`);
@@ -200,69 +203,89 @@ async function updateKmsToSinglePcr0(pcr0: string): Promise<void> {
   }));
 }
 
-async function checkAllUsersMigrated(): Promise<boolean> {
-  if (!TABLE_REGISTRATIONS) {
-    // No registration table configured — can't check, wait for deadline
-    console.log('No registration table configured — cannot check migration progress');
-    return false;
-  }
-
+async function checkAllUsersMigrated(version: string): Promise<boolean> {
   try {
-    // Count active registrations
-    const regResult = await ddb.send(new ScanCommand({
-      TableName: TABLE_REGISTRATIONS,
-      FilterExpression: '#status = :active',
-      ExpressionAttributeNames: { '#status': 'status' },
-      ExpressionAttributeValues: { ':active': { S: 'active' } },
-      Select: 'COUNT',
-    }));
-    const totalUsers = regResult.Count || 0;
-
-    if (totalUsers === 0) {
-      console.log('No active users — safe to finalize');
+    // Enrolled users = folders under vaults/ (each enrolled owner has a folder).
+    const enrolledOwnerSpaces = await listOwnerSpacePrefixes();
+    if (enrolledOwnerSpaces.size === 0) {
+      // No enrolled users yet — nothing to migrate. Safe to finalize.
+      console.log('No enrolled users — safe to finalize');
       return true;
     }
 
-    // Check migration state files in S3 for each user
-    // Migration state is stored per-user at vaults/{ownerSpace}/migration_state.json
-    // For now, use a simple heuristic: if total users <= 10, check each
-    // For larger deployments, rely on the deadline
-    if (totalUsers > 10) {
-      console.log(`${totalUsers} active users — relying on deadline for finalization`);
-      return false;
-    }
+    // Migrated users = explicit markers written by vault-manager on successful
+    // migration (_migration/completed/{version}/{ownerSpace}.json).
+    const migratedOwnerSpaces = await listMigrationMarkers(version);
 
-    // For small user counts, scan migration states
-    const items = (await ddb.send(new ScanCommand({
-      TableName: TABLE_REGISTRATIONS,
-      FilterExpression: '#status = :active',
-      ExpressionAttributeNames: { '#status': 'status' },
-      ExpressionAttributeValues: { ':active': { S: 'active' } },
-    }))).Items || [];
-
-    let migratedCount = 0;
-    for (const item of items) {
-      const reg = unmarshall(item);
-      const ownerSpace = reg.user_guid || reg.owner_space;
-      if (!ownerSpace) continue;
-
-      try {
-        await s3.send(new HeadObjectCommand({
-          Bucket: VAULT_BUCKET,
-          Key: `vaults/${ownerSpace}/migration_state.json`,
-        }));
-        migratedCount++;
-      } catch {
-        // No migration state = not migrated yet
-      }
-    }
-
-    console.log(`Migration progress: ${migratedCount}/${totalUsers} users migrated`);
-    return migratedCount >= totalUsers;
+    const pending: string[] = [];
+    enrolledOwnerSpaces.forEach((owner) => {
+      if (!migratedOwnerSpaces.has(owner)) pending.push(owner);
+    });
+    console.log(
+      `Migration progress for ${version}: ${migratedOwnerSpaces.size}/${enrolledOwnerSpaces.size}` +
+      (pending.length ? ` (pending: ${pending.slice(0, 5).join(', ')}${pending.length > 5 ? '...' : ''})` : ''),
+    );
+    return pending.length === 0;
   } catch (err) {
-    console.error('Error checking migration progress', err);
+    console.error('Error checking migration progress — keeping migration open', err);
     return false;
   }
+}
+
+async function listOwnerSpacePrefixes(): Promise<Set<string>> {
+  const result = new Set<string>();
+  let continuationToken: string | undefined;
+  do {
+    const resp = await s3.send(new ListObjectsV2Command({
+      Bucket: VAULT_BUCKET,
+      Prefix: 'vaults/',
+      Delimiter: '/',
+      ContinuationToken: continuationToken,
+    }));
+    for (const cp of resp.CommonPrefixes || []) {
+      // 'vaults/{ownerSpace}/' → 'ownerSpace'
+      const match = cp.Prefix?.match(/^vaults\/([^/]+)\/$/);
+      if (match) result.add(match[1]);
+    }
+    continuationToken = resp.IsTruncated ? resp.NextContinuationToken : undefined;
+  } while (continuationToken);
+  return result;
+}
+
+async function listMigrationMarkers(version: string): Promise<Set<string>> {
+  const result = new Set<string>();
+  let continuationToken: string | undefined;
+  const prefix = `_migration/completed/${version}/`;
+  do {
+    const resp = await s3.send(new ListObjectsV2Command({
+      Bucket: VAULT_BUCKET,
+      Prefix: prefix,
+      ContinuationToken: continuationToken,
+    }));
+    for (const obj of resp.Contents || []) {
+      const match = obj.Key?.match(/^_migration\/completed\/[^/]+\/([^/]+)\.json$/);
+      if (match) result.add(match[1]);
+    }
+    continuationToken = resp.IsTruncated ? resp.NextContinuationToken : undefined;
+  } while (continuationToken);
+  return result;
+}
+
+async function deleteMigrationMarkers(version: string): Promise<void> {
+  const prefix = `${MIGRATION_MARKERS_PREFIX}${version}/`;
+  let continuationToken: string | undefined;
+  do {
+    const resp = await s3.send(new ListObjectsV2Command({
+      Bucket: VAULT_BUCKET,
+      Prefix: prefix,
+      ContinuationToken: continuationToken,
+    }));
+    for (const obj of resp.Contents || []) {
+      if (!obj.Key) continue;
+      await s3.send(new DeleteObjectCommand({ Bucket: VAULT_BUCKET, Key: obj.Key }));
+    }
+    continuationToken = resp.IsTruncated ? resp.NextContinuationToken : undefined;
+  } while (continuationToken);
 }
 
 async function cleanupSchedule(): Promise<void> {

@@ -61,6 +61,8 @@ const (
 	SealerOpListProposals SealerOperation = "list_proposals"
 	// Migration config (fetched from S3 via parent)
 	SealerOpFetchMigrationConfig SealerOperation = "fetch_migration_config"
+	// Migration marker (written to unencrypted S3 path after user completes migration)
+	SealerOpWriteMigrationMarker SealerOperation = "write_migration_marker"
 	// Migration: unseal the inner sealed material from the full blob (no DEK derivation)
 	SealerOpUnsealMaterial SealerOperation = "unseal_material"
 )
@@ -79,6 +81,9 @@ type SealerRequest struct {
 
 	// For resolve_invite
 	InviteCode string `json:"invite_code,omitempty"`
+
+	// For write_migration_marker
+	MigrationVersion string `json:"migration_version,omitempty"`
 }
 
 // SealerResponse is returned from supervisor to vault-manager
@@ -525,4 +530,24 @@ func (p *SealerProxy) FetchMigrationConfig() ([]byte, error) {
 
 	// nil config means no migration available (normal case)
 	return resp.MigrationConfig, nil
+}
+
+// WriteMigrationMarker publishes an unencrypted "this user has migrated to
+// `version`" marker to S3 (_migration/completed/{version}/{ownerSpace}.json).
+// The auto-finalize Lambda reads these to know when every enrolled user is
+// done, so it no longer has to guess from "active user" heuristics.
+func (p *SealerProxy) WriteMigrationMarker(version string) error {
+	req := SealerRequest{
+		Operation:        SealerOpWriteMigrationMarker,
+		OwnerSpace:       p.ownerSpace,
+		MigrationVersion: version,
+	}
+	resp, err := p.sendRequest(req)
+	if err != nil {
+		return err
+	}
+	if !resp.Success {
+		return fmt.Errorf("write migration marker error: %s", resp.Error)
+	}
+	return nil
 }

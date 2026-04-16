@@ -415,6 +415,15 @@ func (h *MigrationHandler) HandleStart(ctx context.Context, msg *IncomingMessage
 		h.persistFn()
 	}
 
+	// Publish an unencrypted marker so the auto-finalize Lambda can tell that
+	// this user is done. The marker is per-version, so old markers don't
+	// satisfy future migrations.
+	if configVersion != "" {
+		if err := h.sealerProxy.WriteMigrationMarker(configVersion); err != nil {
+			log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("Failed to write migration marker (non-fatal)")
+		}
+	}
+
 	log.Info().
 		Str("owner_space", h.ownerSpace).
 		Str("version", configVersion).

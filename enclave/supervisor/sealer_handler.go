@@ -65,6 +65,8 @@ const (
 	SealerOpListProposals SealerOperation = "list_proposals"
 	// Migration config (fetched from S3 via parent)
 	SealerOpFetchMigrationConfig SealerOperation = "fetch_migration_config"
+	// Migration marker (written to unencrypted S3 path after user migration completes)
+	SealerOpWriteMigrationMarker SealerOperation = "write_migration_marker"
 	SealerOpUnsealMaterial       SealerOperation = "unseal_material"
 )
 
@@ -82,6 +84,9 @@ type SealerRequest struct {
 
 	// For resolve_invite
 	InviteCode string `json:"invite_code,omitempty"`
+
+	// For write_migration_marker
+	MigrationVersion string `json:"migration_version,omitempty"`
 }
 
 // SealerResponse is sent back to vault-manager
@@ -158,6 +163,8 @@ func (sh *SealerHandler) HandleSealerRequest(msg *Message) *Message {
 		resp = sh.listProposals(req)
 	case SealerOpFetchMigrationConfig:
 		resp = sh.fetchMigrationConfig(req)
+	case SealerOpWriteMigrationMarker:
+		resp = sh.writeMigrationMarker(req)
 	case SealerOpUnsealMaterial:
 		resp = sh.unsealMaterial(req)
 	default:
@@ -747,4 +754,26 @@ func (sh *SealerHandler) fetchMigrationConfig(req SealerRequest) SealerResponse 
 
 	log.Info().Int("config_len", len(data)).Msg("Migration config loaded from S3")
 	return SealerResponse{Success: true, MigrationConfig: data}
+}
+
+// writeMigrationMarker publishes an unencrypted "user migrated" signal to S3.
+// Lambda auto-finalize reads these markers to decide when every enrolled user
+// has migrated (instead of relying on the broken "no active users" heuristic).
+// Key: _migration/completed/{version}/{ownerSpace}.json
+func (sh *SealerHandler) writeMigrationMarker(req SealerRequest) SealerResponse {
+	if req.MigrationVersion == "" {
+		return SealerResponse{Success: false, Error: "migration_version is required"}
+	}
+	if req.OwnerSpace == "" {
+		return SealerResponse{Success: false, Error: "owner_space is required"}
+	}
+	key := fmt.Sprintf("_migration/completed/%s/%s.json", req.MigrationVersion, req.OwnerSpace)
+	body := fmt.Sprintf(`{"version":%q,"owner_space":%q,"completed_at":%q}`,
+		req.MigrationVersion, req.OwnerSpace, time.Now().UTC().Format(time.RFC3339))
+	if err := sh.s3Put(key, []byte(body)); err != nil {
+		log.Error().Err(err).Str("key", key).Msg("Failed to write migration marker")
+		return SealerResponse{Success: false, Error: err.Error()}
+	}
+	log.Info().Str("key", key).Msg("Migration marker written")
+	return SealerResponse{Success: true}
 }
