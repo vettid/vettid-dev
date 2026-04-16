@@ -943,29 +943,44 @@ func (mh *MessageHandler) handleCallOperation(ctx context.Context, msg *Incoming
 
 	opType := opParts[1]
 
-	// App-initiated operations (requests from the mobile app)
-	switch opType {
-	case "start":
-		// App wants to initiate an outgoing call
-		return mh.callHandler.HandleInitiateCall(ctx, msg)
-	case "accept":
-		// App wants to accept an incoming call
-		return mh.callHandler.HandleAcceptCall(ctx, msg)
-	case "reject":
-		// App wants to reject an incoming call
-		return mh.callHandler.HandleRejectCall(ctx, msg)
-	case "end":
-		// App wants to end a call
-		return mh.callHandler.HandleEndCall(ctx, msg)
-	case "signal":
-		// App wants to send WebRTC signaling (offer/answer/candidate)
-		return mh.callHandler.HandleSendSignaling(ctx, msg)
-	case "history":
-		// App wants call history
-		return mh.callHandler.HandleGetCallHistory(ctx, msg)
-	case "turn-credentials":
-		// App wants short-lived TURN credentials for WebRTC NAT traversal
-		return mh.callHandler.HandleGetTurnCredentials(ctx, msg)
+	// Peer-to-peer events and app-initiated requests both land on forVault.call.*
+	// with the same op suffix (e.g., both "call.accept"). Distinguish by payload
+	// shape: peer CallEvents carry an `event_type` field; app requests do not.
+	// Without this check, peer accepts get routed to HandleAcceptCall (the
+	// app-side handler), and handleCallAccept — which pushes call.accepted to
+	// the caller's app — never runs, so the caller hangs in "Calling..." forever.
+	var peek struct {
+		EventType string `json:"event_type"`
+	}
+	isPeerEvent := len(msg.Payload) > 0 &&
+		json.Unmarshal(msg.Payload, &peek) == nil &&
+		peek.EventType != ""
+
+	if !isPeerEvent {
+		// App-initiated operations (requests from the mobile app)
+		switch opType {
+		case "start":
+			// App wants to initiate an outgoing call
+			return mh.callHandler.HandleInitiateCall(ctx, msg)
+		case "accept":
+			// App wants to accept an incoming call
+			return mh.callHandler.HandleAcceptCall(ctx, msg)
+		case "reject":
+			// App wants to reject an incoming call
+			return mh.callHandler.HandleRejectCall(ctx, msg)
+		case "end":
+			// App wants to end a call
+			return mh.callHandler.HandleEndCall(ctx, msg)
+		case "signal":
+			// App wants to send WebRTC signaling (offer/answer/candidate)
+			return mh.callHandler.HandleSendSignaling(ctx, msg)
+		case "history":
+			// App wants call history
+			return mh.callHandler.HandleGetCallHistory(ctx, msg)
+		case "turn-credentials":
+			// App wants short-lived TURN credentials for WebRTC NAT traversal
+			return mh.callHandler.HandleGetTurnCredentials(ctx, msg)
+		}
 	}
 
 	// Incoming events from other vaults (call.initiate, call.offer, etc.)
@@ -974,9 +989,11 @@ func (mh *MessageHandler) handleCallOperation(ctx context.Context, msg *Incoming
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("invalid call event payload: %v", err))
 	}
 
-	// Map string to CallEventType
-	eventType := CallEventType(opType)
-	event.EventType = eventType
+	// Map string to CallEventType (fallback for older peer events that
+	// didn't set event_type in the payload itself).
+	if event.EventType == "" {
+		event.EventType = CallEventType(opType)
+	}
 
 	// Handle the incoming call event
 	if err := mh.callHandler.HandleCallEvent(ctx, &event); err != nil {
