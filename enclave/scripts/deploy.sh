@@ -53,8 +53,12 @@ log_step()  { echo -e "${BLUE}[STEP]${NC} $1"; }
 # Parse arguments
 ACTION="deploy"
 SUMMARY=""
+USER_SUMMARY=""
+# Default user-facing summary. Kept deliberately generic + action-oriented so
+# users never see internal commit language. Override with --user-summary.
+DEFAULT_USER_SUMMARY="Your approval is required to apply a security update to your vault."
 DETAILS_URL=""
-DEFAULT_DETAILS_URL="https://github.com/vettid/vettid-dev/commits/main"
+DEFAULT_DETAILS_URL="https://vettid.dev/docs/vault-security-updates"
 DRY_RUN=false
 SKIP_KMS_FINALIZE=false
 
@@ -66,6 +70,8 @@ while [[ $# -gt 0 ]]; do
         --skip-kms-finalize) SKIP_KMS_FINALIZE=true; shift ;;
         --summary) SUMMARY="$2"; shift 2 ;;
         --summary=*) SUMMARY="${1#*=}"; shift ;;
+        --user-summary) USER_SUMMARY="$2"; shift 2 ;;
+        --user-summary=*) USER_SUMMARY="${1#*=}"; shift ;;
         --details-url) DETAILS_URL="$2"; shift 2 ;;
         --details-url=*) DETAILS_URL="${1#*=}"; shift ;;
         -h|--help) usage; exit 0 ;;
@@ -85,8 +91,11 @@ Actions:
   --status          Show current deployment/migration state
 
 Options:
-  --summary TEXT        Change description (required for deploy)
-  --details-url URL     Link to release notes
+  --summary TEXT        Internal change description (for logs / release notes)
+                        NOT shown to users. Required for deploy.
+  --user-summary TEXT   User-facing message on the "Vault Security Update"
+                        card. Default: "$DEFAULT_USER_SUMMARY"
+  --details-url URL     Link to release notes shown in the app
   --dry-run             Preview changes without executing
   --skip-kms-finalize   Leave both PCR0s in KMS policy after deploy
   -h, --help            Show this help
@@ -585,7 +594,7 @@ do_deploy() {
     "old_pcrs": { "pcr0": "$old_pcr0", "pcr1": "$old_pcr1", "pcr2": "$old_pcr2" },
     "valid_from": "$published_at",
     "version": "$version",
-    "summary": "$SUMMARY",
+    "summary": "${USER_SUMMARY:-$DEFAULT_USER_SUMMARY}",
     "details_url": "${DETAILS_URL:-$DEFAULT_DETAILS_URL}",
     "published_at": "$published_at",
     "mandatory_after": "$mandatory_after"
