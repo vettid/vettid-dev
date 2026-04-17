@@ -26,6 +26,10 @@ echo "=== VettID TURN bootstrap starting ==="
 
 # --- Packages ---------------------------------------------------------------
 dnf -y update
+# coturn and certbot are not in AL2023 default repos; pull them from Fedora
+# EPEL 9. AL2023 binaries are compatible with EL9 userspace for everything
+# coturn needs (OpenSSL, libevent, sqlite).
+dnf -y install https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm
 dnf -y install coturn certbot jq awscli amazon-cloudwatch-agent bind-utils
 
 # --- Public IP --------------------------------------------------------------
