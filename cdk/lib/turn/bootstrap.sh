@@ -80,6 +80,12 @@ fi
 mkdir -p /etc/turnserver
 chown turnserver:turnserver /etc/turnserver
 
+# Pre-create log file — coturn runs as the turnserver user and can't create
+# /var/log/coturn.log itself without write access to /var/log.
+touch /var/log/coturn.log
+chown turnserver:turnserver /var/log/coturn.log
+chmod 0640 /var/log/coturn.log
+
 # --- Public IP --------------------------------------------------------------
 # The EIP is attached before cloud-init runs; IMDSv2 gives us the public IPv4.
 TOKEN=$(curl -sS -X PUT "http://169.254.169.254/latest/api/token" \
