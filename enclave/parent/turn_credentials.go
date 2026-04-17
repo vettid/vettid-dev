@@ -19,7 +19,7 @@ import (
 
 const (
 	// turnSecretName is the Secrets Manager id for the HMAC shared secret
-	// that our coturn relay trusts. Defined in cdk/lib/turn-stack.ts.
+	// that our coturn relays trust. Defined in cdk/lib/turn-stack.ts.
 	turnSecretName = "vettid/turn-shared-secret"
 	// turnTTLSeconds: short-lived creds, re-minted per call. 1 hour is
 	// enough to cover ICE restarts and longish conversations without
@@ -27,9 +27,18 @@ const (
 	turnTTLSeconds = 3600
 	// turnSecretCacheTTL keeps Secrets Manager calls cheap.
 	turnSecretCacheTTL = 30 * time.Minute
-	// turnHostname and turnRealm are fixed by the TurnStack deployment.
-	turnHostname = "turn.vettid.dev"
 )
+
+// turnHostnames are the public FQDNs of every coturn instance in our TURN
+// stack. We return one entry per hostname in ice_servers so libwebrtc
+// allocates on each; ICE then gets to try cross-server relay pairs rather
+// than collapsing onto same-server relay (which libwebrtc can't actually
+// use — it sends CREATE_PERMISSION with peer_addr=0.0.0.0 in that case and
+// coturn rejects with 403). Keep this in sync with TurnStack props.
+var turnHostnames = []string{
+	"turn.vettid.dev",
+	"turn-b.vettid.dev",
+}
 
 var (
 	turnSecretMu     sync.Mutex
@@ -111,26 +120,32 @@ func generateTurnCredentials(ctx context.Context, _userGUID string) ([]byte, err
 	mac.Write([]byte(username))
 	credential := base64.StdEncoding.EncodeToString(mac.Sum(nil))
 
-	resp := turnCredentialsResponseJSON{
-		IceServers: []turnIceServerJSON{
-			// TURNS (TLS) preferred — keeps allocation creds off the wire.
-			// 443 fallback is for networks that only allow HTTPS egress.
-			{
-				URLs: []string{
-					fmt.Sprintf("turns:%s:5349?transport=tcp", turnHostname),
-					fmt.Sprintf("turns:%s:443?transport=tcp", turnHostname),
-					// Plain TURN is kept as a fallback only. Clients are
-					// configured to force relay-only over TURNS where
-					// possible; if the TLS ports are blocked we degrade
-					// rather than fail.
-					fmt.Sprintf("turn:%s:3478?transport=udp", turnHostname),
-					fmt.Sprintf("turn:%s:3478?transport=tcp", turnHostname),
-				},
-				Username:   username,
-				Credential: credential,
+	// One iceServer entry per coturn hostname. libwebrtc allocates on each,
+	// giving ICE cross-server relay pairs to try (so same-server relay isn't
+	// the only option for two peers on strict NATs). The HMAC creds are
+	// interchangeable across servers because they share the secret.
+	iceServers := make([]turnIceServerJSON, 0, len(turnHostnames))
+	for _, host := range turnHostnames {
+		iceServers = append(iceServers, turnIceServerJSON{
+			URLs: []string{
+				// TURNS (TLS) preferred — keeps allocation creds off the wire.
+				fmt.Sprintf("turns:%s:5349?transport=tcp", host),
+				// 443 via iptables REDIRECT to 5349 on the server, so the
+				// cert and SNI are identical. Useful on restrictive networks
+				// that only allow outbound HTTPS.
+				fmt.Sprintf("turns:%s:443?transport=tcp", host),
+				// Plain TURN as a fallback when TLS ports are blocked.
+				fmt.Sprintf("turn:%s:3478?transport=udp", host),
+				fmt.Sprintf("turn:%s:3478?transport=tcp", host),
 			},
-		},
-		ExpiresAt: time.Unix(expiry, 0).UTC().Format(time.RFC3339),
+			Username:   username,
+			Credential: credential,
+		})
+	}
+
+	resp := turnCredentialsResponseJSON{
+		IceServers: iceServers,
+		ExpiresAt:  time.Unix(expiry, 0).UTC().Format(time.RFC3339),
 	}
 	return json.Marshal(resp)
 }

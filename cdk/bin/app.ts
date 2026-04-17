@@ -92,10 +92,13 @@ const vault = new VaultStack(app, 'VettID-Vault', {
 });
 
 // 8. Deploy TURN relay stack (WebRTC NAT traversal — own infra, Signal-style)
-// Single EC2 + EIP + Route53. Nitro parent pulls the HMAC secret from here.
+// Two EC2 instances + EIPs + Route53 records. Clients allocate on both so
+// ICE has cross-server relay pairs available when both peers are on
+// symmetric NATs. Nitro parent pulls the HMAC secret from here and includes
+// every hostname in the ice_servers it returns to the app.
 const turn = new TurnStack(app, 'VettID-Turn', {
   env,
-  hostname: 'turn.vettid.dev',
+  hostnames: ['turn.vettid.dev', 'turn-b.vettid.dev'],
   zoneName: 'vettid.dev',
 });
 
