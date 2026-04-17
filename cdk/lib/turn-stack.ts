@@ -122,10 +122,14 @@ export class TurnStack extends cdk.Stack {
       throw new Error('Could not locate cdk/lib/turn/bootstrap.sh');
     }
     const bootstrapTemplate = fs.readFileSync(bootstrapPath, 'utf-8');
+    // .replace(string, …) only swaps the first occurrence — that was
+    // catching the comment block at the top of bootstrap.sh and leaving the
+    // actual variable assignments literal. Use a global regex so every
+    // instance gets substituted.
     const bootstrap = bootstrapTemplate
-      .replace('__REALM__', this.hostname)
-      .replace('__SECRET_ARN__', this.sharedSecret.secretArn)
-      .replace('__REGION__', this.region);
+      .replace(/__REALM__/g, this.hostname)
+      .replace(/__SECRET_ARN__/g, this.sharedSecret.secretArn)
+      .replace(/__REGION__/g, this.region);
     const userData = ec2.UserData.forLinux();
     userData.addCommands(bootstrap);
 
