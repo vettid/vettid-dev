@@ -185,6 +185,25 @@ export class TurnStack extends cdk.Stack {
     });
 
     // -------------------------------------------------------------------- //
+    // CAA record scoped to this subdomain — the parent zone has a
+    // 0 issue "amazon.com" policy that would otherwise block Lets Encrypt.
+    // Adding an explicit CAA at turn.vettid.dev overrides the parent policy
+    // for this FQDN only: cert issuance for turn.vettid.dev is limited to
+    // Let's Encrypt, while the rest of vettid.dev stays locked to Amazon.
+    // -------------------------------------------------------------------- //
+    new route53.CaaRecord(this, 'TurnCaaRecord', {
+      zone: hostedZone,
+      recordName: this.hostname,
+      values: [{
+        flag: 0,
+        tag: route53.CaaTag.ISSUE,
+        value: 'letsencrypt.org',
+      }],
+      ttl: cdk.Duration.minutes(5),
+      comment: 'Allow Lets Encrypt to issue for turn.vettid.dev',
+    });
+
+    // -------------------------------------------------------------------- //
     // Exports — consumed by NitroStack so the parent IAM role gets read
     // access on the same secret.
     // -------------------------------------------------------------------- //
