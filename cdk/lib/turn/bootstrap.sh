@@ -25,12 +25,60 @@ REGION="__REGION__"
 echo "=== VettID TURN bootstrap starting ==="
 
 # --- Packages ---------------------------------------------------------------
+# AL2023 doesn't ship coturn and EPEL 9 won't install (requires redhat-release
+# which AL2023 doesn't provide). Build coturn from source instead — it's a
+# small, well-behaved autotools build. Everything else comes from default
+# repos.
 dnf -y update
-# coturn and certbot are not in AL2023 default repos; pull them from Fedora
-# EPEL 9. AL2023 binaries are compatible with EL9 userspace for everything
-# coturn needs (OpenSSL, libevent, sqlite).
-dnf -y install https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm
-dnf -y install coturn certbot jq awscli amazon-cloudwatch-agent bind-utils
+dnf -y install \
+    jq awscli amazon-cloudwatch-agent bind-utils certbot \
+    gcc make openssl-devel libevent-devel sqlite-devel \
+    tar git
+
+# --- Build coturn from source ----------------------------------------------
+COTURN_VERSION="4.6.2"
+if ! command -v turnserver >/dev/null 2>&1; then
+    echo "Building coturn ${COTURN_VERSION} from source..."
+    cd /tmp
+    curl -fsSL -o coturn.tar.gz \
+        "https://github.com/coturn/coturn/archive/refs/tags/${COTURN_VERSION}.tar.gz"
+    tar xzf coturn.tar.gz
+    cd "coturn-${COTURN_VERSION}"
+    ./configure --prefix=/usr/local --sysconfdir=/etc
+    make -j"$(nproc)"
+    make install
+    cd /
+    # Create turnserver user/group if not already present
+    getent group turnserver >/dev/null || groupadd --system turnserver
+    getent passwd turnserver >/dev/null || \
+        useradd --system --gid turnserver --home-dir /var/lib/turnserver \
+                --create-home --shell /sbin/nologin turnserver
+    # systemd unit (source tarball ships one under rpm/, but simpler to write our own)
+    cat > /etc/systemd/system/coturn.service <<'UNIT'
+[Unit]
+Description=VettID TURN Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=turnserver
+Group=turnserver
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+ExecStart=/usr/local/bin/turnserver -c /etc/turnserver.conf --no-cli
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+    systemctl daemon-reload
+fi
+
+# Working directory for the cert+auth-secret files coturn reads.
+mkdir -p /etc/turnserver
+chown turnserver:turnserver /etc/turnserver
 
 # --- Public IP --------------------------------------------------------------
 # The EIP is attached before cloud-init runs; IMDSv2 gives us the public IPv4.
