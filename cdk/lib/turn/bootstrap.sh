@@ -267,13 +267,24 @@ fi
 # Redirect incoming 443/TCP to coturn's TURNS listener on 5349. The TLS
 # cert and SNI are identical either way, so clients that configure
 # turns:turn.vettid.dev:443 see exactly the same service.
+#
+# AL2023 ships nftables only; iptables isn't installed by default.
+# Install iptables-services which provides the legacy CLI on top of nf_tables.
+# Whole block is best-effort — 5349 still works even if this fails.
 if [[ $TLS_READY -eq 1 ]]; then
-    iptables -t nat -C PREROUTING -p tcp --dport 443 -j REDIRECT --to-port 5349 2>/dev/null || \
-        iptables -t nat -A PREROUTING -p tcp --dport 443 -j REDIRECT --to-port 5349
-    # Persist across reboots. iptables-services provides the save/restore hook.
-    dnf -y install iptables-services 2>/dev/null || true
-    service iptables save 2>/dev/null || iptables-save > /etc/sysconfig/iptables
-    systemctl enable iptables 2>/dev/null || true
+    if ! command -v iptables >/dev/null 2>&1; then
+        dnf -y install iptables-services iptables-nft || \
+            echo "WARN: could not install iptables; skipping 443 redirect"
+    fi
+    if command -v iptables >/dev/null 2>&1; then
+        iptables -t nat -C PREROUTING -p tcp --dport 443 -j REDIRECT --to-port 5349 2>/dev/null || \
+            iptables -t nat -A PREROUTING -p tcp --dport 443 -j REDIRECT --to-port 5349 || \
+            echo "WARN: iptables rule add failed"
+        # Persist across reboots. service iptables save writes /etc/sysconfig/iptables.
+        service iptables save 2>/dev/null || \
+            iptables-save > /etc/sysconfig/iptables 2>/dev/null || true
+        systemctl enable iptables 2>/dev/null || true
+    fi
 fi
 
 # --- Cert auto-renewal ------------------------------------------------------
