@@ -1,12 +1,14 @@
 package main
 
 import (
-	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha1"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"sync"
 	"time"
 
@@ -16,41 +18,40 @@ import (
 )
 
 const (
-	// turnSecretName is the Secrets Manager id for the Cloudflare TURN
-	// shared secret (matches cdk/lambda/handlers/calls/getTurnCredentials.ts).
-	turnSecretName = "vettid/cloudflare-turn"
-	// turnTTLSeconds matches the Lambda's 24h credential lifetime.
-	turnTTLSeconds = 86400
+	// turnSecretName is the Secrets Manager id for the HMAC shared secret
+	// that our coturn relay trusts. Defined in cdk/lib/turn-stack.ts.
+	turnSecretName = "vettid/turn-shared-secret"
+	// turnTTLSeconds: short-lived creds, re-minted per call. 1 hour is
+	// enough to cover ICE restarts and longish conversations without
+	// keeping long-lived tokens floating around.
+	turnTTLSeconds = 3600
 	// turnSecretCacheTTL keeps Secrets Manager calls cheap.
 	turnSecretCacheTTL = 30 * time.Minute
+	// turnHostname and turnRealm are fixed by the TurnStack deployment.
+	turnHostname = "turn.vettid.dev"
 )
-
-type turnSecret struct {
-	TokenID     string `json:"token_id"`
-	TokenSecret string `json:"token_secret"`
-}
 
 var (
 	turnSecretMu     sync.Mutex
-	turnSecretCache  *turnSecret
+	turnSecretCache  string
 	turnSecretExpiry time.Time
 	turnSMClient     *secretsmanager.Client
 )
 
-// getTurnSecret returns the Cloudflare TURN shared secret, fetching from
-// Secrets Manager and caching the result.
-func getTurnSecret(ctx context.Context) (*turnSecret, error) {
+// getTurnSecret returns the HMAC secret used to sign coturn credentials.
+// Fetched from Secrets Manager on first use and cached for 30 min.
+func getTurnSecret(ctx context.Context) (string, error) {
 	turnSecretMu.Lock()
 	defer turnSecretMu.Unlock()
 
-	if turnSecretCache != nil && time.Now().Before(turnSecretExpiry) {
+	if turnSecretCache != "" && time.Now().Before(turnSecretExpiry) {
 		return turnSecretCache, nil
 	}
 
 	if turnSMClient == nil {
 		cfg, err := config.LoadDefaultConfig(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("aws config: %w", err)
+			return "", fmt.Errorf("aws config: %w", err)
 		}
 		turnSMClient = secretsmanager.NewFromConfig(cfg)
 	}
@@ -59,26 +60,18 @@ func getTurnSecret(ctx context.Context) (*turnSecret, error) {
 		SecretId: ptrString(turnSecretName),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("secretsmanager get: %w", err)
+		return "", fmt.Errorf("secretsmanager get: %w", err)
 	}
 	if out.SecretString == nil || *out.SecretString == "" {
-		return nil, fmt.Errorf("turn secret empty")
+		return "", fmt.Errorf("turn secret empty")
 	}
-	var s turnSecret
-	if err := json.Unmarshal([]byte(*out.SecretString), &s); err != nil {
-		return nil, fmt.Errorf("turn secret malformed: %w", err)
-	}
-	if s.TokenSecret == "" {
-		return nil, fmt.Errorf("turn secret missing token_secret")
-	}
-	turnSecretCache = &s
+	turnSecretCache = *out.SecretString
 	turnSecretExpiry = time.Now().Add(turnSecretCacheTTL)
 	return turnSecretCache, nil
 }
 
 // turnCredentialsResponseJSON is the wire format returned to the vault, which
-// in turn relays it to the app. Field shape mirrors what the prior HTTP API
-// returned so the Android client doesn't have to re-shape it.
+// in turn relays it to the app. Shape matches what the Android client parses.
 type turnCredentialsResponseJSON struct {
 	IceServers []turnIceServerJSON `json:"ice_servers"`
 	ExpiresAt  string              `json:"expires_at"`
@@ -90,71 +83,56 @@ type turnIceServerJSON struct {
 	Credential string   `json:"credential,omitempty"`
 }
 
-// cfTurnAPIResponse mirrors Cloudflare's
-// POST /v1/turn/keys/{KEY_ID}/credentials/generate-ice-servers response.
-// `iceServers` is an array — typically one stun-only entry plus one turn entry.
-type cfTurnAPIResponse struct {
-	IceServers []struct {
-		URLs       []string `json:"urls"`
-		Username   string   `json:"username,omitempty"`
-		Credential string   `json:"credential,omitempty"`
-	} `json:"iceServers"`
-}
-
-// generateTurnCredentials calls Cloudflare's Calls TURN API to mint
-// short-lived credentials. Cloudflare's TURN Token Key requires a server-side
-// API call (not local HMAC); the previous implementation produced creds the
-// TURN server would reject silently, leaving callers with srflx-only ICE.
-func generateTurnCredentials(ctx context.Context, userGUID string) ([]byte, error) {
-	if userGUID == "" {
-		return nil, fmt.Errorf("user_guid required")
-	}
+// generateTurnCredentials builds coturn long-term credentials.
+//
+// Format (matches coturn `use-auth-secret` mode):
+//   username   = "<unix-expiry>:<per-call-nonce>"
+//   credential = base64(HMAC-SHA1(shared_secret, username))
+//
+// PRIVACY: we use a random per-call nonce rather than user_guid so that a
+// passive observer of TURN traffic can't correlate allocations to users.
+func generateTurnCredentials(ctx context.Context, _userGUID string) ([]byte, error) {
 	secret, err := getTurnSecret(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	url := fmt.Sprintf("https://rtc.live.cloudflare.com/v1/turn/keys/%s/credentials/generate-ice-servers", secret.TokenID)
-	body := bytes.NewBufferString(fmt.Sprintf(`{"ttl": %d}`, turnTTLSeconds))
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, body)
-	if err != nil {
-		return nil, fmt.Errorf("build cf request: %w", err)
+	// Per-call opaque nonce — 96 bits of randomness is plenty for uniqueness
+	// within the TTL.
+	var nonceBytes [12]byte
+	if _, err := rand.Read(nonceBytes[:]); err != nil {
+		return nil, fmt.Errorf("nonce: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+secret.TokenSecret)
-	req.Header.Set("Content-Type", "application/json")
+	nonce := hex.EncodeToString(nonceBytes[:])
 
-	httpClient := &http.Client{Timeout: 10 * time.Second}
-	res, err := httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("cf turn api: %w", err)
-	}
-	defer res.Body.Close()
+	expiry := time.Now().Add(time.Duration(turnTTLSeconds) * time.Second).Unix()
+	username := fmt.Sprintf("%d:%s", expiry, nonce)
+	mac := hmac.New(sha1.New, []byte(secret))
+	mac.Write([]byte(username))
+	credential := base64.StdEncoding.EncodeToString(mac.Sum(nil))
 
-	respBody, _ := io.ReadAll(res.Body)
-	if res.StatusCode/100 != 2 {
-		return nil, fmt.Errorf("cf turn api status %d: %s", res.StatusCode, string(respBody))
+	resp := turnCredentialsResponseJSON{
+		IceServers: []turnIceServerJSON{
+			// TURNS (TLS) preferred — keeps allocation creds off the wire.
+			// 443 fallback is for networks that only allow HTTPS egress.
+			{
+				URLs: []string{
+					fmt.Sprintf("turns:%s:5349?transport=tcp", turnHostname),
+					fmt.Sprintf("turns:%s:443?transport=tcp", turnHostname),
+					// Plain TURN is kept as a fallback only. Clients are
+					// configured to force relay-only over TURNS where
+					// possible; if the TLS ports are blocked we degrade
+					// rather than fail.
+					fmt.Sprintf("turn:%s:3478?transport=udp", turnHostname),
+					fmt.Sprintf("turn:%s:3478?transport=tcp", turnHostname),
+				},
+				Username:   username,
+				Credential: credential,
+			},
+		},
+		ExpiresAt: time.Unix(expiry, 0).UTC().Format(time.RFC3339),
 	}
-
-	var cfResp cfTurnAPIResponse
-	if err := json.Unmarshal(respBody, &cfResp); err != nil {
-		return nil, fmt.Errorf("cf turn api parse: %w", err)
-	}
-	if len(cfResp.IceServers) == 0 {
-		return nil, fmt.Errorf("cf turn api returned no ice servers: %s", string(respBody))
-	}
-
-	out := turnCredentialsResponseJSON{
-		ExpiresAt: time.Now().Add(time.Duration(turnTTLSeconds) * time.Second).UTC().Format(time.RFC3339),
-	}
-	for _, srv := range cfResp.IceServers {
-		out.IceServers = append(out.IceServers, turnIceServerJSON{
-			URLs:       srv.URLs,
-			Username:   srv.Username,
-			Credential: srv.Credential,
-		})
-	}
-	_ = userGUID // tagging by user_guid is done via Cloudflare's analytics, not in the credential
-	return json.Marshal(out)
+	return json.Marshal(resp)
 }
 
 // handleTurnCredentialsGet handles a TURN-credential request from the enclave.

@@ -548,13 +548,13 @@ export class NitroStack extends cdk.Stack {
         resources: [props.infrastructure.handlerSigningKeySecretArn],
       }));
 
-      // Read Cloudflare TURN shared secret so the parent can mint short-lived
-      // HMAC credentials for the vault on behalf of the user.
+      // Read VettID TURN HMAC secret so the parent can mint short-lived
+      // credentials for our self-hosted coturn relay (see TurnStack).
       this.enclaveInstanceRole.addToPolicy(new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
         actions: ['secretsmanager:GetSecretValue'],
         resources: [
-          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:vettid/cloudflare-turn*`,
+          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:vettid/turn-shared-secret*`,
         ],
       }));
 

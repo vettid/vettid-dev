@@ -11,6 +11,7 @@ import { NatsStack } from '../lib/nats-stack';
 // LedgerStack removed - legacy Protean Credential System replaced by vault-manager JetStream
 import { MonitoringStack } from '../lib/monitoring-stack';
 import { NitroStack } from '../lib/nitro-stack';
+import { TurnStack } from '../lib/turn-stack';
 
 const app = new cdk.App();
 
@@ -90,7 +91,15 @@ const vault = new VaultStack(app, 'VettID-Vault', {
   nitro,  // For enclave communication
 });
 
-// 8. Deploy monitoring stack (CloudWatch dashboard and alarms)
+// 8. Deploy TURN relay stack (WebRTC NAT traversal — own infra, Signal-style)
+// Single EC2 + EIP + Route53. Nitro parent pulls the HMAC secret from here.
+const turn = new TurnStack(app, 'VettID-Turn', {
+  env,
+  hostname: 'turn.vettid.dev',
+  zoneName: 'vettid.dev',
+});
+
+// 9. Deploy monitoring stack (CloudWatch dashboard and alarms)
 // Optional: pass alarmEmail to receive alert notifications
 const monitoring = new MonitoringStack(app, 'VettID-Monitoring', {
   env,
