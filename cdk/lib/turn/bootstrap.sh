@@ -64,7 +64,10 @@ Wants=network-online.target
 Type=simple
 User=turnserver
 Group=turnserver
+# Needed to bind alt-tls-listening-port=443. AmbientCapabilities alone was
+# not taking effect on AL2023 so we also set setcap on the binary below.
 AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 ExecStart=/usr/local/bin/turnserver -c /etc/turnserver.conf --no-cli
 Restart=on-failure
 RestartSec=5
@@ -75,6 +78,10 @@ WantedBy=multi-user.target
 UNIT
     systemctl daemon-reload
 fi
+# Grant the binary the capability to bind privileged ports directly so
+# alt-tls-listening-port=443 works reliably even if systemd capability
+# inheritance has edge cases.
+setcap 'cap_net_bind_service=+ep' /usr/local/bin/turnserver
 
 # Working directory for the cert+auth-secret files coturn reads.
 mkdir -p /etc/turnserver
@@ -160,7 +167,10 @@ fi
 # comes up on plain TURN and we can re-run this bootstrap later to enable
 # TURNS without breaking the service in the meantime.
 if [[ $TLS_READY -eq 1 ]]; then
-    TLS_PORTS_BLOCK=$'tls-listening-port=5349\nalt-tls-listening-port=443'
+    # Only bind the standard TURNS port 5349. Port 443 is handled via
+    # iptables NAT below (cleaner than giving coturn CAP_NET_BIND_SERVICE
+    # and works around 4.6.2 quirks with alt-tls-listening-port).
+    TLS_PORTS_BLOCK=$'tls-listening-port=5349'
     TLS_CONFIG_BLOCK=$"cert=${CERT_DIR}/fullchain.pem
 pkey=${CERT_DIR}/privkey.pem
 no-tlsv1
@@ -172,6 +182,9 @@ else
     TLS_CONFIG_BLOCK="# (no TLS — plain TURN only)"
 fi
 
+# Config file now contains the inlined HMAC secret, so restrict read
+# access to the turnserver user.
+umask 0037
 cat > /etc/turnserver.conf <<CONF
 # VettID TURN relay — managed by bootstrap.sh. Do not hand-edit.
 
@@ -183,10 +196,11 @@ external-ip=${PUBLIC_IP}
 listening-port=3478
 ${TLS_PORTS_BLOCK}
 
-# Realm + HMAC credential mode.
+# Realm + HMAC credential mode. coturn 4.6.2 does not recognize
+# static-auth-secret-file — only the inline form static-auth-secret=VALUE.
 realm=${REALM}
 use-auth-secret
-static-auth-secret-file=/etc/turnserver/auth-secret
+static-auth-secret=${SECRET}
 
 # Short-lived credentials: we issue these from the enclave parent with ~1h
 # TTL. coturn enforces timestamp validity.
@@ -217,7 +231,9 @@ denied-peer-ip=::1
 denied-peer-ip=fe80::-febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff
 denied-peer-ip=fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
 no-multicast-peers
-no-loopback-peers
+# Note: no-loopback-peers is rejected by coturn 4.6.2 ("Bad configuration
+# format"). Loopback is already covered by the 127.0.0.0/8 deny-peer-ip
+# above, so this is safe to drop.
 
 # TLS config — filled in above based on cert availability.
 ${TLS_CONFIG_BLOCK}
@@ -234,6 +250,9 @@ no-stdout-log
 simple-log
 # Don't write user/IP unless debugging an incident.
 CONF
+umask 0022
+chmod 0640 /etc/turnserver.conf
+chown root:turnserver /etc/turnserver.conf
 
 # Generate DH params if missing and we're going to use TLS (slow first time,
 # ~20s on t3.micro).
@@ -241,6 +260,20 @@ if [[ $TLS_READY -eq 1 && ! -f /etc/turnserver/dhparam.pem ]]; then
     echo "Generating DH parameters (one-time)..."
     openssl dhparam -out /etc/turnserver/dhparam.pem 2048
     chown turnserver:turnserver /etc/turnserver/dhparam.pem
+fi
+
+# --- iptables redirect for port 443 ---------------------------------------
+# Many restrictive networks (hotel WiFi, corporate) only allow outbound 443.
+# Redirect incoming 443/TCP to coturn's TURNS listener on 5349. The TLS
+# cert and SNI are identical either way, so clients that configure
+# turns:turn.vettid.dev:443 see exactly the same service.
+if [[ $TLS_READY -eq 1 ]]; then
+    iptables -t nat -C PREROUTING -p tcp --dport 443 -j REDIRECT --to-port 5349 2>/dev/null || \
+        iptables -t nat -A PREROUTING -p tcp --dport 443 -j REDIRECT --to-port 5349
+    # Persist across reboots. iptables-services provides the save/restore hook.
+    dnf -y install iptables-services 2>/dev/null || true
+    service iptables save 2>/dev/null || iptables-save > /etc/sysconfig/iptables
+    systemctl enable iptables 2>/dev/null || true
 fi
 
 # --- Cert auto-renewal ------------------------------------------------------
