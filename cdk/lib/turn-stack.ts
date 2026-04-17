@@ -82,7 +82,7 @@ export class TurnStack extends cdk.Stack {
     sg.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(3478), 'TURN/TCP');
     sg.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(5349), 'TURNS/TCP');
     sg.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(443),  'TURNS/TCP (alt, for restrictive nets)');
-    sg.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(80),   'Let\'s Encrypt HTTP-01');
+    sg.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(80),   'Lets Encrypt HTTP-01');
     // Relay allocation range — coturn picks a UDP port here per allocation.
     sg.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.udpRange(49152, 65535), 'TURN relay range');
 
