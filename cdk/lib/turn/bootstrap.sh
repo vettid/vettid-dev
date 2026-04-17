@@ -26,7 +26,7 @@ echo "=== VettID TURN bootstrap starting ==="
 
 # --- Packages ---------------------------------------------------------------
 dnf -y update
-dnf -y install coturn certbot jq awscli amazon-cloudwatch-agent
+dnf -y install coturn certbot jq awscli amazon-cloudwatch-agent bind-utils
 
 # --- Public IP --------------------------------------------------------------
 # The EIP is attached before cloud-init runs; IMDSv2 gives us the public IPv4.
@@ -53,22 +53,67 @@ chown turnserver:turnserver /etc/turnserver/auth-secret
 # Certbot in standalone mode runs a one-shot HTTP server on :80 to satisfy the
 # ACME HTTP-01 challenge. After cert issuance, we hand off :80 to coturn so it
 # can accept TURN-over-TCP on that port as well for restrictive networks.
+#
+# Race: EIP association, Route53 publication, and cloud-init all happen in
+# parallel. We need our hostname's public A record to resolve to PUBLIC_IP on
+# a resolver the Let's Encrypt validator can reach, otherwise the HTTP-01
+# challenge fails. Poll up to ~5 minutes before giving up; make cert issuance
+# non-fatal so a transient DNS miss doesn't wedge the whole instance.
 CERT_DIR="/etc/letsencrypt/live/${REALM}"
 if [[ ! -f "${CERT_DIR}/fullchain.pem" ]]; then
-    echo "No cert yet — requesting from Let's Encrypt..."
-    certbot certonly --standalone --non-interactive --agree-tos \
-        -m "ops@vettid.dev" -d "$REALM" \
-        --preferred-challenges http
+    echo "Waiting for DNS to advertise $REALM → $PUBLIC_IP ..."
+    dns_ok=0
+    for i in $(seq 1 30); do
+        resolved=$(dig +short "$REALM" @1.1.1.1 | tail -n1 || true)
+        if [[ "$resolved" == "$PUBLIC_IP" ]]; then
+            echo "DNS ready after ${i} attempts"
+            dns_ok=1
+            break
+        fi
+        echo "  attempt $i: got '$resolved', want '$PUBLIC_IP'"
+        sleep 10
+    done
+
+    if [[ $dns_ok -eq 1 ]]; then
+        echo "Requesting cert from Let's Encrypt..."
+        if ! certbot certonly --standalone --non-interactive --agree-tos \
+            -m "ops@vettid.dev" -d "$REALM" \
+            --preferred-challenges http; then
+            echo "WARN: certbot failed — coturn will start without TLS. Re-run bootstrap after fixing DNS."
+        fi
+    else
+        echo "WARN: DNS did not converge in time — skipping cert issuance. Re-run bootstrap later."
+    fi
 else
     echo "Cert already present at $CERT_DIR"
 fi
 
-# Let coturn read the certs.
-chmod 0755 /etc/letsencrypt/live /etc/letsencrypt/archive
-chmod 0644 "${CERT_DIR}/fullchain.pem" "${CERT_DIR}/privkey.pem" \
-    || true
+# Let coturn read the certs (if present).
+if [[ -f "${CERT_DIR}/fullchain.pem" ]]; then
+    chmod 0755 /etc/letsencrypt/live /etc/letsencrypt/archive
+    chmod 0644 "${CERT_DIR}/fullchain.pem" "${CERT_DIR}/privkey.pem" || true
+    TLS_READY=1
+else
+    TLS_READY=0
+fi
 
 # --- coturn config ----------------------------------------------------------
+# When TLS isn't ready yet we omit the TLS ports entirely; that way coturn
+# comes up on plain TURN and we can re-run this bootstrap later to enable
+# TURNS without breaking the service in the meantime.
+if [[ $TLS_READY -eq 1 ]]; then
+    TLS_PORTS_BLOCK=$'tls-listening-port=5349\nalt-tls-listening-port=443'
+    TLS_CONFIG_BLOCK=$"cert=${CERT_DIR}/fullchain.pem
+pkey=${CERT_DIR}/privkey.pem
+no-tlsv1
+no-tlsv1_1
+cipher-list=\"ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM:DHE+CHACHA20:!aNULL:!MD5:!DSS\"
+dh-file=/etc/turnserver/dhparam.pem"
+else
+    TLS_PORTS_BLOCK="# TLS not yet configured — re-run bootstrap once DNS is ready"
+    TLS_CONFIG_BLOCK="# (no TLS — plain TURN only)"
+fi
+
 cat > /etc/turnserver.conf <<CONF
 # VettID TURN relay — managed by bootstrap.sh. Do not hand-edit.
 
@@ -78,9 +123,7 @@ external-ip=${PUBLIC_IP}
 
 # Standard STUN/TURN ports.
 listening-port=3478
-tls-listening-port=5349
-# TURNS on 443 as well — some hotel/corporate networks only allow TCP/443 out.
-alt-tls-listening-port=443
+${TLS_PORTS_BLOCK}
 
 # Realm + HMAC credential mode.
 realm=${REALM}
@@ -118,15 +161,8 @@ denied-peer-ip=fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
 no-multicast-peers
 no-loopback-peers
 
-# TLS certs from Let's Encrypt.
-cert=${CERT_DIR}/fullchain.pem
-pkey=${CERT_DIR}/privkey.pem
-
-# Encryption hardening: modern ciphers only, disable TLSv1.0/1.1.
-no-tlsv1
-no-tlsv1_1
-cipher-list="ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM:DHE+CHACHA20:!aNULL:!MD5:!DSS"
-dh-file=/etc/turnserver/dhparam.pem
+# TLS config — filled in above based on cert availability.
+${TLS_CONFIG_BLOCK}
 
 # Fingerprint messages (standard WebRTC requirement).
 fingerprint
@@ -141,8 +177,9 @@ simple-log
 # Don't write user/IP unless debugging an incident.
 CONF
 
-# Generate DH params if missing (slow first time, ~20s on t3.micro).
-if [[ ! -f /etc/turnserver/dhparam.pem ]]; then
+# Generate DH params if missing and we're going to use TLS (slow first time,
+# ~20s on t3.micro).
+if [[ $TLS_READY -eq 1 && ! -f /etc/turnserver/dhparam.pem ]]; then
     echo "Generating DH parameters (one-time)..."
     openssl dhparam -out /etc/turnserver/dhparam.pem 2048
     chown turnserver:turnserver /etc/turnserver/dhparam.pem
