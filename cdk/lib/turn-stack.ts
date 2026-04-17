@@ -75,7 +75,7 @@ export class TurnStack extends cdk.Stack {
     // -------------------------------------------------------------------- //
     const sg = new ec2.SecurityGroup(this, 'TurnSg', {
       vpc,
-      description: 'VettID TURN relay — STUN/TURN/TURNS',
+      description: 'VettID TURN relay - STUN/TURN/TURNS',
       allowAllOutbound: true,
     });
     sg.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.udp(3478), 'TURN/UDP');
@@ -91,7 +91,7 @@ export class TurnStack extends cdk.Stack {
     // -------------------------------------------------------------------- //
     const role = new iam.Role(this, 'TurnInstanceRole', {
       assumedBy: new iam.ServicePrincipal('ec2.amazonaws.com'),
-      description: 'VettID TURN instance — Secrets Manager read + CloudWatch',
+      description: 'VettID TURN instance - Secrets Manager read + CloudWatch',
       managedPolicies: [
         iam.ManagedPolicy.fromAwsManagedPolicyName('AmazonSSMManagedInstanceCore'),
         iam.ManagedPolicy.fromAwsManagedPolicyName('CloudWatchAgentServerPolicy'),
