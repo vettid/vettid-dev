@@ -235,6 +235,16 @@ no-multicast-peers
 # format"). Loopback is already covered by the 127.0.0.0/8 deny-peer-ip
 # above, so this is safe to drop.
 
+# SECURITY / CORRECTNESS: explicitly allow our own public IP as a valid
+# peer address. When two clients both relay through this server, each
+# side's CREATE_PERMISSION carries the OTHER side's relay endpoint —
+# which is this server's external-ip. coturn rejects that by default with
+# "403 Forbidden IP", breaking same-server relay entirely. Whitelisting
+# our own IP here restores symmetric peer-relay without opening up any
+# other private-network exposure (the denied-peer-ip list above still
+# blocks RFC1918/loopback/etc).
+allowed-peer-ip=${PUBLIC_IP}
+
 # TLS config — filled in above based on cert availability.
 ${TLS_CONFIG_BLOCK}
 
