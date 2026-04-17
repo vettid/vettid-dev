@@ -111,11 +111,17 @@ export class TurnStack extends cdk.Stack {
 
     // -------------------------------------------------------------------- //
     // User-data: read bootstrap.sh, substitute placeholders, run on boot.
+    // __dirname resolves under dist/ after tsc, so walk back to the source
+    // tree (cdk/lib/turn/bootstrap.sh) — the file isn't copied to dist.
     // -------------------------------------------------------------------- //
-    const bootstrapTemplate = fs.readFileSync(
-      path.join(__dirname, 'turn', 'bootstrap.sh'),
-      'utf-8',
-    );
+    const bootstrapPath = [
+      path.join(__dirname, 'turn', 'bootstrap.sh'),                         // if run from source
+      path.join(__dirname, '..', '..', 'lib', 'turn', 'bootstrap.sh'),      // if run from dist/lib
+    ].find((p) => fs.existsSync(p));
+    if (!bootstrapPath) {
+      throw new Error('Could not locate cdk/lib/turn/bootstrap.sh');
+    }
+    const bootstrapTemplate = fs.readFileSync(bootstrapPath, 'utf-8');
     const bootstrap = bootstrapTemplate
       .replace('__REALM__', this.hostname)
       .replace('__SECRET_ARN__', this.sharedSecret.secretArn)
