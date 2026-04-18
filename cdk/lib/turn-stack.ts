@@ -203,6 +203,10 @@ export class TurnStack extends cdk.Stack {
         target: route53.RecordTarget.fromIpAddresses(eip.ref),
         ttl: cdk.Duration.minutes(5),
         comment: `VettID TURN relay ${hostname}`,
+        // deleteExisting lets us rename the resource (the logical ID changed
+        // when we went from one-instance to per-hostname naming) without
+        // tripping CFN's "RRSet already exists" conflict.
+        deleteExisting: true,
       });
 
       // Scope a CAA record to each FQDN so Lets Encrypt can issue despite
@@ -217,6 +221,7 @@ export class TurnStack extends cdk.Stack {
         }],
         ttl: cdk.Duration.minutes(5),
         comment: `Allow Lets Encrypt to issue for ${hostname}`,
+        deleteExisting: true,
       });
 
       new cdk.CfnOutput(this, `TurnHostname${id}`, {
