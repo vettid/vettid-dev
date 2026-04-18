@@ -188,7 +188,6 @@ The serverless backbone that ties everything together.
 │  ├── Backup:   backups, credentialBackups, backupSettings          │
 │  │             credentialRecoveryRequests, credentialTransfers      │
 │  ├── Govern:   proposals, votes, membershipTerms                   │
-│  ├── Agents:   agentShortlinks                                     │
 │  └── Ops:      audit, sentEmails, commandIdempotency, helpRequests │
 │                                                                     │
 │  S3                                                                 │
