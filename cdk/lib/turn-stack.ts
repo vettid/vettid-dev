@@ -172,7 +172,14 @@ export class TurnStack extends cdk.Stack {
         vpc,
         vpcSubnets: { subnets: [subnet] },
         instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.MICRO),
-        machineImage: ec2.MachineImage.latestAmazonLinux2023(),
+        // Ubuntu 24.04 LTS (Noble). Canonical account (099720109477). Has
+        // coturn in the main repo, so we get distro-signed packages and
+        // automatic unattended-upgrades for security patches — much better
+        // supply-chain story than source-building on AL2023.
+        machineImage: ec2.MachineImage.fromSsmParameter(
+          '/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id',
+          { os: ec2.OperatingSystemType.LINUX },
+        ),
         securityGroup: sg,
         role,
         userData,
