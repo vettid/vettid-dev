@@ -37,9 +37,90 @@ apt-get install -y --no-install-recommends \
     coturn certbot \
     jq curl ca-certificates dnsutils \
     iptables-persistent \
-    unattended-upgrades
-# unattended-upgrades auto-installs security patches (including for coturn)
-# without us shipping a new AMI. Default config covers -security sources.
+    unattended-upgrades apparmor-utils
+
+# --- OS hardening (quick wins) ----------------------------------------------
+# Auto-reboot after unattended-upgrades installs a kernel/critical patch. The
+# package defaults to installing -security sources only; turning on the
+# reboot flag closes the window between patch install and the bump actually
+# taking effect.
+mkdir -p /etc/apt/apt.conf.d
+cat > /etc/apt/apt.conf.d/52vettid-unattended <<'UAU'
+Unattended-Upgrade::Automatic-Reboot "true";
+Unattended-Upgrade::Automatic-Reboot-WithUsers "true";
+# 04:17 UTC puts reboots in a low-traffic window (midnight-ish in the
+# Americas, lunch in Europe). A one-instance blip while the other stays up
+# is fine — clients have both servers in their ICE config.
+Unattended-Upgrade::Automatic-Reboot-Time "04:17";
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+UAU
+
+# Shrink default attack surface: we don't ship snaps, so snapd is pure
+# surface without benefit. Mask rather than remove — cheaper to undo.
+systemctl disable --now snapd.service snapd.socket snapd.seeded.service 2>/dev/null || true
+systemctl mask snapd.service snapd.socket 2>/dev/null || true
+
+# Minimal sysctl hardening. Nothing exotic — these are upstream-recommended
+# defaults that Ubuntu ships a bit looser than they could.
+cat > /etc/sysctl.d/99-vettid-turn.conf <<'SYSCTL'
+# Hide kernel pointers + dmesg from unprivileged users.
+kernel.dmesg_restrict = 1
+kernel.kptr_restrict = 2
+# Ptrace only allowed for direct parent (prevents debuggers attaching
+# sideways to other processes on the same host).
+kernel.yama.ptrace_scope = 2
+# Reverse-path filtering on all interfaces — drop packets whose source IP
+# shouldn't be routable via the interface they came in on (spoof guard).
+net.ipv4.conf.all.rp_filter = 1
+net.ipv4.conf.default.rp_filter = 1
+# Standard SYN-flood mitigations.
+net.ipv4.tcp_syncookies = 1
+# Don't accept source-routed packets or ICMP redirects (defense against
+# simple on-path attacks on the VPC network).
+net.ipv4.conf.all.accept_source_route = 0
+net.ipv4.conf.all.accept_redirects = 0
+net.ipv4.conf.all.secure_redirects = 0
+net.ipv4.conf.all.send_redirects = 0
+net.ipv6.conf.all.accept_source_route = 0
+net.ipv6.conf.all.accept_redirects = 0
+SYSCTL
+sysctl --system >/dev/null 2>&1 || true
+
+# Cap coturn's blast radius on the host — if something runs it into the
+# ground (bug, traffic spike, abuse) the rest of the box and the log
+# pipeline stay healthy.
+mkdir -p /etc/systemd/system/coturn.service.d
+cat > /etc/systemd/system/coturn.service.d/10-vettid-limits.conf <<'DROPIN'
+[Service]
+MemoryMax=512M
+MemoryHigh=384M
+CPUQuota=180%
+TasksMax=512
+# Lock down filesystem access — coturn only needs to read certs and write
+# to /var/log/coturn.log and /var/lib/turn.
+ProtectSystem=strict
+ReadWritePaths=/var/log/coturn.log /var/lib/turn /var/tmp
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+DROPIN
+systemctl daemon-reload
+
+# AppArmor — Ubuntu ships a profile for coturn; make sure it's enforcing.
+# Log-only mode would silently let bypasses through.
+if command -v aa-enforce >/dev/null 2>&1 && \
+   [[ -f /etc/apparmor.d/usr.bin.turnserver ]]; then
+    aa-enforce /etc/apparmor.d/usr.bin.turnserver 2>/dev/null || true
+fi
+aa-status --profiled >/dev/null 2>&1 && echo "AppArmor: $(aa-status --complaining) complain, $(aa-status --enforced) enforce" || true
 
 # awscli on Ubuntu 24.04 repos is the v1 in "awscli" or we install v2 directly.
 # Keep things simple — pull the v2 bundle from AWS.
@@ -284,7 +365,11 @@ systemctl enable --now amazon-cloudwatch-agent
     -c file:/opt/aws/amazon-cloudwatch-agent/etc/config.json || true
 
 # --- Start coturn -----------------------------------------------------------
-systemctl enable --now coturn
+# Use restart, not enable --now: Ubuntu's postinst already started coturn
+# with the stock (empty) config. Without an explicit restart the config
+# we just wrote never takes effect.
+systemctl enable coturn
+systemctl restart coturn
 
 echo "=== VettID TURN bootstrap complete ==="
 systemctl status coturn --no-pager | head -20 || true
