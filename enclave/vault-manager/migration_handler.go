@@ -123,7 +123,7 @@ func (h *MigrationHandler) HandleAcknowledge(ctx context.Context, msg *IncomingM
 		Msg("Handling migration.acknowledge request")
 
 	var req AcknowledgeRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleAcknowledge"); err != nil {
 		return h.errorResponse(msg.GetID(), "invalid request format")
 	}
 
@@ -190,7 +190,7 @@ func (h *MigrationHandler) HandleEmergencyRecovery(ctx context.Context, msg *Inc
 		Msg("Handling emergency_recovery request")
 
 	var req EmergencyRecoveryRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleEmergencyRecovery"); err != nil {
 		return h.errorResponse(msg.GetID(), "invalid request format")
 	}
 

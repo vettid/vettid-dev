@@ -96,7 +96,7 @@ type InvitationViewedRequest struct {
 // HandleList handles invitation.list messages
 func (h *InvitationsHandler) HandleList(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req InvitationListRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleList"); err != nil {
 		// Allow empty payload for list all
 		req = InvitationListRequest{}
 	}
@@ -180,7 +180,7 @@ func (h *InvitationsHandler) HandleList(msg *IncomingMessage) (*OutgoingMessage,
 // HandleCancel handles invitation.cancel messages
 func (h *InvitationsHandler) HandleCancel(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req InvitationCancelRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleCancel"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -244,7 +244,7 @@ func (h *InvitationsHandler) HandleCancel(msg *IncomingMessage) (*OutgoingMessag
 // HandleResend handles invitation.resend messages
 func (h *InvitationsHandler) HandleResend(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req InvitationResendRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleResend"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -319,7 +319,7 @@ func (h *InvitationsHandler) HandleResend(msg *IncomingMessage) (*OutgoingMessag
 // HandleViewed handles invitation.viewed messages
 func (h *InvitationsHandler) HandleViewed(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req InvitationViewedRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleViewed"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 

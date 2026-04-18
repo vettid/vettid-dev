@@ -199,7 +199,7 @@ func (h *ServiceDataHandler) errorResponse(requestID, message string) (*Outgoing
 // Enforces contract and rate limiting
 func (h *ServiceDataHandler) HandleGet(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req ServiceDataGetRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleGet"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -323,7 +323,7 @@ func (h *ServiceDataHandler) HandleGet(msg *IncomingMessage) (*OutgoingMessage, 
 // Stores data in service's sandbox in user's vault
 func (h *ServiceDataHandler) HandleStore(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req ServiceDataStoreRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleStore"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -438,7 +438,7 @@ func (h *ServiceDataHandler) HandleStore(msg *IncomingMessage) (*OutgoingMessage
 // HandleList handles listing service-stored data (user-facing)
 func (h *ServiceDataHandler) HandleList(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req ServiceDataListRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleList"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -529,7 +529,7 @@ func (h *ServiceDataHandler) HandleList(msg *IncomingMessage) (*OutgoingMessage,
 // HandleDelete handles deleting service data (user-facing)
 func (h *ServiceDataHandler) HandleDelete(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req ServiceDataDeleteRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleDelete"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -601,7 +601,7 @@ func (h *ServiceDataHandler) HandleDelete(msg *IncomingMessage) (*OutgoingMessag
 // HandleSummary handles getting storage summary (user-facing)
 func (h *ServiceDataHandler) HandleSummary(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req ServiceDataSummaryRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleSummary"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -626,7 +626,7 @@ func (h *ServiceDataHandler) HandleSummary(msg *IncomingMessage) (*OutgoingMessa
 // HandleExport handles exporting all service data (user-facing)
 func (h *ServiceDataHandler) HandleExport(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req ServiceDataExportRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleExport"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 

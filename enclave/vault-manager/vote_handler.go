@@ -82,7 +82,7 @@ func (h *VoteHandler) HandleCastVote(ctx context.Context, msg *IncomingMessage) 
 
 	// Parse request
 	var req CastVoteRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleCastVote"); err != nil {
 		log.Error().Err(err).Msg("Failed to parse vote request")
 		return h.errorResponse(msg.GetID(), "invalid request format")
 	}

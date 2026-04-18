@@ -76,7 +76,7 @@ func (h *PersonalDataHandler) HandleGet(msg *IncomingMessage) (*OutgoingMessage,
 	log.Info().Str("owner_space", h.ownerSpace).Msg("PersonalDataHandler.HandleGet called")
 
 	var req PersonalDataGetRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleGet"); err != nil {
 		// Allow empty payload - return all fields
 		req = PersonalDataGetRequest{}
 	}
@@ -176,7 +176,7 @@ func (h *PersonalDataHandler) HandleUpdate(msg *IncomingMessage) (*OutgoingMessa
 	log.Info().Str("owner_space", h.ownerSpace).Msg("PersonalDataHandler.HandleUpdate called")
 
 	var req PersonalDataUpdateRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleUpdate"); err != nil {
 		log.Warn().Err(err).Str("payload", string(msg.Payload)).Msg("Failed to unmarshal personal data update request")
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
@@ -256,7 +256,7 @@ func (h *PersonalDataHandler) HandleUpdate(msg *IncomingMessage) (*OutgoingMessa
 // Removes personal data fields from the vault
 func (h *PersonalDataHandler) HandleDelete(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req PersonalDataDeleteRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleDelete"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -309,7 +309,7 @@ func (h *PersonalDataHandler) HandleUpdateSortOrder(msg *IncomingMessage) (*Outg
 	log.Info().Str("owner_space", h.ownerSpace).Msg("PersonalDataHandler.HandleUpdateSortOrder called")
 
 	var req PersonalDataUpdateSortOrderRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleUpdateSortOrder"); err != nil {
 		log.Warn().Err(err).Str("payload", string(msg.Payload)).Msg("Failed to unmarshal sort order update request")
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}

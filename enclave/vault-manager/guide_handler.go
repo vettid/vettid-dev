@@ -67,7 +67,7 @@ const guideCatalogKey = "guides/_catalog"
 // It is idempotent: calling with the same catalog is a no-op.
 func (gh *GuideHandler) HandleSync(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req GuideSyncRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleSync"); err != nil {
 		return gh.errorResponse(msg.GetID(), "invalid guide sync request")
 	}
 

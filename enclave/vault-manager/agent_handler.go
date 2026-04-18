@@ -186,7 +186,7 @@ type AgentCatalogRefreshRequest struct {
 func (h *AgentHandler) HandleAgentMessage(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	// Parse envelope
 	var envelope AgentEnvelope
-	if err := json.Unmarshal(msg.Payload, &envelope); err != nil {
+	if err := unmarshalRequest(msg.Payload, &envelope, "HandleAgentMessage"); err != nil {
 		log.Warn().Err(err).Msg("Failed to parse agent envelope")
 		return nil, nil // Don't send error back — can't identify connection
 	}
@@ -745,7 +745,7 @@ func (h *AgentHandler) HandleAgentMessageReply(ctx context.Context, msg *Incomin
 		MessageID    string `json:"message_id,omitempty"` // Optional: reply to specific message
 		Action       string `json:"action,omitempty"`     // For approval responses: "approve"/"deny"
 	}
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleAgentMessageReply"); err != nil {
 		return errorResponse(msg.GetID(), "invalid request"), nil
 	}
 
@@ -838,7 +838,7 @@ func (h *AgentHandler) HandleAppApprovalResponse(ctx context.Context, msg *Incom
 		Response  string `json:"response"` // "approve" or "deny"
 		Reason    string `json:"reason,omitempty"`
 	}
-	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+	if err := unmarshalRequest(msg.Payload, &payload, "HandleAppApprovalResponse"); err != nil {
 		log.Warn().Err(err).Msg("Failed to parse approval response payload")
 		return createSuccessResponse(msg.GetID(), false, "invalid payload")
 	}

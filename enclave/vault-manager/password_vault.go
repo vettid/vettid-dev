@@ -227,7 +227,7 @@ func (h *PasswordVaultHandler) errorResponse(requestID, message string) (*Outgoi
 // HandleCreate handles password.create
 func (h *PasswordVaultHandler) HandleCreate(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req CreatePasswordRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleCreate"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -282,7 +282,7 @@ func (h *PasswordVaultHandler) HandleCreate(msg *IncomingMessage) (*OutgoingMess
 // HandleGet handles password.get
 func (h *PasswordVaultHandler) HandleGet(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req GetPasswordRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleGet"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -313,7 +313,7 @@ func (h *PasswordVaultHandler) HandleGet(msg *IncomingMessage) (*OutgoingMessage
 // HandleUpdate handles password.update
 func (h *PasswordVaultHandler) HandleUpdate(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req UpdatePasswordRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleUpdate"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -375,7 +375,7 @@ func (h *PasswordVaultHandler) HandleUpdate(msg *IncomingMessage) (*OutgoingMess
 // HandleDelete handles password.delete
 func (h *PasswordVaultHandler) HandleDelete(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req DeletePasswordRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleDelete"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -421,7 +421,7 @@ func (h *PasswordVaultHandler) HandleDelete(msg *IncomingMessage) (*OutgoingMess
 // HandleList handles password.list
 func (h *PasswordVaultHandler) HandleList(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req ListPasswordsRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleList"); err != nil {
 		req = ListPasswordsRequest{Limit: 50}
 	}
 
@@ -454,7 +454,7 @@ func (h *PasswordVaultHandler) HandleList(msg *IncomingMessage) (*OutgoingMessag
 // HandleSearch handles password.search
 func (h *PasswordVaultHandler) HandleSearch(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req SearchPasswordsRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleSearch"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -662,7 +662,7 @@ func (h *PasswordVaultHandler) searchEntries(query string, limit int) ([]Passwor
 // HandleSync handles password.sync for multi-device synchronization
 func (h *PasswordVaultHandler) HandleSync(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req SyncPasswordsRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleSync"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 

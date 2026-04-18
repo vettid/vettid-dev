@@ -71,7 +71,7 @@ const credentialStorageKey = "credential/blob"
 // HandleStore handles credential.store messages (initial enrollment)
 func (h *CredentialHandler) HandleStore(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req CredentialStoreRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleStore"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -129,7 +129,7 @@ func (h *CredentialHandler) HandleStore(msg *IncomingMessage) (*OutgoingMessage,
 // HandleSync handles credential.sync messages (after auth rotation)
 func (h *CredentialHandler) HandleSync(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req CredentialSyncRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleSync"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 

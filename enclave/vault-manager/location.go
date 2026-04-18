@@ -123,7 +123,7 @@ type LocationStatsResponse struct {
 // HandleAdd stores a new location point and runs maintenance
 func (h *LocationHandler) HandleAdd(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req LocationAddRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleAdd"); err != nil {
 		return h.errorResponse(msg.GetID(), "invalid request format")
 	}
 
@@ -189,7 +189,7 @@ func (h *LocationHandler) HandleAdd(msg *IncomingMessage) (*OutgoingMessage, err
 // HandleList returns location points filtered by time range
 func (h *LocationHandler) HandleList(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req LocationListRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleList"); err != nil {
 		req = LocationListRequest{} // Use defaults
 	}
 
@@ -244,7 +244,7 @@ func (h *LocationHandler) HandleList(msg *IncomingMessage) (*OutgoingMessage, er
 // HandleDelete removes a specific location point by ID
 func (h *LocationHandler) HandleDelete(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req LocationDeleteRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleDelete"); err != nil {
 		return h.errorResponse(msg.GetID(), "invalid request format")
 	}
 
@@ -327,7 +327,7 @@ func (h *LocationHandler) HandleSettingsGet(msg *IncomingMessage) (*OutgoingMess
 // HandleSettingsUpdate updates location settings
 func (h *LocationHandler) HandleSettingsUpdate(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var settings LocationSettings
-	if err := json.Unmarshal(msg.Payload, &settings); err != nil {
+	if err := unmarshalRequest(msg.Payload, &settings, "HandleSettingsUpdate"); err != nil {
 		return h.errorResponse(msg.GetID(), "invalid settings format")
 	}
 
@@ -535,7 +535,7 @@ func (h *LocationHandler) compactOldRecords(cutoffTimestamp int64) {
 // HandleSharingToggle enables or disables location sharing for a connection
 func (h *LocationHandler) HandleSharingToggle(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req LocationSharingToggleRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleSharingToggle"); err != nil {
 		return h.errorResponse(msg.GetID(), "invalid request format")
 	}
 

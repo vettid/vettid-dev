@@ -159,7 +159,7 @@ func (h *ServiceNotificationsHandler) errorResponse(requestID, message string) (
 // HandleGetNotificationSettings handles service.notifications.get
 func (h *ServiceNotificationsHandler) HandleGetNotificationSettings(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req GetNotificationSettingsRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleGetNotificationSettings"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -215,7 +215,7 @@ func (h *ServiceNotificationsHandler) HandleGetNotificationSettings(msg *Incomin
 // HandleUpdateNotificationSettings handles service.notifications.update
 func (h *ServiceNotificationsHandler) HandleUpdateNotificationSettings(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req UpdateNotificationSettingsRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleUpdateNotificationSettings"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -307,7 +307,7 @@ func (h *ServiceNotificationsHandler) HandleUpdateNotificationSettings(msg *Inco
 // HandleGetTrustIndicators handles service.trust.get
 func (h *ServiceNotificationsHandler) HandleGetTrustIndicators(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req GetTrustIndicatorsRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleGetTrustIndicators"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -495,7 +495,7 @@ func (h *ServiceNotificationsHandler) calculateTrustIndicators(conn *ServiceConn
 // HandleListViolations handles service.violations.list
 func (h *ServiceNotificationsHandler) HandleListViolations(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req ListViolationsRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleListViolations"); err != nil {
 		req = ListViolationsRequest{Limit: 50}
 	}
 
@@ -585,7 +585,7 @@ func (h *ServiceNotificationsHandler) HandleListViolations(msg *IncomingMessage)
 // HandleAcknowledgeViolation handles service.violations.acknowledge
 func (h *ServiceNotificationsHandler) HandleAcknowledgeViolation(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req AcknowledgeViolationRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleAcknowledgeViolation"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 

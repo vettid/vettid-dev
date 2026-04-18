@@ -101,7 +101,7 @@ func (h *ProfileHandler) HandleGet(msg *IncomingMessage) (*OutgoingMessage, erro
 	log.Info().Str("owner_space", h.ownerSpace).Msg("HandleGet called")
 
 	var req ProfileGetRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleGet"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -224,7 +224,7 @@ func (h *ProfileHandler) HandleGet(msg *IncomingMessage) (*OutgoingMessage, erro
 // HandleUpdate handles profile.update messages
 func (h *ProfileHandler) HandleUpdate(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req ProfileUpdateRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleUpdate"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -293,7 +293,7 @@ func (h *ProfileHandler) HandleUpdate(msg *IncomingMessage) (*OutgoingMessage, e
 // HandleDelete handles profile.delete messages
 func (h *ProfileHandler) HandleDelete(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req ProfileDeleteRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleDelete"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -344,7 +344,7 @@ func (h *ProfileHandler) HandleDelete(msg *IncomingMessage) (*OutgoingMessage, e
 // Returns profile fields filtered by sharing settings
 func (h *ProfileHandler) HandleGetShared(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req ProfileGetSharedRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleGetShared"); err != nil {
 		// Allow empty payload
 		req = ProfileGetSharedRequest{}
 	}
@@ -409,7 +409,7 @@ func (h *ProfileHandler) HandleGetShared(msg *IncomingMessage) (*OutgoingMessage
 // HandleUpdateSharingSettings handles profile.sharing-settings.update messages
 func (h *ProfileHandler) HandleUpdateSharingSettings(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var settings SharingSettings
-	if err := json.Unmarshal(msg.Payload, &settings); err != nil {
+	if err := unmarshalRequest(msg.Payload, &settings, "HandleUpdateSharingSettings"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -586,7 +586,7 @@ func (h *ProfileHandler) HandleCategoriesGet(msg *IncomingMessage) (*OutgoingMes
 // Updates the list of custom categories
 func (h *ProfileHandler) HandleCategoriesUpdate(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req ProfileCategoriesUpdateRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleCategoriesUpdate"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -621,7 +621,7 @@ func (h *ProfileHandler) HandlePublish(ctx context.Context, msg *IncomingMessage
 	log.Info().Str("owner_space", h.ownerSpace).Msg("HandlePublish called")
 
 	var req ProfilePublishRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandlePublish"); err != nil {
 		// Allow empty payload - use existing settings
 		log.Debug().Err(err).Str("payload", string(msg.Payload)).Msg("Empty or invalid payload, using existing settings")
 		req = ProfilePublishRequest{}
@@ -791,7 +791,7 @@ func (h *ProfileHandler) HandlePublicSettingsUpdate(msg *IncomingMessage) (*Outg
 	var req struct {
 		Fields []string `json:"fields"`
 	}
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandlePublicSettingsUpdate"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -882,7 +882,7 @@ func (h *ProfileHandler) HandlePhotoUpdate(msg *IncomingMessage) (*OutgoingMessa
 	var req struct {
 		Photo string `json:"photo"` // Base64-encoded JPEG
 	}
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandlePhotoUpdate"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 

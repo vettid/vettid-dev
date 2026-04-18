@@ -96,7 +96,7 @@ type SecretsListResponse struct {
 // HandleAdd handles secrets.datastore.add messages
 func (h *SecretsHandler) HandleAdd(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req SecretsAddRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleAdd"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -152,7 +152,7 @@ func (h *SecretsHandler) HandleAdd(msg *IncomingMessage) (*OutgoingMessage, erro
 // HandleUpdate handles secrets.datastore.update messages
 func (h *SecretsHandler) HandleUpdate(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req SecretsUpdateRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleUpdate"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -216,7 +216,7 @@ func (h *SecretsHandler) HandleUpdate(msg *IncomingMessage) (*OutgoingMessage, e
 // HandleRetrieve handles secrets.datastore.retrieve messages
 func (h *SecretsHandler) HandleRetrieve(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req SecretsRetrieveRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleRetrieve"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -252,7 +252,7 @@ func (h *SecretsHandler) HandleRetrieve(msg *IncomingMessage) (*OutgoingMessage,
 // HandleDelete handles secrets.datastore.delete messages
 func (h *SecretsHandler) HandleDelete(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req SecretsDeleteRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleDelete"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -283,7 +283,7 @@ func (h *SecretsHandler) HandleDelete(msg *IncomingMessage) (*OutgoingMessage, e
 // HandleList handles secrets.datastore.list messages
 func (h *SecretsHandler) HandleList(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req SecretsListRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleList"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 

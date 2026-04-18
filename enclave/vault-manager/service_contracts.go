@@ -140,7 +140,7 @@ func (h *ServiceContractsHandler) errorResponse(requestID, message string) (*Out
 // Returns the current contract for a connection with field availability status
 func (h *ServiceContractsHandler) HandleGetContract(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req GetContractRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleGetContract"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -196,7 +196,7 @@ func (h *ServiceContractsHandler) HandleGetContract(msg *IncomingMessage) (*Outg
 // Accepts a pending contract update
 func (h *ServiceContractsHandler) HandleAcceptUpdate(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req AcceptContractUpdateRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleAcceptUpdate"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -320,7 +320,7 @@ func (h *ServiceContractsHandler) HandleAcceptUpdate(msg *IncomingMessage) (*Out
 // Rejecting a contract update terminates the connection (clean break)
 func (h *ServiceContractsHandler) HandleRejectUpdate(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req RejectContractUpdateRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleRejectUpdate"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -407,7 +407,7 @@ func (h *ServiceContractsHandler) HandleRejectUpdate(msg *IncomingMessage) (*Out
 // Returns history of contract versions for a connection
 func (h *ServiceContractsHandler) HandleContractHistory(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req ContractHistoryRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleContractHistory"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -474,7 +474,7 @@ func (h *ServiceContractsHandler) HandleContractHistory(msg *IncomingMessage) (*
 // This is called when a service publishes a new contract version
 func (h *ServiceContractsHandler) HandleContractUpdateNotification(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req NotifyContractUpdateRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleContractUpdateNotification"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid notification format")
 	}
 

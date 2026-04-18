@@ -105,7 +105,7 @@ type CapabilityRespondPayload struct {
 // HandleRequest handles capability.request messages
 func (h *CapabilityHandler) HandleRequest(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req CapabilityRequestPayload
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleRequest"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -209,7 +209,7 @@ func (h *CapabilityHandler) HandleRequest(msg *IncomingMessage) (*OutgoingMessag
 // HandleRequestList handles capability.request.list messages
 func (h *CapabilityHandler) HandleRequestList(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req CapabilityRequestListPayload
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleRequestList"); err != nil {
 		// Allow empty payload
 		req = CapabilityRequestListPayload{}
 	}
@@ -297,7 +297,7 @@ func (h *CapabilityHandler) HandleRequestList(msg *IncomingMessage) (*OutgoingMe
 // HandleRespond handles capability.respond messages (approve or deny a request)
 func (h *CapabilityHandler) HandleRespond(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req CapabilityRespondPayload
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleRespond"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -382,7 +382,7 @@ func (h *CapabilityHandler) HandleGet(msg *IncomingMessage) (*OutgoingMessage, e
 	var req struct {
 		RequestID string `json:"request_id"`
 	}
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleGet"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 

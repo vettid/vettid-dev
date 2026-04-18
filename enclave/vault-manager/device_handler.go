@@ -153,7 +153,7 @@ func NewDeviceHandler(
 // It decrypts the envelope with the connection key and dispatches.
 func (dh *DeviceHandler) HandleDeviceMessage(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	var envelope AgentEnvelope
-	if err := json.Unmarshal(msg.Payload, &envelope); err != nil {
+	if err := unmarshalRequest(msg.Payload, &envelope, "HandleDeviceMessage"); err != nil {
 		log.Warn().Err(err).Msg("Failed to parse device envelope")
 		return nil, nil
 	}
@@ -350,7 +350,7 @@ func (dh *DeviceHandler) HandlePhoneApprovalResponse(ctx context.Context, msg *I
 		Approved  bool   `json:"approved"`
 		Reason    string `json:"reason,omitempty"`
 	}
-	if err := json.Unmarshal(msg.Payload, &resp); err != nil {
+	if err := unmarshalRequest(msg.Payload, &resp, "HandlePhoneApprovalResponse"); err != nil {
 		return &OutgoingMessage{
 			RequestID: msg.GetID(),
 			Type:      MessageTypeError,

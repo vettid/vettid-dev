@@ -59,7 +59,7 @@ type DecryptedCredentialBlob struct {
 func (mh *MessageHandler) handleAuthenticate(msg *IncomingMessage) (*OutgoingMessage, error) {
 	// msg.Payload is already unwrapped by central unwrapPayload in handleVaultOp
 	var req AuthenticateRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "handleAuthenticate"); err != nil {
 		return mh.authErrorResponse(msg.GetID(), "Invalid request payload format")
 	}
 

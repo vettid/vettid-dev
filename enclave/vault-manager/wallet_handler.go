@@ -54,7 +54,7 @@ func walletStorageKey(walletID string) string {
 // HandleCreate creates a new BTC wallet by deriving a keypair from the vault master secret
 func (h *WalletHandler) HandleCreate(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req WalletCreateRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleCreate"); err != nil {
 		return errorResponse(msg.GetID(), "invalid request: "+err.Error()), nil
 	}
 
@@ -173,7 +173,7 @@ func (h *WalletHandler) HandleCreate(ctx context.Context, msg *IncomingMessage) 
 // HandleDetail returns details for a single wallet
 func (h *WalletHandler) HandleDetail(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req WalletDetailRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleDetail"); err != nil {
 		return errorResponse(msg.GetID(), "invalid request: "+err.Error()), nil
 	}
 
@@ -221,7 +221,7 @@ func (h *WalletHandler) HandleList(ctx context.Context, msg *IncomingMessage) (*
 // HandleGetAddress returns the receive address for a specific wallet
 func (h *WalletHandler) HandleGetAddress(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req WalletGetAddressRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleGetAddress"); err != nil {
 		return errorResponse(msg.GetID(), "invalid request: "+err.Error()), nil
 	}
 
@@ -240,7 +240,7 @@ func (h *WalletHandler) HandleGetAddress(ctx context.Context, msg *IncomingMessa
 // HandleDelete soft-deletes a wallet (archives it; key stays in credential for recovery)
 func (h *WalletHandler) HandleDelete(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req WalletDeleteRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleDelete"); err != nil {
 		return errorResponse(msg.GetID(), "invalid request: "+err.Error()), nil
 	}
 
@@ -276,7 +276,7 @@ func (h *WalletHandler) HandleDelete(ctx context.Context, msg *IncomingMessage) 
 // When public, the address is published to the user's profile.
 func (h *WalletHandler) HandleSetVisibility(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req WalletSetVisibilityRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleSetVisibility"); err != nil {
 		return errorResponse(msg.GetID(), "invalid request: "+err.Error()), nil
 	}
 
@@ -341,7 +341,7 @@ func (h *WalletHandler) republishProfile() {
 // HandleGetBalance fetches the current balance for a wallet via mempool.space API
 func (h *WalletHandler) HandleGetBalance(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req WalletGetBalanceRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleGetBalance"); err != nil {
 		return errorResponse(msg.GetID(), "invalid request: "+err.Error()), nil
 	}
 
@@ -421,7 +421,7 @@ func (h *WalletHandler) HandleGetFees(ctx context.Context, msg *IncomingMessage)
 // The entire process happens inside the enclave — only the signed raw hex leaves.
 func (h *WalletHandler) HandleSend(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req WalletSendRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleSend"); err != nil {
 		return errorResponse(msg.GetID(), "invalid request: "+err.Error()), nil
 	}
 
@@ -534,7 +534,7 @@ func (h *WalletHandler) HandleSend(ctx context.Context, msg *IncomingMessage) (*
 // HandleGetHistory fetches transaction history for a wallet
 func (h *WalletHandler) HandleGetHistory(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req WalletGetHistoryRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleGetHistory"); err != nil {
 		return errorResponse(msg.GetID(), "invalid request: "+err.Error()), nil
 	}
 
@@ -598,7 +598,7 @@ func (h *WalletHandler) HandleGetHistory(ctx context.Context, msg *IncomingMessa
 // Strategy: check peer's public profile first, then request via messaging.
 func (h *WalletHandler) HandleSendToConnection(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req WalletSendToConnectionRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleSendToConnection"); err != nil {
 		return errorResponse(msg.GetID(), "invalid request: "+err.Error()), nil
 	}
 
@@ -691,7 +691,7 @@ func (h *WalletHandler) HandleSendToConnection(ctx context.Context, msg *Incomin
 // HandleRequestPayment sends a payment request to a connection via encrypted messaging.
 func (h *WalletHandler) HandleRequestPayment(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req WalletRequestPaymentRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleRequestPayment"); err != nil {
 		return errorResponse(msg.GetID(), "invalid request: "+err.Error()), nil
 	}
 

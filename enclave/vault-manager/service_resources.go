@@ -117,7 +117,7 @@ func (h *ServiceResourcesHandler) errorResponse(requestID, message string) (*Out
 // Returns the cached service profile for a connection
 func (h *ServiceResourcesHandler) HandleGetProfile(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req GetServiceProfileRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleGetProfile"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -149,7 +149,7 @@ func (h *ServiceResourcesHandler) HandleGetProfile(msg *IncomingMessage) (*Outgo
 // Returns the list of trusted resources for a service
 func (h *ServiceResourcesHandler) HandleGetResources(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req GetResourcesRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleGetResources"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -196,7 +196,7 @@ func (h *ServiceResourcesHandler) HandleGetResources(msg *IncomingMessage) (*Out
 // Verifies a downloaded file against the service's published hash and signature
 func (h *ServiceResourcesHandler) HandleVerifyDownload(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req VerifyDownloadRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleVerifyDownload"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 

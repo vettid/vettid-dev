@@ -48,7 +48,7 @@ func NewCredentialSecretHandler(ownerSpace string, storage *EncryptedStorage, st
 //  5. Return new encrypted credential blob + new UTKs
 func (h *CredentialSecretHandler) HandleAdd(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req CredentialSecretAddRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleAdd"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -190,7 +190,7 @@ func (h *CredentialSecretHandler) HandleAdd(msg *IncomingMessage) (*OutgoingMess
 //  4. Return the actual value + new UTKs
 func (h *CredentialSecretHandler) HandleGet(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req CredentialSecretGetRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleGet"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -296,7 +296,7 @@ func (h *CredentialSecretHandler) HandleGet(msg *IncomingMessage) (*OutgoingMess
 func (h *CredentialSecretHandler) HandleList(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req CredentialSecretListRequest
 	// Allow empty payload
-	json.Unmarshal(msg.Payload, &req)
+	unmarshalRequest(msg.Payload, &req, "HandleList")
 
 	// Verify password if provided (for enhanced metadata)
 	var passwordVerified bool
@@ -381,7 +381,7 @@ func (h *CredentialSecretHandler) HandleList(msg *IncomingMessage) (*OutgoingMes
 //  5. Return new encrypted credential blob + new UTKs
 func (h *CredentialSecretHandler) HandleDelete(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req CredentialSecretDeleteRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleDelete"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 

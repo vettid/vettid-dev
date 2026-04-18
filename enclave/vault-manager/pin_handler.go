@@ -259,7 +259,7 @@ func (h *PINHandler) HandlePINUnlock(ctx context.Context, msg *IncomingMessage) 
 	log.Info().Str("owner_space", h.ownerSpace).Msg("PIN unlock requested")
 
 	var req PINUnlockRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandlePINUnlock"); err != nil {
 		log.Error().Err(err).Str("payload", string(msg.Payload)).Msg("Failed to unmarshal PIN unlock request")
 		return h.errorResponse(msg.GetID(), "invalid request format")
 	}
@@ -599,7 +599,7 @@ func (h *PINHandler) HandlePINChange(ctx context.Context, msg *IncomingMessage) 
 	log.Info().Str("owner_space", h.ownerSpace).Msg("PIN change requested")
 
 	var req PINChangeRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandlePINChange"); err != nil {
 		return h.errorResponse(msg.GetID(), "invalid request format")
 	}
 
@@ -797,7 +797,7 @@ func (h *PINHandler) decryptMobileFormat(msg *IncomingMessage) ([]byte, error) {
 		EphemeralPublicKey string `json:"ephemeral_public_key"`
 		Nonce              string `json:"nonce"`
 	}
-	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+	if err := unmarshalRequest(msg.Payload, &payload, "decryptMobileFormat"); err != nil {
 		return nil, fmt.Errorf("invalid mobile payload format: %w", err)
 	}
 

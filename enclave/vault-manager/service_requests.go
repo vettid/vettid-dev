@@ -164,7 +164,7 @@ func (h *ServiceRequestsHandler) errorResponse(requestID, message string) (*Outg
 // HandleAuthRequest handles incoming auth request from service
 func (h *ServiceRequestsHandler) HandleAuthRequest(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req AuthRequestPayload
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleAuthRequest"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -257,7 +257,7 @@ func (h *ServiceRequestsHandler) HandleAuthRequest(msg *IncomingMessage) (*Outgo
 // HandleConsentRequest handles incoming consent request from service
 func (h *ServiceRequestsHandler) HandleConsentRequest(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req ConsentRequestPayload
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleConsentRequest"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -361,7 +361,7 @@ func (h *ServiceRequestsHandler) HandleConsentRequest(msg *IncomingMessage) (*Ou
 // HandlePaymentRequest handles incoming payment request from service
 func (h *ServiceRequestsHandler) HandlePaymentRequest(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req PaymentRequestPayload
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandlePaymentRequest"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -459,7 +459,7 @@ func (h *ServiceRequestsHandler) HandlePaymentRequest(msg *IncomingMessage) (*Ou
 // HandleRespond handles user response to a request
 func (h *ServiceRequestsHandler) HandleRespond(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req RespondToRequestPayload
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleRespond"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -564,7 +564,7 @@ func (h *ServiceRequestsHandler) HandleRespond(msg *IncomingMessage) (*OutgoingM
 // HandleList handles listing service requests
 func (h *ServiceRequestsHandler) HandleList(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req ListRequestsPayload
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleList"); err != nil {
 		req = ListRequestsPayload{Limit: 50}
 	}
 

@@ -258,7 +258,7 @@ func serializeFields(fields []string) string {
 // HandleQuery handles datastore.audit.query
 func (h *DatastoreAuditHandler) HandleQuery(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	var query DatastoreAuditQuery
-	if err := json.Unmarshal(msg.Payload, &query); err != nil {
+	if err := unmarshalRequest(msg.Payload, &query, "HandleQuery"); err != nil {
 		return h.errorResponse(msg.GetID(), "invalid query payload")
 	}
 
@@ -334,7 +334,7 @@ func (h *DatastoreAuditHandler) HandleQuery(ctx context.Context, msg *IncomingMe
 // HandleExport handles datastore.audit.export
 func (h *DatastoreAuditHandler) HandleExport(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req DatastoreAuditExportRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleExport"); err != nil {
 		return h.errorResponse(msg.GetID(), "invalid export request")
 	}
 
@@ -381,7 +381,7 @@ func (h *DatastoreAuditHandler) HandleExport(ctx context.Context, msg *IncomingM
 // HandleVerifyChain handles datastore.audit.verify - verify chain integrity
 func (h *DatastoreAuditHandler) HandleVerifyChain(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req VerifyChainRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleVerifyChain"); err != nil {
 		return h.errorResponse(msg.GetID(), "invalid verify request")
 	}
 

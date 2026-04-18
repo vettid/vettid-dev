@@ -953,7 +953,7 @@ func (mh *MessageHandler) handleCallOperation(ctx context.Context, msg *Incoming
 		EventType string `json:"event_type"`
 	}
 	isPeerEvent := len(msg.Payload) > 0 &&
-		json.Unmarshal(msg.Payload, &peek) == nil &&
+		unmarshalRequest(msg.Payload, &peek, "handleCallOperation") == nil &&
 		peek.EventType != ""
 
 	if !isPeerEvent {
@@ -985,7 +985,7 @@ func (mh *MessageHandler) handleCallOperation(ctx context.Context, msg *Incoming
 
 	// Incoming events from other vaults (call.initiate, call.offer, etc.)
 	var event CallEvent
-	if err := json.Unmarshal(msg.Payload, &event); err != nil {
+	if err := unmarshalRequest(msg.Payload, &event, "handleCallOperation"); err != nil {
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("invalid call event payload: %v", err))
 	}
 
@@ -1016,7 +1016,7 @@ func (mh *MessageHandler) handleBlockOperation(ctx context.Context, msg *Incomin
 		Reason       string `json:"reason,omitempty"`
 		DurationSecs int64  `json:"duration_secs,omitempty"`
 	}
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "handleBlockOperation"); err != nil {
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("invalid block request: %v", err))
 	}
 
@@ -1814,7 +1814,7 @@ func (mh *MessageHandler) handleAuditOperation(ctx context.Context, msg *Incomin
 
 func (mh *MessageHandler) handleFeedList(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req FeedListRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "handleFeedList"); err != nil {
 		req = FeedListRequest{} // Use defaults
 	}
 
@@ -1831,7 +1831,7 @@ func (mh *MessageHandler) handleFeedGet(ctx context.Context, msg *IncomingMessag
 	var req struct {
 		EventID string `json:"event_id"`
 	}
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "handleFeedGet"); err != nil {
 		return mh.errorResponse(msg.GetID(), "invalid request format")
 	}
 
@@ -1853,7 +1853,7 @@ func (mh *MessageHandler) handleFeedGet(ctx context.Context, msg *IncomingMessag
 
 func (mh *MessageHandler) handleFeedRead(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req FeedUpdateStatusRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "handleFeedRead"); err != nil {
 		return mh.errorResponse(msg.GetID(), "invalid request format")
 	}
 
@@ -1872,7 +1872,7 @@ func (mh *MessageHandler) handleFeedRead(ctx context.Context, msg *IncomingMessa
 
 func (mh *MessageHandler) handleFeedArchive(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req FeedUpdateStatusRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "handleFeedArchive"); err != nil {
 		return mh.errorResponse(msg.GetID(), "invalid request format")
 	}
 
@@ -1891,7 +1891,7 @@ func (mh *MessageHandler) handleFeedArchive(ctx context.Context, msg *IncomingMe
 
 func (mh *MessageHandler) handleFeedDelete(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req FeedUpdateStatusRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "handleFeedDelete"); err != nil {
 		return mh.errorResponse(msg.GetID(), "invalid request format")
 	}
 
@@ -1913,7 +1913,7 @@ func (mh *MessageHandler) handleFeedSetPriority(ctx context.Context, msg *Incomi
 		EventID  string `json:"event_id"`
 		Priority int    `json:"priority"`
 	}
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "handleFeedSetPriority"); err != nil {
 		return mh.errorResponse(msg.GetID(), "invalid request format")
 	}
 
@@ -1937,7 +1937,7 @@ func (mh *MessageHandler) handleFeedSetPriority(ctx context.Context, msg *Incomi
 
 func (mh *MessageHandler) handleFeedAction(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req FeedActionRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "handleFeedAction"); err != nil {
 		return mh.errorResponse(msg.GetID(), "invalid request format")
 	}
 
@@ -1981,7 +1981,7 @@ func (mh *MessageHandler) handleFeedAction(ctx context.Context, msg *IncomingMes
 
 func (mh *MessageHandler) handleFeedSync(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req FeedSyncRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "handleFeedSync"); err != nil {
 		req = FeedSyncRequest{} // Use defaults
 	}
 
@@ -2002,7 +2002,7 @@ func (mh *MessageHandler) handleFeedSettingsGet(ctx context.Context, msg *Incomi
 
 func (mh *MessageHandler) handleFeedSettingsUpdate(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	var settings FeedSettings
-	if err := json.Unmarshal(msg.Payload, &settings); err != nil {
+	if err := unmarshalRequest(msg.Payload, &settings, "handleFeedSettingsUpdate"); err != nil {
 		return mh.errorResponse(msg.GetID(), "invalid settings format")
 	}
 
@@ -2019,7 +2019,7 @@ func (mh *MessageHandler) handleFeedSettingsUpdate(ctx context.Context, msg *Inc
 
 func (mh *MessageHandler) handleAuditQuery(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req AuditQueryRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "handleAuditQuery"); err != nil {
 		req = AuditQueryRequest{} // Use defaults
 	}
 
@@ -2034,7 +2034,7 @@ func (mh *MessageHandler) handleAuditQuery(ctx context.Context, msg *IncomingMes
 
 func (mh *MessageHandler) handleAuditExport(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req AuditExportRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "handleAuditExport"); err != nil {
 		return mh.errorResponse(msg.GetID(), "invalid request format")
 	}
 
@@ -2228,7 +2228,7 @@ func (mh *MessageHandler) handleIdentityMismatch(ctx context.Context, msg *Incom
 		UserGUID   string `json:"user_guid"`
 		ReportedAt string `json:"reported_at"`
 	}
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "handleIdentityMismatch"); err != nil {
 		req.UserGUID = "unknown"
 		req.ReportedAt = time.Now().UTC().Format(time.RFC3339)
 	}
@@ -2970,7 +2970,7 @@ func (mh *MessageHandler) handleFromServiceDataOperation(ctx context.Context, ms
 		var req struct {
 			Fields []string `json:"fields"`
 		}
-		if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		if err := unmarshalRequest(msg.Payload, &req, "handleFromServiceDataOperation"); err != nil {
 			return mh.errorResponse(msg.GetID(), "invalid request format")
 		}
 
@@ -3012,7 +3012,7 @@ type ServiceNotification struct {
 // Supports priority levels, rate limiting, and forwarding to the app
 func (mh *MessageHandler) handleFromServiceNotification(ctx context.Context, msg *IncomingMessage, conn *ServiceConnectionRecord) (*OutgoingMessage, error) {
 	var notification ServiceNotification
-	if err := json.Unmarshal(msg.Payload, &notification); err != nil {
+	if err := unmarshalRequest(msg.Payload, &notification, "handleFromServiceNotification"); err != nil {
 		return mh.errorResponse(msg.GetID(), "invalid notification format")
 	}
 

@@ -45,7 +45,7 @@ func (h *ProteanCredentialHandler) HandleCredentialCreate(ctx context.Context, m
 
 	// Parse request
 	var req CredentialCreateRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleCredentialCreate"); err != nil {
 		return h.errorResponse(msg.GetID(), "invalid request format")
 	}
 
@@ -216,7 +216,7 @@ func (h *ProteanCredentialHandler) HandlePasswordChange(ctx context.Context, msg
 
 	// Parse request
 	var req PasswordChangeRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandlePasswordChange"); err != nil {
 		return h.errorResponse(msg.GetID(), "invalid request format")
 	}
 

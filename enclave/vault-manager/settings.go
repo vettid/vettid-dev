@@ -92,7 +92,7 @@ type NotificationDigestResponse struct {
 // HandleNotificationsUpdate handles settings.notifications.update messages
 func (h *SettingsHandler) HandleNotificationsUpdate(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req NotificationSettingsUpdateRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleNotificationsUpdate"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -194,7 +194,7 @@ func (h *SettingsHandler) HandleNotificationsGet(msg *IncomingMessage) (*Outgoin
 // HandleNotificationsDigest handles notifications.digest messages
 func (h *SettingsHandler) HandleNotificationsDigest(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req NotificationDigestRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleNotificationsDigest"); err != nil {
 		// Allow empty payload
 		req = NotificationDigestRequest{}
 	}
@@ -385,7 +385,7 @@ func (h *SettingsHandler) HandleCredentialSettingsGet(msg *IncomingMessage) (*Ou
 // HandleCredentialSettingsUpdate handles settings.credential.update messages
 func (h *SettingsHandler) HandleCredentialSettingsUpdate(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req CredentialSettingsUpdateRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleCredentialSettingsUpdate"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 

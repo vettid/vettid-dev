@@ -133,7 +133,7 @@ func (h *ServiceOfflineHandler) errorResponse(requestID, message string) (*Outgo
 // HandleListOfflineActions handles service.offline.list
 func (h *ServiceOfflineHandler) HandleListOfflineActions(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req ListOfflineActionsRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleListOfflineActions"); err != nil {
 		req = ListOfflineActionsRequest{Limit: 50}
 	}
 
@@ -212,7 +212,7 @@ func (h *ServiceOfflineHandler) HandleListOfflineActions(msg *IncomingMessage) (
 // HandleTriggerSync handles service.offline.sync
 func (h *ServiceOfflineHandler) HandleTriggerSync(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req TriggerSyncRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleTriggerSync"); err != nil {
 		req = TriggerSyncRequest{}
 	}
 
@@ -312,7 +312,7 @@ func (h *ServiceOfflineHandler) HandleTriggerSync(msg *IncomingMessage) (*Outgoi
 // HandleClearOfflineActions handles service.offline.clear
 func (h *ServiceOfflineHandler) HandleClearOfflineActions(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req ClearOfflineActionsRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleClearOfflineActions"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -367,7 +367,7 @@ func (h *ServiceOfflineHandler) HandleClearOfflineActions(msg *IncomingMessage) 
 // HandleRetryAction handles service.offline.retry
 func (h *ServiceOfflineHandler) HandleRetryAction(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req RetryActionRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleRetryAction"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -428,7 +428,7 @@ func (h *ServiceOfflineHandler) HandleRetryAction(msg *IncomingMessage) (*Outgoi
 // HandleCancelAction handles service.offline.cancel
 func (h *ServiceOfflineHandler) HandleCancelAction(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req CancelActionRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleCancelAction"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 

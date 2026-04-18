@@ -254,7 +254,7 @@ type GetDatastoreResponse struct {
 // HandleCreate handles datastore.create - service requests a new combined datastore
 func (h *CombinedDatastoreHandler) HandleCreate(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req CreateDatastoreRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleCreate"); err != nil {
 		return h.errorResponse(msg.GetID(), "invalid request payload")
 	}
 
@@ -371,7 +371,7 @@ func (h *CombinedDatastoreHandler) HandleCreate(msg *IncomingMessage) (*Outgoing
 // HandleApprove handles datastore.approve - user approves the datastore
 func (h *CombinedDatastoreHandler) HandleApprove(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req ApproveDatastoreRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleApprove"); err != nil {
 		return h.errorResponse(msg.GetID(), "invalid request payload")
 	}
 
@@ -424,7 +424,7 @@ func (h *CombinedDatastoreHandler) HandleApprove(msg *IncomingMessage) (*Outgoin
 // HandleReject handles datastore.reject - user rejects the datastore
 func (h *CombinedDatastoreHandler) HandleReject(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req ApproveDatastoreRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleReject"); err != nil {
 		return h.errorResponse(msg.GetID(), "invalid request payload")
 	}
 
@@ -462,7 +462,7 @@ func (h *CombinedDatastoreHandler) HandleReject(msg *IncomingMessage) (*Outgoing
 // HandleInviteParticipant handles datastore.invite - invite another service
 func (h *CombinedDatastoreHandler) HandleInviteParticipant(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req InviteParticipantRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleInviteParticipant"); err != nil {
 		return h.errorResponse(msg.GetID(), "invalid request payload")
 	}
 
@@ -541,7 +541,7 @@ func (h *CombinedDatastoreHandler) HandleInviteParticipant(msg *IncomingMessage)
 // HandleAcceptInvitation handles datastore.join - service accepts invitation
 func (h *CombinedDatastoreHandler) HandleAcceptInvitation(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req AcceptInvitationRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleAcceptInvitation"); err != nil {
 		return h.errorResponse(msg.GetID(), "invalid request payload")
 	}
 
@@ -608,7 +608,7 @@ func (h *CombinedDatastoreHandler) HandleAcceptInvitation(msg *IncomingMessage) 
 // HandleApproveParticipant handles datastore.approve-participant - user approves a participant
 func (h *CombinedDatastoreHandler) HandleApproveParticipant(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req ApproveParticipantRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleApproveParticipant"); err != nil {
 		return h.errorResponse(msg.GetID(), "invalid request payload")
 	}
 
@@ -668,7 +668,7 @@ func (h *CombinedDatastoreHandler) HandleApproveParticipant(msg *IncomingMessage
 func (h *CombinedDatastoreHandler) HandleList(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req ListDatastoresRequest
 	if msg.Payload != nil {
-		json.Unmarshal(msg.Payload, &req)
+		unmarshalRequest(msg.Payload, &req, "HandleList")
 	}
 
 	datastoreIDs, err := h.storage.GetIndex(KeyDatastoreIndex)
@@ -721,7 +721,7 @@ func (h *CombinedDatastoreHandler) HandleList(msg *IncomingMessage) (*OutgoingMe
 // HandleGet handles datastore.get - get a specific datastore
 func (h *CombinedDatastoreHandler) HandleGet(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req GetDatastoreRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleGet"); err != nil {
 		return h.errorResponse(msg.GetID(), "invalid request payload")
 	}
 

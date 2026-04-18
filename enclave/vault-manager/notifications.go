@@ -93,7 +93,7 @@ type IncomingRevocationNotification struct {
 // HandleProfileBroadcast broadcasts profile updates to all active connections
 func (h *NotificationsHandler) HandleProfileBroadcast(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req ProfileBroadcastRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleProfileBroadcast"); err != nil {
 		// Allow empty payload to broadcast all fields
 		req = ProfileBroadcastRequest{}
 	}
@@ -205,7 +205,7 @@ func (h *NotificationsHandler) HandleProfileBroadcast(msg *IncomingMessage) (*Ou
 // HandleRevokeNotify sends a revocation notice to the peer before revoking
 func (h *NotificationsHandler) HandleRevokeNotify(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req RevokeNotifyRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleRevokeNotify"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 

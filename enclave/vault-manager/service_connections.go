@@ -359,7 +359,7 @@ func (h *ServiceConnectionHandler) errorResponse(requestID, message string) (*Ou
 // Returns service profile and contract, checks for missing required fields
 func (h *ServiceConnectionHandler) HandleDiscover(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req DiscoverServiceRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleDiscover"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -382,7 +382,7 @@ func (h *ServiceConnectionHandler) HandleDiscover(msg *IncomingMessage) (*Outgoi
 // Accepts contract and establishes connection with service
 func (h *ServiceConnectionHandler) HandleInitiate(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req InitiateServiceConnectionRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleInitiate"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -491,7 +491,7 @@ func (h *ServiceConnectionHandler) HandleInitiate(msg *IncomingMessage) (*Outgoi
 // HandleList handles service.connection.list
 func (h *ServiceConnectionHandler) HandleList(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req ListServiceConnectionsRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleList"); err != nil {
 		// Default values if no payload
 		req = ListServiceConnectionsRequest{
 			Limit:  50,
@@ -616,7 +616,7 @@ func (h *ServiceConnectionHandler) HandleList(msg *IncomingMessage) (*OutgoingMe
 // HandleGet handles service.connection.get
 func (h *ServiceConnectionHandler) HandleGet(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req GetServiceConnectionRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleGet"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -653,7 +653,7 @@ func (h *ServiceConnectionHandler) HandleGet(msg *IncomingMessage) (*OutgoingMes
 // HandleUpdate handles service.connection.update
 func (h *ServiceConnectionHandler) HandleUpdate(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req UpdateServiceConnectionRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleUpdate"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -713,7 +713,7 @@ func (h *ServiceConnectionHandler) HandleUpdate(msg *IncomingMessage) (*Outgoing
 // This is a clean break - service loses all access immediately
 func (h *ServiceConnectionHandler) HandleRevoke(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req RevokeServiceConnectionRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleRevoke"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -781,7 +781,7 @@ func (h *ServiceConnectionHandler) HandleRevoke(msg *IncomingMessage) (*Outgoing
 // HandleHealth handles service.connection.health
 func (h *ServiceConnectionHandler) HandleHealth(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req ServiceConnectionHealthRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleHealth"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -1136,7 +1136,7 @@ type AddTagRequest struct {
 // Adds a single tag to a connection (convenience method)
 func (h *ServiceConnectionHandler) HandleAddTag(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req AddTagRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleAddTag"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -1218,7 +1218,7 @@ type RemoveTagRequest struct {
 // Removes a single tag from a connection (convenience method)
 func (h *ServiceConnectionHandler) HandleRemoveTag(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req RemoveTagRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleRemoveTag"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 

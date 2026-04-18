@@ -139,7 +139,7 @@ type AgentSecretCatalog struct {
 // HandleShareSecret stores a secret for agent access.
 func (h *AgentSecretsHandler) HandleShareSecret(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req ShareSecretRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleShareSecret"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -218,7 +218,7 @@ func (h *AgentSecretsHandler) HandleShareSecret(msg *IncomingMessage) (*Outgoing
 // HandleUpdateSharedSecret updates an existing agent-shared secret.
 func (h *AgentSecretsHandler) HandleUpdateSharedSecret(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req UpdateSharedSecretRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleUpdateSharedSecret"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -286,7 +286,7 @@ func (h *AgentSecretsHandler) HandleUpdateSharedSecret(msg *IncomingMessage) (*O
 // HandleRevokeSharedSecret removes a secret from agent access.
 func (h *AgentSecretsHandler) HandleRevokeSharedSecret(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req RevokeSharedSecretRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleRevokeSharedSecret"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -331,7 +331,7 @@ func (h *AgentSecretsHandler) HandleRevokeSharedSecret(msg *IncomingMessage) (*O
 func (h *AgentSecretsHandler) HandleListSharedSecrets(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req ListSharedSecretsRequest
 	if len(msg.Payload) > 0 {
-		json.Unmarshal(msg.Payload, &req)
+		unmarshalRequest(msg.Payload, &req, "HandleListSharedSecrets")
 	}
 
 	index := h.getIndex()

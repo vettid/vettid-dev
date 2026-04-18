@@ -123,7 +123,7 @@ type PeerReadReceipt struct {
 // HandleSend processes message.send from the app
 func (h *MessagingHandler) HandleSend(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req SendMessageRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleSend"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -269,7 +269,7 @@ func (h *MessagingHandler) HandleSend(msg *IncomingMessage) (*OutgoingMessage, e
 // We store it locally and notify our app.
 func (h *MessagingHandler) HandleIncomingPeerMessage(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	var peerMsg PeerMessage
-	if err := json.Unmarshal(msg.Payload, &peerMsg); err != nil {
+	if err := unmarshalRequest(msg.Payload, &peerMsg, "HandleIncomingPeerMessage"); err != nil {
 		log.Warn().Err(err).Msg("Failed to parse incoming peer message")
 		return h.errorResponse(msg.GetID(), "Invalid peer message format")
 	}
@@ -381,7 +381,7 @@ func (h *MessagingHandler) HandleList(msg *IncomingMessage) (*OutgoingMessage, e
 		Limit        int    `json:"limit,omitempty"`
 		Before       string `json:"before,omitempty"` // message_id for pagination
 	}
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleList"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 	if req.ConnectionID == "" {
@@ -512,7 +512,7 @@ func (h *MessagingHandler) HandleGetTransportKey(msg *IncomingMessage) (*Outgoin
 	var req struct {
 		ConnectionID string `json:"connection_id"`
 	}
-	if err := json.Unmarshal(msg.Payload, &req); err != nil || req.ConnectionID == "" {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleGetTransportKey"); err != nil || req.ConnectionID == "" {
 		return h.errorResponse(msg.GetID(), "connection_id is required")
 	}
 
@@ -565,7 +565,7 @@ func (h *MessagingHandler) addToMessageIndex(connectionID, messageID string) {
 // HandleReadReceipt processes message.read-receipt from the app
 func (h *MessagingHandler) HandleReadReceipt(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req ReadReceiptRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleReadReceipt"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 

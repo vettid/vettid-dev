@@ -83,7 +83,7 @@ func (h *BootstrapHandler) HandleBootstrap(ctx context.Context, msg *IncomingMes
 	// Parse bootstrap request (optional)
 	var req BootstrapRequest
 	if len(msg.Payload) > 0 {
-		if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		if err := unmarshalRequest(msg.Payload, &req, "HandleBootstrap"); err != nil {
 			log.Warn().Err(err).Msg("Failed to parse bootstrap request")
 			// Continue anyway - bootstrap token validation is optional
 		}

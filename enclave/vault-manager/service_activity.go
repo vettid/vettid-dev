@@ -159,7 +159,7 @@ func (h *ServiceActivityHandler) errorResponse(requestID, message string) (*Outg
 // HandleActivityList handles service.activity.list
 func (h *ServiceActivityHandler) HandleActivityList(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req ListActivityRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleActivityList"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -250,7 +250,7 @@ func (h *ServiceActivityHandler) HandleActivityList(msg *IncomingMessage) (*Outg
 // HandleActivitySummary handles service.activity.summary
 func (h *ServiceActivityHandler) HandleActivitySummary(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req GetActivitySummaryRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleActivitySummary"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -370,7 +370,7 @@ func (h *ServiceActivityHandler) HandleActivitySummary(msg *IncomingMessage) (*O
 // HandleDataSummary handles service.data.summary
 func (h *ServiceActivityHandler) HandleDataSummary(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req GetDataSummaryRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleDataSummary"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -447,7 +447,7 @@ func (h *ServiceActivityHandler) HandleDataSummary(msg *IncomingMessage) (*Outgo
 // HandleDataExport handles service.data.export
 func (h *ServiceActivityHandler) HandleDataExport(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req ExportDataRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleDataExport"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 

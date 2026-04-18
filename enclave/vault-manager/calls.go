@@ -318,7 +318,7 @@ func (ch *CallHandler) UnblockCaller(ctx context.Context, callerID string) error
 // HandleInitiateCall processes a call initiation request from the app
 func (ch *CallHandler) HandleInitiateCall(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req InitiateCallRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleInitiateCall"); err != nil {
 		return ch.errorResponse(msg.GetID(), "invalid request format")
 	}
 
@@ -448,7 +448,7 @@ func (ch *CallHandler) HandleInitiateCall(ctx context.Context, msg *IncomingMess
 // HandleAcceptCall processes a call acceptance from the app
 func (ch *CallHandler) HandleAcceptCall(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req AcceptCallRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleAcceptCall"); err != nil {
 		return ch.errorResponse(msg.GetID(), "invalid request format")
 	}
 
@@ -536,7 +536,7 @@ func (ch *CallHandler) HandleAcceptCall(ctx context.Context, msg *IncomingMessag
 // HandleRejectCall processes a call rejection from the app
 func (ch *CallHandler) HandleRejectCall(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req RejectCallRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleRejectCall"); err != nil {
 		return ch.errorResponse(msg.GetID(), "invalid request format")
 	}
 
@@ -591,7 +591,7 @@ func (ch *CallHandler) HandleRejectCall(ctx context.Context, msg *IncomingMessag
 // HandleEndCall processes a call end request from the app
 func (ch *CallHandler) HandleEndCall(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req EndCallRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleEndCall"); err != nil {
 		return ch.errorResponse(msg.GetID(), "invalid request format")
 	}
 
@@ -652,7 +652,7 @@ func (ch *CallHandler) HandleEndCall(ctx context.Context, msg *IncomingMessage) 
 // HandleSendSignaling processes WebRTC signaling from the app
 func (ch *CallHandler) HandleSendSignaling(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req SendSignalingRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleSendSignaling"); err != nil {
 		return ch.errorResponse(msg.GetID(), "invalid request format")
 	}
 
@@ -740,7 +740,7 @@ func (ch *CallHandler) HandleSendSignaling(ctx context.Context, msg *IncomingMes
 // HandleGetCallHistory retrieves call history for the app
 func (ch *CallHandler) HandleGetCallHistory(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req GetCallHistoryRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleGetCallHistory"); err != nil {
 		// Allow empty payload for defaults
 		req = GetCallHistoryRequest{}
 	}
@@ -1424,7 +1424,7 @@ type ServiceCallEndRequest struct {
 // SECURITY: Connection must be active and have call capability (already verified by router)
 func (ch *CallHandler) HandleServiceCallInitiate(ctx context.Context, msg *IncomingMessage, conn *ServiceConnectionRecord) (*OutgoingMessage, error) {
 	var req ServiceCallInitiateRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleServiceCallInitiate"); err != nil {
 		return ch.errorResponse(msg.GetID(), "invalid request format")
 	}
 
@@ -1541,7 +1541,7 @@ func (ch *CallHandler) HandleServiceCallInitiate(ctx context.Context, msg *Incom
 // HandleServiceCallSignaling handles WebRTC signaling from a service (DEV-034)
 func (ch *CallHandler) HandleServiceCallSignaling(ctx context.Context, msg *IncomingMessage, conn *ServiceConnectionRecord) (*OutgoingMessage, error) {
 	var req ServiceCallSignalingRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleServiceCallSignaling"); err != nil {
 		return ch.errorResponse(msg.GetID(), "invalid request format")
 	}
 
@@ -1629,7 +1629,7 @@ func (ch *CallHandler) HandleServiceCallSignaling(ctx context.Context, msg *Inco
 // HandleServiceCallEnd handles call termination from a service (DEV-034)
 func (ch *CallHandler) HandleServiceCallEnd(ctx context.Context, msg *IncomingMessage, conn *ServiceConnectionRecord) (*OutgoingMessage, error) {
 	var req ServiceCallEndRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleServiceCallEnd"); err != nil {
 		return ch.errorResponse(msg.GetID(), "invalid request format")
 	}
 

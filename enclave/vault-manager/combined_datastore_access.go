@@ -213,7 +213,7 @@ func contains(slice []string, item string) bool {
 // HandleRead handles datastore.read operations
 func (c *DatastoreAccessController) HandleRead(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req DatastoreReadRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleRead"); err != nil {
 		return c.errorResponse(msg.GetID(), "invalid request payload")
 	}
 
@@ -277,7 +277,7 @@ func (c *DatastoreAccessController) HandleRead(ctx context.Context, msg *Incomin
 // HandleWrite handles datastore.write operations with optimistic locking
 func (c *DatastoreAccessController) HandleWrite(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req DatastoreWriteRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleWrite"); err != nil {
 		return c.errorResponse(msg.GetID(), "invalid request payload")
 	}
 
@@ -375,7 +375,7 @@ func (c *DatastoreAccessController) HandleWrite(ctx context.Context, msg *Incomi
 // HandleDelete handles datastore.delete operations (delete specific fields)
 func (c *DatastoreAccessController) HandleDelete(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req DatastoreDeleteRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleDelete"); err != nil {
 		return c.errorResponse(msg.GetID(), "invalid request payload")
 	}
 
@@ -451,7 +451,7 @@ func (c *DatastoreAccessController) HandleDelete(ctx context.Context, msg *Incom
 // HandleSubscribe handles datastore.subscribe for real-time updates
 func (c *DatastoreAccessController) HandleSubscribe(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req DatastoreSubscribeRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleSubscribe"); err != nil {
 		return c.errorResponse(msg.GetID(), "invalid request payload")
 	}
 
@@ -499,7 +499,7 @@ func (c *DatastoreAccessController) HandleSubscribe(ctx context.Context, msg *In
 // HandleUnsubscribe handles datastore.unsubscribe
 func (c *DatastoreAccessController) HandleUnsubscribe(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req DatastoreUnsubscribeRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleUnsubscribe"); err != nil {
 		return c.errorResponse(msg.GetID(), "invalid request payload")
 	}
 

@@ -410,7 +410,7 @@ type CreateDeviceInviteResponse struct {
 // HandleCreateInvite handles connection.create-invite messages
 func (h *ConnectionsHandler) HandleCreateInvite(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req CreateInviteRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleCreateInvite"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -565,7 +565,7 @@ func (h *ConnectionsHandler) HandleResolveInvite(msg *IncomingMessage) (*Outgoin
 	var req struct {
 		InviteCode string `json:"invite_code"`
 	}
-	if err := json.Unmarshal(msg.Payload, &req); err != nil || req.InviteCode == "" {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleResolveInvite"); err != nil || req.InviteCode == "" {
 		return h.errorResponse(msg.GetID(), "invite_code is required")
 	}
 
@@ -599,7 +599,7 @@ func (h *ConnectionsHandler) HandlePeerKeyExchange(ctx context.Context, msg *Inc
 		E2EPublicKey string `json:"e2e_public_key"`
 	}
 
-	if err := json.Unmarshal(msg.Payload, &keyExchange); err != nil {
+	if err := unmarshalRequest(msg.Payload, &keyExchange, "HandlePeerKeyExchange"); err != nil {
 		log.Warn().Err(err).Msg("Failed to parse key exchange message")
 		return &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}, nil
 	}
@@ -672,7 +672,7 @@ func (h *ConnectionsHandler) HandlePeerConnectionActivated(ctx context.Context, 
 		PeerGUID     string `json:"peer_guid"`
 	}
 
-	if err := json.Unmarshal(msg.Payload, &activation); err != nil || activation.ConnectionID == "" {
+	if err := unmarshalRequest(msg.Payload, &activation, "HandlePeerConnectionActivated"); err != nil || activation.ConnectionID == "" {
 		return &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}, nil
 	}
 
@@ -714,7 +714,7 @@ func (h *ConnectionsHandler) HandlePeerConnectionRejected(ctx context.Context, m
 		PeerGUID     string `json:"peer_guid"`
 	}
 
-	if err := json.Unmarshal(msg.Payload, &rejection); err != nil || rejection.ConnectionID == "" {
+	if err := unmarshalRequest(msg.Payload, &rejection, "HandlePeerConnectionRejected"); err != nil || rejection.ConnectionID == "" {
 		return &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}, nil
 	}
 
@@ -757,7 +757,7 @@ func (h *ConnectionsHandler) HandlePeerConnectionRejected(ctx context.Context, m
 // the details the app needs to call POST /vault/agent/shortlink.
 func (h *ConnectionsHandler) HandleCreateAgentInvite(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req CreateAgentInviteRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleCreateAgentInvite"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -901,7 +901,7 @@ func (h *ConnectionsHandler) createAgentInvitation(connectionID, label, inviteTo
 // HandleStoreCredentials handles connection.store-credentials messages
 func (h *ConnectionsHandler) HandleStoreCredentials(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req StoreCredentialsRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleStoreCredentials"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -1084,7 +1084,7 @@ func (h *ConnectionsHandler) HandleStoreCredentials(msg *IncomingMessage) (*Outg
 // Part of the bidirectional consent flow
 func (h *ConnectionsHandler) HandleInitiate(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req InitiateConnectionRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleInitiate"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -1240,7 +1240,7 @@ func decodeHexKey(hexKey string) ([]byte, error) {
 // Part of bidirectional consent - both parties must accept for connection to become active
 func (h *ConnectionsHandler) HandleRespond(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req RespondConnectionRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleRespond"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -1368,7 +1368,7 @@ func (h *ConnectionsHandler) HandlePeerConnectionNotification(ctx context.Contex
 		MessageSpace string                 `json:"message_space"`
 	}
 
-	if err := json.Unmarshal(msg.Payload, &notification); err != nil {
+	if err := unmarshalRequest(msg.Payload, &notification, "HandlePeerConnectionNotification"); err != nil {
 		log.Warn().Err(err).Msg("Failed to parse peer connection notification")
 		return &OutgoingMessage{
 			Type:    MessageTypeResponse,
@@ -1530,7 +1530,7 @@ func (h *ConnectionsHandler) HandlePeerConnectionNotification(ctx context.Contex
 // HandleRevoke handles connection.revoke messages
 func (h *ConnectionsHandler) HandleRevoke(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req RevokeConnectionRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleRevoke"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -1584,7 +1584,7 @@ func (h *ConnectionsHandler) HandleRevoke(msg *IncomingMessage) (*OutgoingMessag
 // HandleList handles connection.list messages
 func (h *ConnectionsHandler) HandleList(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req ListConnectionsRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleList"); err != nil {
 		// Allow empty payload for list all
 		req = ListConnectionsRequest{}
 	}
@@ -1834,7 +1834,7 @@ func (h *ConnectionsHandler) sortConnections(connections []ConnectionInfo, sortB
 // HandleGet handles connection.get messages
 func (h *ConnectionsHandler) HandleGet(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req GetConnectionRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleGet"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -1901,7 +1901,7 @@ func (h *ConnectionsHandler) HandleGet(msg *IncomingMessage) (*OutgoingMessage, 
 // HandleUpdate handles connection.update messages
 func (h *ConnectionsHandler) HandleUpdate(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req ConnectionUpdateRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleUpdate"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -1965,7 +1965,7 @@ func (h *ConnectionsHandler) HandleRotate(msg *IncomingMessage) (*OutgoingMessag
 	var req struct {
 		ConnectionID string `json:"connection_id"`
 	}
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleRotate"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -2046,7 +2046,7 @@ func (h *ConnectionsHandler) HandleGetCredentials(msg *IncomingMessage) (*Outgoi
 	var req struct {
 		ConnectionID string `json:"connection_id"`
 	}
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleGetCredentials"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -2084,7 +2084,7 @@ func (h *ConnectionsHandler) HandleGetCredentials(msg *IncomingMessage) (*Outgoi
 // HandleGetCapabilities handles connection.get-capabilities messages
 func (h *ConnectionsHandler) HandleGetCapabilities(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req GetCapabilitiesRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleGetCapabilities"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -2123,7 +2123,7 @@ func (h *ConnectionsHandler) HandleGetCapabilities(msg *IncomingMessage) (*Outgo
 // HandleActivitySummary handles connection.activity-summary messages
 func (h *ConnectionsHandler) HandleActivitySummary(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req ActivitySummaryRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleActivitySummary"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -2488,7 +2488,7 @@ func (h *ConnectionsHandler) findPendingAgentInvitationForECIES(encryptedPayload
 // Mirrors HandleCreateAgentInvite but uses ConnectionTypeDevice.
 func (h *ConnectionsHandler) HandleCreateDeviceInvite(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req CreateDeviceInviteRequest
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleCreateDeviceInvite"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -2947,7 +2947,7 @@ func (h *ConnectionsHandler) HandleRevokeDevice(ctx context.Context, msg *Incomi
 	var req struct {
 		ConnectionID string `json:"connection_id"`
 	}
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleRevokeDevice"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -3012,7 +3012,7 @@ func (h *ConnectionsHandler) HandleExtendDeviceSession(ctx context.Context, msg 
 	var req struct {
 		ConnectionID string `json:"connection_id"`
 	}
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleExtendDeviceSession"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -3211,7 +3211,7 @@ func (h *ConnectionsHandler) HandleRevokeAgent(ctx context.Context, msg *Incomin
 	var req struct {
 		ConnectionID string `json:"connection_id"`
 	}
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleRevokeAgent"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
@@ -3272,7 +3272,7 @@ func (h *ConnectionsHandler) HandleUpdateAgentContract(ctx context.Context, msg 
 		ApprovalMode string    `json:"approval_mode,omitempty"`
 		RateLimit    *RateLimit `json:"rate_limit,omitempty"`
 	}
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := unmarshalRequest(msg.Payload, &req, "HandleUpdateAgentContract"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
