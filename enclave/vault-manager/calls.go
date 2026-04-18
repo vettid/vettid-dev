@@ -45,6 +45,7 @@ type CallEvent struct {
 	SDPMid             string            `json:"sdp_mid,omitempty"`                 // ICE candidate SDP mid
 	SDPMLineIndex      *int              `json:"sdp_m_line_index,omitempty"`        // ICE candidate SDP mline index
 	Payload            json.RawMessage   `json:"payload,omitempty"`                 // Additional payload data
+	SharedSecret       string            `json:"shared_secret,omitempty"`           // Derived E2EE key (base64); populated only when this vault forwards an accept event to its own app
 	Timestamp          int64             `json:"timestamp"`
 	Signature          []byte            `json:"signature,omitempty"`               // Caller's signature
 	Metadata           map[string]string `json:"metadata,omitempty"`
@@ -88,9 +89,16 @@ type InitiateCallResponse struct {
 	InitiatedAt   string `json:"initiated_at"`
 }
 
-// AcceptCallRequest is sent by the app to accept an incoming call
+// AcceptCallRequest is sent by the app to accept an incoming call.
+// SDPAnswer is the WebRTC answer we produced after seeing the caller's
+// offer; we carry it through to the caller in the accept event so the
+// caller's WebRTC stack can setRemoteDescription() before ICE candidates
+// start arriving. Without it WebRTC has no remote description and
+// silently rejects every candidate with `added=false` — which is exactly
+// what we were seeing end-to-end before this fix.
 type AcceptCallRequest struct {
-	CallID string `json:"call_id"`
+	CallID    string `json:"call_id"`
+	SDPAnswer string `json:"sdp_answer,omitempty"`
 }
 
 // AcceptCallResponse is returned when accepting a call
@@ -487,13 +495,18 @@ func (ch *CallHandler) HandleAcceptCall(ctx context.Context, msg *IncomingMessag
 		log.Error().Err(err).Msg("Failed to update call record")
 	}
 
-	// Send accept event to peer vault
+	// Send accept event to peer vault. Include the SDP answer we produced
+	// so the caller's WebRTC can setRemoteDescription before ICE candidates
+	// start arriving (without it, every addIceCandidate returns false and
+	// ICE fails without ever running). local_key_pub goes in Payload so the
+	// caller can derive the same shared secret we just derived above.
 	acceptEvent := &CallEvent{
 		EventID:   generateEventID(),
 		EventType: CallEventAccept,
 		CallerID:  ch.ownerSpace,
 		CalleeID:  activeCall.PeerID,
 		CallID:    req.CallID,
+		SDPAnswer: req.SDPAnswer,
 		Timestamp: now.Unix(),
 		Payload:   json.RawMessage(fmt.Sprintf(`{"local_key_pub":"%s"}`, base64.StdEncoding.EncodeToString(activeCall.LocalPubKey))),
 	}
@@ -1135,7 +1148,12 @@ func (ch *CallHandler) handleCallSignaling(ctx context.Context, event *CallEvent
 	return ch.publisher.PublishToApp(ctx, fmt.Sprintf("call.%s", event.EventType), eventData)
 }
 
-// handleCallAccept processes call acceptance
+// handleCallAccept processes call acceptance received from the peer vault.
+// Responsible for (a) extracting the peer's X25519 public key from Payload
+// so we can derive the shared E2EE secret on this end too, and (b)
+// forwarding the event to our app with shared_secret populated at the top
+// level — the Android client's parseCallEvent("accepted") reads shared_secret
+// from root, not from Payload.
 func (ch *CallHandler) handleCallAccept(ctx context.Context, event *CallEvent) error {
 	// Update call record
 	if err := ch.updateCallRecord(ctx, event.CallID, func(r *CallRecord) {
@@ -1145,7 +1163,27 @@ func (ch *CallHandler) handleCallAccept(ctx context.Context, event *CallEvent) e
 		log.Error().Err(err).Msg("Failed to update call record")
 	}
 
-	log.Info().Str("call_id", event.CallID).Msg("Call accepted")
+	// Derive shared secret using our stored private key + peer's public key
+	// from the accept event Payload. The callee did the symmetric derivation
+	// in HandleAcceptCall already, so both sides arrive at the same key.
+	if activeCall, ok := ch.activeCalls[event.CallID]; ok && activeCall.LocalPrivKey != nil && event.Payload != nil {
+		var p struct {
+			LocalKeyPub string `json:"local_key_pub"`
+		}
+		if json.Unmarshal(event.Payload, &p) == nil && p.LocalKeyPub != "" {
+			if peerPubKey, err := base64.StdEncoding.DecodeString(p.LocalKeyPub); err == nil {
+				if sharedSecret, err := deriveSharedSecret(activeCall.LocalPrivKey, peerPubKey, event.CallID); err == nil {
+					activeCall.PeerPubKey = peerPubKey
+					activeCall.SharedSecret = sharedSecret
+					event.SharedSecret = base64.StdEncoding.EncodeToString(sharedSecret)
+				} else {
+					log.Warn().Err(err).Msg("Failed to derive shared secret on accept")
+				}
+			}
+		}
+	}
+
+	log.Info().Str("call_id", event.CallID).Bool("has_sdp_answer", event.SDPAnswer != "").Bool("has_shared_secret", event.SharedSecret != "").Msg("Call accepted")
 
 	eventData, err := json.Marshal(event)
 	if err != nil {
