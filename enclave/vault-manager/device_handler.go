@@ -15,25 +15,18 @@ import (
 	"golang.org/x/crypto/hkdf"
 )
 
-// Domain separation constant for device connections.
-// Must match the vettid-desktop crypto package.
-// Distinct from DomainAgent ("vettid-agent-v1") to prevent cross-use.
+// Domain separation constant for device connections (legacy, used only by
+// the crypto helper below which the new flow no longer exercises).
 const DomainDevice = "vettid-device-v1"
 
-// Phone heartbeat staleness threshold. If the last heartbeat is older
-// than this, the device session is suspended.
-const PhoneHeartbeatStaleThreshold = 5 * time.Minute
-
-// Device message type constants.
+// Device message type constants for per-operation request/response after pairing.
+// The pairing flow itself uses the NATS subject tree under MessageSpace.*.device.*
+// (see vettid-dev/docs/DESKTOP-CONNECTION-FLOW.md) and doesn't use these types.
 const (
-	DeviceMsgConnectionRequest  = "device_connection_request"
-	DeviceMsgConnectionApproved = "device_connection_approved"
-	DeviceMsgConnectionDenied   = "device_connection_denied"
-	DeviceMsgOpRequest          = "device_op_request"
-	DeviceMsgOpResponse         = "device_op_response"
-	DeviceMsgSessionExtend      = "device_session_extend"
-	DeviceMsgApprovalRequest    = "device_approval_request"
-	DeviceMsgApprovalResponse   = "device_approval_response"
+	DeviceMsgOpRequest        = "device_op_request"
+	DeviceMsgOpResponse       = "device_op_response"
+	DeviceMsgApprovalRequest  = "device_approval_request"
+	DeviceMsgApprovalResponse = "device_approval_response"
 )
 
 // DeviceCapability tiers
@@ -164,12 +157,8 @@ func (dh *DeviceHandler) HandleDeviceMessage(ctx context.Context, msg *IncomingM
 		Uint64("sequence", envelope.Sequence).
 		Msg("Received device message")
 
-	// Connection request uses ECIES (device doesn't know connection ID yet)
-	if envelope.Type == DeviceMsgConnectionRequest {
-		return dh.handleDeviceConnectionRequest(ctx, msg, &envelope)
-	}
-
-	// All other messages require a valid connection
+	// Pairing no longer uses this envelope channel — see DESKTOP-CONNECTION-FLOW.md.
+	// Per-operation messages require a valid connection.
 	connData, err := dh.storage.Get("connections/" + envelope.KeyID)
 	if err != nil {
 		log.Warn().Str("key_id", envelope.KeyID).Msg("Device connection not found")
@@ -226,11 +215,6 @@ func (dh *DeviceHandler) HandleDeviceMessage(ctx context.Context, msg *IncomingM
 		log.Warn().Str("type", envelope.Type).Msg("Unknown device message type")
 		return nil, nil
 	}
-}
-
-// handleDeviceConnectionRequest processes ECIES-encrypted registration requests.
-func (dh *DeviceHandler) handleDeviceConnectionRequest(ctx context.Context, msg *IncomingMessage, envelope *AgentEnvelope) (*OutgoingMessage, error) {
-	return dh.connHandler.HandleAcceptDeviceConnection(ctx, msg, envelope)
 }
 
 // handleDeviceOpRequest checks session validity, phone heartbeat, and capability tier,
@@ -441,8 +425,9 @@ func (dh *DeviceHandler) HandlePhoneApprovalResponse(ctx context.Context, msg *I
 	}, nil
 }
 
-// checkSession validates that the device session is active, not expired,
-// and that the phone heartbeat is fresh (within 5 minutes).
+// checkSession validates that the device session is active and not expired.
+// Wall-clock expiry is the only bound — there's no heartbeat requirement
+// under the new design (see DESKTOP-CONNECTION-FLOW.md).
 func (dh *DeviceHandler) checkSession(conn *ConnectionRecord) error {
 	if conn.DeviceSession == nil {
 		return fmt.Errorf("no active device session")
@@ -455,8 +440,6 @@ func (dh *DeviceHandler) checkSession(conn *ConnectionRecord) error {
 		return fmt.Errorf("session has been revoked")
 	case "expired":
 		return fmt.Errorf("session has expired")
-	case "suspended":
-		return fmt.Errorf("session suspended: phone unreachable")
 	}
 
 	// Check expiration
@@ -471,20 +454,6 @@ func (dh *DeviceHandler) checkSession(conn *ConnectionRecord) error {
 				"Device session expired")
 		}
 		return fmt.Errorf("session has expired")
-	}
-
-	// Check phone heartbeat freshness
-	heartbeatAge := time.Duration(now-session.LastPhoneHeartbeat) * time.Second
-	if heartbeatAge > PhoneHeartbeatStaleThreshold {
-		session.Status = "suspended"
-		connData, _ := json.Marshal(conn)
-		dh.storage.Put("connections/"+conn.ConnectionID, connData)
-
-		if dh.eventHandler != nil {
-			dh.eventHandler.LogConnectionEvent(context.Background(), EventTypeDeviceSessionSuspended, conn.ConnectionID, "",
-				"Device session suspended: phone heartbeat stale")
-		}
-		return fmt.Errorf("session suspended: phone unreachable")
 	}
 
 	return nil
@@ -531,12 +500,19 @@ func (dh *DeviceHandler) doCleanExpiredSessions() {
 		}
 
 		session := record.DeviceSession
-		changed := false
 
-		// Expire active sessions past their TTL
+		// Expire active sessions past their wall-clock deadline
 		if session.Status == "active" && now > session.ExpiresAt {
 			session.Status = "expired"
-			changed = true
+
+			// Wipe the session key from storage
+			if session.SessionKeyID != "" {
+				keyPath := fmt.Sprintf("device_session_keys/%s/%s", record.ConnectionID, session.SessionKeyID)
+				_ = dh.storage.Delete(keyPath)
+			}
+
+			connData, _ := json.Marshal(record)
+			dh.storage.Put("connections/"+record.ConnectionID, connData)
 
 			if dh.eventHandler != nil {
 				dh.eventHandler.LogConnectionEvent(context.Background(), EventTypeDeviceSessionExpired, record.ConnectionID, "",
@@ -547,25 +523,6 @@ func (dh *DeviceHandler) doCleanExpiredSessions() {
 				Str("connection_id", record.ConnectionID).
 				Str("session_id", session.SessionID).
 				Msg("Device session expired during cleanup")
-		}
-
-		// Suspend active sessions with stale heartbeat
-		if session.Status == "active" {
-			heartbeatAge := time.Duration(now-session.LastPhoneHeartbeat) * time.Second
-			if heartbeatAge > PhoneHeartbeatStaleThreshold {
-				session.Status = "suspended"
-				changed = true
-
-				if dh.eventHandler != nil {
-					dh.eventHandler.LogConnectionEvent(context.Background(), EventTypeDeviceSessionSuspended, record.ConnectionID, "",
-						"Device session suspended: phone heartbeat stale (cleanup)")
-				}
-			}
-		}
-
-		if changed {
-			connData, _ := json.Marshal(record)
-			dh.storage.Put("connections/"+record.ConnectionID, connData)
 		}
 	}
 

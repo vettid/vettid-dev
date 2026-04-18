@@ -15,12 +15,30 @@ const inviteCodeAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz
 
 // generateInviteCode creates a 16-character random alphanumeric code.
 // 62^16 ≈ 4.7×10^28 combinations — unguessable within the 5-minute TTL.
+// Used for peer-to-peer invitations where the scanner's app reads the code
+// from a QR, so character ambiguity doesn't matter.
 func generateInviteCode() string {
 	code := make([]byte, 16)
 	randomBytes := make([]byte, 16)
 	rand.Read(randomBytes)
 	for i := range code {
 		code[i] = inviteCodeAlphabet[int(randomBytes[i])%len(inviteCodeAlphabet)]
+	}
+	return string(code)
+}
+
+// deviceCodeAlphabet excludes ambiguous glyphs (0/O, 1/l/I, and lowercase)
+// because device codes are hand-typed by the user into the desktop client.
+const deviceCodeAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+// generateDeviceInviteCode creates an 8-character ambiguity-safe code for
+// device pairing. 32^8 ≈ 10^12 combinations — unguessable within the 2-min TTL.
+func generateDeviceInviteCode() string {
+	code := make([]byte, 8)
+	randomBytes := make([]byte, 8)
+	rand.Read(randomBytes)
+	for i := range code {
+		code[i] = deviceCodeAlphabet[int(randomBytes[i])%len(deviceCodeAlphabet)]
 	}
 	return string(code)
 }
@@ -121,6 +139,86 @@ func GenerateInvitationCredentials(accountSeed string, ownerSpace string, expire
 		Str("user_pub", userPubKey).
 		Time("expires", expiresAt).
 		Msg("Generated invitation NATS credentials")
+
+	return creds, nil
+}
+
+// GenerateDeviceCredentials creates scoped NATS credentials for a paired
+// desktop device. Permissions are narrow enough that a compromised JWT
+// cannot read any other user's data or impersonate the user's app, while
+// still allowing the device to exchange pairing messages and session
+// payloads within this specific connection.
+//
+// Permissions granted:
+//   - Publish to MessageSpace.<owner>.forOwner.device.<conn-id>.> — all outbound
+//     device messages for this one connection (request-session, extend, revoke, ops)
+//   - Subscribe to MessageSpace.<owner>.forApp.device.<conn-id>.> — activation,
+//     revocation events, operation responses for this connection
+//   - JetStream consumer ops (so the device can create ephemeral consumers
+//     for reading its own invite and any persistent feed deliveries)
+//
+// SECURITY: scoped to a single connection_id. The device cannot publish
+// or subscribe on behalf of any other connection.
+func GenerateDeviceCredentials(accountSeed, ownerSpace, connectionID string, expiresAt time.Time) (string, error) {
+	accountKP, err := nkeys.FromSeed([]byte(accountSeed))
+	if err != nil {
+		return "", fmt.Errorf("failed to parse account seed: %w", err)
+	}
+	defer accountKP.Wipe()
+
+	accountPubKey, err := accountKP.PublicKey()
+	if err != nil {
+		return "", fmt.Errorf("failed to get account public key: %w", err)
+	}
+
+	userKP, err := nkeys.CreateUser()
+	if err != nil {
+		return "", fmt.Errorf("failed to create user key pair: %w", err)
+	}
+
+	userPubKey, err := userKP.PublicKey()
+	if err != nil {
+		return "", fmt.Errorf("failed to get user public key: %w", err)
+	}
+
+	userSeed, err := userKP.Seed()
+	if err != nil {
+		return "", fmt.Errorf("failed to get user seed: %w", err)
+	}
+	defer func() {
+		for i := range userSeed {
+			userSeed[i] = 0
+		}
+	}()
+
+	claims := jwt.NewUserClaims(userPubKey)
+	claims.IssuerAccount = accountPubKey
+	claims.Expires = expiresAt.Unix()
+
+	// SECURITY: scoped to this connection_id only.
+	claims.Pub.Allow = jwt.StringList{
+		fmt.Sprintf("MessageSpace.%s.forOwner.device.%s.>", ownerSpace, connectionID),
+		"$JS.API.CONSUMER.>",
+	}
+	claims.Sub.Allow = jwt.StringList{
+		fmt.Sprintf("MessageSpace.%s.forApp.device.%s.>", ownerSpace, connectionID),
+		"$JS.API.CONSUMER.>",
+		"$JS.API.STREAM.INFO.>",
+	}
+
+	token, err := claims.Encode(accountKP)
+	if err != nil {
+		return "", fmt.Errorf("failed to encode user JWT: %w", err)
+	}
+
+	creds := formatNATSCredentials(token, userSeed)
+
+	log.Debug().
+		Str("owner_space", ownerSpace).
+		Str("connection_id", connectionID).
+		Str("user_pub", userPubKey).
+		Time("expires", expiresAt).
+		Msg("Generated device NATS credentials")
 
 	return creds, nil
 }

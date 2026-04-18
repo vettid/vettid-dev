@@ -158,10 +158,10 @@ func TestEventHandler_ListFeed(t *testing.T) {
 		title     string
 	}{
 		{EventTypeCallIncoming, "Incoming call"},      // active, high priority
-		{EventTypeMessageReceived, "New message"},     // active, low priority
+		{EventTypeMessageReceived, "New message"},     // active, low priority (normal)
 		{EventTypeCallOutgoing, "Outgoing call"},      // hidden
 		{EventTypeSecurityAlert, "Security alert"},    // active, urgent
-		{EventTypeConnectionAccepted, "Connected"},    // hidden
+		{EventTypeConnectionAccepted, "Connected"},    // active, normal
 	}
 
 	for _, e := range events {
@@ -180,9 +180,9 @@ func TestEventHandler_ListFeed(t *testing.T) {
 		t.Fatalf("Failed to list feed: %v", err)
 	}
 
-	// Should have 3 active events (not hidden ones)
-	if resp.Total != 3 {
-		t.Errorf("Expected 3 feed events, got %d", resp.Total)
+	// 4 active events (all except call.outgoing which is hidden)
+	if resp.Total != 4 {
+		t.Errorf("Expected 4 feed events, got %d", resp.Total)
 	}
 
 	// Verify ordering: urgent first, then high, then low

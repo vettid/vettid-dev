@@ -101,37 +101,50 @@ type ConnectionRecord struct {
 	Contract      *ConnectionContract `json:"contract,omitempty"`
 
 	// Device-specific fields (only set when ConnectionType == "device")
-	DeviceMetadata *DeviceMetadata `json:"device_metadata,omitempty"`
-	DeviceSession  *DeviceSession  `json:"device_session,omitempty"`
+	DeviceMetadata    *DeviceMetadata    `json:"device_metadata,omitempty"`
+	DeviceSession     *DeviceSession     `json:"device_session,omitempty"`
+	DevicePendingAuth *DevicePendingAuth `json:"device_pending_auth,omitempty"`
 }
 
 // DeviceMetadata holds registration details for a desktop device connection.
-// Collected by the desktop app during registration and sent to the vault.
+// Collected by the desktop client during stage-2 pairing and shown to the
+// user before they approve. See vettid-dev/docs/DESKTOP-CONNECTION-FLOW.md.
 type DeviceMetadata struct {
-	DeviceType         string `json:"device_type"`          // "desktop", "laptop", etc.
-	BinaryFingerprint  string `json:"binary_fingerprint"`   // SHA-256 of desktop binary
-	MachineFingerprint string `json:"machine_fingerprint"`  // HMAC-SHA256 of machine attributes
-	IPAddress          string `json:"ip_address"`
-	Hostname           string `json:"hostname"`
-	Platform           string `json:"platform"`             // linux/amd64, darwin/arm64, etc.
+	DeviceName         string `json:"device_name,omitempty"`         // User-assigned label, set at authorize time
+	Hostname           string `json:"hostname,omitempty"`
+	Platform           string `json:"platform,omitempty"`            // linux-x86_64, darwin-arm64, windows-x86_64, ...
+	OSName             string `json:"os_name,omitempty"`             // Fedora, macOS, Windows, ...
+	OSVersion          string `json:"os_version,omitempty"`          // 43, 14.4, 11, ...
 	AppVersion         string `json:"app_version,omitempty"`
-	OSVersion          string `json:"os_version,omitempty"`
+	BinaryFingerprint  string `json:"binary_fingerprint,omitempty"`  // SHA-256 of desktop binary (full)
+	MachineFingerprint string `json:"machine_fingerprint,omitempty"` // HMAC-SHA256 over stable machine attrs
+	ClientIP           string `json:"client_ip,omitempty"`           // IP observed by vault at pairing time
+	FirstSeenAt        int64  `json:"first_seen_at,omitempty"`       // unix seconds
 }
 
-// DeviceSession tracks the time-limited session for a device connection.
-// Sessions require periodic phone heartbeats to remain active.
+// DevicePendingAuth tracks a stage-2 pairing request awaiting user approval.
+// Created when the desktop publishes device.request-session and cleared when
+// the app publishes device.authorize-session. See DESKTOP-CONNECTION-FLOW.md.
+type DevicePendingAuth struct {
+	ApprovalToken  string `json:"approval_token"`   // hex, 32 bytes — set by desktop, verified by app via QR
+	DevicePubKey   []byte `json:"device_pubkey"`    // desktop's stage-2 ephemeral X25519 pubkey (32 bytes)
+	RequestedAt    int64  `json:"requested_at"`     // unix seconds
+	ExpiresAt      int64  `json:"expires_at"`       // unix seconds — stage-2 window (e.g. 10 min)
+}
+
+// DeviceSession tracks the time-limited session for an authorized device.
+// The session_key is never stored — it's derived fresh from the (vault ephemeral,
+// device ephemeral) X25519 shared secret, with both sides doing HKDF over
+// "vettid-device-session-v1" + session_id. On expiry, both sides wipe the key.
 type DeviceSession struct {
-	SessionID          string   `json:"session_id"`
-	Status             string   `json:"status"`              // "active", "expired", "revoked", "suspended"
-	CreatedAt          int64    `json:"created_at"`
-	ExpiresAt          int64    `json:"expires_at"`
-	LastActiveAt       int64    `json:"last_active_at"`
-	LastPhoneHeartbeat int64    `json:"last_phone_heartbeat"`
-	ExtendedCount      int      `json:"extended_count"`
-	MaxExtensions      int      `json:"max_extensions"`      // default 3
-	TTLHours           int      `json:"ttl_hours"`           // default 8
-	Capabilities       []string `json:"capabilities,omitempty"`
-	RequiresPhone      []string `json:"requires_phone,omitempty"`
+	SessionID        string `json:"session_id"`          // uuid
+	Status           string `json:"status"`              // "active" | "expired" | "revoked"
+	CreatedAt        int64  `json:"created_at"`          // unix seconds
+	ExpiresAt        int64  `json:"expires_at"`          // unix seconds — authored duration from CreatedAt
+	LastActiveAt     int64  `json:"last_active_at"`      // unix seconds
+	DurationSeconds  int64  `json:"duration_seconds"`    // user-approved duration (≤ 24h)
+	KeyRotationCount int    `json:"key_rotation_count"`  // incremented on each extend
+	SessionKeyID     string `json:"session_key_id"`      // opaque handle so the vault can match the device's current key
 }
 
 // AgentMetadata holds registration details for an AI agent connection.
@@ -390,19 +403,19 @@ type CreateAgentInviteResponse struct {
 	ExpiresAt      string `json:"expires_at"`
 }
 
-// CreateDeviceInviteRequest is the payload for connection.device.create-invite
+// CreateDeviceInviteRequest is the payload for device.create-invite.
+// The user invokes this from the app when they want to pair a new desktop.
 type CreateDeviceInviteRequest struct {
-	Label string `json:"label"` // Optional name for this device slot
+	Label string `json:"label,omitempty"` // Optional placeholder; final name is set at authorize time
 }
 
-// CreateDeviceInviteResponse returns data the app needs to call POST /vault/agent/shortlink
+// CreateDeviceInviteResponse returns the short code the user types into the
+// desktop client. See vettid-dev/docs/DESKTOP-CONNECTION-FLOW.md §Stage 1.
 type CreateDeviceInviteResponse struct {
-	ConnectionID   string `json:"connection_id"`
-	InvitationID   string `json:"invitation_id"`
-	InviteToken    string `json:"invite_token"`     // 32 bytes, base64url
-	OwnerGUID      string `json:"owner_guid"`
-	VaultPublicKey string `json:"vault_public_key"` // Hex X25519 public key
-	ExpiresAt      string `json:"expires_at"`
+	ConnectionID string `json:"connection_id"`
+	InviteCode   string `json:"invite_code"`   // 8-char ambiguity-safe code
+	NATSEndpoint string `json:"nats_endpoint"` // so the app can show it to the user if needed
+	ExpiresAt    string `json:"expires_at"`    // ISO 8601 — 2 min from now
 }
 
 // --- Handler methods ---
@@ -2482,19 +2495,28 @@ func (h *ConnectionsHandler) findPendingAgentInvitationForECIES(encryptedPayload
 	return nil, nil, fmt.Errorf("no matching pending agent invitation found")
 }
 
-// HandleCreateDeviceInvite handles connection.device.create-invite messages.
-// Creates a connection + invitation for a desktop device and returns
-// the details the app needs to call POST /vault/agent/shortlink.
-// Mirrors HandleCreateAgentInvite but uses ConnectionTypeDevice.
+// HandleCreateDeviceInvite handles device.create-invite messages.
+//
+// Stage 1 of the device pairing flow (see DESKTOP-CONNECTION-FLOW.md):
+//  1. Generate 8-char ambiguity-safe invite code, 2-minute expiry
+//  2. Generate scoped NATS credentials bound to a new connection_id
+//  3. Publish the full invite payload to the INVITATIONS JetStream subject
+//     invite.<code> — the desktop, using its embedded guest account, reads
+//     this to obtain the scoped creds
+//  4. Create a connection record in "pending_pairing" status
+//  5. Return the code + endpoint to the app for display
+//
+// No ConnectionRecord-held ephemeral keys at this stage. Key exchange happens
+// later during stage 2 (device.authorize-session) using fresh ephemeral keys
+// so the stage-1 NATS creds, even if leaked, cannot decrypt session data.
 func (h *ConnectionsHandler) HandleCreateDeviceInvite(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req CreateDeviceInviteRequest
 	if err := unmarshalRequest(msg.Payload, &req, "HandleCreateDeviceInvite"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
-	label := req.Label
-	if label == "" {
-		label = "Desktop"
+	if h.natsProxy == nil || h.publisher == nil {
+		return h.errorResponse(msg.GetID(), "NATS unavailable — cannot create device invite")
 	}
 
 	// Generate connection ID
@@ -2502,75 +2524,81 @@ func (h *ConnectionsHandler) HandleCreateDeviceInvite(msg *IncomingMessage) (*Ou
 	rand.Read(idBytes)
 	connectionID := fmt.Sprintf("conn-%x", idBytes)
 
-	// Device invitations expire in 24 hours
-	expiresAt := time.Now().Add(24 * time.Hour)
+	// 2-minute pairing window
+	expiresAt := time.Now().Add(2 * time.Minute)
 
-	// Generate X25519 key pair for E2E encryption
-	localPrivate := make([]byte, 32)
-	rand.Read(localPrivate)
-
-	localPublic, err := curve25519.X25519(localPrivate, curve25519.Basepoint)
+	// Generate scoped NATS credentials — bound to this connection_id
+	accountSeed, err := h.loadAccountSeed()
 	if err != nil {
-		return h.errorResponse(msg.GetID(), "Failed to derive public key")
+		log.Warn().Err(err).Msg("Failed to load NATS account seed for device invite")
+		return h.errorResponse(msg.GetID(), "Failed to generate invitation credentials")
 	}
+	creds, err := GenerateDeviceCredentials(accountSeed, h.ownerSpace, connectionID, expiresAt)
+	if err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to generate device credentials")
+	}
+	jwtStr, seedStr := extractCredsComponents(creds)
 
-	// Generate invite token (32 bytes, base64url-encoded)
-	tokenBytes := make([]byte, 32)
-	rand.Read(tokenBytes)
-	inviteToken := base64.RawURLEncoding.EncodeToString(tokenBytes)
+	// Generate the 8-char code and publish the invite payload to JetStream
+	inviteCode := generateDeviceInviteCode()
+	brokerPayload := map[string]interface{}{
+		"type":          "vettid_device",
+		"connection_id": connectionID,
+		"jwt":           jwtStr,
+		"seed":          seedStr,
+		"owner_space":   h.ownerSpace,
+		"message_space": fmt.Sprintf("MessageSpace.%s.forApp.device.%s.>", h.ownerSpace, connectionID),
+		"expires_at":    expiresAt.Format(time.RFC3339),
+		"label":         req.Label,
+	}
+	payloadBytes, _ := json.Marshal(brokerPayload)
+	subject := fmt.Sprintf("invite.%s", inviteCode)
+	if err := h.publisher.PublishRaw(subject, payloadBytes); err != nil {
+		log.Error().Err(err).Str("subject", subject).Msg("Failed to publish device invite to broker")
+		return h.errorResponse(msg.GetID(), "Failed to publish invitation")
+	}
 
 	// Store the outbound device connection record
 	record := ConnectionRecord{
 		ConnectionID:      connectionID,
 		ConnectionType:    ConnectionTypeDevice,
-		PeerAlias:         label,
+		PeerAlias:         req.Label, // user may have hinted a name; final set at authorize
 		CredentialsType:   "outbound",
-		MessageSpaceTopic: fmt.Sprintf("MessageSpace.%s.forOwner.>", h.ownerSpace),
-		Status:            "invited",
+		MessageSpaceTopic: fmt.Sprintf("MessageSpace.%s.forOwner.device.%s.>", h.ownerSpace, connectionID),
+		Status:            "pending_pairing",
 		CreatedAt:         time.Now(),
 		ExpiresAt:         expiresAt,
-		LocalPublicKey:    localPublic,
-		LocalPrivateKey:   localPrivate,
 	}
-
 	data, err := json.Marshal(record)
 	if err != nil {
 		return h.errorResponse(msg.GetID(), "Failed to marshal connection")
 	}
-
-	storageKey := "connections/" + connectionID
-	if err := h.storage.Put(storageKey, data); err != nil {
+	if err := h.storage.Put("connections/"+connectionID, data); err != nil {
 		return h.errorResponse(msg.GetID(), "Failed to store connection")
 	}
-
 	h.addToConnectionIndex(connectionID)
 
-	// Create invitation record (reuses agent invitation infrastructure)
-	invitationID, err := h.createDeviceInvitation(connectionID, label, inviteToken, expiresAt)
-	if err != nil {
-		return h.errorResponse(msg.GetID(), "Failed to create invitation")
+	if h.eventHandler != nil {
+		h.eventHandler.LogConnectionEvent(context.Background(), EventTypeDeviceConnectionRequest, connectionID, "", "Device pairing invite created")
 	}
 
-	// Log event
-	if h.eventHandler != nil {
-		h.eventHandler.LogConnectionEvent(context.Background(), EventTypeDeviceConnectionRequest, connectionID, "", "Device invitation created")
+	natsEndpoint := ""
+	if h.natsProxy != nil {
+		natsEndpoint = h.natsProxy.GetNATSEndpoint()
 	}
 
 	log.Info().
 		Str("connection_id", connectionID).
-		Str("invitation_id", invitationID).
-		Msg("Device invitation created")
+		Str("invite_code", inviteCode).
+		Msg("Device invite created and published to broker")
 
 	resp := CreateDeviceInviteResponse{
-		ConnectionID:   connectionID,
-		InvitationID:   invitationID,
-		InviteToken:    inviteToken,
-		OwnerGUID:      h.ownerSpace,
-		VaultPublicKey: fmt.Sprintf("%x", localPublic),
-		ExpiresAt:      expiresAt.Format(time.RFC3339),
+		ConnectionID: connectionID,
+		InviteCode:   inviteCode,
+		NATSEndpoint: natsEndpoint,
+		ExpiresAt:    expiresAt.Format(time.RFC3339),
 	}
 	respBytes, _ := json.Marshal(resp)
-
 	return &OutgoingMessage{
 		RequestID: msg.GetID(),
 		Type:      MessageTypeResponse,
@@ -2578,290 +2606,37 @@ func (h *ConnectionsHandler) HandleCreateDeviceInvite(msg *IncomingMessage) (*Ou
 	}, nil
 }
 
-// createDeviceInvitation creates an invitation record for a device connection.
-func (h *ConnectionsHandler) createDeviceInvitation(connectionID, label, inviteToken string, expiresAt time.Time) (string, error) {
-	idBytes := make([]byte, 16)
-	rand.Read(idBytes)
-	invitationID := fmt.Sprintf("inv-%x", idBytes)
-
-	record := InvitationRecord{
-		InvitationID:   invitationID,
-		ConnectionID:   connectionID,
-		Status:         "pending",
-		DeliveryMethod: "shortlink",
-		Label:          label,
-		InviteToken:    inviteToken,
-		CreatedAt:      time.Now(),
-		ExpiresAt:      expiresAt,
+// loadAccountSeed returns the NATS account seed, loading from storage /
+// sealer proxy if it isn't cached yet. Mirrors generateInvitationCredentials.
+func (h *ConnectionsHandler) loadAccountSeed() (string, error) {
+	if h.natsProxy == nil {
+		return "", fmt.Errorf("NATS proxy not available")
 	}
-
-	data, err := json.Marshal(record)
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal invitation: %w", err)
-	}
-
-	if err := h.storage.Put("invitations/"+invitationID, data); err != nil {
-		return "", fmt.Errorf("failed to store invitation: %w", err)
-	}
-
-	// Add to invitation index
-	var index []string
-	indexData, err := h.storage.Get("invitations/_index")
-	if err == nil {
-		json.Unmarshal(indexData, &index)
-	}
-
-	for _, id := range index {
-		if id == invitationID {
-			return invitationID, nil
+	if !h.natsProxy.HasAccountSeed() {
+		if h.storage != nil {
+			if seedData, err := h.storage.Get("nats_account_seed"); err == nil && len(seedData) > 0 {
+				h.natsProxy.SetAccountSeed(string(seedData))
+			}
 		}
 	}
-
-	index = append(index, invitationID)
-	newIndexData, _ := json.Marshal(index)
-	h.storage.Put("invitations/_index", newIndexData)
-
-	log.Info().
-		Str("invitation_id", invitationID).
-		Str("connection_id", connectionID).
-		Msg("Device invitation record created")
-
-	return invitationID, nil
-}
-
-// HandleAcceptDeviceConnection processes a device connection request (registration completion).
-//
-// The desktop sends a ConnectionRequest ECIES-encrypted with the vault's X25519 public key.
-// Uses DomainDevice domain separation ("vettid-device-v1") distinct from agent's DomainAgent.
-// On acceptance, creates an initial DeviceSession with configured TTL.
-func (h *ConnectionsHandler) HandleAcceptDeviceConnection(ctx context.Context, msg *IncomingMessage, envelope *AgentEnvelope) (*OutgoingMessage, error) {
-	// Extract encrypted bytes from envelope payload
-	encryptedPayload, err := extractPayloadBytes(envelope.Payload)
-	if err != nil {
-		log.Warn().Err(err).Msg("Failed to extract device connection request payload")
-		return nil, nil
-	}
-
-	// Find matching pending device invitation via ECIES decryption trial
-	invRecord, connRecord, err := h.findPendingDeviceInvitationForECIES(encryptedPayload)
-	if err != nil {
-		log.Warn().Err(err).Msg("Failed to find matching device invitation")
-		return nil, nil
-	}
-
-	// ECIES-decrypt with the connection's local private key using device domain
-	plaintext, err := decryptECIESDeviceDomain(connRecord.LocalPrivateKey, encryptedPayload)
-	if err != nil {
-		log.Warn().Err(err).
-			Str("connection_id", connRecord.ConnectionID).
-			Msg("Failed to decrypt device connection request")
-		return nil, nil
-	}
-	defer zeroBytes(plaintext)
-
-	// Parse the connection request
-	var connReq struct {
-		InvitationID    string         `json:"invitation_id"`
-		DevicePublicKey []byte         `json:"device_public_key"`
-		Registration    DeviceMetadata `json:"registration"`
-		Timestamp       time.Time      `json:"timestamp"`
-	}
-	if err := json.Unmarshal(plaintext, &connReq); err != nil {
-		log.Warn().Err(err).Msg("Failed to parse device connection request")
-		return nil, nil
-	}
-
-	// Verify invitation ID matches
-	if connReq.InvitationID != invRecord.InvitationID {
-		log.Warn().
-			Str("expected", invRecord.InvitationID).
-			Str("got", connReq.InvitationID).
-			Msg("Device connection request invitation ID mismatch")
-		return nil, nil
-	}
-
-	// Validate invitation
-	if invRecord.Status != "pending" {
-		log.Warn().Str("status", invRecord.Status).Msg("Device invitation not pending")
-		return nil, nil
-	}
-	if time.Now().After(invRecord.ExpiresAt) {
-		log.Warn().Msg("Device invitation expired")
-		return nil, nil
-	}
-
-	// Validate device public key
-	if len(connReq.DevicePublicKey) != 32 {
-		log.Warn().Int("len", len(connReq.DevicePublicKey)).Msg("Invalid device public key length")
-		return nil, nil
-	}
-
-	// Compute X25519 shared secret
-	sharedSecret, err := curve25519.X25519(connRecord.LocalPrivateKey, connReq.DevicePublicKey)
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to compute shared secret")
-		return nil, nil
-	}
-
-	// Create initial device session
-	sessionIDBytes := make([]byte, 16)
-	rand.Read(sessionIDBytes)
-	now := time.Now()
-	ttlHours := 8
-	session := &DeviceSession{
-		SessionID:          fmt.Sprintf("sess-%x", sessionIDBytes),
-		Status:             "active",
-		CreatedAt:          now.Unix(),
-		ExpiresAt:          now.Add(time.Duration(ttlHours) * time.Hour).Unix(),
-		LastActiveAt:       now.Unix(),
-		LastPhoneHeartbeat: now.Unix(),
-		ExtendedCount:      0,
-		MaxExtensions:      3,
-		TTLHours:           ttlHours,
-		Capabilities:       DeviceIndependentCapabilities(),
-		RequiresPhone:      DevicePhoneRequiredCapabilities(),
-	}
-
-	// Update connection record
-	connRecord.PeerPublicKey = connReq.DevicePublicKey
-	connRecord.SharedSecret = sharedSecret
-	connRecord.Status = "active"
-	connRecord.KeyExchangeAt = time.Now()
-	connRecord.DeviceMetadata = &connReq.Registration
-	connRecord.DeviceSession = session
-
-	// Save updated connection
-	connData, err := json.Marshal(connRecord)
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to marshal updated device connection")
-		return nil, nil
-	}
-	if err := h.storage.Put("connections/"+connRecord.ConnectionID, connData); err != nil {
-		log.Error().Err(err).Msg("Failed to store updated device connection")
-		return nil, nil
-	}
-
-	// Update invitation status
-	invNow := time.Now()
-	invRecord.Status = "accepted"
-	invRecord.RespondedAt = &invNow
-	invData, _ := json.Marshal(invRecord)
-	h.storage.Put("invitations/"+invRecord.InvitationID, invData)
-
-	// Log event
-	if h.eventHandler != nil {
-		h.eventHandler.LogConnectionEvent(ctx, EventTypeDeviceConnectionApproved, connRecord.ConnectionID, "",
-			fmt.Sprintf("Device connection accepted: %s (%s)", connRecord.PeerAlias, connReq.Registration.Hostname))
-	}
-
-	log.Info().
-		Str("connection_id", connRecord.ConnectionID).
-		Str("invitation_id", invRecord.InvitationID).
-		Str("hostname", connReq.Registration.Hostname).
-		Str("session_id", session.SessionID).
-		Msg("Device connection accepted")
-
-	// Derive connection key to encrypt the approval response
-	connKey, err := deriveConnectionKey(sharedSecret)
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to derive connection key for device approval response")
-		return nil, nil
-	}
-	defer zeroBytes(connKey)
-
-	// Build approval payload
-	approval := struct {
-		ConnectionID string         `json:"connection_id"`
-		KeyID        string         `json:"key_id"`
-		Session      *DeviceSession `json:"session"`
-	}{
-		ConnectionID: connRecord.ConnectionID,
-		KeyID:        connRecord.ConnectionID,
-		Session:      session,
-	}
-	approvalBytes, _ := json.Marshal(approval)
-
-	// Encrypt with connection key
-	encryptedApproval, err := encryptXChaCha20(connKey, approvalBytes)
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to encrypt device approval response")
-		return nil, nil
-	}
-	zeroBytes(approvalBytes)
-
-	// Build response envelope
-	encPayloadJSON, _ := json.Marshal(encryptedApproval)
-	envBytes, err := json.Marshal(AgentEnvelope{
-		Type:      DeviceMsgConnectionApproved,
-		KeyID:     connRecord.ConnectionID,
-		Payload:   encPayloadJSON,
-		Timestamp: time.Now().UTC(),
-	})
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to marshal device approval envelope")
-		return nil, nil
-	}
-
-	// Publish to invitation-specific topic so the desktop can receive it
-	responseTopic := fmt.Sprintf("MessageSpace.%s.forOwner.device.invitation.%s", h.ownerSpace, invRecord.InvitationID)
-	log.Debug().Str("topic", responseTopic).Msg("Publishing device connection approval")
-
-	return &OutgoingMessage{
-		ID:      generateMessageID(),
-		Type:    MessageTypeNATSPublish,
-		Subject: responseTopic,
-		Payload: envBytes,
-	}, nil
-}
-
-// findPendingDeviceInvitationForECIES finds the pending device invitation
-// that can successfully decrypt the ECIES payload using device domain separation.
-func (h *ConnectionsHandler) findPendingDeviceInvitationForECIES(encryptedPayload []byte) (*InvitationRecord, *ConnectionRecord, error) {
-	var invIndex []string
-	indexData, err := h.storage.Get("invitations/_index")
-	if err != nil {
-		return nil, nil, fmt.Errorf("no invitations found")
-	}
-	json.Unmarshal(indexData, &invIndex)
-
-	for _, invID := range invIndex {
-		invData, err := h.storage.Get("invitations/" + invID)
+	if !h.natsProxy.HasAccountSeed() {
+		if h.sealerProxy == nil {
+			return "", fmt.Errorf("sealer proxy not available")
+		}
+		seed, err := h.sealerProxy.LoadAccountSeed()
 		if err != nil {
-			continue
+			return "", fmt.Errorf("load account seed: %w", err)
 		}
-
-		var inv InvitationRecord
-		if err := json.Unmarshal(invData, &inv); err != nil {
-			continue
-		}
-
-		if inv.Status != "pending" || time.Now().After(inv.ExpiresAt) {
-			continue
-		}
-
-		connData, err := h.storage.Get("connections/" + inv.ConnectionID)
-		if err != nil {
-			continue
-		}
-
-		var conn ConnectionRecord
-		if err := json.Unmarshal(connData, &conn); err != nil {
-			continue
-		}
-
-		// Must be a device connection with a private key
-		if !conn.IsDevice() || len(conn.LocalPrivateKey) == 0 {
-			continue
-		}
-
-		// Try to decrypt — if it works, this is the right invitation
-		_, err = decryptECIESDeviceDomain(conn.LocalPrivateKey, encryptedPayload)
-		if err == nil {
-			return &inv, &conn, nil
+		h.natsProxy.SetAccountSeed(seed)
+		if h.storage != nil {
+			_ = h.storage.Put("nats_account_seed", []byte(seed))
 		}
 	}
-
-	return nil, nil, fmt.Errorf("no matching pending device invitation found")
+	seed := h.natsProxy.GetAccountSeed()
+	if seed == "" {
+		return "", fmt.Errorf("account seed empty after load")
+	}
+	return seed, nil
 }
 
 // HandleListDeviceConnections returns all device connections with session status.
@@ -2943,10 +2718,11 @@ func (h *ConnectionsHandler) HandleListDeviceConnections(ctx context.Context, ms
 }
 
 // HandleRevokeDevice revokes a device connection and its session.
+// Can be called from either the app (admin revoke) or the device itself (logout).
+// Wipes the session key, marks the connection revoked, and publishes a
+// revocation event so the desktop can clear its local state.
 func (h *ConnectionsHandler) HandleRevokeDevice(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
-	var req struct {
-		ConnectionID string `json:"connection_id"`
-	}
+	var req DeviceRevokeRequest
 	if err := unmarshalRequest(msg.Payload, &req, "HandleRevokeDevice"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
@@ -2969,18 +2745,37 @@ func (h *ConnectionsHandler) HandleRevokeDevice(ctx context.Context, msg *Incomi
 		return h.errorResponse(msg.GetID(), "Connection is not a device")
 	}
 
-	// Revoke connection
-	record.Status = "revoked"
+	// Wipe the session key from storage
+	if record.DeviceSession != nil && record.DeviceSession.SessionKeyID != "" {
+		keyPath := fmt.Sprintf("device_session_keys/%s/%s", record.ConnectionID, record.DeviceSession.SessionKeyID)
+		if err := h.storage.Delete(keyPath); err != nil {
+			log.Warn().Err(err).Str("path", keyPath).Msg("Failed to delete session key during revoke (non-fatal)")
+		}
+	}
 
-	// Revoke session and zero sensitive material
+	// Mark revoked
+	record.Status = "revoked"
 	if record.DeviceSession != nil {
 		record.DeviceSession.Status = "revoked"
 	}
-	zeroBytes(record.SharedSecret)
-	record.SharedSecret = nil
+	record.DevicePendingAuth = nil
 
 	connData, _ := json.Marshal(record)
 	h.storage.Put("connections/"+record.ConnectionID, connData)
+
+	// Notify the desktop so it can clear local state
+	if h.publisher != nil {
+		revokeNotif := map[string]interface{}{
+			"type":          "device.session.revoked",
+			"connection_id": record.ConnectionID,
+			"reason":        req.Reason,
+		}
+		notifBytes, _ := json.Marshal(revokeNotif)
+		subject := fmt.Sprintf("MessageSpace.%s.forApp.device.%s.revoked", h.ownerSpace, record.ConnectionID)
+		if err := h.publisher.PublishRaw(subject, notifBytes); err != nil {
+			log.Warn().Err(err).Str("subject", subject).Msg("Failed to publish device revocation (non-fatal)")
+		}
+	}
 
 	if h.eventHandler != nil {
 		h.eventHandler.LogConnectionEvent(ctx, EventTypeDeviceConnectionRevoked, record.ConnectionID, "",
@@ -2989,6 +2784,7 @@ func (h *ConnectionsHandler) HandleRevokeDevice(ctx context.Context, msg *Incomi
 
 	log.Info().
 		Str("connection_id", record.ConnectionID).
+		Str("reason", req.Reason).
 		Msg("Device connection revoked")
 
 	resp := struct {
@@ -3007,129 +2803,10 @@ func (h *ConnectionsHandler) HandleRevokeDevice(ctx context.Context, msg *Incomi
 	}, nil
 }
 
-// HandleExtendDeviceSession extends an active device session (phone-initiated only).
-func (h *ConnectionsHandler) HandleExtendDeviceSession(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
-	var req struct {
-		ConnectionID string `json:"connection_id"`
-	}
-	if err := unmarshalRequest(msg.Payload, &req, "HandleExtendDeviceSession"); err != nil {
-		return h.errorResponse(msg.GetID(), "Invalid request format")
-	}
-
-	data, err := h.storage.Get("connections/" + req.ConnectionID)
-	if err != nil {
-		return h.errorResponse(msg.GetID(), "Connection not found")
-	}
-
-	var record ConnectionRecord
-	if err := json.Unmarshal(data, &record); err != nil {
-		return h.errorResponse(msg.GetID(), "Failed to read connection")
-	}
-
-	if !record.IsDevice() || record.DeviceSession == nil {
-		return h.errorResponse(msg.GetID(), "No active device session")
-	}
-
-	session := record.DeviceSession
-	if session.Status != "active" {
-		return h.errorResponse(msg.GetID(), fmt.Sprintf("Session is %s, cannot extend", session.Status))
-	}
-	if session.ExtendedCount >= session.MaxExtensions {
-		return h.errorResponse(msg.GetID(), "Maximum session extensions reached")
-	}
-
-	// Extend the session
-	now := time.Now()
-	session.ExpiresAt = now.Add(time.Duration(session.TTLHours) * time.Hour).Unix()
-	session.ExtendedCount++
-	session.LastActiveAt = now.Unix()
-
-	connData, _ := json.Marshal(record)
-	h.storage.Put("connections/"+record.ConnectionID, connData)
-
-	if h.eventHandler != nil {
-		h.eventHandler.LogConnectionEvent(ctx, EventTypeDeviceSessionExtended, record.ConnectionID, "",
-			fmt.Sprintf("Device session extended (%d/%d)", session.ExtendedCount, session.MaxExtensions))
-	}
-
-	log.Info().
-		Str("connection_id", record.ConnectionID).
-		Str("session_id", session.SessionID).
-		Int("extended_count", session.ExtendedCount).
-		Msg("Device session extended")
-
-	resp := struct {
-		Success   bool           `json:"success"`
-		Session   *DeviceSession `json:"session"`
-	}{
-		Success: true,
-		Session: session,
-	}
-	respBytes, _ := json.Marshal(resp)
-
-	return &OutgoingMessage{
-		RequestID: msg.GetID(),
-		Type:      MessageTypeResponse,
-		Payload:   respBytes,
-	}, nil
-}
-
-// HandleDeviceHeartbeat updates the phone heartbeat timestamp on active device sessions.
-func (h *ConnectionsHandler) HandleDeviceHeartbeat(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
-	// Update heartbeat on all active device sessions
-	indexData, err := h.storage.Get("connections/_index")
-	var connectionIDs []string
-	if err == nil {
-		json.Unmarshal(indexData, &connectionIDs)
-	}
-
-	now := time.Now().Unix()
-	updated := 0
-	for _, connID := range connectionIDs {
-		data, err := h.storage.Get("connections/" + connID)
-		if err != nil {
-			continue
-		}
-
-		var record ConnectionRecord
-		if json.Unmarshal(data, &record) != nil {
-			continue
-		}
-
-		if !record.IsDevice() || record.DeviceSession == nil || record.DeviceSession.Status != "active" {
-			continue
-		}
-
-		// Check if session was suspended and resume it
-		record.DeviceSession.LastPhoneHeartbeat = now
-		if record.DeviceSession.Status == "suspended" {
-			record.DeviceSession.Status = "active"
-			if h.eventHandler != nil {
-				h.eventHandler.LogConnectionEvent(ctx, EventTypeDeviceSessionCreated, record.ConnectionID, "",
-					"Device session resumed after heartbeat")
-			}
-		}
-
-		connData, _ := json.Marshal(record)
-		h.storage.Put("connections/"+record.ConnectionID, connData)
-		updated++
-	}
-
-	resp := struct {
-		Success bool `json:"success"`
-		Updated int  `json:"updated"`
-	}{
-		Success: true,
-		Updated: updated,
-	}
-	respBytes, _ := json.Marshal(resp)
-
-	return &OutgoingMessage{
-		RequestID: msg.GetID(),
-		Type:      MessageTypeResponse,
-		Payload:   respBytes,
-	}, nil
-}
+// NOTE: HandleExtendDeviceSession is now defined in device_pairing.go with the
+// key-rotation semantics described in DESKTOP-CONNECTION-FLOW.md §Stage 4.
+// The old phone-heartbeat-based HandleDeviceHeartbeat is removed — sessions are
+// bounded by wall-clock expiry only, extended via user QR scan.
 
 // HandleListAgentConnections returns all agent connections with metadata.
 func (h *ConnectionsHandler) HandleListAgentConnections(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {

@@ -820,23 +820,26 @@ func (mh *MessageHandler) handleDeviceOperation(ctx context.Context, msg *Incomi
 
 	switch opType {
 	case "create-invite":
-		// Create an invitation for a new device
+		// Stage 1: app creates a pairing invite for a new desktop
 		return mh.connectionsHandler.HandleCreateDeviceInvite(msg)
+	case "request-session":
+		// Stage 2 (desktop → vault): request session authorization
+		return mh.connectionsHandler.HandleDeviceRequestSession(ctx, msg)
+	case "authorize-session":
+		// Stage 2 (app → vault): user approves the session with duration
+		return mh.connectionsHandler.HandleDeviceAuthorizeSession(ctx, msg)
+	case "extend-session":
+		// Stage 4: user scans extension QR to rotate keys and extend the session
+		return mh.connectionsHandler.HandleDeviceExtendSession(ctx, msg)
 	case "list":
-		// List device connections
+		// List active device connections
 		return mh.connectionsHandler.HandleListDeviceConnections(ctx, msg)
 	case "revoke":
-		// Revoke a device connection
+		// Revoke a device connection (from app admin or device logout)
 		return mh.connectionsHandler.HandleRevokeDevice(ctx, msg)
-	case "extend-session":
-		// Extend an active device session
-		return mh.connectionsHandler.HandleExtendDeviceSession(ctx, msg)
 	case "approval":
-		// Phone responds to a pending device approval request
+		// Phone responds to a pending per-operation approval request (not stage-2 auth)
 		return mh.deviceHandler.HandlePhoneApprovalResponse(ctx, msg)
-	case "heartbeat":
-		// Update phone heartbeat on active device sessions
-		return mh.connectionsHandler.HandleDeviceHeartbeat(ctx, msg)
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown device operation: %s", opType))
 	}
