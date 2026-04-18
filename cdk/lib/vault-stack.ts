@@ -139,6 +139,9 @@ export class VaultStack extends cdk.Stack {
 
   // Note: Ledger handlers removed - vault-manager uses JetStream storage
 
+  // Device pairing bootstrap (stage-1 of two-stage desktop pairing)
+  public readonly bootstrapDevicePairing!: lambdaNode.NodejsFunction;
+
   // Test Automation Endpoints (for Android E2E testing)
   public readonly testHealth!: lambdaNode.NodejsFunction;
   public readonly testCreateInvitation!: lambdaNode.NodejsFunction;
@@ -379,6 +382,23 @@ export class VaultStack extends cdk.Stack {
     tables.audit.grantWriteData(this.natsCredentialReissue);
     natsOperatorSecretRef.grantRead(this.natsCredentialReissue);
     props.infrastructure.natsSeedEncryptionKey.grantDecrypt(this.natsCredentialReissue);
+
+    // ===== DEVICE PAIRING BOOTSTRAP =====
+    // Public endpoint that mints short-lived (60s) NATS creds scoped to the
+    // INVITATIONS JetStream. The desktop client uses these to read one
+    // specific invite.<code> message and nothing else. See
+    // vettid-dev/docs/DESKTOP-CONNECTION-FLOW.md §Stage 1.
+    this.bootstrapDevicePairing = new lambdaNode.NodejsFunction(this, 'BootstrapDevicePairingFn', {
+      entry: 'lambda/handlers/vault/bootstrapDevicePairing.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        ...defaultEnv,
+        NATS_OPERATOR_SECRET_ARN: natsOperatorSecretRef.secretArn,
+        NATS_ENDPOINT: 'nats.vettid.dev:443',
+      },
+      timeout: cdk.Duration.seconds(10),
+    });
+    natsOperatorSecretRef.grantRead(this.bootstrapDevicePairing);
 
     // ===== DEVICE ATTESTATION (Phase 2) =====
 
@@ -1613,6 +1633,19 @@ export class VaultStack extends cdk.Stack {
     this.route('DeleteByovVault', httpApi, '/vault/byov', apigw.HttpMethod.DELETE, this.deleteByovVault, memberAuthorizer);
 
     // Note: Ledger routes removed - vault-manager uses JetStream storage
+
+    // ===== DEVICE PAIRING BOOTSTRAP =====
+    // Public endpoint — returns short-lived NATS creds scoped to the
+    // INVITATIONS stream so desktop clients can resolve one invite code.
+    // Rate limiting handled by API Gateway throttling at the stage level.
+    new apigw.HttpRoute(this, 'BootstrapDevicePairing', {
+      httpApi,
+      routeKey: apigw.HttpRouteKey.with('/pair/device/bootstrap', apigw.HttpMethod.POST),
+      integration: new integrations.HttpLambdaIntegration(
+        'BootstrapDevicePairingInt',
+        this.bootstrapDevicePairing,
+      ),
+    });
 
     // ===== TEST AUTOMATION ENDPOINTS =====
     // Public endpoints protected by TEST_API_KEY header (validated in handler)
