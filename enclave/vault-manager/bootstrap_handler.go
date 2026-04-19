@@ -324,6 +324,13 @@ func (h *BootstrapHandler) buildBootstrapResponse(requestID string, requiresPass
 	}, nil
 }
 
+// MaxUnusedUTKs caps the number of unused UTK/LTK pairs kept in vault state.
+// Oldest unused pairs are pruned when the pool exceeds this. Must stay ≥ the
+// app-side cap (CredentialStore.UTK_POOL_MAX = 100) so the app's oldest pick
+// still has a matching LTK in the vault. 200 leaves headroom for in-flight
+// generation rounds.
+const MaxUnusedUTKs = 200
+
 // GenerateMoreUTKs generates additional UTK pairs (called when running low)
 // and returns ONLY the freshly-generated ones so callers can send just the
 // new ones to the app — not the entire vault pool.
@@ -349,7 +356,39 @@ func (h *BootstrapHandler) GenerateMoreUTKs(count int) ([]*UTKPair, error) {
 		h.state.utkPairs = append(h.state.utkPairs, pair)
 		newPairs = append(newPairs, pair)
 	}
+	h.pruneUnusedUTKsLocked()
 	return newPairs, nil
+}
+
+// pruneUnusedUTKsLocked drops the oldest unused pairs (FIFO) when the unused
+// count exceeds MaxUnusedUTKs. Caller must hold h.state.mu.
+func (h *BootstrapHandler) pruneUnusedUTKsLocked() {
+	unused := 0
+	for _, pair := range h.state.utkPairs {
+		if pair.UsedAt == 0 {
+			unused++
+		}
+	}
+	excess := unused - MaxUnusedUTKs
+	if excess <= 0 {
+		return
+	}
+	kept := h.state.utkPairs[:0]
+	pruned := 0
+	for _, pair := range h.state.utkPairs {
+		if pair.UsedAt == 0 && pruned < excess {
+			zeroBytes(pair.LTK)
+			pruned++
+			continue
+		}
+		kept = append(kept, pair)
+	}
+	h.state.utkPairs = kept
+	log.Debug().
+		Str("owner_space", h.ownerSpace).
+		Int("pruned", pruned).
+		Int("remaining", len(h.state.utkPairs)).
+		Msg("UTK pool pruned (oldest unused dropped)")
 }
 
 // EncodeUTKs encodes UTK pairs as "id:base64(utk)" strings (legacy wire format).
@@ -430,14 +469,19 @@ func (h *BootstrapHandler) GenerateCEKPair() error {
 	return nil
 }
 
-// MarkUTKUsed marks a UTK as used
+// MarkUTKUsed consumes a UTK. The pair is removed from the pool entirely —
+// callers always do GetLTKForUTK → decrypt → MarkUTKUsed, so the LTK has no
+// further use once marked. Keeping tombstones in place caused the pool to
+// grow unbounded, slowing every GetLTKForUTK scan and every S3 state
+// persist (each round-trip serializes the full slice).
 func (h *BootstrapHandler) MarkUTKUsed(utkID string) bool {
 	h.state.mu.Lock()
 	defer h.state.mu.Unlock()
 
-	for _, pair := range h.state.utkPairs {
+	for i, pair := range h.state.utkPairs {
 		if pair.ID == utkID && pair.UsedAt == 0 {
-			pair.UsedAt = time.Now().Unix()
+			zeroBytes(pair.LTK)
+			h.state.utkPairs = append(h.state.utkPairs[:i], h.state.utkPairs[i+1:]...)
 			return true
 		}
 	}

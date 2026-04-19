@@ -406,8 +406,14 @@ func (h *PINHandler) HandlePINUnlock(ctx context.Context, msg *IncomingMessage) 
 					PublicKey:  persistedState.CEKPublicKey,
 				}
 			}
+			// Skip used-UTK tombstones from legacy state blobs. Current
+			// vaults remove pairs on MarkUTKUsed, but older persisted state
+			// in S3 may still carry them.
 			h.state.utkPairs = nil
 			for _, utk := range persistedState.UTKPairs {
+				if utk.UsedAt != 0 {
+					continue
+				}
 				h.state.utkPairs = append(h.state.utkPairs, &UTKPair{
 					ID:        utk.ID,
 					UTK:       utk.UTK,

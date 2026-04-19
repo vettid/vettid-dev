@@ -2434,7 +2434,13 @@ func (mh *MessageHandler) createEncryptedVaultState(dek []byte) ([]byte, error) 
 		persistedState.CEKPublicKey = mh.vaultState.cekPair.PublicKey
 	}
 
+	// Only persist unused UTK pairs. MarkUTKUsed already removes consumed
+	// pairs from the in-memory slice, but skip defensively in case legacy
+	// tombstones linger after a cold restore from older state.
 	for _, utk := range mh.vaultState.utkPairs {
+		if utk.UsedAt != 0 {
+			continue
+		}
 		persistedState.UTKPairs = append(persistedState.UTKPairs, struct {
 			ID        string `json:"id"`
 			UTK       []byte `json:"utk"`
