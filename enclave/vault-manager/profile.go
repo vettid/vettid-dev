@@ -685,6 +685,18 @@ func (h *ProfileHandler) HandlePublish(ctx context.Context, msg *IncomingMessage
 					Msg("Public profile published to NATS (JetStream retained)")
 			}
 		}
+
+		// Fan out the snapshot to active peers so their cached _peer_profile
+		// picks up the new fields/wallets. Done in a goroutine because the
+		// broadcast iterates every connection and publishes to each peer
+		// vault — don't make the caller wait for network I/O.
+		go BroadcastPublishedProfile(
+			context.Background(),
+			h.ownerSpace,
+			h.storage,
+			h.publisher,
+			h.vaultState,
+		)
 	}
 
 	response := ProfilePublishResponse{

@@ -312,8 +312,13 @@ func (h *WalletHandler) HandleSetVisibility(ctx context.Context, msg *IncomingMe
 	})
 }
 
-// republishProfile triggers a profile re-publish to update public wallet addresses.
-// Uses the shared BuildPublishedProfile function for consistency.
+// republishProfile triggers a profile re-publish to update public wallet
+// addresses. Two fan-outs:
+//  1. Owner's forApp.profile.public subject — so the owner's own app sees
+//     the fresh snapshot in invitation flows and the public-profile preview.
+//  2. Active inbound peers — so their cached `_peer_profile` picks up the
+//     new wallet without waiting for a reconnect. Without this, a wallet
+//     added after connect never shows up in the peer's Connection Detail.
 func (h *WalletHandler) republishProfile() {
 	profile := BuildPublishedProfile(h.ownerSpace, h.storage, h.vaultState)
 
@@ -332,6 +337,15 @@ func (h *WalletHandler) republishProfile() {
 			Int("wallet_count", len(profile.Wallets)).
 			Msg("Profile re-published after wallet visibility change")
 	}
+
+	// Fan out to peers so their cached _peer_profile reflects the change.
+	BroadcastPublishedProfile(
+		context.Background(),
+		h.ownerSpace,
+		h.storage,
+		h.publisher,
+		h.vaultState,
+	)
 }
 
 // ============================================================================
