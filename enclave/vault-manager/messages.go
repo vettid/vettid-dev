@@ -1277,6 +1277,13 @@ func (mh *MessageHandler) handleProfileOperation(ctx context.Context, msg *Incom
 		}
 		mh.persistVaultStateToS3()
 		return response, nil
+	case "broadcast":
+		// Push the current published profile snapshot to every active
+		// peer. Alias for notification.profile-broadcast — the app uses
+		// the profile.* namespace for everything profile-shaped, so we
+		// route it here too. The heavy lifting lives in the
+		// NotificationsHandler.
+		return mh.notificationsHandler.HandleProfileBroadcast(msg)
 	case "get-published":
 		// Get the last published profile (what connections see)
 		return mh.profileHandler.HandleGetPublished(msg)
