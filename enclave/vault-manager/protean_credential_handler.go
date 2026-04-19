@@ -161,20 +161,12 @@ func (h *ProteanCredentialHandler) HandleCredentialCreate(ctx context.Context, m
 	// NOTE: DEK is NOT cleared here - it's needed for vault state persistence
 	// The caller (messages.go) will clear DEK after persisting vault state for cold recovery
 
-	// Generate fresh UTKs for future operations
-	if err := h.bootstrap.GenerateMoreUTKs(5); err != nil {
+	// Generate fresh UTKs for future operations and return ONLY the new ones.
+	newPairs, err := h.bootstrap.GenerateMoreUTKs(5)
+	if err != nil {
 		log.Warn().Err(err).Msg("Failed to generate new UTKs")
 	}
-
-	// Build response with new UTKs
-	utks := h.bootstrap.GetUnusedUTKPairs()
-	utkPublics := make([]UTKPublic, len(utks))
-	for i, utk := range utks {
-		utkPublics[i] = UTKPublic{
-			ID:        utk.ID,
-			PublicKey: base64.StdEncoding.EncodeToString(utk.UTK),
-		}
-	}
+	utkPublics := EncodeUTKPublics(newPairs)
 
 	response := CredentialCreateResponse{
 		Status:              "created",
@@ -302,20 +294,12 @@ func (h *ProteanCredentialHandler) HandlePasswordChange(ctx context.Context, msg
 		return h.errorResponse(msg.GetID(), "encryption failed")
 	}
 
-	// Generate fresh UTKs for future operations
-	if err := h.bootstrap.GenerateMoreUTKs(5); err != nil {
+	// Generate fresh UTKs for future operations and return ONLY the new ones.
+	newPairs, err := h.bootstrap.GenerateMoreUTKs(5)
+	if err != nil {
 		log.Warn().Err(err).Msg("Failed to generate new UTKs")
 	}
-
-	// Build response with new UTKs
-	utks := h.bootstrap.GetUnusedUTKPairs()
-	utkPublics := make([]UTKPublic, len(utks))
-	for i, utk := range utks {
-		utkPublics[i] = UTKPublic{
-			ID:        utk.ID,
-			PublicKey: base64.StdEncoding.EncodeToString(utk.UTK),
-		}
-	}
+	utkPublics := EncodeUTKPublics(newPairs)
 
 	response := PasswordChangeResponse{
 		Status:              "password_changed",

@@ -203,8 +203,14 @@ func (mh *MessageHandler) handleUTKAuthenticate(requestID string, req *Authentic
 		Str("user_guid", credential.UserGUID).
 		Msg("Post-enrollment verification successful")
 
-	// Get replacement UTKs to replenish the app's pool
-	newUTKs := mh.bootstrapHandler.GetUnusedUTKs()
+	// Generate fresh replacement UTKs and return ONLY the new ones.
+	// Returning GetUnusedUTKs() here caused the app pool to balloon because
+	// the full vault pool was appended on every auth round-trip.
+	newPairs, err := mh.bootstrapHandler.GenerateMoreUTKs(3)
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to generate replacement UTKs")
+	}
+	newUTKs := EncodeUTKs(newPairs)
 	log.Debug().Int("new_utks_count", len(newUTKs)).Msg("Including replacement UTKs in auth response")
 
 	resp := AuthenticateResponse{

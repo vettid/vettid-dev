@@ -154,18 +154,12 @@ func (h *CredentialSecretHandler) HandleAdd(msg *IncomingMessage) (*OutgoingMess
 		Str("owner_space", h.ownerSpace).
 		Msg("Credential secret added to credential blob")
 
-	// Generate fresh UTKs
-	if err := h.bootstrap.GenerateMoreUTKs(3); err != nil {
+	// Generate fresh UTKs and return ONLY the new ones.
+	newPairs, err := h.bootstrap.GenerateMoreUTKs(3)
+	if err != nil {
 		log.Warn().Err(err).Msg("Failed to generate replacement UTKs")
 	}
-	utks := h.bootstrap.GetUnusedUTKPairs()
-	utkPublics := make([]UTKPublic, len(utks))
-	for i, utk := range utks {
-		utkPublics[i] = UTKPublic{
-			ID:        utk.ID,
-			PublicKey: base64.StdEncoding.EncodeToString(utk.UTK),
-		}
-	}
+	utkPublics := EncodeUTKPublics(newPairs)
 
 	resp := CredentialSecretAddResponse{
 		ID:                  secretID,
@@ -246,18 +240,12 @@ func (h *CredentialSecretHandler) HandleGet(msg *IncomingMessage) (*OutgoingMess
 		return h.errorResponse(msg.GetID(), "Secret not found in credential")
 	}
 
-	// Generate fresh UTKs
-	if err := h.bootstrap.GenerateMoreUTKs(3); err != nil {
+	// Generate fresh UTKs and return ONLY the new ones.
+	newPairs, err := h.bootstrap.GenerateMoreUTKs(3)
+	if err != nil {
 		log.Warn().Err(err).Msg("Failed to generate replacement UTKs")
 	}
-	utks := h.bootstrap.GetUnusedUTKPairs()
-	utkPublics := make([]UTKPublic, len(utks))
-	for i, utk := range utks {
-		utkPublics[i] = UTKPublic{
-			ID:        utk.ID,
-			PublicKey: base64.StdEncoding.EncodeToString(utk.UTK),
-		}
-	}
+	utkPublics := EncodeUTKPublics(newPairs)
 
 	resp := CredentialSecretGetResponse{
 		ID:       foundSecret.ID,
@@ -475,18 +463,12 @@ func (h *CredentialSecretHandler) HandleDelete(msg *IncomingMessage) (*OutgoingM
 		deletedCategory,
 	)
 
-	// Generate fresh UTKs
-	if err := h.bootstrap.GenerateMoreUTKs(3); err != nil {
+	// Generate fresh UTKs and return ONLY the new ones.
+	newPairs, err := h.bootstrap.GenerateMoreUTKs(3)
+	if err != nil {
 		log.Warn().Err(err).Msg("Failed to generate replacement UTKs")
 	}
-	utks := h.bootstrap.GetUnusedUTKPairs()
-	utkPublics := make([]UTKPublic, len(utks))
-	for i, utk := range utks {
-		utkPublics[i] = UTKPublic{
-			ID:        utk.ID,
-			PublicKey: base64.StdEncoding.EncodeToString(utk.UTK),
-		}
-	}
+	utkPublics := EncodeUTKPublics(newPairs)
 
 	resp := CredentialSecretDeleteResponse{
 		Success:             true,

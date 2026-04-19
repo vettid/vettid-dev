@@ -140,8 +140,11 @@ func (h *PINHandler) HandlePINSetup(ctx context.Context, msg *IncomingMessage) (
 		return h.errorResponse(msg.GetID(), "CEK generation failed")
 	}
 
-	// Generate UTKs for credential creation
-	if err := h.bootstrap.GenerateMoreUTKs(5); err != nil {
+	// Generate fresh UTKs for credential creation. Bootstrap already gave the
+	// app an initial batch (HandleBootstrap), so we only return the newly
+	// generated ones here to avoid duplicate entries in the app's pool.
+	newPairs, err := h.bootstrap.GenerateMoreUTKs(5)
+	if err != nil {
 		log.Warn().Err(err).Msg("Failed to generate UTKs")
 	}
 
@@ -197,15 +200,8 @@ func (h *PINHandler) HandlePINSetup(ctx context.Context, msg *IncomingMessage) (
 		}
 	}
 
-	// Build response with UTKs in the new format
-	utks := h.bootstrap.GetUnusedUTKPairs()
-	utkPublics := make([]UTKPublic, len(utks))
-	for i, utk := range utks {
-		utkPublics[i] = UTKPublic{
-			ID:        utk.ID,
-			PublicKey: base64.StdEncoding.EncodeToString(utk.UTK),
-		}
-	}
+	// Return ONLY the freshly-generated UTKs (not the full pool).
+	utkPublics := EncodeUTKPublics(newPairs)
 
 	// Get ECIES public key for PIN unlock (this is different from the attestation key!)
 	_, eciesPublic := h.bootstrap.GetECIESKeys()
@@ -485,14 +481,17 @@ func (h *PINHandler) HandlePINUnlock(ctx context.Context, msg *IncomingMessage) 
 		log.Debug().Str("owner_space", h.ownerSpace).Msg("Skipping auth hash verification (not set) - PIN validated via DEK derivation")
 	}
 
-	// Generate more UTKs
-	if err := h.bootstrap.GenerateMoreUTKs(3); err != nil {
+	// Generate more UTKs and return ONLY those to the app.
+	// Returning GetUnusedUTKs() here caused the app pool to balloon to ~14k
+	// entries because it appended the full vault pool on every unlock.
+	newPairs, err := h.bootstrap.GenerateMoreUTKs(3)
+	if err != nil {
 		log.Warn().Err(err).Msg("Failed to generate new UTKs")
 	}
 
 	response := PINUnlockResponse{
 		Status:  "unlocked",
-		NewUTKs: h.bootstrap.GetUnusedUTKs(),
+		NewUTKs: EncodeUTKs(newPairs),
 	}
 
 	// SECURITY: Issue full NATS credentials from the vault.
@@ -752,15 +751,16 @@ func (h *PINHandler) HandlePINChange(ctx context.Context, msg *IncomingMessage) 
 		return h.errorResponse(msg.GetID(), "encryption failed")
 	}
 
-	// Generate fresh UTKs
-	if err := h.bootstrap.GenerateMoreUTKs(5); err != nil {
+	// Generate fresh UTKs and return ONLY the new ones (not the full pool).
+	newPairs, err := h.bootstrap.GenerateMoreUTKs(5)
+	if err != nil {
 		log.Warn().Err(err).Msg("Failed to generate new UTKs")
 	}
 
 	response := PINChangeResponse{
 		Status:              "pin_changed",
 		EncryptedCredential: base64.StdEncoding.EncodeToString(encryptedCred),
-		NewUTKs:             h.bootstrap.GetUnusedUTKs(),
+		NewUTKs:             EncodeUTKs(newPairs),
 	}
 
 	responseBytes, err := json.Marshal(response)

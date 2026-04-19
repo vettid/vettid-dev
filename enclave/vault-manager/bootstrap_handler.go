@@ -325,18 +325,52 @@ func (h *BootstrapHandler) buildBootstrapResponse(requestID string, requiresPass
 }
 
 // GenerateMoreUTKs generates additional UTK pairs (called when running low)
-func (h *BootstrapHandler) GenerateMoreUTKs(count int) error {
+// and returns ONLY the freshly-generated ones so callers can send just the
+// new ones to the app — not the entire vault pool.
+//
+// Historical bug: the pin-unlock + authenticate handlers used to generate N
+// UTKs and then return GetUnusedUTKs(), which is the entire unused pool.
+// The app appended everything, duplicates accumulated, and after many
+// unlocks the app's UTK pool ballooned to tens of thousands (~14k observed),
+// blowing up encrypted-prefs decrypt time on every unlock.
+//
+// Callers encode either as a "id:base64(utk)" string (see EncodeUTKs) or as
+// UTKPublic objects (see EncodeUTKPublics) depending on the response shape.
+func (h *BootstrapHandler) GenerateMoreUTKs(count int) ([]*UTKPair, error) {
 	h.state.mu.Lock()
 	defer h.state.mu.Unlock()
 
+	newPairs := make([]*UTKPair, 0, count)
 	for i := 0; i < count; i++ {
 		pair, err := h.generateUTKPair()
 		if err != nil {
-			return err
+			return newPairs, err
 		}
 		h.state.utkPairs = append(h.state.utkPairs, pair)
+		newPairs = append(newPairs, pair)
 	}
-	return nil
+	return newPairs, nil
+}
+
+// EncodeUTKs encodes UTK pairs as "id:base64(utk)" strings (legacy wire format).
+func EncodeUTKs(pairs []*UTKPair) []string {
+	out := make([]string, 0, len(pairs))
+	for _, pair := range pairs {
+		out = append(out, pair.ID+":"+base64.StdEncoding.EncodeToString(pair.UTK))
+	}
+	return out
+}
+
+// EncodeUTKPublics encodes UTK pairs as structured UTKPublic objects.
+func EncodeUTKPublics(pairs []*UTKPair) []UTKPublic {
+	out := make([]UTKPublic, len(pairs))
+	for i, pair := range pairs {
+		out[i] = UTKPublic{
+			ID:        pair.ID,
+			PublicKey: base64.StdEncoding.EncodeToString(pair.UTK),
+		}
+	}
+	return out
 }
 
 // GetUnusedUTKs returns the list of unused UTKs as encoded strings

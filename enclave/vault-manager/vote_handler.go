@@ -159,8 +159,13 @@ func (h *VoteHandler) HandleCastVote(ctx context.Context, msg *IncomingMessage) 
 		Str("voting_key_prefix", votingPublicKeyB64[:16]+"...").
 		Msg("Vote signed successfully")
 
-	// Generate replacement UTKs
-	newUTKs := h.bootstrap.GetUnusedUTKs()
+	// Generate fresh replacement UTKs and return ONLY the new ones
+	// (not GetUnusedUTKs which returns the full vault pool).
+	newPairs, err := h.bootstrap.GenerateMoreUTKs(3)
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to generate replacement UTKs")
+	}
+	newUTKs := EncodeUTKs(newPairs)
 
 	// Build response
 	response := CastVoteResponse{
