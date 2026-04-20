@@ -443,6 +443,25 @@ func (h *MigrationHandler) HandleStart(ctx context.Context, msg *IncomingMessage
 		Str("version", configVersion).
 		Msg("Migration completed successfully — vault re-sealed for new enclave")
 
+	// Record the finalization on the VettID system connection so the
+	// user has a history entry showing they applied this update.
+	if h.auditLog != nil {
+		title := "Vault security update applied"
+		if configVersion != "" {
+			title = title + " (" + configVersion + ")"
+		}
+		refs := map[string]string{}
+		if configVersion != "" {
+			refs["version"] = configVersion
+		}
+		h.auditLog.AppendSystem(AuditEntry{
+			EventType: AuditTypeSystemMigrationFinalized,
+			Title:     title,
+			Body:      "The vault has been re-sealed for the new enclave version.",
+			Refs:      refs,
+		})
+	}
+
 	resp := MigrationStartResponse{
 		Success: true,
 		Message: "Vault security update applied successfully",
