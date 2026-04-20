@@ -475,6 +475,18 @@ type ConnectionInfo struct {
 	LastMessageDirection string `json:"last_message_direction,omitempty"` // "incoming" | "outgoing"
 	UnreadCount          int    `json:"unread_count"`
 
+	// Last activity — merges messages and calls so the card icon can
+	// reflect whatever the user did most recently, not just the last
+	// message. The app picks a glyph from Type + Subtype + Direction +
+	// Outcome. MissedCallCount is the number of unanswered incoming
+	// calls in the record so the Voice action button can show a badge.
+	LastActivityType      string `json:"last_activity_type,omitempty"`      // "message" | "call"
+	LastActivityAt        string `json:"last_activity_at,omitempty"`        // RFC3339
+	LastActivityDirection string `json:"last_activity_direction,omitempty"` // "incoming" | "outgoing"
+	LastActivitySubtype   string `json:"last_activity_subtype,omitempty"`   // for calls: "voice" | "video"
+	LastActivityOutcome   string `json:"last_activity_outcome,omitempty"`   // for calls: "completed" | "missed" | "rejected"
+	MissedCallCount       int    `json:"missed_call_count,omitempty"`
+
 	// Agent-specific fields (only present for agent connections)
 	AgentMetadata *AgentMetadata      `json:"agent_metadata,omitempty"`
 	Contract      *ConnectionContract `json:"contract,omitempty"`
@@ -1868,7 +1880,17 @@ func (h *ConnectionsHandler) HandleList(msg *IncomingMessage) (*OutgoingMessage,
 		}
 
 		// Load message preview and unread count for this connection
-		info.LastMessagePreview, info.LastMessageAt, info.LastMessageDirection, info.UnreadCount = h.getMessagePreview(connID)
+		activity := h.getLastActivity(connID)
+		info.LastMessagePreview = activity.MessagePreview
+		info.LastMessageAt = activity.MessageAt
+		info.LastMessageDirection = activity.MessageDirection
+		info.UnreadCount = activity.UnreadCount
+		info.LastActivityType = activity.Type
+		info.LastActivityAt = activity.At
+		info.LastActivityDirection = activity.Direction
+		info.LastActivitySubtype = activity.Subtype
+		info.LastActivityOutcome = activity.Outcome
+		info.MissedCallCount = activity.MissedCallCount
 
 		connections = append(connections, info)
 	}
@@ -3204,65 +3226,123 @@ func (h *ConnectionsHandler) loadPublishedProfileForPeer() map[string]interface{
 	return PublishedProfileToMap(profile)
 }
 
-// getMessagePreview loads the latest message preview, timestamp,
-// direction, and unread count for a connection. Used by HandleList to
-// populate connection cards.
-func (h *ConnectionsHandler) getMessagePreview(connectionID string) (preview string, lastAt string, direction string, unreadCount int) {
-	indexKey := fmt.Sprintf("messages/%s/_index", connectionID)
-	var messageIDs []string
-	indexData, err := h.storage.Get(indexKey)
-	if err != nil {
-		return "", "", "", 0
-	}
-	if json.Unmarshal(indexData, &messageIDs) != nil {
-		return "", "", "", 0
-	}
+// lastActivityInfo aggregates the bits HandleList needs to paint a
+// connection card's last-activity icon + badges.
+type lastActivityInfo struct {
+	// Message fields (still surfaced separately for the preview text).
+	MessagePreview   string
+	MessageAt        string // RFC3339
+	MessageDirection string // "incoming" | "outgoing"
+	UnreadCount      int    // unread incoming messages
 
-	var latestTime time.Time
-	var latestContent string
-	var latestDirection string
+	// Activity fields — whichever of (latest message, latest call) is
+	// most recent wins Type + At + Direction; the call-only fields
+	// (Subtype, Outcome) populate when Type == "call".
+	Type      string // "message" | "call"
+	At        string // RFC3339
+	Direction string // "incoming" | "outgoing"
+	Subtype   string // "voice" | "video"
+	Outcome   string // "completed" | "missed" | "rejected"
 
-	for _, msgID := range messageIDs {
-		key := fmt.Sprintf("messages/%s/%s", connectionID, msgID)
-		data, err := h.storage.Get(key)
-		if err != nil {
-			continue
-		}
-		var record MessageRecord
-		if json.Unmarshal(data, &record) != nil {
-			continue
-		}
+	MissedCallCount int
+}
 
-		// Track latest message
-		if record.CreatedAt.After(latestTime) {
-			latestTime = record.CreatedAt
-			if record.Direction == MessageDirectionIncoming {
-				latestContent = "Received a message"
-				latestDirection = "incoming"
-			} else {
-				latestContent = "You sent a message"
-				latestDirection = "outgoing"
+// getLastActivity walks the connection's message index and the global
+// call index to compute the latest-activity summary. Missed incoming
+// calls also contribute a count for the Voice action button's badge.
+func (h *ConnectionsHandler) getLastActivity(connectionID string) lastActivityInfo {
+	out := lastActivityInfo{}
+
+	// --- Messages ---
+	var latestMessageTime time.Time
+	if indexData, err := h.storage.Get(fmt.Sprintf("messages/%s/_index", connectionID)); err == nil {
+		var messageIDs []string
+		if json.Unmarshal(indexData, &messageIDs) == nil {
+			for _, msgID := range messageIDs {
+				data, err := h.storage.Get(fmt.Sprintf("messages/%s/%s", connectionID, msgID))
+				if err != nil {
+					continue
+				}
+				var rec MessageRecord
+				if json.Unmarshal(data, &rec) != nil {
+					continue
+				}
+				if rec.CreatedAt.After(latestMessageTime) {
+					latestMessageTime = rec.CreatedAt
+					if rec.Direction == MessageDirectionIncoming {
+						out.MessagePreview = "Received a message"
+						out.MessageDirection = "incoming"
+					} else {
+						out.MessagePreview = "You sent a message"
+						out.MessageDirection = "outgoing"
+					}
+				}
+				if rec.Direction == MessageDirectionIncoming && rec.Status != MessageStatusRead {
+					out.UnreadCount++
+				}
 			}
 		}
+	}
+	if !latestMessageTime.IsZero() {
+		if len(out.MessagePreview) > 100 {
+			out.MessagePreview = out.MessagePreview[:100] + "..."
+		}
+		out.MessageAt = latestMessageTime.Format(time.RFC3339)
+	}
 
-		// Count unread incoming messages
-		if record.Direction == MessageDirectionIncoming && record.Status != MessageStatusRead {
-			unreadCount++
+	// --- Calls ---
+	var latestCallTime time.Time
+	var latestCall *CallRecord
+	if indexData, err := h.storage.Get("calls/_index"); err == nil {
+		var callIDs []string
+		if json.Unmarshal(indexData, &callIDs) == nil {
+			for _, callID := range callIDs {
+				data, err := h.storage.Get("calls/" + callID)
+				if err != nil {
+					continue
+				}
+				var rec CallRecord
+				if json.Unmarshal(data, &rec) != nil {
+					continue
+				}
+				if rec.ConnectionID != connectionID {
+					continue
+				}
+				if rec.Direction == "incoming" && rec.Status == "missed" {
+					out.MissedCallCount++
+				}
+				started := time.Unix(rec.StartedAt, 0)
+				if started.After(latestCallTime) {
+					latestCallTime = started
+					r := rec
+					latestCall = &r
+				}
+			}
 		}
 	}
 
-	if latestContent != "" {
-		// Truncate preview
-		if len(latestContent) > 100 {
-			preview = latestContent[:100] + "..."
-		} else {
-			preview = latestContent
+	// --- Choose winner for Activity* fields ---
+	messageWins := !latestMessageTime.IsZero() && latestMessageTime.After(latestCallTime)
+	if messageWins {
+		out.Type = "message"
+		out.At = out.MessageAt
+		out.Direction = out.MessageDirection
+	} else if latestCall != nil {
+		out.Type = "call"
+		out.At = latestCallTime.Format(time.RFC3339)
+		out.Direction = latestCall.Direction
+		out.Subtype = latestCall.CallType
+		switch latestCall.Status {
+		case "answered":
+			out.Outcome = "completed"
+		case "missed":
+			out.Outcome = "missed"
+		case "rejected", "blocked":
+			out.Outcome = "rejected"
 		}
-		lastAt = latestTime.Format(time.RFC3339)
-		direction = latestDirection
 	}
 
-	return preview, lastAt, direction, unreadCount
+	return out
 }
 
 // generateInvitationCredentials creates scoped NATS credentials for an invitation.

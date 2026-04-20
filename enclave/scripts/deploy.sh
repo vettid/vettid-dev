@@ -321,10 +321,12 @@ do_status() {
         echo -e "  Migration: ${GREEN}None${NC}"
     fi
 
-    # Auto-finalize schedule
-    local rule_exists
-    rule_exists=$(aws events describe-rule --name "$FINALIZE_RULE_NAME" --region "$REGION" 2>/dev/null && echo "yes" || echo "no")
-    if [[ "$rule_exists" == "yes" ]]; then
+    # Auto-finalize schedule. The original idiom "(aws ... && echo yes
+    # || echo no)" captured the describe-rule JSON along with the
+    # literal "yes" in $rule_exists, so the comparison against "yes"
+    # was always false and the status line lied. Check the exit code
+    # instead.
+    if aws events describe-rule --name "$FINALIZE_RULE_NAME" --region "$REGION" >/dev/null 2>&1; then
         echo -e "  Auto-finalize: ${GREEN}Scheduled (every 5 min)${NC}"
     else
         echo "  Auto-finalize: Not scheduled"
