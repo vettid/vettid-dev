@@ -398,6 +398,10 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 	// trail too — the existing LogCallEvent / LogConnectionEvent call
 	// sites get audit coverage for free.
 	eventHandler.SetAuditLog(mh.auditLog)
+	// WalletHandler emits transfer.btc.sent inline; transfer.btc.received
+	// is appended in the inbound `btc-payment-receipt` case below using
+	// the same shared log.
+	mh.walletHandler.SetAuditLog(mh.auditLog)
 
 	return mh
 }
@@ -694,6 +698,34 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 		}
 		if mh.eventHandler != nil {
 			mh.eventHandler.LogEvent(ctx, &Event{EventType: EventTypeWalletTxReceived})
+		}
+		// Per-connection audit: record the inbound transfer. sender_guid
+		// travels in the receipt so we can resolve a local connection_id
+		// without asking NATS (accounts may differ across peers).
+		if mh.auditLog != nil {
+			var receipt BtcPaymentReceiptContent
+			if err := json.Unmarshal(msg.Payload, &receipt); err == nil && receipt.SenderGUID != "" {
+				connID := ""
+				if mh.notificationsHandler != nil {
+					connID = mh.notificationsHandler.FindConnectionByPeerGUID(receipt.SenderGUID)
+				}
+				if connID != "" {
+					mh.auditLog.Append(AuditEntry{
+						ConnectionID: connID,
+						PeerGUID:     receipt.SenderGUID,
+						EventType:    AuditTypeTransferBtcReceived,
+						Direction:    AuditDirectionInbound,
+						Title:        "Received BTC",
+						CreatedAt:    time.Now().Unix(),
+						Refs: map[string]string{
+							"tx_id": receipt.TxID,
+						},
+						Metadata: map[string]string{
+							"amount_sats": fmt.Sprintf("%d", receipt.AmountSats),
+						},
+					})
+				}
+			}
 		}
 		ack, _ := json.Marshal(map[string]string{"status": "received"})
 		return mh.successResponse(msg.GetID(), ack)

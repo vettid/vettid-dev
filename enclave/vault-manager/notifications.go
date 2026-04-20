@@ -318,7 +318,7 @@ func (h *NotificationsHandler) HandleIncomingProfileUpdate(ctx context.Context, 
 	// snapshot. Look up the local connection record by PeerGUID — each
 	// vault assigns its own connection_id so the sender's is useless.
 	if len(update.Profile) > 0 && update.FromOwnerSpace != "" {
-		if connID := h.findConnectionByPeerGUID(update.FromOwnerSpace); connID != "" {
+		if connID := h.FindConnectionByPeerGUID(update.FromOwnerSpace); connID != "" {
 			profileBytes, err := json.Marshal(update.Profile)
 			if err == nil {
 				if err := h.storage.Put("connections/"+connID+"/_peer_profile", profileBytes); err != nil {
@@ -350,9 +350,11 @@ func (h *NotificationsHandler) HandleIncomingProfileUpdate(ctx context.Context, 
 	return nil
 }
 
-// findConnectionByPeerGUID scans the connection index for a record whose
-// PeerGUID matches. Returns "" if no match.
-func (h *NotificationsHandler) findConnectionByPeerGUID(peerGUID string) string {
+// FindConnectionByPeerGUID scans the connection index for a record whose
+// PeerGUID matches. Returns "" if no match. Exported so other handlers
+// (e.g. BTC receive path) can resolve a local connection_id from a
+// peer-identified inbound message without duplicating the scan.
+func (h *NotificationsHandler) FindConnectionByPeerGUID(peerGUID string) string {
 	indexData, err := h.storage.Get("connections/_index")
 	if err != nil {
 		return ""

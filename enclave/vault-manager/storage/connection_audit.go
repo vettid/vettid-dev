@@ -49,6 +49,15 @@ type AuditCursor struct {
 	EntryID   string
 }
 
+// Retention policy (plan §8): cap at max entries OR 2 years, whichever
+// hits first. Trimming runs inline on append so the steady-state size
+// per connection stays bounded. Cheap in practice — the DELETE is a
+// no-op below cap and rarely deletes more than one row at a time.
+const (
+	auditMaxEntriesPerConnection = 10000
+	auditMaxAgeSeconds           = 2 * 365 * 24 * 60 * 60 // ~2 years
+)
+
 // AppendAuditEntry inserts one audit row. Safe to call from any handler
 // — does not increment the rollback counter because a missing audit
 // entry is less bad than a failing primary operation.
@@ -73,7 +82,40 @@ func (s *SQLiteStorage) AppendAuditEntry(r AuditEntryRecord) error {
 	if err != nil {
 		return fmt.Errorf("append audit entry: %w", err)
 	}
+
+	s.trimAuditEntriesLocked(r.ConnectionID)
 	return nil
+}
+
+// trimAuditEntriesLocked enforces the retention policy for one
+// connection. Caller holds s.mu. Runs two cheap DELETEs:
+//   - rows older than the age cap (uses idx_connection_audit_conn_created)
+//   - rows past the entry-count cap (anti-join on the top-N rowids)
+//
+// FTS5 content stays in sync via the AFTER DELETE trigger on the
+// connection_audit table.
+func (s *SQLiteStorage) trimAuditEntriesLocked(connectionID string) {
+	if connectionID == "" {
+		return
+	}
+	cutoff := time.Now().Unix() - auditMaxAgeSeconds
+	if _, err := s.db.Exec(
+		`DELETE FROM connection_audit WHERE connection_id = ? AND created_at < ?`,
+		connectionID, cutoff,
+	); err != nil {
+		// Trim failures are not fatal — the next append will try again.
+		return
+	}
+	_, _ = s.db.Exec(`
+		DELETE FROM connection_audit
+		WHERE connection_id = ?
+		  AND rowid NOT IN (
+		    SELECT rowid FROM connection_audit
+		    WHERE connection_id = ?
+		    ORDER BY created_at DESC, entry_id DESC
+		    LIMIT ?
+		  )
+	`, connectionID, connectionID, auditMaxEntriesPerConnection)
 }
 
 // ListAuditEntries returns a page of entries for a connection, newest

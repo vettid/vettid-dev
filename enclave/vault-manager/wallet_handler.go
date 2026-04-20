@@ -19,6 +19,7 @@ type WalletHandler struct {
 	eventHandler *EventHandler
 	publisher    *VsockPublisher
 	httpProxy    *HTTPProxy
+	auditLog     *AuditLog
 }
 
 // NewWalletHandler creates a new wallet handler
@@ -38,6 +39,13 @@ func NewWalletHandler(
 		publisher:    publisher,
 		httpProxy:    httpProxy,
 	}
+}
+
+// SetAuditLog wires in the per-connection audit trail. Called by
+// NewVaultMessageHandler after the shared AuditLog is constructed so
+// transfer.btc.* entries get recorded alongside the existing feed event.
+func (h *WalletHandler) SetAuditLog(a *AuditLog) {
+	h.auditLog = a
 }
 
 // Storage keys for wallet records
@@ -680,6 +688,7 @@ func (h *WalletHandler) HandleSendToConnection(ctx context.Context, msg *Incomin
 				TxID:       sendResp.TxID,
 				AmountSats: req.AmountSats,
 				FeeSats:    sendResp.FeeSats,
+				SenderGUID: h.ownerSpace,
 			}
 			receiptData, _ := json.Marshal(receipt)
 			if h.publisher != nil {
@@ -695,6 +704,27 @@ func (h *WalletHandler) HandleSendToConnection(ctx context.Context, msg *Incomin
 				}
 				appData, _ := json.Marshal(appMsg)
 				_ = h.publisher.PublishToApp(ctx, "message.btc-receipt", appData)
+			}
+
+			// Per-connection audit: record the outgoing transfer alongside
+			// the existing feed event. refs.tx_id lets the app open the
+			// wallet-tx detail screen directly from the history row.
+			if h.auditLog != nil {
+				h.auditLog.Append(AuditEntry{
+					ConnectionID: req.ConnectionID,
+					PeerGUID:     conn.PeerGUID,
+					EventType:    AuditTypeTransferBtcSent,
+					Direction:    AuditDirectionOutbound,
+					Title:        "Sent BTC",
+					CreatedAt:    time.Now().Unix(),
+					Refs: map[string]string{
+						"tx_id": sendResp.TxID,
+					},
+					Metadata: map[string]string{
+						"amount_sats": fmt.Sprintf("%d", req.AmountSats),
+						"fee_sats":    fmt.Sprintf("%d", sendResp.FeeSats),
+					},
+				})
 			}
 		}
 	}

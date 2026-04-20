@@ -271,6 +271,10 @@ type BtcPaymentReceiptContent struct {
 	AmountSats        int64  `json:"amount_sats"`
 	FeeSats           int64  `json:"fee_sats"`
 	PaymentRequestID  string `json:"payment_request_id,omitempty"` // References original request message
+	// SenderGUID identifies the payer so the receiving vault can resolve
+	// the local connection_id for its audit trail. Optional for backwards
+	// compatibility with older clients — receivers fall back to feed-only.
+	SenderGUID string `json:"sender_guid,omitempty"`
 }
 
 // BtcAddressContent is the content for a btc_address message
