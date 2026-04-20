@@ -62,7 +62,12 @@ func (c *ConnectionRecord) CapabilitiesOrDefault() ConnectionCapabilities {
 // every vault init. The system connection is read-only: it has no
 // peer_guid, no keys, no message-space topic, and
 // CapabilitiesOrDefault() reports read-only messaging only.
+//
+// Also sweeps the orphan record under the legacy "system/vettid" key
+// (which broke app-side nav routing) if present — one-shot migration.
 func (h *ConnectionsHandler) EnsureSystemConnection(ctx context.Context) error {
+	h.cleanupLegacySystemConnection()
+
 	key := "connections/" + SystemConnectionID
 	if data, err := h.storage.Get(key); err == nil && len(data) > 0 {
 		return nil // already provisioned
@@ -89,6 +94,45 @@ func (h *ConnectionsHandler) EnsureSystemConnection(ctx context.Context) error {
 	return nil
 }
 
+// cleanupLegacySystemConnection removes the orphaned record and index
+// entry produced by the v3 enclave, which used a "/" in the ID. Runs
+// every time EnsureSystemConnection is called; cheap no-op on vaults
+// that never had the old ID.
+func (h *ConnectionsHandler) cleanupLegacySystemConnection() {
+	legacyKey := "connections/" + legacySystemConnectionID
+	if _, err := h.storage.Get(legacyKey); err == nil {
+		if err := h.storage.Delete(legacyKey); err != nil {
+			log.Warn().Err(err).Msg("failed to delete legacy system connection record")
+		} else {
+			log.Info().Msg("removed legacy system connection record (system/vettid)")
+		}
+	}
+	// Strip the legacy id from the connection index if present.
+	indexData, err := h.storage.Get("connections/_index")
+	if err != nil {
+		return
+	}
+	var ids []string
+	if json.Unmarshal(indexData, &ids) != nil {
+		return
+	}
+	filtered := make([]string, 0, len(ids))
+	changed := false
+	for _, id := range ids {
+		if id == legacySystemConnectionID {
+			changed = true
+			continue
+		}
+		filtered = append(filtered, id)
+	}
+	if !changed {
+		return
+	}
+	if newIndexData, err := json.Marshal(filtered); err == nil {
+		_ = h.storage.Put("connections/_index", newIndexData)
+	}
+}
+
 // --- Storage types ---
 
 // Connection type constants
@@ -103,7 +147,17 @@ const (
 // VettID system connection. All service-originated events (guides,
 // migration prompts, vote notifications, security alerts) append to
 // its audit trail.
-const SystemConnectionID = "system/vettid"
+//
+// Must be a single path segment (no "/") — it travels through app-side
+// nav routes like connections/{connectionId} and Android's NavController
+// treats "/" as a path boundary.
+const SystemConnectionID = "system-vettid"
+
+// legacySystemConnectionID is the first-shipped ID for the system
+// connection; it contained a "/" which broke nav routing. Vaults
+// provisioned under PCR0 v3 have an orphan record at this key —
+// EnsureSystemConnection cleans it up on next call.
+const legacySystemConnectionID = "system/vettid"
 
 // ConnectionCapabilities declares which user-visible features a
 // connection supports. Peer connections default to all true; agents
