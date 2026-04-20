@@ -13,16 +13,13 @@ import (
 type AuditHandler struct {
 	ownerSpace string
 	auditLog   *AuditLog
-	backfill   *AuditBackfiller
 }
 
-// NewAuditHandler constructs the handler. A non-nil AuditLog is
-// required; the backfiller may be nil until backfill support lands.
-func NewAuditHandler(ownerSpace string, auditLog *AuditLog, backfill *AuditBackfiller) *AuditHandler {
+// NewAuditHandler constructs the handler. A non-nil AuditLog is required.
+func NewAuditHandler(ownerSpace string, auditLog *AuditLog) *AuditHandler {
 	return &AuditHandler{
 		ownerSpace: ownerSpace,
 		auditLog:   auditLog,
-		backfill:   backfill,
 	}
 }
 
@@ -73,17 +70,6 @@ func (h *AuditHandler) HandleList(msg *IncomingMessage) (*OutgoingMessage, error
 		return h.errorResponse(msg.GetID(), "connection_id is required")
 	}
 
-	// Lazy backfill — first read of a connection's audit synthesizes
-	// historical entries from messages + feed + lifecycle so existing
-	// connections aren't blank on the first load after the feature
-	// ships. Noop on subsequent reads.
-	if h.backfill != nil {
-		if err := h.backfill.EnsureBackfilled(req.ConnectionID); err != nil {
-			log.Warn().Err(err).Str("connection_id", req.ConnectionID).
-				Msg("audit backfill failed — continuing with whatever's already indexed")
-		}
-	}
-
 	entries, cursor, err := h.auditLog.List(storage.AuditListOptions{
 		ConnectionID:      req.ConnectionID,
 		Limit:             req.Limit,
@@ -110,13 +96,6 @@ func (h *AuditHandler) HandleSearch(msg *IncomingMessage) (*OutgoingMessage, err
 	}
 	if req.ConnectionID == "" {
 		return h.errorResponse(msg.GetID(), "connection_id is required")
-	}
-
-	if h.backfill != nil {
-		if err := h.backfill.EnsureBackfilled(req.ConnectionID); err != nil {
-			log.Warn().Err(err).Str("connection_id", req.ConnectionID).
-				Msg("audit backfill failed — continuing with whatever's already indexed")
-		}
 	}
 
 	entries, cursor, err := h.auditLog.Search(storage.AuditSearchOptions{

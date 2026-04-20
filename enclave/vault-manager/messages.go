@@ -382,14 +382,10 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 	// Wire up migration handler's persist callback so it can save vault state after re-seal
 	migrationHandler.SetPersistFn(mh.persistVaultStateToS3)
 
-	// Audit read-path wiring: backfiller needs the log to replay into,
-	// handler needs both. Done after the struct literal because
-	// NewAuditBackfiller takes the fully-built AuditLog.
-	mh.auditHandler = NewAuditHandler(
-		ownerSpace,
-		mh.auditLog,
-		NewAuditBackfiller(ownerSpace, storage, mh.auditLog),
-	)
+	// Audit read-path wiring: handler reads, log writes. No backfill —
+	// connections created before this feature shipped will have empty
+	// history by design.
+	mh.auditHandler = NewAuditHandler(ownerSpace, mh.auditLog)
 	// Per-handler audit wiring. Each handler that produces
 	// user-visible events gets a reference to the same AuditLog so
 	// write points stay local rather than centralized.
