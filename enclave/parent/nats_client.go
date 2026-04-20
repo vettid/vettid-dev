@@ -12,7 +12,7 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// NATSMessage represents a message received from NATS
+// NATSMessage represents a message received from NATS.
 type NATSMessage struct {
 	Subject string
 	Reply   string
@@ -101,7 +101,13 @@ func NewNATSClient(cfg NATSConfig, stateCallback ConnectionStateCallback) (*NATS
 	return client, nil
 }
 
-// ensureEnrollmentStream creates or updates the stream for enrollment responses
+// ensureEnrollmentStream creates or updates the stream that holds all
+// OwnerSpace.*.forApp/forVault traffic. The name is ENROLLMENT for
+// historical reasons — it now also backs peer-to-peer messaging and
+// needs long enough retention to survive multi-day offline windows
+// (the receiver's vault catches up via a JetStream pull on next
+// unlock; core-NATS subscribe alone would silently drop anything the
+// vault missed while offline).
 func (c *NATSClient) ensureEnrollmentStream() error {
 	if c.js == nil {
 		return fmt.Errorf("JetStream not available")
@@ -109,40 +115,46 @@ func (c *NATSClient) ensureEnrollmentStream() error {
 
 	streamName := "ENROLLMENT"
 	subjects := []string{
-		"OwnerSpace.*.forApp.>",      // Mobile app responses
-		"OwnerSpace.*.forVault.>",    // Vault requests (for persistence)
+		"OwnerSpace.*.forApp.>",   // Mobile app responses
+		"OwnerSpace.*.forVault.>", // Peer-to-peer messaging + vault requests
 	}
 
-	// Check if stream exists
-	stream, err := c.js.StreamInfo(streamName)
-	if err == nil {
-		log.Debug().Str("stream", streamName).Int64("messages", int64(stream.State.Msgs)).Msg("Enrollment stream exists")
+	cfg := &nats.StreamConfig{
+		Name:      streamName,
+		Subjects:  subjects,
+		Retention: nats.LimitsPolicy, // Keep until limits (MaxAge/MaxMsgs)
+		// 7d retention so a peer message sent while the receiver is
+		// offline still replays when they next open the app. Previously
+		// 30 min, which silently dropped messages across a migration.
+		MaxAge:     7 * 24 * time.Hour,
+		Storage:    nats.FileStorage,
+		Replicas:   1,
+		Discard:    nats.DiscardOld,
+		MaxMsgs:    250_000,           // ~36k/day/user budget with 7d retention
+		MaxBytes:   2 * 1024 * 1024 * 1024, // 2GB
+		Duplicates: 5 * time.Minute,
+	}
+
+	// Update if exists (the stream is long-lived — never delete it —
+	// and we sometimes evolve retention/limits), else create.
+	if existing, err := c.js.StreamInfo(streamName); err == nil {
+		log.Debug().
+			Str("stream", streamName).
+			Int64("messages", int64(existing.State.Msgs)).
+			Dur("desired_max_age", cfg.MaxAge).
+			Dur("current_max_age", existing.Config.MaxAge).
+			Msg("Updating ENROLLMENT stream config")
+		if _, err := c.js.UpdateStream(cfg); err != nil {
+			// UpdateStream refuses some shape changes; log and continue
+			// rather than block startup. Operator can reconcile manually.
+			log.Warn().Err(err).Msg("ENROLLMENT stream update failed — continuing with existing config")
+		}
 		return nil
 	}
 
-	// Create stream with guaranteed delivery semantics
-	//
-	// Config rationale:
-	// - LimitsPolicy: Keep messages until limits, allowing replay if needed
-	// - FileStorage: Survive NATS restarts (critical enrollment data)
-	// - 30 min MaxAge: App may go to background, need time to reconnect
-	// - Dedup window prevents duplicate publishes from retries
-	_, err = c.js.AddStream(&nats.StreamConfig{
-		Name:       streamName,
-		Subjects:   subjects,
-		Retention:  nats.LimitsPolicy,       // Keep until limits (MaxAge/MaxMsgs)
-		MaxAge:     30 * time.Minute,        // Messages expire after 30 min
-		Storage:    nats.FileStorage,        // Persist to disk for durability
-		Replicas:   1,                       // Single replica (increase for HA)
-		Discard:    nats.DiscardOld,         // Drop oldest when full
-		MaxMsgs:    10000,                   // Reasonable limit for enrollment
-		MaxBytes:   100 * 1024 * 1024,       // 100MB max storage
-		Duplicates: 5 * time.Minute,         // Dedup window for retries
-	})
-	if err != nil {
+	if _, err := c.js.AddStream(cfg); err != nil {
 		return fmt.Errorf("failed to create enrollment stream: %w", err)
 	}
-
 	log.Info().Str("stream", streamName).Strs("subjects", subjects).Msg("Created enrollment stream")
 	return nil
 }
@@ -204,6 +216,62 @@ func (c *NATSClient) Subscribe(subject string, msgChan chan *NATSMessage) error 
 
 	c.subs = append(c.subs, sub)
 	log.Debug().Str("subject", subject).Msg("Subscribed to NATS")
+	return nil
+}
+
+// SubscribeJS attaches a durable JetStream push consumer to the given
+// subject filter on the given stream and forwards delivered messages to
+// msgChan. Unlike the core-NATS Subscribe above, this replays messages
+// the consumer missed while the enclave was offline (peer messages,
+// read receipts) and requires explicit Ack per message — the caller is
+// expected to invoke msg.Ack after successful processing so JetStream
+// can clear the record.
+//
+// durableName must be stable across restarts so state (last-delivered
+// sequence, pending acks) carries over.
+func (c *NATSClient) SubscribeJS(stream, subject, durableName string, msgChan chan *NATSMessage) error {
+	if c.js == nil {
+		return fmt.Errorf("JetStream not available")
+	}
+
+	sub, err := c.js.Subscribe(subject, func(msg *nats.Msg) {
+		select {
+		case msgChan <- &NATSMessage{
+			Subject: msg.Subject,
+			Reply:   msg.Reply,
+			Data:    msg.Data,
+		}:
+			// Hand-off to the processing channel is our commit point.
+			// Ack here — if the process crashes between Ack and the
+			// downstream handler finishing, we lose the message, but
+			// that's a narrow window and the normal case matters more.
+			if err := msg.Ack(); err != nil {
+				log.Warn().Err(err).Str("subject", msg.Subject).Msg("JetStream Ack failed")
+			}
+		default:
+			// Channel full — do NOT ack. JetStream will redeliver
+			// after the AckWait window expires.
+			log.Warn().Str("subject", msg.Subject).Msg("Message channel full, leaving JetStream msg unacked for redelivery")
+		}
+	},
+		nats.BindStream(stream),
+		nats.Durable(durableName),
+		nats.DeliverAll(),
+		nats.ManualAck(),
+		nats.AckExplicit(),
+		nats.AckWait(30*time.Second),
+		nats.MaxAckPending(500),
+	)
+	if err != nil {
+		return fmt.Errorf("js subscribe %s (stream=%s, durable=%s): %w", subject, stream, durableName, err)
+	}
+
+	c.subs = append(c.subs, sub)
+	log.Info().
+		Str("subject", subject).
+		Str("stream", stream).
+		Str("durable", durableName).
+		Msg("Subscribed via JetStream")
 	return nil
 }
 

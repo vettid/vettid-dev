@@ -174,11 +174,20 @@ func (p *ParentProcess) routeNATSToEnclave(ctx context.Context) error {
 
 	msgChan := make(chan *NATSMessage, 1000) // Increased from 100 to prevent drops under load
 
-	// Subscribe to messages from mobile apps to vaults (includes call signaling)
-	if err := p.natsClient.Subscribe("OwnerSpace.*.forVault.>", msgChan); err != nil {
-		return fmt.Errorf("failed to subscribe to OwnerSpace.*.forVault.>: %w", err)
+	// JetStream durable consumer for forVault messages. Core-NATS
+	// Subscribe would drop anything published while the enclave was
+	// offline — which is why peer messages sent before the receiver's
+	// vault came back up from a migration were silently lost. The
+	// durable name is stable per enclave so state (last-delivered
+	// sequence, pending acks) carries across restarts.
+	enclaveDurable := fmt.Sprintf("enclave-%s-forVault", sanitizeDurableID(p.enclaveID))
+	if err := p.natsClient.SubscribeJS("ENROLLMENT", "OwnerSpace.*.forVault.>", enclaveDurable, msgChan); err != nil {
+		return fmt.Errorf("failed to JS-subscribe to OwnerSpace.*.forVault.>: %w", err)
 	}
-	log.Debug().Str("subject", "OwnerSpace.*.forVault.>").Msg("Subscribed to NATS")
+	log.Info().
+		Str("subject", "OwnerSpace.*.forVault.>").
+		Str("durable", enclaveDurable).
+		Msg("Subscribed to forVault traffic via JetStream (replays on reconnect)")
 
 	// === Multi-tenant Control Topic Architecture ===
 	// Subscribe to global control commands (all enclaves)
@@ -1189,6 +1198,30 @@ func hasSubjectSuffix(subject, suffix string) bool {
 		return false
 	}
 	return subject[len(subject)-len(suffix):] == suffix
+}
+
+// sanitizeDurableID strips characters NATS JetStream rejects in
+// durable-consumer names (anything other than a-z, A-Z, 0-9, -, _).
+// Produces a stable identifier from an enclave id that may contain
+// dots, spaces, slashes, etc.
+func sanitizeDurableID(raw string) string {
+	out := make([]byte, 0, len(raw))
+	for i := 0; i < len(raw); i++ {
+		c := raw[i]
+		switch {
+		case c >= 'a' && c <= 'z',
+			c >= 'A' && c <= 'Z',
+			c >= '0' && c <= '9',
+			c == '-', c == '_':
+			out = append(out, c)
+		default:
+			out = append(out, '_')
+		}
+	}
+	if len(out) == 0 {
+		return "default"
+	}
+	return string(out)
 }
 
 // buildAppResponseSubject converts a forVault subject to a forApp response subject
