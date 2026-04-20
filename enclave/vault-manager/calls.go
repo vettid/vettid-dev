@@ -56,8 +56,10 @@ type CallRecord struct {
 	CallID       string        `json:"call_id"`
 	CallerID     string        `json:"caller_id"`
 	CalleeID     string        `json:"callee_id"`
-	Direction    string        `json:"direction"` // "incoming" or "outgoing"
-	Status       string        `json:"status"`    // "initiated", "answered", "missed", "rejected", "blocked"
+	ConnectionID string        `json:"connection_id,omitempty"` // set when we have a matching local connection
+	CallType     string        `json:"call_type,omitempty"`     // "voice" or "video"
+	Direction    string        `json:"direction"`               // "incoming" or "outgoing"
+	Status       string        `json:"status"`                  // "initiated", "answered", "missed", "rejected", "blocked"
 	StartedAt    int64         `json:"started_at"`
 	AnsweredAt   int64         `json:"answered_at,omitempty"`
 	EndedAt      int64         `json:"ended_at,omitempty"`
@@ -362,14 +364,23 @@ func (ch *CallHandler) HandleInitiateCall(ctx context.Context, msg *IncomingMess
 	}
 	ch.activeCalls[callID] = activeCall
 
+	// Pull call_type up here so it lands on the record and is
+	// available to the audit-log write below.
+	callType := ""
+	if req.Metadata != nil {
+		callType = req.Metadata["call_type"]
+	}
+
 	// Create call record
 	record := &CallRecord{
-		CallID:    callID,
-		CallerID:  ch.ownerSpace,
-		CalleeID:  conn.PeerGUID,
-		Direction: "outgoing",
-		Status:    "initiated",
-		StartedAt: now.Unix(),
+		CallID:       callID,
+		CallerID:     ch.ownerSpace,
+		CalleeID:     conn.PeerGUID,
+		ConnectionID: conn.ConnectionID,
+		CallType:     callType,
+		Direction:    "outgoing",
+		Status:       "initiated",
+		StartedAt:    now.Unix(),
 	}
 	if err := ch.storeCallRecord(ctx, record); err != nil {
 		log.Error().Err(err).Msg("Failed to store call record")
@@ -391,11 +402,6 @@ func (ch *CallHandler) HandleInitiateCall(ctx context.Context, msg *IncomingMess
 			}
 		}
 		callerDisplayName = full
-	}
-
-	callType := ""
-	if req.Metadata != nil {
-		callType = req.Metadata["call_type"]
 	}
 
 	// Send initiate event to peer vault
@@ -423,10 +429,14 @@ func (ch *CallHandler) HandleInitiateCall(ctx context.Context, msg *IncomingMess
 		Str("peer", conn.PeerGUID).
 		Msg("Outgoing call initiated")
 
-	// Log event for audit
+	// Log event for audit — connection_id + call_type drive the audit
+	// mirror so the call lands in the per-connection history with the
+	// right voice/video taxonomy.
 	if ch.eventHandler != nil {
 		ch.eventHandler.LogCallEvent(ctx, EventTypeCallOutgoing, callID, conn.PeerGUID, "Outgoing call", map[string]string{
-			"peer_alias": conn.PeerAlias,
+			"peer_alias":    conn.PeerAlias,
+			"connection_id": conn.ConnectionID,
+			"call_type":     callType,
 		})
 	}
 
@@ -1050,10 +1060,13 @@ func (ch *CallHandler) handleCallInitiate(ctx context.Context, event *CallEvent)
 			log.Error().Err(err).Msg("Failed to store blocked call record")
 		}
 
-		// Log blocked call event for audit
+		// Log blocked call event for audit. Resolve local connection
+		// if any — blocked callers may still be a known connection.
 		if ch.eventHandler != nil {
 			ch.eventHandler.LogCallEvent(ctx, EventTypeCallBlocked, event.CallID, event.CallerID, "Blocked call", map[string]string{
-				"reason": reason,
+				"reason":        reason,
+				"connection_id": ch.findConnectionIDByPeerGUID(event.CallerID),
+				"call_type":     event.CallType,
 			})
 		}
 
@@ -1092,14 +1105,18 @@ func (ch *CallHandler) handleCallInitiate(ctx context.Context, event *CallEvent)
 
 	ch.activeCalls[event.CallID] = activeCall
 
-	// 3. Log incoming call to storage
+	// 3. Log incoming call to storage. Resolve the local connection_id
+	// so the record + audit trail can be connection-scoped.
+	connectionID := ch.findConnectionIDByPeerGUID(event.CallerID)
 	record := &CallRecord{
-		CallID:    event.CallID,
-		CallerID:  event.CallerID,
-		CalleeID:  ch.ownerSpace,
-		Direction: "incoming",
-		Status:    "initiated",
-		StartedAt: event.Timestamp,
+		CallID:       event.CallID,
+		CallerID:     event.CallerID,
+		CalleeID:     ch.ownerSpace,
+		ConnectionID: connectionID,
+		CallType:     event.CallType,
+		Direction:    "incoming",
+		Status:       "initiated",
+		StartedAt:    event.Timestamp,
 	}
 	if err := ch.storeCallRecord(ctx, record); err != nil {
 		log.Error().Err(err).Msg("Failed to store call record")
@@ -1114,7 +1131,10 @@ func (ch *CallHandler) handleCallInitiate(ctx context.Context, event *CallEvent)
 
 	// 4. Log incoming call event (will appear in feed with accept/decline action)
 	if ch.eventHandler != nil {
-		ch.eventHandler.LogCallEvent(ctx, EventTypeCallIncoming, event.CallID, event.CallerID, "Incoming call", nil)
+		ch.eventHandler.LogCallEvent(ctx, EventTypeCallIncoming, event.CallID, event.CallerID, "Incoming call", map[string]string{
+			"connection_id": connectionID,
+			"call_type":     event.CallType,
+		})
 	}
 
 	// 5. Forward to owner's app
@@ -1229,9 +1249,16 @@ func (ch *CallHandler) handleCallCancel(ctx context.Context, event *CallEvent) e
 
 	log.Info().Str("call_id", event.CallID).Msg("Call cancelled")
 
-	// Log missed call event (will appear in feed)
+	// Log missed call event (will appear in feed). Pull connection_id
+	// + call_type off the stored record so the audit entry is scoped
+	// correctly.
 	if ch.eventHandler != nil {
-		ch.eventHandler.LogCallEvent(ctx, EventTypeCallMissed, event.CallID, event.CallerID, "Missed call", nil)
+		meta := map[string]string{}
+		if rec, err := ch.loadCallRecord(event.CallID); err == nil && rec != nil {
+			meta["connection_id"] = rec.ConnectionID
+			meta["call_type"] = rec.CallType
+		}
+		ch.eventHandler.LogCallEvent(ctx, EventTypeCallMissed, event.CallID, event.CallerID, "Missed call", meta)
 	}
 
 	eventData, err := json.Marshal(event)
@@ -1258,11 +1285,19 @@ func (ch *CallHandler) handleCallEnd(ctx context.Context, event *CallEvent) erro
 
 	log.Info().Str("call_id", event.CallID).Msg("Call ended")
 
-	// Log call ended event for audit
+	// Log call ended event for audit — connection_id + call_type come
+	// from the stored record so the per-connection history shows the
+	// right voice/video taxonomy with a duration.
 	if ch.eventHandler != nil {
-		ch.eventHandler.LogCallEvent(ctx, EventTypeCallEnded, event.CallID, event.CallerID, "Call ended", map[string]string{
-			"duration_secs": fmt.Sprintf("%d", durationSecs),
-		})
+		meta := map[string]string{
+			"duration_secs":    fmt.Sprintf("%d", durationSecs),
+			"duration_seconds": fmt.Sprintf("%d", durationSecs),
+		}
+		if rec, err := ch.loadCallRecord(event.CallID); err == nil && rec != nil {
+			meta["connection_id"] = rec.ConnectionID
+			meta["call_type"] = rec.CallType
+		}
+		ch.eventHandler.LogCallEvent(ctx, EventTypeCallEnded, event.CallID, event.CallerID, "Call ended", meta)
 	}
 
 	eventData, err := json.Marshal(event)
@@ -1336,6 +1371,56 @@ func (ch *CallHandler) publishCallEventToVault(ctx context.Context, targetOwnerS
 	}
 
 	return ch.publisher.PublishToVault(ctx, targetOwnerSpace, fmt.Sprintf("call.%s", event.EventType), eventData)
+}
+
+// loadCallRecord returns the stored CallRecord for a given call_id, or
+// (nil, error) if not found. Used by the audit mirror on call-end and
+// missed-call paths where only the CallID is in scope.
+func (ch *CallHandler) loadCallRecord(callID string) (*CallRecord, error) {
+	if callID == "" {
+		return nil, fmt.Errorf("empty call_id")
+	}
+	data, err := ch.storage.Get("calls/" + callID)
+	if err != nil {
+		return nil, err
+	}
+	var record CallRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		return nil, err
+	}
+	return &record, nil
+}
+
+// findConnectionIDByPeerGUID walks the connection index and returns the
+// local connection_id whose PeerGUID matches. "" when no match. Used
+// on incoming-call paths where the peer GUID arrives from the wire but
+// the local connection scope has to be resolved by the vault.
+func (ch *CallHandler) findConnectionIDByPeerGUID(peerGUID string) string {
+	if peerGUID == "" {
+		return ""
+	}
+	indexData, err := ch.storage.Get("connections/_index")
+	if err != nil {
+		return ""
+	}
+	var connectionIDs []string
+	if err := json.Unmarshal(indexData, &connectionIDs); err != nil {
+		return ""
+	}
+	for _, connID := range connectionIDs {
+		data, err := ch.storage.Get("connections/" + connID)
+		if err != nil {
+			continue
+		}
+		var rec ConnectionRecord
+		if err := json.Unmarshal(data, &rec); err != nil {
+			continue
+		}
+		if rec.PeerGUID == peerGUID {
+			return connID
+		}
+	}
+	return ""
 }
 
 // storeCallRecord stores a call record to JetStream
@@ -1483,9 +1568,10 @@ func (ch *CallHandler) HandleServiceCallInitiate(ctx context.Context, msg *Incom
 			displayName = conn.ServiceProfile.ServiceName
 		}
 		ch.eventHandler.LogCallEvent(ctx, EventTypeCallIncoming, req.CallID, conn.ServiceGUID, "Incoming service call", map[string]string{
-			"service_name": conn.ServiceProfile.ServiceName,
-			"call_type":    req.CallType,
-			"display_name": displayName,
+			"service_name":  conn.ServiceProfile.ServiceName,
+			"call_type":     req.CallType,
+			"display_name":  displayName,
+			"connection_id": conn.ConnectionID,
 		})
 	}
 
@@ -1671,9 +1757,17 @@ func (ch *CallHandler) HandleServiceCallEnd(ctx context.Context, msg *IncomingMe
 
 	// Log call ended event
 	if ch.eventHandler != nil {
-		ch.eventHandler.LogCallEvent(ctx, EventTypeCallEnded, req.CallID, conn.ServiceGUID, "Service call ended", map[string]string{
-			"reason": req.Reason,
-		})
+		endMeta := map[string]string{
+			"reason":        req.Reason,
+			"connection_id": conn.ConnectionID,
+		}
+		if rec, err := ch.loadCallRecord(req.CallID); err == nil && rec != nil {
+			endMeta["call_type"] = rec.CallType
+			if rec.DurationSecs > 0 {
+				endMeta["duration_seconds"] = fmt.Sprintf("%d", rec.DurationSecs)
+			}
+		}
+		ch.eventHandler.LogCallEvent(ctx, EventTypeCallEnded, req.CallID, conn.ServiceGUID, "Service call ended", endMeta)
 	}
 
 	// Notify app
