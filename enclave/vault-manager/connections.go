@@ -416,9 +416,10 @@ type ConnectionInfo struct {
 	PeerVerifications   []string `json:"peer_verifications,omitempty"`
 
 	// Message preview (for connection card display)
-	LastMessagePreview string `json:"last_message_preview,omitempty"`
-	LastMessageAt      string `json:"last_message_at,omitempty"`
-	UnreadCount        int    `json:"unread_count"`
+	LastMessagePreview   string `json:"last_message_preview,omitempty"`
+	LastMessageAt        string `json:"last_message_at,omitempty"`
+	LastMessageDirection string `json:"last_message_direction,omitempty"` // "incoming" | "outgoing"
+	UnreadCount          int    `json:"unread_count"`
 
 	// Agent-specific fields (only present for agent connections)
 	AgentMetadata *AgentMetadata      `json:"agent_metadata,omitempty"`
@@ -1813,7 +1814,7 @@ func (h *ConnectionsHandler) HandleList(msg *IncomingMessage) (*OutgoingMessage,
 		}
 
 		// Load message preview and unread count for this connection
-		info.LastMessagePreview, info.LastMessageAt, info.UnreadCount = h.getMessagePreview(connID)
+		info.LastMessagePreview, info.LastMessageAt, info.LastMessageDirection, info.UnreadCount = h.getMessagePreview(connID)
 
 		connections = append(connections, info)
 	}
@@ -3149,21 +3150,23 @@ func (h *ConnectionsHandler) loadPublishedProfileForPeer() map[string]interface{
 	return PublishedProfileToMap(profile)
 }
 
-// getMessagePreview loads the latest message preview, timestamp, and unread count
-// for a connection. Used by HandleList to populate connection cards.
-func (h *ConnectionsHandler) getMessagePreview(connectionID string) (preview string, lastAt string, unreadCount int) {
+// getMessagePreview loads the latest message preview, timestamp,
+// direction, and unread count for a connection. Used by HandleList to
+// populate connection cards.
+func (h *ConnectionsHandler) getMessagePreview(connectionID string) (preview string, lastAt string, direction string, unreadCount int) {
 	indexKey := fmt.Sprintf("messages/%s/_index", connectionID)
 	var messageIDs []string
 	indexData, err := h.storage.Get(indexKey)
 	if err != nil {
-		return "", "", 0
+		return "", "", "", 0
 	}
 	if json.Unmarshal(indexData, &messageIDs) != nil {
-		return "", "", 0
+		return "", "", "", 0
 	}
 
 	var latestTime time.Time
 	var latestContent string
+	var latestDirection string
 
 	for _, msgID := range messageIDs {
 		key := fmt.Sprintf("messages/%s/%s", connectionID, msgID)
@@ -3181,8 +3184,10 @@ func (h *ConnectionsHandler) getMessagePreview(connectionID string) (preview str
 			latestTime = record.CreatedAt
 			if record.Direction == MessageDirectionIncoming {
 				latestContent = "Received a message"
+				latestDirection = "incoming"
 			} else {
 				latestContent = "You sent a message"
+				latestDirection = "outgoing"
 			}
 		}
 
@@ -3200,9 +3205,10 @@ func (h *ConnectionsHandler) getMessagePreview(connectionID string) (preview str
 			preview = latestContent
 		}
 		lastAt = latestTime.Format(time.RFC3339)
+		direction = latestDirection
 	}
 
-	return preview, lastAt, unreadCount
+	return preview, lastAt, direction, unreadCount
 }
 
 // generateInvitationCredentials creates scoped NATS credentials for an invitation.
