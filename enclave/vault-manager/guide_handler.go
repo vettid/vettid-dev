@@ -16,6 +16,7 @@ type GuideHandler struct {
 	ownerSpace   string
 	storage      *EncryptedStorage
 	eventHandler *EventHandler
+	auditLog     *AuditLog
 }
 
 // NewGuideHandler creates a new guide handler
@@ -26,6 +27,10 @@ func NewGuideHandler(ownerSpace string, storage *EncryptedStorage, eventHandler 
 		eventHandler: eventHandler,
 	}
 }
+
+// SetAuditLog wires the per-connection audit trail so guides land on
+// the VettID system connection alongside the legacy feed event.
+func (gh *GuideHandler) SetAuditLog(a *AuditLog) { gh.auditLog = a }
 
 // GuideSyncRequest is sent by the app with its full guide catalog
 type GuideSyncRequest struct {
@@ -167,6 +172,19 @@ func (gh *GuideHandler) createGuideEvent(ctx context.Context, guide GuideDef, is
 
 	if err := gh.eventHandler.LogEvent(ctx, event); err != nil {
 		return "", fmt.Errorf("failed to log guide event: %w", err)
+	}
+
+	// Mirror to the VettID system connection so the unified feed picks
+	// the guide up as a connection event. The legacy feed event stays
+	// for now — removal happens once the new view ships.
+	if gh.auditLog != nil {
+		gh.auditLog.AppendSystem(AuditEntry{
+			EventType: AuditTypeSystemGuidePublished,
+			Title:     title,
+			Body:      guide.Message,
+			Refs:      map[string]string{"guide_id": guide.GuideID},
+			Metadata:  metadata,
+		})
 	}
 
 	return event.EventID, nil

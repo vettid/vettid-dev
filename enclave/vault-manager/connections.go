@@ -43,6 +43,52 @@ func (h *ConnectionsHandler) SetSealerProxy(sp *SealerProxy) {
 	h.sealerProxy = sp
 }
 
+// CapabilitiesOrDefault returns the connection's capabilities, falling
+// back to peer defaults for pre-feature records that have no stored
+// capability block. The system connection always returns its read-only
+// set regardless of what's persisted.
+func (c *ConnectionRecord) CapabilitiesOrDefault() ConnectionCapabilities {
+	if c.ConnectionType == ConnectionTypeSystem {
+		return SystemCapabilities()
+	}
+	if c.Capabilities != nil {
+		return *c.Capabilities
+	}
+	return DefaultPeerCapabilities()
+}
+
+// EnsureSystemConnection creates the per-vault VettID system connection
+// on first call and is a noop afterwards. Idempotent — safe to run on
+// every vault init. The system connection is read-only: it has no
+// peer_guid, no keys, no message-space topic, and
+// CapabilitiesOrDefault() reports read-only messaging only.
+func (h *ConnectionsHandler) EnsureSystemConnection(ctx context.Context) error {
+	key := "connections/" + SystemConnectionID
+	if data, err := h.storage.Get(key); err == nil && len(data) > 0 {
+		return nil // already provisioned
+	}
+
+	caps := SystemCapabilities()
+	record := ConnectionRecord{
+		ConnectionID:   SystemConnectionID,
+		ConnectionType: ConnectionTypeSystem,
+		PeerAlias:      "VettID",
+		Status:         "active",
+		CreatedAt:      time.Now(),
+		Capabilities:   &caps,
+	}
+	data, err := json.Marshal(&record)
+	if err != nil {
+		return fmt.Errorf("marshal system connection: %w", err)
+	}
+	if err := h.storage.Put(key, data); err != nil {
+		return fmt.Errorf("store system connection: %w", err)
+	}
+	h.addToConnectionIndex(SystemConnectionID)
+	log.Info().Str("owner_space", h.ownerSpace).Msg("VettID system connection provisioned")
+	return nil
+}
+
 // --- Storage types ---
 
 // Connection type constants
@@ -50,7 +96,43 @@ const (
 	ConnectionTypePeer   = "peer"   // Human-to-human connection (default)
 	ConnectionTypeAgent  = "agent"  // AI agent connection via Agent Connector
 	ConnectionTypeDevice = "device" // Desktop device connection via session
+	ConnectionTypeSystem = "system" // VettID service itself (single per vault, capped capabilities)
 )
+
+// SystemConnectionID is the reserved connection_id for the per-vault
+// VettID system connection. All service-originated events (guides,
+// migration prompts, vote notifications, security alerts) append to
+// its audit trail.
+const SystemConnectionID = "system/vettid"
+
+// ConnectionCapabilities declares which user-visible features a
+// connection supports. Peer connections default to all true; agents
+// get a configured subset; the VettID system connection is read-only.
+type ConnectionCapabilities struct {
+	MessagingRead  bool `json:"messaging_read"`
+	MessagingWrite bool `json:"messaging_write"`
+	VoiceCall      bool `json:"voice_call"`
+	VideoCall      bool `json:"video_call"`
+	BTCTransfer    bool `json:"btc_transfer"`
+}
+
+// DefaultPeerCapabilities returns the capability set a freshly-created
+// peer connection starts with — everything on.
+func DefaultPeerCapabilities() ConnectionCapabilities {
+	return ConnectionCapabilities{
+		MessagingRead:  true,
+		MessagingWrite: true,
+		VoiceCall:      true,
+		VideoCall:      true,
+		BTCTransfer:    true,
+	}
+}
+
+// SystemCapabilities returns the read-only capability set for the
+// VettID system connection.
+func SystemCapabilities() ConnectionCapabilities {
+	return ConnectionCapabilities{MessagingRead: true}
+}
 
 // ConnectionRecord represents a stored connection
 type ConnectionRecord struct {
@@ -95,6 +177,13 @@ type ConnectionRecord struct {
 	// Peer verifications and capabilities
 	PeerVerifications []string          `json:"peer_verifications,omitempty"`
 	PeerCapabilities  map[string]string `json:"peer_capabilities,omitempty"`
+
+	// Capabilities declares which user-visible features this connection
+	// supports from the owner's side. Zero value (all false) means the
+	// record predates this field and should be treated as a standard
+	// peer with every capability available — see
+	// ConnectionRecord.CapabilitiesOrDefault().
+	Capabilities *ConnectionCapabilities `json:"capabilities,omitempty"`
 
 	// Agent-specific fields (only set when ConnectionType == "agent")
 	AgentMetadata *AgentMetadata      `json:"agent_metadata,omitempty"`

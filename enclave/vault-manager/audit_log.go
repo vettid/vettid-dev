@@ -41,7 +41,32 @@ const (
 
 	AuditTypeAgentActionExecuted = "agent.action.executed"
 	AuditTypeAgentSecretAccessed = "agent.secret.accessed"
+
+	// System connection events — originate from the VettID service
+	// itself (not a peer) and all land on the reserved system
+	// connection. See plans/luminous-unifying-manatee.md.
+	AuditTypeSystemGuidePublished     = "system.guide.published"
+	AuditTypeSystemMigrationRequired  = "system.migration.required"
+	AuditTypeSystemMigrationFinalized = "system.migration.finalized"
+	AuditTypeSystemVoteProposed       = "system.vote.proposed"
+	AuditTypeSystemVoteTallied        = "system.vote.tallied"
+	AuditTypeSystemSecurityAlert      = "system.security.alert"
+	AuditTypeSystemAnnouncement       = "system.announcement"
 )
+
+// AppendSystem records a service-originated event on the reserved
+// VettID system connection. Convenience wrapper that fills in the
+// connection_id and direction so write sites stay short. Reads
+// SystemConnectionID from connections.go.
+func (a *AuditLog) AppendSystem(entry AuditEntry) {
+	if entry.ConnectionID == "" {
+		entry.ConnectionID = SystemConnectionID
+	}
+	if entry.Direction == "" {
+		entry.Direction = AuditDirectionInbound
+	}
+	a.Append(entry)
+}
 
 // AuditDirectionOutbound / Inbound identify which side initiated the
 // entry from the owner's point of view.

@@ -16,8 +16,13 @@ type MigrationHandler struct {
 	storage     *EncryptedStorage
 	vaultState  *VaultState
 	sealerProxy *SealerProxy
+	auditLog    *AuditLog
 	persistFn   func() // callback to persist vault state after migration re-seal
 }
+
+// SetAuditLog wires the per-connection audit trail so migration
+// required/finalized events land on the VettID system connection.
+func (h *MigrationHandler) SetAuditLog(a *AuditLog) { h.auditLog = a }
 
 // NewMigrationHandler creates a new migration handler.
 func NewMigrationHandler(

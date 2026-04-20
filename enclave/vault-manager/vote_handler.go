@@ -25,7 +25,12 @@ type VoteHandler struct {
 	state       *VaultState
 	bootstrap   *BootstrapHandler
 	sealerProxy *SealerProxy
+	auditLog    *AuditLog
 }
+
+// SetAuditLog wires the per-connection audit trail so vote proposals
+// and tallies land on the VettID system connection.
+func (h *VoteHandler) SetAuditLog(a *AuditLog) { h.auditLog = a }
 
 // NewVoteHandler creates a new vote handler
 func NewVoteHandler(ownerSpace string, state *VaultState, bootstrap *BootstrapHandler) *VoteHandler {

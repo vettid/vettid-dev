@@ -398,6 +398,12 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 	// is appended in the inbound `btc-payment-receipt` case below using
 	// the same shared log.
 	mh.walletHandler.SetAuditLog(mh.auditLog)
+	// Service-originated event handlers mirror to the VettID system
+	// connection via AuditLog.AppendSystem alongside their legacy feed
+	// entries. Plans/luminous-unifying-manatee.md has the design.
+	mh.guideHandler.SetAuditLog(mh.auditLog)
+	mh.migrationHandler.SetAuditLog(mh.auditLog)
+	mh.voteHandler.SetAuditLog(mh.auditLog)
 
 	return mh
 }
@@ -407,6 +413,11 @@ func (mh *MessageHandler) Initialize(ctx context.Context) error {
 	// Load block list
 	if err := mh.callHandler.LoadBlockList(ctx); err != nil {
 		return fmt.Errorf("failed to load block list: %w", err)
+	}
+	// Provision the VettID system connection if it doesn't exist.
+	// Idempotent — only writes on first run for a given vault.
+	if err := mh.connectionsHandler.EnsureSystemConnection(ctx); err != nil {
+		log.Warn().Err(err).Msg("failed to ensure VettID system connection — service events will not have a home")
 	}
 	return nil
 }
