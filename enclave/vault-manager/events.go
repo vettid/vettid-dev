@@ -19,11 +19,21 @@ type EventHandler struct {
 	storage    *EncryptedStorage
 	publisher  *VsockPublisher
 	settings   *FeedSettings
+	// Audit log piggybacks on the existing event write-points so each
+	// user-visible event lands in both the global feed (audit/feed UI)
+	// and the per-connection trail (Connection History / search). Set
+	// via SetAuditLog after the MessageHandler has built the log.
+	auditLog *AuditLog
 
 	// Sync sequence is managed atomically
 	mu           sync.Mutex
 	syncSequence int64
 }
+
+// SetAuditLog wires the per-connection audit log. Safe to call after
+// construction; Log*Event methods will append opportunistically when
+// auditLog is non-nil and the event has a connection_id.
+func (h *EventHandler) SetAuditLog(a *AuditLog) { h.auditLog = a }
 
 // ErrStorageNotReady is returned when storage hasn't been initialized with DEK
 var ErrStorageNotReady = fmt.Errorf("storage not ready: vault must be unlocked first")
@@ -632,18 +642,25 @@ func (h *EventHandler) LogCallEvent(ctx context.Context, eventType EventType, ca
 	metadata["call_id"] = callID
 	metadata["peer_id"] = peerID
 
-	return h.LogEvent(ctx, &Event{
+	err := h.LogEvent(ctx, &Event{
 		EventType:  eventType,
 		SourceType: "call",
 		SourceID:   callID,
 		Title:      title,
 		Metadata:   metadata,
 	})
+	// Project into the audit trail too. Connection id arrives in the
+	// metadata when the caller has it; peer_id is the fallback source
+	// for connection lookup.
+	if connID := metadata["connection_id"]; connID != "" {
+		h.mirrorCallToAudit(connID, peerID, string(eventType), title, metadata)
+	}
+	return err
 }
 
 // LogConnectionEvent logs a connection-related event
 func (h *EventHandler) LogConnectionEvent(ctx context.Context, eventType EventType, connectionID, peerID, title string) error {
-	return h.LogEvent(ctx, &Event{
+	err := h.LogEvent(ctx, &Event{
 		EventType:  eventType,
 		SourceType: "connection",
 		SourceID:   connectionID,
@@ -653,6 +670,8 @@ func (h *EventHandler) LogConnectionEvent(ctx context.Context, eventType EventTy
 			"peer_id":       peerID,
 		},
 	})
+	h.mirrorConnectionToAudit(connectionID, peerID, string(eventType), title)
+	return err
 }
 
 // LogMessageEvent logs a message-related event
@@ -665,7 +684,7 @@ func (h *EventHandler) LogMessageEvent(ctx context.Context, eventType EventType,
 			title = "From " + peerAlias
 		}
 	}
-	return h.LogEvent(ctx, &Event{
+	err := h.LogEvent(ctx, &Event{
 		EventType:  eventType,
 		SourceType: "message",
 		SourceID:   connectionID,
@@ -676,6 +695,84 @@ func (h *EventHandler) LogMessageEvent(ctx context.Context, eventType EventType,
 			"connection_id": connectionID,
 			"peer_alias":    peerAlias,
 		},
+	})
+	// The MessagingHandler already appends audit entries with the
+	// decrypted preview on the receive path; we intentionally skip
+	// mirroring message events here to avoid double-logging.
+	return err
+}
+
+// mirrorCallToAudit records a call event in the per-connection audit
+// trail. Best-effort — the global feed entry is the canonical copy.
+func (h *EventHandler) mirrorCallToAudit(connectionID, peerGUID, eventType, title string, metadata map[string]string) {
+	if h.auditLog == nil || connectionID == "" {
+		return
+	}
+	// Map internal event types onto the audit taxonomy. Any call-
+	// related event that's not explicitly mapped is still recorded
+	// under the general "call.voice.*" family so it shows up.
+	auditType := AuditTypeCallVoiceStarted
+	switch eventType {
+	case string(EventTypeCallMissed):
+		auditType = AuditTypeCallVoiceMissed
+	case string(EventTypeCallEnded), string(EventTypeCallAnswered):
+		auditType = AuditTypeCallVoiceCompleted
+	case string(EventTypeCallRejected):
+		auditType = AuditTypeCallRejected
+	case string(EventTypeCallIncoming), string(EventTypeCallOutgoing):
+		auditType = AuditTypeCallVoiceStarted
+	}
+	if metadata["call_type"] == "video" {
+		switch auditType {
+		case AuditTypeCallVoiceMissed:
+			auditType = AuditTypeCallVideoMissed
+		case AuditTypeCallVoiceCompleted:
+			auditType = AuditTypeCallVideoCompleted
+		case AuditTypeCallVoiceStarted:
+			auditType = AuditTypeCallVideoStarted
+		}
+	}
+
+	refs := map[string]string{}
+	if callID := metadata["call_id"]; callID != "" {
+		refs["call_id"] = callID
+	}
+
+	h.auditLog.Append(AuditEntry{
+		ConnectionID: connectionID,
+		PeerGUID:     peerGUID,
+		EventType:    auditType,
+		Direction:    AuditDirectionInternal,
+		Title:        title,
+		CreatedAt:    time.Now().Unix(),
+		Refs:         refs,
+		Metadata:     metadata,
+	})
+}
+
+// mirrorConnectionToAudit records a connection-lifecycle event.
+func (h *EventHandler) mirrorConnectionToAudit(connectionID, peerGUID, eventType, title string) {
+	if h.auditLog == nil || connectionID == "" {
+		return
+	}
+	auditType := AuditTypeConnectionCreated
+	switch eventType {
+	case string(EventTypeConnectionAccepted):
+		auditType = AuditTypeConnectionAccepted
+	case string(EventTypeConnectionRevoked):
+		auditType = AuditTypeConnectionRevoked
+	case string(EventTypeConnectionRotated):
+		auditType = AuditTypeConnectionRotated
+	case string(EventTypeConnectionCreated), string(EventTypeConnectionRequest), string(EventTypeConnectionInitiated):
+		auditType = AuditTypeConnectionCreated
+	}
+	h.auditLog.Append(AuditEntry{
+		ConnectionID: connectionID,
+		PeerGUID:     peerGUID,
+		EventType:    auditType,
+		Direction:    AuditDirectionInternal,
+		Title:        title,
+		CreatedAt:    time.Now().Unix(),
 	})
 }
 

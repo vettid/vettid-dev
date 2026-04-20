@@ -21,6 +21,7 @@ type MessagingHandler struct {
 	storage      *EncryptedStorage
 	publisher    *VsockPublisher
 	eventHandler *EventHandler
+	auditLog     *AuditLog
 }
 
 // NewMessagingHandler creates a new messaging handler
@@ -32,6 +33,10 @@ func NewMessagingHandler(ownerSpace string, storage *EncryptedStorage, publisher
 		eventHandler: eventHandler,
 	}
 }
+
+// SetAuditLog wires the per-connection audit log so message send /
+// receive events land in the trail. Optional — nil is fine.
+func (h *MessagingHandler) SetAuditLog(a *AuditLog) { h.auditLog = a }
 
 // --- Storage types ---
 
@@ -244,6 +249,20 @@ func (h *MessagingHandler) HandleSend(msg *IncomingMessage) (*OutgoingMessage, e
 		h.eventHandler.LogMessageEvent(context.Background(), EventTypeMessageSent, messageID, req.ConnectionID, conn.PeerAlias, "")
 	}
 
+	// Per-connection audit trail: one entry per message the user sends.
+	// Body left empty — we don't have the plaintext here (encrypted by
+	// the app). The conversation store keeps the content; this entry is
+	// a pointer via refs.message_id.
+	h.auditLog.Append(AuditEntry{
+		ConnectionID: req.ConnectionID,
+		PeerGUID:     conn.PeerGUID,
+		EventType:    AuditTypeMessageSent,
+		Direction:    AuditDirectionOutbound,
+		Title:        "Sent a message",
+		CreatedAt:    now.Unix(),
+		Refs:         map[string]string{"message_id": messageID},
+	})
+
 	log.Info().
 		Str("message_id", messageID).
 		Str("connection_id", req.ConnectionID).
@@ -359,6 +378,20 @@ func (h *MessagingHandler) HandleIncomingPeerMessage(ctx context.Context, msg *I
 			log.Error().Err(err).Msg("Failed to log message.received event")
 		}
 	}
+
+	// Audit trail: receive-side entry, stamped with the decrypted
+	// preview body (short). The conversation store has the full text;
+	// keep this under the 120-char cap.
+	h.auditLog.Append(AuditEntry{
+		ConnectionID: peerMsg.ConnectionID,
+		PeerGUID:     conn.PeerGUID,
+		EventType:    AuditTypeMessageReceived,
+		Direction:    AuditDirectionInbound,
+		Title:        "Received a message",
+		Body:         plaintextContent,
+		CreatedAt:    time.Now().Unix(),
+		Refs:         map[string]string{"message_id": peerMsg.MessageID},
+	})
 
 	resp := map[string]interface{}{
 		"success":    true,

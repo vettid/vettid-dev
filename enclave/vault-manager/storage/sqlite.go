@@ -354,6 +354,60 @@ func (s *SQLiteStorage) initSchema() error {
 		INSERT INTO secrets_fts(id, name, tags)
 		VALUES (new.id, new.name, new.tags);
 	END;
+
+	-- ===============================
+	-- Connection Audit Trail
+	-- ===============================
+	-- Per-connection interaction log. One row per user-visible event
+	-- (message sent/received, call, transfer, connection lifecycle,
+	-- security alert, etc.). Payload carries the AuditEntry struct
+	-- encoded as JSON; top-level columns are the query axes (connection
+	-- + event_type + time + sort key).
+	--
+	-- See docs/CONNECTION-AUDIT-TRAIL-PLAN.md for the design rationale.
+	CREATE TABLE IF NOT EXISTS connection_audit (
+		entry_id TEXT PRIMARY KEY,
+		connection_id TEXT NOT NULL,
+		peer_guid TEXT,
+		event_type TEXT NOT NULL,
+		direction TEXT,
+		title TEXT NOT NULL,
+		body TEXT,
+		created_at INTEGER NOT NULL,
+		payload BLOB NOT NULL   -- full AuditEntry JSON
+	);
+
+	-- Primary query: newest-first page per connection.
+	CREATE INDEX IF NOT EXISTS idx_connection_audit_conn_created
+		ON connection_audit(connection_id, created_at DESC, entry_id DESC);
+
+	-- Secondary: prefix-type filter within a connection.
+	CREATE INDEX IF NOT EXISTS idx_connection_audit_type
+		ON connection_audit(connection_id, event_type, created_at DESC);
+
+	-- Full-text search across title + body. Agents can emit many entries
+	-- quickly (thousands per session), so client-side filtering doesn't
+	-- scale — search runs in the vault.
+	CREATE VIRTUAL TABLE IF NOT EXISTS connection_audit_fts USING fts5(
+		entry_id UNINDEXED,
+		connection_id UNINDEXED,
+		title,
+		body,
+		content='connection_audit',
+		content_rowid='rowid'
+	);
+
+	CREATE TRIGGER IF NOT EXISTS connection_audit_ai
+		AFTER INSERT ON connection_audit BEGIN
+		INSERT INTO connection_audit_fts(rowid, entry_id, connection_id, title, body)
+		VALUES (new.rowid, new.entry_id, new.connection_id, new.title, COALESCE(new.body, ''));
+	END;
+
+	CREATE TRIGGER IF NOT EXISTS connection_audit_ad
+		AFTER DELETE ON connection_audit BEGIN
+		INSERT INTO connection_audit_fts(connection_audit_fts, rowid, entry_id, connection_id, title, body)
+		VALUES ('delete', old.rowid, old.entry_id, old.connection_id, old.title, COALESCE(old.body, ''));
+	END;
 	`
 
 	if _, err := s.db.Exec(schema); err != nil {

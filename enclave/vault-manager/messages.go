@@ -96,6 +96,12 @@ type MessageHandler struct {
 	eventHandler             *EventHandler
 	publisher                *VsockPublisher
 
+	// Per-connection audit trail (docs/CONNECTION-AUDIT-TRAIL-PLAN.md).
+	// auditLog is used by write-points across handlers; auditHandler
+	// serves connection.audit.list / .search.
+	auditLog     *AuditLog
+	auditHandler *AuditHandler
+
 	// NATS proxy for connection credential generation
 	natsProxy *NATSProxy
 
@@ -311,6 +317,12 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 		eventHandler:            eventHandler,
 		publisher:               publisher,
 
+		// Audit trail (audit_log.go / audit_handler.go / audit_backfill.go).
+		// The handler reads, the log writes; backfiller synthesizes
+		// history from messages + feed + lifecycle on first read per
+		// connection.
+		auditLog: NewAuditLog(storage),
+
 		// NATS proxy
 		natsProxy: natsProxy,
 
@@ -369,6 +381,23 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 
 	// Wire up migration handler's persist callback so it can save vault state after re-seal
 	migrationHandler.SetPersistFn(mh.persistVaultStateToS3)
+
+	// Audit read-path wiring: backfiller needs the log to replay into,
+	// handler needs both. Done after the struct literal because
+	// NewAuditBackfiller takes the fully-built AuditLog.
+	mh.auditHandler = NewAuditHandler(
+		ownerSpace,
+		mh.auditLog,
+		NewAuditBackfiller(ownerSpace, storage, mh.auditLog),
+	)
+	// Per-handler audit wiring. Each handler that produces
+	// user-visible events gets a reference to the same AuditLog so
+	// write points stay local rather than centralized.
+	mh.messagingHandler.SetAuditLog(mh.auditLog)
+	// EventHandler mirrors call + connection lifecycle into the audit
+	// trail too — the existing LogCallEvent / LogConnectionEvent call
+	// sites get audit coverage for free.
+	eventHandler.SetAuditLog(mh.auditLog)
 
 	return mh
 }
@@ -1608,6 +1637,21 @@ func (mh *MessageHandler) handleConnectionOperation(ctx context.Context, msg *In
 		return response, nil
 	case "get-credentials":
 		return mh.connectionsHandler.HandleGetCredentials(msg)
+	case "audit":
+		if len(opParts) < 3 {
+			return mh.errorResponse(msg.GetID(), "missing audit operation (list|search)")
+		}
+		if mh.auditHandler == nil {
+			return mh.errorResponse(msg.GetID(), "audit handler unavailable")
+		}
+		switch opParts[2] {
+		case "list":
+			return mh.auditHandler.HandleList(msg)
+		case "search":
+			return mh.auditHandler.HandleSearch(msg)
+		default:
+			return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown audit operation: %s", opParts[2]))
+		}
 	case "agent":
 		if len(opParts) < 3 {
 			return mh.errorResponse(msg.GetID(), "missing agent connection operation")
