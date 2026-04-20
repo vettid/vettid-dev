@@ -58,7 +58,7 @@ USER_SUMMARY=""
 # users never see internal commit language. Override with --user-summary.
 DEFAULT_USER_SUMMARY="Your approval is required to apply a security update to your vault."
 DETAILS_URL=""
-DEFAULT_DETAILS_URL="https://vettid.dev/docs/vault-security-updates"
+DEFAULT_DETAILS_URL="https://github.com/vettid/vettid-dev/blob/main/docs/SECURITY-UPDATES.md"
 DRY_RUN=false
 SKIP_KMS_FINALIZE=false
 
