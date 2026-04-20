@@ -1691,6 +1691,16 @@ func (h *ConnectionsHandler) HandleList(msg *IncomingMessage) (*OutgoingMessage,
 		req = ListConnectionsRequest{}
 	}
 
+	// Lazy-provision the VettID system connection. The Initialize hook
+	// in messages.go runs before PIN unlock, when storage isn't ready
+	// yet — so the initial EnsureSystemConnection call is a silent
+	// no-op. Running it here, right before the app reads the list,
+	// guarantees storage is ready (list is only reachable post-unlock)
+	// and keeps the call idempotent.
+	if err := h.EnsureSystemConnection(context.Background()); err != nil {
+		log.Warn().Err(err).Msg("lazy provision of system connection failed — list may be missing VettID card")
+	}
+
 	// Get connection index
 	indexData, err := h.storage.Get("connections/_index")
 	var connectionIDs []string
