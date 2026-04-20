@@ -711,16 +711,39 @@ func (h *EventHandler) mirrorCallToAudit(connectionID, peerGUID, eventType, titl
 	// Map internal event types onto the audit taxonomy. Any call-
 	// related event that's not explicitly mapped is still recorded
 	// under the general "call.voice.*" family so it shows up.
+	// A call.ended with zero duration means the call never connected —
+	// caller hung up or receiver ignored before pickup. Render that as
+	// "missed" so it visually distinguishes from a genuine completed
+	// call. Duration comes through in metadata["duration_seconds"].
+	endedUnanswered := false
+	if eventType == string(EventTypeCallEnded) {
+		if secs := metadata["duration_seconds"]; secs == "" || secs == "0" {
+			endedUnanswered = true
+		}
+	}
+
 	auditType := AuditTypeCallVoiceStarted
 	switch eventType {
 	case string(EventTypeCallMissed):
 		auditType = AuditTypeCallVoiceMissed
-	case string(EventTypeCallEnded), string(EventTypeCallAnswered):
+	case string(EventTypeCallEnded):
+		if endedUnanswered {
+			auditType = AuditTypeCallVoiceMissed
+		} else {
+			auditType = AuditTypeCallVoiceCompleted
+		}
+	case string(EventTypeCallAnswered):
 		auditType = AuditTypeCallVoiceCompleted
 	case string(EventTypeCallRejected):
 		auditType = AuditTypeCallRejected
 	case string(EventTypeCallIncoming), string(EventTypeCallOutgoing):
 		auditType = AuditTypeCallVoiceStarted
+	}
+
+	// Also rewrite the title so the row reads correctly. "Call ended"
+	// for a never-answered call is confusing — pick a better label.
+	if endedUnanswered {
+		title = "Call cancelled"
 	}
 	if metadata["call_type"] == "video" {
 		switch auditType {

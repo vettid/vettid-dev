@@ -1273,7 +1273,14 @@ func (ch *CallHandler) handleCallCancel(ctx context.Context, event *CallEvent) e
 func (ch *CallHandler) handleCallEnd(ctx context.Context, event *CallEvent) error {
 	// Update call record with duration
 	var durationSecs int
+	var alreadyMissedOrCancelled bool
 	if err := ch.updateCallRecord(ctx, event.CallID, func(r *CallRecord) {
+		// A call can reach this handler AFTER handleCallCancel
+		// already marked it missed — skip the Ended audit entry in
+		// that case so the history doesn't get a duplicate row.
+		if r.Status == "missed" || r.Status == "cancelled" {
+			alreadyMissedOrCancelled = true
+		}
 		r.EndedAt = time.Now().Unix()
 		if r.AnsweredAt > 0 {
 			r.DurationSecs = int(r.EndedAt - r.AnsweredAt)
@@ -1284,6 +1291,14 @@ func (ch *CallHandler) handleCallEnd(ctx context.Context, event *CallEvent) erro
 	}
 
 	log.Info().Str("call_id", event.CallID).Msg("Call ended")
+
+	if alreadyMissedOrCancelled {
+		eventData, err := json.Marshal(event)
+		if err != nil {
+			return fmt.Errorf("failed to marshal end event: %w", err)
+		}
+		return ch.publisher.PublishToApp(ctx, "call.ended", eventData)
+	}
 
 	// Log call ended event for audit — connection_id + call_type come
 	// from the stored record so the per-connection history shows the
