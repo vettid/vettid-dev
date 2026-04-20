@@ -33,6 +33,7 @@ type AuditListRequest struct {
 	CursorCreatedAt int64    `json:"cursor_created_at,omitempty"`
 	CursorEntryID   string   `json:"cursor_entry_id,omitempty"`
 	SinceEpoch      int64    `json:"since_epoch,omitempty"`
+	UntilEpoch      int64    `json:"until_epoch,omitempty"`
 	EventTypes      []string `json:"event_types,omitempty"`
 }
 
@@ -76,6 +77,7 @@ func (h *AuditHandler) HandleList(msg *IncomingMessage) (*OutgoingMessage, error
 		CursorCreatedAt:   req.CursorCreatedAt,
 		CursorEntryID:     req.CursorEntryID,
 		SinceEpoch:        req.SinceEpoch,
+		UntilEpoch:        req.UntilEpoch,
 		EventTypePrefixes: req.EventTypes,
 	})
 	if err != nil {

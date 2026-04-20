@@ -32,6 +32,7 @@ type AuditListOptions struct {
 	CursorCreatedAt int64
 	CursorEntryID   string
 	SinceEpoch      int64
+	UntilEpoch      int64 // Exclude entries with created_at >= this value (exclusive upper bound).
 	// Prefix match; "message." matches message.sent / message.received.
 	EventTypePrefixes []string
 }
@@ -142,6 +143,10 @@ func (s *SQLiteStorage) ListAuditEntries(opts AuditListOptions) (*AuditListResul
 	if opts.SinceEpoch > 0 {
 		where = append(where, "created_at >= ?")
 		args = append(args, opts.SinceEpoch)
+	}
+	if opts.UntilEpoch > 0 {
+		where = append(where, "created_at < ?")
+		args = append(args, opts.UntilEpoch)
 	}
 
 	// Cursor: rows strictly older than (cursor.created_at, cursor.entry_id)
