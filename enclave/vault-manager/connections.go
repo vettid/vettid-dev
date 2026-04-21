@@ -200,6 +200,11 @@ type ConnectionRecord struct {
 	Status            string    `json:"status"` // "active", "revoked", "pending", "expired"
 	CreatedAt         time.Time `json:"created_at"`
 	ExpiresAt         time.Time `json:"expires_at,omitempty"`
+
+	// Presence: per-connection override of the user-wide
+	// presence_share_default. nil = follow default, true/false = explicit.
+	// See plans/luminous-unifying-manatee.md §15.
+	PresenceShareOverride *bool `json:"presence_share_override,omitempty"`
 	LastRotatedAt     time.Time `json:"last_rotated_at,omitempty"`
 	KeyExchangeAt     time.Time `json:"key_exchange_at,omitempty"`
 	KeyRotationCount  int       `json:"key_rotation_count"`

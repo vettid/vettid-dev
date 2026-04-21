@@ -147,6 +147,9 @@ type MessageHandler struct {
 	// Location handler (location tracking)
 	locationHandler *LocationHandler
 
+	// Presence handler (opt-in online/offline signal to peers)
+	presenceHandler *PresenceHandler
+
 	// Agent handlers (AI agent connections)
 	agentHandler        *AgentHandler
 	agentSecretsHandler *AgentSecretsHandler
@@ -379,6 +382,11 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 		walletHandler: NewWalletHandler(ownerSpace, storage, vaultState, eventHandler, publisher, httpProxy),
 	}
 
+	// Presence handler — needs ConnectionsHandler to read the
+	// connection list during the heartbeat loop, so it's wired up
+	// after the struct literal above has ConnectionsHandler populated.
+	mh.presenceHandler = NewPresenceHandler(ownerSpace, storage, publisher, mh.connectionsHandler)
+
 	// Wire up migration handler's persist callback so it can save vault state after re-seal
 	migrationHandler.SetPersistFn(mh.persistVaultStateToS3)
 
@@ -418,6 +426,12 @@ func (mh *MessageHandler) Initialize(ctx context.Context) error {
 	// Idempotent — only writes on first run for a given vault.
 	if err := mh.connectionsHandler.EnsureSystemConnection(ctx); err != nil {
 		log.Warn().Err(err).Msg("failed to ensure VettID system connection — service events will not have a home")
+	}
+	// Kick off the presence heartbeat loop. Internally gated on
+	// per-connection effective share, so if nothing is opted-in it's
+	// just a ticker that reads the connection index and moves on.
+	if mh.presenceHandler != nil {
+		mh.presenceHandler.StartHeartbeat(ctx)
 	}
 	return nil
 }
@@ -685,6 +699,16 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 	case "location-update":
 		// Incoming location update from peer vault
 		return mh.handleIncomingLocationUpdate(ctx, msg)
+	case "presence.heartbeat":
+		// Incoming presence heartbeat from peer vault — re-emit to
+		// our app so the UI can render "online" for that connection.
+		if mh.presenceHandler != nil {
+			if err := mh.presenceHandler.HandleIncomingPeerHeartbeat(ctx, msg.Payload); err != nil {
+				log.Debug().Err(err).Msg("Failed to forward presence heartbeat to app")
+			}
+		}
+		ack, _ := json.Marshal(map[string]string{"status": "received"})
+		return mh.successResponse(msg.GetID(), ack)
 	case "btc-address-request":
 		// Incoming BTC address request from peer vault — auto-respond
 		return mh.walletHandler.HandleIncomingAddressRequest(ctx, msg)
@@ -776,6 +800,9 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 	case "location":
 		// Location tracking operations
 		return mh.handleLocationOperation(ctx, msg, parts[opIndex+1:])
+	case "presence":
+		// Presence (online/offline) opt-in settings + overrides
+		return mh.handlePresenceOperation(ctx, msg, parts[opIndex+1:])
 	case "enrollment":
 		// Enrollment operations (identity mismatch reports)
 		return mh.handleEnrollmentOperation(ctx, msg, parts[opIndex+1:])
