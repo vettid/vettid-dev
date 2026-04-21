@@ -174,20 +174,39 @@ func (p *ParentProcess) routeNATSToEnclave(ctx context.Context) error {
 
 	msgChan := make(chan *NATSMessage, 1000) // Increased from 100 to prevent drops under load
 
-	// JetStream durable consumer for forVault messages. Core-NATS
-	// Subscribe would drop anything published while the enclave was
-	// offline — which is why peer messages sent before the receiver's
-	// vault came back up from a migration were silently lost. The
-	// durable name is stable per enclave so state (last-delivered
-	// sequence, pending acks) carries across restarts.
-	enclaveDurable := fmt.Sprintf("enclave-%s-forVault", sanitizeDurableID(p.enclaveID))
-	if err := p.natsClient.SubscribeJS("ENROLLMENT", "OwnerSpace.*.forVault.>", enclaveDurable, msgChan); err != nil {
-		return fmt.Errorf("failed to JS-subscribe to OwnerSpace.*.forVault.>: %w", err)
+	// Live traffic for all forVault ops (credential, connection, feed,
+	// call signaling, message.*) comes through core NATS pub/sub — no
+	// replay, ephemeral.
+	//
+	// An earlier iteration bound a JetStream durable consumer to the
+	// ENROLLMENT stream (subject `OwnerSpace.*.forVault.>`) with
+	// DeliverAll, to replay peer messages sent while the receiver was
+	// offline. That same subscription also captured credential and
+	// migration traffic, so every new vault-manager instance replayed
+	// weeks of history — including credential.migration.start,
+	// reprocessing each one and overwriting the user's vault state
+	// with fresh empty data. Do NOT reinstate a broad JS subscription
+	// here.
+	if err := p.natsClient.Subscribe("OwnerSpace.*.forVault.>", msgChan); err != nil {
+		return fmt.Errorf("failed to subscribe to OwnerSpace.*.forVault.>: %w", err)
 	}
-	log.Info().
-		Str("subject", "OwnerSpace.*.forVault.>").
-		Str("durable", enclaveDurable).
-		Msg("Subscribed to forVault traffic via JetStream (replays on reconnect)")
+	log.Info().Str("subject", "OwnerSpace.*.forVault.>").Msg("Subscribed to forVault traffic (core NATS, live only)")
+
+	// Offline-message durability lives in the dedicated VAULT_MESSAGES
+	// stream, scoped strictly to peer message subjects. DeliverAll
+	// replays missed peer messages on first-subscribe; dedup on the
+	// message_id inside HandleIncomingPeerMessage is what makes this
+	// safe — each replayed message is processed at most once.
+	enclaveDurable := fmt.Sprintf("enclave-%s-vaultMsgs", sanitizeDurableID(p.enclaveID))
+	if err := p.natsClient.SubscribeJS("VAULT_MESSAGES", "OwnerSpace.*.forVault.message.>", enclaveDurable, msgChan); err != nil {
+		log.Warn().Err(err).Msg("Failed to JS-subscribe to VAULT_MESSAGES — offline peer-message replay disabled (core NATS still handles live traffic)")
+	} else {
+		log.Info().
+			Str("stream", "VAULT_MESSAGES").
+			Str("subject_filter", "OwnerSpace.*.forVault.message.>").
+			Str("durable", enclaveDurable).
+			Msg("Subscribed via JetStream for peer-message replay on reconnect")
+	}
 
 	// === Multi-tenant Control Topic Architecture ===
 	// Subscribe to global control commands (all enclaves)

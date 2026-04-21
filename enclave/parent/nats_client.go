@@ -92,6 +92,14 @@ func NewNATSClient(cfg NATSConfig, stateCallback ConnectionStateCallback) (*NATS
 			log.Warn().Err(err).Msg("Failed to create enrollment stream, JetStream publish may fail")
 		}
 
+		// Long-TTL stream scoped to peer-to-peer message subjects.
+		// Bound to the vault's JS durable consumer so offline peers
+		// can catch up on missed messages — without replaying
+		// credential ops (those live in ENROLLMENT only).
+		if err := client.ensureVaultMessagesStream(); err != nil {
+			log.Warn().Err(err).Msg("Failed to create vault messages stream — offline peer-message replay disabled")
+		}
+
 		// Ensure invitations stream exists for connection invitation broker
 		if err := client.ensureInvitationsStream(); err != nil {
 			log.Warn().Err(err).Msg("Failed to create invitations stream")
@@ -101,13 +109,16 @@ func NewNATSClient(cfg NATSConfig, stateCallback ConnectionStateCallback) (*NATS
 	return client, nil
 }
 
-// ensureEnrollmentStream creates or updates the stream that holds all
-// OwnerSpace.*.forApp/forVault traffic. The name is ENROLLMENT for
-// historical reasons — it now also backs peer-to-peer messaging and
-// needs long enough retention to survive multi-day offline windows
-// (the receiver's vault catches up via a JetStream pull on next
-// unlock; core-NATS subscribe alone would silently drop anything the
-// vault missed while offline).
+// ensureEnrollmentStream persists short-TTL traffic for the enrollment
+// flow and for in-flight request/response pairs: forApp responses the
+// mobile app expects to collect after a reconnect, and forVault
+// requests the parent may need to replay to the enclave over a brief
+// disconnect. 30-minute retention is deliberate — this stream must NOT
+// outlive the request lifetime, because a durable consumer on it
+// would otherwise replay credential ops, migration starts, etc. on
+// every new enclave instance (see the peer-message replay comment in
+// parent.routeNATSToEnclave). Long-lived peer messaging durability
+// lives in the VAULT_MESSAGES stream instead.
 func (c *NATSClient) ensureEnrollmentStream() error {
 	if c.js == nil {
 		return fmt.Errorf("JetStream not available")
@@ -116,27 +127,22 @@ func (c *NATSClient) ensureEnrollmentStream() error {
 	streamName := "ENROLLMENT"
 	subjects := []string{
 		"OwnerSpace.*.forApp.>",   // Mobile app responses
-		"OwnerSpace.*.forVault.>", // Peer-to-peer messaging + vault requests
+		"OwnerSpace.*.forVault.>", // Vault requests (for persistence)
 	}
 
 	cfg := &nats.StreamConfig{
-		Name:      streamName,
-		Subjects:  subjects,
-		Retention: nats.LimitsPolicy, // Keep until limits (MaxAge/MaxMsgs)
-		// 7d retention so a peer message sent while the receiver is
-		// offline still replays when they next open the app. Previously
-		// 30 min, which silently dropped messages across a migration.
-		MaxAge:     7 * 24 * time.Hour,
+		Name:       streamName,
+		Subjects:   subjects,
+		Retention:  nats.LimitsPolicy,
+		MaxAge:     30 * time.Minute,
 		Storage:    nats.FileStorage,
 		Replicas:   1,
 		Discard:    nats.DiscardOld,
-		MaxMsgs:    250_000,           // ~36k/day/user budget with 7d retention
-		MaxBytes:   2 * 1024 * 1024 * 1024, // 2GB
+		MaxMsgs:    10000,
+		MaxBytes:   100 * 1024 * 1024, // 100MB
 		Duplicates: 5 * time.Minute,
 	}
 
-	// Update if exists (the stream is long-lived — never delete it —
-	// and we sometimes evolve retention/limits), else create.
 	if existing, err := c.js.StreamInfo(streamName); err == nil {
 		log.Debug().
 			Str("stream", streamName).
@@ -145,17 +151,63 @@ func (c *NATSClient) ensureEnrollmentStream() error {
 			Dur("current_max_age", existing.Config.MaxAge).
 			Msg("Updating ENROLLMENT stream config")
 		if _, err := c.js.UpdateStream(cfg); err != nil {
-			// UpdateStream refuses some shape changes; log and continue
-			// rather than block startup. Operator can reconcile manually.
 			log.Warn().Err(err).Msg("ENROLLMENT stream update failed — continuing with existing config")
 		}
 		return nil
 	}
-
 	if _, err := c.js.AddStream(cfg); err != nil {
 		return fmt.Errorf("failed to create enrollment stream: %w", err)
 	}
 	log.Info().Str("stream", streamName).Strs("subjects", subjects).Msg("Created enrollment stream")
+	return nil
+}
+
+// ensureVaultMessagesStream persists peer-to-peer vault messages for
+// offline replay. Scope is strict: only message subjects, no
+// credential / migration / connection ops. 7-day MaxAge so a peer
+// message sent while the receiver is offline still replays when they
+// next unlock. Publishes to these subjects ALSO land in ENROLLMENT
+// (subject overlap); that is fine — ENROLLMENT is short-TTL and has
+// no subscriber bound to it, so the duplicate copy simply ages out.
+// The vault-side JS durable consumer binds to THIS stream, which is
+// what prevents credential ops from being replayed.
+func (c *NATSClient) ensureVaultMessagesStream() error {
+	if c.js == nil {
+		return fmt.Errorf("JetStream not available")
+	}
+
+	streamName := "VAULT_MESSAGES"
+	subjects := []string{
+		"OwnerSpace.*.forVault.message.>",
+	}
+
+	cfg := &nats.StreamConfig{
+		Name:       streamName,
+		Subjects:   subjects,
+		Retention:  nats.LimitsPolicy,
+		MaxAge:     7 * 24 * time.Hour,
+		Storage:    nats.FileStorage,
+		Replicas:   1,
+		Discard:    nats.DiscardOld,
+		MaxMsgs:    250_000,
+		MaxBytes:   2 * 1024 * 1024 * 1024, // 2GB
+		Duplicates: 5 * time.Minute,
+	}
+
+	if existing, err := c.js.StreamInfo(streamName); err == nil {
+		log.Debug().
+			Str("stream", streamName).
+			Int64("messages", int64(existing.State.Msgs)).
+			Msg("VAULT_MESSAGES stream exists")
+		if _, err := c.js.UpdateStream(cfg); err != nil {
+			log.Warn().Err(err).Msg("VAULT_MESSAGES stream update failed — continuing with existing config")
+		}
+		return nil
+	}
+	if _, err := c.js.AddStream(cfg); err != nil {
+		return fmt.Errorf("failed to create vault messages stream: %w", err)
+	}
+	log.Info().Str("stream", streamName).Strs("subjects", subjects).Msg("Created vault messages stream")
 	return nil
 }
 
