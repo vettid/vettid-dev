@@ -297,6 +297,29 @@ func (h *MessagingHandler) HandleIncomingPeerMessage(ctx context.Context, msg *I
 		return h.errorResponse(msg.GetID(), "Missing connection_id or message_id")
 	}
 
+	// Idempotency gate. The JetStream durable consumer for
+	// OwnerSpace.*.forVault.> replays messages from the stream
+	// (DeliverAll) — without this check, a peer message that was
+	// delivered on the previous enclave gets re-stored here, flipping
+	// its status back to "delivered" and inflating the unread count.
+	// Short-circuit silently if we've already processed this id.
+	storageKey := fmt.Sprintf("messages/%s/%s", peerMsg.ConnectionID, peerMsg.MessageID)
+	if existing, err := h.storage.Get(storageKey); err == nil && len(existing) > 0 {
+		log.Debug().
+			Str("message_id", peerMsg.MessageID).
+			Str("connection_id", peerMsg.ConnectionID).
+			Msg("Duplicate peer message — already stored, skipping")
+		ackPayload, _ := json.Marshal(map[string]interface{}{
+			"success": true,
+			"status":  "duplicate",
+		})
+		return &OutgoingMessage{
+			RequestID: msg.GetID(),
+			Type:      MessageTypeResponse,
+			Payload:   ackPayload,
+		}, nil
+	}
+
 	log.Info().
 		Str("message_id", peerMsg.MessageID).
 		Str("connection_id", peerMsg.ConnectionID).
@@ -327,7 +350,6 @@ func (h *MessagingHandler) HandleIncomingPeerMessage(ctx context.Context, msg *I
 	}
 
 	msgData, _ := json.Marshal(localMsg)
-	storageKey := fmt.Sprintf("messages/%s/%s", peerMsg.ConnectionID, peerMsg.MessageID)
 	if err := h.storage.Put(storageKey, msgData); err != nil {
 		log.Warn().Err(err).Msg("Failed to store incoming message")
 	}
