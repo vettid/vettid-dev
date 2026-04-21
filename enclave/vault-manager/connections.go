@@ -611,7 +611,15 @@ func (h *ConnectionsHandler) HandleCreateInvite(msg *IncomingMessage) (*Outgoing
 		return h.errorResponse(msg.GetID(), "Failed to derive public key")
 	}
 
-	// Store the outbound connection record
+	// Store the outbound connection record.
+	//
+	// Status starts as "pending": the peer hasn't resolved the
+	// invitation yet, so no session exists to message/call over.
+	// Previously this was "active" from the start, which made the
+	// Android card render as a blank "Connected" entry (no peer
+	// profile, but not marked pending either) and left the record
+	// stuck forever when the peer never joined. HandleActivation
+	// (line ~861) flips this to "active" when the peer accepts.
 	record := ConnectionRecord{
 		ConnectionID:      connectionID,
 		ConnectionType:    req.ConnectionType, // "peer", "agent", or "device" (empty defaults to peer)
@@ -619,7 +627,7 @@ func (h *ConnectionsHandler) HandleCreateInvite(msg *IncomingMessage) (*Outgoing
 		PeerGUID:          req.PeerGUID,
 		CredentialsType:   "outbound",
 		MessageSpaceTopic: fmt.Sprintf("MessageSpace.%s.forOwner.>", h.ownerSpace),
-		Status:            "active",
+		Status:            "pending",
 		CreatedAt:         time.Now(),
 		ExpiresAt:         expiresAt,
 		LocalPublicKey:    localPublic,
@@ -1793,21 +1801,32 @@ func (h *ConnectionsHandler) HandleList(msg *IncomingMessage) (*OutgoingMessage,
 			continue
 		}
 
-		// Transition pending → expired when the invitation's
-		// expires_at has lapsed. The broker TTL is short (5 min),
-		// but without this the record would sit in "pending"
-		// forever and the client would keep showing it as an
-		// actionable invitation. Persist the new status so every
-		// subsequent read is consistent and the change replicates
-		// to other clients.
-		if record.Status == "pending" && !record.ExpiresAt.IsZero() &&
-			record.ExpiresAt.Before(time.Now()) {
+		// Transition stale outbound invitations to "expired" when
+		// expires_at has lapsed. Two cases:
+		//
+		//   a) status="pending" — the correct state for a fresh
+		//      outbound invite waiting for a peer to resolve it.
+		//   b) status="active" with no PeerPublicKey — legacy
+		//      records from the earlier design where outbound
+		//      invites were stored as "active" from day 1. Key
+		//      exchange with the peer never happened (PeerPublicKey
+		//      stays empty), so this is semantically the same as
+		//      (a): an invitation the peer never accepted.
+		//
+		// Real active peer connections have PeerPublicKey set
+		// from key exchange and are unaffected by this filter.
+		// Persist the new status so every subsequent read is
+		// consistent and the change replicates to other clients.
+		expired := !record.ExpiresAt.IsZero() && record.ExpiresAt.Before(time.Now())
+		unaccepted := len(record.PeerPublicKey) == 0
+		if expired && (record.Status == "pending" ||
+			(record.Status == "active" && unaccepted)) {
 			record.Status = "expired"
 			if updated, mErr := json.Marshal(&record); mErr == nil {
 				if pErr := h.storage.Put("connections/"+record.ConnectionID, updated); pErr != nil {
 					log.Warn().Err(pErr).
 						Str("connection_id", record.ConnectionID).
-						Msg("connection.list: failed to persist pending→expired transition")
+						Msg("connection.list: failed to persist → expired transition")
 				}
 			}
 		}
