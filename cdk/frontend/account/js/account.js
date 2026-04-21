@@ -734,6 +734,20 @@ function activateSubTab(parentTab, subTabName) {
   }
 }
 
+// Refresh the Credential Backup status when the portal tab regains
+// focus. Covers the common case of decommissioning or re-enrolling
+// from the mobile app and coming back to the portal — without this,
+// the card keeps showing whatever date was loaded at initial render.
+// Cheap enough (one HEAD request) to fire unconditionally; the
+// loader guards against missing DOM nodes when the card isn't
+// mounted yet.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  if (typeof loadCredentialBackupStatus === 'function') {
+    try { loadCredentialBackupStatus(); } catch (_) { /* card not loaded yet */ }
+  }
+});
+
 // Keyboard shortcuts for tab navigation (1-6)
 document.addEventListener('keydown', (e) => {
   // Only trigger if not typing in an input field
