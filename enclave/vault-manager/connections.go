@@ -1768,11 +1768,17 @@ func (h *ConnectionsHandler) HandleList(msg *IncomingMessage) (*OutgoingMessage,
 		log.Warn().Err(err).Msg("lazy provision of system connection failed — list may be missing VettID card")
 	}
 
-	// Get connection index
+	// Get connection index. Silent-empty on error previously hid
+	// legitimate problems (decrypt failure, storage not ready); log
+	// enough to tell the difference from "genuinely no connections."
 	indexData, err := h.storage.Get("connections/_index")
 	var connectionIDs []string
-	if err == nil {
-		json.Unmarshal(indexData, &connectionIDs)
+	if err != nil {
+		log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("connection.list: index read failed — returning empty")
+	} else if len(indexData) == 0 {
+		log.Info().Str("owner_space", h.ownerSpace).Msg("connection.list: index empty — no connections provisioned yet")
+	} else if err := json.Unmarshal(indexData, &connectionIDs); err != nil {
+		log.Warn().Err(err).Str("owner_space", h.ownerSpace).Int("bytes", len(indexData)).Msg("connection.list: index unmarshal failed")
 	}
 
 	connections := make([]ConnectionInfo, 0)
@@ -1785,6 +1791,25 @@ func (h *ConnectionsHandler) HandleList(msg *IncomingMessage) (*OutgoingMessage,
 		var record ConnectionRecord
 		if json.Unmarshal(data, &record) != nil {
 			continue
+		}
+
+		// Transition pending → expired when the invitation's
+		// expires_at has lapsed. The broker TTL is short (5 min),
+		// but without this the record would sit in "pending"
+		// forever and the client would keep showing it as an
+		// actionable invitation. Persist the new status so every
+		// subsequent read is consistent and the change replicates
+		// to other clients.
+		if record.Status == "pending" && !record.ExpiresAt.IsZero() &&
+			record.ExpiresAt.Before(time.Now()) {
+			record.Status = "expired"
+			if updated, mErr := json.Marshal(&record); mErr == nil {
+				if pErr := h.storage.Put("connections/"+record.ConnectionID, updated); pErr != nil {
+					log.Warn().Err(pErr).
+						Str("connection_id", record.ConnectionID).
+						Msg("connection.list: failed to persist pending→expired transition")
+				}
+			}
 		}
 
 		// Filter by connection type if specified
