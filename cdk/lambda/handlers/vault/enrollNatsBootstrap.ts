@@ -197,16 +197,54 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       return badRequest('Enrollment session has expired', origin);
     }
 
-    // Check if NATS account exists, create if not
-    let accountRecord = await getOrCreateNatsAccount(userGuid, requestId);
+    // Kick off the registration-profile lookup in parallel with the
+    // NATS account + credential work below. The profile is optional
+    // (used only to echo first/last/email in the response), so we
+    // await it at the end instead of blocking the rest of the flow.
+    const registrationProfilePromise: Promise<RegistrationProfile | undefined> = (async () => {
+      try {
+        const result = await ddb.send(new QueryCommand({
+          TableName: TABLE_REGISTRATIONS,
+          IndexName: 'user-guid-index',
+          KeyConditionExpression: 'user_guid = :guid',
+          ExpressionAttributeValues: marshall({ ':guid': userGuid }),
+          ProjectionExpression: 'first_name, last_name, email',
+          Limit: 1,
+        }));
+        if (result.Items && result.Items.length > 0) {
+          const reg = unmarshall(result.Items[0]);
+          if (reg.first_name && reg.last_name && reg.email) {
+            return {
+              first_name: reg.first_name,
+              last_name: reg.last_name,
+              email: reg.email,
+            };
+          }
+        }
+        return undefined;
+      } catch (error) {
+        // Profile is optional — log and swallow.
+        console.warn('Failed to fetch registration profile:', error);
+        return undefined;
+      }
+    })();
+
+    // Check if NATS account exists, create if not. When we create a
+    // fresh account here we also keep the plaintext seed in memory
+    // so we can skip the KMS Decrypt round-trip below — we just
+    // encrypted it, we already know the value.
+    const { record: accountRecord, plaintextSeed: seedFromCreate } =
+      await getOrCreateNatsAccount(userGuid, requestId);
 
     // Generate user credentials for the app
     const now = nowIso();
     const credExpiresAt = addMinutesIso(ENROLLMENT_TOKEN_VALIDITY_MINUTES);
     const tokenId = `nats_enroll_${randomUUID()}`;
 
-    // Decrypt account seed
-    const accountSeed = await decryptAccountSeed(accountRecord, userGuid);
+    // Reuse the plaintext seed from a fresh create, otherwise decrypt.
+    // Skipping the decrypt on fresh accounts saves one KMS round-trip
+    // (~200-500ms) since we just wrote the same plaintext a moment ago.
+    const accountSeed = seedFromCreate ?? await decryptAccountSeed(accountRecord, userGuid);
 
     // Define app permissions
     const ownerSpace = accountRecord.owner_space_id;
@@ -256,35 +294,8 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       owner_space: ownerSpace,
     }, requestId);
 
-    // Fetch registration profile for the user (using GSI on user_guid)
-    let registrationProfile: RegistrationProfile | undefined;
-    try {
-      const registrationResult = await ddb.send(new QueryCommand({
-        TableName: TABLE_REGISTRATIONS,
-        IndexName: 'user-guid-index',
-        KeyConditionExpression: 'user_guid = :guid',
-        ExpressionAttributeValues: marshall({ ':guid': userGuid }),
-        ProjectionExpression: 'first_name, last_name, email',
-        Limit: 1,
-      }));
-
-      if (registrationResult.Items && registrationResult.Items.length > 0) {
-        const reg = unmarshall(registrationResult.Items[0]);
-        if (reg.first_name && reg.last_name && reg.email) {
-          registrationProfile = {
-            first_name: reg.first_name,
-            last_name: reg.last_name,
-            email: reg.email,
-          };
-          console.log('Found registration profile:', { firstName: reg.first_name, lastName: reg.last_name, email: reg.email });
-        }
-      } else {
-        console.warn('No registration found for user_guid:', userGuid);
-      }
-    } catch (error) {
-      // Log but don't fail - profile is optional
-      console.warn('Failed to fetch registration profile:', error);
-    }
+    // Collect the parallel registration profile result.
+    const registrationProfile = await registrationProfilePromise;
 
     const response: NatsBootstrapResponse = {
       nats_endpoint: `tls://${NATS_DOMAIN}:443`,
@@ -325,7 +336,16 @@ const ENROLLMENT_TTL_SECONDS = 60 * 60;
  * Accounts stuck in 'enrolling' status have a TTL and will be automatically
  * deleted after 1 hour.
  */
-async function getOrCreateNatsAccount(userGuid: string, requestId: string): Promise<any> {
+interface AccountLookup {
+  record: any;
+  // Populated only when this invocation created a fresh account.
+  // Lets the caller skip the KMS Decrypt round-trip since we just
+  // generated the plaintext here. Null for existing accounts — they
+  // need a real decrypt.
+  plaintextSeed: string | null;
+}
+
+async function getOrCreateNatsAccount(userGuid: string, requestId: string): Promise<AccountLookup> {
   // Check if account exists
   const existingAccount = await ddb.send(new GetItemCommand({
     TableName: TABLE_NATS_ACCOUNTS,
@@ -337,14 +357,14 @@ async function getOrCreateNatsAccount(userGuid: string, requestId: string): Prom
 
     // If account is active, user is already enrolled
     if (account.status === 'active') {
-      return account;
+      return { record: account, plaintextSeed: null };
     }
 
     // If account is in 'enrolling' status, allow re-enrollment
     // This handles the case where a previous enrollment attempt failed
     if (account.status === 'enrolling') {
       console.log(`Re-using existing enrolling account for user ${userGuid}`);
-      return account;
+      return { record: account, plaintextSeed: null };
     }
 
     // Any other status is an error
@@ -404,7 +424,7 @@ async function getOrCreateNatsAccount(userGuid: string, requestId: string): Prom
     status: 'enrolling',
   }, requestId);
 
-  return accountRecord;
+  return { record: accountRecord, plaintextSeed: accountCredentials.seed };
 }
 
 /**

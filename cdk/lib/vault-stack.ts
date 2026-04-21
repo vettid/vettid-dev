@@ -50,6 +50,13 @@ export class VaultStack extends cdk.Stack {
   public readonly getEnrollmentStatus!: lambdaNode.NodejsFunction;
   public readonly enrollNatsBootstrap!: lambdaNode.NodejsFunction;
   public readonly natsCredentialReissue!: lambdaNode.NodejsFunction;
+
+  // Provisioned-concurrency aliases for the two hot enrollment
+  // Lambdas. API Gateway routes target the alias instead of
+  // $LATEST so the first call after a cold period hits a
+  // pre-warmed container.
+  private readonly authenticateEnrollmentAlias!: lambda.Alias;
+  private readonly enrollNatsBootstrapAlias!: lambda.Alias;
   // Legacy auth handlers removed - vault-manager handles auth via NATS
 
   // Device attestation handlers (Phase 2)
@@ -268,6 +275,9 @@ export class VaultStack extends cdk.Stack {
     tables.natsAccounts.grantReadWriteData(this.cancelEnrollmentSession);
 
     // Authenticate enrollment (public endpoint for mobile to exchange session_token for JWT)
+    // Memory bumped to 512MB so the default 128MB doesn't throttle
+    // CPU on the auth path — the Cognito-backed round-trip is the
+    // long pole but we also don't want to leave perf on the table.
     this.authenticateEnrollment = new lambdaNode.NodejsFunction(this, 'AuthenticateEnrollmentFn', {
       entry: 'lambda/handlers/vault/authenticateEnrollment.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
@@ -276,7 +286,16 @@ export class VaultStack extends cdk.Stack {
         TABLE_AUDIT: tables.audit.tableName,
         ENROLLMENT_JWT_SECRET_ARN: props.infrastructure.enrollmentJwtSecretArn,
       },
+      memorySize: 512,
       timeout: cdk.Duration.seconds(30),
+    });
+    // Provisioned-concurrency alias so enrollment's first hit doesn't
+    // pay the cold-start penalty (~1-2s). Aliased as `live`; API
+    // Gateway integration below targets the alias instead of $LATEST.
+    (this as any).authenticateEnrollmentAlias = new lambda.Alias(this, 'AuthenticateEnrollmentAlias', {
+      aliasName: 'live',
+      version: this.authenticateEnrollment.currentVersion,
+      provisionedConcurrentExecutions: 1,
     });
 
     // Grant read access to the enrollment JWT secret
@@ -326,7 +345,10 @@ export class VaultStack extends cdk.Stack {
     });
 
     // NATS bootstrap for enrollment (provides NATS credentials after authentication)
-    // This bridges the gap between authentication and NATS connection during enrollment
+    // This bridges the gap between authentication and NATS connection during enrollment.
+    // Memory is 512MB: the handler does Ed25519 account + user keypair
+    // signing back-to-back, which is CPU-bound, and the default 128MB
+    // gives shared/burstable CPU that makes signing ~2-3x slower.
     this.enrollNatsBootstrap = new lambdaNode.NodejsFunction(this, 'EnrollNatsBootstrapFn', {
       entry: 'lambda/handlers/vault/enrollNatsBootstrap.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
@@ -341,7 +363,17 @@ export class VaultStack extends cdk.Stack {
         NATS_SEED_KMS_KEY_ARN: props.infrastructure.natsSeedEncryptionKey.keyArn,
         ENROLLMENT_JWT_SECRET_ARN: props.infrastructure.enrollmentJwtSecretArn,
       },
+      memorySize: 512,
       timeout: cdk.Duration.seconds(30),
+    });
+    // Provisioned-concurrency alias — this endpoint is the long
+    // pole of enrollment Phase 1 (~6s). With PC=1 the first
+    // enrollment after a cold start hits a warm container and
+    // skips ~1-3s of init time.
+    (this as any).enrollNatsBootstrapAlias = new lambda.Alias(this, 'EnrollNatsBootstrapAlias', {
+      aliasName: 'live',
+      version: this.enrollNatsBootstrap.currentVersion,
+      provisionedConcurrentExecutions: 1,
     });
 
     // Grant permissions for enrollNatsBootstrap
@@ -1415,7 +1447,9 @@ export class VaultStack extends cdk.Stack {
     httpApi: apigw.HttpApi,
     path: string,
     method: apigw.HttpMethod,
-    handler: lambdaNode.NodejsFunction,
+    // IFunction (not NodejsFunction) so callers can pass a
+    // lambda.Alias for provisioned-concurrency routing.
+    handler: lambda.IFunction,
     authorizer: apigw.IHttpRouteAuthorizer,
   ): void {
     new apigw.HttpRoute(this, id, {
@@ -1449,11 +1483,12 @@ export class VaultStack extends cdk.Stack {
     this.route('CreateEnrollmentSession', httpApi, '/vault/enroll/session', apigw.HttpMethod.POST, this.createEnrollmentSession, memberAuthorizer);
     this.route('CancelEnrollmentSession', httpApi, '/vault/enroll/cancel', apigw.HttpMethod.POST, this.cancelEnrollmentSession, memberAuthorizer);
 
-    // Public endpoint: Mobile exchanges session_token for enrollment JWT (no auth required)
+    // Public endpoint: Mobile exchanges session_token for enrollment JWT (no auth required).
+    // Routed at the provisioned-concurrency alias so we skip cold-start init.
     new apigw.HttpRoute(this, 'AuthenticateEnrollment', {
       httpApi,
       routeKey: apigw.HttpRouteKey.with('/vault/enroll/authenticate', apigw.HttpMethod.POST),
-      integration: new integrations.HttpLambdaIntegration('AuthenticateEnrollmentInt', this.authenticateEnrollment),
+      integration: new integrations.HttpLambdaIntegration('AuthenticateEnrollmentInt', this.authenticateEnrollmentAlias),
       // No authorizer - this is a public endpoint
     });
 
@@ -1465,9 +1500,10 @@ export class VaultStack extends cdk.Stack {
       // No authorizer - this is a public endpoint
     });
 
-    // Mobile enrollment - NATS bootstrap provides credentials after authentication
-    // This bridges the gap between authentication and NATS connection
-    this.route('EnrollNatsBootstrap', httpApi, '/vault/enroll/nats-bootstrap', apigw.HttpMethod.POST, this.enrollNatsBootstrap, enrollmentLambdaAuthorizer);
+    // Mobile enrollment - NATS bootstrap provides credentials after authentication.
+    // Routed at the provisioned-concurrency alias — this is the
+    // long pole of Phase 1 and the cold-start avoidance pays off most here.
+    this.route('EnrollNatsBootstrap', httpApi, '/vault/enroll/nats-bootstrap', apigw.HttpMethod.POST, this.enrollNatsBootstrapAlias, enrollmentLambdaAuthorizer);
 
     // Mobile enrollment - enrollFinalize now handles complete enrollment via vault-manager
     // Legacy enrollStart/enrollSetPassword removed - vault-manager handles key generation
