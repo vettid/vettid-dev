@@ -5,17 +5,20 @@ import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import {
   ok,
   conflict,
+  forbidden,
   internalError,
   getRequestId,
   putAudit,
   generateSecureId,
   requireUserClaims,
 } from '../../common/util';
+import { hasActiveSubscription } from '../../common/subscription';
 
 const ddb = new DynamoDBClient({});
 
 const TABLE_ENROLLMENT_SESSIONS = process.env.TABLE_ENROLLMENT_SESSIONS!;
 const TABLE_NATS_ACCOUNTS = process.env.TABLE_NATS_ACCOUNTS!;
+const TABLE_SUBSCRIPTIONS = process.env.TABLE_SUBSCRIPTIONS!;
 const DEEP_LINK_BASE_URL = 'https://vettid.dev/enroll';
 
 /**
@@ -63,6 +66,20 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
 
     const userGuid = claims.user_guid;
     const userEmail = claims.email;
+
+    // Gate vault enrollment on an active subscription. The account
+    // portal hides the Deploy Vault tab without one, but the API
+    // must enforce the rule too — the portal is UX, this is the
+    // actual boundary.
+    const subActive = await hasActiveSubscription(userGuid, TABLE_SUBSCRIPTIONS);
+    if (!subActive) {
+      await putAudit({
+        type: 'enrollment_session_denied',
+        user_guid: userGuid,
+        reason: 'no_active_subscription',
+      }, requestId);
+      return forbidden('An active subscription is required to enroll a vault.', origin);
+    }
 
     // Check if user already has an active NATS account (vault is enrolled)
     // In the Nitro model, having a NATS account means the user has a vault

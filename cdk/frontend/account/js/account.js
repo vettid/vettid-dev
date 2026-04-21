@@ -1740,6 +1740,17 @@ async function clearGettingStartedComplete() {
 }
 
 function switchToTab(tabName, subTabName) {
+  // Defense-in-depth: vault management requires an active subscription.
+  // The tab itself is hidden by updateTabVisibility, but any code path
+  // that calls switchToTab('deploy-vault') directly (guides, deep
+  // links, future additions) would otherwise render the hidden
+  // content. Short-circuit to Subscription here so there's one place
+  // that enforces the rule.
+  if (tabName === 'deploy-vault' && signedIn() && !isSubscriber()) {
+    tabName = 'subscription';
+    subTabName = undefined;
+  }
+
   // Reset scroll position when switching tabs
   window.scrollTo(0, 0);
 
@@ -1992,7 +2003,15 @@ async function populateGettingStartedSteps() {
 
 document.getElementById('gotItBtn').onclick = async () => {
   await markGettingStartedComplete();
-  switchToTab('deploy-vault');
+  // Vault management lives under Deploy Vault, which the portal hides
+  // for users without an active subscription (see updateTabVisibility).
+  // The getting-started guide otherwise lands the user on a tab they
+  // can't see — route to Subscription so they can renew first.
+  if (isSubscriber()) {
+    switchToTab('deploy-vault');
+  } else {
+    switchToTab('subscription');
+  }
 };
 
 // ---- Vault Services Functions ----

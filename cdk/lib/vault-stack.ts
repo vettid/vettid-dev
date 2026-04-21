@@ -248,6 +248,7 @@ export class VaultStack extends cdk.Stack {
       environment: {
         ...defaultEnv,
         TABLE_NATS_ACCOUNTS: tables.natsAccounts.tableName,
+        TABLE_SUBSCRIPTIONS: tables.subscriptions.tableName,
         API_URL: 'https://api.vettid.dev',
       },
       timeout: cdk.Duration.seconds(30),
@@ -615,6 +616,7 @@ export class VaultStack extends cdk.Stack {
     tables.enrollmentSessions.grantReadWriteData(this.enrollFinalize);
     tables.enrollmentSessions.grantReadWriteData(this.createEnrollmentSession);
     tables.natsAccounts.grantReadData(this.createEnrollmentSession);
+    tables.subscriptions.grantReadData(this.createEnrollmentSession);
     tables.audit.grantReadWriteData(this.createEnrollmentSession);
     tables.enrollmentSessions.grantReadWriteData(this.cancelEnrollmentSession);
     tables.audit.grantReadWriteData(this.cancelEnrollmentSession);
