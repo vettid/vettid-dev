@@ -219,6 +219,17 @@ func (p *ParentProcess) routeNATSToEnclave(ctx context.Context) error {
 	if err := p.natsClient.Subscribe("OwnerSpace.*.forVault.credential.create", msgChan); err != nil {
 		return fmt.Errorf("failed to subscribe to OwnerSpace.*.forVault.credential.create: %w", err)
 	}
+	// PIN setup is the actual first write during enrollment — the
+	// mobile app publishes the bare `forVault.pin` subject before
+	// `credential.create`. Without this, enrollment hangs waiting
+	// for a PIN response that no instance ever heard.
+	//
+	// We intentionally do NOT subscribe to `forVault.pin.>` here —
+	// post-enrollment PIN operations (e.g. pin.unlock) require
+	// existing ownership and must come through the per-user sub.
+	if err := p.natsClient.Subscribe("OwnerSpace.*.forVault.pin", msgChan); err != nil {
+		return fmt.Errorf("failed to subscribe to OwnerSpace.*.forVault.pin: %w", err)
+	}
 	// Match both the bare attestation subject (what the mobile app
 	// actually publishes during enrollment) and any deeper attestation
 	// variants. NATS `>` requires at least one extra token, so the
@@ -447,26 +458,40 @@ func (p *ParentProcess) forwardToEnclave(ctx context.Context, msg *NATSMessage) 
 
 		// Routing guard (per-user ownership). See routing.go.
 		//
-		//   - credential.create: the entry point for a brand-new
-		//     user. Claim ownership now; lose silently if another
-		//     instance got there first.
-		//   - attestation.*: stateless; any instance can answer.
-		//     Allow through.
-		//   - everything else forVault: we must own the user, or we
-		//     drop. This catches the brief split-brain window during
-		//     a handoff (subscription not torn down yet).
+		//   - If we already own the user: proceed. Mostly the per-user
+		//     sub does this delivery, but wildcards may race ahead of
+		//     the sub being installed on the first message post-claim.
+		//   - Attestation: stateless; any instance can answer.
+		//   - Enrollment-entry subjects (pin, credential.create): the
+		//     first operations for a brand-new user. Try to CAS-claim;
+		//     drop silently if another instance got there first.
+		//   - Everything else: we must own the user. Drop otherwise —
+		//     this catches the brief split-brain window during a
+		//     handoff (sub not torn down yet) as well as wildcard
+		//     leakage from pre-claim operations we don't serve.
+		//
+		// NOTE: We cannot use msgType to detect enrollment-entry
+		// subjects — mapSubjectToMessageType collapses all mobile
+		// forVault ops (including credential.create and pin) to
+		// VaultOp. Subject-suffix matching is the authoritative
+		// discriminator.
 		if p.routing != nil && !isForOwnerSubject(msg.Subject) && ownerSpace != "" {
-			isCreate := msgType == EnclaveMessageTypeCredentialCreate
-			isAttestation := msgType == EnclaveMessageTypeAttestationRequest
-			if isCreate {
+			switch {
+			case p.routing.IsOwner(ownerSpace):
+				// proceed
+			case msgType == EnclaveMessageTypeAttestationRequest:
+				// proceed — stateless
+			case isEnrollmentEntrySubject(msg.Subject):
 				won, err := p.routing.ClaimForEnrollment(ownerSpace, p.pcr0)
 				if err != nil {
-					log.Warn().Err(err).Str("owner_space", ownerSpace).Msg("routing: claim-for-enrollment errored — proceeding without claim")
-				} else if !won {
-					log.Info().Str("owner_space", ownerSpace).Msg("routing: credential.create ignored — owned by another instance")
+					log.Warn().Err(err).Str("owner_space", ownerSpace).Str("subject", msg.Subject).Msg("routing: claim-for-enrollment errored — dropping")
 					return nil
 				}
-			} else if !isAttestation && !p.routing.IsOwner(ownerSpace) {
+				if !won {
+					log.Info().Str("owner_space", ownerSpace).Str("subject", msg.Subject).Msg("routing: enrollment-entry ignored — another instance owns this user")
+					return nil
+				}
+			default:
 				log.Debug().Str("owner_space", ownerSpace).Str("subject", msg.Subject).Msg("routing: dropping message for user we don't own")
 				return nil
 			}
@@ -1285,6 +1310,16 @@ func mapSubjectToMessageType(subject string) EnclaveMessageType {
 
 	// Default to vault operation - includes credential.create/unseal for mobile apps
 	return EnclaveMessageTypeVaultOp
+}
+
+// isEnrollmentEntrySubject reports whether the NATS subject represents
+// a first-time operation that may legitimately arrive before we own
+// the user. These are the entry points the routing guard should try
+// to CAS-claim rather than drop. Post-enrollment operations (like
+// pin.unlock) must NOT match here — they require existing ownership.
+func isEnrollmentEntrySubject(subject string) bool {
+	return hasSubjectSuffix(subject, ".forVault.pin") ||
+		hasSubjectSuffix(subject, ".forVault.credential.create")
 }
 
 // isForOwnerSubject checks if a NATS subject contains ".forOwner." routing segment.
