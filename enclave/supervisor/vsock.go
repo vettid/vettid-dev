@@ -91,6 +91,11 @@ const (
 
 	// Audit event (org-vault-manager -> supervisor -> parent -> DynamoDB + NATS)
 	MessageTypeAuditEvent MessageType = "audit_event"
+
+	// Routing handoff (vault-manager -> supervisor -> parent): after
+	// a successful migration re-seal, vault-manager asks parent to
+	// transfer ownership via the `vault-routing` JetStream KV.
+	MessageTypeRoutingHandoff MessageType = "routing_handoff"
 )
 
 // SECURITY: Handshake constants
@@ -155,6 +160,10 @@ type Message struct {
 	LogLevel   string `json:"log_level,omitempty"`   // "debug", "info", "warn", "error"
 	LogMessage string `json:"log_message,omitempty"` // Log message content
 	LogSource  string `json:"log_source,omitempty"`  // "supervisor", "vault-manager", owner_space
+
+	// Routing handoff (vault-manager -> parent after migration re-seal)
+	TargetInstanceID string `json:"target_instance_id,omitempty"` // empty = release-for-reclaim
+	NewPCR0          string `json:"new_pcr0,omitempty"`
 
 	// Error
 	Error string `json:"error,omitempty"`

@@ -167,6 +167,13 @@ const (
 
 	// Audit event (org-vault-manager -> parent -> DynamoDB + NATS)
 	EnclaveMessageTypeAuditEvent EnclaveMessageType = "audit_event"
+
+	// Ownership handoff (vault-manager -> parent): after a successful
+	// credential.migration.start re-seal, the vault-manager asks the
+	// parent to transfer this user's routing ownership to the target
+	// enclave instance. Parent executes the CAS-update on the
+	// `vault-routing` KV bucket and drops its per-user subscription.
+	EnclaveMessageTypeRoutingHandoff EnclaveMessageType = "routing_handoff"
 )
 
 // Attestation holds a Nitro attestation document
@@ -211,6 +218,12 @@ type EnclaveMessage struct {
 	LogLevel   string `json:"log_level,omitempty"`   // "debug", "info", "warn", "error"
 	LogMessage string `json:"log_message,omitempty"` // Log message content
 	LogSource  string `json:"log_source,omitempty"`  // "supervisor", "vault-manager", or owner_space
+
+	// Routing handoff fields (vault-manager -> parent after migration).
+	// TargetInstanceID is the enclave ID that should take over ownership
+	// for OwnerSpace. NewPCR0 is the PCR the state is now sealed to.
+	TargetInstanceID string `json:"target_instance_id,omitempty"`
+	NewPCR0          string `json:"new_pcr0,omitempty"`
 }
 
 // CredentialRequest is the request to create a new credential

@@ -273,7 +273,7 @@ func (pm *ProcessManager) Send(ctx context.Context, ownerSpace string, msg *Mess
 			// Continue waiting for the final response
 			continue
 
-		case MessageTypeNATSPublish, MessageTypeLog:
+		case MessageTypeNATSPublish, MessageTypeLog, MessageTypeRoutingHandoff:
 			// These messages should be forwarded to parent, not returned as the response.
 			// In the process_manager context, we don't have direct access to forward them,
 			// so we log a warning and continue waiting for the actual response.

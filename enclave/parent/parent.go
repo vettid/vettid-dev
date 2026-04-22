@@ -22,6 +22,8 @@ type ParentProcess struct {
 	healthSrv      *HealthServer
 	kmsClient      *KMSClient
 	dynamoDBClient *DynamoDBClient
+	routing        *RoutingManager // Per-user ownership + routing (see routing.go)
+	pcr0           string          // Attested PCR0 of this enclave, populated once known
 	mu             sync.RWMutex
 }
 
@@ -54,9 +56,16 @@ func (p *ParentProcess) Run(ctx context.Context) error {
 	go p.healthSrv.Start()
 	defer p.healthSrv.Stop()
 
-	// Connect to NATS with health status callback
+	// Connect to NATS with health + routing-reconnect callback
 	natsClient, err := NewNATSClient(p.config.NATS, func(connected bool) {
 		p.updateHealthStatus()
+		// When we reconnect, resync the routing state — any KV
+		// changes that occurred during the disconnect need to be
+		// picked up so our subscription set matches authoritative
+		// ownership. See RoutingManager.OnReconnect.
+		if connected && p.routing != nil {
+			p.routing.OnReconnect()
+		}
 	})
 	if err != nil {
 		return fmt.Errorf("failed to connect to NATS: %w", err)
@@ -174,23 +183,46 @@ func (p *ParentProcess) routeNATSToEnclave(ctx context.Context) error {
 
 	msgChan := make(chan *NATSMessage, 1000) // Increased from 100 to prevent drops under load
 
-	// Live traffic for all forVault ops (credential, connection, feed,
-	// call signaling, message.*) comes through core NATS pub/sub — no
-	// replay, ephemeral.
+	// Per-user routing: forVault traffic only arrives here through
+	// subscriptions owned by the RoutingManager — one per user we
+	// own. The routing manager's heartbeat + KV watcher keep the
+	// subscription set in sync with authoritative ownership state.
+	// See enclave/parent/routing.go.
 	//
-	// An earlier iteration bound a JetStream durable consumer to the
-	// ENROLLMENT stream (subject `OwnerSpace.*.forVault.>`) with
-	// DeliverAll, to replay peer messages sent while the receiver was
-	// offline. That same subscription also captured credential and
-	// migration traffic, so every new vault-manager instance replayed
-	// weeks of history — including credential.migration.start,
-	// reprocessing each one and overwriting the user's vault state
-	// with fresh empty data. Do NOT reinstate a broad JS subscription
-	// here.
-	if err := p.natsClient.Subscribe("OwnerSpace.*.forVault.>", msgChan); err != nil {
-		return fmt.Errorf("failed to subscribe to OwnerSpace.*.forVault.>: %w", err)
+	// Historical note: we used to subscribe to the wildcard
+	// `OwnerSpace.*.forVault.>` on every instance. That worked when
+	// we ran a single enclave, but during the 2-instance migration
+	// window both old and new instances fanned in every request and
+	// whichever answered first decided what the user saw (often
+	// wrong, because the hydrating instance had empty SQLite). An
+	// even earlier iteration bound a JetStream durable consumer on
+	// the ENROLLMENT stream with DeliverAll to that wildcard; every
+	// new instance replayed weeks of credential.migration.start
+	// messages and overwrote user state. Neither pattern is coming
+	// back — the per-user subscription is the only correct shape.
+	p.routing = NewRoutingManager(p.enclaveID, p.pcr0, p.natsClient, msgChan)
+	if err := p.routing.Start(ctx); err != nil {
+		return fmt.Errorf("failed to start routing manager: %w", err)
 	}
-	log.Info().Str("subject", "OwnerSpace.*.forVault.>").Msg("Subscribed to forVault traffic (core NATS, live only)")
+
+	// Narrow wildcards for pre-enrollment operations that any instance
+	// may accept. The routing manager handles the handoff once a user
+	// is enrolled: the instance whose vault-manager successfully
+	// creates the credential CAS-claims the routing row, and from
+	// that point on only that instance's per-user subscription sees
+	// traffic for the user.
+	//
+	// These two subjects are fine to fan-in across instances — the
+	// downstream enclave-side handlers are idempotent, and in the
+	// credential.create case the CAS-claim in the routing manager
+	// decides the single winner.
+	if err := p.natsClient.Subscribe("OwnerSpace.*.forVault.credential.create", msgChan); err != nil {
+		return fmt.Errorf("failed to subscribe to OwnerSpace.*.forVault.credential.create: %w", err)
+	}
+	if err := p.natsClient.Subscribe("OwnerSpace.*.forVault.attestation.>", msgChan); err != nil {
+		return fmt.Errorf("failed to subscribe to OwnerSpace.*.forVault.attestation.>: %w", err)
+	}
+	log.Info().Msg("Subscribed to enrollment-only forVault wildcards; per-user routing covers the rest")
 
 	// Offline-message durability lives in the dedicated VAULT_MESSAGES
 	// stream, scoped strictly to peer message subjects. DeliverAll
@@ -403,6 +435,33 @@ func (p *ParentProcess) forwardToEnclave(ctx context.Context, msg *NATSMessage) 
 		if msgType == EnclaveMessageTypeCredentialCreate || msgType == EnclaveMessageTypeCredentialUnseal {
 			if err := p.parseCredentialRequestFromPayload(msg.Data, enclaveMsg); err != nil {
 				log.Warn().Err(err).Msg("Failed to parse credential request from payload")
+			}
+		}
+
+		// Routing guard (per-user ownership). See routing.go.
+		//
+		//   - credential.create: the entry point for a brand-new
+		//     user. Claim ownership now; lose silently if another
+		//     instance got there first.
+		//   - attestation.*: stateless; any instance can answer.
+		//     Allow through.
+		//   - everything else forVault: we must own the user, or we
+		//     drop. This catches the brief split-brain window during
+		//     a handoff (subscription not torn down yet).
+		if p.routing != nil && !isForOwnerSubject(msg.Subject) && ownerSpace != "" {
+			isCreate := msgType == EnclaveMessageTypeCredentialCreate
+			isAttestation := msgType == EnclaveMessageTypeAttestationRequest
+			if isCreate {
+				won, err := p.routing.ClaimForEnrollment(ownerSpace, p.pcr0)
+				if err != nil {
+					log.Warn().Err(err).Str("owner_space", ownerSpace).Msg("routing: claim-for-enrollment errored — proceeding without claim")
+				} else if !won {
+					log.Info().Str("owner_space", ownerSpace).Msg("routing: credential.create ignored — owned by another instance")
+					return nil
+				}
+			} else if !isAttestation && !p.routing.IsOwner(ownerSpace) {
+				log.Debug().Str("owner_space", ownerSpace).Str("subject", msg.Subject).Msg("routing: dropping message for user we don't own")
+				return nil
 			}
 		}
 	}
@@ -720,6 +779,28 @@ func (p *ParentProcess) sendWithHandlerSupport(ctx context.Context, msg *Enclave
 
 			go p.persistAuditEvent(ctx, response)
 			continue // Wait for next response
+		}
+
+		// Check for routing handoff request from vault-manager after a
+		// successful migration re-seal. Parent executes the CAS-update
+		// on the routing KV bucket — the target instance's watcher
+		// picks up the change and takes over subscription ownership.
+		if response.Type == EnclaveMessageTypeRoutingHandoff {
+			if p.routing != nil && response.OwnerSpace != "" && response.TargetInstanceID != "" {
+				if err := p.routing.HandoffToPeer(response.OwnerSpace, response.TargetInstanceID, response.NewPCR0); err != nil {
+					log.Error().
+						Err(err).
+						Str("owner_space", response.OwnerSpace).
+						Str("target", response.TargetInstanceID).
+						Msg("routing: handoff failed")
+				}
+			} else {
+				log.Warn().
+					Str("owner_space", response.OwnerSpace).
+					Str("target", response.TargetInstanceID).
+					Msg("routing: ignoring malformed handoff request from enclave")
+			}
+			continue
 		}
 
 		// Check if this is an HTTP proxy request from the enclave

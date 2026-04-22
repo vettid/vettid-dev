@@ -390,6 +390,27 @@ func (vp *VaultProcess) ProcessMessage(ctx context.Context, msg *Message) (*Mess
 				// Continue waiting for the final response
 				continue
 
+			case MessageTypeRoutingHandoff:
+				// Vault-manager finished migration re-seal and is
+				// asking parent to transfer ownership in the
+				// routing KV. Forward and keep waiting for the
+				// actual response to the migration operation.
+				log.Info().
+					Str("owner_space", vp.OwnerSpace).
+					Str("target_instance", response.TargetInstanceID).
+					Str("new_pcr0", response.NewPCR0).
+					Msg("Forwarding routing handoff from vault-manager")
+
+				if vp.parentSender != nil {
+					if err := vp.parentSender.SendToParent(response); err != nil {
+						log.Warn().
+							Err(err).
+							Str("owner_space", vp.OwnerSpace).
+							Msg("Failed to forward routing handoff (non-fatal)")
+					}
+				}
+				continue
+
 			case MessageTypeLog:
 				// Vault-manager log message - forward and continue
 				log.Debug().

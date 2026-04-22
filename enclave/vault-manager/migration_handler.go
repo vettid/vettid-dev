@@ -17,7 +17,8 @@ type MigrationHandler struct {
 	vaultState  *VaultState
 	sealerProxy *SealerProxy
 	auditLog    *AuditLog
-	persistFn   func() // callback to persist vault state after migration re-seal
+	persistFn   func()                            // callback to persist vault state after migration re-seal
+	sendToParent func(msg *OutgoingMessage) error // callback to emit routing-handoff to parent
 }
 
 // SetAuditLog wires the per-connection audit trail so migration
@@ -43,6 +44,14 @@ func NewMigrationHandler(
 // This is called after successful migration re-seal to ensure durability.
 func (h *MigrationHandler) SetPersistFn(fn func()) {
 	h.persistFn = fn
+}
+
+// SetSendToParent wires the callback used to emit routing-handoff
+// messages after a successful migration. The message tells parent to
+// release ownership in the `vault-routing` KV bucket so an instance
+// attesting to the new PCR can take over.
+func (h *MigrationHandler) SetSendToParent(fn func(msg *OutgoingMessage) error) {
+	h.sendToParent = fn
 }
 
 // MigrationUserStatus represents the status of a user's migration.
@@ -435,6 +444,28 @@ func (h *MigrationHandler) HandleStart(ctx context.Context, msg *IncomingMessage
 	if configVersion != "" {
 		if err := h.sealerProxy.WriteMigrationMarker(configVersion); err != nil {
 			log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("Failed to write migration marker (non-fatal)")
+		}
+	}
+
+	// Routing handoff: the user's state is now sealed to the new
+	// PCR, so the parent should release ownership in the
+	// vault-routing KV. TargetInstanceID="" means "release for
+	// reclaim" — any instance attesting to the new PCR will then
+	// take over the user's subscription. See plans/luminous-
+	// unifying-manatee.md §multi-instance-routing and the design
+	// notes in enclave/parent/routing.go.
+	if h.sendToParent != nil {
+		handoffMsg := &OutgoingMessage{
+			Type:             MessageTypeRoutingHandoff,
+			OwnerSpace:       h.ownerSpace,
+			TargetInstanceID: "",
+			NewPCR0:          configVersion, // repurposed as the PCR marker; parent stores it in the KV
+		}
+		if err := h.sendToParent(handoffMsg); err != nil {
+			log.Warn().
+				Err(err).
+				Str("owner_space", h.ownerSpace).
+				Msg("routing handoff send failed (non-fatal — lease expiry will cover it)")
 		}
 	}
 

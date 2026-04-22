@@ -30,6 +30,12 @@ const (
 	MessageTypeResponse        MessageType = "response"
 	MessageTypeError           MessageType = "error"
 	MessageTypeStorageResponse MessageType = "storage_response" // From parent for S3 operations
+
+	// Routing handoff (vault-manager -> supervisor -> parent):
+	// emitted after a successful credential.migration.start re-seal
+	// so the parent can transfer ownership in the routing KV. Use
+	// TargetInstanceID="" for release-for-reclaim semantics.
+	MessageTypeRoutingHandoff MessageType = "routing_handoff"
 )
 
 // IncomingMessage is a message from the supervisor/parent
@@ -75,6 +81,10 @@ type OutgoingMessage struct {
 	ReplyTo    string          `json:"reply_to,omitempty"`
 	Payload    json.RawMessage `json:"payload,omitempty"`
 	Error      string          `json:"error,omitempty"`
+
+	// Routing handoff fields (see MessageTypeRoutingHandoff)
+	TargetInstanceID string `json:"target_instance_id,omitempty"`
+	NewPCR0          string `json:"new_pcr0,omitempty"`
 
 	// Legacy field for backward compatibility
 	ID string `json:"id,omitempty"`
@@ -389,6 +399,9 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 
 	// Wire up migration handler's persist callback so it can save vault state after re-seal
 	migrationHandler.SetPersistFn(mh.persistVaultStateToS3)
+	// Wire the routing-handoff callback so the parent can update the
+	// vault-routing KV after a successful migration re-seal.
+	migrationHandler.SetSendToParent(sendFn)
 
 	// Audit read-path wiring: handler reads, log writes. No backfill —
 	// connections created before this feature shipped will have empty

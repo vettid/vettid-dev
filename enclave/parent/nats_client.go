@@ -104,9 +104,64 @@ func NewNATSClient(cfg NATSConfig, stateCallback ConnectionStateCallback) (*NATS
 		if err := client.ensureInvitationsStream(); err != nil {
 			log.Warn().Err(err).Msg("Failed to create invitations stream")
 		}
+
+		// Ensure routing KV bucket exists. Holds per-user ownership
+		// state (which enclave instance is currently authoritative
+		// for a user). See enclave/parent/routing.go.
+		if err := client.ensureRoutingKV(); err != nil {
+			log.Warn().Err(err).Msg("Failed to create routing KV — per-user routing will fall back to wildcard")
+		}
 	}
 
 	return client, nil
+}
+
+// RoutingKV exposes the JetStream KeyValue store used for per-user
+// ownership. Returns nil if JetStream isn't available or the bucket
+// doesn't exist yet.
+func (c *NATSClient) RoutingKV() (nats.KeyValue, error) {
+	if c.js == nil {
+		return nil, fmt.Errorf("JetStream not available")
+	}
+	return c.js.KeyValue(routingBucketName)
+}
+
+const (
+	routingBucketName = "vault-routing"
+	routingKVHistory  = uint8(5)
+	routingKVMaxValue = int32(512)
+)
+
+// ensureRoutingKV creates the KV bucket that holds per-user
+// ownership state. See enclave/parent/routing.go for the protocol.
+//
+// History=5 so we can look at recent ownership transitions for
+// forensics. No TTL — heartbeat keeps keys fresh, so absence is
+// meaningful. MaxValueSize caps writes to catch bugs (our JSON is
+// ~200 B).
+func (c *NATSClient) ensureRoutingKV() error {
+	if c.js == nil {
+		return fmt.Errorf("JetStream not available")
+	}
+
+	if existing, err := c.js.KeyValue(routingBucketName); err == nil && existing != nil {
+		log.Debug().Str("bucket", routingBucketName).Msg("Routing KV bucket already exists")
+		return nil
+	}
+
+	_, err := c.js.CreateKeyValue(&nats.KeyValueConfig{
+		Bucket:       routingBucketName,
+		Description:  "Per-user vault ownership (instance_id, pcr0, lease_until)",
+		History:      routingKVHistory,
+		MaxValueSize: routingKVMaxValue,
+		Storage:      nats.FileStorage,
+		Replicas:     1,
+	})
+	if err != nil {
+		return fmt.Errorf("create routing KV: %w", err)
+	}
+	log.Info().Str("bucket", routingBucketName).Msg("Created routing KV bucket")
+	return nil
 }
 
 // ensureEnrollmentStream persists short-TTL traffic for the enrollment
