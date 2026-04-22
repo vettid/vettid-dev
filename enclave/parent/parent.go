@@ -219,6 +219,13 @@ func (p *ParentProcess) routeNATSToEnclave(ctx context.Context) error {
 	if err := p.natsClient.Subscribe("OwnerSpace.*.forVault.credential.create", msgChan); err != nil {
 		return fmt.Errorf("failed to subscribe to OwnerSpace.*.forVault.credential.create: %w", err)
 	}
+	// Match both the bare attestation subject (what the mobile app
+	// actually publishes during enrollment) and any deeper attestation
+	// variants. NATS `>` requires at least one extra token, so the
+	// bare subject needs its own exact subscription.
+	if err := p.natsClient.Subscribe("OwnerSpace.*.forVault.attestation", msgChan); err != nil {
+		return fmt.Errorf("failed to subscribe to OwnerSpace.*.forVault.attestation: %w", err)
+	}
 	if err := p.natsClient.Subscribe("OwnerSpace.*.forVault.attestation.>", msgChan); err != nil {
 		return fmt.Errorf("failed to subscribe to OwnerSpace.*.forVault.attestation.>: %w", err)
 	}
