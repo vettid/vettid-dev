@@ -412,15 +412,23 @@ func (h *MigrationHandler) HandleStart(ctx context.Context, msg *IncomingMessage
 		log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("Failed to re-seal ECIES keys (non-fatal)")
 	}
 
-	// 3. Fetch migration config version for state tracking
+	// 3. Fetch migration config for state tracking + routing handoff.
+	// We need both the human-readable version (for MigrationState) and
+	// the actual PCR0 hex (for the routing KV so reclaiming instances
+	// can match it against their attested PCR).
 	configVersion := ""
+	newPCR0 := ""
 	configData, err := h.sealerProxy.FetchMigrationConfig()
 	if err == nil && len(configData) > 0 {
 		var config struct {
 			Version string `json:"version"`
+			NewPCRs struct {
+				PCR0 string `json:"pcr0"`
+			} `json:"new_pcrs"`
 		}
 		json.Unmarshal(configData, &config)
 		configVersion = config.Version
+		newPCR0 = config.NewPCRs.PCR0
 	}
 
 	// 4. Mark migration complete
@@ -451,15 +459,15 @@ func (h *MigrationHandler) HandleStart(ctx context.Context, msg *IncomingMessage
 	// PCR, so the parent should release ownership in the
 	// vault-routing KV. TargetInstanceID="" means "release for
 	// reclaim" — any instance attesting to the new PCR will then
-	// take over the user's subscription. See plans/luminous-
-	// unifying-manatee.md §multi-instance-routing and the design
-	// notes in enclave/parent/routing.go.
-	if h.sendToParent != nil {
+	// take over the user's subscription. NewPCR0 is the actual PCR0
+	// hex hash (not the version string) so parent's canClaim() gate
+	// can match it against an instance's attested PCR0.
+	if h.sendToParent != nil && newPCR0 != "" {
 		handoffMsg := &OutgoingMessage{
 			Type:             MessageTypeRoutingHandoff,
 			OwnerSpace:       h.ownerSpace,
 			TargetInstanceID: "",
-			NewPCR0:          configVersion, // repurposed as the PCR marker; parent stores it in the KV
+			NewPCR0:          newPCR0,
 		}
 		if err := h.sendToParent(handoffMsg); err != nil {
 			log.Warn().
@@ -467,6 +475,11 @@ func (h *MigrationHandler) HandleStart(ctx context.Context, msg *IncomingMessage
 				Str("owner_space", h.ownerSpace).
 				Msg("routing handoff send failed (non-fatal — lease expiry will cover it)")
 		}
+	} else if h.sendToParent != nil {
+		log.Warn().
+			Str("owner_space", h.ownerSpace).
+			Str("config_version", configVersion).
+			Msg("migration config missing new PCR0 — skipping routing handoff (sweeper will reclaim)")
 	}
 
 	log.Info().

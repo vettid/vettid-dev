@@ -284,8 +284,16 @@ func (r *RoutingManager) ReclaimIfExpiredOrVacant(userGuid string) (bool, error)
 	if !vacant && !expired {
 		return false, nil // still alive; back off
 	}
-	if !r.canClaim(existing.PCR0) {
-		return false, nil // wrong PCR for this state; another instance should take it
+	// For vacant rows (explicit release-for-reclaim), the previous
+	// owner deliberately set the PCR the state is sealed to; honor
+	// that and only claim if it matches us. For expired rows the
+	// previous owner is dead — someone has to serve the user, and
+	// KMS AnyOf policy is the real authority on who can decrypt.
+	// Blocking on PCR here would leave users black-holed whenever a
+	// migration re-seal didn't complete cleanly (owner died before
+	// sending the release handoff, handoff got dropped, etc.).
+	if vacant && !r.canClaim(existing.PCR0) {
+		return false, nil // explicit release targeted a different PCR
 	}
 
 	entry := routingEntry{
@@ -383,6 +391,53 @@ func (r *RoutingManager) heartbeatOnce() {
 			e.leaseUntil = time.Unix(newEntry.LeaseUntil, 0)
 		}
 		r.mu.Unlock()
+	}
+
+	// Sweep for stale rows while we're here. If a peer instance died
+	// without sending a release handoff (ASG terminate, process crash,
+	// hard network partition), its row's lease eventually lapses and
+	// the watcher never fires — no KV update happened. The sweep is
+	// the floor on how long such a user stays unreachable: heartbeat
+	// interval + lease TTL in the worst case.
+	r.sweepStaleRows(kv)
+}
+
+// sweepStaleRows walks the routing KV and tries to reclaim any row
+// whose lease has expired or which is vacant. We only pick up rows
+// whose PCR0 matches ours (canClaim, enforced inside
+// ReclaimIfExpiredOrVacant). Rows we already own are skipped —
+// heartbeatOnce above handles their lease renewal.
+func (r *RoutingManager) sweepStaleRows(kv nats.KeyValue) {
+	keys, err := kv.Keys()
+	if err != nil {
+		// ErrNoKeysFound is the empty-bucket case — nothing to do.
+		if err == nats.ErrNoKeysFound {
+			return
+		}
+		log.Debug().Err(err).Msg("routing: sweep skipped, KV list failed")
+		return
+	}
+	for _, key := range keys {
+		if len(key) <= len(routingKeyPrefix) || key[:len(routingKeyPrefix)] != routingKeyPrefix {
+			continue
+		}
+		guid := key[len(routingKeyPrefix):]
+
+		r.mu.RLock()
+		_, owned := r.owned[guid]
+		r.mu.RUnlock()
+		if owned {
+			continue
+		}
+
+		// ReclaimIfExpiredOrVacant is a no-op if the row is still
+		// alive (lease hasn't expired and InstanceID is non-empty) or
+		// if PCR0 doesn't match ours. Cheap to call.
+		if ok, err := r.ReclaimIfExpiredOrVacant(guid); err != nil {
+			log.Debug().Err(err).Str("user_guid", guid).Msg("routing: sweep reclaim errored")
+		} else if ok {
+			log.Info().Str("user_guid", guid).Msg("routing: sweep reclaimed stale row")
+		}
 	}
 }
 

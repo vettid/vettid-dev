@@ -817,8 +817,14 @@ func (p *ParentProcess) sendWithHandlerSupport(ctx context.Context, msg *Enclave
 		// successful migration re-seal. Parent executes the CAS-update
 		// on the routing KV bucket — the target instance's watcher
 		// picks up the change and takes over subscription ownership.
+		//
+		// Empty TargetInstanceID is the release-for-reclaim path: the
+		// vault-manager doesn't know which peer will take over, so it
+		// asks the parent to clear the InstanceID field while leaving
+		// the new PCR0 in place. Any instance whose attested PCR0
+		// matches can then claim via the watcher.
 		if response.Type == EnclaveMessageTypeRoutingHandoff {
-			if p.routing != nil && response.OwnerSpace != "" && response.TargetInstanceID != "" {
+			if p.routing != nil && response.OwnerSpace != "" {
 				if err := p.routing.HandoffToPeer(response.OwnerSpace, response.TargetInstanceID, response.NewPCR0); err != nil {
 					log.Error().
 						Err(err).
