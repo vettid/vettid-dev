@@ -90,6 +90,18 @@ func NewSQLiteStorage(ownerSpace string, dek []byte) (*SQLiteStorage, error) {
 		return nil, fmt.Errorf("failed to open SQLite: %w", err)
 	}
 
+	// CRITICAL: Go's database/sql pool and SQLite `:memory:` don't mix.
+	// Each new connection in the pool gets its OWN separate in-memory
+	// database — opening a second connection loses every table we
+	// created. Under concurrent load (migration writes + background
+	// presence/device heartbeats reading, etc.) Go readily spins up
+	// additional pool connections, and the readers see an empty DB
+	// with "no such table" errors even though the "real" connection
+	// still has everything. Pin the pool to one connection so every
+	// operation hits the same underlying database.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+
 	// Set pragmas for security and performance
 	pragmas := []string{
 		"PRAGMA journal_mode=WAL",      // Write-ahead logging for better concurrency
