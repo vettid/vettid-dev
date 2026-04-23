@@ -8,13 +8,45 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"runtime/debug"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/chacha20poly1305"
+	"github.com/rs/zerolog/log"
 	_ "modernc.org/sqlite"
 )
+
+// storageInstanceCounter assigns a monotonic ID to every
+// SQLiteStorage we create, so log lines can distinguish between
+// storage instances that were meant to be "the one."
+var storageInstanceCounter uint64
+
+// RIPWIRE: table-gone diagnostic for a suspected schema-reset
+// bug. When a SQL op returns "no such table: ..." — which should
+// never happen for tables created in initSchema — we emit a full
+// stack trace, the storage instance ID, and the owner_space so we
+// can pinpoint the code path that caused the reset. Scope-limited:
+// this logs on every failure, not just the target user, so any
+// regression surfaces loudly.
+func logTableGone(ownerSpace string, instanceID uint64, op string, err error) {
+	if err == nil {
+		return
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "no such table") {
+		return
+	}
+	log.Error().
+		Str("owner_space", ownerSpace).
+		Uint64("storage_instance", instanceID).
+		Str("op", op).
+		Err(err).
+		Str("stack", string(debug.Stack())).
+		Msg("TRIPWIRE: SQLite table missing that initSchema should have created")
+}
 
 // SQLiteStorage provides encrypted SQLite storage for vault data
 // The entire database is encrypted at rest using the DEK (Data Encryption Key)
@@ -30,6 +62,12 @@ type SQLiteStorage struct {
 	dek        []byte // 32-byte Data Encryption Key
 	ownerSpace string
 	dbPath     string
+
+	// instanceID is a monotonic counter value assigned on creation.
+	// Included in every diagnostic log line so we can tell whether a
+	// "missing table" error happened on the storage we expected, or
+	// on a different one that replaced it mid-session.
+	instanceID uint64
 
 	// Rollback protection counter - incremented on each write
 	// Prevents replay attacks where attacker restores old backup
@@ -73,19 +111,32 @@ func NewSQLiteStorage(ownerSpace string, dek []byte) (*SQLiteStorage, error) {
 	dekCopy := make([]byte, len(dek))
 	copy(dekCopy, dek)
 
+	instanceID := atomic.AddUint64(&storageInstanceCounter, 1)
 	storage := &SQLiteStorage{
 		db:              db,
 		dek:             dekCopy,
 		ownerSpace:      ownerSpace,
 		dbPath:          ":memory:",
+		instanceID:      instanceID,
 		rollbackCounter: 0,
 	}
+
+	log.Info().
+		Str("owner_space", ownerSpace).
+		Uint64("storage_instance", instanceID).
+		Str("stack", string(debug.Stack())).
+		Msg("DIAG: SQLiteStorage created")
 
 	// Initialize schema
 	if err := storage.initSchema(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to initialize schema: %w", err)
 	}
+
+	log.Info().
+		Str("owner_space", ownerSpace).
+		Uint64("storage_instance", instanceID).
+		Msg("DIAG: SQLiteStorage initSchema completed")
 
 	return storage, nil
 }
@@ -825,6 +876,7 @@ func (s *SQLiteStorage) StoreHandlerState(handlerID string, state []byte) error 
 			updated_at = excluded.updated_at
 	`, handlerID, encState, now)
 	if err != nil {
+		logTableGone(s.ownerSpace, s.instanceID, "StoreHandlerState", err)
 		return fmt.Errorf("failed to store handler state: %w", err)
 	}
 
@@ -849,6 +901,7 @@ func (s *SQLiteStorage) GetHandlerState(handlerID string) (*HandlerState, error)
 		return nil, nil
 	}
 	if err != nil {
+		logTableGone(s.ownerSpace, s.instanceID, "GetHandlerState", err)
 		return nil, fmt.Errorf("failed to get handler state: %w", err)
 	}
 
@@ -956,6 +1009,15 @@ func (s *SQLiteStorage) RestoreBackup(backup *BackupData) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	log.Info().
+		Str("owner_space", s.ownerSpace).
+		Uint64("storage_instance", s.instanceID).
+		Int64("backup_rollback", backup.RollbackCounter).
+		Int64("current_rollback", s.rollbackCounter).
+		Int("backup_data_len", len(backup.Data)).
+		Str("stack", string(debug.Stack())).
+		Msg("DIAG: RestoreBackup called")
+
 	// Verify HMAC
 	h := hmac.New(sha256.New, s.dek)
 	h.Write(backup.Data)
@@ -1003,6 +1065,7 @@ func (s *SQLiteStorage) exportData() ([]byte, error) {
 	for _, table := range tables {
 		rows, err := s.db.Query(fmt.Sprintf("SELECT * FROM %s", table))
 		if err != nil {
+			logTableGone(s.ownerSpace, s.instanceID, "exportData:"+table, err)
 			return nil, fmt.Errorf("failed to query table %s: %w", table, err)
 		}
 		defer rows.Close()

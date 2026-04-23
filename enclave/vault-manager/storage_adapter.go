@@ -32,9 +32,15 @@ func (s *EncryptedStorage) InitializeWithDEK(dek []byte) error {
 	// This is important because the SQLite database is in-memory
 	// and recreating it would lose all stored data
 	if s.sqlite != nil {
-		log.Debug().Str("owner_space", s.ownerSpace).Msg("Storage already initialized, preserving existing data")
+		log.Info().
+			Str("owner_space", s.ownerSpace).
+			Msg("DIAG: InitializeWithDEK no-op — storage already initialized (preserving existing data)")
 		return nil
 	}
+
+	log.Info().
+		Str("owner_space", s.ownerSpace).
+		Msg("DIAG: InitializeWithDEK creating fresh SQLiteStorage")
 
 	sqlite, err := storage.NewSQLiteStorage(s.ownerSpace, dek)
 	if err != nil {
