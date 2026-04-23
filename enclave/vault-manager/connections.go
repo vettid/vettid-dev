@@ -1807,25 +1807,24 @@ func (h *ConnectionsHandler) HandleList(msg *IncomingMessage) (*OutgoingMessage,
 		}
 
 		// Transition stale outbound invitations to "expired" when
-		// expires_at has lapsed. Two cases:
+		// expires_at has lapsed AND the peer never got far enough
+		// for key exchange. Once a PeerPublicKey is present the
+		// invitation has already been resolved by the peer — the
+		// record is waiting on the inviter's own review, which is
+		// not an invite-timeout condition. Expiring it here sweeps
+		// away in-progress connections and surfaces them as
+		// "revoked"/"expired" in the app, which was the case
+		// behind the post-accept "Connection revoked" bug.
 		//
-		//   a) status="pending" — the correct state for a fresh
-		//      outbound invite waiting for a peer to resolve it.
-		//   b) status="active" with no PeerPublicKey — legacy
-		//      records from the earlier design where outbound
-		//      invites were stored as "active" from day 1. Key
-		//      exchange with the peer never happened (PeerPublicKey
-		//      stays empty), so this is semantically the same as
-		//      (a): an invitation the peer never accepted.
-		//
-		// Real active peer connections have PeerPublicKey set
-		// from key exchange and are unaffected by this filter.
-		// Persist the new status so every subsequent read is
-		// consistent and the change replicates to other clients.
+		// Cases covered:
+		//   a) status="pending", no peer key yet — the peer never
+		//      opened the invitation link/code in time.
+		//   b) status="active" with no peer key — legacy records
+		//      from when outbound invites were stored as "active"
+		//      from day one; semantically the same as (a).
 		expired := !record.ExpiresAt.IsZero() && record.ExpiresAt.Before(time.Now())
 		unaccepted := len(record.PeerPublicKey) == 0
-		if expired && (record.Status == "pending" ||
-			(record.Status == "active" && unaccepted)) {
+		if expired && unaccepted && (record.Status == "pending" || record.Status == "active") {
 			record.Status = "expired"
 			if updated, mErr := json.Marshal(&record); mErr == nil {
 				if pErr := h.storage.Put("connections/"+record.ConnectionID, updated); pErr != nil {
