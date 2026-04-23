@@ -653,6 +653,19 @@ func (h *ProfileHandler) HandlePublish(ctx context.Context, msg *IncomingMessage
 		return h.errorResponse(msg.GetID(), "Failed to save public profile settings")
 	}
 
+	// Persist public-secret metadata sent by the app. The list
+	// replaces any prior value — an empty array explicitly clears
+	// previously-published secret entries, which lets the user
+	// revoke a secret from their public profile without a separate
+	// call. Metadata only (name/type/category); values never travel
+	// through this path.
+	if req.PublicSecrets != nil {
+		secretsBytes, _ := json.Marshal(req.PublicSecrets)
+		if err := h.storage.Put("profile/_public_secrets", secretsBytes); err != nil {
+			log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("Failed to save public secrets metadata (non-fatal)")
+		}
+	}
+
 	log.Debug().
 		Int("version", settings.Version).
 		Int("fields_to_publish", len(settings.Fields)).

@@ -3385,6 +3385,12 @@ func (h *ConnectionsHandler) getLastActivity(connectionID string) lastActivityIn
 			out.Outcome = "completed"
 		case "missed":
 			out.Outcome = "missed"
+		case "cancelled":
+			// Caller hung up before the peer answered. Distinct
+			// from "missed" (which is the peer side's view of the
+			// same event) so the outgoing side's card can say
+			// "Call cancelled" instead of "Missed call."
+			out.Outcome = "cancelled"
 		case "rejected", "blocked":
 			out.Outcome = "rejected"
 		}

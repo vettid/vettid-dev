@@ -834,6 +834,30 @@ type PublishedWallet struct {
 	Network  string `json:"network"` // "mainnet" or "testnet"
 }
 
+// PublishedHandler is a single vault capability entry in the peer
+// profile. Peers see the full operation set so the "what can this
+// connection do?" row in the profile preview is honest, not just a
+// count. All vaults of the same version share the same list; the
+// app still renders it per-peer so each connection card can answer
+// the question independently even if the viewer upgrades later.
+type PublishedHandler struct {
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Description string   `json:"description,omitempty"`
+	Operations  []string `json:"operations,omitempty"`
+}
+
+// PublishedSecretMetadata is metadata (never value) about a secret
+// the user has opted into publishing to connections. Comes from the
+// app's MinorSecretsStore via profile.publish and is stored in the
+// vault so peers see the same metadata rows the user sees in their
+// own public-profile preview.
+type PublishedSecretMetadata struct {
+	Name     string `json:"name"`
+	Type     string `json:"type"`
+	Category string `json:"category,omitempty"`
+}
+
 type PublishedProfile struct {
 	UserGUID      string                    `json:"user_guid"`
 	PublicKey     string                    `json:"public_key"`                // Ed25519 public key (base64)
@@ -844,6 +868,8 @@ type PublishedProfile struct {
 	Photo         string                    `json:"photo,omitempty"`           // Base64-encoded JPEG profile photo
 	Fields        map[string]PublishedField `json:"fields"`                    // Selected personal data fields
 	Wallets       []PublishedWallet         `json:"wallets,omitempty"`         // Public wallet addresses
+	Handlers      []PublishedHandler        `json:"handlers,omitempty"`        // Vault capabilities surfaced to peers
+	PublicSecrets []PublishedSecretMetadata `json:"public_secrets,omitempty"`  // Metadata (no values) for secrets the user opted to publish
 	Version       int                       `json:"profile_version"`
 	UpdatedAt     string                    `json:"updated_at"` // ISO8601
 }
@@ -864,6 +890,12 @@ type ProfileCategoriesUpdateRequest struct {
 // ProfilePublishRequest is the request for profile.publish
 type ProfilePublishRequest struct {
 	Fields []string `json:"fields,omitempty"` // Optional: update selected fields before publishing
+	// PublicSecrets is metadata (name/type/category — never values)
+	// that the app sources from MinorSecretsStore. The vault stores
+	// it alongside the published field selection so peers see the
+	// same "Secrets (N)" badge row the user sees on their own
+	// public-profile preview. Empty list explicitly clears prior.
+	PublicSecrets []PublishedSecretMetadata `json:"public_secrets,omitempty"`
 }
 
 // ProfilePublishResponse is the response for profile.publish

@@ -155,6 +155,26 @@ func BuildPublishedProfile(
 		}
 	}
 
+	// --- Handlers (vault capabilities) ---
+	// Surfaced so peers see the same "Handlers" row in their
+	// connection-preview card that the user sees in their own
+	// public-profile preview. The set is whatever this enclave
+	// version exposes — handleHandlersOperation in messages.go is
+	// the source of truth.
+	profile.Handlers = publishedHandlerList()
+
+	// --- Public Secrets Metadata ---
+	// Stored at profile/_public_secrets by profile.publish — the
+	// app derives this list from MinorSecretsStore and sends it
+	// along with the field selection when the user publishes. We
+	// never persist secret values here, only metadata.
+	if secretsData, err := storage.Get("profile/_public_secrets"); err == nil && len(secretsData) > 0 {
+		var publicSecrets []PublishedSecretMetadata
+		if json.Unmarshal(secretsData, &publicSecrets) == nil {
+			profile.PublicSecrets = publicSecrets
+		}
+	}
+
 	log.Debug().
 		Str("owner_space", ownerSpace).
 		Int("field_count", len(profile.Fields)).
@@ -217,5 +237,63 @@ func PublishedProfileToMap(p *PublishedProfile) map[string]interface{} {
 		result["wallets"] = wallets
 	}
 
+	// Handlers (vault capabilities) — surfaced so peers see the
+	// same "Handlers" row the user sees on their own preview.
+	if len(p.Handlers) > 0 {
+		var handlers []map[string]interface{}
+		for _, h := range p.Handlers {
+			handlers = append(handlers, map[string]interface{}{
+				"id":          h.ID,
+				"name":        h.Name,
+				"description": h.Description,
+				"operations":  h.Operations,
+			})
+		}
+		result["handlers"] = handlers
+	}
+
+	// Public secret metadata — names/types/categories only,
+	// never values.
+	if len(p.PublicSecrets) > 0 {
+		var secrets []map[string]string
+		for _, s := range p.PublicSecrets {
+			secrets = append(secrets, map[string]string{
+				"name":     s.Name,
+				"type":     s.Type,
+				"category": s.Category,
+			})
+		}
+		result["public_secrets"] = secrets
+	}
+
 	return result
+}
+
+// publishedHandlerList returns the vault's static handler catalog in
+// the published-profile shape. Source of truth for the list is
+// handleHandlersOperation; this helper keeps the two lists aligned
+// without re-running the NATS handler just to build a profile.
+func publishedHandlerList() []PublishedHandler {
+	return []PublishedHandler{
+		{ID: "profile", Name: "Profile", Description: "Manage vault profile, sharing settings, and photos", Operations: []string{"get", "update", "delete", "get-shared", "sharing-settings", "categories", "public", "publish", "photo"}},
+		{ID: "personal-data", Name: "Personal Data", Description: "Store and manage personal identity data", Operations: []string{"get", "update", "delete", "update-sort-order", "get-sort-order"}},
+		{ID: "secrets", Name: "Secrets", Description: "Encrypted secret storage and identity keys", Operations: []string{"add", "update", "retrieve", "delete", "list", "identity"}},
+		{ID: "credential", Name: "Credentials", Description: "Credential lifecycle management", Operations: []string{"create", "store", "sync", "get", "delete", "password-change", "secret", "version"}},
+		{ID: "connection", Name: "Connections", Description: "Peer connection management", Operations: []string{"create-invite", "initiate", "respond", "revoke", "list", "get", "update", "rotate", "get-credentials", "get-capabilities", "activity-summary"}},
+		{ID: "message", Name: "Messaging", Description: "Encrypted peer messaging", Operations: []string{"send", "read-receipt"}},
+		{ID: "feed", Name: "Event Feed", Description: "Activity feed and event management", Operations: []string{"list", "get", "read", "archive", "delete", "sync", "settings", "action"}},
+		{ID: "location", Name: "Location", Description: "Location tracking and sharing", Operations: []string{"add", "list", "delete", "delete-all"}},
+		{ID: "vote", Name: "Voting", Description: "Vault-signed governance voting", Operations: []string{"cast", "list"}},
+		{ID: "audit", Name: "Audit", Description: "Audit log queries and export", Operations: []string{"query", "export"}},
+		{ID: "call", Name: "Calls", Description: "Voice and video call management", Operations: []string{"start", "accept", "reject", "end", "signal", "history"}},
+		{ID: "invitation", Name: "Invitations", Description: "Connection invitation lifecycle", Operations: []string{"list", "cancel", "resend", "viewed"}},
+		{ID: "capability", Name: "Capabilities", Description: "Peer capability negotiation", Operations: []string{"request", "respond", "get", "list"}},
+		{ID: "settings", Name: "Settings", Description: "Notification preferences", Operations: []string{"notifications"}},
+		{ID: "notification", Name: "Notifications", Description: "Push notification routing", Operations: []string{"profile-broadcast", "revoke-notify"}},
+		{ID: "service", Name: "Services", Description: "B2C service connections and contracts", Operations: []string{"connection", "contract", "data", "request", "profile", "activity", "notifications", "trust"}},
+		{ID: "datastore", Name: "Data Stores", Description: "Shared collaborative data stores", Operations: []string{"create", "join", "read", "write", "delete", "subscribe", "audit"}},
+		{ID: "pin", Name: "Security", Description: "PIN and vault access management", Operations: []string{"setup", "unlock", "change"}},
+		{ID: "agent-secrets", Name: "Agent Secrets", Description: "Manage secrets shared with AI agents", Operations: []string{"share", "update", "revoke", "list"}},
+		{ID: "wallet", Name: "Bitcoin Wallets", Description: "HD wallet management and BTC transactions", Operations: []string{"create", "list", "detail", "get-balance", "get-address", "get-fees", "send", "send-to-connection", "request-payment", "get-history", "delete", "set-visibility"}},
+	}
 }

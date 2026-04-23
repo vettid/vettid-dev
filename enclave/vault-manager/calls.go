@@ -620,20 +620,40 @@ func (ch *CallHandler) HandleEndCall(ctx context.Context, msg *IncomingMessage) 
 
 	now := time.Now()
 
-	// Update call record
+	// Update call record. Set a terminal status so "last activity"
+	// on the connection card and the call-history log know how to
+	// label this row. Without this, an outgoing call the user
+	// cancels before connect stays at status="initiated" forever —
+	// getLastActivity sees no matching case in its switch and the
+	// app's preview fallback collapses to whatever other activity
+	// is lying around (e.g. the earlier sent-message).
+	isCancelled := false
 	if err := ch.updateCallRecord(ctx, req.CallID, func(r *CallRecord) {
 		r.EndedAt = now.Unix()
 		if r.AnsweredAt > 0 {
 			r.DurationSecs = int(r.EndedAt - r.AnsweredAt)
+			r.Status = "answered" // already was; keep explicit
+		} else {
+			// Never answered — mark cancelled by the caller. The
+			// peer's handleCallCancel path marks THEIR side as
+			// missed; this marks the CALLER's side as cancelled.
+			r.Status = "cancelled"
+			isCancelled = true
 		}
 	}); err != nil {
 		log.Error().Err(err).Msg("Failed to update call record")
 	}
 
-	// Send end event to peer
+	// Send end event to peer. If we cancelled before connect, send
+	// the cancel event instead so the peer's record is marked
+	// "missed" rather than just ending a call that never started.
+	eventType := CallEventEnd
+	if isCancelled {
+		eventType = CallEventCancel
+	}
 	endEvent := &CallEvent{
 		EventID:   generateEventID(),
-		EventType: CallEventEnd,
+		EventType: eventType,
 		CallerID:  ch.ownerSpace,
 		CalleeID:  activeCall.PeerID,
 		CallID:    req.CallID,
