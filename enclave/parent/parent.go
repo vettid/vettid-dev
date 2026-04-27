@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -786,6 +787,30 @@ func (p *ParentProcess) sendWithHandlerSupport(ctx context.Context, msg *Enclave
 			}
 			p.vsockClient.writeMu.Unlock()
 			continue // Wait for next response
+		}
+
+		// Vault-mediated vote submission from the enclave (vault-manager).
+		if response.Type == EnclaveMessageTypeVoteSubmit {
+			log.Debug().Int("payload_len", len(response.Payload)).Msg("Enclave requested vote submission")
+			voteResp := p.handleVoteSubmit(response)
+			p.vsockClient.writeMu.Lock()
+			if err := p.vsockClient.writeMessage(voteResp); err != nil {
+				log.Error().Err(err).Msg("Failed to send vote submit response")
+			}
+			p.vsockClient.writeMu.Unlock()
+			continue
+		}
+
+		// Vault-requested Merkle inclusion proof for verifying a cast vote.
+		if response.Type == EnclaveMessageTypeVoteProofRequest {
+			log.Debug().Int("payload_len", len(response.Payload)).Msg("Enclave requested vote proof")
+			proofResp := p.handleVoteProof(response)
+			p.vsockClient.writeMu.Lock()
+			if err := p.vsockClient.writeMessage(proofResp); err != nil {
+				log.Error().Err(err).Msg("Failed to send vote proof response")
+			}
+			p.vsockClient.writeMu.Unlock()
+			continue
 		}
 
 		// Check if this is an invitation resolve request from the enclave
@@ -1723,6 +1748,73 @@ func (p *ParentProcess) handleProposalsList(msg *EnclaveMessage) *EnclaveMessage
 	}
 
 	return &EnclaveMessage{Type: EnclaveMessageTypeProposalsResponse, Payload: data}
+}
+
+// handleVoteSubmit accepts a vault-signed vote payload from the enclave,
+// runs Ed25519/format validation in the parent (vote_validator.go), and
+// writes the row to DynamoDB. Idempotent: a duplicate (proposal_id,
+// voting_public_key) returns success with `already_voted: true` so the
+// vault can drop the queued retry.
+func (p *ParentProcess) handleVoteSubmit(msg *EnclaveMessage) *EnclaveMessage {
+	if p.dynamoDBClient == nil {
+		resp, _ := json.Marshal(map[string]interface{}{"success": false, "error": "DynamoDB not available"})
+		return &EnclaveMessage{Type: EnclaveMessageTypeVoteSubmitResponse, Payload: resp}
+	}
+
+	// Validation window:
+	// - 5 minutes for fresh submissions (matches the original Lambda)
+	// - 0 (disabled) for resubmits of receipts that may be hours old
+	// We carry a `resubmit` flag in the payload envelope. The vault sets it
+	// when draining its sealed pending-vote queue.
+	var envelope struct {
+		Resubmit bool            `json:"resubmit,omitempty"`
+		Vote     json.RawMessage `json:"vote"`
+	}
+	maxAge := 5 * time.Minute
+	votePayload := msg.Payload
+	if err := json.Unmarshal(msg.Payload, &envelope); err == nil && len(envelope.Vote) > 0 {
+		votePayload = envelope.Vote
+		if envelope.Resubmit {
+			maxAge = 0
+		}
+	}
+
+	err := p.dynamoDBClient.SubmitSignedVote(context.Background(), votePayload, maxAge)
+	if err != nil {
+		if errors.Is(err, ErrAlreadyVoted) {
+			resp, _ := json.Marshal(map[string]interface{}{"success": true, "already_voted": true})
+			return &EnclaveMessage{Type: EnclaveMessageTypeVoteSubmitResponse, Payload: resp}
+		}
+		log.Error().Err(err).Msg("Vote submission failed")
+		resp, _ := json.Marshal(map[string]interface{}{"success": false, "error": err.Error()})
+		return &EnclaveMessage{Type: EnclaveMessageTypeVoteSubmitResponse, Payload: resp}
+	}
+	resp, _ := json.Marshal(map[string]interface{}{"success": true})
+	return &EnclaveMessage{Type: EnclaveMessageTypeVoteSubmitResponse, Payload: resp}
+}
+
+// handleVoteProof loads the published Merkle artifacts for a closed proposal
+// and returns an inclusion proof for the requested voting_public_key. The
+// vault re-verifies the proof locally; this is just data access.
+func (p *ParentProcess) handleVoteProof(msg *EnclaveMessage) *EnclaveMessage {
+	if p.dynamoDBClient == nil {
+		resp, _ := json.Marshal(map[string]interface{}{"error": "DynamoDB not available"})
+		return &EnclaveMessage{Type: EnclaveMessageTypeVoteProofResponse, Payload: resp}
+	}
+	var req struct {
+		ProposalID      string `json:"proposal_id"`
+		VotingPublicKey string `json:"voting_public_key"`
+	}
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		resp, _ := json.Marshal(map[string]interface{}{"error": "invalid request: " + err.Error()})
+		return &EnclaveMessage{Type: EnclaveMessageTypeVoteProofResponse, Payload: resp}
+	}
+	data, err := p.dynamoDBClient.GetVoteProof(context.Background(), req.ProposalID, req.VotingPublicKey)
+	if err != nil {
+		resp, _ := json.Marshal(map[string]interface{}{"error": err.Error()})
+		return &EnclaveMessage{Type: EnclaveMessageTypeVoteProofResponse, Payload: resp}
+	}
+	return &EnclaveMessage{Type: EnclaveMessageTypeVoteProofResponse, Payload: data}
 }
 
 // handleHealthCheck returns health status

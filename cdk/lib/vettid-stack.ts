@@ -1065,19 +1065,10 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       environment: defaultEnv,
     });
 
-    // Vault-based voting: receive vault-signed votes from mobile apps
+    // Vault-based voting: vault submits signed votes directly to DynamoDB via the
+    // parent process (see enclave/parent/dynamodb_client.go SubmitSignedVote).
+    // No public HTTP route — the app never holds a signed ballot.
     const publishedVotesBucket = props.infrastructure.publishedVotesBucket;
-    const receiveSignedVote = new lambdaNode.NodejsFunction(this, 'ReceiveSignedVoteFn', {
-      entry: 'lambda/handlers/member/receiveSignedVote.ts',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      environment: {
-        ...defaultEnv,
-        TABLE_VOTES: tables.votes.tableName,
-        TABLE_PROPOSALS: tables.proposals.tableName,
-      },
-      timeout: cdk.Duration.seconds(30),
-      description: 'Receive and verify vault-signed votes',
-    });
 
     // Get Merkle proof for individual vote verification
     const getVoteMerkleProof = new lambdaNode.NodejsFunction(this, 'GetVoteMerkleProofFn', {
@@ -1121,9 +1112,22 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       environment: {
         ...defaultEnv,
         TABLE_VOTES: tables.votes.tableName,
+        PUBLISHED_VOTES_BUCKET: publishedVotesBucket.bucketName,
       },
-      timeout: cdk.Duration.seconds(60), // Allow time for scanning and updating multiple proposals
+      timeout: cdk.Duration.minutes(2), // Scan + per-proposal Merkle build + S3 upload
     });
+
+    // One-shot migration Lambda for stale status strings (ended/finalized/published).
+    // Invoke manually post-deploy: aws lambda invoke --function-name <name> /dev/stdout
+    const migrateProposalStatus = new lambdaNode.NodejsFunction(this, 'MigrateProposalStatusFn', {
+      entry: 'lambda/handlers/scheduled/migrateProposalStatus.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: { ...defaultEnv },
+      timeout: cdk.Duration.minutes(5),
+      description: 'One-shot rewrite of stale proposal status strings to canonical values',
+    });
+    tables.proposals.grantReadWriteData(migrateProposalStatus);
+
     const checkSubscriptionExpiry = new lambdaNode.NodejsFunction(this, 'CheckSubscriptionExpiryFn', {
       entry: 'lambda/handlers/admin/checkSubscriptionExpiry.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
@@ -1255,9 +1259,8 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
     tables.proposals.grantReadData(getMemberProposalVoteCounts);
 
     // Vault-based voting grants
-    tables.votes.grantReadWriteData(receiveSignedVote);
-    tables.proposals.grantReadData(receiveSignedVote);
-    tables.audit.grantReadWriteData(receiveSignedVote);
+    // (Vault-mediated submission grants its DynamoDB access to the parent EC2
+    // role in nitro-stack.ts; no Lambda needs votes table write access here.)
     tables.proposals.grantReadData(getVoteMerkleProof);
     publishedVotesBucket.grantRead(getVoteMerkleProof);
     tables.proposals.grantReadData(getPublishedVotes);
@@ -1265,8 +1268,9 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
     tables.proposals.grantReadData(listPublishedProposals);
 
     tables.proposals.grantReadWriteData(closeExpiredProposals); // Scheduled job to close expired proposals
-    tables.votes.grantReadData(closeExpiredProposals); // Read votes for quorum calculation
+    tables.votes.grantReadData(closeExpiredProposals); // Read votes for quorum + Merkle build
     tables.subscriptions.grantReadData(closeExpiredProposals); // Count eligible voters for quorum
+    publishedVotesBucket.grantReadWrite(closeExpiredProposals); // Auto-publish Merkle artifacts on close
     // Proposal reminder scheduled job
     tables.proposals.grantReadData(sendProposalReminders);
     tables.votes.grantReadData(sendProposalReminders);
@@ -1597,13 +1601,9 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       authorizer: this.memberAuthorizer,
     });
 
-    // Vault-based voting routes
-    this.httpApi.addRoutes({
-      path: '/member/votes/signed',
-      methods: [apigw.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('ReceiveSignedVoteInt', receiveSignedVote),
-      authorizer: this.memberAuthorizer,
-    });
+    // Vault-based voting: submission goes vault → parent → DynamoDB direct
+    // (no HTTP route). Verification still has a public route since members
+    // verifying their own vote receipts are doing read-only Merkle lookups.
     this.httpApi.addRoutes({
       path: '/member/votes/{proposal_id}/proof',
       methods: [apigw.HttpMethod.GET],

@@ -59,6 +59,10 @@ const (
 	SealerOpResolveInvite SealerOperation = "resolve_invite"
 	// Proposals list (fetched from DynamoDB via parent)
 	SealerOpListProposals SealerOperation = "list_proposals"
+	// Vault-mediated vote submission (parent writes to DynamoDB)
+	SealerOpSubmitSignedVote SealerOperation = "submit_signed_vote"
+	// Vote inclusion proof (parent reads from S3 published votes)
+	SealerOpGetVoteProof SealerOperation = "get_vote_proof"
 	// Migration config (fetched from S3 via parent)
 	SealerOpFetchMigrationConfig SealerOperation = "fetch_migration_config"
 	// Migration marker (written to unencrypted S3 path after user completes migration)
@@ -86,6 +90,13 @@ type SealerRequest struct {
 
 	// For write_migration_marker
 	MigrationVersion string `json:"migration_version,omitempty"`
+
+	// For submit_signed_vote: full submission envelope JSON.
+	VoteSubmitPayload []byte `json:"vote_submit_payload,omitempty"`
+
+	// For get_vote_proof
+	ProposalID      string `json:"proposal_id,omitempty"`
+	VotingPublicKey string `json:"voting_public_key,omitempty"`
 }
 
 // SealerResponse is returned from supervisor to vault-manager
@@ -113,6 +124,12 @@ type SealerResponse struct {
 
 	// For list_proposals
 	ProposalsData []byte `json:"proposals_data,omitempty"`
+
+	// For submit_signed_vote
+	VoteSubmitResult []byte `json:"vote_submit_result,omitempty"`
+
+	// For get_vote_proof
+	VoteProofData []byte `json:"vote_proof_data,omitempty"`
 
 	// For fetch_migration_config
 	MigrationConfig []byte `json:"migration_config,omitempty"`
@@ -527,6 +544,75 @@ func (p *SealerProxy) ListProposals() ([]byte, error) {
 	}
 
 	return resp.ProposalsData, nil
+}
+
+// VoteSubmitResult is the structured response returned to the vault after the
+// parent writes (or rejects) a vote. AlreadyVoted indicates the same voting
+// public key has already been recorded for this proposal — the vault treats
+// this as success-equivalent and drops any queued retry.
+type VoteSubmitResult struct {
+	Success      bool   `json:"success"`
+	AlreadyVoted bool   `json:"already_voted,omitempty"`
+	Error        string `json:"error,omitempty"`
+}
+
+// SubmitSignedVote ships a vault-signed vote payload to the parent for
+// validation and DynamoDB write. `payload` is the JSON envelope:
+//
+//	{ "resubmit": bool, "vote": { proposal_id, vote, voted_at,
+//	                              voting_public_key, vote_signature,
+//	                              signed_payload } }
+//
+// On success the result indicates whether this was a fresh write or a
+// duplicate (already_voted). Network/DynamoDB failures surface as errors so
+// callers can queue and retry.
+func (p *SealerProxy) SubmitSignedVote(payload []byte) (*VoteSubmitResult, error) {
+	req := SealerRequest{
+		Operation:         SealerOpSubmitSignedVote,
+		OwnerSpace:        p.ownerSpace,
+		VoteSubmitPayload: payload,
+	}
+	resp, err := p.sendRequest(req)
+	if err != nil {
+		return nil, err
+	}
+	if !resp.Success {
+		return nil, fmt.Errorf("submit signed vote: %s", resp.Error)
+	}
+	if len(resp.VoteSubmitResult) == 0 {
+		return &VoteSubmitResult{Success: true}, nil
+	}
+	var result VoteSubmitResult
+	if err := json.Unmarshal(resp.VoteSubmitResult, &result); err != nil {
+		return nil, fmt.Errorf("decode vote submit result: %w", err)
+	}
+	if !result.Success && result.Error != "" {
+		return &result, fmt.Errorf("submit signed vote: %s", result.Error)
+	}
+	return &result, nil
+}
+
+// GetVoteProof fetches a Merkle inclusion proof for the given voting key on
+// a closed/published proposal. The vault re-verifies the proof locally
+// before reporting "verified" to the app.
+func (p *SealerProxy) GetVoteProof(proposalID, votingPublicKey string) ([]byte, error) {
+	req := SealerRequest{
+		Operation:       SealerOpGetVoteProof,
+		OwnerSpace:      p.ownerSpace,
+		ProposalID:      proposalID,
+		VotingPublicKey: votingPublicKey,
+	}
+	resp, err := p.sendRequest(req)
+	if err != nil {
+		return nil, err
+	}
+	if !resp.Success {
+		return nil, fmt.Errorf("get vote proof: %s", resp.Error)
+	}
+	if len(resp.VoteProofData) == 0 {
+		return nil, fmt.Errorf("empty vote proof response")
+	}
+	return resp.VoteProofData, nil
 }
 
 // FetchMigrationConfig loads the signed migration config from S3 via the supervisor.

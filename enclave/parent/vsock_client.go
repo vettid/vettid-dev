@@ -157,6 +157,14 @@ const (
 	EnclaveMessageTypeProposalsList     EnclaveMessageType = "proposals_list"
 	EnclaveMessageTypeProposalsResponse EnclaveMessageType = "proposals_response"
 
+	// Vault-mediated vote submission (enclave -> parent -> DynamoDB)
+	EnclaveMessageTypeVoteSubmit         EnclaveMessageType = "vote_submit"
+	EnclaveMessageTypeVoteSubmitResponse EnclaveMessageType = "vote_submit_response"
+
+	// Vote inclusion proof (enclave -> parent -> S3 published votes)
+	EnclaveMessageTypeVoteProofRequest  EnclaveMessageType = "vote_proof_request"
+	EnclaveMessageTypeVoteProofResponse EnclaveMessageType = "vote_proof_response"
+
 	// HTTP proxy operations (enclave -> parent -> internet)
 	EnclaveMessageTypeHTTPRequest  EnclaveMessageType = "http_request"
 	EnclaveMessageTypeHTTPResponse EnclaveMessageType = "http_response"

@@ -52,8 +52,13 @@ type DynamoDBConfig struct {
 	NatsAccountsTable string `yaml:"nats_accounts_table"`
 	// Table name for governance proposals
 	ProposalsTable string `yaml:"proposals_table"`
+	// Table name for governance votes (vault-mediated submission target)
+	VotesTable string `yaml:"votes_table"`
 	// Table name for org vault audit events
 	OrgAuditTable string `yaml:"org_audit_table"`
+	// S3 bucket holding published Merkle trees + anonymized vote lists
+	// (written by closeExpiredProposals, read by GetVoteProof)
+	PublishedVotesBucket string `yaml:"published_votes_bucket"`
 	// AWS region (defaults to KMS region if not set)
 	Region string `yaml:"region"`
 }

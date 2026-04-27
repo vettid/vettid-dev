@@ -1956,6 +1956,10 @@ func (mh *MessageHandler) handleVoteOperation(ctx context.Context, msg *Incoming
 		return mh.voteHandler.HandleListProposals(ctx, msg)
 	case "cast":
 		return mh.voteHandler.HandleCastVote(ctx, msg)
+	case "verify":
+		return mh.voteHandler.HandleVerifyVote(ctx, msg)
+	case "resubmit-pending":
+		return mh.voteHandler.HandleResubmitPendingVotes(ctx, msg)
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown vote operation: %s", opType))
 	}

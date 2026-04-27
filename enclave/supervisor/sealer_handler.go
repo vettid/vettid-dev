@@ -63,6 +63,10 @@ const (
 	SealerOpResolveInvite SealerOperation = "resolve_invite"
 	// Proposals list (fetched from DynamoDB via parent)
 	SealerOpListProposals SealerOperation = "list_proposals"
+	// Vault-mediated vote submission (parent writes to DynamoDB)
+	SealerOpSubmitSignedVote SealerOperation = "submit_signed_vote"
+	// Vote inclusion proof (parent reads from S3 published votes)
+	SealerOpGetVoteProof SealerOperation = "get_vote_proof"
 	// Migration config (fetched from S3 via parent)
 	SealerOpFetchMigrationConfig SealerOperation = "fetch_migration_config"
 	// Migration marker (written to unencrypted S3 path after user migration completes)
@@ -89,6 +93,13 @@ type SealerRequest struct {
 
 	// For write_migration_marker
 	MigrationVersion string `json:"migration_version,omitempty"`
+
+	// For submit_signed_vote: full vote-submission envelope as JSON.
+	VoteSubmitPayload []byte `json:"vote_submit_payload,omitempty"`
+
+	// For get_vote_proof
+	ProposalID      string `json:"proposal_id,omitempty"`
+	VotingPublicKey string `json:"voting_public_key,omitempty"`
 }
 
 // SealerResponse is sent back to vault-manager
@@ -116,6 +127,12 @@ type SealerResponse struct {
 
 	// For list_proposals
 	ProposalsData []byte `json:"proposals_data,omitempty"`
+
+	// For submit_signed_vote: { success: bool, already_voted: bool, error: string }
+	VoteSubmitResult []byte `json:"vote_submit_result,omitempty"`
+
+	// For get_vote_proof: full proof JSON (see VoteProofResponse in parent)
+	VoteProofData []byte `json:"vote_proof_data,omitempty"`
 
 	// For fetch_migration_config
 	MigrationConfig []byte `json:"migration_config,omitempty"`
@@ -166,6 +183,10 @@ func (sh *SealerHandler) HandleSealerRequest(msg *Message) *Message {
 		resp = sh.resolveInvite(req)
 	case SealerOpListProposals:
 		resp = sh.listProposals(req)
+	case SealerOpSubmitSignedVote:
+		resp = sh.submitSignedVote(req)
+	case SealerOpGetVoteProof:
+		resp = sh.getVoteProof(req)
 	case SealerOpFetchMigrationConfig:
 		resp = sh.fetchMigrationConfig(req)
 	case SealerOpWriteMigrationMarker:
@@ -638,6 +659,82 @@ func (sh *SealerHandler) resolveInvite(req SealerRequest) SealerResponse {
 
 	log.Info().Str("invite_code", req.InviteCode).Int("payload_len", len(response.Payload)).Msg("Invitation resolved from parent")
 	return SealerResponse{Success: true, InviteData: response.Payload}
+}
+
+// submitSignedVote forwards a vault-signed vote payload to the parent for
+// validation + DynamoDB write. Idempotency is the parent's responsibility:
+// duplicate (proposal_id, voting_public_key) returns success with
+// already_voted=true so the vault can drop a queued retry.
+func (sh *SealerHandler) submitSignedVote(req SealerRequest) SealerResponse {
+	sh.connMu.Lock()
+	defer sh.connMu.Unlock()
+
+	if sh.parentConn == nil {
+		return SealerResponse{Success: false, Error: "no parent connection available"}
+	}
+	if len(req.VoteSubmitPayload) == 0 {
+		return SealerResponse{Success: false, Error: "empty vote submit payload"}
+	}
+
+	msg := &Message{
+		Type:    MessageTypeVoteSubmit,
+		Payload: req.VoteSubmitPayload,
+	}
+	if err := sh.parentConn.WriteMessage(msg); err != nil {
+		return SealerResponse{Success: false, Error: fmt.Sprintf("failed to send vote submit: %v", err)}
+	}
+	resp, err := sh.parentConn.ReadMessage()
+	if err != nil {
+		return SealerResponse{Success: false, Error: fmt.Sprintf("failed to read vote submit response: %v", err)}
+	}
+	if resp.Type != MessageTypeVoteSubmitResponse {
+		return SealerResponse{Success: false, Error: fmt.Sprintf("unexpected response type: %s", resp.Type)}
+	}
+	return SealerResponse{Success: true, VoteSubmitResult: resp.Payload}
+}
+
+// getVoteProof fetches a Merkle inclusion proof from the parent (which reads
+// from the published-votes S3 bucket). The vault verifies the proof locally.
+func (sh *SealerHandler) getVoteProof(req SealerRequest) SealerResponse {
+	sh.connMu.Lock()
+	defer sh.connMu.Unlock()
+
+	if sh.parentConn == nil {
+		return SealerResponse{Success: false, Error: "no parent connection available"}
+	}
+	if req.ProposalID == "" || req.VotingPublicKey == "" {
+		return SealerResponse{Success: false, Error: "proposal_id and voting_public_key required"}
+	}
+
+	body, err := json.Marshal(map[string]string{
+		"proposal_id":       req.ProposalID,
+		"voting_public_key": req.VotingPublicKey,
+	})
+	if err != nil {
+		return SealerResponse{Success: false, Error: err.Error()}
+	}
+	msg := &Message{
+		Type:    MessageTypeVoteProofRequest,
+		Payload: body,
+	}
+	if err := sh.parentConn.WriteMessage(msg); err != nil {
+		return SealerResponse{Success: false, Error: fmt.Sprintf("failed to send vote proof request: %v", err)}
+	}
+	resp, err := sh.parentConn.ReadMessage()
+	if err != nil {
+		return SealerResponse{Success: false, Error: fmt.Sprintf("failed to read vote proof response: %v", err)}
+	}
+	if resp.Type != MessageTypeVoteProofResponse {
+		return SealerResponse{Success: false, Error: fmt.Sprintf("unexpected response type: %s", resp.Type)}
+	}
+	// Parent encodes errors inside the JSON body (no MessageTypeError here).
+	var errCheck struct {
+		Error string `json:"error,omitempty"`
+	}
+	if json.Unmarshal(resp.Payload, &errCheck) == nil && errCheck.Error != "" {
+		return SealerResponse{Success: false, Error: errCheck.Error}
+	}
+	return SealerResponse{Success: true, VoteProofData: resp.Payload}
 }
 
 // listProposals fetches proposals from DynamoDB via the parent process.

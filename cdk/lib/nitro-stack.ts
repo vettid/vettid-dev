@@ -574,15 +574,34 @@ export class NitroStack extends cdk.Stack {
         tier: ssm.ParameterTier.STANDARD,
       });
 
-      // ===== PROPOSALS TABLE ACCESS =====
-      // Grant DynamoDB read access for proposals listing (voted through mobile app)
+      // ===== PROPOSALS / VOTES TABLE ACCESS =====
+      // Parent reads proposals (list + lookup at submit time) and writes votes
+      // (vault-mediated submission replacing the old member/votes/signed Lambda).
       props.infrastructure.tables.proposals.grantReadData(this.enclaveInstanceRole);
+      props.infrastructure.tables.votes.grantWriteData(this.enclaveInstanceRole);
 
-      // Store proposals table name in SSM for parent process configuration
+      // Parent reads the published Merkle artifacts when the vault asks for an
+      // inclusion proof (the proof never round-trips through the app).
+      props.infrastructure.publishedVotesBucket.grantRead(this.enclaveInstanceRole);
+
+      // Store proposals/votes table names + published-votes bucket in SSM for
+      // parent process configuration consumption.
       new ssm.StringParameter(this, 'ProposalsTableParameter', {
         parameterName: '/vettid/nitro/proposals-table',
         description: 'DynamoDB table name for proposals listing by parent process',
         stringValue: props.infrastructure.tables.proposals.tableName,
+        tier: ssm.ParameterTier.STANDARD,
+      });
+      new ssm.StringParameter(this, 'VotesTableParameter', {
+        parameterName: '/vettid/nitro/votes-table',
+        description: 'DynamoDB table name for vault-mediated vote submission',
+        stringValue: props.infrastructure.tables.votes.tableName,
+        tier: ssm.ParameterTier.STANDARD,
+      });
+      new ssm.StringParameter(this, 'PublishedVotesBucketParameter', {
+        parameterName: '/vettid/nitro/published-votes-bucket',
+        description: 'S3 bucket holding Merkle artifacts for vote inclusion proofs',
+        stringValue: props.infrastructure.publishedVotesBucket.bucketName,
         tier: ssm.ParameterTier.STANDARD,
       });
 
@@ -1156,9 +1175,13 @@ export class NitroStack extends cdk.Stack {
       'NATS_ACCOUNTS_TABLE=$(aws ssm get-parameter --name /vettid/nitro/nats-accounts-table --region $REGION --query Parameter.Value --output text 2>/dev/null || echo "")',
       'NATS_SEED_KEY_ARN=$(aws ssm get-parameter --name /vettid/nitro/nats-seed-key-arn --region $REGION --query Parameter.Value --output text 2>/dev/null || echo "")',
       'PROPOSALS_TABLE=$(aws ssm get-parameter --name /vettid/nitro/proposals-table --region $REGION --query Parameter.Value --output text 2>/dev/null || echo "")',
+      'VOTES_TABLE=$(aws ssm get-parameter --name /vettid/nitro/votes-table --region $REGION --query Parameter.Value --output text 2>/dev/null || echo "")',
+      'PUBLISHED_VOTES_BUCKET=$(aws ssm get-parameter --name /vettid/nitro/published-votes-bucket --region $REGION --query Parameter.Value --output text 2>/dev/null || echo "")',
       'echo "NATS accounts table: $NATS_ACCOUNTS_TABLE"',
       'echo "NATS seed key ARN: $NATS_SEED_KEY_ARN"',
       'echo "Proposals table: $PROPOSALS_TABLE"',
+      'echo "Votes table: $VOTES_TABLE"',
+      'echo "Published votes bucket: $PUBLISHED_VOTES_BUCKET"',
       '',
       '# Update parent config to use NATS credentials and KMS',
       'cat > /etc/vettid/parent.yaml << EOF',
@@ -1199,6 +1222,8 @@ export class NitroStack extends cdk.Stack {
       'dynamodb:',
       '  nats_accounts_table: $NATS_ACCOUNTS_TABLE',
       '  proposals_table: $PROPOSALS_TABLE',
+      '  votes_table: $VOTES_TABLE',
+      '  published_votes_bucket: $PUBLISHED_VOTES_BUCKET',
       '  region: $REGION',
       '',
       'logging:',

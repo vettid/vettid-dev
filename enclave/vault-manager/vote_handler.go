@@ -5,9 +5,12 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -26,6 +29,22 @@ type VoteHandler struct {
 	bootstrap   *BootstrapHandler
 	sealerProxy *SealerProxy
 	auditLog    *AuditLog
+
+	// pendingVotes holds receipts that the vault signed but couldn't ship
+	// to the parent (network blip, parent not yet ready, etc). Drained on
+	// the next successful submit or via vote.resubmit-pending.
+	pendingMu    sync.Mutex
+	pendingVotes []pendingVote
+}
+
+// pendingVote is a vault-signed receipt awaiting submission to DynamoDB.
+type pendingVote struct {
+	ProposalID      string `json:"proposal_id"`
+	Vote            string `json:"vote"`
+	VotedAt         string `json:"voted_at"`
+	VotingPublicKey string `json:"voting_public_key"`
+	VoteSignature   string `json:"vote_signature"`
+	SignedPayload   string `json:"signed_payload"`
 }
 
 // SetAuditLog wires the per-connection audit trail so vote proposals
@@ -64,6 +83,15 @@ type CastVoteRequest struct {
 }
 
 // CastVoteResponse is returned after successful vote signing
+//
+// Status values:
+//   - "submitted": vault signed AND backend accepted the vote
+//   - "queued": vault signed but submission failed; vault will retry
+//     automatically on the next vote.resubmit-pending call. The receipt is
+//     still valid and the user has voted from a privacy standpoint — the
+//     row just hasn't landed in DynamoDB yet.
+//   - "duplicate": this voting public key already submitted on this proposal
+//     (idempotent re-cast — UI should treat as success)
 type CastVoteResponse struct {
 	Status          string   `json:"status"`
 	ProposalID      string   `json:"proposal_id"`
@@ -72,7 +100,8 @@ type CastVoteResponse struct {
 	VoteSignature   string   `json:"vote_signature"`    // Base64-encoded Ed25519 signature
 	SignedPayload   string   `json:"signed_payload"`    // The canonical payload that was signed
 	VotedAt         string   `json:"voted_at"`
-	NewUTKs         []string `json:"new_utks,omitempty"` // Replacement UTKs after consumption
+	SubmitError     string   `json:"submit_error,omitempty"` // populated when status="queued"
+	NewUTKs         []string `json:"new_utks,omitempty"`     // Replacement UTKs after consumption
 }
 
 // HandleCastVote processes a vote request
@@ -164,6 +193,19 @@ func (h *VoteHandler) HandleCastVote(ctx context.Context, msg *IncomingMessage) 
 		Str("voting_key_prefix", votingPublicKeyB64[:16]+"...").
 		Msg("Vote signed successfully")
 
+	// Build the receipt the parent expects (mirrors SignedVoteSubmission in
+	// enclave/parent/vote_validator.go). The vault submits it directly via
+	// the sealer proxy — the app never sees the signature.
+	pv := pendingVote{
+		ProposalID:      req.ProposalID,
+		Vote:            req.Vote,
+		VotedAt:         votedAt,
+		VotingPublicKey: votingPublicKeyB64,
+		VoteSignature:   signatureB64,
+		SignedPayload:   signedPayload,
+	}
+	status, submitErr := h.submitVote(pv, false)
+
 	// Generate fresh replacement UTKs and return ONLY the new ones
 	// (not GetUnusedUTKs which returns the full vault pool).
 	newPairs, err := h.bootstrap.GenerateMoreUTKs(3)
@@ -172,9 +214,8 @@ func (h *VoteHandler) HandleCastVote(ctx context.Context, msg *IncomingMessage) 
 	}
 	newUTKs := EncodeUTKs(newPairs)
 
-	// Build response
 	response := CastVoteResponse{
-		Status:          "success",
+		Status:          status,
 		ProposalID:      req.ProposalID,
 		Vote:            req.Vote,
 		VotingPublicKey: votingPublicKeyB64,
@@ -182,6 +223,9 @@ func (h *VoteHandler) HandleCastVote(ctx context.Context, msg *IncomingMessage) 
 		SignedPayload:   signedPayload,
 		VotedAt:         votedAt,
 		NewUTKs:         newUTKs,
+	}
+	if submitErr != nil {
+		response.SubmitError = submitErr.Error()
 	}
 
 	responseBytes, err := json.Marshal(response)
@@ -195,6 +239,236 @@ func (h *VoteHandler) HandleCastVote(ctx context.Context, msg *IncomingMessage) 
 		Type:      MessageTypeResponse,
 		Payload:   responseBytes,
 	}, nil
+}
+
+// submitVote ships a signed receipt to the parent for DynamoDB write. On
+// network/parent failure the receipt is queued in pendingVotes for retry via
+// vote.resubmit-pending. Returns the wire-level status string the app sees
+// in CastVoteResponse.
+func (h *VoteHandler) submitVote(pv pendingVote, isResubmit bool) (string, error) {
+	if h.sealerProxy == nil {
+		h.queuePendingVote(pv)
+		return "queued", fmt.Errorf("sealer proxy not available")
+	}
+
+	envelope := struct {
+		Resubmit bool        `json:"resubmit,omitempty"`
+		Vote     pendingVote `json:"vote"`
+	}{Resubmit: isResubmit, Vote: pv}
+	body, err := json.Marshal(envelope)
+	if err != nil {
+		return "queued", fmt.Errorf("marshal vote envelope: %w", err)
+	}
+
+	result, err := h.sealerProxy.SubmitSignedVote(body)
+	if err != nil {
+		log.Warn().Err(err).
+			Str("proposal_id", pv.ProposalID).
+			Str("voting_pk_prefix", pv.VotingPublicKey[:min(16, len(pv.VotingPublicKey))]+"...").
+			Msg("Vote submission failed; queueing for retry")
+		h.queuePendingVote(pv)
+		return "queued", err
+	}
+	if result.AlreadyVoted {
+		log.Info().Str("proposal_id", pv.ProposalID).Msg("Vote already recorded (idempotent)")
+		return "duplicate", nil
+	}
+	log.Info().Str("proposal_id", pv.ProposalID).Msg("Vote submitted to backend")
+	return "submitted", nil
+}
+
+func (h *VoteHandler) queuePendingVote(pv pendingVote) {
+	h.pendingMu.Lock()
+	defer h.pendingMu.Unlock()
+	// Skip if we already have this exact (proposal_id, voting_public_key)
+	for _, existing := range h.pendingVotes {
+		if existing.ProposalID == pv.ProposalID && existing.VotingPublicKey == pv.VotingPublicKey {
+			return
+		}
+	}
+	h.pendingVotes = append(h.pendingVotes, pv)
+}
+
+// HandleResubmitPendingVotes drains the in-memory pending queue. Called by
+// the app (vote.resubmit-pending) when connectivity is restored, or by the
+// recovery script for one-off rescues. Each pending receipt is submitted
+// with the resubmit flag so the parent skips its 5-minute timestamp window.
+func (h *VoteHandler) HandleResubmitPendingVotes(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	h.pendingMu.Lock()
+	queued := append([]pendingVote(nil), h.pendingVotes...)
+	h.pendingVotes = h.pendingVotes[:0]
+	h.pendingMu.Unlock()
+
+	type itemResult struct {
+		ProposalID      string `json:"proposal_id"`
+		VotingPublicKey string `json:"voting_public_key"`
+		Status          string `json:"status"`
+		Error           string `json:"error,omitempty"`
+	}
+	results := make([]itemResult, 0, len(queued))
+	requeued := 0
+	for _, pv := range queued {
+		status, err := h.submitVote(pv, true)
+		ir := itemResult{ProposalID: pv.ProposalID, VotingPublicKey: pv.VotingPublicKey, Status: status}
+		if err != nil {
+			ir.Error = err.Error()
+			requeued++
+		}
+		results = append(results, ir)
+	}
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"status":         "ok",
+		"processed":      len(queued),
+		"still_queued":   requeued,
+		"items":          results,
+	})
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   body,
+	}, nil
+}
+
+// VerifyVoteRequest asks the vault to fetch a Merkle inclusion proof for a
+// previously cast vote and verify it locally. Used by the app's "Verify my
+// vote" UX on closed proposals.
+type VerifyVoteRequest struct {
+	ProposalID string `json:"proposal_id"`
+	// Optional: when present, override the derivation. Normally the vault
+	// re-derives the voting key from identity + proposal_id.
+	VotingPublicKey string `json:"voting_public_key,omitempty"`
+}
+
+// VerifyVoteResponse is the result returned to the app.
+type VerifyVoteResponse struct {
+	Verified        bool   `json:"verified"`
+	ProposalID      string `json:"proposal_id"`
+	VotingPublicKey string `json:"voting_public_key,omitempty"`
+	LeafIndex       int    `json:"leaf_index,omitempty"`
+	Total           int    `json:"total,omitempty"`
+	MerkleRoot      string `json:"merkle_root,omitempty"`
+	Vote            string `json:"vote,omitempty"`
+	Error           string `json:"error,omitempty"`
+}
+
+// HandleVerifyVote re-derives the user's voting public key for the given
+// proposal, asks the parent for the published Merkle proof, and verifies it
+// locally inside the enclave. The vault is the source of truth on whether a
+// vote was counted — the app only renders the boolean.
+func (h *VoteHandler) HandleVerifyVote(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req VerifyVoteRequest
+	if err := unmarshalRequest(msg.Payload, &req, "HandleVerifyVote"); err != nil {
+		return h.errorResponse(msg.GetID(), "invalid request format")
+	}
+	if req.ProposalID == "" {
+		return h.errorResponse(msg.GetID(), "proposal_id is required")
+	}
+
+	// Re-derive the voting public key if not explicitly provided.
+	vk := req.VotingPublicKey
+	if vk == "" {
+		h.state.mu.RLock()
+		credential := h.state.credential
+		h.state.mu.RUnlock()
+		if credential == nil || len(credential.IdentityPrivateKey) == 0 {
+			return h.errorResponse(msg.GetID(), "vault is locked - unlock with PIN first")
+		}
+		_, pubKey, err := h.deriveVotingKeypair(credential.IdentityPrivateKey, req.ProposalID)
+		if err != nil {
+			return h.errorResponse(msg.GetID(), "key derivation failed")
+		}
+		vk = base64.StdEncoding.EncodeToString(pubKey)
+	}
+
+	if h.sealerProxy == nil {
+		return h.respondJSON(msg.GetID(), VerifyVoteResponse{
+			Verified: false, ProposalID: req.ProposalID, VotingPublicKey: vk,
+			Error: "sealer proxy not available",
+		})
+	}
+
+	proofData, err := h.sealerProxy.GetVoteProof(req.ProposalID, vk)
+	if err != nil {
+		return h.respondJSON(msg.GetID(), VerifyVoteResponse{
+			Verified: false, ProposalID: req.ProposalID, VotingPublicKey: vk,
+			Error: err.Error(),
+		})
+	}
+
+	var proof struct {
+		MerkleRoot string                   `json:"merkle_root"`
+		LeafHash   string                   `json:"leaf_hash"`
+		LeafIndex  int                      `json:"leaf_index"`
+		Total      int                      `json:"total"`
+		ProofPath  []map[string]interface{} `json:"proof_path"`
+		Vote       map[string]interface{}   `json:"vote"`
+	}
+	if err := json.Unmarshal(proofData, &proof); err != nil {
+		return h.respondJSON(msg.GetID(), VerifyVoteResponse{
+			Verified: false, ProposalID: req.ProposalID, VotingPublicKey: vk,
+			Error: "decode proof: " + err.Error(),
+		})
+	}
+
+	// Recompute leaf hash inside the enclave so we never trust the parent's
+	// claim about which choice the user voted for.
+	choice, _ := proof.Vote["vote"].(string)
+	sig, _ := proof.Vote["vote_signature"].(string)
+	leaf := fmt.Sprintf("%s|%s|%s", vk, choice, sig)
+	if hashHex(leaf) != proof.LeafHash {
+		return h.respondJSON(msg.GetID(), VerifyVoteResponse{
+			Verified: false, ProposalID: req.ProposalID, VotingPublicKey: vk,
+			Error: "leaf hash mismatch (vote tampered)",
+		})
+	}
+
+	// Walk the path and compare against the published root.
+	cur := proof.LeafHash
+	for _, step := range proof.ProofPath {
+		hStr, _ := step["hash"].(string)
+		dir, _ := step["direction"].(string)
+		if dir == "left" {
+			cur = hashHex(hStr + cur)
+		} else {
+			cur = hashHex(cur + hStr)
+		}
+	}
+	verified := cur == proof.MerkleRoot && strings.TrimSpace(proof.MerkleRoot) != ""
+
+	return h.respondJSON(msg.GetID(), VerifyVoteResponse{
+		Verified:        verified,
+		ProposalID:      req.ProposalID,
+		VotingPublicKey: vk,
+		LeafIndex:       proof.LeafIndex,
+		Total:           proof.Total,
+		MerkleRoot:      proof.MerkleRoot,
+		Vote:            choice,
+	})
+}
+
+func (h *VoteHandler) respondJSON(reqID string, payload interface{}) (*OutgoingMessage, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return h.errorResponse(reqID, "response serialization failed")
+	}
+	return &OutgoingMessage{
+		RequestID: reqID,
+		Type:      MessageTypeResponse,
+		Payload:   body,
+	}, nil
+}
+
+func hashHex(s string) string {
+	h := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(h[:])
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // verifyPassword verifies the encrypted password hash against the stored credential

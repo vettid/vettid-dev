@@ -1,10 +1,12 @@
 import { DynamoDBClient, ScanCommand, UpdateItemCommand, QueryCommand } from '@aws-sdk/client-dynamodb';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
+import { publishVoteResults } from '../../common/publishResults';
 
 const ddb = new DynamoDBClient({});
 const TABLE_PROPOSALS = process.env.TABLE_PROPOSALS!;
 const TABLE_VOTES = process.env.TABLE_VOTES!;
 const TABLE_SUBSCRIPTIONS = process.env.TABLE_SUBSCRIPTIONS!;
+const PUBLISHED_VOTES_BUCKET = process.env.PUBLISHED_VOTES_BUCKET!;
 
 /**
  * Count eligible voters (members with active subscriptions)
@@ -21,9 +23,15 @@ async function countEligibleVoters(): Promise<number> {
 }
 
 /**
- * Get vote counts for a proposal
+ * Tally votes for a proposal across whatever choice IDs the proposal
+ * defines (or yes/no/abstain by default). The previous implementation
+ * counted only the literal strings yes/no/abstain — custom choice IDs
+ * never showed up in the tally.
  */
-async function getVoteCounts(proposalId: string): Promise<{ yes: number; no: number; abstain: number; total: number }> {
+async function getVoteCounts(proposalId: string): Promise<{
+  yes: number; no: number; abstain: number;
+  total: number; counts: Record<string, number>;
+}> {
   const result = await ddb.send(new QueryCommand({
     TableName: TABLE_VOTES,
     IndexName: 'proposal-vote-index',
@@ -32,16 +40,22 @@ async function getVoteCounts(proposalId: string): Promise<{ yes: number; no: num
   }));
 
   const votes = (result.Items || []).map(item => unmarshall(item));
-  const counts = { yes: 0, no: 0, abstain: 0, total: votes.length };
-
+  const counts: Record<string, number> = {};
   for (const vote of votes) {
-    const voteChoice = (vote.vote || '').toLowerCase();
-    if (voteChoice === 'yes') counts.yes++;
-    else if (voteChoice === 'no') counts.no++;
-    else if (voteChoice === 'abstain') counts.abstain++;
+    const choice = String(vote.vote || '');
+    if (!choice) continue;
+    counts[choice] = (counts[choice] || 0) + 1;
   }
 
-  return counts;
+  // Keep the historical fields populated so existing readers (e.g. the
+  // proposals row's final_yes/final_no/final_abstain) keep working.
+  return {
+    yes: counts.yes || 0,
+    no: counts.no || 0,
+    abstain: counts.abstain || 0,
+    total: votes.length,
+    counts,
+  };
 }
 
 /**
@@ -71,9 +85,34 @@ function checkQuorumMet(
 }
 
 /**
+ * Build Merkle artifacts and publish vote results to S3 immediately after
+ * a proposal closes. Logs but doesn't throw on failure — the proposal is
+ * already marked closed; results can be republished by the admin endpoint.
+ */
+async function autoPublishResults(proposalId: string): Promise<void> {
+  if (!PUBLISHED_VOTES_BUCKET) {
+    console.warn('PUBLISHED_VOTES_BUCKET not set; skipping auto-publish');
+    return;
+  }
+  const result = await publishVoteResults(
+    proposalId,
+    TABLE_PROPOSALS,
+    TABLE_VOTES,
+    PUBLISHED_VOTES_BUCKET,
+    'scheduler:closeExpiredProposals'
+  );
+  if (!result.success) {
+    console.error(`Auto-publish failed for ${proposalId}:`, result.error);
+    return;
+  }
+  console.log(`Auto-published results for ${proposalId}: merkle_root=${result.merkle_root}`);
+}
+
+/**
  * Scheduled Lambda to manage proposal lifecycle transitions
  * - Activates "upcoming" proposals when opens_at is reached
  * - Closes "active" proposals when closes_at is reached
+ * - Auto-publishes Merkle tree + anonymized vote list to S3 on close
  * Triggered by EventBridge scheduled rule
  */
 export const handler = async (): Promise<void> => {
@@ -173,6 +212,7 @@ async function activateUpcomingProposals(now: Date): Promise<void> {
         }),
       }));
 
+      await autoPublishResults(proposal.proposal_id);
       closedDirectlyCount++;
     }
   }
@@ -252,6 +292,7 @@ async function closeActiveProposals(now: Date): Promise<void> {
         }),
       }));
 
+      await autoPublishResults(proposal.proposal_id);
       closedCount++;
     }
   }

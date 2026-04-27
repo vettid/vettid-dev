@@ -81,6 +81,14 @@ const (
 	MessageTypeProposalsList     MessageType = "proposals_list"
 	MessageTypeProposalsResponse MessageType = "proposals_response"
 
+	// Vault-mediated vote submission (vault-manager -> parent -> DynamoDB)
+	MessageTypeVoteSubmit         MessageType = "vote_submit"
+	MessageTypeVoteSubmitResponse MessageType = "vote_submit_response"
+
+	// Vote inclusion proof (vault-manager -> parent -> S3 published votes)
+	MessageTypeVoteProofRequest  MessageType = "vote_proof_request"
+	MessageTypeVoteProofResponse MessageType = "vote_proof_response"
+
 	// HTTP proxy operations (vault-manager -> supervisor -> parent -> internet)
 	MessageTypeHTTPRequest  MessageType = "http_request"
 	MessageTypeHTTPResponse MessageType = "http_response"
