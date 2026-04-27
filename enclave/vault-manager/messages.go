@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -169,6 +170,13 @@ type MessageHandler struct {
 
 	// Bitcoin wallet handler
 	walletHandler *WalletHandler
+
+	// Handler authorization (user-controlled enable/share toggles +
+	// per-connection grants). See handler_authorization.go. Populated
+	// after PIN unlock; the gate is fail-closed before that.
+	handlerAuthMu     sync.RWMutex
+	handlerAuthState  *HandlerState
+	handlerAuthGrants map[string]*ConnectionHandlerGrants
 }
 
 // VsockPublisher implements CallPublisher using vsock to parent
@@ -411,6 +419,10 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 	// user-visible events gets a reference to the same AuditLog so
 	// write points stay local rather than centralized.
 	mh.messagingHandler.SetAuditLog(mh.auditLog)
+	// ConnectionsHandler audits lifecycle events (activated, revoked,
+	// rotated) so the per-connection history view shows them
+	// alongside messages and calls.
+	mh.connectionsHandler.SetAuditLog(mh.auditLog)
 	// EventHandler mirrors call + connection lifecycle into the audit
 	// trail too — the existing LogCallEvent / LogConnectionEvent call
 	// sites get audit coverage for free.
@@ -419,6 +431,7 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 	// is appended in the inbound `btc-payment-receipt` case below using
 	// the same shared log.
 	mh.walletHandler.SetAuditLog(mh.auditLog)
+	mh.walletHandler.SetCredentialSecretHandler(mh.credentialSecretHandler)
 	// Service-originated event handlers mirror to the VettID system
 	// connection via AuditLog.AppendSystem alongside their legacy feed
 	// entries. Plans/luminous-unifying-manatee.md has the design.
@@ -445,6 +458,12 @@ func (mh *MessageHandler) Initialize(ctx context.Context) error {
 	// just a ticker that reads the connection index and moves on.
 	if mh.presenceHandler != nil {
 		mh.presenceHandler.StartHeartbeat(ctx)
+	}
+	// Kick off the connection-expiry sweep — flips abandoned invites
+	// past their TTL to "expired" and emits forApp.connection.expired.
+	// See plans/parallel-review-handshake.md §10 risk #3.
+	if mh.connectionsHandler != nil {
+		mh.connectionsHandler.StartExpirySweep(ctx)
 	}
 	return nil
 }
@@ -570,26 +589,46 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 			if i+1 < len(parts) && parts[i+1] == "device" {
 				// Device messages: routed to deviceHandler
 				resp, err = mh.deviceHandler.HandleDeviceMessage(ctx, msg)
+			} else if i+1 < len(parts) && parts[i+1] == "presence" {
+				// Cross-vault presence heartbeat from a peer published
+				// via MessageSpace.{us}.forOwner.presence.heartbeat
+				// (backend NATS account). Republish to our app's
+				// forApp.presence.heartbeat so the OwnerSpaceClient
+				// can light up the avatar ring.
+				if mh.presenceHandler != nil {
+					if hbErr := mh.presenceHandler.HandleIncomingPeerHeartbeat(ctx, msg.Payload); hbErr != nil {
+						log.Debug().Err(hbErr).Msg("Failed to forward peer presence heartbeat")
+					}
+				}
+				resp = &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}
 			} else if i+1 < len(parts) && parts[i+1] == "connection" {
-				// Connection messages from peers, agents, and devices — route by operation
+				// Connection messages from peers, agents, and devices.
+				// Parallel-review handshake (plans/parallel-review-handshake.md):
+				// every peer-direction subject collapses into `connection.signal`
+				// with three signal kinds (response-ready / peer-accepted /
+				// peer-rejected). The legacy subjects (accepted, key-exchange,
+				// activated, rejected) are kept as no-op aliases for one
+				// release window so any in-flight messages from a partially-
+				// upgraded mesh don't hard-fail; user is re-enrolling so
+				// they should rarely fire.
 				if i+2 < len(parts) {
 					switch parts[i+2] {
-					case "accepted":
-						resp, err = mh.connectionsHandler.HandlePeerConnectionNotification(ctx, msg)
-					case "key-exchange":
-						resp, err = mh.connectionsHandler.HandlePeerKeyExchange(ctx, msg)
-					case "activated":
-						resp, err = mh.connectionsHandler.HandlePeerConnectionActivated(ctx, msg)
-					case "rejected":
-						resp, err = mh.connectionsHandler.HandlePeerConnectionRejected(ctx, msg)
+					case "signal":
+						resp, err = mh.connectionsHandler.HandleConnectionSignal(ctx, msg)
 					case "store-credentials":
-						// Agents and devices send store-credentials via MessageSpace
+						// Agents and devices still use store-credentials.
 						resp, err = mh.connectionsHandler.HandleStoreCredentials(msg)
+					case "accepted", "key-exchange", "activated", "rejected":
+						// Legacy peer subjects — drop as ack. Re-enrollment
+						// regenerates everything against the new flow.
+						log.Debug().Str("legacy_subject", parts[i+2]).Msg("Dropping legacy peer connection subject (parallel-review flow active)")
+						resp = &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}
 					default:
-						resp, err = mh.connectionsHandler.HandlePeerConnectionNotification(ctx, msg)
+						log.Debug().Str("subject", parts[i+2]).Msg("Unknown peer connection subject — dropping")
+						resp = &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}
 					}
 				} else {
-					resp, err = mh.connectionsHandler.HandlePeerConnectionNotification(ctx, msg)
+					resp = &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}
 				}
 			} else {
 				// Agent messages (default forOwner routing)
@@ -655,6 +694,17 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 	// Handlers expect just the inner payload content.
 	msg.PayloadType, msg.Payload = unwrapPayload(msg.Payload)
 
+	// Handler authorization gate. Owner-originated dispatch (forVault.*
+	// from the user's app) — system handlers bypass; everything else
+	// must be enabled in handlers/_state. Peer-originated subjects are
+	// gated separately inside the cases below so we have the resolved
+	// connection_id in scope.
+	if peerHandlerForIncomingSubject(operation) == "" {
+		if gateResp := mh.gateOperation(operation, "owner", "", msg.GetID()); gateResp != nil {
+			return gateResp, nil
+		}
+	}
+
 	switch operation {
 	case "call":
 		return mh.handleCallOperation(ctx, msg, parts[opIndex+1:])
@@ -663,12 +713,32 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 	case "bootstrap":
 		return mh.handleBootstrap(ctx, msg)
 	case "pin":
-		// Route based on payload type for mobile apps using forVault.pin subject
-		return mh.handlePinOperation(ctx, msg)
+		// Route based on payload type for mobile apps using forVault.pin subject.
+		// Refresh handler-auth cache afterwards so the gate can read the
+		// user's toggles on the very next dispatch.
+		resp, err := mh.handlePinOperation(ctx, msg)
+		if err == nil && resp != nil && resp.Type != MessageTypeError {
+			if rerr := mh.refreshHandlerAuth(); rerr != nil {
+				log.Debug().Err(rerr).Msg("Failed to refresh handler-auth cache after pin op")
+			}
+		}
+		return resp, err
 	case "pin-setup":
-		return mh.pinHandler.HandlePINSetup(ctx, msg)
+		resp, err := mh.pinHandler.HandlePINSetup(ctx, msg)
+		if err == nil && resp != nil && resp.Type != MessageTypeError {
+			if rerr := mh.refreshHandlerAuth(); rerr != nil {
+				log.Debug().Err(rerr).Msg("Failed to refresh handler-auth cache after pin-setup")
+			}
+		}
+		return resp, err
 	case "pin-unlock":
-		return mh.pinHandler.HandlePINUnlock(ctx, msg)
+		resp, err := mh.pinHandler.HandlePINUnlock(ctx, msg)
+		if err == nil && resp != nil && resp.Type != MessageTypeError {
+			if rerr := mh.refreshHandlerAuth(); rerr != nil {
+				log.Debug().Err(rerr).Msg("Failed to refresh handler-auth cache after pin-unlock")
+			}
+		}
+		return resp, err
 	case "pin-change":
 		response, err := mh.pinHandler.HandlePINChange(ctx, msg)
 		if err != nil {
@@ -699,22 +769,40 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 		return mh.handleNotificationOperation(ctx, msg, parts[opIndex+1:])
 	case "profile-update":
 		// Incoming notification from peer vault
+		if gateResp := mh.gatePeerSubject(operation, msg.Payload, msg.GetID()); gateResp != nil {
+			return gateResp, nil
+		}
 		return mh.handleIncomingProfileUpdate(ctx, msg)
 	case "revoked":
 		// Incoming revocation notice from peer vault
+		if gateResp := mh.gatePeerSubject(operation, msg.Payload, msg.GetID()); gateResp != nil {
+			return gateResp, nil
+		}
 		return mh.handleIncomingRevocation(ctx, msg)
 	case "new-message":
 		// Incoming message from peer vault
+		if gateResp := mh.gatePeerSubject(operation, msg.Payload, msg.GetID()); gateResp != nil {
+			return gateResp, nil
+		}
 		return mh.handleIncomingPeerMessage(ctx, msg)
 	case "read-receipt":
 		// Incoming read receipt from peer vault
+		if gateResp := mh.gatePeerSubject(operation, msg.Payload, msg.GetID()); gateResp != nil {
+			return gateResp, nil
+		}
 		return mh.handleIncomingReadReceipt(ctx, msg)
 	case "location-update":
 		// Incoming location update from peer vault
+		if gateResp := mh.gatePeerSubject(operation, msg.Payload, msg.GetID()); gateResp != nil {
+			return gateResp, nil
+		}
 		return mh.handleIncomingLocationUpdate(ctx, msg)
 	case "presence.heartbeat":
 		// Incoming presence heartbeat from peer vault — re-emit to
 		// our app so the UI can render "online" for that connection.
+		if gateResp := mh.gatePeerSubject(operation, msg.Payload, msg.GetID()); gateResp != nil {
+			return gateResp, nil
+		}
 		if mh.presenceHandler != nil {
 			if err := mh.presenceHandler.HandleIncomingPeerHeartbeat(ctx, msg.Payload); err != nil {
 				log.Debug().Err(err).Msg("Failed to forward presence heartbeat to app")
@@ -724,9 +812,15 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 		return mh.successResponse(msg.GetID(), ack)
 	case "btc-address-request":
 		// Incoming BTC address request from peer vault — auto-respond
+		if gateResp := mh.gatePeerSubject(operation, msg.Payload, msg.GetID()); gateResp != nil {
+			return gateResp, nil
+		}
 		return mh.walletHandler.HandleIncomingAddressRequest(ctx, msg)
 	case "btc-payment-request":
 		// Incoming BTC payment request from peer vault — forward to app
+		if gateResp := mh.gatePeerSubject(operation, msg.Payload, msg.GetID()); gateResp != nil {
+			return gateResp, nil
+		}
 		if mh.publisher != nil {
 			_ = mh.publisher.PublishToApp(ctx, "message.btc-payment-request", msg.Payload)
 		}
@@ -737,6 +831,9 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 		return mh.successResponse(msg.GetID(), ack)
 	case "btc-payment-receipt":
 		// Incoming BTC payment receipt from peer vault — forward to app
+		if gateResp := mh.gatePeerSubject(operation, msg.Payload, msg.GetID()); gateResp != nil {
+			return gateResp, nil
+		}
 		if mh.publisher != nil {
 			_ = mh.publisher.PublishToApp(ctx, "message.btc-payment-receipt", msg.Payload)
 		}
@@ -775,6 +872,9 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 		return mh.successResponse(msg.GetID(), ack)
 	case "btc-address-response":
 		// Incoming BTC address response from peer vault — forward to app
+		if gateResp := mh.gatePeerSubject(operation, msg.Payload, msg.GetID()); gateResp != nil {
+			return gateResp, nil
+		}
 		if mh.publisher != nil {
 			_ = mh.publisher.PublishToApp(ctx, "message.btc-address-response", msg.Payload)
 		}
@@ -985,6 +1085,10 @@ func (mh *MessageHandler) handleWalletOperation(ctx context.Context, msg *Incomi
 		return mh.walletHandler.HandleDelete(ctx, msg)
 	case "set-visibility":
 		return mh.walletHandler.HandleSetVisibility(ctx, msg)
+	case "backup-seed":
+		return mh.walletHandler.HandleBackupSeed(ctx, msg)
+	case "revoke-backup":
+		return mh.walletHandler.HandleRevokeBackup(ctx, msg)
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown wallet operation: %s", opType))
 	}
@@ -1686,9 +1790,18 @@ func (mh *MessageHandler) handleConnectionOperation(ctx context.Context, msg *In
 		mh.persistVaultStateToS3()
 		return response, nil
 	case "revoke":
+		// Capture the connection_id before invoking so we can drop the
+		// per-connection grant blob even if HandleRevoke mutates state.
+		var revokeReq struct {
+			ConnectionID string `json:"connection_id"`
+		}
+		_ = json.Unmarshal(msg.Payload, &revokeReq)
 		response, err := mh.connectionsHandler.HandleRevoke(msg)
 		if err != nil {
 			return response, err
+		}
+		if revokeReq.ConnectionID != "" {
+			mh.clearConnectionGrants(revokeReq.ConnectionID)
 		}
 		mh.persistVaultStateToS3()
 		return response, nil
@@ -1746,9 +1859,70 @@ func (mh *MessageHandler) handleConnectionOperation(ctx context.Context, msg *In
 		default:
 			return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown agent operation: %s", opParts[2]))
 		}
+	case "share-handlers":
+		if len(opParts) < 3 {
+			return mh.errorResponse(msg.GetID(), "missing share-handlers operation (get|set)")
+		}
+		switch opParts[2] {
+		case "get":
+			return mh.handleShareHandlersGet(msg)
+		case "set":
+			resp, err := mh.handleShareHandlersSet(msg)
+			if err != nil {
+				return resp, err
+			}
+			mh.persistVaultStateToS3()
+			return resp, nil
+		default:
+			return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown share-handlers operation: %s", opParts[2]))
+		}
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown connection operation: %s", opType))
 	}
+}
+
+// handleShareHandlersGet returns the per-connection grant blob plus the
+// surfaced catalog so the app can render the toggles.
+//
+//	body: {"connection_id": "<id>"}
+func (mh *MessageHandler) handleShareHandlersGet(msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req struct {
+		ConnectionID string `json:"connection_id"`
+	}
+	if err := json.Unmarshal(msg.Payload, &req); err != nil || req.ConnectionID == "" {
+		return mh.errorResponse(msg.GetID(), "connection_id required")
+	}
+	grants, err := mh.getConnectionGrants(req.ConnectionID)
+	if err != nil {
+		return mh.errorResponse(msg.GetID(), err.Error())
+	}
+	respBytes, _ := json.Marshal(map[string]interface{}{
+		"connection_id": req.ConnectionID,
+		"granted":       grants.Granted,
+		"updated_at":    grants.UpdatedAt,
+	})
+	return mh.successResponse(msg.GetID(), respBytes)
+}
+
+// handleShareHandlersSet replaces the per-connection grant blob.
+//
+//	body: {"connection_id": "<id>", "granted": {"wallet": true, "call": false}}
+func (mh *MessageHandler) handleShareHandlersSet(msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req struct {
+		ConnectionID string          `json:"connection_id"`
+		Granted      map[string]bool `json:"granted"`
+	}
+	if err := json.Unmarshal(msg.Payload, &req); err != nil || req.ConnectionID == "" {
+		return mh.errorResponse(msg.GetID(), "connection_id and granted map required")
+	}
+	if err := mh.setConnectionGrants(req.ConnectionID, req.Granted); err != nil {
+		return mh.errorResponse(msg.GetID(), err.Error())
+	}
+	respBytes, _ := json.Marshal(map[string]interface{}{
+		"success":       true,
+		"connection_id": req.ConnectionID,
+	})
+	return mh.successResponse(msg.GetID(), respBytes)
 }
 
 // handleNotificationOperation routes notification-related operations
@@ -2395,51 +2569,48 @@ func (mh *MessageHandler) handleIdentityMismatch(ctx context.Context, msg *Incom
 	return mh.successResponse(msg.GetID(), respBytes)
 }
 
-// handleHandlersOperation returns a static list of vault handler categories and their operations.
-// This is read-only introspection — no DB access needed — it describes the vault-manager's own capabilities.
+// handleHandlersOperation routes forVault.handlers.* operations. The
+// handler list is now state-aware: each entry in the response includes
+// the user's enabled / share_globally toggles alongside the immutable
+// classification metadata from the catalog.
 func (mh *MessageHandler) handleHandlersOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
 	if len(opParts) < 2 {
 		return mh.errorResponse(msg.GetID(), "missing handlers operation type")
 	}
-	if opParts[1] != "list" {
+	switch opParts[1] {
+	case "list", "get-state":
+		respBytes, err := json.Marshal(map[string]interface{}{
+			"handlers": mh.buildHandlersStateResponse(),
+		})
+		if err != nil {
+			return mh.errorResponse(msg.GetID(), "failed to marshal handlers list")
+		}
+		return mh.successResponse(msg.GetID(), respBytes)
+	case "set-enabled":
+		id, val, key, err := parseHandlerToggleRequest(msg.Payload)
+		if err != nil || key != "enabled" {
+			return mh.errorResponse(msg.GetID(), "set-enabled requires {handler_id, enabled}")
+		}
+		if err := mh.setHandlerEnabled(id, val); err != nil {
+			return mh.errorResponse(msg.GetID(), err.Error())
+		}
+		mh.persistVaultStateToS3()
+		respBytes, _ := json.Marshal(map[string]interface{}{"success": true, "handler_id": id, "enabled": val})
+		return mh.successResponse(msg.GetID(), respBytes)
+	case "set-share-global":
+		id, val, key, err := parseHandlerToggleRequest(msg.Payload)
+		if err != nil || key != "share_globally" {
+			return mh.errorResponse(msg.GetID(), "set-share-global requires {handler_id, share_globally}")
+		}
+		if err := mh.setHandlerShareGlobal(id, val); err != nil {
+			return mh.errorResponse(msg.GetID(), err.Error())
+		}
+		mh.persistVaultStateToS3()
+		respBytes, _ := json.Marshal(map[string]interface{}{"success": true, "handler_id": id, "share_globally": val})
+		return mh.successResponse(msg.GetID(), respBytes)
+	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown handlers operation: %s", opParts[1]))
 	}
-
-	type handlerInfo struct {
-		ID          string   `json:"id"`
-		Name        string   `json:"name"`
-		Description string   `json:"description"`
-		Operations  []string `json:"operations"`
-	}
-
-	handlers := []handlerInfo{
-		{ID: "profile", Name: "Profile", Description: "Manage vault profile, sharing settings, and photos", Operations: []string{"get", "update", "delete", "get-shared", "sharing-settings", "categories", "public", "publish", "photo"}},
-		{ID: "personal-data", Name: "Personal Data", Description: "Store and manage personal identity data", Operations: []string{"get", "update", "delete", "update-sort-order", "get-sort-order"}},
-		{ID: "secrets", Name: "Secrets", Description: "Encrypted secret storage and identity keys", Operations: []string{"add", "update", "retrieve", "delete", "list", "identity"}},
-		{ID: "credential", Name: "Credentials", Description: "Credential lifecycle management", Operations: []string{"create", "store", "sync", "get", "delete", "password-change", "secret", "version"}},
-		{ID: "connection", Name: "Connections", Description: "Peer connection management", Operations: []string{"create-invite", "initiate", "respond", "revoke", "list", "get", "update", "rotate", "get-credentials", "get-capabilities", "activity-summary"}},
-		{ID: "message", Name: "Messaging", Description: "Encrypted peer messaging", Operations: []string{"send", "read-receipt"}},
-		{ID: "feed", Name: "Event Feed", Description: "Activity feed and event management", Operations: []string{"list", "get", "read", "archive", "delete", "sync", "settings", "action"}},
-		{ID: "location", Name: "Location", Description: "Location tracking and sharing", Operations: []string{"add", "list", "delete", "delete-all"}},
-		{ID: "vote", Name: "Voting", Description: "Vault-signed governance voting", Operations: []string{"cast", "list"}},
-		{ID: "audit", Name: "Audit", Description: "Audit log queries and export", Operations: []string{"query", "export"}},
-		{ID: "call", Name: "Calls", Description: "Voice and video call management", Operations: []string{"start", "accept", "reject", "end", "signal", "history"}},
-		{ID: "invitation", Name: "Invitations", Description: "Connection invitation lifecycle", Operations: []string{"list", "cancel", "resend", "viewed"}},
-		{ID: "capability", Name: "Capabilities", Description: "Peer capability negotiation", Operations: []string{"request", "respond", "get", "list"}},
-		{ID: "settings", Name: "Settings", Description: "Notification preferences", Operations: []string{"notifications"}},
-		{ID: "notification", Name: "Notifications", Description: "Push notification routing", Operations: []string{"profile-broadcast", "revoke-notify"}},
-		{ID: "service", Name: "Services", Description: "B2C service connections and contracts", Operations: []string{"connection", "contract", "data", "request", "profile", "activity", "notifications", "trust"}},
-		{ID: "datastore", Name: "Data Stores", Description: "Shared collaborative data stores", Operations: []string{"create", "join", "read", "write", "delete", "subscribe", "audit"}},
-		{ID: "pin", Name: "Security", Description: "PIN and vault access management", Operations: []string{"setup", "unlock", "change"}},
-		{ID: "agent-secrets", Name: "Agent Secrets", Description: "Manage secrets shared with AI agents", Operations: []string{"share", "update", "revoke", "list"}},
-		{ID: "wallet", Name: "Bitcoin Wallets", Description: "HD wallet management and BTC transactions", Operations: []string{"create", "list", "detail", "get-balance", "get-address", "get-fees", "send", "send-to-connection", "request-payment", "get-history", "delete", "set-visibility"}},
-	}
-
-	respBytes, err := json.Marshal(map[string]interface{}{"handlers": handlers})
-	if err != nil {
-		return mh.errorResponse(msg.GetID(), "failed to marshal handlers list")
-	}
-	return mh.successResponse(msg.GetID(), respBytes)
 }
 
 // handleAgentSecretsOperation routes agent-secrets operations from the mobile app.

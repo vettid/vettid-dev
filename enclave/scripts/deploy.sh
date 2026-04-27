@@ -620,46 +620,22 @@ CONFIGEOF
     log_info "Migration config published (version: $version, deadline: $mandatory_after)"
 
     # ------------------------------------------------------------------
-    # Phase 6: Schedule auto-finalize
+    # Phase 6: Verify auto-finalize schedule
     # ------------------------------------------------------------------
-    PHASE="schedule-finalize"
-    log_step "Phase 6: Scheduling auto-finalize"
+    # The EventBridge rule that polls the finalize Lambda is provisioned
+    # by CDK (NitroStack.MigrationFinalizeSchedule). This phase just
+    # sanity-checks it exists so a bad cdk deploy doesn't silently leave
+    # the cleanup unscheduled.
+    PHASE="verify-finalize-schedule"
+    log_step "Phase 6: Verifying auto-finalize schedule"
 
-    # Check if Lambda exists
-    if aws lambda get-function --function-name "$FINALIZE_LAMBDA_NAME" --region "$REGION" >/dev/null 2>&1; then
-        # Create EventBridge rule (every 5 minutes)
-        aws events put-rule \
-            --name "$FINALIZE_RULE_NAME" \
-            --schedule-expression "rate(5 minutes)" \
-            --state ENABLED \
-            --description "Auto-finalize enclave migration when all users migrated or deadline passed" \
-            --region "$REGION" >/dev/null
-
-        # Get Lambda ARN
-        local lambda_arn
-        lambda_arn=$(aws lambda get-function --function-name "$FINALIZE_LAMBDA_NAME" \
-            --query 'Configuration.FunctionArn' --output text --region "$REGION")
-
-        # Add Lambda as target
-        aws events put-targets \
-            --rule "$FINALIZE_RULE_NAME" \
-            --targets "Id=migration-finalize,Arn=$lambda_arn" \
-            --region "$REGION" >/dev/null
-
-        # Ensure EventBridge can invoke the Lambda
-        aws lambda add-permission \
-            --function-name "$FINALIZE_LAMBDA_NAME" \
-            --statement-id "migration-finalize-schedule" \
-            --action "lambda:InvokeFunction" \
-            --principal "events.amazonaws.com" \
-            --source-arn "arn:aws:events:${REGION}:$(aws sts get-caller-identity --query Account --output text):rule/${FINALIZE_RULE_NAME}" \
-            --region "$REGION" 2>/dev/null || true  # Ignore if already exists
-
-        log_info "Auto-finalize scheduled (every 5 minutes)"
-        log_info "Lambda will finalize when all users migrate or deadline passes"
+    if aws events describe-rule --name "$FINALIZE_RULE_NAME" --region "$REGION" >/dev/null 2>&1; then
+        log_info "Auto-finalize rule is in place (polls every 5 min)"
     else
-        log_warn "Auto-finalize Lambda ($FINALIZE_LAMBDA_NAME) not found"
-        log_warn "Migration will need manual finalization: $0 --finalize"
+        log_warn "Auto-finalize rule ($FINALIZE_RULE_NAME) not found in EventBridge"
+        log_warn "Expected CDK stack VettID-Nitro to provision it. Run:"
+        log_warn "  cd cdk && npm run deploy -- VettID-Nitro"
+        log_warn "Manual finalize while it's missing: $0 --finalize"
     fi
 
     # ------------------------------------------------------------------

@@ -7,6 +7,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.38.1
 	github.com/aws/aws-sdk-go-v2/service/kms v1.49.4
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.71.1
+	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.41.5
 	github.com/aws/aws-sdk-go-v2/service/ssm v1.67.8
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1
 	github.com/fxamacker/cbor/v2 v2.9.0
@@ -18,6 +19,7 @@ require (
 	github.com/nats-io/nats.go v1.48.0
 	github.com/nats-io/nkeys v0.4.11
 	github.com/rs/zerolog v1.34.0
+	github.com/tyler-smith/go-bip39 v1.1.0
 	golang.org/x/crypto v0.47.0
 	golang.org/x/sys v0.40.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -26,7 +28,6 @@ require (
 
 require (
 	github.com/aws/aws-sdk-go-v2/service/internal/endpoint-discovery v1.10.7 // indirect
-	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.41.5 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jmespath/go-jmespath v0.4.0 // indirect

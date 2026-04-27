@@ -474,6 +474,19 @@ func (p *SealerProxy) ResolveInvite(inviteCode string) ([]byte, error) {
 	return resp.InviteData, nil
 }
 
+// ResolveResponseInvite fetches B's response-invite from the broker
+// keyed by the connection_id (A's connection invite created during
+// connection.create-invite). Used by A's vault on receipt of a
+// signal=response-ready ping.
+//
+// The broker subject is `invite.response.<connectionID>`; we reuse the
+// existing resolve plumbing by encoding "response." into the lookup
+// key (parent will read `invite.<key>` from the INVITATIONS stream).
+// See plans/parallel-review-handshake.md §3.1.
+func (p *SealerProxy) ResolveResponseInvite(connectionID string) ([]byte, error) {
+	return p.ResolveInvite("response." + connectionID)
+}
+
 // LoadVaultState loads DEK-encrypted vault state from S3 for cold vault recovery
 func (p *SealerProxy) LoadVaultState() ([]byte, error) {
 	req := SealerRequest{

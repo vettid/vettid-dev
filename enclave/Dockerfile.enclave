@@ -18,6 +18,12 @@ WORKDIR /build
 COPY supervisor/ ./supervisor/
 COPY vault-manager/ ./vault-manager/
 COPY go.mod go.sum ./
+# Vendor directory pre-populated so the Docker build doesn't need
+# network access to the Go module proxy and avoids toolchain
+# auto-fetch surprises when go.mod's `go` directive points past the
+# system Go on the build instance. Go uses -mod=vendor implicitly
+# when vendor/ is present alongside go.mod.
+COPY vendor/ ./vendor/
 
 # Build supervisor
 RUN cd supervisor && go build -ldflags="-s -w" -o /build/bin/supervisor .

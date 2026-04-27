@@ -20,6 +20,13 @@ type WalletHandler struct {
 	publisher    *VsockPublisher
 	httpProxy    *HTTPProxy
 	auditLog     *AuditLog
+
+	// credentialSecretHandler is wired in by SetCredentialSecretHandler
+	// so backup-seed / revoke-backup can reuse the password-verify and
+	// credential-mutation logic that powers Critical Secrets. Set
+	// after construction because of the dependency cycle (handlers are
+	// built in messages.go in dependency order).
+	credentialSecretHandler *CredentialSecretHandler
 }
 
 // NewWalletHandler creates a new wallet handler
@@ -46,6 +53,14 @@ func NewWalletHandler(
 // transfer.btc.* entries get recorded alongside the existing feed event.
 func (h *WalletHandler) SetAuditLog(a *AuditLog) {
 	h.auditLog = a
+}
+
+// SetCredentialSecretHandler wires in the credential-secret handler
+// post-construction so backup-seed / revoke-backup can write to the
+// Critical Secrets list using the same auth + encryption path the
+// existing credential.secret.* operations use.
+func (h *WalletHandler) SetCredentialSecretHandler(c *CredentialSecretHandler) {
+	h.credentialSecretHandler = c
 }
 
 // Storage keys for wallet records
@@ -91,15 +106,20 @@ func (h *WalletHandler) HandleCreate(ctx context.Context, msg *IncomingMessage) 
 		return errorResponse(msg.GetID(), "vault master secret not available"), nil
 	}
 
-	// Find next available account index
-	accountIndex := h.nextAccountIndex()
-
-	// Derive BIP84 keypair from master secret
-	privKey, pubKey, address, derivPath, err := GenerateWalletKeypair(
-		credential.VaultMasterSecret, accountIndex, network,
-	)
+	// Each wallet now has its own self-contained 12-word BIP39
+	// mnemonic (independent of the user's vault master secret). This
+	// means a wallet can be backed up to Critical Secrets as a single
+	// portable artifact, and we keep the door open to "transfer wallet
+	// to another user" in the future — the receiving vault re-imports
+	// the mnemonic and reconstructs the same address.
+	mnemonic, err := generateWalletMnemonic()
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to generate wallet keypair")
+		log.Error().Err(err).Msg("Failed to generate wallet mnemonic")
+		return errorResponse(msg.GetID(), "mnemonic generation failed"), nil
+	}
+	privKey, pubKey, address, derivPath, err := generateWalletKeypairFromMnemonic(mnemonic, network)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to derive keypair from mnemonic")
 		return errorResponse(msg.GetID(), "key derivation failed"), nil
 	}
 
@@ -116,7 +136,10 @@ func (h *WalletHandler) HandleCreate(ctx context.Context, msg *IncomingMessage) 
 	})
 	h.vaultState.mu.Unlock()
 
-	// Store wallet metadata in encrypted SQLite
+	// Store wallet metadata in encrypted SQLite. The mnemonic lives
+	// here behind the vault DEK like every other field — the
+	// backup-seed op exposes it to Critical Secrets only after a
+	// fresh password re-auth.
 	now := time.Now().Unix()
 	record := WalletRecord{
 		WalletID:       walletID,
@@ -124,9 +147,10 @@ func (h *WalletHandler) HandleCreate(ctx context.Context, msg *IncomingMessage) 
 		CryptoKeyID:    cryptoKeyID,
 		Address:        address,
 		DerivationPath: derivPath,
-		AccountIndex:   accountIndex,
+		AccountIndex:   0, // Each wallet has its own BIP39 root → account=0 always.
 		Network:        network,
 		CreatedAt:      now,
+		BIP39Mnemonic:  mnemonic,
 	}
 
 	recordJSON, err := json.Marshal(record)
@@ -191,13 +215,15 @@ func (h *WalletHandler) HandleDetail(ctx context.Context, msg *IncomingMessage) 
 	}
 
 	return successResponse(msg.GetID(), WalletDetailResponse{
-		WalletID:          record.WalletID,
-		Label:             record.Label,
-		Address:           record.Address,
-		Network:           record.Network,
-		CachedBalanceSats: record.CachedBalance,
-		BalanceUpdatedAt:  record.BalanceUpdatedAt,
-		IsPublic:          record.IsPublic,
+		WalletID:           record.WalletID,
+		Label:              record.Label,
+		Address:            record.Address,
+		Network:            record.Network,
+		CachedBalanceSats:  record.CachedBalance,
+		BalanceUpdatedAt:   record.BalanceUpdatedAt,
+		IsPublic:           record.IsPublic,
+		SeedBackedUpAt:     record.SeedBackedUpAt,
+		SeedBackupSecretID: record.SeedBackupSecretID,
 	})
 }
 
@@ -942,7 +968,11 @@ func (h *WalletHandler) loadAllWallets() ([]WalletRecord, error) {
 	return wallets, nil
 }
 
-// findPrivateKey finds the private key for a wallet from the credential's CryptoKeys
+// findPrivateKey finds the private key for a wallet by re-deriving it
+// from the wallet's BIP39 mnemonic. Each wallet has its own self-
+// contained mnemonic, so signing only needs the wallet record itself.
+//
+// SECURITY: caller must zero the returned slice after use.
 func (h *WalletHandler) findPrivateKey(record *WalletRecord) ([]byte, error) {
 	h.vaultState.mu.RLock()
 	credential := h.vaultState.credential
@@ -952,13 +982,14 @@ func (h *WalletHandler) findPrivateKey(record *WalletRecord) ([]byte, error) {
 		return nil, fmt.Errorf("vault not unlocked")
 	}
 
-	// Re-derive the key from master secret using the wallet's account index
-	// This is deterministic and more reliable than searching CryptoKeys by ID
-	privKey, _, _, _, err := GenerateWalletKeypair(
-		credential.VaultMasterSecret,
-		record.AccountIndex,
-		record.Network,
-	)
+	if record.BIP39Mnemonic == "" {
+		// Legacy wallet predating the BIP39 migration. User re-enrolls,
+		// so this branch should never run in production — leave a clear
+		// error if it ever does.
+		return nil, fmt.Errorf("wallet has no mnemonic; recreate via wallet.create")
+	}
+
+	privKey, _, _, _, err := generateWalletKeypairFromMnemonic(record.BIP39Mnemonic, record.Network)
 	if err != nil {
 		return nil, fmt.Errorf("failed to re-derive private key: %w", err)
 	}

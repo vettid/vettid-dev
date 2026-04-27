@@ -742,14 +742,19 @@ type CredentialSecretDeleteResponse struct {
 }
 
 // SecretMetadataRecord is stored in vault SQLite for the metadata index
-// This allows listing secrets without needing the credential blob
+// This allows listing secrets without needing the credential blob.
+// Discoverability mirrors the personal-data flag: cataloged (default —
+// peers see metadata, can request value), public (metadata + the user
+// has elected to publish — currently same as cataloged for secrets),
+// private (excluded from any peer-visible catalog).
 type SecretMetadataRecord struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Category    string `json:"category"`
-	Description string `json:"description,omitempty"`
-	Owner       string `json:"owner"`
-	CreatedAt   int64  `json:"created_at"`
+	ID              string          `json:"id"`
+	Name            string          `json:"name"`
+	Category        string          `json:"category"`
+	Description     string          `json:"description,omitempty"`
+	Owner           string          `json:"owner"`
+	Discoverability Discoverability `json:"discoverability,omitempty"`
+	CreatedAt       int64           `json:"created_at"`
 }
 
 // --- Personal Data Types ---
@@ -786,18 +791,45 @@ var PredefinedCategories = []PredefinedCategory{
 	{ID: "other", Name: "Other", Icon: "more"},
 }
 
+// Discoverability controls how a personal-data field (or secret entry)
+// shows up to peers. Three states:
+//
+//   public     — value goes into the published profile and is visible
+//                to every connection. The user explicitly promoted it
+//                to their calling-card.
+//   cataloged  — only metadata (name, type, category) is visible. Peers
+//                see "Al has a credit card called Personal Visa" and
+//                can request the value through a future capability flow.
+//                This is the default for new entries.
+//   private    — invisible to peers. The vault holds the value but
+//                doesn't list it in any catalog. Use for genuinely
+//                sensitive items the user doesn't want any connection
+//                to know they possess (e.g. medical info, seed
+//                phrases).
+//
+// Empty string is treated as "cataloged" so legacy fields written
+// before the discoverability work behave per the new default.
+type Discoverability string
+
+const (
+	DiscoverabilityPublic    Discoverability = "public"
+	DiscoverabilityCataloged Discoverability = "cataloged"
+	DiscoverabilityPrivate   Discoverability = "private"
+)
+
 // PersonalDataField represents a user's personal data field stored in the vault
 // Uses dotted namespace naming: personal.legal.first_name, contact.phone.mobile
 type PersonalDataField struct {
-	ID          string    `json:"id"`           // UUID
-	Name        string    `json:"name"`         // Dotted namespace: "contact.phone.mobile"
-	DisplayName string    `json:"display_name"` // Human-readable: "Mobile Phone"
-	Value       string    `json:"value"`        // The actual value (encrypted in vault)
-	FieldType   FieldType `json:"field_type"`   // TEXT, PASSWORD, NUMBER, DATE, EMAIL, PHONE, URL, NOTE
-	Category    string    `json:"category"`     // Category ID (predefined or custom)
-	IsSensitive bool      `json:"is_sensitive"` // If true, treated like minor secret
-	CreatedAt   int64     `json:"created_at"`   // Unix timestamp
-	UpdatedAt   int64     `json:"updated_at"`
+	ID              string          `json:"id"`           // UUID
+	Name            string          `json:"name"`         // Dotted namespace: "contact.phone.mobile"
+	DisplayName     string          `json:"display_name"` // Human-readable: "Mobile Phone"
+	Value           string          `json:"value"`        // The actual value (encrypted in vault)
+	FieldType       FieldType       `json:"field_type"`   // TEXT, PASSWORD, NUMBER, DATE, EMAIL, PHONE, URL, NOTE
+	Category        string          `json:"category"`     // Category ID (predefined or custom)
+	IsSensitive     bool            `json:"is_sensitive"` // If true, treated like minor secret
+	Discoverability Discoverability `json:"discoverability,omitempty"` // public | cataloged | private
+	CreatedAt       int64           `json:"created_at"`   // Unix timestamp
+	UpdatedAt       int64           `json:"updated_at"`
 }
 
 // CustomCategory represents a user-defined category for organizing personal data
@@ -845,6 +877,12 @@ type PublishedHandler struct {
 	Name        string   `json:"name"`
 	Description string   `json:"description,omitempty"`
 	Operations  []string `json:"operations,omitempty"`
+	// Classification baked into the enclave's handler catalog. Peers
+	// see these so their UI can render "system / default / optional"
+	// badges and avoid offering toggles the owner cannot flip.
+	Category  string `json:"category,omitempty"`
+	Required  bool   `json:"required,omitempty"`
+	Shareable bool   `json:"shareable,omitempty"`
 }
 
 // PublishedSecretMetadata is metadata (never value) about a secret
@@ -858,6 +896,26 @@ type PublishedSecretMetadata struct {
 	Category string `json:"category,omitempty"`
 }
 
+// CatalogedDataItem is a metadata-only entry surfaced via the public
+// profile's data catalog. Peers see what kinds of data the user has
+// stored (e.g. "Home Address" / "Mobile Phone") and can later request
+// access to specific values through the capability flow. Items
+// flagged Discoverability=private never appear here.
+type CatalogedDataItem struct {
+	Name        string `json:"name"`         // Dotted namespace, e.g. "contact.phone.mobile"
+	DisplayName string `json:"display_name"` // Human-readable name
+	FieldType   string `json:"field_type"`   // text, email, phone, ...
+	Category    string `json:"category,omitempty"`
+}
+
+// CatalogedSecretItem mirrors CatalogedDataItem for vault secrets.
+// Like data items, items flagged private are excluded.
+type CatalogedSecretItem struct {
+	Name     string `json:"name"`
+	Type     string `json:"type"`               // SEED_PHRASE, PRIVATE_KEY, etc.
+	Category string `json:"category,omitempty"` // user-defined grouping
+}
+
 type PublishedProfile struct {
 	UserGUID      string                    `json:"user_guid"`
 	PublicKey     string                    `json:"public_key"`                // Ed25519 public key (base64)
@@ -866,12 +924,18 @@ type PublishedProfile struct {
 	Email         string                    `json:"email"`                     // Always included
 	EmailVerified bool                      `json:"email_verified"`            // From registration
 	Photo         string                    `json:"photo,omitempty"`           // Base64-encoded JPEG profile photo
-	Fields        map[string]PublishedField `json:"fields"`                    // Selected personal data fields
+	Fields        map[string]PublishedField `json:"fields"`                    // Personal data fields the user marked Public — value visible
 	Wallets       []PublishedWallet         `json:"wallets,omitempty"`         // Public wallet addresses
-	Handlers      []PublishedHandler        `json:"handlers,omitempty"`        // Vault capabilities surfaced to peers
-	PublicSecrets []PublishedSecretMetadata `json:"public_secrets,omitempty"`  // Metadata (no values) for secrets the user opted to publish
-	Version       int                       `json:"profile_version"`
-	UpdatedAt     string                    `json:"updated_at"` // ISO8601
+	Handlers      []PublishedHandler        `json:"handlers,omitempty"`        // Vault capability catalog (shareable handlers only)
+	PublicSecrets []PublishedSecretMetadata `json:"public_secrets,omitempty"`  // Legacy: kept for older app builds; superseded by SecretCatalog
+	// Catalogs are the metadata-only surfaces a peer browses. They
+	// list every personal-data / secret entry the user has NOT marked
+	// private. Values are never carried — peers must request them
+	// through the capability flow.
+	DataCatalog   []CatalogedDataItem   `json:"data_catalog,omitempty"`
+	SecretCatalog []CatalogedSecretItem `json:"secret_catalog,omitempty"`
+	Version       int                   `json:"profile_version"`
+	UpdatedAt     string                `json:"updated_at"` // ISO8601
 }
 
 // --- Profile Request/Response Types ---

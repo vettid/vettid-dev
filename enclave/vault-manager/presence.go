@@ -18,6 +18,13 @@ import (
 // user's effective broadcast flag is true for that connection; absence
 // otherwise. The observer infers offline from heartbeat absence — the
 // lack of a signal is not itself an informational channel.
+//
+// App-liveness gate: heartbeats are only broadcast while the app has
+// recently said "I'm here" via presence.app-active. The vault tracks
+// the last app-active timestamp in memory; if it's stale (or the app
+// explicitly said it's leaving via active=false), the broadcast loop
+// stays quiet. Without this, killing the app would leave the AWS
+// enclave broadcasting forever and peers would always see us online.
 type PresenceHandler struct {
 	ownerSpace  string
 	storage     *EncryptedStorage
@@ -28,7 +35,19 @@ type PresenceHandler struct {
 	tickerMu sync.Mutex
 	ticker   *time.Ticker
 	done     chan struct{}
+
+	// App-liveness gate. lastAppActiveAt is unix-seconds; appActive
+	// is the explicit boolean from the most recent app message
+	// (defaults to false until we hear from the app at least once).
+	appMu           sync.Mutex
+	appActive       bool
+	lastAppActiveAt int64
 }
+
+// appActiveTTL bounds how stale the last app-active signal can be
+// before the broadcast loop falls silent. ~3× the app's foreground
+// heartbeat interval so a single missed beat doesn't flap presence.
+const appActiveTTL = 90 * time.Second
 
 const (
 	presenceSettingsKey = "settings/presence"
@@ -214,10 +233,48 @@ func (h *PresenceHandler) heartbeatLoop(ctx context.Context) {
 	}
 }
 
+// HandleAppActive records the app-liveness signal. The app calls
+// this on resume (active=true) and on graceful background (active=
+// false). Force-stops / OS kills are caught by the staleness check
+// in isAppLive — no app message → vault falls silent after ~90s.
+func (h *PresenceHandler) HandleAppActive(msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req struct {
+		Active bool `json:"active"`
+	}
+	if err := unmarshalRequest(msg.Payload, &req, "HandleAppActive"); err != nil {
+		return h.errorResponse(msg.GetID(), err.Error())
+	}
+	h.appMu.Lock()
+	h.appActive = req.Active
+	if req.Active {
+		h.lastAppActiveAt = time.Now().Unix()
+	}
+	h.appMu.Unlock()
+	return okResponse(msg.GetID())
+}
+
+// isAppLive returns true when we should be broadcasting heartbeats
+// because the app is (probably) running. Combines the explicit
+// "I'm active" boolean with a staleness check on the last signal.
+func (h *PresenceHandler) isAppLive() bool {
+	h.appMu.Lock()
+	defer h.appMu.Unlock()
+	if !h.appActive {
+		return false
+	}
+	return time.Since(time.Unix(h.lastAppActiveAt, 0)) < appActiveTTL
+}
+
 // broadcast iterates the connection index once and publishes an
 // "online" heartbeat to every peer for whom the user has opted in.
 func (h *PresenceHandler) broadcast(ctx context.Context) {
 	if h.connections == nil || h.publisher == nil {
+		return
+	}
+	// Don't broadcast if the app hasn't checked in recently. Without
+	// this gate, killing the app would leave us perpetually "online"
+	// to every peer.
+	if !h.isAppLive() {
 		return
 	}
 	indexData, err := h.storage.Get("connections/_index")
@@ -255,7 +312,16 @@ func (h *PresenceHandler) broadcast(ctx context.Context) {
 		if err != nil {
 			continue
 		}
-		if err := h.publisher.PublishToVault(ctx, record.PeerGUID, "presence.heartbeat", payload); err != nil {
+		// SECURITY/ROUTING: Publish via the parent's backend NATS
+		// account using the MessageSpace.{peer}.forOwner.* pattern,
+		// the same pattern HandleStoreCredentials uses for cross-
+		// vault connection-acceptance notifications. The previous
+		// PublishToVault path went out under the member account and
+		// the peer's parent only subscribes under backend → packets
+		// were dropped at the NATS account boundary, leaving the
+		// presence ring permanently dark.
+		subject := fmt.Sprintf("MessageSpace.%s.forOwner.presence.heartbeat", record.PeerGUID)
+		if err := h.publisher.PublishRaw(subject, payload); err != nil {
 			log.Debug().Err(err).Str("connection_id", record.ConnectionID).Msg("Presence heartbeat publish failed")
 		}
 	}
@@ -305,14 +371,16 @@ func okResponse(requestID string) (*OutgoingMessage, error) {
 // handlePresenceOperation routes forVault.presence.* operations to
 // the presence handler.
 func (mh *MessageHandler) handlePresenceOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
-	if len(opParts) < 1 {
+	// opParts is parts[opIndex+1:], so opParts[0] == "presence" and the
+	// sub-op lives at opParts[1] (matches every other handler).
+	if len(opParts) < 2 {
 		return mh.errorResponse(msg.GetID(), "missing presence operation")
 	}
 	h := mh.presenceHandler
 	if h == nil {
 		return mh.errorResponse(msg.GetID(), "presence handler not initialized")
 	}
-	switch opParts[0] {
+	switch opParts[1] {
 	case "get":
 		return h.HandleSettingsGet(msg)
 	case "set-default":
@@ -329,7 +397,10 @@ func (mh *MessageHandler) handlePresenceOperation(ctx context.Context, msg *Inco
 		}
 		mh.persistVaultStateToS3()
 		return resp, nil
+	case "app-active":
+		// In-memory liveness signal — no need to persist to S3.
+		return h.HandleAppActive(msg)
 	default:
-		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown presence operation: %s", opParts[0]))
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown presence operation: %s", opParts[1]))
 	}
 }

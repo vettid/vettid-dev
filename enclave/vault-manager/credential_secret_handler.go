@@ -484,6 +484,77 @@ func (h *CredentialSecretHandler) HandleDelete(msg *IncomingMessage) (*OutgoingM
 	}, nil
 }
 
+// MutateSecretsResult is what MutateSecrets returns to the caller.
+type MutateSecretsResult struct {
+	EncryptedCredential string
+	NewUTKs             []UTKPublic
+}
+
+// MutateSecrets is the shared entry point for any vault op that needs
+// to add, remove, or update an entry on the credential's Secrets list
+// (e.g. wallet.backup-seed reusing the auth path that powers Critical
+// Secrets directly). Wraps decrypt → password verify → mutate →
+// re-encrypt → UTK rotation in a single helper so handlers don't
+// re-implement the cycle. The mutator runs against the decrypted
+// credential; return any error to abort (the credential isn't
+// re-encrypted on error).
+func (h *CredentialSecretHandler) MutateSecrets(
+	encryptedCredential, encryptedPasswordHash, ephemeralPublicKey, nonce, keyID string,
+	mutate func(*ProteanCredentialV2) error,
+) (MutateSecretsResult, error) {
+	var out MutateSecretsResult
+
+	if encryptedCredential == "" || encryptedPasswordHash == "" || keyID == "" {
+		return out, fmt.Errorf("missing credential auth fields")
+	}
+
+	cred, err := h.decryptCredentialBlob(encryptedCredential)
+	if err != nil {
+		return out, fmt.Errorf("decrypt credential: %w", err)
+	}
+	defer cred.SecureErase()
+
+	if err := h.verifyPasswordAgainstCredential(encryptedPasswordHash, ephemeralPublicKey, nonce, keyID, cred); err != nil {
+		return out, fmt.Errorf("password verification: %w", err)
+	}
+
+	if err := mutate(cred); err != nil {
+		return out, err
+	}
+
+	cred.Timestamps.LastModified = time.Now().Unix()
+	cred.Version++
+
+	sealed, err := h.encryptCredentialBlob(cred)
+	if err != nil {
+		return out, fmt.Errorf("re-encrypt credential: %w", err)
+	}
+	if err := h.storage.Put("credential/sealed_blob", []byte(sealed)); err != nil {
+		log.Warn().Err(err).Msg("Failed to store credential blob for backup (non-fatal)")
+	}
+
+	newPairs, err := h.bootstrap.GenerateMoreUTKs(3)
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to generate replacement UTKs")
+	}
+	out.EncryptedCredential = sealed
+	out.NewUTKs = EncodeUTKPublics(newPairs)
+	return out, nil
+}
+
+// StoreSecretMetadata exposes the metadata index for handlers (like
+// the wallet backup-seed path) that mutate Secrets through MutateSecrets
+// instead of calling HandleAdd directly.
+func (h *CredentialSecretHandler) StoreSecretMetadata(record SecretMetadataRecord) {
+	h.storeMetadataRecord(record)
+}
+
+// RemoveSecretMetadata is the counterpart to StoreSecretMetadata for
+// the wallet revoke-backup path.
+func (h *CredentialSecretHandler) RemoveSecretMetadata(secretID string) {
+	h.removeMetadataRecord(secretID)
+}
+
 // --- Credential blob operations ---
 
 // decryptCredentialBlob decrypts a CEK-encrypted credential blob and returns V2 format.

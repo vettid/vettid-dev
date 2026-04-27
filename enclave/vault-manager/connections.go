@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -24,6 +25,18 @@ type ConnectionsHandler struct {
 	sealerProxy  *SealerProxy
 	publisher    *VsockPublisher
 	vaultState   *VaultState
+	// Per-connection audit trail. Optional — when nil, audit
+	// writes are skipped. Populated post-construction via
+	// SetAuditLog so we don't have to touch every call site.
+	auditLog     *AuditLog
+
+	// Per-connection mutex map. Two paths can mutate the same
+	// connection record concurrently — local respond from the app
+	// and peer signals arriving on NATS — so the parallel-review
+	// handshake serializes every read-modify-write through these
+	// locks. Lazily populated; entries are intentionally never
+	// removed (they're cheap and the connection lifetime is short).
+	connMutexes sync.Map // map[string]*sync.Mutex (key = connection_id)
 }
 
 // NewConnectionsHandler creates a new connections handler
@@ -36,6 +49,195 @@ func NewConnectionsHandler(ownerSpace string, storage *EncryptedStorage, eventHa
 		publisher:    publisher,
 		vaultState:   vaultState,
 	}
+}
+
+// SetAuditLog plumbs the per-connection audit trail in after the
+// MessageHandler has created its AuditLog. Allows audit writes for
+// connection-lifecycle events (activated, revoked, rotated) so the
+// per-connection history view shows them alongside messages and
+// calls. Idempotent — safe to call again on reload.
+func (h *ConnectionsHandler) SetAuditLog(auditLog *AuditLog) {
+	h.auditLog = auditLog
+}
+
+// connectionLock returns the per-connection mutex, creating one on
+// first use. Use this around every read-modify-write of a
+// ConnectionRecord — see plans/parallel-review-handshake.md §10 risk
+// #1 for the race we're guarding against.
+func (h *ConnectionsHandler) connectionLock(connectionID string) *sync.Mutex {
+	if m, ok := h.connMutexes.Load(connectionID); ok {
+		return m.(*sync.Mutex)
+	}
+	m, _ := h.connMutexes.LoadOrStore(connectionID, &sync.Mutex{})
+	return m.(*sync.Mutex)
+}
+
+// withConnectionRecord loads a record, runs `mutate` under the
+// per-connection lock, and persists the result if mutate returned true.
+// `mutate` returns (changed bool, err error). The helper is the only
+// place ConnectionRecord writes should happen on the parallel-review
+// path. Loads with no record return ErrKeyNotFound.
+func (h *ConnectionsHandler) withConnectionRecord(connectionID string, mutate func(*ConnectionRecord) (bool, error)) (*ConnectionRecord, error) {
+	lock := h.connectionLock(connectionID)
+	lock.Lock()
+	defer lock.Unlock()
+
+	storageKey := "connections/" + connectionID
+	data, err := h.storage.Get(storageKey)
+	if err != nil {
+		return nil, err
+	}
+	if data == nil {
+		return nil, ErrKeyNotFound
+	}
+	var record ConnectionRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		return nil, fmt.Errorf("decode connection record: %w", err)
+	}
+
+	changed, err := mutate(&record)
+	if err != nil {
+		return &record, err
+	}
+	if !changed {
+		return &record, nil
+	}
+
+	newData, err := json.Marshal(&record)
+	if err != nil {
+		return &record, fmt.Errorf("encode connection record: %w", err)
+	}
+	if err := h.storage.Put(storageKey, newData); err != nil {
+		return &record, fmt.Errorf("persist connection record: %w", err)
+	}
+	return &record, nil
+}
+
+// recordTerminal returns true when the record is in a final state and
+// should reject further decision changes. Replay attacks of stale
+// signals also bounce off this guard (plan §10 risk #2).
+func recordTerminal(status string) bool {
+	switch status {
+	case ConnStatusActive, ConnStatusDeclinedByUs, ConnStatusDeclinedByPeer, ConnStatusExpired, ConnStatusRevoked:
+		return true
+	}
+	return false
+}
+
+// applyDecision sets either LocalDecision or PeerDecision on the record
+// while enforcing the no-flip rule (once a side commits, it stays
+// committed). Returns true if the field actually changed.
+func applyDecision(field *string, decision string) (bool, error) {
+	if decision != DecisionAccept && decision != DecisionReject {
+		return false, fmt.Errorf("invalid decision: %s", decision)
+	}
+	if *field == decision {
+		return false, nil // idempotent
+	}
+	if *field != "" {
+		// Decision already recorded as the opposite — refuse to flip.
+		return false, fmt.Errorf("decision already recorded as %s, cannot change to %s", *field, decision)
+	}
+	*field = decision
+	return true, nil
+}
+
+// computeStatus is the single source of truth for record.Status given
+// the two decisions. Run after every applyDecision under the lock.
+func computeStatus(record *ConnectionRecord) {
+	if recordTerminal(record.Status) {
+		return // already final, don't reverse
+	}
+	switch {
+	case record.LocalDecision == DecisionReject:
+		record.Status = ConnStatusDeclinedByUs
+	case record.PeerDecision == DecisionReject:
+		record.Status = ConnStatusDeclinedByPeer
+	case record.LocalDecision == DecisionAccept && record.PeerDecision == DecisionAccept:
+		record.Status = ConnStatusActive
+	case record.LocalDecision == DecisionAccept:
+		record.Status = ConnStatusOurAcceptPending
+	case record.PeerDecision == DecisionAccept:
+		record.Status = ConnStatusPeerAcceptPending
+	default:
+		// Neither side has decided. Leave as-is unless caller set it
+		// explicitly (e.g. invited or peer_reviewing).
+	}
+}
+
+// tryActivate is the convergence point. Called from both the local
+// respond path AND the peer-signal arrival path. Atomic, idempotent,
+// and emits connection.activated exactly once per record-lifetime
+// thanks to the ActivatedAt guard.
+//
+// Returns the post-mutation record and a flag indicating whether the
+// record was newly activated by this call.
+func (h *ConnectionsHandler) tryActivate(ctx context.Context, connectionID string) (*ConnectionRecord, bool, error) {
+	var newlyActivated bool
+	record, err := h.withConnectionRecord(connectionID, func(r *ConnectionRecord) (bool, error) {
+		// ActivatedAt is the canonical "we already emitted" guard.
+		// computeStatus may have flipped Status to Active before
+		// this call (which is fine — the work to do is just emit).
+		if !r.ActivatedAt.IsZero() {
+			return false, nil
+		}
+		if r.LocalDecision != DecisionAccept || r.PeerDecision != DecisionAccept {
+			return false, nil // not ready
+		}
+		r.Status = ConnStatusActive
+		r.ActivatedAt = time.Now().UTC()
+		newlyActivated = true
+		return true, nil
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	if newlyActivated && h.publisher != nil && record != nil {
+		// 1) Notify the peer so they too can flip to active. The peer
+		// runs its own tryActivate when this signal arrives — if it
+		// converged at the same instant, that side already activated
+		// and the signal is a no-op.
+		if record.PeerOwnerSpace != "" {
+			signal := map[string]interface{}{
+				"signal":        "peer-accepted",
+				"connection_id": connectionID,
+			}
+			payload, _ := json.Marshal(signal)
+			subject := fmt.Sprintf("MessageSpace.%s.forOwner.connection.signal", record.PeerOwnerSpace)
+			if err := h.publisher.PublishRaw(subject, payload); err != nil {
+				log.Warn().Err(err).Str("connection_id", connectionID).Msg("Failed to publish peer-accepted signal during activation")
+			}
+		}
+		// 2) Notify our own app.
+		notif := map[string]interface{}{
+			"type":          "connection.activated",
+			"connection_id": connectionID,
+			"peer_guid":     record.PeerGUID,
+			"peer_alias":    record.PeerAlias,
+		}
+		notifBytes, _ := json.Marshal(notif)
+		if err := h.publisher.PublishToApp(ctx, "connection.activated", notifBytes); err != nil {
+			log.Warn().Err(err).Msg("Failed to publish connection.activated to app")
+		}
+		if h.eventHandler != nil {
+			h.eventHandler.LogConnectionEvent(ctx, EventTypeConnectionCreated, connectionID, record.PeerGUID, "Connection established")
+		}
+		// Per-connection audit trail entry so the connection-detail
+		// history view has a "Connection established" row at the
+		// origin of the timeline. The feed gets it via the event
+		// above; that's a separate stream.
+		if h.auditLog != nil {
+			h.auditLog.Append(AuditEntry{
+				ConnectionID: connectionID,
+				PeerGUID:     record.PeerGUID,
+				EventType:    AuditTypeConnectionAccepted,
+				Direction:    AuditDirectionInternal,
+				Title:        "Connection established",
+				CreatedAt:    record.ActivatedAt.Unix(),
+			})
+		}
+	}
+	return record, newlyActivated, nil
 }
 
 // SetSealerProxy sets the sealer proxy for account seed loading
@@ -55,6 +257,59 @@ func (c *ConnectionRecord) CapabilitiesOrDefault() ConnectionCapabilities {
 		return *c.Capabilities
 	}
 	return DefaultPeerCapabilities()
+}
+
+// publishConnectionSignal sends a tiny routing-only signal to the peer's
+// MessageSpace. Hard rule: NO PII rides on this subject — only the
+// connection_id and (for response-ready) a review_nonce. See
+// plans/parallel-review-handshake.md §3.2.
+func (h *ConnectionsHandler) publishConnectionSignal(peerOwnerSpace, signalType, connectionID, reviewNonce string) error {
+	if h.publisher == nil {
+		return fmt.Errorf("publisher not available")
+	}
+	if peerOwnerSpace == "" {
+		return fmt.Errorf("peer_owner_space is empty — cannot route signal")
+	}
+	body := map[string]interface{}{
+		"signal":        signalType,
+		"connection_id": connectionID,
+	}
+	if reviewNonce != "" {
+		body["review_nonce"] = reviewNonce
+	}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	subject := fmt.Sprintf("MessageSpace.%s.forOwner.connection.signal", peerOwnerSpace)
+	return h.publisher.PublishRaw(subject, payload)
+}
+
+// publishResponseInvite writes B's response invite into the broker
+// keyed by A's connection_id. Subject: `invite.response.<conn_id>`.
+// Overwrites on each call (re-resolves replace prior content).
+func (h *ConnectionsHandler) publishResponseInvite(connectionID string, payload map[string]interface{}) error {
+	if h.publisher == nil {
+		return fmt.Errorf("publisher not available")
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	subject := fmt.Sprintf("invite.response.%s", connectionID)
+	return h.publisher.PublishRaw(subject, body)
+}
+
+// generateReviewNonce returns a hex-encoded 16-byte nonce used to
+// de-dup peer-side review notifications when the scanner re-resolves
+// the same code.
+func generateReviewNonce() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		// Fall back to time-based if crypto/rand fails (extremely unlikely)
+		return fmt.Sprintf("ts-%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b)
 }
 
 // EnsureSystemConnection creates the per-vault VettID system connection
@@ -189,6 +444,35 @@ func SystemCapabilities() ConnectionCapabilities {
 }
 
 // ConnectionRecord represents a stored connection
+// Connection statuses for the parallel-review handshake.
+//
+//	invited            — A created the connection invite, no response yet.
+//	peer_reviewing     — both sides are reviewing each other's profiles.
+//	our_accept_pending — our side accepted, waiting on the peer.
+//	peer_accept_pending — peer accepted, our side still reviewing.
+//	active             — both sides accepted; connection live.
+//	declined_by_us     — terminal: this vault declined.
+//	declined_by_peer   — terminal: the peer declined.
+//	expired            — terminal: invitation TTL elapsed before both accepted.
+//	revoked            — terminal: a previously-active connection was revoked.
+const (
+	ConnStatusInvited            = "invited"
+	ConnStatusPeerReviewing      = "peer_reviewing"
+	ConnStatusOurAcceptPending   = "our_accept_pending"
+	ConnStatusPeerAcceptPending  = "peer_accept_pending"
+	ConnStatusActive             = "active"
+	ConnStatusDeclinedByUs       = "declined_by_us"
+	ConnStatusDeclinedByPeer     = "declined_by_peer"
+	ConnStatusExpired            = "expired"
+	ConnStatusRevoked            = "revoked"
+)
+
+// Decision values for ConnectionRecord.LocalDecision / PeerDecision.
+const (
+	DecisionAccept = "accept"
+	DecisionReject = "reject"
+)
+
 type ConnectionRecord struct {
 	ConnectionID      string    `json:"connection_id"`
 	ConnectionType    string    `json:"connection_type,omitempty"` // "peer" (default) or "agent"
@@ -197,9 +481,19 @@ type ConnectionRecord struct {
 	CredentialsType   string    `json:"credentials_type"` // "outbound" or "inbound"
 	Credentials       string    `json:"credentials,omitempty"`
 	MessageSpaceTopic string    `json:"message_space_topic"`
-	Status            string    `json:"status"` // "active", "revoked", "pending", "expired"
+	Status            string    `json:"status"` // see ConnStatus* constants
 	CreatedAt         time.Time `json:"created_at"`
 	ExpiresAt         time.Time `json:"expires_at,omitempty"`
+
+	// Parallel-review handshake (plans/parallel-review-handshake.md):
+	// each vault tracks BOTH local and peer decisions independently.
+	// Convergence to "active" is gated on both being "accept" via
+	// the idempotent tryActivate() helper. ActivatedAt fires the
+	// app-side connection.activated event exactly once per record.
+	LocalDecision string    `json:"local_decision,omitempty"` // "" | accept | reject
+	PeerDecision  string    `json:"peer_decision,omitempty"`  // "" | accept | reject
+	ReviewNonce   string    `json:"review_nonce,omitempty"`   // last accepted from peer; de-dup
+	ActivatedAt   time.Time `json:"activated_at,omitempty"`   // zero == not yet emitted
 
 	// Presence: per-connection override of the user-wide
 	// presence_share_default. nil = follow default, true/false = explicit.
@@ -495,6 +789,12 @@ type ConnectionInfo struct {
 	// Agent-specific fields (only present for agent connections)
 	AgentMetadata *AgentMetadata      `json:"agent_metadata,omitempty"`
 	Contract      *ConnectionContract `json:"contract,omitempty"`
+
+	// Per-connection presence override. nil = follow user-wide
+	// default; true/false = explicit override. Surfaced on the
+	// connection-detail screen so the user can override their global
+	// presence setting for a specific peer.
+	PresenceShareOverride *bool `json:"presence_share_override,omitempty"`
 }
 
 // ListConnectionsResponse is the response for connection.list
@@ -625,6 +925,14 @@ func (h *ConnectionsHandler) HandleCreateInvite(msg *IncomingMessage) (*Outgoing
 	// profile, but not marked pending either) and left the record
 	// stuck forever when the peer never joined. HandleActivation
 	// (line ~861) flips this to "active" when the peer accepts.
+	// Parallel-review handshake: peer connections start at "invited"
+	// (was "pending"). Status flips through peer_reviewing → *_pending
+	// → active as the resolve + decisions land. Agent / device flows
+	// keep their own status semantics; we only own peer here.
+	initialStatus := "pending"
+	if req.ConnectionType == "" || req.ConnectionType == "peer" {
+		initialStatus = ConnStatusInvited
+	}
 	record := ConnectionRecord{
 		ConnectionID:      connectionID,
 		ConnectionType:    req.ConnectionType, // "peer", "agent", or "device" (empty defaults to peer)
@@ -632,7 +940,7 @@ func (h *ConnectionsHandler) HandleCreateInvite(msg *IncomingMessage) (*Outgoing
 		PeerGUID:          req.PeerGUID,
 		CredentialsType:   "outbound",
 		MessageSpaceTopic: fmt.Sprintf("MessageSpace.%s.forOwner.>", h.ownerSpace),
-		Status:            "pending",
+		Status:            initialStatus,
 		CreatedAt:         time.Now(),
 		ExpiresAt:         expiresAt,
 		LocalPublicKey:    localPublic,
@@ -700,6 +1008,7 @@ func (h *ConnectionsHandler) HandleCreateInvite(msg *IncomingMessage) (*Outgoing
 
 		brokerPayload := map[string]interface{}{
 			"type":            "vettid_connection",
+			"kind":            "connection", // see plans/parallel-review-handshake.md §3.1
 			"connection_id":   connectionID,
 			"jwt":             jwt,
 			"seed":            seed,
@@ -708,6 +1017,12 @@ func (h *ConnectionsHandler) HandleCreateInvite(msg *IncomingMessage) (*Outgoing
 			"expires_at":      expiresAt.Format(time.RFC3339),
 			"label":           req.Label,
 			"inviter_profile": inviterProfile,
+			// E2E pubkey rides in the broker payload (capability-gated
+			// by the invite code) so B can derive the shared secret at
+			// resolve-time before any review screen renders. The
+			// existing JWT/seed already grant the holder reach to A's
+			// MessageSpace, so embedding A's pubkey here is no weaker.
+			"e2e_public_key": fmt.Sprintf("%x", localPublic),
 		}
 		payloadBytes, _ := json.Marshal(brokerPayload)
 
@@ -741,8 +1056,22 @@ func (h *ConnectionsHandler) HandleCreateInvite(msg *IncomingMessage) (*Outgoing
 }
 
 // HandleResolveInvite handles connection.resolve-invite messages.
-// Fetches invitation data from the NATS INVITATIONS stream via the parent process.
-// The app sends the invite code from a scanned QR; the vault resolves it.
+//
+// In the parallel-review handshake (plans/parallel-review-handshake.md)
+// this handler does the heavy lifting on B's side:
+//   1. Fetch A's connection invite from the broker.
+//   2. Generate B's X25519 keypair, derive the shared secret with A's pubkey.
+//   3. Persist B's inbound connection record at status `peer_reviewing`.
+//   4. Publish B's response invite (`invite.response.<conn_id>`) carrying
+//      B's profile + pubkey + message_space.
+//   5. Push a tiny `signal=response-ready` ping to A's MessageSpace
+//      (no PII, just `{conn_id, review_nonce}`).
+//   6. Return inviter profile + connection_id to B's app so the preview
+//      screen renders without a second round-trip.
+//
+// Re-resolves of the same code are idempotent: existing local record is
+// kept (and its keypair preserved), a fresh review_nonce is minted, the
+// response invite is overwritten, the signal is re-pushed.
 func (h *ConnectionsHandler) HandleResolveInvite(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req struct {
 		InviteCode string `json:"invite_code"`
@@ -763,12 +1092,400 @@ func (h *ConnectionsHandler) HandleResolveInvite(msg *IncomingMessage) (*Outgoin
 		return h.errorResponse(msg.GetID(), fmt.Sprintf("invitation not found or expired: %v", err))
 	}
 
-	// Return the raw invitation data — it contains connection_id, jwt, seed, owner_space, etc.
+	// Parse the broker payload to pull out the fields the parallel-review
+	// flow needs. The shape is set by HandleCreateInvite on A's side.
+	var brokerPayload struct {
+		ConnectionID    string                 `json:"connection_id"`
+		JWT             string                 `json:"jwt"`
+		Seed            string                 `json:"seed"`
+		OwnerSpace      string                 `json:"owner_space"`
+		MessageSpace    string                 `json:"message_space"`
+		ExpiresAt       string                 `json:"expires_at"`
+		Label           string                 `json:"label"`
+		InviterProfile  map[string]interface{} `json:"inviter_profile"`
+		E2EPublicKey    string                 `json:"e2e_public_key"`
+	}
+	if err := json.Unmarshal(inviteData, &brokerPayload); err != nil {
+		log.Warn().Err(err).Msg("Failed to parse broker invitation payload")
+		return h.errorResponse(msg.GetID(), "invitation payload malformed")
+	}
+	if brokerPayload.ConnectionID == "" || brokerPayload.OwnerSpace == "" || brokerPayload.E2EPublicKey == "" {
+		return h.errorResponse(msg.GetID(), "invitation payload missing required fields")
+	}
+	if brokerPayload.OwnerSpace == h.ownerSpace {
+		return h.errorResponse(msg.GetID(), "cannot resolve your own invitation")
+	}
+
+	peerPubKey, err := decodeHexKey(brokerPayload.E2EPublicKey)
+	if err != nil {
+		return h.errorResponse(msg.GetID(), fmt.Sprintf("invalid inviter pubkey: %v", err))
+	}
+	expiresAt, _ := time.Parse(time.RFC3339, brokerPayload.ExpiresAt)
+
+	// Look up an existing record (re-resolve case). On first resolve we
+	// create the record from scratch with a fresh keypair.
+	storageKey := "connections/" + brokerPayload.ConnectionID
+	var record ConnectionRecord
+	existing, _ := h.storage.Get(storageKey)
+	if len(existing) > 0 {
+		_ = json.Unmarshal(existing, &record)
+		if recordTerminal(record.Status) {
+			return h.errorResponse(msg.GetID(), "this connection is already terminal")
+		}
+	}
+
+	// Generate B's keypair only if we don't already have one for this
+	// connection_id (so re-resolves don't churn keys).
+	if len(record.LocalPrivateKey) == 0 {
+		localPrivate := make([]byte, 32)
+		if _, err := rand.Read(localPrivate); err != nil {
+			return h.errorResponse(msg.GetID(), "Failed to generate keys")
+		}
+		localPublic, err := curve25519.X25519(localPrivate, curve25519.Basepoint)
+		if err != nil {
+			return h.errorResponse(msg.GetID(), "Failed to derive public key")
+		}
+		record.LocalPrivateKey = localPrivate
+		record.LocalPublicKey = localPublic
+	}
+
+	// Derive shared secret. Idempotent — same inputs → same output.
+	sharedSecret, err := curve25519.X25519(record.LocalPrivateKey, peerPubKey)
+	if err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to derive shared secret")
+	}
+
+	// Build a peer-alias from the inviter profile (first + last name).
+	peerAlias := brokerPayload.Label
+	if firstName, ok := brokerPayload.InviterProfile["_system_first_name"].(string); ok && firstName != "" {
+		alias := firstName
+		if lastName, ok := brokerPayload.InviterProfile["_system_last_name"].(string); ok && lastName != "" {
+			alias += " " + lastName
+		}
+		peerAlias = strings.TrimSpace(alias)
+	}
+
+	// Fill / refresh the record. Preserve the original ConnectionID,
+	// CreatedAt, and any decisions already recorded.
+	record.ConnectionID = brokerPayload.ConnectionID
+	record.ConnectionType = "peer"
+	record.CredentialsType = "inbound"
+	record.PeerOwnerSpace = brokerPayload.OwnerSpace
+	record.PeerMessageSpace = brokerPayload.MessageSpace
+	record.PeerGUID = brokerPayload.OwnerSpace
+	record.PeerAlias = peerAlias
+	record.PeerPublicKey = peerPubKey
+	record.SharedSecret = sharedSecret
+	record.KeyExchangeAt = time.Now()
+	record.MessageSpaceTopic = fmt.Sprintf("MessageSpace.%s.forOwner.>", h.ownerSpace)
+	if record.CreatedAt.IsZero() {
+		record.CreatedAt = time.Now()
+	}
+	if !expiresAt.IsZero() {
+		record.ExpiresAt = expiresAt
+	}
+	if record.Status == "" || record.Status == "pending" || record.Status == ConnStatusInvited {
+		record.Status = ConnStatusPeerReviewing
+	}
+	record.ReviewNonce = generateReviewNonce()
+
+	newData, err := json.Marshal(record)
+	if err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to marshal connection record")
+	}
+	if err := h.storage.Put(storageKey, newData); err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to store connection record")
+	}
+	h.addToConnectionIndex(brokerPayload.ConnectionID)
+
+	// Publish B's response invite to the broker so A can pull B's
+	// profile + pubkey on demand. Hard rule: profile + pubkey only
+	// flow through the broker (capability-gated). The peer push that
+	// follows is a tiny routing-only signal.
+	myProfile := h.loadPublishedProfileForPeer()
+	myAlias := ""
+	if firstName, ok := myProfile["_system_first_name"].(string); ok && firstName != "" {
+		myAlias = firstName
+		if lastName, ok := myProfile["_system_last_name"].(string); ok && lastName != "" {
+			myAlias += " " + lastName
+		}
+		myAlias = strings.TrimSpace(myAlias)
+	}
+	responsePayload := map[string]interface{}{
+		"type":           "vettid_connection",
+		"kind":           "response",
+		"connection_id":  brokerPayload.ConnectionID,
+		"owner_space":    h.ownerSpace,
+		"message_space":  record.MessageSpaceTopic,
+		"expires_at":     brokerPayload.ExpiresAt,
+		"label":          myAlias,
+		"profile":        myProfile,
+		"e2e_public_key": fmt.Sprintf("%x", record.LocalPublicKey),
+		"review_nonce":   record.ReviewNonce,
+	}
+	if err := h.publishResponseInvite(brokerPayload.ConnectionID, responsePayload); err != nil {
+		log.Warn().Err(err).Str("connection_id", brokerPayload.ConnectionID).Msg("Failed to publish response invite (continuing)")
+	}
+
+	// Cache A's profile to the per-connection peer-profile key so B's
+	// connection.list returns it. Without this, B's preview/detail
+	// screens for this connection render blank.
+	if profileBytes, marshalErr := json.Marshal(brokerPayload.InviterProfile); marshalErr == nil && len(brokerPayload.InviterProfile) > 0 {
+		if err := h.storage.Put("connections/"+brokerPayload.ConnectionID+"/_peer_profile", profileBytes); err != nil {
+			log.Warn().Err(err).Str("connection_id", brokerPayload.ConnectionID).Msg("Failed to cache inviter profile")
+		}
+	}
+
+	// Push tiny `response-ready` ping to A. No PII — just routing tokens.
+	if err := h.publishConnectionSignal(brokerPayload.OwnerSpace, "response-ready", brokerPayload.ConnectionID, record.ReviewNonce); err != nil {
+		log.Warn().Err(err).Str("connection_id", brokerPayload.ConnectionID).Msg("Failed to push response-ready signal")
+	}
+
+	if h.eventHandler != nil {
+		h.eventHandler.LogConnectionEvent(context.Background(), EventTypeConnectionCreated, brokerPayload.ConnectionID, brokerPayload.OwnerSpace, "Reviewing peer's connection invite")
+	}
+
+	// Emit forApp.connection.peer-reviewing so the local app can render
+	// the preview screen with A's profile (the same path A's app will
+	// use to render its review screen with B's profile).
+	if h.publisher != nil {
+		notif := map[string]interface{}{
+			"type":          "connection.peer-reviewing",
+			"connection_id": brokerPayload.ConnectionID,
+			"peer_guid":     brokerPayload.OwnerSpace,
+			"peer_alias":    peerAlias,
+			"peer_profile":  brokerPayload.InviterProfile,
+			"status":        record.Status,
+		}
+		notifBytes, _ := json.Marshal(notif)
+		_ = h.publisher.PublishToApp(context.Background(), "connection.peer-reviewing", notifBytes)
+	}
+
+	// Return the original broker payload to the app so the existing
+	// scanner preview continues to render without further round-trips.
 	return &OutgoingMessage{
 		RequestID: msg.GetID(),
 		Type:      MessageTypeResponse,
 		Payload:   inviteData,
 	}, nil
+}
+
+// HandleConnectionSignal routes incoming peer signals (response-ready,
+// peer-accepted, peer-rejected) on the parallel-review handshake.
+// Hard rule: signals carry only routing tokens (conn_id + nonce) — no
+// PII flows on this channel. See plans/parallel-review-handshake.md §3.2.
+func (h *ConnectionsHandler) HandleConnectionSignal(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	var signal struct {
+		Signal       string `json:"signal"`
+		ConnectionID string `json:"connection_id"`
+		ReviewNonce  string `json:"review_nonce,omitempty"`
+	}
+	if err := unmarshalRequest(msg.Payload, &signal, "HandleConnectionSignal"); err != nil {
+		return &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}, nil
+	}
+	if signal.ConnectionID == "" || signal.Signal == "" {
+		return &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}, nil
+	}
+
+	switch signal.Signal {
+	case "response-ready":
+		return h.handleResponseReady(ctx, msg, signal.ConnectionID, signal.ReviewNonce)
+	case "peer-accepted":
+		return h.handlePeerAccepted(ctx, msg, signal.ConnectionID)
+	case "peer-rejected":
+		return h.handlePeerRejected(ctx, msg, signal.ConnectionID)
+	default:
+		log.Debug().Str("signal", signal.Signal).Msg("Unknown connection signal — dropping")
+		return &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}, nil
+	}
+}
+
+// handleResponseReady is A's vault reacting to B's "response-ready"
+// ping: pull the response invite from the broker, fill in B's profile +
+// pubkey, derive shared secret, set status peer_reviewing, emit
+// forApp.connection.peer-reviewing so A's review screen lights up.
+//
+// De-dup: identical (connection_id, review_nonce) combos are no-ops.
+// Drop signals for terminal records (replay guard, plan §10 risk #2).
+func (h *ConnectionsHandler) handleResponseReady(ctx context.Context, msg *IncomingMessage, connectionID, reviewNonce string) (*OutgoingMessage, error) {
+	storageKey := "connections/" + connectionID
+	existing, _ := h.storage.Get(storageKey)
+	if len(existing) == 0 {
+		// We don't have a record for this connection_id at all. Either
+		// it was already revoked/expired (and the storage cleaned up),
+		// or this is a stray signal we have no business processing.
+		log.Debug().Str("connection_id", connectionID).Msg("response-ready for unknown connection — dropping")
+		return &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}, nil
+	}
+	var prior ConnectionRecord
+	if err := json.Unmarshal(existing, &prior); err != nil {
+		log.Warn().Err(err).Msg("Failed to parse connection record for response-ready")
+		return &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}, nil
+	}
+	if recordTerminal(prior.Status) {
+		log.Debug().Str("connection_id", connectionID).Str("status", prior.Status).Msg("response-ready dropped — record terminal")
+		return &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}, nil
+	}
+	if prior.ReviewNonce == reviewNonce && prior.ReviewNonce != "" && len(prior.PeerPublicKey) > 0 {
+		// Duplicate signal — we already pulled this response invite.
+		log.Debug().Str("connection_id", connectionID).Msg("response-ready duplicate (nonce match) — no-op")
+		return &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}, nil
+	}
+
+	// Pull the response invite from the broker.
+	if h.sealerProxy == nil {
+		return h.errorResponse(msg.GetID(), "sealer proxy not available")
+	}
+	respData, err := h.sealerProxy.ResolveResponseInvite(connectionID)
+	if err != nil {
+		log.Warn().Err(err).Str("connection_id", connectionID).Msg("Failed to fetch response invite")
+		return &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}, nil
+	}
+	var response struct {
+		ConnectionID string                 `json:"connection_id"`
+		OwnerSpace   string                 `json:"owner_space"`
+		MessageSpace string                 `json:"message_space"`
+		Label        string                 `json:"label"`
+		Profile      map[string]interface{} `json:"profile"`
+		E2EPublicKey string                 `json:"e2e_public_key"`
+		ReviewNonce  string                 `json:"review_nonce"`
+	}
+	if err := json.Unmarshal(respData, &response); err != nil {
+		log.Warn().Err(err).Msg("Failed to parse response invite payload")
+		return &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}, nil
+	}
+	if response.ConnectionID != connectionID || response.OwnerSpace == "" || response.E2EPublicKey == "" {
+		log.Warn().Str("connection_id", connectionID).Msg("Response invite payload missing required fields — dropping")
+		return &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}, nil
+	}
+	peerPubKey, err := decodeHexKey(response.E2EPublicKey)
+	if err != nil {
+		log.Warn().Err(err).Msg("Invalid responder pubkey — dropping")
+		return &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}, nil
+	}
+
+	// Fold the pulled data into the record under the per-connection lock.
+	record, err := h.withConnectionRecord(connectionID, func(r *ConnectionRecord) (bool, error) {
+		if recordTerminal(r.Status) {
+			return false, nil
+		}
+		// Decline-flip protection — once the peer's decision is
+		// recorded as accept/reject, response-ready can't undo it.
+		// This guards against profile churn flipping our state.
+		r.PeerOwnerSpace = response.OwnerSpace
+		r.PeerMessageSpace = response.MessageSpace
+		r.PeerGUID = response.OwnerSpace
+		r.PeerAlias = response.Label
+		r.PeerPublicKey = peerPubKey
+		if len(r.LocalPrivateKey) > 0 {
+			ss, err := curve25519.X25519(r.LocalPrivateKey, peerPubKey)
+			if err == nil {
+				r.SharedSecret = ss
+				r.KeyExchangeAt = time.Now()
+			}
+		}
+		r.ReviewNonce = response.ReviewNonce
+		// Only set peer_reviewing if neither side has decided yet.
+		if r.LocalDecision == "" && r.PeerDecision == "" {
+			r.Status = ConnStatusPeerReviewing
+		} else {
+			computeStatus(r)
+		}
+		return true, nil
+	})
+	if err != nil {
+		log.Warn().Err(err).Str("connection_id", connectionID).Msg("Failed to apply response-ready under lock")
+		return &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}, nil
+	}
+
+	// Persist the peer's published profile to the per-connection
+	// cache key so connection.list returns it. Without this, the
+	// app's peer-profile view renders blank — the parallel-review
+	// handshake landed but the cache write was missing.
+	if profileBytes, marshalErr := json.Marshal(response.Profile); marshalErr == nil && len(response.Profile) > 0 {
+		if err := h.storage.Put("connections/"+connectionID+"/_peer_profile", profileBytes); err != nil {
+			log.Warn().Err(err).Str("connection_id", connectionID).Msg("Failed to cache peer profile")
+		}
+	}
+
+	// Emit forApp.connection.peer-reviewing so A's review screen lights up.
+	if h.publisher != nil && record != nil {
+		notif := map[string]interface{}{
+			"type":          "connection.peer-reviewing",
+			"connection_id": connectionID,
+			"peer_guid":     record.PeerGUID,
+			"peer_alias":    record.PeerAlias,
+			"peer_profile":  response.Profile,
+			"status":        record.Status,
+		}
+		notifBytes, _ := json.Marshal(notif)
+		_ = h.publisher.PublishToApp(ctx, "connection.peer-reviewing", notifBytes)
+	}
+	return &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}, nil
+}
+
+// handlePeerAccepted records that the peer hit Accept on their side.
+// Sets PeerDecision and runs tryActivate. Idempotent.
+func (h *ConnectionsHandler) handlePeerAccepted(ctx context.Context, msg *IncomingMessage, connectionID string) (*OutgoingMessage, error) {
+	var changed bool
+	_, err := h.withConnectionRecord(connectionID, func(r *ConnectionRecord) (bool, error) {
+		if recordTerminal(r.Status) {
+			return false, nil
+		}
+		c, err := applyDecision(&r.PeerDecision, DecisionAccept)
+		if err != nil || !c {
+			return false, err
+		}
+		computeStatus(r)
+		changed = true
+		return true, nil
+	})
+	if err != nil {
+		log.Warn().Err(err).Str("connection_id", connectionID).Msg("peer-accepted apply failed")
+	}
+	if changed {
+		if _, _, aerr := h.tryActivate(ctx, connectionID); aerr != nil {
+			log.Warn().Err(aerr).Str("connection_id", connectionID).Msg("tryActivate after peer-accepted failed")
+		}
+	}
+	return &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}, nil
+}
+
+// handlePeerRejected records that the peer declined. Marks the record
+// terminal as declined_by_peer, zeroes shared key material, emits
+// forApp.connection.rejected. Idempotent.
+func (h *ConnectionsHandler) handlePeerRejected(ctx context.Context, msg *IncomingMessage, connectionID string) (*OutgoingMessage, error) {
+	var fired bool
+	record, err := h.withConnectionRecord(connectionID, func(r *ConnectionRecord) (bool, error) {
+		if r.Status == ConnStatusDeclinedByPeer {
+			return false, nil // idempotent
+		}
+		if recordTerminal(r.Status) {
+			return false, nil
+		}
+		_, _ = applyDecision(&r.PeerDecision, DecisionReject)
+		r.Status = ConnStatusDeclinedByPeer
+		// Zero shared key material — connection won't be used.
+		zeroBytes(r.SharedSecret)
+		r.SharedSecret = nil
+		zeroBytes(r.LocalPrivateKey)
+		r.LocalPrivateKey = nil
+		fired = true
+		return true, nil
+	})
+	if err != nil {
+		log.Warn().Err(err).Str("connection_id", connectionID).Msg("peer-rejected apply failed")
+	}
+	if fired && h.publisher != nil && record != nil {
+		notif := map[string]interface{}{
+			"type":          "connection.rejected",
+			"connection_id": connectionID,
+			"peer_guid":     record.PeerGUID,
+		}
+		notifBytes, _ := json.Marshal(notif)
+		_ = h.publisher.PublishToApp(ctx, "connection.rejected", notifBytes)
+	}
+	return &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}, nil
 }
 
 // HandlePeerKeyExchange handles incoming key exchange replies from peers.
@@ -1418,8 +2135,10 @@ func decodeHexKey(hexKey string) ([]byte, error) {
 	return decoded, nil
 }
 
-// HandleRespond handles connection.respond messages
-// Part of bidirectional consent - both parties must accept for connection to become active
+// HandleRespond handles connection.respond messages on the parallel-
+// review handshake. Sets LocalDecision (accept|reject), pushes the
+// matching peer signal, and runs tryActivate. Idempotent — repeat
+// taps converge to the same state.
 func (h *ConnectionsHandler) HandleRespond(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req RespondConnectionRequest
 	if err := unmarshalRequest(msg.Payload, &req, "HandleRespond"); err != nil {
@@ -1433,98 +2152,111 @@ func (h *ConnectionsHandler) HandleRespond(msg *IncomingMessage) (*OutgoingMessa
 		return h.errorResponse(msg.GetID(), "response must be 'accept' or 'reject'")
 	}
 
-	// Load the connection record
-	storageKey := "connections/" + req.ConnectionID
-	connData, err := h.storage.Get(storageKey)
+	decision := DecisionAccept
+	if req.Response == "reject" {
+		decision = DecisionReject
+	}
+
+	// Apply the decision under the per-connection lock. The mutator
+	// enforces the no-flip rule (once a decision is recorded, it's
+	// final) and computes the resulting status.
+	var declined bool
+	record, err := h.withConnectionRecord(req.ConnectionID, func(r *ConnectionRecord) (bool, error) {
+		if recordTerminal(r.Status) {
+			// Idempotent for the case where we got the same accept
+			// twice and already activated.
+			if r.Status == ConnStatusActive && decision == DecisionAccept && r.LocalDecision == DecisionAccept {
+				return false, nil
+			}
+			return false, fmt.Errorf("connection is %s, cannot respond", r.Status)
+		}
+		c, err := applyDecision(&r.LocalDecision, decision)
+		if err != nil || !c {
+			return false, err
+		}
+		if decision == DecisionReject {
+			r.Status = ConnStatusDeclinedByUs
+			zeroBytes(r.SharedSecret)
+			r.SharedSecret = nil
+			zeroBytes(r.LocalPrivateKey)
+			r.LocalPrivateKey = nil
+			declined = true
+		} else {
+			computeStatus(r)
+		}
+		return true, nil
+	})
 	if err != nil {
+		return h.errorResponse(msg.GetID(), err.Error())
+	}
+	if record == nil {
 		return h.errorResponse(msg.GetID(), "Connection not found")
 	}
 
-	var record ConnectionRecord
-	if err := json.Unmarshal(connData, &record); err != nil {
-		return h.errorResponse(msg.GetID(), "Failed to read connection")
+	// Push the matching peer signal. NonCancellable upstream — we set
+	// LocalDecision before publishing, so even if the push fails the
+	// state is consistent and a future re-respond is a no-op.
+	if record.PeerOwnerSpace != "" {
+		signalType := "peer-accepted"
+		if decision == DecisionReject {
+			signalType = "peer-rejected"
+		}
+		if err := h.publishConnectionSignal(record.PeerOwnerSpace, signalType, req.ConnectionID, ""); err != nil {
+			log.Warn().Err(err).Str("connection_id", req.ConnectionID).Msg("Failed to push respond signal to peer")
+		}
 	}
 
-	// Validate current status allows a response
-	validStatuses := map[string]bool{
-		"pending":              true, // Inviter reviewing peer's profile
-		"pending_our_review":   true, // Legacy status
-		"pending_their_accept": true, // Legacy status
-	}
-	if !validStatuses[record.Status] {
-		return h.errorResponse(msg.GetID(), fmt.Sprintf("Connection is not awaiting response (status: %s)", record.Status))
-	}
-
-	var newStatus string
-	var message string
-
-	if req.Response == "reject" {
-		newStatus = "rejected"
-		message = "Connection rejected"
-
-		// Zero key material
-		zeroBytes(record.SharedSecret)
-		record.SharedSecret = nil
-		zeroBytes(record.LocalPrivateKey)
-		record.LocalPrivateKey = nil
-
-		// Log rejection event
+	// Reject side: log, notify own app, return.
+	if declined {
 		if h.eventHandler != nil {
 			h.eventHandler.LogConnectionEvent(context.Background(), EventTypeConnectionRejected, req.ConnectionID, record.PeerGUID, req.RejectionReason)
 		}
-
-		// Notify peer of rejection
-		if h.publisher != nil && record.PeerOwnerSpace != "" {
+		if h.publisher != nil {
 			notif := map[string]interface{}{
+				"type":          "connection.rejected",
 				"connection_id": req.ConnectionID,
-				"peer_guid":     h.ownerSpace,
+				"peer_guid":     record.PeerGUID,
 			}
 			notifBytes, _ := json.Marshal(notif)
-			subject := fmt.Sprintf("MessageSpace.%s.forOwner.connection.rejected", record.PeerOwnerSpace)
-			h.publisher.PublishRaw(subject, notifBytes)
+			_ = h.publisher.PublishToApp(context.Background(), "connection.rejected", notifBytes)
 		}
 	} else {
-		// Accept — connection is now active (key exchange already happened)
-		newStatus = "active"
+		// Accept side: try to activate. Will be a no-op if peer
+		// hasn't accepted yet — the converging accept signal from the
+		// peer will trigger activation when it lands.
+		if _, _, aerr := h.tryActivate(context.Background(), req.ConnectionID); aerr != nil {
+			log.Warn().Err(aerr).Str("connection_id", req.ConnectionID).Msg("tryActivate after local respond failed")
+		}
+	}
+
+	// Re-load to return current status (post-tryActivate).
+	final, _ := h.withConnectionRecord(req.ConnectionID, func(r *ConnectionRecord) (bool, error) { return false, nil })
+	status := record.Status
+	if final != nil {
+		status = final.Status
+	}
+	message := "Decision recorded"
+	switch status {
+	case ConnStatusActive:
 		message = "Connection established"
-
-		// Log completion event (hidden — audit only, user already saw the accept prompt)
-		if h.eventHandler != nil {
-			h.eventHandler.LogConnectionEvent(context.Background(), EventTypeConnectionCreated, req.ConnectionID, record.PeerGUID, "Connection established")
-		}
-
-		// Notify peer that connection is now active
-		if h.publisher != nil && record.PeerOwnerSpace != "" {
-			notif := map[string]interface{}{
-				"connection_id": req.ConnectionID,
-				"peer_guid":     h.ownerSpace,
-			}
-			notifBytes, _ := json.Marshal(notif)
-			subject := fmt.Sprintf("MessageSpace.%s.forOwner.connection.activated", record.PeerOwnerSpace)
-			h.publisher.PublishRaw(subject, notifBytes)
-		}
-	}
-
-	// Update connection record
-	record.Status = newStatus
-	newData, err := json.Marshal(record)
-	if err != nil {
-		return h.errorResponse(msg.GetID(), "Failed to update connection")
-	}
-	if err := h.storage.Put(storageKey, newData); err != nil {
-		return h.errorResponse(msg.GetID(), "Failed to store connection update")
+	case ConnStatusDeclinedByUs, ConnStatusDeclinedByPeer:
+		message = "Connection declined"
+	case ConnStatusOurAcceptPending:
+		message = "Waiting for peer to accept"
+	case ConnStatusPeerAcceptPending:
+		message = "Peer is reviewing your acceptance"
 	}
 
 	log.Info().
 		Str("connection_id", req.ConnectionID).
-		Str("response", req.Response).
-		Str("new_status", newStatus).
-		Msg("Connection response processed")
+		Str("decision", decision).
+		Str("status", status).
+		Msg("Connection respond processed")
 
 	resp := RespondConnectionResponse{
 		Success:      true,
 		ConnectionID: req.ConnectionID,
-		Status:       newStatus,
+		Status:       status,
 		Message:      message,
 	}
 	respBytes, _ := json.Marshal(resp)
@@ -1888,24 +2620,25 @@ func (h *ConnectionsHandler) HandleList(msg *IncomingMessage) (*OutgoingMessage,
 		needsAttention := h.computeNeedsAttention(&record)
 
 		info := ConnectionInfo{
-			ConnectionID:       record.ConnectionID,
-			ConnectionType:     record.GetConnectionType(),
-			PeerAlias:          record.PeerAlias,
-			PeerGUID:           record.PeerGUID,
-			Status:             record.Status,
-			CreatedAt:          record.CreatedAt.Format(time.RFC3339),
-			CredentialsType:    record.CredentialsType,
-			E2EReady:           len(record.SharedSecret) > 0,
-			KeyRotationCount:   record.KeyRotationCount,
-			ActivityCount:      record.ActivityCount,
-			Tags:               record.Tags,
-			IsFavorite:         record.IsFavorite,
-			IsArchived:         record.IsArchived,
-			NeedsAttention:     needsAttention,
-			PeerProfileVersion: record.PeerProfileVersion,
-			PeerVerifications:  record.PeerVerifications,
-			AgentMetadata:      record.AgentMetadata,
-			Contract:           record.Contract,
+			ConnectionID:          record.ConnectionID,
+			ConnectionType:        record.GetConnectionType(),
+			PeerAlias:             record.PeerAlias,
+			PeerGUID:              record.PeerGUID,
+			Status:                record.Status,
+			CreatedAt:             record.CreatedAt.Format(time.RFC3339),
+			CredentialsType:       record.CredentialsType,
+			E2EReady:              len(record.SharedSecret) > 0,
+			KeyRotationCount:      record.KeyRotationCount,
+			ActivityCount:         record.ActivityCount,
+			Tags:                  record.Tags,
+			IsFavorite:            record.IsFavorite,
+			IsArchived:            record.IsArchived,
+			NeedsAttention:        needsAttention,
+			PeerProfileVersion:    record.PeerProfileVersion,
+			PeerVerifications:     record.PeerVerifications,
+			AgentMetadata:         record.AgentMetadata,
+			Contract:              record.Contract,
+			PresenceShareOverride: record.PresenceShareOverride,
 		}
 
 		if !record.LastRotatedAt.IsZero() {
@@ -2459,6 +3192,84 @@ func (h *ConnectionsHandler) UpdateConnectionActivity(connectionID string, activ
 	h.storage.Put(activityKey, summaryData)
 
 	return nil
+}
+
+// StartExpirySweep launches a background ticker that periodically
+// flips stale connection records to ConnStatusExpired. Records are
+// considered expired when ExpiresAt is in the past AND status is one
+// of the in-flight states (invited, peer_reviewing, *_pending).
+// Active and terminal records are untouched. See plan §10 risk #3.
+func (h *ConnectionsHandler) StartExpirySweep(ctx context.Context) {
+	go func() {
+		// Run an immediate first sweep so a vault that wakes up after
+		// being offline catches up quickly.
+		h.sweepExpiredConnections(ctx)
+		ticker := time.NewTicker(60 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				h.sweepExpiredConnections(ctx)
+			}
+		}
+	}()
+}
+
+func (h *ConnectionsHandler) sweepExpiredConnections(ctx context.Context) {
+	indexData, err := h.storage.Get("connections/_index")
+	if err != nil || len(indexData) == 0 {
+		return
+	}
+	var index []string
+	if err := json.Unmarshal(indexData, &index); err != nil {
+		return
+	}
+	now := time.Now().UTC()
+	// 30s grace window for clock skew across vaults.
+	threshold := now.Add(-30 * time.Second)
+
+	for _, connectionID := range index {
+		var fired bool
+		record, err := h.withConnectionRecord(connectionID, func(r *ConnectionRecord) (bool, error) {
+			if recordTerminal(r.Status) || r.Status == "" {
+				return false, nil
+			}
+			if r.ExpiresAt.IsZero() {
+				return false, nil
+			}
+			if r.ExpiresAt.After(threshold) {
+				return false, nil // not yet expired
+			}
+			// Only sweep records still in the in-flight state set.
+			switch r.Status {
+			case ConnStatusInvited, ConnStatusPeerReviewing, ConnStatusOurAcceptPending, ConnStatusPeerAcceptPending, "pending":
+				r.Status = ConnStatusExpired
+				zeroBytes(r.SharedSecret)
+				r.SharedSecret = nil
+				zeroBytes(r.LocalPrivateKey)
+				r.LocalPrivateKey = nil
+				fired = true
+				return true, nil
+			default:
+				return false, nil
+			}
+		})
+		if err != nil {
+			log.Debug().Err(err).Str("connection_id", connectionID).Msg("expiry sweep skipped record")
+			continue
+		}
+		if fired && h.publisher != nil && record != nil {
+			notif := map[string]interface{}{
+				"type":          "connection.expired",
+				"connection_id": connectionID,
+				"peer_guid":     record.PeerGUID,
+			}
+			notifBytes, _ := json.Marshal(notif)
+			_ = h.publisher.PublishToApp(ctx, "connection.expired", notifBytes)
+		}
+	}
 }
 
 // Helper methods

@@ -18,6 +18,28 @@ type WalletRecord struct {
 	CreatedAt        int64  `json:"created_at"`
 	IsArchived       bool   `json:"is_archived"`          // Soft delete
 	IsPublic         bool   `json:"is_public"`            // If true, address published to profile
+
+	// BIP39Mnemonic is the wallet's 12-word backup phrase. Each wallet
+	// has its own self-contained BIP39 entropy (independent of the
+	// user's vault master) so wallets can be backed up to Critical
+	// Secrets and, eventually, transferred to another vault. The
+	// mnemonic is encrypted at rest by the vault DEK like every other
+	// field on this record. Empty for legacy wallets created before
+	// the BIP39 migration.
+	BIP39Mnemonic string `json:"bip39_mnemonic,omitempty"`
+
+	// SeedBackedUpAt is the unix-second timestamp when the user last
+	// opted this wallet's seed phrase into Critical Secrets. Zero
+	// means "not currently backed up". The actual seed value lives in
+	// the credential's CriticalSecrets list — this field is only a
+	// flag the UI uses to show the backup state without re-fetching.
+	SeedBackedUpAt int64 `json:"seed_backed_up_at,omitempty"`
+
+	// SeedBackupSecretID points at the CredentialSecretEntry.ID in
+	// the user's Critical Secrets so wallet.revoke-backup can find
+	// and remove the right entry without name-matching guesses.
+	// Cleared on revoke.
+	SeedBackupSecretID string `json:"seed_backup_secret_id,omitempty"`
 }
 
 // ============================================================================
@@ -111,13 +133,15 @@ type WalletDetailRequest struct {
 
 // WalletDetailResponse is the response for wallet.detail
 type WalletDetailResponse struct {
-	WalletID         string `json:"wallet_id"`
-	Label            string `json:"label"`
-	Address          string `json:"address"`
-	Network          string `json:"network"`
-	CachedBalanceSats int64 `json:"cached_balance_sats"`
-	BalanceUpdatedAt int64  `json:"balance_updated_at"`
-	IsPublic         bool   `json:"is_public"`
+	WalletID           string `json:"wallet_id"`
+	Label              string `json:"label"`
+	Address            string `json:"address"`
+	Network            string `json:"network"`
+	CachedBalanceSats  int64  `json:"cached_balance_sats"`
+	BalanceUpdatedAt   int64  `json:"balance_updated_at"`
+	IsPublic           bool   `json:"is_public"`
+	SeedBackedUpAt     int64  `json:"seed_backed_up_at,omitempty"`
+	SeedBackupSecretID string `json:"seed_backup_secret_id,omitempty"`
 }
 
 // WalletCreateRequest is the payload for wallet.create

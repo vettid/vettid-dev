@@ -11,6 +11,8 @@ import {
   aws_route53_targets as route53Targets,
   aws_certificatemanager as acm,
   aws_secretsmanager as secretsmanager,
+  aws_events as events,
+  aws_events_targets as eventsTargets,
   custom_resources as cr,
 } from 'aws-cdk-lib';
 
@@ -1038,8 +1040,9 @@ export class NitroStack extends cdk.Stack {
     // ===== MIGRATION AUTO-FINALIZE LAMBDA =====
     // Checks every 5 min (when scheduled by deploy.sh) if migration can be finalized.
     // Finalizes when all users have migrated or the 72-hour deadline passes.
-    // The EventBridge rule is created dynamically by deploy.sh (not here),
-    // but the Lambda and its permissions must exist in CDK.
+    // Both the Lambda and its EventBridge schedule live in CDK so a
+    // partially-failed deploy.sh run can't leave auto-finalize in a
+    // half-wired state (as happened before this was moved here).
     const migrationFinalizeFn = new cdk.aws_lambda_nodejs.NodejsFunction(this, 'MigrationFinalizeFn', {
       functionName: 'vettid-migration-finalize',
       entry: 'lambda/handlers/scheduled/migrationFinalize.ts',
@@ -1083,6 +1086,16 @@ export class NitroStack extends cdk.Stack {
     if (props?.infrastructure?.tables?.registrations) {
       props.infrastructure.tables.registrations.grantReadData(migrationFinalizeFn);
     }
+
+    // Always-on EventBridge rule that polls the Lambda. The rule name
+    // is fixed so the Lambda can look it up via FINALIZE_RULE_NAME when
+    // it tears itself down at the end of a migration.
+    new events.Rule(this, 'MigrationFinalizeSchedule', {
+      ruleName: 'vettid-migration-finalize-schedule',
+      description: 'Auto-finalize enclave migration when all users migrated or deadline passed',
+      schedule: events.Schedule.rate(cdk.Duration.minutes(5)),
+      targets: [new eventsTargets.LambdaFunction(migrationFinalizeFn)],
+    });
   }
 
   /**

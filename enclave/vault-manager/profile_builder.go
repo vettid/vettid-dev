@@ -158,22 +158,35 @@ func BuildPublishedProfile(
 	// --- Handlers (vault capabilities) ---
 	// Surfaced so peers see the same "Handlers" row in their
 	// connection-preview card that the user sees in their own
-	// public-profile preview. The set is whatever this enclave
-	// version exposes — handleHandlersOperation in messages.go is
-	// the source of truth.
-	profile.Handlers = publishedHandlerList()
+	// public-profile preview. Filtered against the user's
+	// handlers/_state — only entries the user has enabled AND
+	// elected to share globally appear. Per-connection grants
+	// narrow further at peer-message dispatch (see gateOperation).
+	profile.Handlers = buildPublishedHandlerList(storage)
 
-	// --- Public Secrets Metadata ---
-	// Stored at profile/_public_secrets by profile.publish — the
-	// app derives this list from MinorSecretsStore and sends it
-	// along with the field selection when the user publishes. We
-	// never persist secret values here, only metadata.
+	// --- Public Secrets Metadata (legacy) ---
+	// Stored at profile/_public_secrets by profile.publish — kept for
+	// backwards compat with older app builds; new clients should read
+	// SecretCatalog instead.
 	if secretsData, err := storage.Get("profile/_public_secrets"); err == nil && len(secretsData) > 0 {
 		var publicSecrets []PublishedSecretMetadata
 		if json.Unmarshal(secretsData, &publicSecrets) == nil {
 			profile.PublicSecrets = publicSecrets
 		}
 	}
+
+	// --- Data Catalog (every personal-data item the user has stored,
+	//     metadata only, excluding entries flagged Private) ---
+	// Peers browse this to know what kinds of data the user holds and
+	// can request values via the capability flow. Values never appear.
+	profile.DataCatalog = buildDataCatalog(storage)
+
+	// --- Secret Catalog (every secret entry, metadata only,
+	//     excluding entries flagged Private) ---
+	// Same model as DataCatalog: peers see "Al has a credit card
+	// called Personal Visa" and can request access; the value stays
+	// behind the credential blob.
+	profile.SecretCatalog = buildSecretCatalog(storage)
 
 	log.Debug().
 		Str("owner_space", ownerSpace).
@@ -247,13 +260,16 @@ func PublishedProfileToMap(p *PublishedProfile) map[string]interface{} {
 				"name":        h.Name,
 				"description": h.Description,
 				"operations":  h.Operations,
+				"category":    h.Category,
+				"required":    h.Required,
+				"shareable":   h.Shareable,
 			})
 		}
 		result["handlers"] = handlers
 	}
 
-	// Public secret metadata — names/types/categories only,
-	// never values.
+	// Public secret metadata (legacy — kept for older app builds that
+	// haven't picked up SecretCatalog yet).
 	if len(p.PublicSecrets) > 0 {
 		var secrets []map[string]string
 		for _, s := range p.PublicSecrets {
@@ -266,34 +282,167 @@ func PublishedProfileToMap(p *PublishedProfile) map[string]interface{} {
 		result["public_secrets"] = secrets
 	}
 
+	if len(p.DataCatalog) > 0 {
+		var items []map[string]string
+		for _, d := range p.DataCatalog {
+			items = append(items, map[string]string{
+				"name":         d.Name,
+				"display_name": d.DisplayName,
+				"field_type":   d.FieldType,
+				"category":     d.Category,
+			})
+		}
+		result["data_catalog"] = items
+	}
+
+	if len(p.SecretCatalog) > 0 {
+		var items []map[string]string
+		for _, s := range p.SecretCatalog {
+			items = append(items, map[string]string{
+				"name":     s.Name,
+				"type":     s.Type,
+				"category": s.Category,
+			})
+		}
+		result["secret_catalog"] = items
+	}
+
 	return result
 }
 
-// publishedHandlerList returns the vault's static handler catalog in
-// the published-profile shape. Source of truth for the list is
-// handleHandlersOperation; this helper keeps the two lists aligned
-// without re-running the NATS handler just to build a profile.
-func publishedHandlerList() []PublishedHandler {
-	return []PublishedHandler{
-		{ID: "profile", Name: "Profile", Description: "Manage vault profile, sharing settings, and photos", Operations: []string{"get", "update", "delete", "get-shared", "sharing-settings", "categories", "public", "publish", "photo"}},
-		{ID: "personal-data", Name: "Personal Data", Description: "Store and manage personal identity data", Operations: []string{"get", "update", "delete", "update-sort-order", "get-sort-order"}},
-		{ID: "secrets", Name: "Secrets", Description: "Encrypted secret storage and identity keys", Operations: []string{"add", "update", "retrieve", "delete", "list", "identity"}},
-		{ID: "credential", Name: "Credentials", Description: "Credential lifecycle management", Operations: []string{"create", "store", "sync", "get", "delete", "password-change", "secret", "version"}},
-		{ID: "connection", Name: "Connections", Description: "Peer connection management", Operations: []string{"create-invite", "initiate", "respond", "revoke", "list", "get", "update", "rotate", "get-credentials", "get-capabilities", "activity-summary"}},
-		{ID: "message", Name: "Messaging", Description: "Encrypted peer messaging", Operations: []string{"send", "read-receipt"}},
-		{ID: "feed", Name: "Event Feed", Description: "Activity feed and event management", Operations: []string{"list", "get", "read", "archive", "delete", "sync", "settings", "action"}},
-		{ID: "location", Name: "Location", Description: "Location tracking and sharing", Operations: []string{"add", "list", "delete", "delete-all"}},
-		{ID: "vote", Name: "Voting", Description: "Vault-signed governance voting", Operations: []string{"cast", "list"}},
-		{ID: "audit", Name: "Audit", Description: "Audit log queries and export", Operations: []string{"query", "export"}},
-		{ID: "call", Name: "Calls", Description: "Voice and video call management", Operations: []string{"start", "accept", "reject", "end", "signal", "history"}},
-		{ID: "invitation", Name: "Invitations", Description: "Connection invitation lifecycle", Operations: []string{"list", "cancel", "resend", "viewed"}},
-		{ID: "capability", Name: "Capabilities", Description: "Peer capability negotiation", Operations: []string{"request", "respond", "get", "list"}},
-		{ID: "settings", Name: "Settings", Description: "Notification preferences", Operations: []string{"notifications"}},
-		{ID: "notification", Name: "Notifications", Description: "Push notification routing", Operations: []string{"profile-broadcast", "revoke-notify"}},
-		{ID: "service", Name: "Services", Description: "B2C service connections and contracts", Operations: []string{"connection", "contract", "data", "request", "profile", "activity", "notifications", "trust"}},
-		{ID: "datastore", Name: "Data Stores", Description: "Shared collaborative data stores", Operations: []string{"create", "join", "read", "write", "delete", "subscribe", "audit"}},
-		{ID: "pin", Name: "Security", Description: "PIN and vault access management", Operations: []string{"setup", "unlock", "change"}},
-		{ID: "agent-secrets", Name: "Agent Secrets", Description: "Manage secrets shared with AI agents", Operations: []string{"share", "update", "revoke", "list"}},
-		{ID: "wallet", Name: "Bitcoin Wallets", Description: "HD wallet management and BTC transactions", Operations: []string{"create", "list", "detail", "get-balance", "get-address", "get-fees", "send", "send-to-connection", "request-payment", "get-history", "delete", "set-visibility"}},
+// buildPublishedHandlerList returns the discovery surface for vault
+// handlers — every handler that's both Surfaced (user-visible in the
+// catalog) AND Shareable (declared as something a peer could
+// legitimately invoke). Discovery is intentionally decoupled from
+// the actual invocation gate: a peer seeing wallet in this list can
+// know "Al's vault supports BTC", but whether they can actually call
+// any wallet op still goes through gateOperation (enabled +
+// share_globally + per-connection grant). Keeping discovery broad
+// lets users see what's possible without needing to flip every
+// toggle just to make the catalog visible.
+func buildPublishedHandlerList(storage *EncryptedStorage) []PublishedHandler {
+	out := make([]PublishedHandler, 0)
+	for _, entry := range HandlerCatalog() {
+		if !entry.Surfaced || !entry.Shareable {
+			continue
+		}
+		out = append(out, PublishedHandler{
+			ID:          entry.ID,
+			Name:        entry.Name,
+			Description: entry.Description,
+			Operations:  entry.Operations,
+			Category:    entry.Category,
+			Required:    entry.Required,
+			Shareable:   entry.Shareable,
+		})
 	}
+	return out
+}
+
+// buildDataCatalog enumerates every personal-data field the user has
+// stored and returns metadata-only entries. Items flagged
+// Discoverability=private are excluded; everything else (public,
+// cataloged, or unset — which defaults to cataloged) appears so
+// peers can see "Al has a Mobile Phone" and request the value
+// through the capability flow.
+func buildDataCatalog(storage *EncryptedStorage) []CatalogedDataItem {
+	if storage == nil {
+		return nil
+	}
+	// Union the two indexes the personal-data system writes to —
+	// older fields landed in profile/_index, newer ones in
+	// personal-data/_index, and both are still active sources of
+	// truth (see profile.HandleGet for the same union pattern).
+	fieldNames := make(map[string]bool)
+	for _, key := range []string{"profile/_index", "personal-data/_index"} {
+		if data, err := storage.Get(key); err == nil && len(data) > 0 {
+			var names []string
+			if json.Unmarshal(data, &names) == nil {
+				for _, n := range names {
+					fieldNames[n] = true
+				}
+			}
+		}
+	}
+	out := make([]CatalogedDataItem, 0, len(fieldNames))
+	for name := range fieldNames {
+		// Skip system fields — they're already on the calling card.
+		if isSystemFieldName(name) {
+			continue
+		}
+		// Try profile/<name> first (legacy) then personal-data/<name>.
+		var data []byte
+		var err error
+		data, err = storage.Get("profile/" + name)
+		if err != nil {
+			data, err = storage.Get("personal-data/" + name)
+			if err != nil {
+				continue
+			}
+		}
+		// PersonalDataField is the modern shape; ProfileEntry is the
+		// older form and has no discoverability — treat as cataloged.
+		var pdf PersonalDataField
+		if err := json.Unmarshal(data, &pdf); err == nil && pdf.Name != "" {
+			if pdf.Discoverability == DiscoverabilityPrivate {
+				continue
+			}
+			out = append(out, CatalogedDataItem{
+				Name:        pdf.Name,
+				DisplayName: pdf.DisplayName,
+				FieldType:   string(pdf.FieldType),
+				Category:    pdf.Category,
+			})
+			continue
+		}
+		// Fall back: profile entry with no metadata. Use display
+		// name derived from the namespace.
+		out = append(out, CatalogedDataItem{
+			Name:        name,
+			DisplayName: displayNameFromNamespace(name),
+			FieldType:   string(FieldTypeText),
+		})
+	}
+	return out
+}
+
+// buildSecretCatalog enumerates every credential secret in the
+// metadata index and returns metadata-only entries. Items flagged
+// Discoverability=private are excluded.
+func buildSecretCatalog(storage *EncryptedStorage) []CatalogedSecretItem {
+	if storage == nil {
+		return nil
+	}
+	data, err := storage.Get("credential-secrets/_metadata")
+	if err != nil || len(data) == 0 {
+		return nil
+	}
+	var records []SecretMetadataRecord
+	if err := json.Unmarshal(data, &records); err != nil {
+		return nil
+	}
+	out := make([]CatalogedSecretItem, 0, len(records))
+	for _, r := range records {
+		if r.Discoverability == DiscoverabilityPrivate {
+			continue
+		}
+		out = append(out, CatalogedSecretItem{
+			Name:     r.Name,
+			Type:     r.Category, // SecretMetadataRecord.Category holds the type enum
+			Category: "",         // future: user-defined grouping
+		})
+	}
+	return out
+}
+
+// isSystemFieldName recognises the registration-supplied fields that
+// already render on the calling card. These don't need duplicate
+// catalog entries.
+func isSystemFieldName(name string) bool {
+	switch name {
+	case "_system_first_name", "_system_last_name", "_system_email",
+		"_system_stored_at", "_system_email_verified":
+		return true
+	}
+	return false
 }
