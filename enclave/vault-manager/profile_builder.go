@@ -164,6 +164,13 @@ func BuildPublishedProfile(
 	// narrow further at peer-message dispatch (see gateOperation).
 	profile.Handlers = buildPublishedHandlerList(storage)
 
+	// --- Actions (shareable invocations, Phase 1) ---
+	// New layer on top of Handlers: specific verbs the peer can invoke
+	// (request payment, share field, delegate vote). Default-deny
+	// entries are hidden from the broadcast profile; allowlist entries
+	// are advertised but the auth engine rejects unauthorised invokes.
+	profile.Actions = BuildPublishedActionsAdvert(storage)
+
 	// --- Public Secrets Metadata (legacy) ---
 	// Stored at profile/_public_secrets by profile.publish — kept for
 	// backwards compat with older app builds; new clients should read

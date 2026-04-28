@@ -42,6 +42,16 @@ const (
 	AuditTypeAgentActionExecuted = "agent.action.executed"
 	AuditTypeAgentSecretAccessed = "agent.secret.accessed"
 
+	// Shared-action invocations (action_invoker.go). These land on the
+	// connection that drove the invocation — both sides see the trail.
+	AuditTypeActionInvocationSigOK     = "action.invocation.sig_ok"
+	AuditTypeActionInvocationSigFailed = "action.invocation.sig_failed"
+	AuditTypeActionInvoked             = "action.invoked"
+	AuditTypeActionApproved            = "action.approved"
+	AuditTypeActionDenied              = "action.denied"
+	AuditTypeActionExpired             = "action.expired"
+	AuditTypeActionFailed              = "action.failed"
+
 	// System connection events — originate from the VettID service
 	// itself (not a peer) and all land on the reserved system
 	// connection. See plans/luminous-unifying-manatee.md.

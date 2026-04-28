@@ -177,6 +177,13 @@ type MessageHandler struct {
 	handlerAuthMu     sync.RWMutex
 	handlerAuthState  *HandlerState
 	handlerAuthGrants map[string]*ConnectionHandlerGrants
+
+	// Shared-action layer (action_*.go). EnabledActions tracks per-action
+	// auth-mode + allowlist for the new invoke-action wire protocol;
+	// pendingApprovals is the durable queue of prompt-each-time
+	// invocations awaiting owner decision.
+	enabledActions   *EnabledActionState
+	pendingApprovals *ActionPendingApprovalQueue
 }
 
 // VsockPublisher implements CallPublisher using vsock to parent
@@ -883,6 +890,18 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 	case "vote":
 		// Vault-signed voting operation
 		return mh.handleVoteOperation(ctx, msg, parts[opIndex+1:])
+	case "action":
+		// Shared-action layer: list catalog, configure auth, invoke on
+		// peer, decide pending approvals. See action_*.go.
+		return mh.handleActionOperation(ctx, msg, parts[opIndex+1:])
+	case "invoke-action":
+		// Peer-originated invocation arriving on our connection's E2E
+		// channel. The auth engine handles 9-step validation + audit.
+		return mh.handleIncomingInvokeAction(ctx, msg)
+	case "action-result":
+		// Peer-originated result for an invocation we sent. Forward to
+		// our app via forApp.action.result so the invoker's UI updates.
+		return mh.handleIncomingActionResult(ctx, msg)
 	case "feed":
 		// Feed operations (unified event feed)
 		return mh.handleFeedOperation(ctx, msg, parts[opIndex+1:])

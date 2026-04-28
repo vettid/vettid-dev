@@ -927,6 +927,7 @@ type PublishedProfile struct {
 	Fields        map[string]PublishedField `json:"fields"`                    // Personal data fields the user marked Public — value visible
 	Wallets       []PublishedWallet         `json:"wallets,omitempty"`         // Public wallet addresses
 	Handlers      []PublishedHandler        `json:"handlers,omitempty"`        // Vault capability catalog (shareable handlers only)
+	Actions       []PublishedAction         `json:"actions,omitempty"`         // Shared-action catalog (Phase 1: visibility-filtered per viewer)
 	PublicSecrets []PublishedSecretMetadata `json:"public_secrets,omitempty"`  // Legacy: kept for older app builds; superseded by SecretCatalog
 	// Catalogs are the metadata-only surfaces a peer browses. They
 	// list every personal-data / secret entry the user has NOT marked
