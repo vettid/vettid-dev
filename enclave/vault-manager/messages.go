@@ -1718,6 +1718,8 @@ func (mh *MessageHandler) handleCredentialSecretOperation(ctx context.Context, m
 		return mh.credentialSecretHandler.HandleList(msg)
 	case "delete":
 		return mh.credentialSecretHandler.HandleDelete(msg)
+	case "set-discoverability":
+		return mh.credentialSecretHandler.HandleSetDiscoverability(msg)
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown credential.secret operation: %s", opType))
 	}

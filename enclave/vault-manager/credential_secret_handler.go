@@ -137,14 +137,19 @@ func (h *CredentialSecretHandler) HandleAdd(msg *IncomingMessage) (*OutgoingMess
 		log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("Failed to store credential blob for backup (non-fatal)")
 	}
 
-	// Store metadata in vault SQLite (NO values - just metadata for listing)
+	// Store metadata in vault SQLite (NO values - just metadata for listing).
+	// Default discoverability to "cataloged" — peers see the metadata
+	// row and can request the value through a future capability flow.
+	// Owners can flip it to "public" (publish on profile) or "private"
+	// (hide from any peer-visible catalog).
 	metadataRecord := SecretMetadataRecord{
-		ID:          secretID,
-		Name:        req.Name,
-		Category:    req.Category,
-		Description: req.Description,
-		Owner:       "user",
-		CreatedAt:   now.Unix(),
+		ID:              secretID,
+		Name:            req.Name,
+		Category:        req.Category,
+		Description:     req.Description,
+		Owner:           "user",
+		Discoverability: DiscoverabilityCataloged,
+		CreatedAt:       now.Unix(),
 	}
 	h.storeMetadataRecord(metadataRecord)
 
@@ -300,13 +305,19 @@ func (h *CredentialSecretHandler) HandleList(msg *IncomingMessage) (*OutgoingMes
 	metadataRecords := h.getAllMetadataRecords()
 	secrets := make([]CredentialSecretMetadata, 0, len(metadataRecords))
 	for _, record := range metadataRecords {
+		// Legacy rows pre-discoverability default to "cataloged".
+		disc := record.Discoverability
+		if disc == "" {
+			disc = DiscoverabilityCataloged
+		}
 		secrets = append(secrets, CredentialSecretMetadata{
-			ID:          record.ID,
-			Name:        record.Name,
-			Category:    record.Category,
-			Description: record.Description,
-			Owner:       record.Owner,
-			CreatedAt:   time.Unix(record.CreatedAt, 0).Format(time.RFC3339),
+			ID:              record.ID,
+			Name:            record.Name,
+			Category:        record.Category,
+			Description:     record.Description,
+			Owner:           record.Owner,
+			Discoverability: disc,
+			CreatedAt:       time.Unix(record.CreatedAt, 0).Format(time.RFC3339),
 		})
 	}
 
@@ -352,6 +363,60 @@ func (h *CredentialSecretHandler) HandleList(msg *IncomingMessage) (*OutgoingMes
 		Bool("password_verified", passwordVerified).
 		Str("owner_space", h.ownerSpace).
 		Msg("Listed credential secrets")
+
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// HandleSetDiscoverability handles credential.secret.set-discoverability.
+// Updates only the metadata row's Discoverability flag — no password
+// is required because the credential blob (and the secret value) are
+// not touched. The owner uses this to flip a critical secret between
+// public (published on profile), cataloged (peers see metadata only),
+// and private (hidden from any peer-visible catalog).
+func (h *CredentialSecretHandler) HandleSetDiscoverability(msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req CredentialSecretSetDiscoverabilityRequest
+	if err := unmarshalRequest(msg.Payload, &req, "HandleSetDiscoverability"); err != nil {
+		return h.errorResponse(msg.GetID(), "Invalid request format")
+	}
+	if req.ID == "" {
+		return h.errorResponse(msg.GetID(), "id is required")
+	}
+	switch req.Discoverability {
+	case DiscoverabilityPublic, DiscoverabilityCataloged, DiscoverabilityPrivate:
+		// ok
+	default:
+		return h.errorResponse(msg.GetID(), "discoverability must be public, cataloged, or private")
+	}
+
+	records := h.getAllMetadataRecords()
+	found := false
+	for i := range records {
+		if records[i].ID == req.ID {
+			records[i].Discoverability = req.Discoverability
+			found = true
+			break
+		}
+	}
+	if !found {
+		return h.errorResponse(msg.GetID(), "Secret not found")
+	}
+	h.saveMetadataRecords(records)
+
+	resp := CredentialSecretSetDiscoverabilityResponse{
+		ID:              req.ID,
+		Discoverability: req.Discoverability,
+	}
+	respBytes, _ := json.Marshal(resp)
+
+	log.Info().
+		Str("secret_id", req.ID).
+		Str("discoverability", string(req.Discoverability)).
+		Str("owner_space", h.ownerSpace).
+		Msg("Critical secret discoverability updated")
 
 	return &OutgoingMessage{
 		RequestID: msg.GetID(),

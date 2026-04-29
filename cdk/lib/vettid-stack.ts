@@ -1854,10 +1854,14 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
     });
     cleanupRule.addTarget(new targets_events.LambdaFunction(cleanupExpiredAccounts));
 
-    // EventBridge scheduled rule to close expired proposals every 15 minutes
+    // EventBridge rule firing every minute. The same lambda activates
+    // upcoming→active and closes active→closed; running once a minute
+    // keeps the user-visible status flip near-realtime so the app
+    // doesn't show a stale "starts in 1 minute" countdown after
+    // opens_at has passed.
     const closeProposalsRule = new events.Rule(this, 'CloseExpiredProposalsRule', {
-      description: 'Close proposals that have passed their closes_at time',
-      schedule: events.Schedule.rate(cdk.Duration.minutes(15)),
+      description: 'Activate upcoming proposals and close expired ones (1m cadence)',
+      schedule: events.Schedule.rate(cdk.Duration.minutes(1)),
     });
     closeProposalsRule.addTarget(new targets_events.LambdaFunction(closeExpiredProposals));
 

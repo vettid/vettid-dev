@@ -695,12 +695,27 @@ type CredentialSecretListResponse struct {
 
 // CredentialSecretMetadata is the metadata for a secret in list response
 type CredentialSecretMetadata struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Category    string `json:"category"`
-	Description string `json:"description,omitempty"`
-	Owner       string `json:"owner,omitempty"`
-	CreatedAt   string `json:"created_at"` // ISO8601
+	ID              string          `json:"id"`
+	Name            string          `json:"name"`
+	Category        string          `json:"category"`
+	Description     string          `json:"description,omitempty"`
+	Owner           string          `json:"owner,omitempty"`
+	Discoverability Discoverability `json:"discoverability,omitempty"` // public | cataloged | private
+	CreatedAt       string          `json:"created_at"`                // ISO8601
+}
+
+// CredentialSecretSetDiscoverabilityRequest is the request for
+// credential.secret.set-discoverability — updates only the metadata
+// row, never touches the credential blob (the value stays sealed).
+type CredentialSecretSetDiscoverabilityRequest struct {
+	ID              string          `json:"id"`
+	Discoverability Discoverability `json:"discoverability"` // public | cataloged | private
+}
+
+// CredentialSecretSetDiscoverabilityResponse is the response shape.
+type CredentialSecretSetDiscoverabilityResponse struct {
+	ID              string          `json:"id"`
+	Discoverability Discoverability `json:"discoverability"`
 }
 
 // CryptoKeyMetadata is metadata for a crypto key (no private key data)
