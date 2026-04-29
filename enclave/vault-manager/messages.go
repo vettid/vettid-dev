@@ -1104,10 +1104,10 @@ func (mh *MessageHandler) handleWalletOperation(ctx context.Context, msg *Incomi
 		return mh.walletHandler.HandleDelete(ctx, msg)
 	case "set-visibility":
 		return mh.walletHandler.HandleSetVisibility(ctx, msg)
-	case "backup-seed":
-		return mh.walletHandler.HandleBackupSeed(ctx, msg)
-	case "revoke-backup":
-		return mh.walletHandler.HandleRevokeBackup(ctx, msg)
+	case "move-seed-to-credential":
+		return mh.walletHandler.HandleMoveSeedToCredential(ctx, msg)
+	case "move-seed-to-wallet":
+		return mh.walletHandler.HandleMoveSeedToWallet(ctx, msg)
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown wallet operation: %s", opType))
 	}

@@ -508,8 +508,12 @@ func (h *WalletHandler) HandleSend(ctx context.Context, msg *IncomingMessage) (*
 		return errorResponse(msg.GetID(), "no UTXOs available (zero balance)"), nil
 	}
 
-	// Find the private key for this wallet from the credential
-	privKey, err := h.findPrivateKey(record)
+	// Find the private key for this wallet. When the seed lives in
+	// the credential (BIP39Mnemonic empty + SeedBackupSecretID set)
+	// the request must carry password material so the enclave can
+	// decrypt the credential to retrieve the seed. Otherwise (legacy
+	// vault-DEK-only) the password fields are ignored.
+	privKey, err := h.findPrivateKeyForSign(record, &req)
 	if err != nil {
 		return errorResponse(msg.GetID(), "private key not found: "+err.Error()), nil
 	}
@@ -994,6 +998,55 @@ func (h *WalletHandler) findPrivateKey(record *WalletRecord) ([]byte, error) {
 		return nil, fmt.Errorf("failed to re-derive private key: %w", err)
 	}
 
+	return privKey, nil
+}
+
+// findPrivateKeyForSign branches on whether the wallet's seed is in
+// the wallet record (vault-DEK gated) or in the credential blob
+// (CEK + password gated). In the credential branch we require the
+// caller to have carried the password material in the sign request,
+// decrypt the credential here, locate the matching seed entry, derive
+// the key, and zero the credential's mnemonic copy on the way out so
+// nothing lingers in memory beyond what's required.
+//
+// SECURITY: caller must zero the returned slice after use.
+func (h *WalletHandler) findPrivateKeyForSign(record *WalletRecord, req *WalletSendRequest) ([]byte, error) {
+	if record.BIP39Mnemonic != "" {
+		return h.findPrivateKey(record)
+	}
+	if record.SeedBackupSecretID == "" {
+		return nil, fmt.Errorf("wallet has no mnemonic; recreate via wallet.create")
+	}
+	if h.credentialSecretHandler == nil {
+		return nil, fmt.Errorf("credential secret handler not available")
+	}
+	if req.EncryptedCredential == "" || req.EncryptedPasswordHash == "" || req.KeyID == "" {
+		return nil, fmt.Errorf("password required: this wallet's seed is in your credential")
+	}
+
+	mnemonic, err := h.credentialSecretHandler.RevealSecretValue(
+		record.SeedBackupSecretID,
+		req.EncryptedCredential,
+		req.EncryptedPasswordHash,
+		req.EphemeralPublicKey,
+		req.Nonce,
+		req.KeyID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("credential decrypt failed: %w", err)
+	}
+	defer func() {
+		// Best-effort zero of the mnemonic string's backing bytes —
+		// strings in Go are immutable so this clears the temporary
+		// byte slice we use for derivation.
+		mb := []byte(mnemonic)
+		zeroBytes(mb)
+	}()
+
+	privKey, _, _, _, err := generateWalletKeypairFromMnemonic(mnemonic, record.Network)
+	if err != nil {
+		return nil, fmt.Errorf("failed to re-derive private key: %w", err)
+	}
 	return privKey, nil
 }
 

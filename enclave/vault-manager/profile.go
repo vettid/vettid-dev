@@ -776,7 +776,11 @@ func (h *ProfileHandler) HandleGetPublished(msg *IncomingMessage) (*OutgoingMess
 	// Build profile using shared function (single source of truth)
 	profile := BuildPublishedProfile(h.ownerSpace, h.storage, h.vaultState)
 
-	// Wrap in response format
+	// Wrap in response format. The catalogs (data, secrets, handlers,
+	// actions) are mirrored from the broadcast representation so the
+	// owner's own preview matches what peers receive — without them,
+	// the Secrets badge undercounts critical-secret entries the user
+	// has marked "cataloged".
 	resp := map[string]interface{}{
 		"success":         true,
 		"published":       settings.PublishedAt > 0,
@@ -787,6 +791,11 @@ func (h *ProfileHandler) HandleGetPublished(msg *IncomingMessage) (*OutgoingMess
 		"email_verified":  profile.EmailVerified,
 		"fields":          profile.Fields,
 		"wallets":         profile.Wallets,
+		"handlers":        profile.Handlers,
+		"actions":         profile.Actions,
+		"data_catalog":    profile.DataCatalog,
+		"secret_catalog":  profile.SecretCatalog,
+		"public_secrets":  profile.PublicSecrets,
 		"profile_version": profile.Version,
 		"updated_at":      profile.UpdatedAt,
 		"published_at":    time.Unix(settings.PublishedAt, 0).Format(time.RFC3339),

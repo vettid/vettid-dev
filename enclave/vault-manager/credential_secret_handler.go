@@ -385,11 +385,16 @@ func (h *CredentialSecretHandler) HandleSetDiscoverability(msg *IncomingMessage)
 	if req.ID == "" {
 		return h.errorResponse(msg.GetID(), "id is required")
 	}
+	// Critical secret VALUES must never reach the published profile —
+	// the credential is the trust boundary, not the broadcast surface.
+	// Only "cataloged" (peers see metadata: this secret exists) or
+	// "private" (peers see nothing) are valid here. "public" is
+	// rejected even if the client tries.
 	switch req.Discoverability {
-	case DiscoverabilityPublic, DiscoverabilityCataloged, DiscoverabilityPrivate:
+	case DiscoverabilityCataloged, DiscoverabilityPrivate:
 		// ok
 	default:
-		return h.errorResponse(msg.GetID(), "discoverability must be public, cataloged, or private")
+		return h.errorResponse(msg.GetID(), "discoverability must be cataloged or private")
 	}
 
 	records := h.getAllMetadataRecords()
@@ -406,11 +411,16 @@ func (h *CredentialSecretHandler) HandleSetDiscoverability(msg *IncomingMessage)
 	}
 	h.saveMetadataRecords(records)
 
-	resp := CredentialSecretSetDiscoverabilityResponse{
-		ID:              req.ID,
-		Discoverability: req.Discoverability,
-	}
-	respBytes, _ := json.Marshal(resp)
+	// Wrap with `success: true` so the Android client's standard
+	// VaultResponse parsing (which checks `success` first, falling
+	// through to typed dispatch otherwise) picks this up as a
+	// HandlerResult. Without it, the optimistic update path on the
+	// segmented control silently no-ops.
+	respBytes, _ := json.Marshal(map[string]interface{}{
+		"success":         true,
+		"id":              req.ID,
+		"discoverability": string(req.Discoverability),
+	})
 
 	log.Info().
 		Str("secret_id", req.ID).
@@ -612,6 +622,38 @@ func (h *CredentialSecretHandler) MutateSecrets(
 // instead of calling HandleAdd directly.
 func (h *CredentialSecretHandler) StoreSecretMetadata(record SecretMetadataRecord) {
 	h.storeMetadataRecord(record)
+}
+
+// RevealSecretValue is the read-only counterpart to MutateSecrets.
+// Given the password material the caller already collected, it
+// decrypts the credential blob, finds the entry by ID, returns its
+// value as a string, and zeroes the in-memory credential. Used by
+// wallet signing when the seed has been moved into the credential.
+//
+// Caller is responsible for zeroing the returned bytes.
+func (h *CredentialSecretHandler) RevealSecretValue(
+	secretID, encryptedCredential, encryptedPasswordHash, ephemeralPublicKey, nonce, keyID string,
+) (string, error) {
+	if secretID == "" {
+		return "", fmt.Errorf("secret_id is required")
+	}
+	credentialV2, err := h.decryptCredentialBlob(encryptedCredential)
+	if err != nil {
+		return "", fmt.Errorf("decrypt credential: %w", err)
+	}
+	defer credentialV2.SecureErase()
+
+	if err := h.verifyPasswordAgainstCredential(encryptedPasswordHash, ephemeralPublicKey, nonce, keyID, credentialV2); err != nil {
+		return "", fmt.Errorf("password verification failed")
+	}
+
+	for i := range credentialV2.Secrets {
+		if credentialV2.Secrets[i].ID == secretID {
+			value := string(credentialV2.Secrets[i].Value)
+			return value, nil
+		}
+	}
+	return "", fmt.Errorf("secret not found in credential")
 }
 
 // RemoveSecretMetadata is the counterpart to StoreSecretMetadata for
@@ -828,19 +870,29 @@ func (h *CredentialSecretHandler) verifyPassword(encryptedPasswordHash, ephemera
 
 // --- Metadata index operations (vault SQLite) ---
 
-// storeMetadataRecord stores a metadata record in vault SQLite
+// storeMetadataRecord stores a metadata record in vault SQLite. When
+// upserting over an existing row (same ID) we preserve any prior
+// Discoverability the user had set, unless the caller explicitly sets
+// a non-empty value. This guards against indirect callers (e.g. the
+// wallet backup path) inadvertently resetting a user-chosen "private"
+// flag back to default by passing a zero-value record.
 func (h *CredentialSecretHandler) storeMetadataRecord(record SecretMetadataRecord) {
 	records := h.getAllMetadataRecords()
 
-	// Check if already exists
 	for i, r := range records {
 		if r.ID == record.ID {
+			if record.Discoverability == "" {
+				record.Discoverability = r.Discoverability
+			}
 			records[i] = record
 			h.saveMetadataRecords(records)
 			return
 		}
 	}
 
+	if record.Discoverability == "" {
+		record.Discoverability = DiscoverabilityCataloged
+	}
 	records = append(records, record)
 	h.saveMetadataRecords(records)
 }

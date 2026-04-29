@@ -198,12 +198,26 @@ type WalletGetFeesResponse struct {
 	MinimumFee  int `json:"minimum_fee"`
 }
 
-// WalletSendRequest is the payload for wallet.send
+// WalletSendRequest is the payload for wallet.send.
+//
+// When the wallet's seed has been moved into the credential blob
+// (BIP39Mnemonic="", SeedBackupSecretID!=""), the request MUST also
+// carry the password material so the enclave can decrypt the
+// credential to retrieve the seed for signing. When the seed is in
+// the wallet record itself, the password fields are ignored.
 type WalletSendRequest struct {
 	WalletID    string `json:"wallet_id"`
 	ToAddress   string `json:"to_address"`
 	AmountSats  int64  `json:"amount_sats"`
 	FeeRate     int    `json:"fee_rate"` // sat/vB
+
+	// Optional credential-unlock material (required only when the
+	// wallet's seed has been moved into the credential).
+	EncryptedCredential   string `json:"encrypted_credential,omitempty"`
+	EncryptedPasswordHash string `json:"encrypted_password_hash,omitempty"`
+	EphemeralPublicKey    string `json:"ephemeral_public_key,omitempty"`
+	Nonce                 string `json:"nonce,omitempty"`
+	KeyID                 string `json:"key_id,omitempty"`
 }
 
 // WalletSendResponse is the response for wallet.send

@@ -413,32 +413,73 @@ func buildDataCatalog(storage *EncryptedStorage) []CatalogedDataItem {
 	return out
 }
 
-// buildSecretCatalog enumerates every credential secret in the
-// metadata index and returns metadata-only entries. Items flagged
-// Discoverability=private are excluded.
+// buildSecretCatalog enumerates the user's "what I have" inventory:
+//
+//   1. Every credential secret in the metadata index (seed phrases,
+//      private keys, etc.). Values stay sealed in the credential
+//      blob; only the metadata row is shareable with peers.
+//   2. Every active BTC wallet. Wallet seeds live in the wallet's
+//      own keystore in the enclave (or in the credential after
+//      "Move to credential"); either way, the wallet itself is part
+//      of the user's inventory and peers should be able to see they
+//      have it. Wallets whose seed has been moved to credential are
+//      already represented by the credential-secret row, so we skip
+//      them here to avoid double-listing.
+//
+// Items flagged Discoverability=private are excluded. Wallets default
+// to cataloged.
 func buildSecretCatalog(storage *EncryptedStorage) []CatalogedSecretItem {
 	if storage == nil {
 		return nil
 	}
-	data, err := storage.Get("credential-secrets/_metadata")
-	if err != nil || len(data) == 0 {
-		return nil
-	}
-	var records []SecretMetadataRecord
-	if err := json.Unmarshal(data, &records); err != nil {
-		return nil
-	}
-	out := make([]CatalogedSecretItem, 0, len(records))
-	for _, r := range records {
-		if r.Discoverability == DiscoverabilityPrivate {
-			continue
+	out := make([]CatalogedSecretItem, 0)
+
+	if data, err := storage.Get("credential-secrets/_metadata"); err == nil && len(data) > 0 {
+		var records []SecretMetadataRecord
+		if err := json.Unmarshal(data, &records); err == nil {
+			for _, r := range records {
+				if r.Discoverability == DiscoverabilityPrivate {
+					continue
+				}
+				out = append(out, CatalogedSecretItem{
+					Name:     r.Name,
+					Type:     r.Category,
+					Category: "",
+				})
+			}
 		}
-		out = append(out, CatalogedSecretItem{
-			Name:     r.Name,
-			Type:     r.Category, // SecretMetadataRecord.Category holds the type enum
-			Category: "",         // future: user-defined grouping
-		})
 	}
+
+	if ids, err := storage.GetIndex("wallets/_index"); err == nil {
+		for _, id := range ids {
+			data, err := storage.Get("wallets/" + id)
+			if err != nil {
+				continue
+			}
+			var w WalletRecord
+			if err := json.Unmarshal(data, &w); err != nil {
+				continue
+			}
+			if w.IsArchived {
+				continue
+			}
+			// Seed already in credential — skip; the credential-secret
+			// row above covers it.
+			if w.SeedBackupSecretID != "" {
+				continue
+			}
+			label := w.Label
+			if label == "" {
+				label = "BTC Wallet"
+			}
+			out = append(out, CatalogedSecretItem{
+				Name:     label,
+				Type:     "BTC_WALLET",
+				Category: "Cryptocurrency",
+			})
+		}
+	}
+
 	return out
 }
 
