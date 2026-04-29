@@ -83,6 +83,19 @@ body {
   transition: background var(--duration-slow), color var(--duration-slow);
 }
 
+/* Form controls don't inherit font-family/size from <body> by UA
+   default, which made admin/account sidebar nav (`<button class="tab">`)
+   render in the system "button" font (Arial-ish) instead of Inter.
+   This forces inheritance so portal nav matches the rest of the page. */
+button,
+input,
+select,
+textarea,
+optgroup {
+  font-family: inherit;
+  font-size: inherit;
+}
+
 /* Noise texture overlay */
 body::before {
   content: '';
