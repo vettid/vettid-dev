@@ -6,6 +6,21 @@
  * - Plus Jakarta Sans: https://github.com/niclasinohia/PlusJakartaSans (Glow Type)
  */
 
+/* Force form controls to inherit page typography. Browsers default
+   <button>/<input>/<select>/<textarea> to a UA "form" font (Arial-ish)
+   that ignores body font-family — that's why portal sidebar tabs and
+   the "Load Individual Votes" button rendered off. Living here so any
+   page that pulls fonts.css gets the correct typography on its form
+   elements without also having to pull /assets/styles.css. */
+button,
+input,
+select,
+textarea,
+optgroup {
+  font-family: inherit;
+  font-size: inherit;
+}
+
 /* ============================================
    INTER - Body Text Font
    ============================================ */
