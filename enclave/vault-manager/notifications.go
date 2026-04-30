@@ -138,6 +138,39 @@ func (h *NotificationsHandler) HandleProfileBroadcast(msg *IncomingMessage) (*Ou
 	}, nil
 }
 
+// RepublishProfile is the shared "metadata changed, push the new
+// snapshot" helper. Called by any vault op that mutates a profile-
+// surface field (wallet create, critical-secret add/delete/visibility,
+// wallet seed move, etc.). Two fan-outs:
+//
+//  1. JetStream-retained subject `OwnerSpace.<guid>.forApp.profile.public`
+//     so the owner's own app sees the fresh snapshot in invite-create
+//     and own-profile-preview flows.
+//  2. Active inbound peers via BroadcastPublishedProfile so peers see
+//     the new wallet / catalog row without waiting for reconnect.
+//
+// Failures are logged but never propagated — a republish miss must not
+// block the original mutation.
+func RepublishProfile(ownerSpace string, storage *EncryptedStorage, publisher *VsockPublisher, vaultState *VaultState) {
+	if publisher == nil || storage == nil {
+		return
+	}
+	profile := BuildPublishedProfile(ownerSpace, storage, vaultState)
+	profileBytes, err := json.Marshal(profile)
+	if err == nil {
+		subject := fmt.Sprintf("OwnerSpace.%s.forApp.profile.public", ownerSpace)
+		if err := publisher.PublishRaw(subject, profileBytes); err != nil {
+			log.Warn().Err(err).Str("owner_space", ownerSpace).Msg("RepublishProfile: forApp publish failed (non-fatal)")
+		}
+	}
+	BroadcastPublishedProfile(context.Background(), ownerSpace, storage, publisher, vaultState)
+	// Broker (INVITATIONS stream) carries an inviter_profile snapshot
+	// frozen at create-invite time. Walk pending outbound invites and
+	// re-publish each so a scanner who hasn't acted yet gets the
+	// fresh catalogs/wallets next time they fetch the broker payload.
+	RepublishOutstandingInvites(ownerSpace, storage, publisher, vaultState)
+}
+
 // BroadcastPublishedProfile sends the owner's current published profile
 // snapshot to every active inbound peer. Called by profile.publish,
 // wallet.set-visibility, and the profile.broadcast RPC. Returns

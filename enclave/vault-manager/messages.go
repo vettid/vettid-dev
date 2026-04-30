@@ -287,6 +287,7 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 
 	// Create credential secret handler for critical secrets
 	credentialSecretHandler := NewCredentialSecretHandler(ownerSpace, storage, vaultState, bootstrapHandler, eventHandler)
+	credentialSecretHandler.SetPublisher(publisher)
 
 	// Create migration handler for migration status and recovery
 	migrationHandler := NewMigrationHandler(ownerSpace, storage, vaultState, sealerProxy)

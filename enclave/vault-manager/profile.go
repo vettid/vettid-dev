@@ -699,17 +699,11 @@ func (h *ProfileHandler) HandlePublish(ctx context.Context, msg *IncomingMessage
 			}
 		}
 
-		// Fan out the snapshot to active peers so their cached _peer_profile
-		// picks up the new fields/wallets. Done in a goroutine because the
-		// broadcast iterates every connection and publishes to each peer
-		// vault — don't make the caller wait for network I/O.
-		go BroadcastPublishedProfile(
-			context.Background(),
-			h.ownerSpace,
-			h.storage,
-			h.publisher,
-			h.vaultState,
-		)
+		// Fan out the snapshot to active peers AND outstanding
+		// invitation broker payloads so a still-pending scanner sees
+		// the latest catalogs without us having to recreate the
+		// invite. Goroutine because both fan-outs touch the network.
+		go RepublishProfile(h.ownerSpace, h.storage, h.publisher, h.vaultState)
 	}
 
 	response := ProfilePublishResponse{

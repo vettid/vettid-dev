@@ -152,6 +152,14 @@ func (h *WalletHandler) HandleMoveSeedToCredential(ctx context.Context, msg *Inc
 		})
 	}
 
+	// Move flips the wallet from "wallet table" representation in
+	// secret_catalog to "credential-secret metadata" representation —
+	// either way it appears in the catalog, but the underlying row
+	// changes so a snapshot refresh keeps the public view consistent.
+	if h.publisher != nil {
+		go RepublishProfile(h.ownerSpace, h.storage, h.publisher, h.vaultState)
+	}
+
 	resp := WalletMoveSeedResponse{
 		WalletID:            req.WalletID,
 		SecretID:            newSecretID,
@@ -249,6 +257,12 @@ func (h *WalletHandler) HandleMoveSeedToWallet(ctx context.Context, msg *Incomin
 				"reason":    "wallet_seed_moved_back_to_wallet",
 			},
 		})
+	}
+
+	// Same as the move-to-credential path: the catalog entry shifts
+	// representation, so refresh the public snapshot.
+	if h.publisher != nil {
+		go RepublishProfile(h.ownerSpace, h.storage, h.publisher, h.vaultState)
 	}
 
 	resp := struct {

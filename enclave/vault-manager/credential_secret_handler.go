@@ -26,6 +26,7 @@ type CredentialSecretHandler struct {
 	state        *VaultState
 	bootstrap    *BootstrapHandler
 	eventHandler *EventHandler
+	publisher    *VsockPublisher // optional — used to refresh broadcast snapshots after metadata mutations
 }
 
 // NewCredentialSecretHandler creates a new credential secret handler
@@ -37,6 +38,13 @@ func NewCredentialSecretHandler(ownerSpace string, storage *EncryptedStorage, st
 		bootstrap:    bootstrap,
 		eventHandler: eventHandler,
 	}
+}
+
+// SetPublisher wires the vsock publisher post-construction. Optional —
+// only used to fan out fresh published-profile snapshots after a
+// metadata mutation. No-op if never called.
+func (h *CredentialSecretHandler) SetPublisher(p *VsockPublisher) {
+	h.publisher = p
 }
 
 // HandleAdd handles credential.secret.add messages
@@ -158,6 +166,13 @@ func (h *CredentialSecretHandler) HandleAdd(msg *IncomingMessage) (*OutgoingMess
 		Str("category", req.Category).
 		Str("owner_space", h.ownerSpace).
 		Msg("Credential secret added to credential blob")
+
+	// Critical-secret metadata feeds the published secret_catalog —
+	// refresh existing peers and outstanding invitation broker
+	// payloads so the user doesn't have to manually publish.
+	if h.publisher != nil {
+		go RepublishProfile(h.ownerSpace, h.storage, h.publisher, h.state)
+	}
 
 	// Generate fresh UTKs and return ONLY the new ones.
 	newPairs, err := h.bootstrap.GenerateMoreUTKs(3)
@@ -428,6 +443,12 @@ func (h *CredentialSecretHandler) HandleSetDiscoverability(msg *IncomingMessage)
 		Str("owner_space", h.ownerSpace).
 		Msg("Critical secret discoverability updated")
 
+	// Toggling discoverability flips whether peers see the metadata
+	// row in secret_catalog — push the updated snapshot.
+	if h.publisher != nil {
+		go RepublishProfile(h.ownerSpace, h.storage, h.publisher, h.state)
+	}
+
 	return &OutgoingMessage{
 		RequestID: msg.GetID(),
 		Type:      MessageTypeResponse,
@@ -528,6 +549,13 @@ func (h *CredentialSecretHandler) HandleDelete(msg *IncomingMessage) (*OutgoingM
 		Str("secret_id", req.ID).
 		Str("owner_space", h.ownerSpace).
 		Msg("Credential secret deleted (password verified)")
+
+	// Removing a critical secret drops its row from secret_catalog —
+	// push the fresh snapshot so peers / outstanding invites stop
+	// advertising it.
+	if h.publisher != nil {
+		go RepublishProfile(h.ownerSpace, h.storage, h.publisher, h.state)
+	}
 
 	// Log audit event for secret deletion
 	h.eventHandler.LogSecretEvent(

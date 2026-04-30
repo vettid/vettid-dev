@@ -484,6 +484,12 @@ type ConnectionRecord struct {
 	Status            string    `json:"status"` // see ConnStatus* constants
 	CreatedAt         time.Time `json:"created_at"`
 	ExpiresAt         time.Time `json:"expires_at,omitempty"`
+	// InviteCode is the 8-char code published to the INVITATIONS
+	// broker stream as the subject suffix `invite.<code>`. Persisted
+	// here so RepublishOutstandingInvites can rebuild the broker
+	// payload on profile changes (otherwise the scanner sees a stale
+	// catalog snapshot from create-invite time).
+	InviteCode        string    `json:"invite_code,omitempty"`
 
 	// Parallel-review handshake (plans/parallel-review-handshake.md):
 	// each vault tracks BOTH local and peer decisions independently.
@@ -1032,6 +1038,14 @@ func (h *ConnectionsHandler) HandleCreateInvite(msg *IncomingMessage) (*Outgoing
 			inviteCode = "" // Fall back to inline credentials
 		} else {
 			log.Info().Str("invite_code", inviteCode).Str("connection_id", connectionID).Msg("Invitation published to broker stream")
+			// Persist code + creds on the connection record so
+			// RepublishOutstandingInvites can rebuild the broker
+			// payload after later metadata mutations. Best-effort.
+			record.Credentials = invitationCreds
+			record.InviteCode = inviteCode
+			if updated, err := json.Marshal(record); err == nil {
+				_ = h.storage.Put(storageKey, updated)
+			}
 		}
 	}
 
@@ -4083,6 +4097,86 @@ func (h *ConnectionsHandler) loadInviterProfile() map[string]string {
 func (h *ConnectionsHandler) loadPublishedProfileForPeer() map[string]interface{} {
 	profile := BuildPublishedProfile(h.ownerSpace, h.storage, h.vaultState)
 	return PublishedProfileToMap(profile)
+}
+
+// RepublishOutstandingInvites walks every pending outbound invitation
+// the user has open and re-publishes its broker payload (subject
+// invite.<code>) with a fresh `inviter_profile` snapshot. INVITATIONS
+// stream uses last-message-per-subject retention so re-publishing
+// overwrites the previous payload — a scanner who hasn't resolved yet
+// will see the latest catalogs/wallets.
+//
+// Best-effort: a per-invite failure logs but does not abort the walk.
+// Skips connections that have already moved past the pre-resolve
+// window (active, declined, expired, revoked, etc.).
+func RepublishOutstandingInvites(ownerSpace string, storage *EncryptedStorage, publisher *VsockPublisher, vaultState *VaultState) {
+	if storage == nil || publisher == nil {
+		return
+	}
+	indexData, err := storage.Get("connections/_index")
+	if err != nil || len(indexData) == 0 {
+		return
+	}
+	var ids []string
+	if err := json.Unmarshal(indexData, &ids); err != nil {
+		return
+	}
+
+	profile := BuildPublishedProfile(ownerSpace, storage, vaultState)
+	inviterProfile := PublishedProfileToMap(profile)
+
+	for _, id := range ids {
+		data, err := storage.Get("connections/" + id)
+		if err != nil {
+			continue
+		}
+		var rec ConnectionRecord
+		if json.Unmarshal(data, &rec) != nil {
+			continue
+		}
+		if rec.CredentialsType != "outbound" {
+			continue
+		}
+		if rec.InviteCode == "" {
+			continue
+		}
+		// Only refresh while the invite is still pre-resolution.
+		switch rec.Status {
+		case ConnStatusInvited, ConnStatusPeerReviewing,
+			ConnStatusOurAcceptPending, ConnStatusPeerAcceptPending,
+			"pending", "pending_their_review":
+			// proceed
+		default:
+			continue
+		}
+
+		jwt, seed := extractCredsComponents(rec.Credentials)
+		if jwt == "" || seed == "" {
+			continue
+		}
+
+		brokerPayload := map[string]interface{}{
+			"type":            "vettid_connection",
+			"kind":            "connection",
+			"connection_id":   rec.ConnectionID,
+			"jwt":             jwt,
+			"seed":            seed,
+			"owner_space":     ownerSpace,
+			"message_space":   rec.MessageSpaceTopic,
+			"expires_at":      rec.ExpiresAt.Format(time.RFC3339),
+			"label":           rec.PeerAlias,
+			"inviter_profile": inviterProfile,
+			"e2e_public_key":  fmt.Sprintf("%x", rec.LocalPublicKey),
+		}
+		payloadBytes, err := json.Marshal(brokerPayload)
+		if err != nil {
+			continue
+		}
+		subject := fmt.Sprintf("invite.%s", rec.InviteCode)
+		if err := publisher.PublishRaw(subject, payloadBytes); err != nil {
+			log.Warn().Err(err).Str("invite_code", rec.InviteCode).Msg("RepublishOutstandingInvites: per-invite republish failed")
+		}
+	}
 }
 
 // lastActivityInfo aggregates the bits HandleList needs to paint a

@@ -188,6 +188,13 @@ func (h *WalletHandler) HandleCreate(ctx context.Context, msg *IncomingMessage) 
 		Str("path", derivPath).
 		Msg("BTC wallet created")
 
+	// New wallet adds a row to the secret_catalog and (when public) to
+	// the wallets array — push the fresh snapshot so existing peers and
+	// any outstanding invitation broker payloads pick up the change.
+	if h.publisher != nil {
+		go RepublishProfile(h.ownerSpace, h.storage, h.publisher, h.vaultState)
+	}
+
 	// Don't log pubkey/privkey details
 	_ = pubKey
 
