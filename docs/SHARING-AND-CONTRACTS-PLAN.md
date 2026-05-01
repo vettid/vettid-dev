@@ -628,8 +628,7 @@ editor surface, and the legacy ops become façades.
 **Files changed**
 - `vettid-dev/enclave/vault-manager/handler_authorization.go`:
   `isHandlerGrantedToConnection` reads `_share_policy` instead of
-  `share_handlers`. Migration path: read-through fallback if
-  `_share_policy` is empty but `share_handlers` exists.
+  `share_handlers`. Hard cutover (users re-enroll between releases).
 - `vettid-dev/enclave/vault-manager/action_authorization.go`: same
   swap for `EnabledAction.Allowlist`.
 - `vettid-dev/enclave/vault-manager/credential_secret_handler.go` +
@@ -641,11 +640,12 @@ editor surface, and the legacy ops become façades.
   the new policy.
 
 **Vault changes**: new ops `connection.share-policy.get` /
-`connection.share-policy.set`. Legacy ops re-route internally.
+`connection.share-policy.set`. Legacy ops re-route internally for the
+duration of this release; remove in Phase 3.
 
 **Test plan**
-- Existing handler grants migrate cleanly (read-through on first
-  access; explicit migration on next set).
+- Fresh enrollment + connection creation produces an empty share
+  policy except for the published-profile fields.
 - Toggling a field in the new editor is reflected in the legacy
   Handlers dialog immediately.
 - Default policy on a fresh connection: only published-profile fields
@@ -885,12 +885,67 @@ detail (Follow account / Always shared / Never shared), but it's a
 view onto `setting:presence` in the policy. The Sharing-screen editor
 adds the time-window + rate-limit knobs.
 
-**Migration**: on first read of a connection that has the legacy
-`_location_share_enabled` or `_presence_override` keys but no
-`setting:location` / `setting:presence` entries in `_share_policy`,
-copy the values over and write back. Phase 2 already plans
-read-through fallbacks for handler-grants; this is the same pattern
-for these two.
+**No migration.** Both users re-enroll between this work and the next
+release; legacy keys vanish with the old vault. Phase 2 doesn't carry
+read-through fallbacks for these two.
+
+### Viewing a peer's shared location
+
+Sharing the toggle is one half — the other half is letting me actually
+*see* where my peer is when they're sharing. Two pieces:
+
+**Vault-side cache.** Today location updates are ephemeral (forwarded
+to a flow for display, not persisted). For "show their last known
+position when I open the connection," the vault caches the most
+recent fix at `connections/{id}/_last_location`:
+
+```go
+type LastKnownLocation struct {
+    Latitude   float64 `json:"latitude"`
+    Longitude  float64 `json:"longitude"`
+    AccuracyM  float32 `json:"accuracy_m"`
+    UpdatedAt  int64   `json:"updated_at"`   // unix
+    ReceivedAt int64   `json:"received_at"`  // unix; for retention math
+}
+```
+
+Retention is short by default — 1 hour — so the cache decays to empty
+unless a fresh update arrives. Falls under the same retention sweep
+as everything else in `connections/{id}/transparent/`. The user-side
+share-policy entry `setting:location` carries the retention knob, so
+the receiver can set their own cache window separate from whatever
+the sender's setting says (the sender controls *whether* to share;
+the receiver controls *how long to keep* what arrives).
+
+**Display + handoff.** Two surfaces:
+
+1. **Connection detail card** — when a `_last_location` exists, the
+   card renders a "Last shared location" panel: a small static map
+   tile (using a privacy-friendly external service or a stylized
+   coordinate display — see §7a-decision below), the timestamp
+   (`Updated 3m ago`), accuracy (`±15m`), and an "Open in Maps"
+   button.
+2. **Open in Maps button** — Android Intent handoff, no SDK
+   dependency:
+   ```kotlin
+   val uri = Uri.parse("geo:$lat,$lon?q=$lat,$lon($peerLabel)")
+   startActivity(Intent(Intent.ACTION_VIEW, uri))
+   ```
+   Any installed map app (Google Maps, Organic Maps, OsmAnd,
+   anything that registers the `geo:` scheme) handles the intent. We
+   don't bundle a map SDK.
+
+**Inline preview decision** — the static map tile is optional in v1.
+A purely textual "lat, lon ±accuracy m" with the Open-in-Maps button
+ships first; a styled tile can be a Phase 4 fast-follow. The privacy
+math: any inline tile inevitably calls a tile server (which sees the
+coordinates), so we keep tiles off by default and let the user
+explicitly tap to launch their chosen map app.
+
+**Audit.** Every location update received is logged to the connection
+audit trail with `EventTypeLocationUpdateReceived` (already exists);
+every "Open in Maps" tap logs `EventTypeLocationViewed` so the user
+can see retroactively when they checked a peer's position.
 
 ---
 
