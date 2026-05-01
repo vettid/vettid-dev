@@ -222,6 +222,11 @@ func (h *ConnectionsHandler) tryActivate(ctx context.Context, connectionID strin
 		if h.eventHandler != nil {
 			h.eventHandler.LogConnectionEvent(ctx, EventTypeConnectionCreated, connectionID, record.PeerGUID, "Connection established")
 		}
+		// Seed the per-connection share policy with the default
+		// (published-profile fields allowed; everything else
+		// default-deny). Idempotent — safe if both sides activate
+		// on the same instant.
+		SeedDefaultSharePolicy(h.storage, connectionID)
 		// Per-connection audit trail entry so the connection-detail
 		// history view has a "Connection established" row at the
 		// origin of the timeline. The feed gets it via the event

@@ -1898,6 +1898,19 @@ func (mh *MessageHandler) handleConnectionOperation(ctx context.Context, msg *In
 		default:
 			return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown share-handlers operation: %s", opParts[2]))
 		}
+	case "share-policy":
+		// Phase 2: per-connection sharing policy (the unified store).
+		if len(opParts) < 3 {
+			return mh.errorResponse(msg.GetID(), "missing share-policy operation (get|set)")
+		}
+		switch opParts[2] {
+		case "get":
+			return mh.handleSharePolicyGet(msg)
+		case "set":
+			return mh.handleSharePolicySet(msg)
+		default:
+			return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown share-policy operation: %s", opParts[2]))
+		}
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown connection operation: %s", opType))
 	}
@@ -1943,6 +1956,52 @@ func (mh *MessageHandler) handleShareHandlersSet(msg *IncomingMessage) (*Outgoin
 	respBytes, _ := json.Marshal(map[string]interface{}{
 		"success":       true,
 		"connection_id": req.ConnectionID,
+	})
+	return mh.successResponse(msg.GetID(), respBytes)
+}
+
+// handleSharePolicyGet returns the per-connection share policy or
+// the empty default if none is set.
+func (mh *MessageHandler) handleSharePolicyGet(msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req struct {
+		ConnectionID string `json:"connection_id"`
+	}
+	if err := json.Unmarshal(msg.Payload, &req); err != nil || req.ConnectionID == "" {
+		return mh.errorResponse(msg.GetID(), "connection_id required")
+	}
+	policy := loadSharePolicy(mh.storage, req.ConnectionID)
+	if policy == nil {
+		policy = defaultSharePolicy()
+	}
+	respBytes, _ := json.Marshal(map[string]interface{}{
+		"success":       true,
+		"connection_id": req.ConnectionID,
+		"policy":        policy,
+	})
+	return mh.successResponse(msg.GetID(), respBytes)
+}
+
+// handleSharePolicySet merges new items into the policy. The payload's
+// `items` map is keyed by SharePolicyKey ("<kind>:<id>"). To clear an
+// item entirely, send `{allowed:false}` rather than omitting it (we
+// don't currently support a "remove key" operation — that's Phase 3
+// fast-follow if it's needed).
+func (mh *MessageHandler) handleSharePolicySet(msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req struct {
+		ConnectionID string                     `json:"connection_id"`
+		Items        map[string]SharePolicyItem `json:"items"`
+	}
+	if err := json.Unmarshal(msg.Payload, &req); err != nil || req.ConnectionID == "" {
+		return mh.errorResponse(msg.GetID(), "connection_id and items required")
+	}
+	if err := MergePolicyItems(mh.storage, req.ConnectionID, req.Items); err != nil {
+		return mh.errorResponse(msg.GetID(), err.Error())
+	}
+	policy := loadSharePolicy(mh.storage, req.ConnectionID)
+	respBytes, _ := json.Marshal(map[string]interface{}{
+		"success":       true,
+		"connection_id": req.ConnectionID,
+		"policy":        policy,
 	})
 	return mh.successResponse(msg.GetID(), respBytes)
 }

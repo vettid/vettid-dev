@@ -409,6 +409,19 @@ func (mh *MessageHandler) setConnectionGrants(connectionID string, granted map[s
 		mh.handlerAuthGrants = make(map[string]*ConnectionHandlerGrants)
 	}
 	mh.handlerAuthGrants[connectionID] = grants
+
+	// Phase 2: also write through to the SharePolicy so the unified
+	// gate sees the same decision as the legacy Handlers dialog.
+	policyItems := make(map[string]SharePolicyItem, len(granted))
+	for id, on := range granted {
+		policyItems[sharePolicyKey(SharePolicyKindHandler, id)] = SharePolicyItem{
+			Allowed: on,
+			Tier:    "on_demand",
+		}
+	}
+	if err := MergePolicyItems(mh.storage, connectionID, policyItems); err != nil {
+		log.Warn().Err(err).Str("connection_id", connectionID).Msg("setConnectionGrants: SharePolicy mirror failed (non-fatal)")
+	}
 	return nil
 }
 
@@ -458,12 +471,18 @@ func (mh *MessageHandler) clearConnectionGrants(connectionID string) {
 }
 
 // isHandlerGrantedToConnection answers the per-connection gate question.
-// Loads grants on demand. Errors fail closed.
+// Phase 2 of the sharing-and-contracts plan makes SharePolicy the
+// authoritative store; the legacy ConnectionHandlerGrants blob is the
+// read-through fallback for connections that haven't been re-seeded yet.
+// Errors fail closed.
 func (mh *MessageHandler) isHandlerGrantedToConnection(handlerID, connectionID string) bool {
 	if connectionID == "" {
 		// No connection context — peer message arrived but we couldn't
 		// resolve which connection it came from. Reject.
 		return false
+	}
+	if policy := loadSharePolicy(mh.storage, connectionID); policy != nil {
+		return policy.IsItemAllowed(SharePolicyKindHandler, handlerID)
 	}
 	grants, err := mh.getConnectionGrants(connectionID)
 	if err != nil || grants == nil {
@@ -545,7 +564,7 @@ func extractSenderGUID(payload []byte) string {
 	if err := json.Unmarshal(payload, &probe); err != nil {
 		return ""
 	}
-	for _, key := range []string{"sender_guid", "from_user_guid", "from_owner_space", "fromOwnerSpace", "sender", "owner_space"} {
+	for _, key := range []string{"sender_guid", "reader_guid", "from_user_guid", "from_owner_space", "fromOwnerSpace", "sender", "owner_space"} {
 		if raw, ok := probe[key]; ok {
 			var s string
 			if err := json.Unmarshal(raw, &s); err == nil && s != "" {
