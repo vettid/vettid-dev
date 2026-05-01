@@ -140,7 +140,12 @@ func (h *CapabilityHandler) HandleRequest(msg *IncomingMessage) (*OutgoingMessag
 		return h.errorResponse(msg.GetID(), "Failed to read connection")
 	}
 
-	if connRecord.Status != "active" {
+	// Reject only on terminal statuses. Parallel-review intermediate
+	// states (our_accept_pending, peer_accept_pending, peer_reviewing)
+	// are still live connections — capability.request may legitimately
+	// fire during them, especially when the request kicks off a value
+	// share that's gated on both sides accepting.
+	if recordTerminal(connRecord.Status) {
 		return h.errorResponse(msg.GetID(), "Connection is not active")
 	}
 
