@@ -277,10 +277,19 @@ func (c *NATSClient) ensureInvitationsStream() error {
 	streamName := "INVITATIONS"
 	subjects := []string{"invite.>"}
 
-	// Check if stream exists
+	// Check if stream exists. The StreamInfo call doubles as a JS
+	// connection warm-up — the first JetStream RPC on a fresh
+	// connection bears 5-10s of init latency that would otherwise
+	// land on the user's first invitation resolve.
 	stream, err := c.js.StreamInfo(streamName)
 	if err == nil {
-		log.Debug().Str("stream", streamName).Int64("messages", int64(stream.State.Msgs)).Msg("Invitations stream exists")
+		// Also warm the GetLastMsg path — that's the specific RPC
+		// invitation-resolve uses, and observation shows it has its
+		// own connection-establishment cost separate from StreamInfo.
+		// "not found" on a sentinel subject is fine; we just need the
+		// round trip to land.
+		_, _ = c.js.GetLastMsg(streamName, "invite._warmup")
+		log.Debug().Str("stream", streamName).Int64("messages", int64(stream.State.Msgs)).Msg("Invitations stream exists; JS connection warmed")
 		return nil
 	}
 
@@ -301,6 +310,8 @@ func (c *NATSClient) ensureInvitationsStream() error {
 	}
 
 	log.Info().Str("stream", streamName).Strs("subjects", subjects).Msg("Created invitations stream")
+	// Warm the GetLastMsg path on the freshly-created stream too.
+	_, _ = c.js.GetLastMsg(streamName, "invite._warmup")
 	return nil
 }
 
