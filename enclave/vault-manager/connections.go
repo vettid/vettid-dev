@@ -290,6 +290,41 @@ func (h *ConnectionsHandler) publishConnectionSignal(peerOwnerSpace, signalType,
 	return h.publisher.PublishRaw(subject, payload)
 }
 
+// publishConnectionSignalWithExtras is publishConnectionSignal but with
+// caller-supplied additional fields. Used to inline the response-invite
+// payload directly into the response-ready signal so the receiving
+// vault skips the JetStream broker fetch (sealerProxy.ResolveResponseInvite)
+// — that's the dominant cost in the parallel-review handshake on a cold
+// JetStream consumer.
+func (h *ConnectionsHandler) publishConnectionSignalWithExtras(
+	peerOwnerSpace, signalType, connectionID, reviewNonce string,
+	extras map[string]interface{},
+) error {
+	if h.publisher == nil {
+		return fmt.Errorf("publisher not available")
+	}
+	body := map[string]interface{}{
+		"signal":        signalType,
+		"connection_id": connectionID,
+	}
+	if reviewNonce != "" {
+		body["review_nonce"] = reviewNonce
+	}
+	for k, v := range extras {
+		// Don't let extras clobber the routing fields.
+		if k == "signal" || k == "connection_id" || k == "review_nonce" {
+			continue
+		}
+		body[k] = v
+	}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	subject := fmt.Sprintf("MessageSpace.%s.forOwner.connection.signal", peerOwnerSpace)
+	return h.publisher.PublishRaw(subject, payload)
+}
+
 // publishResponseInvite writes B's response invite into the broker
 // keyed by A's connection_id. Subject: `invite.response.<conn_id>`.
 // Overwrites on each call (re-resolves replace prior content).
@@ -1255,8 +1290,21 @@ func (h *ConnectionsHandler) HandleResolveInvite(msg *IncomingMessage) (*Outgoin
 		}
 	}
 
-	// Push tiny `response-ready` ping to A. No PII — just routing tokens.
-	if err := h.publishConnectionSignal(brokerPayload.OwnerSpace, "response-ready", brokerPayload.ConnectionID, record.ReviewNonce); err != nil {
+	// Push response-ready signal to A with the response-invite payload
+	// inlined. The broker write above stays as a fallback (older
+	// inviter vaults that don't read inline data still pull from
+	// the broker), but the inline path skips the JetStream round-trip
+	// and is the difference between a ~1s and a ~10s convergence on a
+	// cold consumer. See plans/parallel-review-handshake.md §3.1.
+	signalExtras := map[string]interface{}{
+		"owner_space":    h.ownerSpace,
+		"message_space":  record.MessageSpaceTopic,
+		"label":          myAlias,
+		"profile":        myProfile,
+		"e2e_public_key": fmt.Sprintf("%x", record.LocalPublicKey),
+		"expires_at":     brokerPayload.ExpiresAt,
+	}
+	if err := h.publishConnectionSignalWithExtras(brokerPayload.OwnerSpace, "response-ready", brokerPayload.ConnectionID, record.ReviewNonce, signalExtras); err != nil {
 		log.Warn().Err(err).Str("connection_id", brokerPayload.ConnectionID).Msg("Failed to push response-ready signal")
 	}
 
@@ -1294,6 +1342,9 @@ func (h *ConnectionsHandler) HandleResolveInvite(msg *IncomingMessage) (*Outgoin
 // Hard rule: signals carry only routing tokens (conn_id + nonce) — no
 // PII flows on this channel. See plans/parallel-review-handshake.md §3.2.
 func (h *ConnectionsHandler) HandleConnectionSignal(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	// The signal struct stays narrow for routing; inline payload fields
+	// (used by response-ready to skip the broker fetch) are pulled out
+	// of the raw payload by the receiving handler.
 	var signal struct {
 		Signal       string `json:"signal"`
 		ConnectionID string `json:"connection_id"`
@@ -1317,6 +1368,74 @@ func (h *ConnectionsHandler) HandleConnectionSignal(ctx context.Context, msg *In
 		log.Debug().Str("signal", signal.Signal).Msg("Unknown connection signal — dropping")
 		return &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}, nil
 	}
+}
+
+// readInlineResponseInvite extracts the response-invite fields the
+// scanner inlines into the response-ready signal. Returns nil if the
+// payload doesn't carry inline data (older scanner builds, or the
+// scanner couldn't include the profile for any reason).
+func readInlineResponseInvite(payload []byte, connectionID string) *responseInvite {
+	var raw map[string]json.RawMessage
+	if json.Unmarshal(payload, &raw) != nil {
+		return nil
+	}
+	var inline struct {
+		OwnerSpace   string                 `json:"owner_space"`
+		MessageSpace string                 `json:"message_space"`
+		Label        string                 `json:"label"`
+		Profile      map[string]interface{} `json:"profile"`
+		E2EPublicKey string                 `json:"e2e_public_key"`
+		ExpiresAt    string                 `json:"expires_at"`
+		ReviewNonce  string                 `json:"review_nonce"`
+	}
+	// Decode fields one at a time so a malformed sub-field doesn't
+	// drop the whole payload.
+	if data, ok := raw["owner_space"]; ok {
+		_ = json.Unmarshal(data, &inline.OwnerSpace)
+	}
+	if data, ok := raw["message_space"]; ok {
+		_ = json.Unmarshal(data, &inline.MessageSpace)
+	}
+	if data, ok := raw["label"]; ok {
+		_ = json.Unmarshal(data, &inline.Label)
+	}
+	if data, ok := raw["profile"]; ok {
+		_ = json.Unmarshal(data, &inline.Profile)
+	}
+	if data, ok := raw["e2e_public_key"]; ok {
+		_ = json.Unmarshal(data, &inline.E2EPublicKey)
+	}
+	if data, ok := raw["expires_at"]; ok {
+		_ = json.Unmarshal(data, &inline.ExpiresAt)
+	}
+	if data, ok := raw["review_nonce"]; ok {
+		_ = json.Unmarshal(data, &inline.ReviewNonce)
+	}
+	if inline.OwnerSpace == "" || inline.E2EPublicKey == "" {
+		return nil
+	}
+	return &responseInvite{
+		ConnectionID: connectionID,
+		OwnerSpace:   inline.OwnerSpace,
+		MessageSpace: inline.MessageSpace,
+		Label:        inline.Label,
+		Profile:      inline.Profile,
+		E2EPublicKey: inline.E2EPublicKey,
+		ReviewNonce:  inline.ReviewNonce,
+	}
+}
+
+// responseInvite is the unified shape consumed by handleResponseReady,
+// regardless of whether it came from the inline signal payload or the
+// JetStream broker fetch fallback.
+type responseInvite struct {
+	ConnectionID string
+	OwnerSpace   string
+	MessageSpace string
+	Label        string
+	Profile      map[string]interface{}
+	E2EPublicKey string
+	ReviewNonce  string
 }
 
 // handleResponseReady is A's vault reacting to B's "response-ready"
@@ -1351,27 +1470,42 @@ func (h *ConnectionsHandler) handleResponseReady(ctx context.Context, msg *Incom
 		return &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}, nil
 	}
 
-	// Pull the response invite from the broker.
-	if h.sealerProxy == nil {
-		return h.errorResponse(msg.GetID(), "sealer proxy not available")
-	}
-	respData, err := h.sealerProxy.ResolveResponseInvite(connectionID)
-	if err != nil {
-		log.Warn().Err(err).Str("connection_id", connectionID).Msg("Failed to fetch response invite")
-		return &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}, nil
-	}
-	var response struct {
-		ConnectionID string                 `json:"connection_id"`
-		OwnerSpace   string                 `json:"owner_space"`
-		MessageSpace string                 `json:"message_space"`
-		Label        string                 `json:"label"`
-		Profile      map[string]interface{} `json:"profile"`
-		E2EPublicKey string                 `json:"e2e_public_key"`
-		ReviewNonce  string                 `json:"review_nonce"`
-	}
-	if err := json.Unmarshal(respData, &response); err != nil {
-		log.Warn().Err(err).Msg("Failed to parse response invite payload")
-		return &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}, nil
+	// Prefer the inline payload from the response-ready signal — saves
+	// the JetStream round-trip the broker fetch costs on a cold
+	// consumer. Fall back to the broker only if the scanner's signal
+	// didn't carry the fields.
+	response := readInlineResponseInvite(msg.Payload, connectionID)
+	if response == nil {
+		if h.sealerProxy == nil {
+			return h.errorResponse(msg.GetID(), "sealer proxy not available")
+		}
+		respData, err := h.sealerProxy.ResolveResponseInvite(connectionID)
+		if err != nil {
+			log.Warn().Err(err).Str("connection_id", connectionID).Msg("Failed to fetch response invite")
+			return &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}, nil
+		}
+		var raw struct {
+			ConnectionID string                 `json:"connection_id"`
+			OwnerSpace   string                 `json:"owner_space"`
+			MessageSpace string                 `json:"message_space"`
+			Label        string                 `json:"label"`
+			Profile      map[string]interface{} `json:"profile"`
+			E2EPublicKey string                 `json:"e2e_public_key"`
+			ReviewNonce  string                 `json:"review_nonce"`
+		}
+		if err := json.Unmarshal(respData, &raw); err != nil {
+			log.Warn().Err(err).Msg("Failed to parse response invite payload")
+			return &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}, nil
+		}
+		response = &responseInvite{
+			ConnectionID: raw.ConnectionID,
+			OwnerSpace:   raw.OwnerSpace,
+			MessageSpace: raw.MessageSpace,
+			Label:        raw.Label,
+			Profile:      raw.Profile,
+			E2EPublicKey: raw.E2EPublicKey,
+			ReviewNonce:  raw.ReviewNonce,
+		}
 	}
 	if response.ConnectionID != connectionID || response.OwnerSpace == "" || response.E2EPublicKey == "" {
 		log.Warn().Str("connection_id", connectionID).Msg("Response invite payload missing required fields — dropping")
