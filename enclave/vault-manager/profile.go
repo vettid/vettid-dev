@@ -64,6 +64,7 @@ type ProfileGetResponse struct {
 // ProfileFieldResponse represents a single profile field
 type ProfileFieldResponse struct {
 	Value     string `json:"value"`
+	Alias     string `json:"alias,omitempty"`
 	UpdatedAt string `json:"updated_at"`
 }
 
@@ -173,7 +174,10 @@ func (h *ProfileHandler) HandleGet(msg *IncomingMessage) (*OutgoingMessage, erro
 		log.Debug().Int("profile_fields", len(fieldSet)).Strs("fields", req.Fields).Msg("Combined field index")
 	}
 
-	// Get specific fields - try profile/ first, then personal-data/
+	// Get specific fields - try profile/ first, then personal-data/.
+	// `field` here may be a plain namespace (legacy callers) or a
+	// composite fieldKey ("namespace::alias") for personal-data
+	// entries that share a namespace across multiple aliases.
 	for _, field := range req.Fields {
 		var data []byte
 		var err error
@@ -195,6 +199,7 @@ func (h *ProfileHandler) HandleGet(msg *IncomingMessage) (*OutgoingMessage, erro
 		if json.Unmarshal(data, &pdEntry) == nil && pdEntry.Namespace != "" {
 			result.Fields[field] = ProfileFieldResponse{
 				Value:     pdEntry.Value,
+				Alias:     pdEntry.Alias,
 				UpdatedAt: pdEntry.UpdatedAt.Format(time.RFC3339),
 			}
 			continue
@@ -211,6 +216,12 @@ func (h *ProfileHandler) HandleGet(msg *IncomingMessage) (*OutgoingMessage, erro
 			UpdatedAt: entry.UpdatedAt.Format(time.RFC3339),
 		}
 	}
+
+	// When a value-mapped composite fieldKey ("ns::alias") was
+	// requested, the profile fallback at "profile/<key>" would have
+	// failed and the personal-data path resolved it. The response
+	// keys are the requested composite IDs — clients split on "::"
+	// to recover (namespace, alias).
 
 	respBytes, _ := json.Marshal(result)
 
@@ -495,6 +506,16 @@ func containsString(slice []string, s string) bool {
 		}
 	}
 	return false
+}
+
+func removeString(slice []string, s string) []string {
+	out := make([]string, 0, len(slice))
+	for _, item := range slice {
+		if item != s {
+			out = append(out, item)
+		}
+	}
+	return out
 }
 
 // displayNameFromNamespace converts a dotted namespace to a human-readable display name.

@@ -482,7 +482,28 @@ func (mh *MessageHandler) isHandlerGrantedToConnection(handlerID, connectionID s
 		return false
 	}
 	if policy := loadSharePolicy(mh.storage, connectionID); policy != nil {
-		return policy.IsItemAllowed(SharePolicyKindHandler, handlerID)
+		key := sharePolicyKey(SharePolicyKindHandler, handlerID)
+		if item, ok := policy.Items[key]; ok {
+			// Explicit per-connection decision wins. Honour expiry.
+			if item.ExpiresAt > 0 && item.ExpiresAt < time.Now().Unix() {
+				return false
+			}
+			return item.Allowed
+		}
+		// No explicit policy item: fall back to the user's global
+		// share-state. A handler the user has marked share_globally
+		// remains granted to every active connection unless the user
+		// explicitly toggles it off for this peer in the editor.
+		mh.handlerAuthMu.RLock()
+		state := mh.handlerAuthState
+		mh.handlerAuthMu.RUnlock()
+		if state != nil {
+			se := state.Entries[handlerID]
+			if se.Enabled && se.ShareGlobally {
+				return true
+			}
+		}
+		return false
 	}
 	grants, err := mh.getConnectionGrants(connectionID)
 	if err != nil || grants == nil {

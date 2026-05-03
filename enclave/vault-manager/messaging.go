@@ -116,10 +116,18 @@ type PeerMessage struct {
 	SentAt           string `json:"sent_at"`
 }
 
-// PeerReadReceipt is the structure for read receipts
+// PeerReadReceipt is the structure for read receipts.
+//
+// ReaderGUID rides on the wire so the receiving vault can resolve
+// the connection_id via FindConnectionByPeerGUID and run the
+// per-connection handler gate. Without it gatePeerSubject sees an
+// empty connectionID and fails closed (HandlerErrNotSharedToPeer),
+// which is why early read-receipt rollouts looked like they
+// "vanished" peer-side while new-message worked fine.
 type PeerReadReceipt struct {
 	MessageID    string `json:"message_id"`
 	ConnectionID string `json:"connection_id"`
+	ReaderGUID   string `json:"reader_guid"`
 	ReadAt       string `json:"read_at"`
 }
 
@@ -658,10 +666,12 @@ func (h *MessagingHandler) HandleReadReceipt(msg *IncomingMessage) (*OutgoingMes
 		return h.errorResponse(msg.GetID(), "Invalid connection data")
 	}
 
-	// Build read receipt for peer
+	// Build read receipt for peer. ReaderGUID is OUR ownerSpace —
+	// the peer's gate uses it to resolve the connection record.
 	receipt := PeerReadReceipt{
 		MessageID:    req.MessageID,
 		ConnectionID: req.ConnectionID,
+		ReaderGUID:   h.ownerSpace,
 		ReadAt:       readAt,
 	}
 	receiptData, _ := json.Marshal(receipt)

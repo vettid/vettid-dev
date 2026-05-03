@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/base64"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -187,13 +188,14 @@ func BuildPublishedProfile(
 	// Peers browse this to know what kinds of data the user holds and
 	// can request values via the capability flow. Values never appear.
 	profile.DataCatalog = buildDataCatalog(storage)
+	_ = vaultState // keep reference; used by secret-catalog below
 
 	// --- Secret Catalog (every secret entry, metadata only,
 	//     excluding entries flagged Private) ---
 	// Same model as DataCatalog: peers see "Al has a credit card
 	// called Personal Visa" and can request access; the value stays
 	// behind the credential blob.
-	profile.SecretCatalog = buildSecretCatalog(storage)
+	profile.SecretCatalog = buildSecretCatalog(storage, vaultState)
 
 	log.Debug().
 		Str("owner_space", ownerSpace).
@@ -290,26 +292,39 @@ func PublishedProfileToMap(p *PublishedProfile) map[string]interface{} {
 	}
 
 	if len(p.DataCatalog) > 0 {
-		var items []map[string]string
+		// Preserve alias on the wire — without it, two entries that
+		// share a namespace ("contact.family.phone::Wife" vs "::Daughter")
+		// arrive at the peer as visually identical rows. Use map[string]any
+		// (not map[string]string) so empty fields can simply be absent.
+		var items []map[string]any
 		for _, d := range p.DataCatalog {
-			items = append(items, map[string]string{
+			row := map[string]any{
 				"name":         d.Name,
 				"display_name": d.DisplayName,
 				"field_type":   d.FieldType,
-				"category":     d.Category,
-			})
+			}
+			if d.Category != "" {
+				row["category"] = d.Category
+			}
+			if d.Alias != "" {
+				row["alias"] = d.Alias
+			}
+			items = append(items, row)
 		}
 		result["data_catalog"] = items
 	}
 
 	if len(p.SecretCatalog) > 0 {
-		var items []map[string]string
+		var items []map[string]any
 		for _, s := range p.SecretCatalog {
-			items = append(items, map[string]string{
-				"name":     s.Name,
-				"type":     s.Type,
-				"category": s.Category,
-			})
+			row := map[string]any{
+				"name": s.Name,
+				"type": s.Type,
+			}
+			if s.Category != "" {
+				row["category"] = s.Category
+			}
+			items = append(items, row)
 		}
 		result["secret_catalog"] = items
 	}
@@ -373,8 +388,14 @@ func buildDataCatalog(storage *EncryptedStorage) []CatalogedDataItem {
 	}
 	out := make([]CatalogedDataItem, 0, len(fieldNames))
 	for name := range fieldNames {
-		// Skip system fields — they're already on the calling card.
-		if isSystemFieldName(name) {
+		// System fields render on the calling card (name/email) and
+		// don't belong in the catalog list — surfacing them again
+		// duplicates rows under the catalog "Other" section in the
+		// preview. Skip every `_system_*` namespace; the calling
+		// card is the single source for these.
+		if isSystemFieldName(name) ||
+			name == "_system_stored_at" ||
+			name == "_system_email_verified" {
 			continue
 		}
 		// Try profile/<name> first (legacy) then personal-data/<name>.
@@ -399,18 +420,78 @@ func buildDataCatalog(storage *EncryptedStorage) []CatalogedDataItem {
 				DisplayName: pdf.DisplayName,
 				FieldType:   string(pdf.FieldType),
 				Category:    pdf.Category,
+				Alias:       pdf.Alias,
 			})
 			continue
 		}
-		// Fall back: profile entry with no metadata. Use display
-		// name derived from the namespace.
+		// Personal-data path stores PersonalDataEntry. The `name` we
+		// iterate is the composite fieldKey ("namespace::alias" or
+		// plain namespace) — split it for display purposes so peers
+		// see "Phone — Wife" / "Phone — Daughter" with proper names
+		// even when the index entry is composite.
+		var pde PersonalDataEntry
+		_ = json.Unmarshal(data, &pde)
+		ns, aliasFromKey := splitFieldKey(name)
+		alias := pde.Alias
+		if alias == "" {
+			alias = aliasFromKey
+		}
+		nameForDisplay := pde.Namespace
+		if nameForDisplay == "" {
+			nameForDisplay = ns
+		}
 		out = append(out, CatalogedDataItem{
-			Name:        name,
-			DisplayName: displayNameFromNamespace(name),
+			Name:        nameForDisplay,
+			DisplayName: displayNameFromNamespace(nameForDisplay),
 			FieldType:   string(FieldTypeText),
+			Category:    categoryFromNamespace(nameForDisplay),
+			Alias:       alias,
 		})
 	}
 	return out
+}
+
+// categoryFromNamespace maps a personal-data namespace to its
+// display-side category (Identity, Contact, Family, Address, etc.)
+// so catalog rows always carry a category — without this, peers and
+// the owner's own preview see family/address/contact rows leak into
+// the catch-all "Other" bucket.
+func categoryFromNamespace(namespace string) string {
+	switch {
+	case strings.HasPrefix(namespace, "personal.legal"),
+		strings.HasPrefix(namespace, "personal.info"),
+		strings.HasPrefix(namespace, "identity."):
+		return "Identity"
+	case strings.HasPrefix(namespace, "contact.family."):
+		return "Family"
+	case strings.HasPrefix(namespace, "contact."),
+		strings.HasPrefix(namespace, "social."):
+		return "Contact"
+	case strings.HasPrefix(namespace, "address."):
+		return "Address"
+	case strings.HasPrefix(namespace, "financial."):
+		return "Financial"
+	case strings.HasPrefix(namespace, "medical."):
+		return "Medical"
+	case strings.HasPrefix(namespace, "professional."):
+		return "Professional"
+	case strings.HasPrefix(namespace, "education."):
+		return "Education"
+	case strings.HasPrefix(namespace, "vehicle."):
+		return "Vehicle"
+	case strings.HasPrefix(namespace, "legal."):
+		return "Legal"
+	case strings.HasPrefix(namespace, "digital."):
+		return "Digital"
+	case strings.HasPrefix(namespace, "travel."):
+		return "Travel"
+	case strings.HasPrefix(namespace, "membership."):
+		return "Membership"
+	case strings.HasPrefix(namespace, "property."):
+		return "Property"
+	default:
+		return "Other"
+	}
 }
 
 // buildSecretCatalog enumerates the user's "what I have" inventory:
@@ -418,17 +499,17 @@ func buildDataCatalog(storage *EncryptedStorage) []CatalogedDataItem {
 //   1. Every credential secret in the metadata index (seed phrases,
 //      private keys, etc.). Values stay sealed in the credential
 //      blob; only the metadata row is shareable with peers.
-//   2. Every active BTC wallet. Wallet seeds live in the wallet's
-//      own keystore in the enclave (or in the credential after
-//      "Move to credential"); either way, the wallet itself is part
-//      of the user's inventory and peers should be able to see they
-//      have it. Wallets whose seed has been moved to credential are
-//      already represented by the credential-secret row, so we skip
-//      them here to avoid double-listing.
+//   2. Every active wallet — including ones whose seed has been
+//      moved to the credential. The seed and the wallet itself are
+//      separate things from a peer's perspective: peers care about
+//      the wallet's public address, not the seed. Listing them
+//      together gives an accurate "what I can share" view.
+//   3. Every credential crypto key (ETH address, BTC pubkey, etc.).
+//      The private half stays sealed; only the label/type and
+//      public material are surfaced as catalog metadata.
 //
-// Items flagged Discoverability=private are excluded. Wallets default
-// to cataloged.
-func buildSecretCatalog(storage *EncryptedStorage) []CatalogedSecretItem {
+// Items flagged Discoverability=private are excluded.
+func buildSecretCatalog(storage *EncryptedStorage, vaultState *VaultState) []CatalogedSecretItem {
 	if storage == nil {
 		return nil
 	}
@@ -444,10 +525,28 @@ func buildSecretCatalog(storage *EncryptedStorage) []CatalogedSecretItem {
 				out = append(out, CatalogedSecretItem{
 					Name:     r.Name,
 					Type:     r.Category,
-					Category: "",
+					Category: "Critical Secret",
 				})
 			}
 		}
+	}
+
+	// Minor secrets — vault-stored, retrievable without a password
+	// re-prompt. Same catalog visibility rules apply (private hides
+	// metadata; cataloged/public show name + category to peers).
+	for _, m := range MinorSecretRecords(storage) {
+		if m.Discoverability == DiscoverabilityPrivate {
+			continue
+		}
+		category := m.Category
+		if category == "" {
+			category = "Secret"
+		}
+		out = append(out, CatalogedSecretItem{
+			Name:     m.Name,
+			Type:     m.Type,
+			Category: category,
+		})
 	}
 
 	if ids, err := storage.GetIndex("wallets/_index"); err == nil {
@@ -463,11 +562,6 @@ func buildSecretCatalog(storage *EncryptedStorage) []CatalogedSecretItem {
 			if w.IsArchived {
 				continue
 			}
-			// Seed already in credential — skip; the credential-secret
-			// row above covers it.
-			if w.SeedBackupSecretID != "" {
-				continue
-			}
 			label := w.Label
 			if label == "" {
 				label = "BTC Wallet"
@@ -477,6 +571,32 @@ func buildSecretCatalog(storage *EncryptedStorage) []CatalogedSecretItem {
 				Type:     "BTC_WALLET",
 				Category: "Cryptocurrency",
 			})
+		}
+	}
+
+	// Credential crypto keys (ETH address, BTC pubkey, signing key,
+	// etc.) live inside the in-memory credential blob — surface each
+	// as its own row so peers see the full key inventory. Only the
+	// label/type travel; the private material stays sealed.
+	if vaultState != nil {
+		vaultState.mu.RLock()
+		credential := vaultState.credential
+		vaultState.mu.RUnlock()
+		if credential != nil {
+			for _, k := range credential.CryptoKeys {
+				label := k.Label
+				if label == "" {
+					label = string(k.Type)
+				}
+				if label == "" {
+					continue
+				}
+				out = append(out, CatalogedSecretItem{
+					Name:     label,
+					Type:     string(k.Type),
+					Category: "Crypto Key",
+				})
+			}
 		}
 	}
 

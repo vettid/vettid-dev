@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -28,7 +29,40 @@ func NewPersonalDataHandler(ownerSpace string, storage *EncryptedStorage) *Perso
 type PersonalDataEntry struct {
 	Namespace string    `json:"namespace"`
 	Value     string    `json:"value"`
+	// Alias is a short user-defined identifier that disambiguates
+	// multiple entries within the same category — e.g. "Wife",
+	// "Maria", "Mom", "Work". Optional. Surfaced via the data
+	// catalog so peers can tell similar entries apart without
+	// seeing the value itself. The (namespace, alias) tuple is the
+	// logical identity of an entry — two family members can have
+	// the same `contact.family.phone` namespace as long as their
+	// aliases differ.
+	Alias     string    `json:"alias,omitempty"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// FieldKeySeparator joins a namespace and alias to form the
+// composite storage key. Picked to be unambiguous in dotted
+// namespaces (no plain dot).
+const FieldKeySeparator = "::"
+
+// fieldKey returns the storage-key suffix for a (namespace, alias)
+// pair. Aliasless entries use the bare namespace so legacy data
+// stays readable.
+func fieldKey(namespace, alias string) string {
+	if alias == "" {
+		return namespace
+	}
+	return namespace + FieldKeySeparator + alias
+}
+
+// splitFieldKey reverses fieldKey: returns (namespace, alias). For
+// keys without the separator, alias is "".
+func splitFieldKey(key string) (string, string) {
+	if idx := strings.Index(key, FieldKeySeparator); idx >= 0 {
+		return key[:idx], key[idx+len(FieldKeySeparator):]
+	}
+	return key, ""
 }
 
 // PersonalDataGetRequest is the payload for personal-data.get
@@ -47,15 +81,20 @@ type PersonalDataGetResponse struct {
 	Error     string                                `json:"error,omitempty"`
 }
 
-// PersonalDataFieldResponse represents a single personal data field in responses
+// PersonalDataFieldResponse represents a single personal data field in responses.
+// `Namespace` is included so clients can split a composite "namespace::alias"
+// response key back into its parts without re-implementing the parser.
 type PersonalDataFieldResponse struct {
+	Namespace string `json:"namespace,omitempty"`
 	Value     string `json:"value"`
+	Alias     string `json:"alias,omitempty"`
 	UpdatedAt string `json:"updated_at"`
 }
 
 // PersonalDataUpdateRequest is the payload for personal-data.update
 type PersonalDataUpdateRequest struct {
-	Fields map[string]string `json:"fields"` // Namespace -> value
+	Fields  map[string]string `json:"fields"`            // Namespace -> value
+	Aliases map[string]string `json:"aliases,omitempty"` // Namespace -> short user-defined alias
 }
 
 // PersonalDataDeleteRequest is the payload for personal-data.delete
@@ -120,36 +159,46 @@ func (h *PersonalDataHandler) HandleGet(msg *IncomingMessage) (*OutgoingMessage,
 		Str("email", result.Email).
 		Msg("Loaded system fields for personal-data.get")
 
-	// Get the list of namespaces to return
-	namespaces := req.Namespaces
-	if len(namespaces) == 0 {
+	// Get the list of fieldKeys to return. The index stores composite
+	// keys ("namespace::alias" when alias is set, plain namespace
+	// otherwise). Callers asking for a specific subset can pass either
+	// raw namespaces or composite keys; both resolve via splitFieldKey
+	// downstream.
+	fieldKeys := req.Namespaces
+	if len(fieldKeys) == 0 {
 		// Load full index of all personal data fields
 		indexData, err := h.storage.Get("personal-data/_index")
 		if err == nil {
-			if err := json.Unmarshal(indexData, &namespaces); err != nil {
+			if err := json.Unmarshal(indexData, &fieldKeys); err != nil {
 				log.Warn().Err(err).Msg("Failed to unmarshal personal data index")
 			}
 		}
-		log.Info().Int("count", len(namespaces)).Strs("namespaces", namespaces).Msg("Loaded personal data index")
+		log.Info().Int("count", len(fieldKeys)).Strs("field_keys", fieldKeys).Msg("Loaded personal data index")
 	}
 
 	// Load each field
-	for _, namespace := range namespaces {
-		storageKey := "personal-data/" + namespace
+	for _, key := range fieldKeys {
+		storageKey := "personal-data/" + key
 		data, err := h.storage.Get(storageKey)
 		if err != nil {
-			log.Debug().Str("namespace", namespace).Msg("Personal data field not found")
+			log.Debug().Str("field_key", key).Msg("Personal data field not found")
 			continue
 		}
 
 		var entry PersonalDataEntry
 		if err := json.Unmarshal(data, &entry); err != nil {
-			log.Warn().Str("namespace", namespace).Err(err).Msg("Failed to unmarshal personal data entry")
+			log.Warn().Str("field_key", key).Err(err).Msg("Failed to unmarshal personal data entry")
 			continue
 		}
 
-		result.Fields[namespace] = PersonalDataFieldResponse{
+		// Response key is the composite fieldKey so two entries that
+		// share a namespace (different aliases) come back as separate
+		// rows. The entry payload still carries `namespace` and
+		// `alias` separately for clients that need them apart.
+		result.Fields[key] = PersonalDataFieldResponse{
+			Namespace: entry.Namespace,
 			Value:     entry.Value,
+			Alias:     entry.Alias,
 			UpdatedAt: entry.UpdatedAt.Format(time.RFC3339),
 		}
 	}
@@ -200,10 +249,39 @@ func (h *PersonalDataHandler) HandleUpdate(msg *IncomingMessage) (*OutgoingMessa
 
 	log.Debug().Int("existing_index_size", len(fieldIndex)).Int("fields_to_update", len(req.Fields)).Msg("Updating personal data")
 
-	for namespace, value := range req.Fields {
+	// The (namespace, alias) tuple is the logical identity. Keys in
+	// req.Fields can either be raw namespaces (legacy clients) or
+	// already-composited "namespace::alias" — splitFieldKey handles
+	// both. Caller-supplied req.Aliases is the canonical alias for
+	// the namespace; if it's missing, fall back to whatever was
+	// stored on the existing entry so renaming the value doesn't
+	// erase a previously-set alias.
+	for fieldOrNamespace, value := range req.Fields {
+		namespace, embeddedAlias := splitFieldKey(fieldOrNamespace)
+		alias := embeddedAlias
+		if a, ok := req.Aliases[fieldOrNamespace]; ok {
+			alias = a
+		} else if a, ok := req.Aliases[namespace]; ok && embeddedAlias == "" {
+			alias = a
+		}
+		key := fieldKey(namespace, alias)
+		// Preserve alias from existing record if caller didn't
+		// supply one (covers value-only edits — renaming the alias
+		// requires the caller to send aliases explicitly).
+		if alias == "" {
+			if existing, err := h.storage.Get("personal-data/" + key); err == nil && len(existing) > 0 {
+				var prev PersonalDataEntry
+				if json.Unmarshal(existing, &prev) == nil {
+					alias = prev.Alias
+					key = fieldKey(namespace, alias)
+				}
+			}
+		}
+
 		entry := PersonalDataEntry{
 			Namespace: namespace,
 			Value:     value,
+			Alias:     alias,
 			UpdatedAt: now,
 		}
 
@@ -213,19 +291,63 @@ func (h *PersonalDataHandler) HandleUpdate(msg *IncomingMessage) (*OutgoingMessa
 			continue
 		}
 
-		storageKey := "personal-data/" + namespace
+		storageKey := "personal-data/" + key
 		if err := h.storage.Put(storageKey, data); err != nil {
 			log.Warn().Str("namespace", namespace).Err(err).Msg("Failed to store personal data field")
 			continue
 		}
 
 		// Add to index if not present
-		if !containsString(fieldIndex, namespace) {
-			fieldIndex = append(fieldIndex, namespace)
+		if !containsString(fieldIndex, key) {
+			fieldIndex = append(fieldIndex, key)
+		}
+
+		// If the caller's input keyed by an old composite (i.e. the
+		// alias just changed for an existing record), the data is
+		// now under the new key — delete the orphan at the old
+		// location so we don't leave a stale entry behind.
+		oldKey := fieldOrNamespace
+		if oldKey != key {
+			_ = h.storage.Delete("personal-data/" + oldKey)
+			fieldIndex = removeString(fieldIndex, oldKey)
 		}
 
 		updatedCount++
-		log.Debug().Str("namespace", namespace).Msg("Personal data field updated")
+		log.Debug().Str("field_key", key).Msg("Personal data field updated")
+	}
+
+	// Aliases without a corresponding value (rename-only updates)
+	// still need to land. Walk the alias map for fieldKeys that
+	// weren't in Fields and patch the existing entry — moving the
+	// storage key if the alias actually changed.
+	for fieldOrNamespace, newAlias := range req.Aliases {
+		if _, written := req.Fields[fieldOrNamespace]; written {
+			continue
+		}
+		namespace, oldAliasFromKey := splitFieldKey(fieldOrNamespace)
+		oldKey := fieldKey(namespace, oldAliasFromKey)
+		existing, err := h.storage.Get("personal-data/" + oldKey)
+		if err != nil || len(existing) == 0 {
+			continue
+		}
+		var prev PersonalDataEntry
+		if json.Unmarshal(existing, &prev) != nil {
+			continue
+		}
+		prev.Alias = newAlias
+		prev.UpdatedAt = now
+		newKey := fieldKey(namespace, newAlias)
+		if newKey != oldKey {
+			_ = h.storage.Delete("personal-data/" + oldKey)
+			fieldIndex = removeString(fieldIndex, oldKey)
+		}
+		if data, err := json.Marshal(prev); err == nil {
+			_ = h.storage.Put("personal-data/"+newKey, data)
+			if !containsString(fieldIndex, newKey) {
+				fieldIndex = append(fieldIndex, newKey)
+			}
+			updatedCount++
+		}
 	}
 
 	// Always save the index (even if it was empty before)

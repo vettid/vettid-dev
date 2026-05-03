@@ -838,6 +838,12 @@ type PersonalDataField struct {
 	ID              string          `json:"id"`           // UUID
 	Name            string          `json:"name"`         // Dotted namespace: "contact.phone.mobile"
 	DisplayName     string          `json:"display_name"` // Human-readable: "Mobile Phone"
+	// Alias is a short user-defined identifier that disambiguates
+	// multiple entries within the same category — e.g. "Wife",
+	// "Maria", "Mom", "Work". Surfaced in the catalog so peers see
+	// "Family · Phone — Wife" instead of two indistinguishable
+	// "Family · Phone" rows. Optional; never carries the value.
+	Alias           string          `json:"alias,omitempty"`
 	Value           string          `json:"value"`        // The actual value (encrypted in vault)
 	FieldType       FieldType       `json:"field_type"`   // TEXT, PASSWORD, NUMBER, DATE, EMAIL, PHONE, URL, NOTE
 	Category        string          `json:"category"`     // Category ID (predefined or custom)
@@ -921,6 +927,10 @@ type CatalogedDataItem struct {
 	DisplayName string `json:"display_name"` // Human-readable name
 	FieldType   string `json:"field_type"`   // text, email, phone, ...
 	Category    string `json:"category,omitempty"`
+	// Alias mirrors PersonalDataField.Alias — surfaces user-defined
+	// disambiguator so peers can tell "Family · Phone — Wife" apart
+	// from "Family · Phone — Daughter".
+	Alias       string `json:"alias,omitempty"`
 }
 
 // CatalogedSecretItem mirrors CatalogedDataItem for vault secrets.

@@ -186,6 +186,14 @@ func (h *ConnectionsHandler) tryActivate(ctx context.Context, connectionID strin
 		}
 		r.Status = ConnStatusActive
 		r.ActivatedAt = time.Now().UTC()
+		// Clear the invitation-window expiry — at this point the
+		// invitation has fully resolved, the peer key is exchanged,
+		// and the record is a long-lived connection. Leaving the
+		// 10-minute invite expiry on it caused active connections
+		// to look expired the next time the user logged in (the
+		// list-side migration check flagged any active record past
+		// ExpiresAt as expired).
+		r.ExpiresAt = time.Time{}
 		newlyActivated = true
 		return true, nil
 	})
@@ -1742,6 +1750,17 @@ func (h *ConnectionsHandler) HandlePeerConnectionActivated(ctx context.Context, 
 	}
 
 	record.Status = "active"
+	// Stamp ActivatedAt and clear ExpiresAt on every path that
+	// promotes a record to active. Without ActivatedAt the
+	// connection.list self-heal can't distinguish a real active
+	// record from a stale "active without peer key" outbound
+	// invitation. Without clearing ExpiresAt the active record
+	// inherits the 10-minute invite expiry and gets wrongly
+	// demoted to "expired" the next time the user logs in.
+	if record.ActivatedAt.IsZero() {
+		record.ActivatedAt = time.Now().UTC()
+	}
+	record.ExpiresAt = time.Time{}
 	newData, _ := json.Marshal(record)
 	h.storage.Put(storageKey, newData)
 
@@ -2691,25 +2710,56 @@ func (h *ConnectionsHandler) HandleList(msg *IncomingMessage) (*OutgoingMessage,
 			continue
 		}
 
+		// Self-heal records mistakenly written to "expired" by the
+		// pre-fix list-side check. Criteria: both sides accepted
+		// AND peer key is on the record. Either of those alone
+		// could be ambiguous, but together they only describe a
+		// connection that fully completed key exchange and mutual
+		// accept — there's no scenario where "expired" is the
+		// correct status for such a record. ActivatedAt is NOT
+		// required because legacy paths (HandlePeerConnectionActivated,
+		// agent activation) didn't stamp it; relying on it would
+		// leave those records stranded.
+		if record.Status == ConnStatusExpired &&
+			record.LocalDecision == DecisionAccept &&
+			record.PeerDecision == DecisionAccept &&
+			len(record.PeerPublicKey) > 0 {
+			record.Status = ConnStatusActive
+			record.ExpiresAt = time.Time{}
+			if record.ActivatedAt.IsZero() {
+				record.ActivatedAt = time.Now().UTC()
+			}
+			if updated, mErr := json.Marshal(&record); mErr == nil {
+				_ = h.storage.Put("connections/"+record.ConnectionID, updated)
+				log.Info().
+					Str("connection_id", record.ConnectionID).
+					Msg("connection.list: self-healed mistakenly-expired record back to active")
+			}
+		}
+
 		// Transition stale outbound invitations to "expired" when
 		// expires_at has lapsed AND the peer never got far enough
 		// for key exchange. Once a PeerPublicKey is present the
-		// invitation has already been resolved by the peer — the
-		// record is waiting on the inviter's own review, which is
-		// not an invite-timeout condition. Expiring it here sweeps
-		// away in-progress connections and surfaces them as
-		// "revoked"/"expired" in the app, which was the case
-		// behind the post-accept "Connection revoked" bug.
+		// invitation has already been resolved by the peer.
+		//
+		// IMPORTANT: never flip a fully-activated record to expired
+		// here. ExpiresAt on the record is the INVITATION expiry,
+		// inherited at activation time and not cleared on success
+		// (the invitation broker payload's expiry doesn't apply to
+		// the long-lived connection). A successfully-activated
+		// connection that's been around longer than the invitation
+		// window would otherwise get retroactively expired the next
+		// time the user opens the app — the bug behind "logged in
+		// and both connections show expired".
 		//
 		// Cases covered:
-		//   a) status="pending", no peer key yet — the peer never
-		//      opened the invitation link/code in time.
-		//   b) status="active" with no peer key — legacy records
-		//      from when outbound invites were stored as "active"
-		//      from day one; semantically the same as (a).
+		//   - status="pending" with no peer key: peer never opened
+		//     the invitation link/code in time. Sweep to expired.
+		// Legacy "active without peer key" records are now defended
+		// at activation time (see tryActivate: ExpiresAt cleared).
 		expired := !record.ExpiresAt.IsZero() && record.ExpiresAt.Before(time.Now())
 		unaccepted := len(record.PeerPublicKey) == 0
-		if expired && unaccepted && (record.Status == "pending" || record.Status == "active") {
+		if expired && unaccepted && record.Status == "pending" {
 			record.Status = "expired"
 			if updated, mErr := json.Marshal(&record); mErr == nil {
 				if pErr := h.storage.Put("connections/"+record.ConnectionID, updated); pErr != nil {
@@ -3534,6 +3584,13 @@ func (h *ConnectionsHandler) HandleAcceptAgentConnection(ctx context.Context, ms
 	connRecord.SharedSecret = sharedSecret
 	connRecord.Status = "active"
 	connRecord.KeyExchangeAt = time.Now()
+	// Stamp ActivatedAt + clear invite expiry so connection.list's
+	// migration sweep doesn't later flip this agent connection back
+	// to "expired" when the original invite window lapses.
+	if connRecord.ActivatedAt.IsZero() {
+		connRecord.ActivatedAt = time.Now().UTC()
+	}
+	connRecord.ExpiresAt = time.Time{}
 	connRecord.AgentMetadata = &connReq.Registration
 
 	// Set default contract (owner can update later)

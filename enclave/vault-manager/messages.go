@@ -288,6 +288,11 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 	// Create credential secret handler for critical secrets
 	credentialSecretHandler := NewCredentialSecretHandler(ownerSpace, storage, vaultState, bootstrapHandler, eventHandler)
 	credentialSecretHandler.SetPublisher(publisher)
+	// Minor-secrets handler shares the same publisher + vaultState so
+	// every add/update/delete republishes the catalog automatically.
+	minorSecretsHandler := NewSecretsHandler(ownerSpace, storage)
+	minorSecretsHandler.SetPublisher(publisher)
+	minorSecretsHandler.SetVaultState(vaultState)
 
 	// Create migration handler for migration status and recovery
 	migrationHandler := NewMigrationHandler(ownerSpace, storage, vaultState, sealerProxy)
@@ -335,7 +340,7 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 		ownerSpace:           ownerSpace,
 		storage:              storage,
 		callHandler:          NewCallHandler(ownerSpace, storage, publisher, eventHandler, vaultState, sealerProxy),
-		secretsHandler:       NewSecretsHandler(ownerSpace, storage),
+		secretsHandler:       minorSecretsHandler,
 		profileHandler:       profileHandler,
 		personalDataHandler:  personalDataHandler,
 		credentialHandler:    NewCredentialHandler(ownerSpace, storage),
@@ -1373,6 +1378,15 @@ func (mh *MessageHandler) handleSecretsOperation(ctx context.Context, msg *Incom
 		return response, nil
 	case "list":
 		return mh.secretsHandler.HandleList(msg)
+	case "get":
+		return mh.secretsHandler.HandleGet(msg)
+	case "set-discoverability":
+		response, err := mh.secretsHandler.HandleSetDiscoverability(msg)
+		if err != nil {
+			return response, err
+		}
+		mh.persistVaultStateToS3()
+		return response, nil
 	case "identity":
 		// Return the user's Ed25519 identity public key from the credential
 		return mh.handleGetIdentityPublicKey(msg)
@@ -1437,6 +1451,9 @@ func (mh *MessageHandler) handleProfileOperation(ctx context.Context, msg *Incom
 			return response, err
 		}
 		mh.persistVaultStateToS3()
+		// data_catalog reflects every non-private field — broadcast
+		// so peers' cached _peer_profile mirrors what the owner sees.
+		go RepublishProfile(mh.ownerSpace, mh.storage, mh.publisher, mh.vaultState)
 		return response, nil
 	case "delete":
 		response, err := mh.profileHandler.HandleDelete(msg)
@@ -1444,6 +1461,7 @@ func (mh *MessageHandler) handleProfileOperation(ctx context.Context, msg *Incom
 			return response, err
 		}
 		mh.persistVaultStateToS3()
+		go RepublishProfile(mh.ownerSpace, mh.storage, mh.publisher, mh.vaultState)
 		return response, nil
 	case "get-shared":
 		return mh.profileHandler.HandleGetShared(msg)
@@ -1567,6 +1585,10 @@ func (mh *MessageHandler) handlePersonalDataOperation(ctx context.Context, msg *
 		}
 		// Persist vault state to S3 after successful update
 		mh.persistVaultStateToS3()
+		// Catalog (data_catalog) just changed — fan the new snapshot
+		// out to peers so their cached _peer_profile mirrors what the
+		// owner sees in their own profile preview.
+		go RepublishProfile(mh.ownerSpace, mh.storage, mh.publisher, mh.vaultState)
 		return response, nil
 	case "delete":
 		response, err := mh.personalDataHandler.HandleDelete(msg)
@@ -1575,6 +1597,7 @@ func (mh *MessageHandler) handlePersonalDataOperation(ctx context.Context, msg *
 		}
 		// Persist vault state to S3 after successful delete
 		mh.persistVaultStateToS3()
+		go RepublishProfile(mh.ownerSpace, mh.storage, mh.publisher, mh.vaultState)
 		return response, nil
 	case "update-sort-order":
 		response, err := mh.personalDataHandler.HandleUpdateSortOrder(msg)
@@ -1583,6 +1606,9 @@ func (mh *MessageHandler) handlePersonalDataOperation(ctx context.Context, msg *
 		}
 		// Persist vault state to S3 after successful sort order update
 		mh.persistVaultStateToS3()
+		// Sort-order doesn't change WHAT is exposed in data_catalog
+		// (content), only ordering on the owner's screen. No broadcast
+		// needed — peers don't see ordering.
 		return response, nil
 	case "get-sort-order":
 		return mh.personalDataHandler.HandleGetSortOrder(msg)
