@@ -766,7 +766,9 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 		return mh.handleSign(ctx, msg)
 	case "block":
 		return mh.handleBlockOperation(ctx, msg, parts[opIndex+1:])
-	case "secrets":
+	case "secrets", "secret":
+		// Android client publishes the singular `secret.*` form; legacy callers
+		// use the plural `secrets.*` form. Both route to the same handler.
 		return mh.handleSecretsOperation(ctx, msg, parts[opIndex+1:])
 	case "profile":
 		return mh.handleProfileOperation(ctx, msg, parts[opIndex+1:])
