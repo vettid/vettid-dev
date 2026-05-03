@@ -388,14 +388,12 @@ func buildDataCatalog(storage *EncryptedStorage) []CatalogedDataItem {
 	}
 	out := make([]CatalogedDataItem, 0, len(fieldNames))
 	for name := range fieldNames {
-		// System fields render on the calling card (name/email) and
-		// don't belong in the catalog list — surfacing them again
-		// duplicates rows under the catalog "Other" section in the
-		// preview. Skip every `_system_*` namespace; the calling
-		// card is the single source for these.
-		if isSystemFieldName(name) ||
-			name == "_system_stored_at" ||
-			name == "_system_email_verified" {
+		// Internal bookkeeping fields aren't user data and never
+		// belong in the catalog. The user-visible system fields
+		// (first/last name, email) DO surface here so the catalog
+		// is the single, complete inventory of everything not
+		// explicitly hidden.
+		if name == "_system_stored_at" || name == "_system_email_verified" {
 			continue
 		}
 		// Try profile/<name> first (legacy) then personal-data/<name>.
@@ -457,6 +455,12 @@ func buildDataCatalog(storage *EncryptedStorage) []CatalogedDataItem {
 // the owner's own preview see family/address/contact rows leak into
 // the catch-all "Other" bucket.
 func categoryFromNamespace(namespace string) string {
+	switch namespace {
+	case "_system_first_name", "_system_last_name":
+		return "Identity"
+	case "_system_email":
+		return "Contact"
+	}
 	switch {
 	case strings.HasPrefix(namespace, "personal.legal"),
 		strings.HasPrefix(namespace, "personal.info"),
