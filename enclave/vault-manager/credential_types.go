@@ -645,6 +645,7 @@ type CredentialSecretAddRequest struct {
 	Name                  string `json:"name"`
 	Category              string `json:"category"`                // SEED_PHRASE, PRIVATE_KEY, etc.
 	Description           string `json:"description,omitempty"`
+	Alias                 string `json:"alias,omitempty"`         // user-defined label that groups related secrets in the catalog
 	Value                 string `json:"value"`                   // Base64-encoded secret value (transport-encrypted via UTK)
 }
 
@@ -701,6 +702,7 @@ type CredentialSecretMetadata struct {
 	Description     string          `json:"description,omitempty"`
 	Owner           string          `json:"owner,omitempty"`
 	Discoverability Discoverability `json:"discoverability,omitempty"` // public | cataloged | private
+	Alias           string          `json:"alias,omitempty"`           // user-defined label that groups related critical secrets
 	CreatedAt       string          `json:"created_at"`                // ISO8601
 }
 
@@ -769,6 +771,7 @@ type SecretMetadataRecord struct {
 	Description     string          `json:"description,omitempty"`
 	Owner           string          `json:"owner"`
 	Discoverability Discoverability `json:"discoverability,omitempty"`
+	Alias           string          `json:"alias,omitempty"` // user-defined label (groups related critical secrets)
 	CreatedAt       int64           `json:"created_at"`
 }
 
@@ -939,6 +942,7 @@ type CatalogedSecretItem struct {
 	Name     string `json:"name"`
 	Type     string `json:"type"`               // SEED_PHRASE, PRIVATE_KEY, etc.
 	Category string `json:"category,omitempty"` // user-defined grouping
+	Alias    string `json:"alias,omitempty"`    // user-defined label (groups related secrets)
 }
 
 type PublishedProfile struct {

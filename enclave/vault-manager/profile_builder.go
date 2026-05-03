@@ -530,6 +530,7 @@ func buildSecretCatalog(storage *EncryptedStorage, vaultState *VaultState) []Cat
 					Name:     r.Name,
 					Type:     r.Category,
 					Category: "Critical Secret",
+					Alias:    r.Alias,
 				})
 			}
 		}
@@ -550,6 +551,7 @@ func buildSecretCatalog(storage *EncryptedStorage, vaultState *VaultState) []Cat
 			Name:     m.Name,
 			Type:     m.Type,
 			Category: category,
+			Alias:    m.Alias,
 		})
 	}
 

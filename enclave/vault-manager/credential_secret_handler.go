@@ -157,6 +157,7 @@ func (h *CredentialSecretHandler) HandleAdd(msg *IncomingMessage) (*OutgoingMess
 		Description:     req.Description,
 		Owner:           "user",
 		Discoverability: DiscoverabilityCataloged,
+		Alias:           req.Alias,
 		CreatedAt:       now.Unix(),
 	}
 	h.storeMetadataRecord(metadataRecord)
@@ -332,6 +333,7 @@ func (h *CredentialSecretHandler) HandleList(msg *IncomingMessage) (*OutgoingMes
 			Description:     record.Description,
 			Owner:           record.Owner,
 			Discoverability: disc,
+			Alias:           record.Alias,
 			CreatedAt:       time.Unix(record.CreatedAt, 0).Format(time.RFC3339),
 		})
 	}
