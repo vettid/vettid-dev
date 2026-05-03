@@ -524,9 +524,6 @@ func removeString(slice []string, s string) []string {
 func displayNameFromNamespace(namespace string) string {
 	// Known mappings for common namespaces
 	knownMappings := map[string]string{
-		"_system_first_name":          "First Name",
-		"_system_last_name":           "Last Name",
-		"_system_email":               "Email",
 		"personal.legal.prefix":       "Name Prefix",
 		"personal.legal.first_name":   "Legal First Name",
 		"personal.legal.middle_name":  "Middle Name",
