@@ -152,12 +152,15 @@ func (mh *MessageHandler) handleActionInvokeOnPeer(ctx context.Context, msg *Inc
 		return mh.errorResponse(msg.GetID(), "ERR_INVALID_PARAMS:"+err.Error())
 	}
 
+	// Phase C: read the carved-out identity key directly so we don't
+	// need the rest of the credential plaintext in memory for signing.
 	mh.vaultState.mu.RLock()
-	credential := mh.vaultState.credential
+	idKey := append([]byte(nil), mh.vaultState.identityPrivateKey...)
 	mh.vaultState.mu.RUnlock()
-	if credential == nil || len(credential.IdentityPrivateKey) == 0 {
+	if len(idKey) == 0 {
 		return mh.errorResponse(msg.GetID(), "vault is locked")
 	}
+	defer zeroBytes(idKey)
 
 	envelope := InvocationRequest{
 		InvocationID:  newInvocationID(),
@@ -167,8 +170,8 @@ func (mh *MessageHandler) handleActionInvokeOnPeer(ctx context.Context, msg *Inc
 		InvokedAt:     time.Now().UTC().Format(time.RFC3339),
 		InvokerGUID:   mh.ownerSpace,
 	}
-	envelope.InvokerPubKey = mh.ownerEd25519PubKeyBase64(credential.IdentityPrivateKey)
-	envelope.InvokerSig = mh.signInvokerEnvelope(credential.IdentityPrivateKey, &envelope)
+	envelope.InvokerPubKey = mh.ownerEd25519PubKeyBase64(idKey)
+	envelope.InvokerSig = mh.signInvokerEnvelope(idKey, &envelope)
 
 	if err := mh.sendInvokeActionToPeer(ctx, req.ConnectionID, &envelope); err != nil {
 		return mh.errorResponse(msg.GetID(), "send peer: "+err.Error())

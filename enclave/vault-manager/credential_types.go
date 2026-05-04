@@ -59,8 +59,26 @@ type VaultState struct {
 	// UTKs are sent to app, LTKs are kept in vault
 	utkPairs []*UTKPair
 
-	// The unsealed credential (decrypted in enclave memory)
+	// The unsealed credential (decrypted in enclave memory).
+	//
+	// Phase C+D of the credential-out-of-memory refactor is in flight:
+	// new code reads the identity key from identityPrivateKey /
+	// identityPublicKey below, and per-op work decrypts the credential
+	// from the request blob. This pointer is kept only for the
+	// remaining legacy readers (password-change, bootstrap public-key
+	// surfacing, profile_builder identity public-key, credential.list
+	// crypto-keys), which Phase D will convert.
 	credential *UnsealedCredential
+
+	// Identity-key carve-out (Phase C). Populated at PIN unlock and
+	// retained for the session so action signing + contract signing
+	// don't need the full credential plaintext in memory.
+	//
+	// SECURITY: identityPrivateKey is the user's Ed25519 private key;
+	// it stays in the enclave and never leaves. Cleared on logout /
+	// PIN re-prompt the same way the credential is.
+	identityPrivateKey []byte // ed25519.PrivateKey (64 bytes)
+	identityPublicKey  []byte // ed25519.PublicKey (32 bytes)
 
 	// KMS-sealed material for DEK derivation
 	// This is PCR-bound and used with the user's PIN to derive the DEK

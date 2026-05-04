@@ -134,15 +134,18 @@ func SignContract(vaultState *VaultState, ownerSpace string, contract *ServiceDa
 		return nil, fmt.Errorf("vault state is nil")
 	}
 
-	// Get credential with lock
+	// Phase C: signing reads only the carved-out identity keypair, not
+	// the full credential plaintext.
 	vaultState.mu.RLock()
-	credential := vaultState.credential
+	idKey := append([]byte(nil), vaultState.identityPrivateKey...)
+	idPub := append([]byte(nil), vaultState.identityPublicKey...)
 	vaultState.mu.RUnlock()
+	defer zeroBytes(idKey)
 
-	if credential == nil {
+	if len(idKey) == 0 {
 		return nil, fmt.Errorf("vault is locked - unlock with PIN first")
 	}
-	if len(credential.IdentityPrivateKey) != ed25519.PrivateKeySize {
+	if len(idKey) != ed25519.PrivateKeySize {
 		return nil, fmt.Errorf("invalid identity key length")
 	}
 
@@ -165,13 +168,13 @@ func SignContract(vaultState *VaultState, ownerSpace string, contract *ServiceDa
 	)
 
 	// Sign with Ed25519
-	signature := ed25519.Sign(credential.IdentityPrivateKey, []byte(signingPayload))
+	signature := ed25519.Sign(idKey, []byte(signingPayload))
 
 	// Get public key
-	publicKey := credential.IdentityPublicKey
+	publicKey := idPub
 	if len(publicKey) == 0 {
 		// Derive from private key if not stored
-		publicKey = ed25519.PrivateKey(credential.IdentityPrivateKey).Public().(ed25519.PublicKey)
+		publicKey = ed25519.PrivateKey(idKey).Public().(ed25519.PublicKey)
 	}
 
 	return &ContractSignature{

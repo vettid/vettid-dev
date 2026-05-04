@@ -137,9 +137,14 @@ func (h *ProteanCredentialHandler) HandleCredentialCreate(ctx context.Context, m
 		Version:            1,
 	}
 
-	// Store credential in vault state
+	// Store credential in vault state — and carve out the identity
+	// keypair into its own fields so signing flows can use the
+	// minimum necessary subset (Phase C of the credential-out-of-
+	// memory refactor).
 	h.state.mu.Lock()
 	h.state.credential = credential
+	h.state.identityPrivateKey = append([]byte(nil), credential.IdentityPrivateKey...)
+	h.state.identityPublicKey = append([]byte(nil), credential.IdentityPublicKey...)
 	h.state.mu.Unlock()
 
 	// Serialize credential for encryption
@@ -345,6 +350,11 @@ func (h *ProteanCredentialHandler) ClearCredential() {
 		h.state.credential = nil
 		log.Info().Str("owner_space", h.ownerSpace).Msg("In-memory credential cleared for decommission")
 	}
+	if h.state.identityPrivateKey != nil {
+		zeroBytes(h.state.identityPrivateKey)
+		h.state.identityPrivateKey = nil
+	}
+	h.state.identityPublicKey = nil
 
 	// Also clear CEK pair since it's no longer needed
 	if h.state.cekPair != nil {

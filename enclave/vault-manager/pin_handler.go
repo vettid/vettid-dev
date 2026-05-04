@@ -109,6 +109,11 @@ func (h *PINHandler) HandlePINSetup(ctx context.Context, msg *IncomingMessage) (
 		log.Info().Str("owner_space", h.ownerSpace).Msg("Clearing existing credential for fresh enrollment")
 		h.state.credential = nil
 	}
+	if h.state.identityPrivateKey != nil {
+		zeroBytes(h.state.identityPrivateKey)
+		h.state.identityPrivateKey = nil
+	}
+	h.state.identityPublicKey = nil
 	h.state.mu.Unlock()
 
 	// Initialize encrypted storage with DEK so feed/events are accessible
@@ -425,6 +430,11 @@ func (h *PINHandler) HandlePINUnlock(ctx context.Context, msg *IncomingMessage) 
 			if persistedState.Credential != nil {
 				h.state.credential = persistedState.Credential
 				storedCredential = persistedState.Credential
+				// Phase C carve-out: keep identity-key copies so
+				// signing flows can read them without unwrapping
+				// the rest of the credential.
+				h.state.identityPrivateKey = append([]byte(nil), persistedState.Credential.IdentityPrivateKey...)
+				h.state.identityPublicKey = append([]byte(nil), persistedState.Credential.IdentityPublicKey...)
 			}
 			if len(persistedState.SealedMaterial) > 0 {
 				h.state.sealedMaterial = persistedState.SealedMaterial

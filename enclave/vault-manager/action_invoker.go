@@ -292,17 +292,19 @@ func verifyInvokerSignature(req *InvocationRequest) error {
 func (mh *MessageHandler) signResult(r *InvocationResult) *InvocationResult {
 	r.PeerGUID = mh.ownerSpace
 	canonical := canonicalResultBytes(r)
+	// Phase C: read the carved-out identity key directly.
 	mh.vaultState.mu.RLock()
-	credential := mh.vaultState.credential
+	idKey := append([]byte(nil), mh.vaultState.identityPrivateKey...)
 	mh.vaultState.mu.RUnlock()
-	if credential == nil || len(credential.IdentityPrivateKey) == 0 {
+	if len(idKey) == 0 {
 		// Vault locked — return unsigned. The wire layer will refuse to
 		// send an unsigned envelope, but this still gives us a structured
 		// failure to log.
 		log.Warn().Str("invocation_id", r.InvocationID).Msg("cannot sign result: vault locked")
 		return r
 	}
-	r.PeerSig = base64.StdEncoding.EncodeToString(ed25519.Sign(credential.IdentityPrivateKey, canonical))
+	defer zeroBytes(idKey)
+	r.PeerSig = base64.StdEncoding.EncodeToString(ed25519.Sign(idKey, canonical))
 	return r
 }
 
