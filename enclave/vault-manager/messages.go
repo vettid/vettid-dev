@@ -1401,24 +1401,20 @@ func (mh *MessageHandler) handleSecretsOperation(ctx context.Context, msg *Incom
 // This is the user's permanent identity key generated during credential creation
 // API: secrets.datastore.identity
 func (mh *MessageHandler) handleGetIdentityPublicKey(msg *IncomingMessage) (*OutgoingMessage, error) {
+	// Phase D: read from the identity-public-key carve-out so we
+	// don't need the full credential plaintext in memory.
 	mh.vaultState.mu.RLock()
-	credential := mh.vaultState.credential
+	idPub := append([]byte(nil), mh.vaultState.identityPublicKey...)
 	mh.vaultState.mu.RUnlock()
 
-	if credential == nil {
-		log.Warn().Str("owner_space", mh.ownerSpace).Msg("Identity public key requested but no credential exists")
-		return mh.errorResponse(msg.GetID(), "credential not found - enrollment incomplete")
+	if len(idPub) == 0 {
+		log.Warn().Str("owner_space", mh.ownerSpace).Msg("Identity public key requested but vault is locked")
+		return mh.errorResponse(msg.GetID(), "vault is locked - unlock with PIN first")
 	}
 
-	if len(credential.IdentityPublicKey) == 0 {
-		log.Error().Str("owner_space", mh.ownerSpace).Msg("Credential exists but identity public key is empty")
-		return mh.errorResponse(msg.GetID(), "identity public key not available")
-	}
-
-	// Return the identity public key in base64 format
 	response := map[string]interface{}{
 		"success":    true,
-		"public_key": base64.StdEncoding.EncodeToString(credential.IdentityPublicKey),
+		"public_key": base64.StdEncoding.EncodeToString(idPub),
 		"key_type":   "Ed25519",
 		"is_system":  true,
 	}
@@ -1426,7 +1422,7 @@ func (mh *MessageHandler) handleGetIdentityPublicKey(msg *IncomingMessage) (*Out
 
 	log.Debug().
 		Str("owner_space", mh.ownerSpace).
-		Int("key_len", len(credential.IdentityPublicKey)).
+		Int("key_len", len(idPub)).
 		Msg("Identity public key retrieved")
 
 	return &OutgoingMessage{
@@ -2870,9 +2866,10 @@ func (mh *MessageHandler) createEncryptedVaultState(dek []byte) ([]byte, error) 
 		})
 	}
 
-	if mh.vaultState.credential != nil {
-		persistedState.Credential = mh.vaultState.credential
-	}
+	// Phase D: vault state no longer caches the full credential
+	// plaintext. The CEK-sealed credential blob is persisted under
+	// `credential/sealed_blob` in storage instead, and PIN unlock
+	// reads it back from there to repopulate the carve-outs.
 	mh.vaultState.mu.RUnlock()
 
 	// Include SQLite database backup if storage is initialized

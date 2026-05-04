@@ -295,20 +295,24 @@ func (h *BootstrapHandler) buildBootstrapResponse(requestID string, requiresPass
 		}
 	}
 
+	// Phase D: surface readiness via the identity-public-key carve-
+	// out so we can drop the full credential cache. A populated
+	// identityPublicKey means PIN unlock has run and the credential
+	// has been bound in this session.
+	hasIdentity := len(h.state.identityPublicKey) > 0
 	response := BootstrapResponse{
 		Status:           "bootstrapped",
 		UTKs:             utks,
 		ECIESPublicKey:   base64.StdEncoding.EncodeToString(h.state.eciesPublicKey),
 		EnclavePublicKey: "", // Will be set after credential creation
 		Capabilities:     []string{"call", "sign", "store", "connect"},
-		RequiresPassword: requiresPassword && h.state.credential == nil,
+		RequiresPassword: requiresPassword && !hasIdentity,
 		RequiresPIN:      true, // Always require PIN for DEK derivation
 		BindingVerified:  bindingVerified,
 	}
 
-	// If credential exists, include the enclave public key
-	if h.state.credential != nil {
-		response.EnclavePublicKey = base64.StdEncoding.EncodeToString(h.state.credential.IdentityPublicKey)
+	if hasIdentity {
+		response.EnclavePublicKey = base64.StdEncoding.EncodeToString(h.state.identityPublicKey)
 	}
 
 	responseBytes, err := json.Marshal(response)

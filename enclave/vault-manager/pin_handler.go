@@ -102,18 +102,22 @@ func (h *PINHandler) HandlePINSetup(ctx context.Context, msg *IncomingMessage) (
 	h.state.mu.Lock()
 	h.state.sealedMaterial = sealedMaterial
 	h.state.dek = dekCopy // Store DEK copy for credential.create
-	// Clear any existing credential for fresh enrollment retries.
-	// This allows users to retry enrollment if credential.create succeeded
-	// but a later step (like finalize) failed.
-	if h.state.credential != nil {
-		log.Info().Str("owner_space", h.ownerSpace).Msg("Clearing existing credential for fresh enrollment")
-		h.state.credential = nil
-	}
+	// Clear any existing credential carve-outs for fresh enrollment
+	// retries. This lets users retry enrollment if credential.create
+	// succeeded but a later step (like finalize) failed.
 	if h.state.identityPrivateKey != nil {
 		zeroBytes(h.state.identityPrivateKey)
 		h.state.identityPrivateKey = nil
 	}
 	h.state.identityPublicKey = nil
+	if h.state.pinAuthHash != nil {
+		zeroBytes(h.state.pinAuthHash)
+		h.state.pinAuthHash = nil
+	}
+	if h.state.pinAuthSalt != nil {
+		zeroBytes(h.state.pinAuthSalt)
+		h.state.pinAuthSalt = nil
+	}
 	h.state.mu.Unlock()
 
 	// Initialize encrypted storage with DEK so feed/events are accessible
@@ -271,7 +275,6 @@ func (h *PINHandler) HandlePINUnlock(ctx context.Context, msg *IncomingMessage) 
 	h.state.mu.RLock()
 	eciesPrivateKey := h.state.eciesPrivateKey
 	sealedMaterial := h.state.sealedMaterial
-	storedCredential := h.state.credential
 	isWarmVault := eciesPrivateKey != nil && sealedMaterial != nil
 	h.state.mu.RUnlock()
 
@@ -428,13 +431,17 @@ func (h *PINHandler) HandlePINUnlock(ctx context.Context, msg *IncomingMessage) 
 				})
 			}
 			if persistedState.Credential != nil {
-				h.state.credential = persistedState.Credential
-				storedCredential = persistedState.Credential
-				// Phase C carve-out: keep identity-key copies so
-				// signing flows can read them without unwrapping
-				// the rest of the credential.
+				// Phase D: extract everything we need from the
+				// credential into narrow carve-out fields, then
+				// drop the full struct. The signing path reads
+				// identityPrivateKey/PublicKey; PIN-change reads
+				// pinAuthHash/Salt. Nothing else needs the
+				// credential plaintext in memory anymore.
 				h.state.identityPrivateKey = append([]byte(nil), persistedState.Credential.IdentityPrivateKey...)
 				h.state.identityPublicKey = append([]byte(nil), persistedState.Credential.IdentityPublicKey...)
+				h.state.pinAuthHash = append([]byte(nil), persistedState.Credential.AuthHash...)
+				h.state.pinAuthSalt = append([]byte(nil), persistedState.Credential.AuthSalt...)
+				persistedState.Credential.SecureErase()
 			}
 			if len(persistedState.SealedMaterial) > 0 {
 				h.state.sealedMaterial = persistedState.SealedMaterial
@@ -482,18 +489,20 @@ func (h *PINHandler) HandlePINUnlock(ctx context.Context, msg *IncomingMessage) 
 		}
 	}
 
-	// If we have credential in memory AND it has auth hash set, verify auth hash
-	// Note: DEK derivation (line 327) already validates the PIN through KMS
-	// The auth hash is an additional check that may not be set for older credentials
-	if storedCredential != nil && len(storedCredential.AuthHash) > 0 && len(storedCredential.AuthSalt) > 0 {
-		// SECURITY: payload.PIN is already []byte (SensitiveBytes), passed directly
-		if !verifyAuthHash(payload.PIN, storedCredential.AuthSalt, storedCredential.AuthHash) {
+	// Phase D: verify the PIN against the carve-out auth hash that
+	// was extracted at credential load time. DEK derivation already
+	// validated the PIN via KMS — this is a belt-and-braces check.
+	h.state.mu.RLock()
+	pinAuthHash := append([]byte(nil), h.state.pinAuthHash...)
+	pinAuthSalt := append([]byte(nil), h.state.pinAuthSalt...)
+	h.state.mu.RUnlock()
+	if len(pinAuthHash) > 0 && len(pinAuthSalt) > 0 {
+		if !verifyAuthHash(payload.PIN, pinAuthSalt, pinAuthHash) {
 			log.Warn().Str("owner_space", h.ownerSpace).Msg("PIN auth hash verification failed (DEK derivation succeeded)")
 			return h.errorResponse(msg.GetID(), "invalid PIN")
 		}
 		log.Debug().Str("owner_space", h.ownerSpace).Msg("PIN auth hash verification passed")
-	} else if storedCredential != nil {
-		// Credential exists but no auth hash - DEK derivation already validated PIN
+	} else {
 		log.Debug().Str("owner_space", h.ownerSpace).Msg("Skipping auth hash verification (not set) - PIN validated via DEK derivation")
 	}
 
@@ -535,16 +544,13 @@ func (h *PINHandler) HandlePINUnlock(ctx context.Context, msg *IncomingMessage) 
 		log.Warn().Str("owner_space", h.ownerSpace).Msg("Account seed unavailable - PIN unlock response without NATS credentials")
 	}
 
-	// If credential exists, include encrypted version
-	if storedCredential != nil {
-		credBytes, err := json.Marshal(storedCredential)
-		if err == nil {
-			encryptedCred, err := encryptWithDEK(dek, credBytes)
-			if err == nil {
-				response.EncryptedCredential = base64.StdEncoding.EncodeToString(encryptedCred)
-			}
-			zeroBytes(credBytes)
-		}
+	// Phase D: pass through the CEK-sealed credential blob from
+	// storage instead of re-encrypting an in-memory plaintext (which
+	// is no longer cached). The blob is what subsequent password-
+	// gated ops (wallet.create, credential.secret.add, etc.) supply
+	// back to the enclave for per-op decrypt.
+	if sealed, err := h.storage.Get("credential/sealed_blob"); err == nil && len(sealed) > 0 {
+		response.EncryptedCredential = string(sealed)
 	}
 
 	responseBytes, err := json.Marshal(response)
@@ -633,11 +639,19 @@ func (h *PINHandler) HandlePINChange(ctx context.Context, msg *IncomingMessage) 
 	h.state.mu.RLock()
 	eciesPrivateKey := h.state.eciesPrivateKey
 	sealedMaterial := h.state.sealedMaterial
-	credential := h.state.credential
+	pinAuthHash := append([]byte(nil), h.state.pinAuthHash...)
+	pinAuthSalt := append([]byte(nil), h.state.pinAuthSalt...)
+	cekPair := h.state.cekPair
 	h.state.mu.RUnlock()
 
-	if eciesPrivateKey == nil || credential == nil {
+	if eciesPrivateKey == nil {
 		return h.errorResponse(msg.GetID(), "vault not initialized")
+	}
+	if cekPair == nil {
+		return h.errorResponse(msg.GetID(), "CEK not available")
+	}
+	if req.EncryptedCredential == "" {
+		return h.errorResponse(msg.GetID(), "encrypted_credential is required")
 	}
 
 	payloadBytes, err := decryptWithECIES(eciesPrivateKey, encryptedPayload)
@@ -665,11 +679,12 @@ func (h *PINHandler) HandlePINChange(ctx context.Context, msg *IncomingMessage) 
 	// Mark UTK as used
 	h.bootstrap.MarkUTKUsed(req.UTKID)
 
-	// Verify old PIN
-	// SECURITY: payload.OldPIN is already []byte (SensitiveBytes)
-	if len(credential.AuthHash) == 0 || len(credential.AuthSalt) == 0 {
-		// AuthHash was never set (pre-existing vaults enrolled before auth hash was added).
-		// Verify old PIN by attempting DEK derivation (same as pin-unlock cold path).
+	// Verify old PIN — Phase D reads from the auth carve-out
+	// (populated at PIN unlock) instead of the full credential.
+	if len(pinAuthHash) == 0 || len(pinAuthSalt) == 0 {
+		// Auth hash was never set (pre-existing vaults enrolled before
+		// auth hash was added). Fall back to DEK-derivation: getting
+		// the same DEK back proves PIN knowledge.
 		if sealedMaterial == nil {
 			return h.errorResponse(msg.GetID(), "vault not initialized - no sealed material")
 		}
@@ -680,12 +695,11 @@ func (h *PINHandler) HandlePINChange(ctx context.Context, msg *IncomingMessage) 
 		zeroBytes(oldDEK)
 		log.Debug().Str("owner_space", h.ownerSpace).Msg("Old PIN verified via DEK derivation (no auth hash)")
 	} else {
-		if !verifyAuthHash(payload.OldPIN, credential.AuthSalt, credential.AuthHash) {
+		if !verifyAuthHash(payload.OldPIN, pinAuthSalt, pinAuthHash) {
 			return h.errorResponse(msg.GetID(), "invalid current PIN")
 		}
 		// Additional DEK derivation check
 		if sealedMaterial != nil {
-			// SECURITY: Pass PIN as []byte so both ends can zero it
 			oldDEK, err := h.sealerProxy.DeriveDEKFromPIN(sealedMaterial, []byte(payload.OldPIN))
 			if err != nil {
 				return h.errorResponse(msg.GetID(), "verification failed")
@@ -738,22 +752,43 @@ func (h *PINHandler) HandlePINChange(ctx context.Context, msg *IncomingMessage) 
 	newDEKCopy := make([]byte, len(newDEK))
 	copy(newDEKCopy, newDEK)
 
+	// Phase D: decrypt the request-supplied credential blob with CEK,
+	// mutate AuthHash/AuthSalt/Version, persist the carve-outs, and
+	// re-encrypt with the new DEK for the response. The credential
+	// plaintext never lives on vaultState.
+	encBlobBytes, err := base64.StdEncoding.DecodeString(req.EncryptedCredential)
+	if err != nil {
+		return h.errorResponse(msg.GetID(), "invalid encrypted_credential encoding")
+	}
+	credPlain, err := decryptWithCEK(cekPair.PrivateKey, encBlobBytes)
+	if err != nil {
+		log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("HandlePINChange: failed to decrypt credential blob")
+		return h.errorResponse(msg.GetID(), "credential decrypt failed")
+	}
+	defer zeroBytes(credPlain)
+	var credForChange UnsealedCredential
+	if err := json.Unmarshal(credPlain, &credForChange); err != nil {
+		return h.errorResponse(msg.GetID(), "credential parse failed")
+	}
+	defer credForChange.SecureErase()
+	credForChange.AuthHash = newAuthHash
+	credForChange.AuthSalt = newSalt
+	credForChange.Version++
+
 	h.state.mu.Lock()
 	oldDEKRef := h.state.dek
-	h.state.credential.AuthHash = newAuthHash
-	h.state.credential.AuthSalt = newSalt
-	h.state.credential.Version++
+	h.state.pinAuthHash = append([]byte(nil), newAuthHash...)
+	h.state.pinAuthSalt = append([]byte(nil), newSalt...)
 	h.state.sealedMaterial = newSealedMaterial
 	h.state.dek = newDEKCopy
 	h.state.mu.Unlock()
 
-	// Zero the old DEK after replacing it
 	if oldDEKRef != nil {
 		zeroBytes(oldDEKRef)
 	}
 
-	// Re-encrypt credential with new DEK
-	credBytes, err := json.Marshal(credential)
+	// Re-encrypt credential with new DEK and return to client.
+	credBytes, err := json.Marshal(&credForChange)
 	if err != nil {
 		return h.errorResponse(msg.GetID(), "serialization failed")
 	}
@@ -786,7 +821,7 @@ func (h *PINHandler) HandlePINChange(ctx context.Context, msg *IncomingMessage) 
 
 	log.Info().
 		Str("owner_space", h.ownerSpace).
-		Int("credential_version", credential.Version).
+		Int("credential_version", credForChange.Version).
 		Msg("PIN change completed")
 
 	return &OutgoingMessage{

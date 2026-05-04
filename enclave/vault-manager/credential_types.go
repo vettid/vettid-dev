@@ -59,17 +59,6 @@ type VaultState struct {
 	// UTKs are sent to app, LTKs are kept in vault
 	utkPairs []*UTKPair
 
-	// The unsealed credential (decrypted in enclave memory).
-	//
-	// Phase C+D of the credential-out-of-memory refactor is in flight:
-	// new code reads the identity key from identityPrivateKey /
-	// identityPublicKey below, and per-op work decrypts the credential
-	// from the request blob. This pointer is kept only for the
-	// remaining legacy readers (password-change, bootstrap public-key
-	// surfacing, profile_builder identity public-key, credential.list
-	// crypto-keys), which Phase D will convert.
-	credential *UnsealedCredential
-
 	// Identity-key carve-out (Phase C). Populated at PIN unlock and
 	// retained for the session so action signing + contract signing
 	// don't need the full credential plaintext in memory.
@@ -79,6 +68,13 @@ type VaultState struct {
 	// PIN re-prompt the same way the credential is.
 	identityPrivateKey []byte // ed25519.PrivateKey (64 bytes)
 	identityPublicKey  []byte // ed25519.PublicKey (32 bytes)
+
+	// PIN auth carve-out (Phase D). Populated at PIN unlock so PIN
+	// change can verify the old PIN without retaining the full
+	// credential plaintext. Updated atomically with the credential
+	// blob persistence in HandlePINChange.
+	pinAuthHash []byte // Argon2id hash of the user's PIN
+	pinAuthSalt []byte // 16-byte salt used to compute pinAuthHash
 
 	// KMS-sealed material for DEK derivation
 	// This is PCR-bound and used with the user's PIN to derive the DEK
@@ -491,6 +487,11 @@ type PINUnlockResponse struct {
 type PINChangeRequest struct {
 	UTKID            string `json:"utk_id"`
 	EncryptedPayload string `json:"encrypted_payload"` // Contains old_pin and new_pin
+	// Phase D: caller supplies the CEK-encrypted credential blob so
+	// the vault decrypts in-flight, mutates AuthHash/AuthSalt/Version,
+	// re-encrypts, and returns the new blob without holding the
+	// credential plaintext in memory.
+	EncryptedCredential string `json:"encrypted_credential,omitempty"`
 }
 
 // PINChangePayload is the decrypted payload for PIN change
@@ -512,6 +513,9 @@ type PINChangeResponse struct {
 type PasswordChangeRequest struct {
 	UTKID            string `json:"utk_id"`
 	EncryptedPayload string `json:"encrypted_payload"` // UTK-encrypted old + new password hashes
+	// Phase D: caller supplies the encrypted credential blob so the
+	// vault decrypts in-flight rather than reading vaultState.credential.
+	EncryptedCredential string `json:"encrypted_credential,omitempty"`
 }
 
 // PasswordChangePayload is the decrypted payload for password change
@@ -564,10 +568,21 @@ func (vs *VaultState) SecureErase() {
 	}
 	vs.utkPairs = nil
 
-	// Zero unsealed credential
-	if vs.credential != nil {
-		vs.credential.SecureErase()
-		vs.credential = nil
+	// Phase D: full credential plaintext is no longer cached. Wipe
+	// the narrow carve-outs (identity keypair + PIN auth hash/salt)
+	// instead.
+	if vs.identityPrivateKey != nil {
+		zeroBytes(vs.identityPrivateKey)
+		vs.identityPrivateKey = nil
+	}
+	vs.identityPublicKey = nil
+	if vs.pinAuthHash != nil {
+		zeroBytes(vs.pinAuthHash)
+		vs.pinAuthHash = nil
+	}
+	if vs.pinAuthSalt != nil {
+		zeroBytes(vs.pinAuthSalt)
+		vs.pinAuthSalt = nil
 	}
 
 	// Zero sealed material
@@ -698,10 +713,16 @@ type CredentialSecretGetResponse struct {
 // CredentialSecretListRequest is the request for credential.secret.list
 // Password required for initial authentication
 type CredentialSecretListRequest struct {
-	EncryptedPasswordHash string `json:"encrypted_password_hash,omitempty"` // Optional: for first auth
-	EphemeralPublicKey    string `json:"ephemeral_public_key,omitempty"`    // Base64-encoded X25519 ephemeral public key
-	Nonce                 string `json:"nonce,omitempty"`                   // Base64-encoded XChaCha20 nonce
-	KeyID                 string `json:"key_id,omitempty"`                  // UTK ID used for encryption
+	// Plain list (metadata index only) needs no auth fields. To get
+	// the enriched response (crypto keys + credential info) the caller
+	// supplies the encrypted credential blob alongside the password
+	// material; the vault decrypts per-op rather than holding the
+	// credential in memory.
+	EncryptedCredential   string `json:"encrypted_credential,omitempty"`
+	EncryptedPasswordHash string `json:"encrypted_password_hash,omitempty"`
+	EphemeralPublicKey    string `json:"ephemeral_public_key,omitempty"`
+	Nonce                 string `json:"nonce,omitempty"`
+	KeyID                 string `json:"key_id,omitempty"`
 }
 
 // CredentialSecretListResponse is the response for credential.secret.list

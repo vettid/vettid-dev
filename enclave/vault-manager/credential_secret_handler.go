@@ -307,15 +307,28 @@ func (h *CredentialSecretHandler) HandleList(msg *IncomingMessage) (*OutgoingMes
 	// Allow empty payload
 	unmarshalRequest(msg.Payload, &req, "HandleList")
 
-	// Verify password if provided (for enhanced metadata)
-	var passwordVerified bool
-	if req.EncryptedPasswordHash != "" && req.KeyID != "" {
-		if err := h.verifyPassword(req.EncryptedPasswordHash, req.EphemeralPublicKey, req.Nonce, req.KeyID); err != nil {
+	// Phase D: when the caller wants the enriched response (crypto
+	// keys + credential info), they supply the encrypted credential
+	// alongside the password material so we can decrypt and verify
+	// per-op without holding the credential in memory.
+	var verifiedCred *ProteanCredentialV2
+	if req.EncryptedCredential != "" && req.EncryptedPasswordHash != "" && req.KeyID != "" {
+		cred, err := h.decryptCredentialBlob(req.EncryptedCredential)
+		if err != nil {
+			log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("HandleList: failed to decrypt credential")
+			return h.errorResponse(msg.GetID(), "credential decrypt failed")
+		}
+		if err := h.verifyPasswordAgainstCredential(req.EncryptedPasswordHash, req.EphemeralPublicKey, req.Nonce, req.KeyID, cred); err != nil {
+			cred.SecureErase()
 			log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("Password verification failed for secret list")
 			return h.errorResponse(msg.GetID(), "Password verification failed")
 		}
-		passwordVerified = true
+		verifiedCred = cred
+		// Wipe at the end of this handler — the caller doesn't see
+		// the live struct.
+		defer verifiedCred.SecureErase()
 	}
+	passwordVerified := verifiedCred != nil
 
 	// Read metadata from vault SQLite
 	metadataRecords := h.getAllMetadataRecords()
@@ -342,34 +355,27 @@ func (h *CredentialSecretHandler) HandleList(msg *IncomingMessage) (*OutgoingMes
 		Secrets: secrets,
 	}
 
-	// If password verified, include crypto key metadata and credential info from in-memory state
-	if passwordVerified {
-		h.state.mu.RLock()
-		credential := h.state.credential
-		h.state.mu.RUnlock()
-
-		if credential != nil {
-			// Crypto key metadata (public info only)
-			// Use V1 credential's crypto keys
-			cryptoKeys := make([]CryptoKeyMetadata, len(credential.CryptoKeys))
-			for i, k := range credential.CryptoKeys {
-				cryptoKeys[i] = CryptoKeyMetadata{
-					ID:        fmt.Sprintf("key-%d", i),
-					Label:     k.Label,
-					Type:      k.Type,
-					CreatedAt: time.Unix(k.CreatedAt, 0).Format(time.RFC3339),
-				}
+	// If password verified, surface crypto-key metadata + credential
+	// info from the per-op-decrypted blob (Phase D — no read of
+	// vaultState.credential).
+	if passwordVerified && verifiedCred != nil {
+		cryptoKeys := make([]CryptoKeyMetadata, len(verifiedCred.CryptoKeys))
+		for i, k := range verifiedCred.CryptoKeys {
+			cryptoKeys[i] = CryptoKeyMetadata{
+				ID:        fmt.Sprintf("key-%d", i),
+				Label:     k.Label,
+				Type:      k.Type,
+				CreatedAt: time.Unix(k.CreatedAt, 0).Format(time.RFC3339),
 			}
-			resp.CryptoKeys = cryptoKeys
+		}
+		resp.CryptoKeys = cryptoKeys
 
-			// Credential info metadata
-			fingerprint := sha256.Sum256(credential.IdentityPublicKey)
-			resp.Credential = &CredentialInfoMetadata{
-				IdentityFingerprint: hex.EncodeToString(fingerprint[:8]),
-				Version:             credential.Version,
-				CreatedAt:           time.Unix(credential.CreatedAt, 0).Format(time.RFC3339),
-				LastModified:        time.Unix(credential.CreatedAt, 0).Format(time.RFC3339),
-			}
+		fingerprint := sha256.Sum256(verifiedCred.Identity.PublicKey)
+		resp.Credential = &CredentialInfoMetadata{
+			IdentityFingerprint: hex.EncodeToString(fingerprint[:8]),
+			Version:             verifiedCred.Version,
+			CreatedAt:           time.Unix(verifiedCred.Timestamps.CreatedAt, 0).Format(time.RFC3339),
+			LastModified:        time.Unix(verifiedCred.Timestamps.LastModified, 0).Format(time.RFC3339),
 		}
 	}
 
@@ -831,72 +837,10 @@ func (h *CredentialSecretHandler) verifyPasswordAgainstCredential(encryptedPassw
 	return nil
 }
 
-// verifyPassword verifies the password against the in-memory credential (for list operation)
-// The app sends three separate base64-encoded components: ciphertext, ephemeral public key, and nonce.
-func (h *CredentialSecretHandler) verifyPassword(encryptedPasswordHash, ephemeralPublicKey, nonce, keyID string) error {
-	// Get the LTK for the provided UTK ID
-	ltk, found := h.bootstrap.GetLTKForUTK(keyID)
-	if !found {
-		return fmt.Errorf("invalid or expired UTK")
-	}
-
-	// Decode the three separate base64-encoded components
-	ciphertext, err := base64.StdEncoding.DecodeString(encryptedPasswordHash)
-	if err != nil {
-		return fmt.Errorf("invalid encrypted_password_hash encoding")
-	}
-
-	ephPubKey, err := base64.StdEncoding.DecodeString(ephemeralPublicKey)
-	if err != nil {
-		return fmt.Errorf("invalid ephemeral_public_key encoding")
-	}
-
-	nonceBytes, err := base64.StdEncoding.DecodeString(nonce)
-	if err != nil {
-		return fmt.Errorf("invalid nonce encoding")
-	}
-
-	// Combine into format expected by decryptWithUTK: pubkey(32) || nonce(24) || ciphertext
-	combinedPayload := make([]byte, 0, len(ephPubKey)+len(nonceBytes)+len(ciphertext))
-	combinedPayload = append(combinedPayload, ephPubKey...)
-	combinedPayload = append(combinedPayload, nonceBytes...)
-	combinedPayload = append(combinedPayload, ciphertext...)
-
-	// Decrypt using the LTK
-	passwordHashBytes, err := decryptWithUTK(ltk, combinedPayload)
-	if err != nil {
-		return fmt.Errorf("decryption failed: %w", err)
-	}
-	defer zeroBytes(passwordHashBytes)
-
-	// Parse decrypted payload - the app sends a PHC string (may be raw or JSON-wrapped)
-	passwordHash := string(passwordHashBytes)
-	var payload struct {
-		PasswordHash string `json:"password_hash"`
-	}
-	if err := json.Unmarshal(passwordHashBytes, &payload); err == nil && payload.PasswordHash != "" {
-		passwordHash = payload.PasswordHash
-	}
-
-	// Get the stored credential's password hash
-	h.state.mu.RLock()
-	credential := h.state.credential
-	h.state.mu.RUnlock()
-
-	if credential == nil {
-		return fmt.Errorf("no credential available")
-	}
-
-	// Compare PHC strings directly (constant-time comparison)
-	if !timingSafeEqualStrings(passwordHash, credential.PasswordHash) {
-		return fmt.Errorf("incorrect password")
-	}
-
-	// Mark UTK as used (single-use for security)
-	h.bootstrap.MarkUTKUsed(keyID)
-
-	return nil
-}
+// verifyPassword (Phase D: removed). All callers now go through
+// verifyPasswordAgainstCredential after decrypting the request-
+// supplied credential blob in-flight; the in-memory credential is
+// no longer cached.
 
 // --- Metadata index operations (vault SQLite) ---
 

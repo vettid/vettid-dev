@@ -254,14 +254,18 @@ func SignAuthChallenge(vaultState *VaultState, ownerSpace string, challenge stri
 		return "", "", fmt.Errorf("vault state is nil")
 	}
 
+	// Phase D: read the carved-out identity keypair, not the
+	// credential plaintext.
 	vaultState.mu.RLock()
-	credential := vaultState.credential
+	idKey := append([]byte(nil), vaultState.identityPrivateKey...)
+	idPub := append([]byte(nil), vaultState.identityPublicKey...)
 	vaultState.mu.RUnlock()
+	defer zeroBytes(idKey)
 
-	if credential == nil {
+	if len(idKey) == 0 {
 		return "", "", fmt.Errorf("vault is locked")
 	}
-	if len(credential.IdentityPrivateKey) != ed25519.PrivateKeySize {
+	if len(idKey) != ed25519.PrivateKeySize {
 		return "", "", fmt.Errorf("invalid identity key")
 	}
 
@@ -275,7 +279,8 @@ func SignAuthChallenge(vaultState *VaultState, ownerSpace string, challenge stri
 	)
 
 	// Sign
-	signature := ed25519.Sign(credential.IdentityPrivateKey, []byte(signingPayload))
+	signature := ed25519.Sign(idKey, []byte(signingPayload))
+	_ = idPub // surfaced for symmetry with SignContract; not needed here
 
 	return base64.StdEncoding.EncodeToString(signature), timestamp, nil
 }

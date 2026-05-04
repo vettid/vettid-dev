@@ -32,11 +32,13 @@ func BuildPublishedProfile(
 
 	// --- Identity Public Key ---
 	// Primary: from vaultState (in-memory credential after PIN unlock)
-	// Fallback: from storage (persisted during enrollment)
+	// Phase D: read the identity public key from the carve-out
+	// (populated at PIN unlock + credential rotation) so we don't
+	// need the rest of the credential plaintext in memory.
 	if vaultState != nil {
 		vaultState.mu.RLock()
-		if vaultState.credential != nil && vaultState.credential.IdentityPublicKey != nil {
-			profile.PublicKey = base64.StdEncoding.EncodeToString(vaultState.credential.IdentityPublicKey)
+		if len(vaultState.identityPublicKey) > 0 {
+			profile.PublicKey = base64.StdEncoding.EncodeToString(vaultState.identityPublicKey)
 		}
 		vaultState.mu.RUnlock()
 	}
@@ -595,13 +597,17 @@ func buildSecretCatalog(storage *EncryptedStorage, vaultState *VaultState) []Cat
 	// as its own row so peers see the full key inventory. Only the
 	// label/type travel; the private material stays sealed.
 	//
-	// Wallet-derived keys carry the wallet's Label (set when the wallet
-	// is created — wallet_handler.go); reusing it as the alias keeps
-	// these grouped with the parent wallet's catalog row.
-	if vaultState != nil {
-		vaultState.mu.RLock()
-		credential := vaultState.credential
-		vaultState.mu.RUnlock()
+	// Phase D: full credential plaintext is no longer cached on
+	// vaultState, so we can't enumerate credential.CryptoKeys here
+	// for the public catalog any more. Wallet creation routes don't
+	// add to credential.CryptoKeys either (the wallet's signing key
+	// is re-derived from the credential-stored seed every time we
+	// sign), so the only caller that lost a row is the historical
+	// case of an ancient credential containing some manually-added
+	// key. Live secrets enumeration goes through credential.secret.
+	// list (per-op decrypt) instead.
+	if false && vaultState != nil {
+		var credential *UnsealedCredential
 		if credential != nil {
 			for _, k := range credential.CryptoKeys {
 				label := k.Label
@@ -611,10 +617,6 @@ func buildSecretCatalog(storage *EncryptedStorage, vaultState *VaultState) []Cat
 				if label == "" {
 					continue
 				}
-				// Wallet-derived crypto keys carry the wallet's label
-				// as their CryptoKey.Label. Prefix the asset for
-				// consistency with the wallet row above; non-wallet
-				// keys just keep their raw label.
 				keyAlias := k.Label
 				if k.Type == "secp256k1" && keyAlias != "" {
 					keyAlias = "BTC · " + keyAlias

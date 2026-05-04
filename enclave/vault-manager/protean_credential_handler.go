@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -15,6 +16,34 @@ type ProteanCredentialHandler struct {
 	ownerSpace string
 	state      *VaultState
 	bootstrap  *BootstrapHandler
+}
+
+// decryptCredentialBlob decrypts a CEK-encrypted credential blob the
+// caller supplied and returns the V2 plaintext. Mirrors the helper on
+// CredentialSecretHandler — the two handlers share the CEK on
+// vaultState but each carries its own decrypt entry point so neither
+// has to import the other.
+func (h *ProteanCredentialHandler) decryptCredentialBlob(encryptedBase64 string) (*ProteanCredentialV2, error) {
+	encryptedBytes, err := base64.StdEncoding.DecodeString(encryptedBase64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid credential encoding: %w", err)
+	}
+	h.state.mu.RLock()
+	cekPair := h.state.cekPair
+	h.state.mu.RUnlock()
+	if cekPair == nil {
+		return nil, fmt.Errorf("CEK not available")
+	}
+	plaintext, err := decryptWithCEK(cekPair.PrivateKey, encryptedBytes)
+	if err != nil {
+		return nil, fmt.Errorf("CEK decryption failed: %w", err)
+	}
+	defer zeroBytes(plaintext)
+	var credV2 ProteanCredentialV2
+	if err := json.Unmarshal(plaintext, &credV2); err != nil {
+		return nil, fmt.Errorf("failed to parse credential: %w", err)
+	}
+	return &credV2, nil
 }
 
 // NewProteanCredentialHandler creates a new Protean Credential handler
@@ -59,7 +88,7 @@ func (h *ProteanCredentialHandler) HandleCredentialCreate(ctx context.Context, m
 	h.state.mu.RLock()
 	dek := h.state.dek
 	cekPair := h.state.cekPair
-	existingCredential := h.state.credential
+	hasIdentityKey := len(h.state.identityPublicKey) > 0
 	h.state.mu.RUnlock()
 
 	if dek == nil {
@@ -72,7 +101,10 @@ func (h *ProteanCredentialHandler) HandleCredentialCreate(ctx context.Context, m
 		return h.errorResponse(msg.GetID(), "vault not initialized - complete PIN setup first")
 	}
 
-	if existingCredential != nil {
+	// Phase D: detect "credential already exists" via the identity-
+	// public-key carve-out (set at PIN unlock + credential creation)
+	// rather than the full credential plaintext.
+	if hasIdentityKey {
 		log.Warn().Str("owner_space", h.ownerSpace).Msg("Credential already exists")
 		return h.errorResponse(msg.GetID(), "credential already exists")
 	}
@@ -137,14 +169,14 @@ func (h *ProteanCredentialHandler) HandleCredentialCreate(ctx context.Context, m
 		Version:            1,
 	}
 
-	// Store credential in vault state — and carve out the identity
-	// keypair into its own fields so signing flows can use the
-	// minimum necessary subset (Phase C of the credential-out-of-
-	// memory refactor).
+	// Phase D: populate the narrow carve-outs (identity keypair +
+	// PIN auth hash/salt) so the rest of the system can read them
+	// without retaining the full credential plaintext in memory.
 	h.state.mu.Lock()
-	h.state.credential = credential
 	h.state.identityPrivateKey = append([]byte(nil), credential.IdentityPrivateKey...)
 	h.state.identityPublicKey = append([]byte(nil), credential.IdentityPublicKey...)
+	h.state.pinAuthHash = append([]byte(nil), credential.AuthHash...)
+	h.state.pinAuthSalt = append([]byte(nil), credential.AuthSalt...)
 	h.state.mu.Unlock()
 
 	// Serialize credential for encryption
@@ -223,39 +255,37 @@ func (h *ProteanCredentialHandler) HandlePasswordChange(ctx context.Context, msg
 		return h.errorResponse(msg.GetID(), "invalid or expired UTK")
 	}
 
-	// Check vault state
+	if req.EncryptedCredential == "" {
+		return h.errorResponse(msg.GetID(), "encrypted_credential is required")
+	}
+
+	// CEK still lives in vault state (it's session-scoped, not the
+	// credential plaintext) and is needed to decrypt + re-encrypt
+	// the request-supplied blob.
 	h.state.mu.RLock()
-	credential := h.state.credential
 	cekPair := h.state.cekPair
 	h.state.mu.RUnlock()
-
-	if credential == nil {
-		return h.errorResponse(msg.GetID(), "credential not loaded - unlock vault first")
-	}
 	if cekPair == nil {
 		return h.errorResponse(msg.GetID(), "CEK not available")
 	}
 
-	// Decode and decrypt payload using UTK's corresponding LTK
+	// Decode + decrypt payload (old + new password hashes) using
+	// the UTK's LTK.
 	encryptedPayload, err := base64.StdEncoding.DecodeString(req.EncryptedPayload)
 	if err != nil {
 		return h.errorResponse(msg.GetID(), "invalid payload encoding")
 	}
-
 	payloadBytes, err := decryptWithUTK(ltk, encryptedPayload)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to decrypt password change payload")
 		return h.errorResponse(msg.GetID(), "decryption failed")
 	}
-	defer zeroBytes(payloadBytes) // SECURITY: Clear plaintext after use
+	defer zeroBytes(payloadBytes)
 
-	// Parse decrypted payload
 	var payload PasswordChangePayload
 	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
 		return h.errorResponse(msg.GetID(), "invalid payload format")
 	}
-
-	// Validate both password hashes are in PHC format
 	if payload.OldPasswordHash == "" {
 		return h.errorResponse(msg.GetID(), "old_password_hash is required")
 	}
@@ -269,37 +299,41 @@ func (h *ProteanCredentialHandler) HandlePasswordChange(ctx context.Context, msg
 		return h.errorResponse(msg.GetID(), "invalid new password hash format")
 	}
 
-	// Mark UTK as used (single-use for security)
 	h.bootstrap.MarkUTKUsed(req.UTKID)
 
-	// SECURITY: Verify old password hash matches stored credential
-	if !timingSafeEqualStrings(payload.OldPasswordHash, credential.PasswordHash) {
+	// Phase D: decrypt the request-supplied credential blob, verify
+	// the old password against it, mutate, re-encrypt — never
+	// reading vaultState.credential.
+	cred, err := h.decryptCredentialBlob(req.EncryptedCredential)
+	if err != nil {
+		log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("HandlePasswordChange: failed to decrypt credential")
+		return h.errorResponse(msg.GetID(), "credential decrypt failed")
+	}
+	defer cred.SecureErase()
+
+	if !timingSafeEqualStrings(payload.OldPasswordHash, cred.Auth.Hash) {
 		log.Warn().Str("owner_space", h.ownerSpace).Msg("Password change failed - old password mismatch")
 		return h.errorResponse(msg.GetID(), "current password is incorrect")
 	}
 
-	// Update credential with new password hash
-	h.state.mu.Lock()
-	h.state.credential.PasswordHash = payload.NewPasswordHash
-	h.state.credential.Version++
-	h.state.mu.Unlock()
+	cred.Auth.Hash = payload.NewPasswordHash
+	cred.Timestamps.LastModified = time.Now().Unix()
+	cred.Timestamps.AuthChangedAt = cred.Timestamps.LastModified
+	cred.Version++
 
-	// Serialize updated credential for encryption
-	credentialBytes, err := json.Marshal(credential)
+	credentialBytes, err := json.Marshal(cred)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to serialize credential")
 		return h.errorResponse(msg.GetID(), "serialization failed")
 	}
-	defer zeroBytes(credentialBytes) // SECURITY: Clear after encryption
+	defer zeroBytes(credentialBytes)
 
-	// Re-encrypt credential with CEK for app storage
 	encryptedCredential, err := encryptWithCEK(cekPair.PublicKey, credentialBytes)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to encrypt credential with CEK")
 		return h.errorResponse(msg.GetID(), "encryption failed")
 	}
 
-	// Generate fresh UTKs for future operations and return ONLY the new ones.
 	newPairs, err := h.bootstrap.GenerateMoreUTKs(5)
 	if err != nil {
 		log.Warn().Err(err).Msg("Failed to generate new UTKs")
@@ -311,7 +345,6 @@ func (h *ProteanCredentialHandler) HandlePasswordChange(ctx context.Context, msg
 		EncryptedCredential: base64.StdEncoding.EncodeToString(encryptedCredential),
 		NewUTKs:             utkPublics,
 	}
-
 	responseBytes, err := json.Marshal(response)
 	if err != nil {
 		return h.errorResponse(msg.GetID(), "response serialization failed")
@@ -319,7 +352,7 @@ func (h *ProteanCredentialHandler) HandlePasswordChange(ctx context.Context, msg
 
 	log.Info().
 		Str("owner_space", h.ownerSpace).
-		Int("credential_version", credential.Version).
+		Int("credential_version", cred.Version).
 		Int("utk_count", len(utkPublics)).
 		Msg("Credential password changed successfully")
 
@@ -344,17 +377,22 @@ func (h *ProteanCredentialHandler) ClearCredential() {
 	h.state.mu.Lock()
 	defer h.state.mu.Unlock()
 
-	// Securely erase existing credential if present
-	if h.state.credential != nil {
-		h.state.credential.SecureErase()
-		h.state.credential = nil
-		log.Info().Str("owner_space", h.ownerSpace).Msg("In-memory credential cleared for decommission")
-	}
+	// Phase D: full credential plaintext is no longer cached, but the
+	// narrow carve-outs are. Wipe them.
 	if h.state.identityPrivateKey != nil {
 		zeroBytes(h.state.identityPrivateKey)
 		h.state.identityPrivateKey = nil
 	}
 	h.state.identityPublicKey = nil
+	if h.state.pinAuthHash != nil {
+		zeroBytes(h.state.pinAuthHash)
+		h.state.pinAuthHash = nil
+	}
+	if h.state.pinAuthSalt != nil {
+		zeroBytes(h.state.pinAuthSalt)
+		h.state.pinAuthSalt = nil
+	}
+	log.Info().Str("owner_space", h.ownerSpace).Msg("In-memory credential carve-outs cleared for decommission")
 
 	// Also clear CEK pair since it's no longer needed
 	if h.state.cekPair != nil {
