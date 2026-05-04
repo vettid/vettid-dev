@@ -11,37 +11,36 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-const inviteCodeAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+// shortCodeAlphabet excludes ambiguous glyphs (0/O, 1/I/L, and lowercase) so
+// the same code is safe to display on a QR AND hand-type. Used for every
+// short-lived pairing/invitation code: peer invitations, device pairing,
+// agent registration. Standardising on one alphabet means a user can't
+// fail by entering the wrong shape from the wrong flow.
+const shortCodeAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
-// generateInviteCode creates a 16-character random alphanumeric code.
-// 62^16 ≈ 4.7×10^28 combinations — unguessable within the 5-minute TTL.
-// Used for peer-to-peer invitations where the scanner's app reads the code
-// from a QR, so character ambiguity doesn't matter.
-func generateInviteCode() string {
-	code := make([]byte, 16)
-	randomBytes := make([]byte, 16)
+// generateShortCode produces a 12-character ambiguity-safe code, displayed
+// to the user as three 4-character blocks (`ABCD-EFGH-JKLM`). 32^12 ≈
+// 1.15×10^18 combinations — comfortably brute-resistant within the
+// minutes-scale TTLs these codes live for, especially once paired with
+// broker-side rate limiting.
+func generateShortCode() string {
+	code := make([]byte, 12)
+	randomBytes := make([]byte, 12)
 	rand.Read(randomBytes)
 	for i := range code {
-		code[i] = inviteCodeAlphabet[int(randomBytes[i])%len(inviteCodeAlphabet)]
+		code[i] = shortCodeAlphabet[int(randomBytes[i])%len(shortCodeAlphabet)]
 	}
 	return string(code)
 }
 
-// deviceCodeAlphabet excludes ambiguous glyphs (0/O, 1/l/I, and lowercase)
-// because device codes are hand-typed by the user into the desktop client.
-const deviceCodeAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+// generateInviteCode produces a peer-invitation code. Aliased to
+// generateShortCode so peer + device + agent flows all share the same
+// shape and validation rules.
+func generateInviteCode() string { return generateShortCode() }
 
-// generateDeviceInviteCode creates an 8-character ambiguity-safe code for
-// device pairing. 32^8 ≈ 10^12 combinations — unguessable within the 2-min TTL.
-func generateDeviceInviteCode() string {
-	code := make([]byte, 8)
-	randomBytes := make([]byte, 8)
-	rand.Read(randomBytes)
-	for i := range code {
-		code[i] = deviceCodeAlphabet[int(randomBytes[i])%len(deviceCodeAlphabet)]
-	}
-	return string(code)
-}
+// generateDeviceInviteCode produces a device-pairing code. Same shape
+// as peer invitations; alias kept for callsite readability.
+func generateDeviceInviteCode() string { return generateShortCode() }
 
 // extractCredsComponents extracts the JWT and seed from a NATS .creds file.
 func extractCredsComponents(creds string) (jwt string, seed string) {
