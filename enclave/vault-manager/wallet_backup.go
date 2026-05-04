@@ -116,6 +116,9 @@ func (h *WalletHandler) HandleMoveSeedToCredential(ctx context.Context, msg *Inc
 		return errorResponse(msg.GetID(), err.Error()), nil
 	}
 
+	// Stamp the wallet's label as the alias so the seed metadata row
+	// groups with the wallet's catalog entry and crypto-key row under
+	// one card in the Available Secrets dialog.
 	h.credentialSecretHandler.StoreSecretMetadata(SecretMetadataRecord{
 		ID:              newSecretID,
 		Name:            secretName,
@@ -123,6 +126,7 @@ func (h *WalletHandler) HandleMoveSeedToCredential(ctx context.Context, msg *Inc
 		Description:     "BIP39 seed phrase",
 		Owner:           "user",
 		Discoverability: DiscoverabilityCataloged,
+		Alias:           record.Label,
 		CreatedAt:       now.Unix(),
 	})
 

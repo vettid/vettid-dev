@@ -572,10 +572,16 @@ func buildSecretCatalog(storage *EncryptedStorage, vaultState *VaultState) []Cat
 			if label == "" {
 				label = "BTC Wallet"
 			}
+			// Wallet rows carry their label as the alias so the
+			// wallet, its seed (when moved to credential), and its
+			// crypto key all collapse into one card in the catalog
+			// dialog. See wallet_backup.go HandleMoveSeedToCredential
+			// + the CryptoKey loop below for the matching alias stamp.
 			out = append(out, CatalogedSecretItem{
 				Name:     label,
 				Type:     "BTC_WALLET",
 				Category: "Cryptocurrency",
+				Alias:    label,
 			})
 		}
 	}
@@ -584,6 +590,10 @@ func buildSecretCatalog(storage *EncryptedStorage, vaultState *VaultState) []Cat
 	// etc.) live inside the in-memory credential blob — surface each
 	// as its own row so peers see the full key inventory. Only the
 	// label/type travel; the private material stays sealed.
+	//
+	// Wallet-derived keys carry the wallet's Label (set when the wallet
+	// is created — wallet_handler.go); reusing it as the alias keeps
+	// these grouped with the parent wallet's catalog row.
 	if vaultState != nil {
 		vaultState.mu.RLock()
 		credential := vaultState.credential
@@ -601,6 +611,7 @@ func buildSecretCatalog(storage *EncryptedStorage, vaultState *VaultState) []Cat
 					Name:     label,
 					Type:     string(k.Type),
 					Category: "Crypto Key",
+					Alias:    k.Label,
 				})
 			}
 		}
