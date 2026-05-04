@@ -153,8 +153,10 @@ func (h *WalletHandler) HandleCreate(ctx context.Context, msg *IncomingMessage) 
 	zeroBytes([]byte(mnemonic))
 
 	// Stamp the metadata index so the seed shows up in
-	// credential.secret.list and the catalog (alias-grouped with the
-	// wallet row by sharing the wallet's label as the alias).
+	// credential.secret.list and the catalog. The alias is asset-
+	// prefixed ("BTC · <label>") so it collapses into the same card
+	// as the wallet row + signing key, with the asset visible in
+	// the card title.
 	h.credentialSecretHandler.StoreSecretMetadata(SecretMetadataRecord{
 		ID:              secretID,
 		Name:            req.Label,
@@ -162,7 +164,7 @@ func (h *WalletHandler) HandleCreate(ctx context.Context, msg *IncomingMessage) 
 		Description:     "BIP39 seed phrase",
 		Owner:           "user",
 		Discoverability: DiscoverabilityCataloged,
-		Alias:           req.Label,
+		Alias:           "BTC · " + req.Label,
 		CreatedAt:       now.Unix(),
 	})
 

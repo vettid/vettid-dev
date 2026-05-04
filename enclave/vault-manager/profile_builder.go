@@ -572,16 +572,20 @@ func buildSecretCatalog(storage *EncryptedStorage, vaultState *VaultState) []Cat
 			if label == "" {
 				label = "BTC Wallet"
 			}
-			// Wallet rows carry their label as the alias so the
-			// wallet, its seed (when moved to credential), and its
-			// crypto key all collapse into one card in the catalog
-			// dialog. See wallet_backup.go HandleMoveSeedToCredential
-			// + the CryptoKey loop below for the matching alias stamp.
+			// Wallet rows carry their asset-prefixed label as the
+			// alias so the wallet, its seed (when moved to
+			// credential), and its crypto key all collapse into one
+			// card in the catalog dialog AND surface the asset
+			// (BTC) in the card title — peers see "BTC · MyWallet"
+			// at a glance instead of having to infer the chain.
+			// See wallet_handler.go HandleCreate + the CryptoKey
+			// loop below for the matching alias stamp.
+			alias := "BTC · " + label
 			out = append(out, CatalogedSecretItem{
 				Name:     label,
 				Type:     "BTC_WALLET",
 				Category: "Cryptocurrency",
-				Alias:    label,
+				Alias:    alias,
 			})
 		}
 	}
@@ -607,11 +611,19 @@ func buildSecretCatalog(storage *EncryptedStorage, vaultState *VaultState) []Cat
 				if label == "" {
 					continue
 				}
+				// Wallet-derived crypto keys carry the wallet's label
+				// as their CryptoKey.Label. Prefix the asset for
+				// consistency with the wallet row above; non-wallet
+				// keys just keep their raw label.
+				keyAlias := k.Label
+				if k.Type == "secp256k1" && keyAlias != "" {
+					keyAlias = "BTC · " + keyAlias
+				}
 				out = append(out, CatalogedSecretItem{
 					Name:     label,
 					Type:     string(k.Type),
 					Category: "Crypto Key",
-					Alias:    k.Label,
+					Alias:    keyAlias,
 				})
 			}
 		}
