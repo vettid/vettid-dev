@@ -144,19 +144,40 @@ type WalletDetailResponse struct {
 	SeedBackupSecretID string `json:"seed_backup_secret_id,omitempty"`
 }
 
-// WalletCreateRequest is the payload for wallet.create
+// WalletCreateRequest is the payload for wallet.create.
+//
+// As of the credential-out-of-memory redesign, wallet creation requires
+// a fresh password re-auth. The seed is stored only inside the
+// credential blob — there's no plaintext copy in vault state, no
+// pre-loaded private key, and no separate "backup seed" step. The
+// caller supplies the encrypted credential + password material; the
+// enclave decrypts in-flight, appends the seed to credential.Secrets,
+// re-encrypts, and returns the new blob. The client stores the new
+// blob in place of the old one.
 type WalletCreateRequest struct {
 	Label   string `json:"label"`
 	Network string `json:"network,omitempty"` // defaults to "mainnet"
+
+	// Credential-unlock material — required.
+	EncryptedCredential   string `json:"encrypted_credential"`
+	EncryptedPasswordHash string `json:"encrypted_password_hash"`
+	EphemeralPublicKey    string `json:"ephemeral_public_key"`
+	Nonce                 string `json:"nonce"`
+	KeyID                 string `json:"key_id"`
 }
 
-// WalletCreateResponse is the response for wallet.create
+// WalletCreateResponse is the response for wallet.create. Includes the
+// re-encrypted credential blob (now containing the wallet's seed) and
+// replacement UTKs for the next password-gated op.
 type WalletCreateResponse struct {
-	WalletID       string `json:"wallet_id"`
-	Label          string `json:"label"`
-	Address        string `json:"address"`
-	DerivationPath string `json:"derivation_path"`
-	Network        string `json:"network"`
+	WalletID            string      `json:"wallet_id"`
+	Label               string      `json:"label"`
+	Address             string      `json:"address"`
+	DerivationPath      string      `json:"derivation_path"`
+	Network             string      `json:"network"`
+	SeedSecretID        string      `json:"seed_secret_id"`
+	EncryptedCredential string      `json:"encrypted_credential"`
+	NewUTKs             []UTKPublic `json:"new_utks,omitempty"`
 }
 
 // WalletListResponse is the response for wallet.list
@@ -200,24 +221,23 @@ type WalletGetFeesResponse struct {
 
 // WalletSendRequest is the payload for wallet.send.
 //
-// When the wallet's seed has been moved into the credential blob
-// (BIP39Mnemonic="", SeedBackupSecretID!=""), the request MUST also
-// carry the password material so the enclave can decrypt the
-// credential to retrieve the seed for signing. When the seed is in
-// the wallet record itself, the password fields are ignored.
+// All wallet seeds live in the credential blob, so every signing op
+// requires fresh password material. The enclave decrypts the
+// credential, retrieves the seed, derives the private key, signs,
+// re-encrypts the credential (UTK rotation falls out of the mutate
+// helper), and returns the new blob alongside the broadcast result.
 type WalletSendRequest struct {
-	WalletID    string `json:"wallet_id"`
-	ToAddress   string `json:"to_address"`
-	AmountSats  int64  `json:"amount_sats"`
-	FeeRate     int    `json:"fee_rate"` // sat/vB
+	WalletID   string `json:"wallet_id"`
+	ToAddress  string `json:"to_address"`
+	AmountSats int64  `json:"amount_sats"`
+	FeeRate    int    `json:"fee_rate"` // sat/vB
 
-	// Optional credential-unlock material (required only when the
-	// wallet's seed has been moved into the credential).
-	EncryptedCredential   string `json:"encrypted_credential,omitempty"`
-	EncryptedPasswordHash string `json:"encrypted_password_hash,omitempty"`
-	EphemeralPublicKey    string `json:"ephemeral_public_key,omitempty"`
-	Nonce                 string `json:"nonce,omitempty"`
-	KeyID                 string `json:"key_id,omitempty"`
+	// Credential-unlock material — required.
+	EncryptedCredential   string `json:"encrypted_credential"`
+	EncryptedPasswordHash string `json:"encrypted_password_hash"`
+	EphemeralPublicKey    string `json:"ephemeral_public_key"`
+	Nonce                 string `json:"nonce"`
+	KeyID                 string `json:"key_id"`
 }
 
 // WalletSendResponse is the response for wallet.send
