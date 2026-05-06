@@ -728,11 +728,17 @@ export class NatsStack extends cdk.Stack {
     });
 
     // Target group for NATS instances (plain TCP, no TLS)
+    // SECURITY (infra-#2 follow-up): preserveClientIp disabled so NLB
+    // SNATs traffic to its own VPC IP. Pairs with the VPC-CIDR-only
+    // ingress rule on natsSecurityGroup below — without SNAT the target
+    // would see public client IPs and the SG rule would drop them.
+    // We don't use real client IPs at the NATS layer (auth is JWT).
     const targetGroup = new elbv2.NetworkTargetGroup(this, 'NatsTargetGroup', {
       vpc: this.vpc,
       port: 4222,
       protocol: elbv2.Protocol.TCP,
       targetType: elbv2.TargetType.INSTANCE,
+      preserveClientIp: false,
       healthCheck: {
         enabled: true,
         port: '8222',
