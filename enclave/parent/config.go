@@ -42,6 +42,13 @@ type KMSConfig struct {
 	SealingKeyARN string `yaml:"sealing_key_arn"`
 	// KMS key ARN for NATS seed encryption/decryption
 	NatsSeedKeyARN string `yaml:"nats_seed_key_arn"`
+	// KMS key ARN for the PCR-manifest / migration-config signing key
+	// (ECDSA P-256, alias `vettid-pcr-signing`). Parent calls
+	// kms:GetPublicKey on this key at startup and ships the DER bytes
+	// to the vault-manager so the migration handler can verify the
+	// signature on every fetched migration config. SSM fallback:
+	// /vettid/attestation/pcr-signing-key-id.
+	PCRSigningKeyARN string `yaml:"pcr_signing_key_arn"`
 	// AWS region
 	Region string `yaml:"region"`
 }

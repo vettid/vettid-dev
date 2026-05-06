@@ -777,6 +777,19 @@ func (p *ParentProcess) sendWithHandlerSupport(ctx context.Context, msg *Enclave
 			continue // Wait for next response
 		}
 
+		// PCR-signing public-key fetch — enclave needs the DER bytes
+		// to verify migration-config signatures.
+		if response.Type == EnclaveMessageTypePCRSigningKeyGet {
+			log.Debug().Msg("Enclave requested PCR signing public key")
+			keyResp := p.handlePCRSigningKeyGet(ctx, response)
+			p.vsockClient.writeMu.Lock()
+			if err := p.vsockClient.writeMessage(keyResp); err != nil {
+				log.Error().Err(err).Msg("Failed to send PCR signing key response")
+			}
+			p.vsockClient.writeMu.Unlock()
+			continue
+		}
+
 		// Check if this is a proposals list request from the enclave
 		if response.Type == EnclaveMessageTypeProposalsList {
 			log.Debug().Msg("Enclave requested proposals list")

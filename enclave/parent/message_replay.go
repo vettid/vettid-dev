@@ -4,6 +4,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -23,6 +25,17 @@ const (
 
 	// Cleanup interval
 	replayCacheCleanupInterval = 60 * time.Second
+
+	// SECURITY (authZ-H4): persist the replay cache to local disk so a
+	// parent restart inside the message-freshness window doesn't reset
+	// the dedup state. On the same EC2 host across an in-place restart
+	// this prevents an attacker from replaying a captured-but-fresh
+	// message while we were briefly down. Across an ASG refresh the
+	// new host starts empty (no shared disk), but the timestamp gate
+	// is still the primary defence.
+	replayCachePersistInterval = 30 * time.Second
+	replayCachePathDefault     = "/var/lib/vettid/replay-cache.json"
+	replayCachePathEnvVar      = "VETTID_REPLAY_CACHE_PATH"
 )
 
 // replayEntry stores a message hash with its first-seen time
@@ -39,12 +52,103 @@ type MessageReplayCache struct {
 	lastCleanup time.Time
 }
 
-// NewMessageReplayCache creates a new message replay cache
+// NewMessageReplayCache creates a new message replay cache. Loads any
+// previously-persisted entries from disk so dedup state survives an
+// in-place parent restart. SECURITY (authZ-H4).
 func NewMessageReplayCache() *MessageReplayCache {
-	return &MessageReplayCache{
+	rc := &MessageReplayCache{
 		entries:     make(map[[32]byte]time.Time),
 		lastCleanup: time.Now(),
 	}
+	rc.loadFromDisk()
+	go rc.persistLoop()
+	return rc
+}
+
+func replayCachePath() string {
+	if p := os.Getenv(replayCachePathEnvVar); p != "" {
+		return p
+	}
+	return replayCachePathDefault
+}
+
+// persistedEntry is the on-disk shape — we serialize the hex hash + the
+// first-seen unix-nanos so reload preserves the original retention
+// window.
+type persistedEntry struct {
+	Hash      string `json:"h"`
+	FirstSeen int64  `json:"t"`
+}
+
+func (rc *MessageReplayCache) loadFromDisk() {
+	path := replayCachePath()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Warn().Err(err).Str("path", path).Msg("Replay cache load failed; starting empty")
+		}
+		return
+	}
+	var entries []persistedEntry
+	if err := json.Unmarshal(data, &entries); err != nil {
+		log.Warn().Err(err).Str("path", path).Msg("Replay cache parse failed; starting empty")
+		return
+	}
+	cutoff := time.Now().Add(-time.Duration(replayCacheRetentionSeconds) * time.Second)
+	loaded := 0
+	for _, e := range entries {
+		ts := time.Unix(0, e.FirstSeen)
+		if ts.Before(cutoff) {
+			continue
+		}
+		raw, err := hex.DecodeString(e.Hash)
+		if err != nil || len(raw) != 32 {
+			continue
+		}
+		var hash [32]byte
+		copy(hash[:], raw)
+		rc.entries[hash] = ts
+		loaded++
+	}
+	log.Info().Int("loaded", loaded).Int("on_disk", len(entries)).Msg("Replay cache restored from disk")
+}
+
+func (rc *MessageReplayCache) persistLoop() {
+	ticker := time.NewTicker(replayCachePersistInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		if err := rc.persistToDisk(); err != nil {
+			log.Warn().Err(err).Msg("Replay cache persist failed")
+		}
+	}
+}
+
+func (rc *MessageReplayCache) persistToDisk() error {
+	rc.mu.RLock()
+	entries := make([]persistedEntry, 0, len(rc.entries))
+	for hash, ts := range rc.entries {
+		entries = append(entries, persistedEntry{
+			Hash:      hex.EncodeToString(hash[:]),
+			FirstSeen: ts.UnixNano(),
+		})
+	}
+	rc.mu.RUnlock()
+
+	data, err := json.Marshal(entries)
+	if err != nil {
+		return err
+	}
+	path := replayCachePath()
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o700); err != nil && !os.IsExist(err) {
+			return err
+		}
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // computeMessageHash generates a unique hash for a message

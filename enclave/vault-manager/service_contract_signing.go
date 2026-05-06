@@ -128,23 +128,25 @@ func (om *orderedMap) MarshalJSON() ([]byte, error) {
 
 // SignContract signs a service contract using the vault's Ed25519 identity key
 // The signature covers the canonical JSON representation of the contract
-// SECURITY: Requires vault to be unlocked (credential loaded in memory)
-func SignContract(vaultState *VaultState, ownerSpace string, contract *ServiceDataContract) (*ContractSignature, error) {
-	if vaultState == nil {
-		return nil, fmt.Errorf("vault state is nil")
+// SECURITY: Requires the identity-key TTL window to be open. Returns
+// ErrIdentityLocked if the user must re-authenticate.
+func SignContract(mh *MessageHandler, ownerSpace string, contract *ServiceDataContract) (*ContractSignature, error) {
+	if mh == nil {
+		return nil, fmt.Errorf("message handler is nil")
 	}
 
-	// Phase C: signing reads only the carved-out identity keypair, not
-	// the full credential plaintext.
-	vaultState.mu.RLock()
-	idKey := append([]byte(nil), vaultState.identityPrivateKey...)
-	idPub := append([]byte(nil), vaultState.identityPublicKey...)
-	vaultState.mu.RUnlock()
+	// Phase E: identity-key TTL gate. consumeIdentityKey returns
+	// ErrIdentityLocked if the user hasn't unlocked recently.
+	idKey, err := mh.consumeIdentityKey()
+	if err != nil {
+		return nil, err
+	}
 	defer zeroBytes(idKey)
 
-	if len(idKey) == 0 {
-		return nil, fmt.Errorf("vault is locked - unlock with PIN first")
-	}
+	mh.vaultState.mu.RLock()
+	idPub := append([]byte(nil), mh.vaultState.identityPublicKey...)
+	mh.vaultState.mu.RUnlock()
+
 	if len(idKey) != ed25519.PrivateKeySize {
 		return nil, fmt.Errorf("invalid identity key length")
 	}
@@ -248,23 +250,25 @@ func VerifyContractSignature(contract *ServiceDataContract, sig *ContractSignatu
 // --- Challenge Signing for Auth Requests ---
 
 // SignAuthChallenge signs an authentication challenge from a service
-// This proves the vault owner's identity to the service
-func SignAuthChallenge(vaultState *VaultState, ownerSpace string, challenge string, serviceGUID string) (string, string, error) {
-	if vaultState == nil {
-		return "", "", fmt.Errorf("vault state is nil")
+// This proves the vault owner's identity to the service.
+// SECURITY: Requires the identity-key TTL window to be open. Returns
+// ErrIdentityLocked if the user must re-authenticate.
+func SignAuthChallenge(mh *MessageHandler, ownerSpace string, challenge string, serviceGUID string) (string, string, error) {
+	if mh == nil {
+		return "", "", fmt.Errorf("message handler is nil")
 	}
 
-	// Phase D: read the carved-out identity keypair, not the
-	// credential plaintext.
-	vaultState.mu.RLock()
-	idKey := append([]byte(nil), vaultState.identityPrivateKey...)
-	idPub := append([]byte(nil), vaultState.identityPublicKey...)
-	vaultState.mu.RUnlock()
+	// Phase E: identity-key TTL gate.
+	idKey, err := mh.consumeIdentityKey()
+	if err != nil {
+		return "", "", err
+	}
 	defer zeroBytes(idKey)
 
-	if len(idKey) == 0 {
-		return "", "", fmt.Errorf("vault is locked")
-	}
+	mh.vaultState.mu.RLock()
+	idPub := append([]byte(nil), mh.vaultState.identityPublicKey...)
+	mh.vaultState.mu.RUnlock()
+
 	if len(idKey) != ed25519.PrivateKeySize {
 		return "", "", fmt.Errorf("invalid identity key")
 	}

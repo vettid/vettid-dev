@@ -72,7 +72,8 @@ func (h *WalletHandler) HandleMoveSeedToCredential(ctx context.Context, msg *Inc
 	if err := json.Unmarshal(walletJSON, &record); err != nil {
 		return errorResponse(msg.GetID(), "wallet record corrupt"), nil
 	}
-	if record.BIP39Mnemonic == "" && record.SeedBackupSecretID != "" {
+	defer record.SecureErase()
+	if len(record.BIP39Mnemonic) == 0 && record.SeedBackupSecretID != "" {
 		respBytes, _ := json.Marshal(WalletMoveSeedResponse{
 			WalletID:            req.WalletID,
 			SecretID:            record.SeedBackupSecretID,
@@ -85,7 +86,7 @@ func (h *WalletHandler) HandleMoveSeedToCredential(ctx context.Context, msg *Inc
 			Payload:   respBytes,
 		}, nil
 	}
-	if record.BIP39Mnemonic == "" {
+	if len(record.BIP39Mnemonic) == 0 {
 		return errorResponse(msg.GetID(), "this wallet has no mnemonic to move — recreate it"), nil
 	}
 
@@ -93,17 +94,20 @@ func (h *WalletHandler) HandleMoveSeedToCredential(ctx context.Context, msg *Inc
 	secretName := fmt.Sprintf("BTC Wallet — %s", record.Label)
 	now := time.Now()
 
-	mnemonic := record.BIP39Mnemonic
 	result, err := h.credentialSecretHandler.MutateSecrets(
 		req.EncryptedCredential, req.EncryptedPasswordHash,
 		req.EphemeralPublicKey, req.Nonce, req.KeyID,
 		func(cred *ProteanCredentialV2) error {
+			// Copy the mnemonic into a fresh buffer for the credential —
+			// the local record's slice is wiped by deferred SecureErase.
+			mnCopy := make([]byte, len(record.BIP39Mnemonic))
+			copy(mnCopy, record.BIP39Mnemonic)
 			cred.Secrets = append(cred.Secrets, CredentialSecretEntry{
 				ID:          newSecretID,
 				Name:        secretName,
 				Category:    SecretCategorySeedPhrase,
 				Description: "BIP39 12-word seed phrase. Restorable in any BIP84 (P2WPKH) wallet.",
-				Value:       []byte(mnemonic),
+				Value:       mnCopy,
 				Owner:       "user",
 				CreatedAt:   now.Unix(),
 				UpdatedAt:   now.Unix(),
@@ -137,7 +141,8 @@ func (h *WalletHandler) HandleMoveSeedToCredential(ctx context.Context, msg *Inc
 	// notice the existing entry.
 	record.SeedBackedUpAt = now.Unix()
 	record.SeedBackupSecretID = newSecretID
-	record.BIP39Mnemonic = ""
+	zeroBytes(record.BIP39Mnemonic)
+	record.BIP39Mnemonic = nil
 	if data, err := json.Marshal(record); err == nil {
 		if err := h.storage.Put(walletStorageKey(req.WalletID), data); err != nil {
 			log.Error().Err(err).Str("wallet_id", req.WalletID).Msg("Failed to wipe mnemonic from wallet record after move")
@@ -211,7 +216,7 @@ func (h *WalletHandler) HandleMoveSeedToWallet(ctx context.Context, msg *Incomin
 	}
 
 	targetSecretID := record.SeedBackupSecretID
-	var recoveredMnemonic string
+	var recoveredMnemonic []byte
 
 	result, err := h.credentialSecretHandler.MutateSecrets(
 		req.EncryptedCredential, req.EncryptedPasswordHash,
@@ -221,7 +226,11 @@ func (h *WalletHandler) HandleMoveSeedToWallet(ctx context.Context, msg *Incomin
 			removed := false
 			for _, s := range cred.Secrets {
 				if s.ID == targetSecretID {
-					recoveredMnemonic = string(s.Value)
+					// Copy the bytes out before zeroing the source slice,
+					// then keep them in a local []byte the caller can wipe
+					// after persisting.
+					recoveredMnemonic = make([]byte, len(s.Value))
+					copy(recoveredMnemonic, s.Value)
 					zeroBytes(s.Value)
 					removed = true
 					continue
@@ -237,15 +246,18 @@ func (h *WalletHandler) HandleMoveSeedToWallet(ctx context.Context, msg *Incomin
 	)
 	if err != nil {
 		log.Warn().Err(err).Str("wallet_id", req.WalletID).Msg("Failed to move wallet seed back to wallet")
+		zeroBytes(recoveredMnemonic)
 		return errorResponse(msg.GetID(), err.Error()), nil
 	}
-	if recoveredMnemonic == "" {
+	if len(recoveredMnemonic) == 0 {
 		return errorResponse(msg.GetID(), "recovered mnemonic was empty — abort"), nil
 	}
+	defer zeroBytes(recoveredMnemonic)
 
 	h.credentialSecretHandler.RemoveSecretMetadata(targetSecretID)
 
-	record.BIP39Mnemonic = recoveredMnemonic
+	record.BIP39Mnemonic = make([]byte, len(recoveredMnemonic))
+	copy(record.BIP39Mnemonic, recoveredMnemonic)
 	record.SeedBackedUpAt = 0
 	record.SeedBackupSecretID = ""
 	if data, err := json.Marshal(record); err == nil {

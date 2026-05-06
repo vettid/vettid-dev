@@ -28,6 +28,7 @@ import { CloudFormationClient, DescribeStacksCommand } from '@aws-sdk/client-clo
 import { CloudFrontClient, CreateInvalidationCommand } from '@aws-sdk/client-cloudfront';
 import { createHash, randomUUID } from 'crypto';
 import { parseArgs } from 'util';
+import { canonicalize } from '../lib/canonical-json';
 
 interface PcrSet {
   id: string;
@@ -273,8 +274,13 @@ Examples:
   manifest.version += 1;
   manifest.timestamp = new Date().toISOString();
 
-  // Sign the manifest
-  const dataToSign = JSON.stringify({
+  // Sign the manifest using RFC 8785 canonical JSON so the producer
+  // and every verifier (Lambda, Android, Go) hash byte-for-byte
+  // identical input no matter which runtime emits it. Default
+  // JSON.stringify is order-by-insertion (deterministic only within
+  // one process); a verifier that re-canonicalizes after parsing
+  // would silently fail signature checks.
+  const dataToSign = canonicalize({
     version: manifest.version,
     timestamp: manifest.timestamp,
     pcr_sets: manifest.pcr_sets,

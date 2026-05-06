@@ -42,6 +42,78 @@ func generateInviteCode() string { return generateShortCode() }
 // as peer invitations; alias kept for callsite readability.
 func generateDeviceInviteCode() string { return generateShortCode() }
 
+// verifyBrokerInviteJWT validates the JWT/seed pair carried inside a
+// broker-stored invitation payload. Returns nil when:
+//
+//  1. The JWT decodes (signature-verified by the embedded issuer key).
+//  2. The seed corresponds to the JWT subject (the user pubkey), so
+//     the holder of the broker payload also controls the credential.
+//  3. The JWT is not expired.
+//  4. The pub/sub permission lists name the inviter's owner-space
+//     (`OwnerSpace.<owner>.forApp.profile.>` or
+//     `MessageSpace.<owner>.forOwner.connection.accepted`). Anyone
+//     forging the payload to point at a different OwnerSpace would
+//     have to also forge a JWT, and forging a JWT requires the
+//     account signing key the broker doesn't have.
+//
+// SECURITY (authZ-H1): without this check, anyone with broker write
+// could phish a connection by replaying a valid JWT under a different
+// OwnerSpace claim — `connection.resolve-invite` would happily accept
+// it because the broker payload was previously trusted on its face.
+func verifyBrokerInviteJWT(token, seed, expectedOwnerSpace string) error {
+	if token == "" {
+		return fmt.Errorf("missing JWT")
+	}
+	if seed == "" {
+		return fmt.Errorf("missing seed")
+	}
+	if expectedOwnerSpace == "" {
+		return fmt.Errorf("missing owner space")
+	}
+
+	claims, err := jwt.DecodeUserClaims(token)
+	if err != nil {
+		return fmt.Errorf("invalid JWT: %w", err)
+	}
+
+	// Subject must be a NATS user pubkey, and must match the seed we
+	// got alongside it. Catches a payload that pairs a stolen JWT with
+	// an attacker-controlled seed.
+	if !nkeys.IsValidPublicUserKey(claims.Subject) {
+		return fmt.Errorf("JWT subject is not a user public key")
+	}
+	userKP, err := nkeys.FromSeed([]byte(seed))
+	if err != nil {
+		return fmt.Errorf("invalid seed: %w", err)
+	}
+	defer userKP.Wipe()
+	seedPub, err := userKP.PublicKey()
+	if err != nil {
+		return fmt.Errorf("failed to derive pubkey from seed: %w", err)
+	}
+	if seedPub != claims.Subject {
+		return fmt.Errorf("seed does not correspond to JWT subject")
+	}
+
+	if claims.Expires > 0 && time.Now().Unix() > claims.Expires {
+		return fmt.Errorf("JWT expired")
+	}
+
+	// Permission patterns that bind the JWT to the expected owner space.
+	// Any one of these strings present in the allow lists is enough.
+	subPattern := fmt.Sprintf("OwnerSpace.%s.forApp.profile.>", expectedOwnerSpace)
+	pubPattern := fmt.Sprintf("MessageSpace.%s.forOwner.connection.accepted", expectedOwnerSpace)
+
+	if !containsString([]string(claims.Sub.Allow), subPattern) {
+		return fmt.Errorf("JWT subscribe permissions do not bind expected owner space %q", expectedOwnerSpace)
+	}
+	if !containsString([]string(claims.Pub.Allow), pubPattern) {
+		return fmt.Errorf("JWT publish permissions do not bind expected owner space %q", expectedOwnerSpace)
+	}
+
+	return nil
+}
+
 // extractCredsComponents extracts the JWT and seed from a NATS .creds file.
 func extractCredsComponents(creds string) (jwt string, seed string) {
 	// Extract JWT between markers

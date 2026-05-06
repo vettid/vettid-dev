@@ -54,6 +54,19 @@ type ExtendedKey struct {
 	Index     uint32
 }
 
+// Wipe zeroizes the private key + chain code material. Callers must
+// invoke this once they've copied out the bytes they need; the BIP32
+// key tree the *ExtendedKey was derived from already lives only in
+// stack memory, but the heap-allocated Key/ChainCode slices stick
+// around until GC unless we explicitly zero them. SECURITY (crypto-H3).
+func (k *ExtendedKey) Wipe() {
+	if k == nil {
+		return
+	}
+	zeroBytes(k.Key)
+	zeroBytes(k.ChainCode)
+}
+
 // DeriveBTCSeed derives a BTC-specific seed from the vault master secret
 // using HKDF-SHA256 with domain separation.
 func DeriveBTCSeed(masterSecret []byte) ([]byte, error) {
@@ -772,6 +785,7 @@ func GenerateWalletKeypair(masterSecret []byte, accountIndex int, network string
 	if err != nil {
 		return nil, nil, "", "", fmt.Errorf("failed to derive BIP84 key: %w", err)
 	}
+	defer extKey.Wipe()
 
 	compressedPubKey := PublicKeyFromPrivate(extKey.Key)
 
@@ -786,7 +800,8 @@ func GenerateWalletKeypair(masterSecret []byte, accountIndex int, network string
 	}
 	path := fmt.Sprintf("m/84'/%d'/%d'/0/0", coinType, accountIndex)
 
-	// Copy private key for caller (must be zeroized by caller)
+	// Copy private key for caller (must be zeroized by caller).
+	// extKey.Key is wiped by the deferred Wipe() above.
 	privKeyCopy := make([]byte, 32)
 	copy(privKeyCopy, extKey.Key)
 

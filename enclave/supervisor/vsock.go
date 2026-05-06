@@ -97,6 +97,12 @@ const (
 	MessageTypeTurnCredentialsGet      MessageType = "turn_credentials_get"
 	MessageTypeTurnCredentialsResponse MessageType = "turn_credentials_response"
 
+	// PCR-signing public-key fetch (vault-manager -> supervisor -> parent -> KMS GetPublicKey).
+	// Returns DER-encoded SPKI bytes that the migration handler uses to
+	// verify the signature on every fetched migration config.
+	MessageTypePCRSigningKeyGet      MessageType = "pcr_signing_key_get"
+	MessageTypePCRSigningKeyResponse MessageType = "pcr_signing_key_response"
+
 	// Audit event (org-vault-manager -> supervisor -> parent -> DynamoDB + NATS)
 	MessageTypeAuditEvent MessageType = "audit_event"
 

@@ -101,14 +101,11 @@ type VaultConfig struct {
 type VaultManager struct {
 	config         *VaultConfig
 	storage        *EncryptedStorage
-	credential     *UnsealedCredential
 	session        *Session
 	messageHandler *MessageHandler
 	publisher      *VsockPublisher
 	parentConn     *ParentConnection // IPC connection to supervisor
 }
-
-// NOTE: UnsealedCredential and CryptoKey types are defined in credential_types.go
 
 // Session holds session state for authenticated operations
 type Session struct {
@@ -300,12 +297,8 @@ func (vm *VaultManager) sendToParent(msg *OutgoingMessage) error {
 func (vm *VaultManager) SecureShutdown() {
 	log.Info().Msg("Performing secure shutdown")
 
-	// 1. Zero credential if loaded
-	if vm.credential != nil {
-		vm.credential.SecureErase()
-		vm.credential = nil
-		log.Debug().Msg("Zeroed credential data")
-	}
+	// 1. Credential plaintext is no longer cached on VaultManager
+	//    (Phase D moved to per-op decrypt). Nothing to zero here.
 
 	// 2. Zero session token
 	if vm.session != nil {

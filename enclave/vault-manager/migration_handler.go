@@ -4,21 +4,32 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
+
+	"github.com/vettid/vettid-dev/enclave/migration"
 )
 
 // MigrationHandler handles migration-related NATS operations.
 // Provides status checks, acknowledgments, and emergency recovery for migrated users.
 type MigrationHandler struct {
-	ownerSpace  string
-	storage     *EncryptedStorage
-	vaultState  *VaultState
-	sealerProxy *SealerProxy
-	auditLog    *AuditLog
-	persistFn   func()                            // callback to persist vault state after migration re-seal
+	ownerSpace   string
+	storage      *EncryptedStorage
+	vaultState   *VaultState
+	sealerProxy  *SealerProxy
+	auditLog     *AuditLog
+	persistFn    func()                            // callback to persist vault state after migration re-seal
 	sendToParent func(msg *OutgoingMessage) error // callback to emit routing-handoff to parent
+
+	// pcrSigningPublicKey is the DER-encoded SPKI bytes for the
+	// migration-config signing key. Lazily fetched from the parent
+	// (KMS GetPublicKey) on first use; cached for the process
+	// lifetime since the public material only changes on KMS-key
+	// rotation, which requires redeploy.
+	pcrPubKeyMu        sync.Mutex
+	pcrSigningPublicDER []byte
 }
 
 // SetAuditLog wires the per-connection audit trail so migration
@@ -52,6 +63,64 @@ func (h *MigrationHandler) SetPersistFn(fn func()) {
 // attesting to the new PCR can take over.
 func (h *MigrationHandler) SetSendToParent(fn func(msg *OutgoingMessage) error) {
 	h.sendToParent = fn
+}
+
+// fetchAndVerifyMigrationConfig fetches the migration config from S3
+// AND verifies its ECDSA signature against the KMS-managed signing
+// key before returning the parsed struct. This is the single chokepoint
+// every migration code path goes through — there is no path that
+// trusts the config based on shape alone.
+//
+// Returns (nil, nil) when no migration config exists on S3 (the
+// normal "no update available" case).
+//
+// SECURITY: bypassing this and reading FetchMigrationConfig directly
+// would re-introduce the unsigned-overwrite vulnerability where an
+// attacker with S3 write access could direct the enclave at a
+// PCR0 they control. Don't.
+func (h *MigrationHandler) fetchAndVerifyMigrationConfig() (*migration.SignedPCRConfig, []byte, error) {
+	configData, err := h.sealerProxy.FetchMigrationConfig()
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(configData) == 0 {
+		return nil, nil, nil
+	}
+
+	// Lazy-load + cache the signing public key.
+	h.pcrPubKeyMu.Lock()
+	if len(h.pcrSigningPublicDER) == 0 {
+		der, kerr := h.sealerProxy.FetchPCRSigningPublicKey()
+		if kerr != nil {
+			h.pcrPubKeyMu.Unlock()
+			return nil, nil, fmt.Errorf("fetch pcr signing public key: %w", kerr)
+		}
+		h.pcrSigningPublicDER = der
+	}
+	pubKey := h.pcrSigningPublicDER
+	h.pcrPubKeyMu.Unlock()
+
+	parsed, err := migration.ParseSignedPCRConfig(configData)
+	if err != nil {
+		return nil, nil, fmt.Errorf("parse migration config: %w", err)
+	}
+
+	// Verify signature + time-window. We can't verify OldPCRs match
+	// the running enclave from inside vault-manager (it doesn't have
+	// direct NSM access; PCR plumbing through the supervisor is a
+	// future hardening). The signature + ValidFrom/ExpiresAt window
+	// reject the F1 attack outright since an attacker without the
+	// KMS signing key cannot mint a config that passes ECDSA verify.
+	verifier, err := migration.NewSignatureOnlyVerifier(pubKey)
+	if err != nil {
+		return nil, nil, fmt.Errorf("init verifier: %w", err)
+	}
+	if err := verifier.VerifySignatureAndTime(parsed); err != nil {
+		log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("Migration config rejected — signature/time-window verification failed")
+		return nil, nil, fmt.Errorf("migration config verification failed: %w", err)
+	}
+
+	return parsed, configData, nil
 }
 
 // MigrationUserStatus represents the status of a user's migration.
@@ -290,10 +359,13 @@ func (h *MigrationHandler) HandleGetConfig(ctx context.Context, msg *IncomingMes
 
 	state, _ := h.loadMigrationState(ctx)
 
-	// Fetch migration config from S3 via sealer proxy
-	configData, err := h.sealerProxy.FetchMigrationConfig()
-	if err != nil || len(configData) == 0 {
-		// No migration config available (normal case)
+	// Fetch + verify migration config (signature + time window). Any
+	// integrity failure surfaces as "not available" — same shape as
+	// the no-config case so a forged blob doesn't leak diagnostic
+	// information to the caller. The detailed error is logged in
+	// fetchAndVerifyMigrationConfig.
+	verifiedConfig, _, err := h.fetchAndVerifyMigrationConfig()
+	if err != nil || verifiedConfig == nil {
 		resp := MigrationConfigResponse{Available: false}
 		respBytes, _ := json.Marshal(resp)
 		return &OutgoingMessage{
@@ -303,26 +375,8 @@ func (h *MigrationHandler) HandleGetConfig(ctx context.Context, msg *IncomingMes
 		}, nil
 	}
 
-	// Parse the signed config to extract user-facing fields
-	var config struct {
-		Version        string `json:"version"`
-		Summary        string `json:"summary"`
-		DetailsURL     string `json:"details_url"`
-		PublishedAt    string `json:"published_at"`
-		MandatoryAfter string `json:"mandatory_after"`
-		NewPCRs        struct {
-			PCR0 string `json:"pcr0"`
-		} `json:"new_pcrs"`
-	}
-	if err := json.Unmarshal(configData, &config); err != nil {
-		log.Error().Err(err).Msg("Failed to parse migration config")
-		return h.errorResponse(msg.GetID(), "invalid migration config")
-	}
-
 	// User already migrated to THIS published version — nothing to do.
-	// Previously this short-circuited on Status==Complete alone, which meant a
-	// prior migration blocked subsequent ones forever.
-	if state != nil && state.Status == MigrationUserStatusComplete && state.ToPCRVersion == config.Version {
+	if state != nil && state.Status == MigrationUserStatusComplete && state.ToPCRVersion == verifiedConfig.Version {
 		resp := MigrationConfigResponse{Available: false}
 		respBytes, _ := json.Marshal(resp)
 		return &OutgoingMessage{
@@ -334,17 +388,25 @@ func (h *MigrationHandler) HandleGetConfig(ctx context.Context, msg *IncomingMes
 
 	log.Info().
 		Str("owner_space", h.ownerSpace).
-		Str("version", config.Version).
+		Str("version", verifiedConfig.Version).
 		Msg("Migration config available for user")
 
+	publishedAt := ""
+	if !verifiedConfig.PublishedAt.IsZero() {
+		publishedAt = verifiedConfig.PublishedAt.Format(time.RFC3339)
+	}
+	mandatoryAfter := ""
+	if !verifiedConfig.MandatoryAfter.IsZero() {
+		mandatoryAfter = verifiedConfig.MandatoryAfter.Format(time.RFC3339)
+	}
 	resp := MigrationConfigResponse{
 		Available:      true,
-		Version:        config.Version,
-		Summary:        config.Summary,
-		DetailsURL:     config.DetailsURL,
-		PublishedAt:    config.PublishedAt,
-		MandatoryAfter: config.MandatoryAfter,
-		NewPCR0:        config.NewPCRs.PCR0,
+		Version:        verifiedConfig.Version,
+		Summary:        verifiedConfig.Summary,
+		DetailsURL:     verifiedConfig.DetailsURL,
+		PublishedAt:    publishedAt,
+		MandatoryAfter: mandatoryAfter,
+		NewPCR0:        verifiedConfig.NewPCRs.PCR0,
 	}
 
 	respBytes, _ := json.Marshal(resp)
@@ -368,15 +430,27 @@ func (h *MigrationHandler) HandleStart(ctx context.Context, msg *IncomingMessage
 	// migrated to the CURRENTLY-published version; a new published version
 	// should re-run migration.
 	state, _ := h.loadMigrationState(ctx)
-	currentVersion := ""
-	if cfg, err := h.sealerProxy.FetchMigrationConfig(); err == nil && len(cfg) > 0 {
-		var c struct {
-			Version string `json:"version"`
-		}
-		if json.Unmarshal(cfg, &c) == nil {
-			currentVersion = c.Version
-		}
+	verifiedConfig, _, err := h.fetchAndVerifyMigrationConfig()
+	if err != nil {
+		// Verification failed — refuse the migration. Without a signed
+		// config we have no proof that the new PCR0 is one we deployed.
+		log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("Refusing migration.start — config verification failed")
+		return h.errorResponse(msg.GetID(), "migration config verification failed")
 	}
+	if verifiedConfig == nil {
+		// No config published — nothing to migrate to.
+		resp := MigrationStartResponse{
+			Success: true,
+			Message: "No migration available",
+		}
+		respBytes, _ := json.Marshal(resp)
+		return &OutgoingMessage{
+			RequestID: msg.GetID(),
+			Type:      MessageTypeResponse,
+			Payload:   respBytes,
+		}, nil
+	}
+	currentVersion := verifiedConfig.Version
 	if state != nil && state.Status == MigrationUserStatusComplete && currentVersion != "" && state.ToPCRVersion == currentVersion {
 		resp := MigrationStartResponse{
 			Success: true,
@@ -412,24 +486,11 @@ func (h *MigrationHandler) HandleStart(ctx context.Context, msg *IncomingMessage
 		log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("Failed to re-seal ECIES keys (non-fatal)")
 	}
 
-	// 3. Fetch migration config for state tracking + routing handoff.
-	// We need both the human-readable version (for MigrationState) and
-	// the actual PCR0 hex (for the routing KV so reclaiming instances
-	// can match it against their attested PCR).
-	configVersion := ""
-	newPCR0 := ""
-	configData, err := h.sealerProxy.FetchMigrationConfig()
-	if err == nil && len(configData) > 0 {
-		var config struct {
-			Version string `json:"version"`
-			NewPCRs struct {
-				PCR0 string `json:"pcr0"`
-			} `json:"new_pcrs"`
-		}
-		json.Unmarshal(configData, &config)
-		configVersion = config.Version
-		newPCR0 = config.NewPCRs.PCR0
-	}
+	// 3. Use the already-verified config from earlier in this handler
+	// for state tracking + routing handoff. Re-fetching here would
+	// just re-run the verifier; the values can't change mid-call.
+	configVersion := verifiedConfig.Version
+	newPCR0 := verifiedConfig.NewPCRs.PCR0
 
 	// 4. Mark migration complete
 	now := time.Now()

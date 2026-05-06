@@ -453,26 +453,51 @@ export class NitroStack extends cdk.Stack {
     // S3 access for vault data bucket
     this.vaultDataBucket.grantReadWrite(this.enclaveInstanceRole);
 
-    // KMS access for Nitro Enclave envelope encryption
-    // The parent process (EC2 host) calls KMS on behalf of the enclave:
-    // - Encrypt/GenerateDataKey: No attestation needed (parent encrypts DEKs)
-    // - Decrypt: REQUIRES PCR0 attestation - KMS validates the attestation document
-    //   and only returns CiphertextForRecipient if PCR0 matches
+    // KMS access for Nitro Enclave envelope encryption.
     //
-    // Key policy statements (KMS resource-based policy):
+    // Threat model: anything that can assume `enclaveInstanceRole`
+    // (the EC2 instance profile, an SSM session into the parent host,
+    // a future Lambda we add to the role chain) can call this KMS key.
+    // Plain `kms:Encrypt` and `kms:GenerateDataKey` (without
+    // attestation) cannot be PCR-gated — the AWS condition
+    // `kms:RecipientAttestation:*` only applies to operations that
+    // produce a CiphertextForRecipient. To still bound the blast
+    // radius:
+    //
+    //   1. Every operation requires the encryption context
+    //      `purpose=vault-sealing-v1`. A host-side attacker without
+    //      that context can't produce a ciphertext the legitimate
+    //      enclave will Decrypt (the context is checked on Decrypt
+    //      too), nor can they Decrypt a legitimate sealed blob.
+    //   2. Decrypt additionally requires PCR0 attestation, so even
+    //      with the context an attacker can't Decrypt outside the
+    //      measured enclave.
+    //
+    // The encryption context value lives in the supervisor sealing
+    // path + parent KMS client (`sealingEncryptionContext`); bumping
+    // the version requires re-encrypting all stored material under
+    // the new context.
+    const sealingEncryptionContext = { purpose: 'vault-sealing-v1' };
 
-    // Statement 1: Allow Encrypt and GenerateDataKey without attestation
-    // This lets the parent process seal new credentials
+    // Statement 1: Allow Encrypt + GenerateDataKey only when the
+    // request carries the canonical encryption context.
     sealingKey.addToResourcePolicy(new iam.PolicyStatement({
       sid: 'AllowEnclaveEncrypt',
       effect: iam.Effect.ALLOW,
       principals: [new iam.ArnPrincipal(this.enclaveInstanceRole.roleArn)],
       actions: ['kms:Encrypt', 'kms:GenerateDataKey'],
       resources: ['*'],
+      conditions: {
+        StringEquals: {
+          'kms:EncryptionContext:purpose': sealingEncryptionContext.purpose,
+        },
+      },
     }));
 
-    // Statement 2: Allow Decrypt ONLY with valid PCR0 attestation
-    // This ensures only the exact enclave build can unseal credentials
+    // Statement 2: Allow Decrypt only with PCR0 attestation AND the
+    // canonical encryption context. Defence in depth: even an attacker
+    // who briefly possessed an attestation document cannot Decrypt a
+    // ciphertext they minted under a different context.
     sealingKey.addToResourcePolicy(new iam.PolicyStatement({
       sid: 'AllowEnclaveDecrypt',
       effect: iam.Effect.ALLOW,
@@ -482,6 +507,9 @@ export class NitroStack extends cdk.Stack {
       conditions: {
         StringEqualsIgnoreCase: {
           'kms:RecipientAttestation:PCR0': pcr0Value,
+        },
+        StringEquals: {
+          'kms:EncryptionContext:purpose': sealingEncryptionContext.purpose,
         },
       },
     }));
@@ -1002,6 +1030,20 @@ export class NitroStack extends cdk.Stack {
       stringValue: this.pcrSigningKey.keyId,
       description: 'KMS Key ID for PCR manifest signing',
     });
+
+    // Grant the enclave parent process read-only access to the PCR
+    // signing key's public material. The parent caches the DER at
+    // startup and forwards it to the vault-manager so the migration
+    // handler can verify the signature on every fetched migration
+    // config (defense against an attacker who can write to S3 but
+    // cannot sign with this key).
+    this.pcrSigningKey.addToResourcePolicy(new iam.PolicyStatement({
+      sid: 'AllowEnclaveReadPublicKey',
+      effect: iam.Effect.ALLOW,
+      principals: [new iam.ArnPrincipal(this.enclaveInstanceRole.roleArn)],
+      actions: ['kms:GetPublicKey', 'kms:DescribeKey'],
+      resources: ['*'],
+    }));
 
     // Store CloudFront URL in SSM (using custom domain)
     new ssm.StringParameter(this, 'PcrManifestUrlParam', {

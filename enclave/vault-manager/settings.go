@@ -31,9 +31,20 @@ type CredentialSettings struct {
 	UpdatedAt         int64 `json:"updated_at"`
 }
 
-// CredentialSettingsUpdateRequest is the payload for settings.credential.update
+// CredentialSettingsUpdateRequest is the payload for settings.credential.update.
+//
+// Phase E: changing security-sensitive settings (TTL window) requires
+// fresh password authentication. The encrypted_credential + UTK envelope
+// fields are verified by the routing layer before the SettingsHandler
+// is invoked.
 type CredentialSettingsUpdateRequest struct {
 	SessionTtlSeconds *int `json:"session_ttl_seconds,omitempty"`
+
+	EncryptedCredential   string `json:"encrypted_credential"`
+	EncryptedPasswordHash string `json:"encrypted_password_hash"`
+	EphemeralPublicKey    string `json:"ephemeral_public_key"`
+	Nonce                 string `json:"nonce"`
+	KeyID                 string `json:"key_id"`
 }
 
 // NotificationSettings controls notification preferences
@@ -424,6 +435,20 @@ func (h *SettingsHandler) HandleCredentialSettingsUpdate(msg *IncomingMessage) (
 		Type:      MessageTypeResponse,
 		Payload:   respBytes,
 	}, nil
+}
+
+// SessionTTLSeconds returns the user's configured identity-key TTL in
+// seconds, falling back to 300s (5 min) if no setting is stored or the
+// stored value is out of range.
+func (h *SettingsHandler) SessionTTLSeconds() int {
+	if h == nil {
+		return 300
+	}
+	s := h.loadCredentialSettings()
+	if s.SessionTtlSeconds < 30 || s.SessionTtlSeconds > 3600 {
+		return 300
+	}
+	return s.SessionTtlSeconds
 }
 
 func (h *SettingsHandler) loadCredentialSettings() *CredentialSettings {

@@ -410,10 +410,18 @@ func (h *ServiceConnectionHandler) HandleInitiate(msg *IncomingMessage) (*Outgoi
 		return h.errorResponse(msg.GetID(), "Invalid service public key format")
 	}
 
-	// Compute shared secret
-	var sharedSecret []byte
-	if len(peerPublicKey) == 32 {
-		sharedSecret, _ = curve25519.X25519(privateKey[:], peerPublicKey)
+	// Compute shared secret. SECURITY (crypto-H1): a service-connection
+	// record is only useful when E2E messaging works, which requires a
+	// valid 32-byte peer pubkey + a successful scalar mult. Refusing to
+	// build the record on either failure prevents a "looks active but
+	// can't decrypt" state.
+	if len(peerPublicKey) != 32 {
+		return h.errorResponse(msg.GetID(), "Service public key must be 32 bytes")
+	}
+	sharedSecret, err := curve25519.X25519(privateKey[:], peerPublicKey)
+	if err != nil {
+		log.Error().Err(err).Str("service_guid", req.ServiceGUID).Msg("ECDH derive failed")
+		return h.errorResponse(msg.GetID(), "Failed to derive shared secret")
 	}
 
 	now := time.Now()

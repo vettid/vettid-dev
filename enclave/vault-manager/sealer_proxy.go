@@ -71,6 +71,8 @@ const (
 	SealerOpGetTurnCredentials SealerOperation = "get_turn_credentials"
 	// Migration: unseal the inner sealed material from the full blob (no DEK derivation)
 	SealerOpUnsealMaterial SealerOperation = "unseal_material"
+	// PCR signing public key fetch (returns DER-encoded SPKI bytes)
+	SealerOpFetchPCRSigningPublicKey SealerOperation = "fetch_pcr_signing_public_key"
 )
 
 // SealerRequest is sent from vault-manager to supervisor
@@ -136,6 +138,9 @@ type SealerResponse struct {
 
 	// For get_turn_credentials (opaque JSON returned by parent)
 	TurnCredentials []byte `json:"turn_credentials,omitempty"`
+
+	// For fetch_pcr_signing_public_key (DER-encoded SPKI bytes)
+	PCRSigningPublicKey []byte `json:"pcr_signing_public_key,omitempty"`
 }
 
 // GenerateSealedMaterial requests the supervisor to generate PCR-bound sealed material
@@ -613,6 +618,29 @@ func (p *SealerProxy) GetVoteProof(proposalID, votingPublicKey string) ([]byte, 
 		return nil, fmt.Errorf("empty vote proof response")
 	}
 	return resp.VoteProofData, nil
+}
+
+// FetchPCRSigningPublicKey returns the DER-encoded SPKI bytes for
+// the PCR signing key (used to verify migration config signatures).
+// The result is invariant for the lifetime of the KMS key, so callers
+// should cache. Each call still hits the parent → supervisor → KMS
+// path; first call inside the parent caches the bytes there too.
+func (p *SealerProxy) FetchPCRSigningPublicKey() ([]byte, error) {
+	req := SealerRequest{
+		Operation:  SealerOpFetchPCRSigningPublicKey,
+		OwnerSpace: p.ownerSpace,
+	}
+	resp, err := p.sendRequest(req)
+	if err != nil {
+		return nil, err
+	}
+	if !resp.Success {
+		return nil, fmt.Errorf("fetch pcr signing public key error: %s", resp.Error)
+	}
+	if len(resp.PCRSigningPublicKey) == 0 {
+		return nil, fmt.Errorf("empty pcr signing public key response")
+	}
+	return resp.PCRSigningPublicKey, nil
 }
 
 // FetchMigrationConfig loads the signed migration config from S3 via the supervisor.

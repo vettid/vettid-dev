@@ -152,13 +152,13 @@ func (mh *MessageHandler) handleActionInvokeOnPeer(ctx context.Context, msg *Inc
 		return mh.errorResponse(msg.GetID(), "ERR_INVALID_PARAMS:"+err.Error())
 	}
 
-	// Phase C: read the carved-out identity key directly so we don't
-	// need the rest of the credential plaintext in memory for signing.
-	mh.vaultState.mu.RLock()
-	idKey := append([]byte(nil), mh.vaultState.identityPrivateKey...)
-	mh.vaultState.mu.RUnlock()
-	if len(idKey) == 0 {
-		return mh.errorResponse(msg.GetID(), "vault is locked")
+	// Phase E: identity-key signing is gated by a sliding TTL.
+	// consumeIdentityKey returns ErrIdentityLocked if the window has
+	// lapsed; the client surfaces that to the user, who re-authenticates
+	// with their password via credential.identity-unlock and retries.
+	idKey, err := mh.consumeIdentityKey()
+	if err != nil {
+		return mh.errorResponse(msg.GetID(), "identity_locked")
 	}
 	defer zeroBytes(idKey)
 

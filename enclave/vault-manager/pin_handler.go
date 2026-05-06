@@ -99,6 +99,23 @@ func (h *PINHandler) HandlePINSetup(ctx context.Context, msg *IncomingMessage) (
 	copy(dekCopy, dek)
 	zeroBytes(dek) // Zero the original
 
+	// Compute the PIN auth hash + salt up-front so the post-unlock
+	// belt-and-braces check has a known-good comparator.
+	//
+	// SECURITY: without this, fresh enrollments leave Auth.PinHash
+	// empty until the first PIN change, which short-circuits the
+	// check at HandlePINUnlock and lets a wrong PIN warm-unlock the
+	// vault on a Pixel that already had a successful unlock recently
+	// (sealed material is loaded, no DEK-decrypt of vault state
+	// happens, KMS happily returns *some* DEK for any input). The
+	// hash check below was designed to catch that case but only
+	// fired after the user had changed their PIN.
+	pinSetupSalt, err := generateSalt()
+	if err != nil {
+		return h.errorResponse(msg.GetID(), "salt generation failed")
+	}
+	pinSetupAuthHash := hashAuthInput([]byte(payload.PIN), pinSetupSalt)
+
 	h.state.mu.Lock()
 	h.state.sealedMaterial = sealedMaterial
 	h.state.dek = dekCopy // Store DEK copy for credential.create
@@ -112,12 +129,12 @@ func (h *PINHandler) HandlePINSetup(ctx context.Context, msg *IncomingMessage) (
 	h.state.identityPublicKey = nil
 	if h.state.pinAuthHash != nil {
 		zeroBytes(h.state.pinAuthHash)
-		h.state.pinAuthHash = nil
 	}
 	if h.state.pinAuthSalt != nil {
 		zeroBytes(h.state.pinAuthSalt)
-		h.state.pinAuthSalt = nil
 	}
+	h.state.pinAuthHash = pinSetupAuthHash
+	h.state.pinAuthSalt = pinSetupSalt
 	h.state.mu.Unlock()
 
 	// Initialize encrypted storage with DEK so feed/events are accessible
@@ -392,9 +409,9 @@ func (h *PINHandler) HandlePINUnlock(ctx context.Context, msg *IncomingMessage) 
 					UsedAt    int64  `json:"used_at"`
 					CreatedAt int64  `json:"created_at"`
 				} `json:"utk_pairs"`
-				Credential     *UnsealedCredential `json:"credential,omitempty"`
-				SealedMaterial []byte              `json:"sealed_material"`
-				DatabaseBackup json.RawMessage     `json:"database_backup,omitempty"`
+				Credential     *ProteanCredentialV2 `json:"credential,omitempty"`
+				SealedMaterial []byte               `json:"sealed_material"`
+				DatabaseBackup json.RawMessage      `json:"database_backup,omitempty"`
 			}
 			if err := json.Unmarshal(stateData, &persistedState); err != nil {
 				return h.errorResponse(msg.GetID(), "invalid vault state format")
@@ -431,16 +448,19 @@ func (h *PINHandler) HandlePINUnlock(ctx context.Context, msg *IncomingMessage) 
 				})
 			}
 			if persistedState.Credential != nil {
-				// Phase D: extract everything we need from the
-				// credential into narrow carve-out fields, then
-				// drop the full struct. The signing path reads
-				// identityPrivateKey/PublicKey; PIN-change reads
-				// pinAuthHash/Salt. Nothing else needs the
-				// credential plaintext in memory anymore.
-				h.state.identityPrivateKey = append([]byte(nil), persistedState.Credential.IdentityPrivateKey...)
-				h.state.identityPublicKey = append([]byte(nil), persistedState.Credential.IdentityPublicKey...)
-				h.state.pinAuthHash = append([]byte(nil), persistedState.Credential.AuthHash...)
-				h.state.pinAuthSalt = append([]byte(nil), persistedState.Credential.AuthSalt...)
+				// Phase D: pull narrow carve-outs from V2 credential
+				// (identity keypair + PIN verifier) into vaultState
+				// and then drop the full struct. Nothing else needs
+				// the credential plaintext in memory.
+				h.state.identityPrivateKey = append([]byte(nil), persistedState.Credential.Identity.PrivateKey...)
+				h.state.identityPublicKey = append([]byte(nil), persistedState.Credential.Identity.PublicKey...)
+				h.state.pinAuthHash = append([]byte(nil), persistedState.Credential.Auth.PinHash...)
+				h.state.pinAuthSalt = append([]byte(nil), persistedState.Credential.Auth.PinSalt...)
+				// Phase E: gate identity-key signing on a user-configurable
+				// sliding TTL (settings.credential.session_ttl_seconds).
+				// PIN unlock starts the window; subsequent signed ops slide
+				// it forward via consumeIdentityKey().
+				h.state.identityKeyExpiresAt = time.Now().Unix() + loadSessionTTLSeconds(h.storage)
 				persistedState.Credential.SecureErase()
 			}
 			if len(persistedState.SealedMaterial) > 0 {
@@ -489,21 +509,31 @@ func (h *PINHandler) HandlePINUnlock(ctx context.Context, msg *IncomingMessage) 
 		}
 	}
 
-	// Phase D: verify the PIN against the carve-out auth hash that
-	// was extracted at credential load time. DEK derivation already
-	// validated the PIN via KMS — this is a belt-and-braces check.
+	// Verify the PIN against the carve-out auth hash.
+	//
+	// SECURITY: in cold-unlock, DEK decryption of the persisted vault
+	// state at line 377 already proved the PIN was right (a wrong DEK
+	// can't decrypt). In warm-unlock no decrypt happens — the only
+	// gate left is this hash check, so it MUST be present. If the
+	// carve-out is empty in warm mode, fail closed: the user's
+	// credential was minted before PIN-setup hash stamping landed and
+	// needs to be re-enrolled. Letting them through would let any
+	// random PIN warm-unlock the vault.
 	h.state.mu.RLock()
 	pinAuthHash := append([]byte(nil), h.state.pinAuthHash...)
 	pinAuthSalt := append([]byte(nil), h.state.pinAuthSalt...)
 	h.state.mu.RUnlock()
 	if len(pinAuthHash) > 0 && len(pinAuthSalt) > 0 {
 		if !verifyAuthHash(payload.PIN, pinAuthSalt, pinAuthHash) {
-			log.Warn().Str("owner_space", h.ownerSpace).Msg("PIN auth hash verification failed (DEK derivation succeeded)")
+			log.Warn().Str("owner_space", h.ownerSpace).Msg("PIN auth hash verification failed")
 			return h.errorResponse(msg.GetID(), "invalid PIN")
 		}
 		log.Debug().Str("owner_space", h.ownerSpace).Msg("PIN auth hash verification passed")
+	} else if isWarmVault {
+		log.Warn().Str("owner_space", h.ownerSpace).Msg("Warm-unlock attempted but no PIN hash on record — refusing to accept the PIN unverified")
+		return h.errorResponse(msg.GetID(), "vault needs re-enrollment (no PIN hash stored)")
 	} else {
-		log.Debug().Str("owner_space", h.ownerSpace).Msg("Skipping auth hash verification (not set) - PIN validated via DEK derivation")
+		log.Debug().Str("owner_space", h.ownerSpace).Msg("Cold-unlock proved PIN via DEK-decrypt; skipping hash check (carve-out empty)")
 	}
 
 	// Generate more UTKs and return ONLY those to the app.
@@ -752,10 +782,10 @@ func (h *PINHandler) HandlePINChange(ctx context.Context, msg *IncomingMessage) 
 	newDEKCopy := make([]byte, len(newDEK))
 	copy(newDEKCopy, newDEK)
 
-	// Phase D: decrypt the request-supplied credential blob with CEK,
-	// mutate AuthHash/AuthSalt/Version, persist the carve-outs, and
-	// re-encrypt with the new DEK for the response. The credential
-	// plaintext never lives on vaultState.
+	// Decrypt the request-supplied credential blob with CEK, swap
+	// the PIN auth fields (Auth.PinHash + Auth.PinSalt), bump Version,
+	// re-encrypt with CEK, ship the new blob back to the app. The
+	// password's Auth.Hash is untouched.
 	encBlobBytes, err := base64.StdEncoding.DecodeString(req.EncryptedCredential)
 	if err != nil {
 		return h.errorResponse(msg.GetID(), "invalid encrypted_credential encoding")
@@ -766,13 +796,18 @@ func (h *PINHandler) HandlePINChange(ctx context.Context, msg *IncomingMessage) 
 		return h.errorResponse(msg.GetID(), "credential decrypt failed")
 	}
 	defer zeroBytes(credPlain)
-	var credForChange UnsealedCredential
+	var credForChange ProteanCredentialV2
 	if err := json.Unmarshal(credPlain, &credForChange); err != nil {
 		return h.errorResponse(msg.GetID(), "credential parse failed")
 	}
+	if credForChange.FormatVersion < 2 {
+		return h.errorResponse(msg.GetID(), fmt.Sprintf("unsupported credential format version: %d", credForChange.FormatVersion))
+	}
 	defer credForChange.SecureErase()
-	credForChange.AuthHash = newAuthHash
-	credForChange.AuthSalt = newSalt
+	credForChange.Auth.PinHash = newAuthHash
+	credForChange.Auth.PinSalt = newSalt
+	credForChange.Timestamps.LastModified = time.Now().Unix()
+	credForChange.Timestamps.AuthChangedAt = credForChange.Timestamps.LastModified
 	credForChange.Version++
 
 	h.state.mu.Lock()
@@ -787,16 +822,22 @@ func (h *PINHandler) HandlePINChange(ctx context.Context, msg *IncomingMessage) 
 		zeroBytes(oldDEKRef)
 	}
 
-	// Re-encrypt credential with new DEK and return to client.
+	// Re-encrypt credential with CEK (not DEK) and return to client.
+	// The app-side blob is always CEK-encrypted — every other handler
+	// that decrypts this blob calls decryptWithCEK. Re-encrypting with
+	// the new DEK shipped a blob the rest of the system couldn't read,
+	// which forced the app to silently keep its pre-change blob and
+	// drift out of sync with the vault on AuthHash/AuthSalt.
 	credBytes, err := json.Marshal(&credForChange)
 	if err != nil {
 		return h.errorResponse(msg.GetID(), "serialization failed")
 	}
 	defer zeroBytes(credBytes)
 
-	encryptedCred, err := encryptWithDEK(newDEK, credBytes)
-	// SECURITY: Zero the local newDEK copy now that encryption is done.
-	// The DEK remains stored in h.state.dek (as newDEKCopy) for vault state persistence.
+	encryptedCred, err := encryptWithCEK(cekPair.PublicKey, credBytes)
+	// SECURITY: Zero the local newDEK copy now that we no longer need it
+	// for blob encryption. h.state.dek already holds newDEKCopy for
+	// vault-state persistence.
 	zeroBytes(newDEK)
 	if err != nil {
 		return h.errorResponse(msg.GetID(), "encryption failed")

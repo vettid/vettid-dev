@@ -12,14 +12,41 @@ import (
 
 // KMSClient handles KMS operations with Nitro attestation support
 type KMSClient struct {
-	client        *kms.Client
-	sealingKeyARN string
+	client           *kms.Client
+	sealingKeyARN    string
+	pcrSigningKeyARN string
+	// pcrSigningPublicKey is the DER-encoded SPKI bytes for the PCR
+	// signing key. Cached on first successful KMS GetPublicKey call;
+	// shipped to the enclave so the migration handler can verify the
+	// signature on every fetched migration config.
+	pcrSigningPublicKey []byte
+}
+
+// SealingEncryptionContext is the KMS encryption context attached to
+// every Encrypt / GenerateDataKey / Decrypt call against the vault
+// sealing key. The KMS resource policy requires
+// `kms:EncryptionContext:purpose == vault-sealing-v1` on these
+// operations, so a host-side process that assumes the enclave instance
+// role but doesn't know to set this context produces ciphertexts the
+// real enclave will refuse to decrypt — and conversely cannot decrypt
+// legitimate ciphertexts. Plain `kms:Encrypt` doesn't support
+// RecipientAttestation conditions, so the encryption context is the
+// principal defense-in-depth gate for that API.
+//
+// Bumping the version → roll the policy condition + redeploy +
+// re-encrypt all stored material under the new context (handled in
+// the supervisor sealing path).
+var sealingEncryptionContext = map[string]string{
+	"purpose": "vault-sealing-v1",
 }
 
 // NewKMSClient creates a new KMS client
 func NewKMSClient(cfg KMSConfig) (*KMSClient, error) {
 	if cfg.SealingKeyARN == "" {
 		log.Warn().Msg("KMS sealing key ARN not configured - sealing operations will fail")
+	}
+	if cfg.PCRSigningKeyARN == "" {
+		log.Warn().Msg("KMS PCR-signing key ARN not configured — migration config verification will fail")
 	}
 
 	awsCfg, err := config.LoadDefaultConfig(context.Background(),
@@ -30,9 +57,39 @@ func NewKMSClient(cfg KMSConfig) (*KMSClient, error) {
 	}
 
 	return &KMSClient{
-		client:        kms.NewFromConfig(awsCfg),
-		sealingKeyARN: cfg.SealingKeyARN,
+		client:           kms.NewFromConfig(awsCfg),
+		sealingKeyARN:    cfg.SealingKeyARN,
+		pcrSigningKeyARN: cfg.PCRSigningKeyARN,
 	}, nil
+}
+
+// GetPCRSigningPublicKey returns the DER-encoded SPKI public key for
+// the PCR signing key (used to verify signed migration configs). The
+// result is cached on first successful call — the public material
+// only changes when the KMS key is rotated, which requires redeploy.
+func (k *KMSClient) GetPCRSigningPublicKey(ctx context.Context) ([]byte, error) {
+	if k.pcrSigningPublicKey != nil {
+		return k.pcrSigningPublicKey, nil
+	}
+	if k.pcrSigningKeyARN == "" {
+		return nil, fmt.Errorf("PCR signing key ARN not configured")
+	}
+
+	result, err := k.client.GetPublicKey(ctx, &kms.GetPublicKeyInput{
+		KeyId: &k.pcrSigningKeyARN,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("KMS GetPublicKey failed: %w", err)
+	}
+	if len(result.PublicKey) == 0 {
+		return nil, fmt.Errorf("KMS GetPublicKey returned empty key")
+	}
+	k.pcrSigningPublicKey = result.PublicKey
+	log.Info().
+		Int("der_len", len(result.PublicKey)).
+		Str("key_arn", k.pcrSigningKeyARN).
+		Msg("Fetched + cached PCR signing public key")
+	return k.pcrSigningPublicKey, nil
 }
 
 // Encrypt encrypts data using the sealing key
@@ -44,8 +101,9 @@ func (k *KMSClient) Encrypt(ctx context.Context, plaintext []byte) ([]byte, erro
 	}
 
 	result, err := k.client.Encrypt(ctx, &kms.EncryptInput{
-		KeyId:     &k.sealingKeyARN,
-		Plaintext: plaintext,
+		KeyId:             &k.sealingKeyARN,
+		Plaintext:         plaintext,
+		EncryptionContext: sealingEncryptionContext,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("KMS encrypt failed: %w", err)
@@ -78,9 +136,10 @@ func (k *KMSClient) DecryptWithAttestation(ctx context.Context, ciphertext []byt
 	}
 
 	result, err := k.client.Decrypt(ctx, &kms.DecryptInput{
-		KeyId:          &k.sealingKeyARN,
-		CiphertextBlob: ciphertext,
-		Recipient:      recipient,
+		KeyId:             &k.sealingKeyARN,
+		CiphertextBlob:    ciphertext,
+		Recipient:         recipient,
+		EncryptionContext: sealingEncryptionContext,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("KMS decrypt with attestation failed: %w", err)
@@ -147,8 +206,9 @@ func (k *KMSClient) GenerateDataKey(ctx context.Context) (plaintext, ciphertext 
 	}
 
 	result, err := k.client.GenerateDataKey(ctx, &kms.GenerateDataKeyInput{
-		KeyId:   &k.sealingKeyARN,
-		KeySpec: types.DataKeySpecAes256,
+		KeyId:             &k.sealingKeyARN,
+		KeySpec:           types.DataKeySpecAes256,
+		EncryptionContext: sealingEncryptionContext,
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("KMS generate data key failed: %w", err)
@@ -176,9 +236,10 @@ func (k *KMSClient) GenerateDataKeyWithAttestation(ctx context.Context, attestat
 	}
 
 	result, err := k.client.GenerateDataKey(ctx, &kms.GenerateDataKeyInput{
-		KeyId:     &k.sealingKeyARN,
-		KeySpec:   types.DataKeySpecAes256,
-		Recipient: recipient,
+		KeyId:             &k.sealingKeyARN,
+		KeySpec:           types.DataKeySpecAes256,
+		Recipient:         recipient,
+		EncryptionContext: sealingEncryptionContext,
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("KMS generate data key with attestation failed: %w", err)

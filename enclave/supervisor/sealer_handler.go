@@ -74,6 +74,10 @@ const (
 	// TURN credentials (parent fetches Secrets Manager + generates HMAC creds)
 	SealerOpGetTurnCredentials SealerOperation = "get_turn_credentials"
 	SealerOpUnsealMaterial     SealerOperation = "unseal_material"
+	// PCR signing public key fetch (parent calls KMS GetPublicKey on
+	// the pcr-signing key, returns DER-encoded SPKI bytes). Used by
+	// the migration handler to verify config signatures.
+	SealerOpFetchPCRSigningPublicKey SealerOperation = "fetch_pcr_signing_public_key"
 )
 
 // SealerRequest is received from vault-manager
@@ -139,6 +143,9 @@ type SealerResponse struct {
 
 	// For get_turn_credentials (opaque JSON returned by parent)
 	TurnCredentials []byte `json:"turn_credentials,omitempty"`
+
+	// For fetch_pcr_signing_public_key (DER-encoded SPKI bytes)
+	PCRSigningPublicKey []byte `json:"pcr_signing_public_key,omitempty"`
 }
 
 // HandleSealerRequest processes a sealer request from vault-manager
@@ -195,6 +202,8 @@ func (sh *SealerHandler) HandleSealerRequest(msg *Message) *Message {
 		resp = sh.getTurnCredentials(req)
 	case SealerOpUnsealMaterial:
 		resp = sh.unsealMaterial(req)
+	case SealerOpFetchPCRSigningPublicKey:
+		resp = sh.fetchPCRSigningPublicKey(req)
 	default:
 		resp = SealerResponse{
 			Success: false,
@@ -900,6 +909,56 @@ func (sh *SealerHandler) getTurnCredentials(req SealerRequest) SealerResponse {
 	}
 
 	return SealerResponse{Success: true, TurnCredentials: response.Payload}
+}
+
+// fetchPCRSigningPublicKey forwards the request to the parent which
+// returns the DER-encoded SPKI bytes of the PCR signing key.
+func (sh *SealerHandler) fetchPCRSigningPublicKey(req SealerRequest) SealerResponse {
+	sh.connMu.Lock()
+	defer sh.connMu.Unlock()
+
+	if sh.parentConn == nil {
+		return SealerResponse{Success: false, Error: "no parent connection available"}
+	}
+
+	msg := &Message{
+		Type:       MessageTypePCRSigningKeyGet,
+		OwnerSpace: req.OwnerSpace,
+	}
+	if err := sh.parentConn.WriteMessage(msg); err != nil {
+		return SealerResponse{Success: false, Error: fmt.Sprintf("failed to send pcr signing key request: %v", err)}
+	}
+
+	response, err := sh.parentConn.ReadMessage()
+	if err != nil {
+		return SealerResponse{Success: false, Error: fmt.Sprintf("failed to read pcr signing key response: %v", err)}
+	}
+	if response.Type == MessageTypeError {
+		return SealerResponse{Success: false, Error: fmt.Sprintf("parent error: %s", response.Error)}
+	}
+	if response.Type != MessageTypePCRSigningKeyResponse {
+		return SealerResponse{Success: false, Error: fmt.Sprintf("unexpected response type: %s", response.Type)}
+	}
+
+	// Inline error payload?
+	var errPeek struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(response.Payload, &errPeek) == nil && errPeek.Error != "" {
+		return SealerResponse{Success: false, Error: errPeek.Error}
+	}
+
+	// Extract the DER bytes from the JSON envelope.
+	var keyEnv struct {
+		PublicKeyDER []byte `json:"public_key_der"`
+	}
+	if err := json.Unmarshal(response.Payload, &keyEnv); err != nil {
+		return SealerResponse{Success: false, Error: fmt.Sprintf("invalid pcr signing key envelope: %v", err)}
+	}
+	if len(keyEnv.PublicKeyDER) == 0 {
+		return SealerResponse{Success: false, Error: "empty pcr signing public key"}
+	}
+	return SealerResponse{Success: true, PCRSigningPublicKey: keyEnv.PublicKeyDER}
 }
 
 // writeMigrationMarker publishes an unencrypted "user migrated" signal to S3.

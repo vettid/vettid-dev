@@ -278,7 +278,7 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 	proteanCredentialHandler := NewProteanCredentialHandler(ownerSpace, vaultState, bootstrapHandler)
 
 	// Create vote handler for vault-signed voting
-	voteHandler := NewVoteHandler(ownerSpace, vaultState, bootstrapHandler)
+	voteHandler := NewVoteHandler(ownerSpace, vaultState, storage, bootstrapHandler)
 	voteHandler.SetSealerProxy(sealerProxy)
 
 	// Create event handler for unified audit logging and feed
@@ -617,13 +617,11 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 			} else if i+1 < len(parts) && parts[i+1] == "connection" {
 				// Connection messages from peers, agents, and devices.
 				// Parallel-review handshake (plans/parallel-review-handshake.md):
-				// every peer-direction subject collapses into `connection.signal`
-				// with three signal kinds (response-ready / peer-accepted /
-				// peer-rejected). The legacy subjects (accepted, key-exchange,
-				// activated, rejected) are kept as no-op aliases for one
-				// release window so any in-flight messages from a partially-
-				// upgraded mesh don't hard-fail; user is re-enrolling so
-				// they should rarely fire.
+				// every peer-direction subject collapses into either
+				// `connection.signal` (response-ready / peer-accepted /
+				// peer-rejected) or `connection.store-credentials` for
+				// agent/device pairing. Pre-parallel-review subject
+				// aliases were removed once existing users re-enrolled.
 				if i+2 < len(parts) {
 					switch parts[i+2] {
 					case "signal":
@@ -631,11 +629,6 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 					case "store-credentials":
 						// Agents and devices still use store-credentials.
 						resp, err = mh.connectionsHandler.HandleStoreCredentials(msg)
-					case "accepted", "key-exchange", "activated", "rejected":
-						// Legacy peer subjects — drop as ack. Re-enrollment
-						// regenerates everything against the new flow.
-						log.Debug().Str("legacy_subject", parts[i+2]).Msg("Dropping legacy peer connection subject (parallel-review flow active)")
-						resp = &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}
 					default:
 						log.Debug().Str("subject", parts[i+2]).Msg("Unknown peer connection subject — dropping")
 						resp = &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}
@@ -1711,6 +1704,12 @@ func (mh *MessageHandler) handleCredentialOperation(ctx context.Context, msg *In
 		}
 		mh.persistVaultStateToS3()
 		return response, nil
+	case "identity-unlock":
+		// Phase E: re-populate the identity-key carve-out after the
+		// sliding TTL has elapsed. Decrypts the request-supplied
+		// credential blob, verifies the password, copies the identity
+		// keypair into vaultState, and starts a fresh window.
+		return mh.handleCredentialIdentityUnlock(ctx, msg)
 	case "secret":
 		// Critical secrets stored within Protean Credential
 		return mh.handleCredentialSecretOperation(ctx, msg, opParts[1:])
@@ -1814,13 +1813,14 @@ func (mh *MessageHandler) handleConnectionOperation(ctx context.Context, msg *In
 		return response, nil
 	case "resolve-invite":
 		return mh.connectionsHandler.HandleResolveInvite(msg)
-	case "store-credentials":
-		response, err := mh.connectionsHandler.HandleStoreCredentials(msg)
-		if err != nil {
-			return response, err
-		}
-		mh.persistVaultStateToS3()
-		return response, nil
+	// connection.store-credentials over forVault (OwnerSpace) had no
+	// live caller — the agent/device pairing flow shipped its
+	// credentials in via MessageSpace.<us>.forOwner.connection
+	// .store-credentials, and the local-app `ConnectionsClient
+	// .storeCredentials(...)` API was never wired up to anything.
+	// The MessageSpace route at line ~631 is the canonical (and
+	// invite-code-gated) path; this OwnerSpace duplicate is removed
+	// to eliminate the dual gate surface.
 	case "initiate":
 		response, err := mh.connectionsHandler.HandleInitiate(msg)
 		if err != nil {
@@ -2595,6 +2595,31 @@ func (mh *MessageHandler) handleSettingsOperation(ctx context.Context, msg *Inco
 		case "get":
 			return mh.settingsHandler.HandleCredentialSettingsGet(msg)
 		case "update":
+			// Phase E: gate security-sensitive setting changes on
+			// fresh password verification. We unmarshal once, verify
+			// the password by decrypting the request-supplied
+			// credential blob, then delegate to the settings handler
+			// for the actual write.
+			var verifyReq CredentialSettingsUpdateRequest
+			if err := unmarshalRequest(msg.Payload, &verifyReq, "settings.credential.update"); err != nil {
+				return mh.errorResponse(msg.GetID(), "invalid request format")
+			}
+			if verifyReq.EncryptedCredential == "" || verifyReq.EncryptedPasswordHash == "" ||
+				verifyReq.EphemeralPublicKey == "" || verifyReq.Nonce == "" || verifyReq.KeyID == "" {
+				return mh.errorResponse(msg.GetID(), "password authorization required")
+			}
+			idKey, err := mh.credentialSecretHandler.RevealIdentityPrivateKey(
+				verifyReq.EncryptedCredential,
+				verifyReq.EncryptedPasswordHash,
+				verifyReq.EphemeralPublicKey,
+				verifyReq.Nonce,
+				verifyReq.KeyID,
+			)
+			if err != nil {
+				log.Warn().Err(err).Str("owner_space", mh.ownerSpace).Msg("settings.credential.update password verification failed")
+				return mh.errorResponse(msg.GetID(), err.Error())
+			}
+			zeroBytes(idKey)
 			return mh.settingsHandler.HandleCredentialSettingsUpdate(msg)
 		default:
 			return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown credential settings operation: %s", opParts[2]))
@@ -2832,9 +2857,9 @@ func (mh *MessageHandler) createEncryptedVaultState(dek []byte) ([]byte, error) 
 			UsedAt    int64  `json:"used_at"`
 			CreatedAt int64  `json:"created_at"`
 		} `json:"utk_pairs"`
-		Credential     *UnsealedCredential `json:"credential,omitempty"`
-		SealedMaterial []byte              `json:"sealed_material"`
-		DatabaseBackup json.RawMessage     `json:"database_backup,omitempty"`
+		Credential     *ProteanCredentialV2 `json:"credential,omitempty"`
+		SealedMaterial []byte               `json:"sealed_material"`
+		DatabaseBackup json.RawMessage      `json:"database_backup,omitempty"`
 	}{
 		SealedMaterial: mh.vaultState.sealedMaterial,
 	}

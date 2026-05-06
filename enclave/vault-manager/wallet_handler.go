@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -109,6 +110,7 @@ func (h *WalletHandler) HandleCreate(ctx context.Context, msg *IncomingMessage) 
 		log.Error().Err(err).Msg("Failed to generate wallet mnemonic")
 		return errorResponse(msg.GetID(), "mnemonic generation failed"), nil
 	}
+	defer zeroBytes(mnemonic)
 	// Derive the address now (only needs the mnemonic, no credential
 	// access required) so we can store it in the public wallet record.
 	// The private key is intentionally NOT retained in vault state —
@@ -133,12 +135,17 @@ func (h *WalletHandler) HandleCreate(ctx context.Context, msg *IncomingMessage) 
 		req.Nonce,
 		req.KeyID,
 		func(cred *ProteanCredentialV2) error {
+			// Copy the mnemonic into a fresh buffer for the credential.
+			// The credential mutator will hold this until re-encrypted;
+			// the local `mnemonic` slice is wiped by the deferred above.
+			mnCopy := make([]byte, len(mnemonic))
+			copy(mnCopy, mnemonic)
 			cred.Secrets = append(cred.Secrets, CredentialSecretEntry{
 				ID:          secretID,
 				Name:        req.Label,
 				Category:    SecretCategorySeedPhrase,
 				Description: "BIP39 12-word seed phrase. Restorable in any BIP84 (P2WPKH) wallet.",
-				Value:       []byte(mnemonic),
+				Value:       mnCopy,
 				Owner:       "user",
 				CreatedAt:   now.Unix(),
 				UpdatedAt:   now.Unix(),
@@ -150,7 +157,6 @@ func (h *WalletHandler) HandleCreate(ctx context.Context, msg *IncomingMessage) 
 		log.Warn().Err(err).Msg("wallet.create: credential mutation failed")
 		return errorResponse(msg.GetID(), "credential write failed: "+err.Error()), nil
 	}
-	zeroBytes([]byte(mnemonic))
 
 	// Stamp the metadata index so the seed shows up in
 	// credential.secret.list and the catalog. The alias is asset-
@@ -706,9 +712,14 @@ func (h *WalletHandler) HandleSendToConnection(ctx context.Context, msg *Incomin
 
 	if peerAddress == "" {
 		// Strategy 2: Request address from peer via encrypted messaging
-		// Send btc_address_request to peer vault
+		// Send btc_address_request to peer vault. Stamp our own GUID
+		// so the receiver can route the response back via the standard
+		// connection-resolve path instead of falling back to a
+		// receiver-side identity (which used to spoof itself as the
+		// sender — see authZ-H3).
 		addrReq := BtcAddressContent{
-			Network: "mainnet",
+			Network:    "mainnet",
+			SenderGUID: h.ownerSpace,
 		}
 		reqData, _ := json.Marshal(addrReq)
 		if h.publisher != nil {
@@ -872,9 +883,39 @@ func (h *WalletHandler) HandleRequestPayment(ctx context.Context, msg *IncomingM
 
 // HandleIncomingAddressRequest handles a btc_address_request from a peer vault.
 // Auto-responds with the user's primary (first non-archived) wallet address.
+//
+// SECURITY (authZ-H3): the sender's GUID is extracted from the payload's
+// `sender_guid` field, NOT from msg.OwnerSpace (which is our own GUID —
+// the receiver's routing key). The resolved sender must point to an
+// `active` peer connection or the request is dropped silently. Without
+// this check, a malformed request used to be answered to ourselves.
 func (h *WalletHandler) HandleIncomingAddressRequest(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
-	// Find the sender's owner space from the message subject
-	senderGUID := msg.OwnerSpace
+	var req BtcAddressContent
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		return successResponse(msg.GetID(), map[string]string{"status": "invalid_request"})
+	}
+	senderGUID := strings.TrimSpace(req.SenderGUID)
+	if senderGUID == "" || senderGUID == h.ownerSpace {
+		log.Warn().Str("sender_guid", senderGUID).Msg("BTC address request rejected: missing or self sender")
+		return successResponse(msg.GetID(), map[string]string{"status": "no_sender"})
+	}
+	connID := h.findConnectionIDByPeerGUID(senderGUID)
+	if connID == "" {
+		log.Warn().Str("sender_guid", senderGUID).Msg("BTC address request from unknown peer")
+		return successResponse(msg.GetID(), map[string]string{"status": "unknown_peer"})
+	}
+	connData, err := h.storage.Get("connections/" + connID)
+	if err != nil {
+		return successResponse(msg.GetID(), map[string]string{"status": "no_connection"})
+	}
+	var conn ConnectionRecord
+	if err := json.Unmarshal(connData, &conn); err != nil {
+		return successResponse(msg.GetID(), map[string]string{"status": "no_connection"})
+	}
+	if conn.Status != "active" {
+		log.Warn().Str("conn_status", conn.Status).Str("sender_guid", senderGUID).Msg("BTC address request from non-active connection")
+		return successResponse(msg.GetID(), map[string]string{"status": "connection_not_active"})
+	}
 
 	wallets, err := h.loadAllWallets()
 	if err != nil || len(wallets) == 0 {
@@ -899,12 +940,13 @@ func (h *WalletHandler) HandleIncomingAddressRequest(ctx context.Context, msg *I
 
 	// Respond to the requesting peer
 	addrResp := BtcAddressContent{
-		Address: address,
-		Network: network,
+		Address:    address,
+		Network:    network,
+		SenderGUID: h.ownerSpace,
 	}
 	respData, _ := json.Marshal(addrResp)
 
-	if h.publisher != nil && senderGUID != "" {
+	if h.publisher != nil {
 		_ = h.publisher.PublishToVault(ctx, senderGUID, "btc-address-response", respData)
 	}
 
@@ -914,6 +956,35 @@ func (h *WalletHandler) HandleIncomingAddressRequest(ctx context.Context, msg *I
 		Msg("Responded to BTC address request")
 
 	return successResponse(msg.GetID(), map[string]string{"status": "sent"})
+}
+
+// findConnectionIDByPeerGUID walks the local connection index and
+// returns the connection_id whose record carries the given PeerGUID.
+// Mirrors NotificationsHandler.FindConnectionByPeerGUID — duplicated
+// here to avoid threading that handler through every wallet caller.
+func (h *WalletHandler) findConnectionIDByPeerGUID(peerGUID string) string {
+	indexData, err := h.storage.Get("connections/_index")
+	if err != nil {
+		return ""
+	}
+	var connectionIDs []string
+	if json.Unmarshal(indexData, &connectionIDs) != nil {
+		return ""
+	}
+	for _, connID := range connectionIDs {
+		data, err := h.storage.Get("connections/" + connID)
+		if err != nil {
+			continue
+		}
+		var conn ConnectionRecord
+		if json.Unmarshal(data, &conn) != nil {
+			continue
+		}
+		if conn.PeerGUID == peerGUID {
+			return connID
+		}
+	}
+	return ""
 }
 
 // findPeerBtcAddress checks a peer's cached profile for a public BTC address
@@ -1026,10 +1097,7 @@ func (h *WalletHandler) findPrivateKeyForSign(record *WalletRecord, req *WalletS
 	if err != nil {
 		return nil, fmt.Errorf("credential decrypt failed: %w", err)
 	}
-	defer func() {
-		// Best-effort zero of the mnemonic string's backing bytes.
-		zeroBytes([]byte(mnemonic))
-	}()
+	defer zeroBytes(mnemonic)
 
 	privKey, _, _, _, err := generateWalletKeypairFromMnemonic(mnemonic, record.Network)
 	if err != nil {

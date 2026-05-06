@@ -1,5 +1,7 @@
 package main
 
+import "encoding/json"
+
 // ============================================================================
 // Wallet Storage Types
 // ============================================================================
@@ -26,7 +28,11 @@ type WalletRecord struct {
 	// mnemonic is encrypted at rest by the vault DEK like every other
 	// field on this record. Empty for legacy wallets created before
 	// the BIP39 migration.
-	BIP39Mnemonic string `json:"bip39_mnemonic,omitempty"`
+	//
+	// SECURITY (crypto-H3): held as []byte so callers can explicitly
+	// zero the memory once they've copied it out. Custom MarshalJSON /
+	// UnmarshalJSON keep the on-disk wire format (string) compatible.
+	BIP39Mnemonic []byte `json:"-"`
 
 	// SeedBackedUpAt is the unix-second timestamp when the user last
 	// opted this wallet's seed phrase into Critical Secrets. Zero
@@ -40,6 +46,83 @@ type WalletRecord struct {
 	// and remove the right entry without name-matching guesses.
 	// Cleared on revoke.
 	SeedBackupSecretID string `json:"seed_backup_secret_id,omitempty"`
+}
+
+// SecureErase zeros the sensitive byte slices on this record so they
+// don't outlive the request that loaded them. Call via defer right
+// after json.Unmarshal succeeds.
+func (r *WalletRecord) SecureErase() {
+	if r == nil {
+		return
+	}
+	zeroBytes(r.BIP39Mnemonic)
+	r.BIP39Mnemonic = nil
+}
+
+// walletRecordWire is the on-disk JSON shape (mnemonic stored as
+// string for backward compatibility). MarshalJSON / UnmarshalJSON
+// translate between WalletRecord (mnemonic = []byte) and this wire
+// type so existing persisted records continue to load unchanged.
+type walletRecordWire struct {
+	WalletID           string `json:"wallet_id"`
+	Label              string `json:"label"`
+	CryptoKeyID        string `json:"crypto_key_id"`
+	Address            string `json:"address"`
+	DerivationPath     string `json:"derivation_path"`
+	AccountIndex       int    `json:"account_index"`
+	Network            string `json:"network"`
+	CachedBalance      int64  `json:"cached_balance_sats"`
+	BalanceUpdatedAt   int64  `json:"balance_updated_at"`
+	CreatedAt          int64  `json:"created_at"`
+	IsArchived         bool   `json:"is_archived"`
+	IsPublic           bool   `json:"is_public"`
+	BIP39Mnemonic      string `json:"bip39_mnemonic,omitempty"`
+	SeedBackedUpAt     int64  `json:"seed_backed_up_at,omitempty"`
+	SeedBackupSecretID string `json:"seed_backup_secret_id,omitempty"`
+}
+
+func (r WalletRecord) MarshalJSON() ([]byte, error) {
+	w := walletRecordWire{
+		WalletID:           r.WalletID,
+		Label:              r.Label,
+		CryptoKeyID:        r.CryptoKeyID,
+		Address:            r.Address,
+		DerivationPath:     r.DerivationPath,
+		AccountIndex:       r.AccountIndex,
+		Network:            r.Network,
+		CachedBalance:      r.CachedBalance,
+		BalanceUpdatedAt:   r.BalanceUpdatedAt,
+		CreatedAt:          r.CreatedAt,
+		IsArchived:         r.IsArchived,
+		IsPublic:           r.IsPublic,
+		BIP39Mnemonic:      string(r.BIP39Mnemonic),
+		SeedBackedUpAt:     r.SeedBackedUpAt,
+		SeedBackupSecretID: r.SeedBackupSecretID,
+	}
+	return json.Marshal(&w)
+}
+
+func (r *WalletRecord) UnmarshalJSON(data []byte) error {
+	var w walletRecordWire
+	if err := json.Unmarshal(data, &w); err != nil {
+		return err
+	}
+	r.WalletID = w.WalletID
+	r.Label = w.Label
+	r.CryptoKeyID = w.CryptoKeyID
+	r.Address = w.Address
+	r.DerivationPath = w.DerivationPath
+	r.AccountIndex = w.AccountIndex
+	r.Network = w.Network
+	r.CachedBalance = w.CachedBalance
+	r.BalanceUpdatedAt = w.BalanceUpdatedAt
+	r.CreatedAt = w.CreatedAt
+	r.IsArchived = w.IsArchived
+	r.IsPublic = w.IsPublic
+	r.BIP39Mnemonic = []byte(w.BIP39Mnemonic)
+	r.SeedBackedUpAt = w.SeedBackedUpAt
+	r.SeedBackupSecretID = w.SeedBackupSecretID
+	return nil
 }
 
 // ============================================================================
@@ -340,6 +423,12 @@ type BtcAddressContent struct {
 	Address  string `json:"address"`
 	Label    string `json:"label,omitempty"`
 	Network  string `json:"network"`
+	// SenderGUID stamps the inviter's owner-space onto the request so
+	// the receiver can resolve the sender via the standard
+	// extractSenderGUID path. Without this, the receiver fell back to
+	// its own GUID (msg.OwnerSpace) and would have published the
+	// response back to itself. SECURITY (authZ-H3).
+	SenderGUID string `json:"sender_guid,omitempty"`
 }
 
 // ============================================================================

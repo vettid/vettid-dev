@@ -141,9 +141,26 @@ func (mh *MessageHandler) HandleIncomingInvocation(ctx context.Context, connecti
 		})
 	}
 
-	// Step 4: identity-key signature verify. ALWAYS audit-logged — pass
-	// or fail — so a forged-sig attempt is itself a permanent record.
-	if err := verifyInvokerSignature(req); err != nil {
+	// Step 4: identity-key signature verify against the STORED peer
+	// identity key on this connection. ALWAYS audit-logged — pass or
+	// fail. Reject when no connection is bound (a peer must have
+	// completed the parallel-review handshake before invoking).
+	if connectionID == "" {
+		mh.logActionAudit("", req.InvokerGUID, AuditTypeActionInvocationSigFailed, req.InvocationID, req.ActionID, "no connection bound to invoker GUID")
+		return mh.signResult(&InvocationResult{
+			InvocationID: req.InvocationID, ActionID: req.ActionID,
+			Status: ResultStatusFailed, Error: "ERR_INVOKER_SIG", DecidedAt: now,
+		})
+	}
+	expectedPub, err := mh.loadPeerIdentityKey(connectionID)
+	if err != nil || len(expectedPub) == 0 {
+		mh.logActionAudit(connectionID, req.InvokerGUID, AuditTypeActionInvocationSigFailed, req.InvocationID, req.ActionID, "peer identity key unavailable: "+errString(err))
+		return mh.signResult(&InvocationResult{
+			InvocationID: req.InvocationID, ActionID: req.ActionID,
+			Status: ResultStatusFailed, Error: "ERR_INVOKER_SIG", DecidedAt: now,
+		})
+	}
+	if err := verifyInvokerSignature(req, expectedPub); err != nil {
 		mh.logActionAudit(connectionID, req.InvokerGUID, AuditTypeActionInvocationSigFailed, req.InvocationID, req.ActionID, err.Error())
 		return mh.signResult(&InvocationResult{
 			InvocationID: req.InvocationID, ActionID: req.ActionID,
@@ -271,20 +288,97 @@ func (mh *MessageHandler) FinishDeniedInvocation(p *ActionPendingApproval, owner
 // Signature verification + result signing
 // ----------------------------------------------------------------------
 
-func verifyInvokerSignature(req *InvocationRequest) error {
-	pubKey, err := base64.StdEncoding.DecodeString(req.InvokerPubKey)
-	if err != nil || len(pubKey) != ed25519.PublicKeySize {
-		return fmt.Errorf("invalid invoker_pubkey")
+// verifyInvokerSignature verifies the action-invoke envelope signature
+// against the peer's STORED identity public key (loaded from the
+// connection's cached profile).
+//
+// SECURITY: callers MUST NOT pass req.InvokerPubKey here — that value
+// is attacker-controlled. Spoofing was the F1 attack: a malicious peer
+// minted a fresh Ed25519 keypair, set InvokerGUID to an arbitrary
+// GUID, signed with their own key, and the verifier accepted because
+// it trusted the wire pubkey. By binding the verify to the connection's
+// stored peer identity key, signatures from any keypair other than the
+// one introduced during the parallel-review handshake fail closed.
+//
+// expectedPubKey is the raw 32-byte Ed25519 public key from the peer
+// profile that was cached when the connection was established.
+func verifyInvokerSignature(req *InvocationRequest, expectedPubKey []byte) error {
+	if len(expectedPubKey) != ed25519.PublicKeySize {
+		return fmt.Errorf("connection has no usable peer identity key")
 	}
 	sig, err := base64.StdEncoding.DecodeString(req.InvokerSig)
 	if err != nil || len(sig) != ed25519.SignatureSize {
 		return fmt.Errorf("invalid invoker_sig")
 	}
+	// Defense in depth: if the wire-supplied pubkey is present, refuse
+	// when it doesn't match the stored key (catches the case where a
+	// future caller forgets to verify connection identity before
+	// reaching here).
+	if req.InvokerPubKey != "" {
+		wirePub, derr := base64.StdEncoding.DecodeString(req.InvokerPubKey)
+		if derr != nil || !bytesEqual(wirePub, expectedPubKey) {
+			return fmt.Errorf("invoker_pubkey does not match stored peer identity")
+		}
+	}
 	canonical := canonicalRequestBytes(req)
-	if !ed25519.Verify(pubKey, canonical, sig) {
+	if !ed25519.Verify(expectedPubKey, canonical, sig) {
 		return fmt.Errorf("ed25519 verify failed")
 	}
 	return nil
+}
+
+func bytesEqual(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func errString(e error) string {
+	if e == nil {
+		return ""
+	}
+	return e.Error()
+}
+
+// loadPeerIdentityKey returns the raw 32-byte Ed25519 public key for
+// the peer on a given connection. Reads from the cached peer profile
+// (`connections/<id>/_peer_profile`) which is populated during the
+// parallel-review handshake. The peer's identity key is the
+// `public_key` field of their published profile (base64-encoded).
+//
+// The connection record's `PeerPublicKey` is the X25519 key used for
+// E2E key exchange — different primitive, do not confuse with this.
+func (mh *MessageHandler) loadPeerIdentityKey(connectionID string) ([]byte, error) {
+	if connectionID == "" {
+		return nil, fmt.Errorf("connection_id required")
+	}
+	if mh.storage == nil {
+		return nil, fmt.Errorf("storage not available")
+	}
+	data, err := mh.storage.Get("connections/" + connectionID + "/_peer_profile")
+	if err != nil || len(data) == 0 {
+		return nil, fmt.Errorf("peer profile not cached: %w", err)
+	}
+	var profile struct {
+		PublicKey string `json:"public_key"`
+	}
+	if err := json.Unmarshal(data, &profile); err != nil {
+		return nil, fmt.Errorf("malformed peer profile: %w", err)
+	}
+	if profile.PublicKey == "" {
+		return nil, fmt.Errorf("peer profile has no public_key")
+	}
+	pub, err := base64.StdEncoding.DecodeString(profile.PublicKey)
+	if err != nil || len(pub) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("invalid peer identity key encoding")
+	}
+	return pub, nil
 }
 
 // signResult attaches the owner's identity-key signature to the result
@@ -292,15 +386,12 @@ func verifyInvokerSignature(req *InvocationRequest) error {
 func (mh *MessageHandler) signResult(r *InvocationResult) *InvocationResult {
 	r.PeerGUID = mh.ownerSpace
 	canonical := canonicalResultBytes(r)
-	// Phase C: read the carved-out identity key directly.
-	mh.vaultState.mu.RLock()
-	idKey := append([]byte(nil), mh.vaultState.identityPrivateKey...)
-	mh.vaultState.mu.RUnlock()
-	if len(idKey) == 0 {
-		// Vault locked — return unsigned. The wire layer will refuse to
-		// send an unsigned envelope, but this still gives us a structured
-		// failure to log.
-		log.Warn().Str("invocation_id", r.InvocationID).Msg("cannot sign result: vault locked")
+	// Phase E: identity-key signing is gated by a sliding TTL.
+	// If the window has lapsed, return the result unsigned so callers
+	// upstream can prompt the user to re-authenticate before retrying.
+	idKey, err := mh.consumeIdentityKey()
+	if err != nil {
+		log.Warn().Str("invocation_id", r.InvocationID).Msg("cannot sign result: identity key locked")
 		return r
 	}
 	defer zeroBytes(idKey)
@@ -401,6 +492,23 @@ func (mh *MessageHandler) execProfileFieldsRead(invokerGUID string, params json.
 }
 
 // --- secrets.share ---
+//
+// SECURITY: secrets.share previously returned the plaintext of ANY
+// secret_id the invoker requested, with no per-secret grant check.
+// Combined with the unauthenticated-invoker bug (A1) this was a full
+// secret-read primitive for any peer.
+//
+// The owner now defines a hard-cap allowlist via the action's
+// OwnerParams["allowed_secret_ids"]. A request that names a secret
+// not in the list — or any request when the list is empty/unset —
+// is rejected with ERR_SECRET_NOT_SHAREABLE. Approval-time
+// ownerOverrides["allowed_secret_ids"] narrows further. Combined
+// with the per-connection Allowlist that gates whether the action
+// can be invoked at all, this gives the owner two layers: WHO can
+// invoke, and WHICH secrets they can name.
+//
+// A future per-connection ACL (different secret sets for different
+// peers) can be layered on top by storing the map in OwnerParams.
 func (mh *MessageHandler) execSecretsShare(invokerGUID string, params json.RawMessage, ownerOverrides map[string]interface{}) (json.RawMessage, error) {
 	var p struct {
 		SecretID string `json:"secret_id"`
@@ -408,6 +516,29 @@ func (mh *MessageHandler) execSecretsShare(invokerGUID string, params json.RawMe
 	if err := json.Unmarshal(params, &p); err != nil {
 		return nil, fmt.Errorf("parse: %w", err)
 	}
+	if p.SecretID == "" {
+		return nil, fmt.Errorf("ERR_SECRET_ID_REQUIRED")
+	}
+
+	allowed := mh.ownerAllowedSecretIDs(ActionIDSecretsShare)
+	if override, ok := ownerOverrides["allowed_secret_ids"].([]interface{}); ok {
+		overrideStrs := make([]string, 0, len(override))
+		for _, v := range override {
+			if s, ok := v.(string); ok {
+				overrideStrs = append(overrideStrs, s)
+			}
+		}
+		allowed = intersectStrings(allowed, overrideStrs)
+	}
+	if !containsString(allowed, p.SecretID) {
+		log.Warn().
+			Str("invoker", invokerGUID).
+			Str("secret_id", p.SecretID).
+			Int("allowed_count", len(allowed)).
+			Msg("secrets.share denied — secret_id not in owner allowlist")
+		return nil, fmt.Errorf("ERR_SECRET_NOT_SHAREABLE")
+	}
+
 	plaintext, err := mh.fetchSecretPlaintext(p.SecretID)
 	if err != nil {
 		return nil, fmt.Errorf("ERR_SECRET_NOT_FOUND")
@@ -417,6 +548,32 @@ func (mh *MessageHandler) execSecretsShare(invokerGUID string, params json.RawMe
 		"plaintext": plaintext,
 	})
 	return out, nil
+}
+
+// ownerAllowedSecretIDs is the secrets.share counterpart to
+// ownerAllowedFields. Returns the list of secret_ids the owner has
+// explicitly designated as shareable. Empty/missing → no secrets are
+// shareable (strict fail-closed).
+func (mh *MessageHandler) ownerAllowedSecretIDs(actionID string) []string {
+	if err := mh.ensureEnabledActions(); err != nil {
+		return nil
+	}
+	actionAuthMu.RLock()
+	defer actionAuthMu.RUnlock()
+	ea := mh.enabledActions.Actions[actionID]
+	if ea == nil {
+		return nil
+	}
+	if v, ok := ea.OwnerParams["allowed_secret_ids"].([]interface{}); ok {
+		out := make([]string, 0, len(v))
+		for _, x := range v {
+			if s, ok := x.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	return nil
 }
 
 // --- wallet.request-address ---

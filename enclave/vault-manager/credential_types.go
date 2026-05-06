@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"sync"
 )
 
@@ -59,15 +58,23 @@ type VaultState struct {
 	// UTKs are sent to app, LTKs are kept in vault
 	utkPairs []*UTKPair
 
-	// Identity-key carve-out (Phase C). Populated at PIN unlock and
-	// retained for the session so action signing + contract signing
-	// don't need the full credential plaintext in memory.
+	// Identity-key carve-out.
 	//
-	// SECURITY: identityPrivateKey is the user's Ed25519 private key;
-	// it stays in the enclave and never leaves. Cleared on logout /
-	// PIN re-prompt the same way the credential is.
-	identityPrivateKey []byte // ed25519.PrivateKey (64 bytes)
-	identityPublicKey  []byte // ed25519.PublicKey (32 bytes)
+	// The Ed25519 private key is loaded at PIN unlock and gated by a
+	// user-configurable sliding TTL (settings.credential.session_ttl_seconds,
+	// 30s–60min, default 5min). Every signed action / contract / vote
+	// extends the window via consumeIdentityKey(); after the window
+	// passes idle, the key is wiped and the next signing op returns
+	// "identity_locked". The client re-authenticates with the user's
+	// password via credential.identity-unlock to repopulate the field
+	// for another window.
+	//
+	// The public key has no TTL — it's public and stays loaded for
+	// the session so profile.publish, bootstrap, etc. can surface it
+	// without prompting.
+	identityPrivateKey   []byte // ed25519.PrivateKey (64 bytes)
+	identityPublicKey    []byte // ed25519.PublicKey (32 bytes)
+	identityKeyExpiresAt int64  // unix seconds; zero == not unlocked / expired
 
 	// PIN auth carve-out (Phase D). Populated at PIN unlock so PIN
 	// change can verify the old PIN without retaining the full
@@ -110,41 +117,10 @@ type UTKPair struct {
 	UsedAt    int64 // 0 if not yet used
 }
 
-// UnsealedCredential holds the decrypted Protean Credential in memory
-// SECURITY: This is only held in enclave memory, never persisted to disk
-type UnsealedCredential struct {
-	IdentityPrivateKey []byte      `json:"identity_private_key"` // Ed25519 private key
-	IdentityPublicKey  []byte      `json:"identity_public_key"`  // Ed25519 public key
-	VaultMasterSecret  []byte      `json:"vault_master_secret"`  // Master secret for key derivation
-
-	// PasswordHash is the credential password in PHC string format:
-	// $argon2id$v=19$m=65536,t=3,p=4$<base64-salt>$<base64-hash>
-	// This self-describing format includes all parameters for verification.
-	// Used for credential operations (signing, key derivation, etc.)
-	PasswordHash string `json:"password_hash,omitempty"`
-
-	// AuthHash and AuthSalt are used for PIN-based vault unlock operations.
-	// These are set during PIN setup and used for PIN verification.
-	// NOTE: For credential password, use PasswordHash (PHC format) instead.
-	AuthHash []byte `json:"auth_hash,omitempty"` // Argon2id hash of PIN
-	AuthSalt []byte `json:"auth_salt,omitempty"` // Salt for PIN Argon2id
-
-	AuthType   string      `json:"auth_type"` // "password" or "pin"
-	CryptoKeys []CryptoKey `json:"crypto_keys"` // Additional keys (secp256k1, etc.)
-	CreatedAt  int64       `json:"created_at"`
-	Version    int         `json:"version"`
-}
-
-// CryptoKey represents a cryptographic key stored in the credential (V1 format)
-type CryptoKey struct {
-	Label      string `json:"label"`
-	Type       string `json:"type"` // "secp256k1", "ed25519", etc.
-	PrivateKey []byte `json:"private_key"`
-	CreatedAt  int64  `json:"created_at"`
-}
-
 // --- Protean Credential Format V2 ---
-// This is the new structured format with grouped fields and metadata
+// V2 is the only supported format. The V1 UnsealedCredential / CryptoKey
+// structs and their MigrateV1ToV2 / ToV1 helpers were removed once all
+// users were re-enrolled.
 
 // ProteanCredentialV2 is the new credential format with grouped fields
 // See docs/specs/credential-format.md for specification
@@ -176,10 +152,20 @@ type CredentialIdentity struct {
 	PublicKey  []byte `json:"public_key"`  // Ed25519 public key (32 bytes)
 }
 
-// CredentialAuth holds authentication information
+// CredentialAuth holds authentication information.
+//
+// Hash is the PHC-format hash of the credential password — verified on
+// every signed op (wallet add, secret reveal, password change).
+//
+// PinHash + PinSalt are the Argon2id raw-bytes hash of the device PIN,
+// used during pin.unlock to verify the PIN before deriving the DEK.
+// They are populated on PIN setup (or first PIN change) and rotated
+// on every subsequent PIN change.
 type CredentialAuth struct {
-	Type string `json:"type"` // "password" or "pin"
-	Hash string `json:"hash"` // PHC format: $argon2id$v=19$m=65536,t=3,p=4$<salt>$<hash>
+	Type    string `json:"type"`     // "password" (always — PIN is a separate factor below)
+	Hash    string `json:"hash"`     // PHC string for the password
+	PinHash []byte `json:"pin_hash,omitempty"`
+	PinSalt []byte `json:"pin_salt,omitempty"`
 }
 
 // CredentialCryptoMetadata enables algorithm agility
@@ -247,82 +233,6 @@ func DefaultCryptoMetadata() CredentialCryptoMetadata {
 	}
 }
 
-// MigrateV1ToV2 converts a V1 UnsealedCredential to V2 format
-func MigrateV1ToV2(v1 *UnsealedCredential, vaultID string) *ProteanCredentialV2 {
-	now := currentTimestamp()
-
-	// Determine auth hash - prefer PHC format PasswordHash, fall back to constructing from AuthHash/AuthSalt
-	authHash := v1.PasswordHash
-	if authHash == "" && len(v1.AuthHash) > 0 && len(v1.AuthSalt) > 0 {
-		// Legacy format - would need to reconstruct PHC string
-		// For now, this signals migration is needed at the application level
-		authHash = ""
-	}
-
-	// Migrate crypto keys
-	cryptoKeys := make([]CryptoKeyV2, len(v1.CryptoKeys))
-	for i, k := range v1.CryptoKeys {
-		cryptoKeys[i] = CryptoKeyV2{
-			ID:         fmt.Sprintf("key-%d", i),
-			Label:      k.Label,
-			Type:       k.Type,
-			PrivateKey: k.PrivateKey,
-			PublicKey:  nil, // Will need to be derived from private key
-			CreatedAt:  k.CreatedAt,
-		}
-	}
-
-	return &ProteanCredentialV2{
-		FormatVersion: 2,
-		Identity: CredentialIdentity{
-			PrivateKey: v1.IdentityPrivateKey,
-			PublicKey:  v1.IdentityPublicKey,
-		},
-		MasterSecret: v1.VaultMasterSecret,
-		Auth: CredentialAuth{
-			Type: v1.AuthType,
-			Hash: authHash,
-		},
-		CryptoMetadata: DefaultCryptoMetadata(),
-		Binding: &CredentialBinding{
-			VaultID: vaultID,
-			BoundAt: now,
-		},
-		CryptoKeys: cryptoKeys,
-		Timestamps: CredentialTimestamps{
-			CreatedAt:     v1.CreatedAt,
-			LastModified:  now,
-			AuthChangedAt: v1.CreatedAt,
-		},
-		Version: v1.Version,
-	}
-}
-
-// ToV1 converts a V2 credential back to V1 format for backward compatibility
-func (v2 *ProteanCredentialV2) ToV1() *UnsealedCredential {
-	// Migrate crypto keys back
-	cryptoKeys := make([]CryptoKey, len(v2.CryptoKeys))
-	for i, k := range v2.CryptoKeys {
-		cryptoKeys[i] = CryptoKey{
-			Label:      k.Label,
-			Type:       k.Type,
-			PrivateKey: k.PrivateKey,
-			CreatedAt:  k.CreatedAt,
-		}
-	}
-
-	return &UnsealedCredential{
-		IdentityPrivateKey: v2.Identity.PrivateKey,
-		IdentityPublicKey:  v2.Identity.PublicKey,
-		VaultMasterSecret:  v2.MasterSecret,
-		PasswordHash:       v2.Auth.Hash,
-		AuthType:           v2.Auth.Type,
-		CryptoKeys:         cryptoKeys,
-		CreatedAt:          v2.Timestamps.CreatedAt,
-		Version:            v2.Version,
-	}
-}
-
 // SecureErase zeros all sensitive data in the V2 credential
 func (v2 *ProteanCredentialV2) SecureErase() {
 	if v2 == nil {
@@ -334,6 +244,10 @@ func (v2 *ProteanCredentialV2) SecureErase() {
 	zeroBytes(v2.MasterSecret)
 
 	v2.Auth.Hash = ""
+	zeroBytes(v2.Auth.PinHash)
+	zeroBytes(v2.Auth.PinSalt)
+	v2.Auth.PinHash = nil
+	v2.Auth.PinSalt = nil
 
 	for i := range v2.CryptoKeys {
 		zeroBytes(v2.CryptoKeys[i].PrivateKey)
@@ -596,36 +510,6 @@ func (vs *VaultState) SecureErase() {
 	// Clear block list (no sensitive data)
 	vs.blockList = nil
 	vs.callHistory = nil
-}
-
-// SecureErase zeros all sensitive data in the credential
-// SECURITY: This must be called before credential is released
-func (uc *UnsealedCredential) SecureErase() {
-	if uc == nil {
-		return
-	}
-
-	zeroBytes(uc.IdentityPrivateKey)
-	zeroBytes(uc.IdentityPublicKey)
-	zeroBytes(uc.VaultMasterSecret)
-	zeroBytes(uc.AuthHash)
-	zeroBytes(uc.AuthSalt)
-
-	// Zero the password hash string (PHC format)
-	// While Go strings are immutable, we clear the field for defense in depth
-	uc.PasswordHash = ""
-
-	// Zero all crypto keys
-	for i := range uc.CryptoKeys {
-		zeroBytes(uc.CryptoKeys[i].PrivateKey)
-	}
-	uc.CryptoKeys = nil
-
-	uc.IdentityPrivateKey = nil
-	uc.IdentityPublicKey = nil
-	uc.VaultMasterSecret = nil
-	uc.AuthHash = nil
-	uc.AuthSalt = nil
 }
 
 // SecureErase zeros the CEK pair

@@ -463,8 +463,6 @@ func decryptWithPINDomain(privateKey []byte, ciphertext []byte) ([]byte, error) 
 	return decryptWithDomain(privateKey, ciphertext, DomainPIN)
 }
 
-// NOTE: generateX25519Keypair is defined in cek.go
-
 // --- Hash Utilities ---
 
 // hashSHA256 computes SHA-256 hash

@@ -26,6 +26,7 @@ const VotingKeyDerivationInfo = "vettid-vote-v1"
 type VoteHandler struct {
 	ownerSpace  string
 	state       *VaultState
+	storage     *EncryptedStorage
 	bootstrap   *BootstrapHandler
 	sealerProxy *SealerProxy
 	auditLog    *AuditLog
@@ -52,12 +53,18 @@ type pendingVote struct {
 func (h *VoteHandler) SetAuditLog(a *AuditLog) { h.auditLog = a }
 
 // NewVoteHandler creates a new vote handler
-func NewVoteHandler(ownerSpace string, state *VaultState, bootstrap *BootstrapHandler) *VoteHandler {
+func NewVoteHandler(ownerSpace string, state *VaultState, storage *EncryptedStorage, bootstrap *BootstrapHandler) *VoteHandler {
 	return &VoteHandler{
 		ownerSpace: ownerSpace,
 		state:      state,
+		storage:    storage,
 		bootstrap:  bootstrap,
 	}
+}
+
+// consumeIdentityKey is the VoteHandler shim around the shared TTL gate.
+func (h *VoteHandler) consumeIdentityKey() ([]byte, error) {
+	return consumeIdentityKeyFromState(h.state, h.storage)
 }
 
 // SetSealerProxy sets the sealer proxy for proposals list access
@@ -148,29 +155,29 @@ func (h *VoteHandler) HandleCastVote(ctx context.Context, msg *IncomingMessage) 
 	}
 	// If no valid choices provided, accept any non-empty vote string (validated on backend Lambda)
 
-	// Phase D: read identity key from carve-out; verify password by
-	// decrypting the request-supplied credential blob (no in-memory
-	// credential plaintext).
-	h.state.mu.RLock()
-	idKey := append([]byte(nil), h.state.identityPrivateKey...)
-	h.state.mu.RUnlock()
-	defer zeroBytes(idKey)
-
-	if len(idKey) == 0 {
-		return h.errorResponse(msg.GetID(), "vault is locked - unlock with PIN first")
-	}
-
-	// SECURITY: Verify password before allowing vote
+	// Phase E: voting is high-stakes — always require fresh password
+	// authorization in addition to the TTL gate. The password verify
+	// decrypts the request-supplied credential blob and pulls the
+	// identity key directly from it, so we never rely on the in-memory
+	// carve-out for vote signing.
 	if req.EncryptedPasswordHash == "" || req.EphemeralPublicKey == "" || req.Nonce == "" || req.KeyID == "" {
 		return h.errorResponse(msg.GetID(), "password authorization required")
 	}
 	if req.EncryptedCredential == "" {
 		return h.errorResponse(msg.GetID(), "encrypted_credential required for vote authorization")
 	}
-	if err := h.verifyPasswordViaBlob(req.EncryptedCredential, req.EncryptedPasswordHash, req.EphemeralPublicKey, req.Nonce, req.KeyID); err != nil {
+	idKey, err := h.revealIdentityViaPasswordedBlob(
+		req.EncryptedCredential,
+		req.EncryptedPasswordHash,
+		req.EphemeralPublicKey,
+		req.Nonce,
+		req.KeyID,
+	)
+	if err != nil {
 		log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("Vote password verification failed")
 		return h.errorResponse(msg.GetID(), err.Error())
 	}
+	defer zeroBytes(idKey)
 
 	// Derive voting keypair using HKDF
 	// Derivation: HKDF-SHA256(identity_private_key, proposal_id, "vettid-vote-v1")
@@ -373,15 +380,16 @@ func (h *VoteHandler) HandleVerifyVote(ctx context.Context, msg *IncomingMessage
 	}
 
 	// Re-derive the voting public key if not explicitly provided.
+	// Phase E: verify-vote is read-only — uses the same TTL gate as
+	// other signing ops via mh.consumeIdentityKey, but the value
+	// returned is only used as HKDF input for public-key derivation.
 	vk := req.VotingPublicKey
 	if vk == "" {
-		h.state.mu.RLock()
-		idKey := append([]byte(nil), h.state.identityPrivateKey...)
-		h.state.mu.RUnlock()
-		defer zeroBytes(idKey)
-		if len(idKey) == 0 {
-			return h.errorResponse(msg.GetID(), "vault is locked - unlock with PIN first")
+		idKey, err := h.consumeIdentityKey()
+		if err != nil {
+			return h.errorResponse(msg.GetID(), "identity_locked")
 		}
+		defer zeroBytes(idKey)
 		_, pubKey, err := h.deriveVotingKeypair(idKey, req.ProposalID)
 		if err != nil {
 			return h.errorResponse(msg.GetID(), "key derivation failed")
@@ -479,31 +487,37 @@ func min(a, b int) int {
 	return b
 }
 
-// verifyPasswordViaBlob (Phase D) decrypts the request-supplied
-// encrypted credential blob and verifies the encrypted password hash
-// against THAT decrypted credential — never reads vaultState.credential.
-// The decrypted credential is securely erased before this function returns.
-func (h *VoteHandler) verifyPasswordViaBlob(encryptedCredential, encryptedPasswordHash, ephemeralPublicKey, nonce, keyID string) error {
+// revealIdentityViaPasswordedBlob (Phase E) decrypts the request-supplied
+// encrypted credential blob, verifies the encrypted password hash against
+// THAT decrypted credential, and on success returns a fresh copy of the
+// user's Ed25519 identity private key. The decrypted credential is
+// securely erased before this function returns; the caller owns the
+// returned key and must zero it out (defer zeroBytes(idKey)).
+//
+// Vote signing always uses this path — the in-memory carve-out is never
+// consulted, so casting a vote always requires fresh password
+// authorization.
+func (h *VoteHandler) revealIdentityViaPasswordedBlob(encryptedCredential, encryptedPasswordHash, ephemeralPublicKey, nonce, keyID string) ([]byte, error) {
 	// Decrypt the credential blob in-flight via the CEK still cached
 	// on vaultState.
 	encBytes, err := base64.StdEncoding.DecodeString(encryptedCredential)
 	if err != nil {
-		return fmt.Errorf("invalid credential encoding: %w", err)
+		return nil, fmt.Errorf("invalid credential encoding: %w", err)
 	}
 	h.state.mu.RLock()
 	cekPair := h.state.cekPair
 	h.state.mu.RUnlock()
 	if cekPair == nil {
-		return fmt.Errorf("CEK not available")
+		return nil, fmt.Errorf("CEK not available")
 	}
 	plaintext, err := decryptWithCEK(cekPair.PrivateKey, encBytes)
 	if err != nil {
-		return fmt.Errorf("CEK decryption failed: %w", err)
+		return nil, fmt.Errorf("CEK decryption failed: %w", err)
 	}
 	defer zeroBytes(plaintext)
 	var cred ProteanCredentialV2
 	if err := json.Unmarshal(plaintext, &cred); err != nil {
-		return fmt.Errorf("failed to parse credential: %w", err)
+		return nil, fmt.Errorf("failed to parse credential: %w", err)
 	}
 	defer cred.SecureErase()
 
@@ -511,19 +525,19 @@ func (h *VoteHandler) verifyPasswordViaBlob(encryptedCredential, encryptedPasswo
 	// password-hash envelope.
 	ltk, found := h.bootstrap.GetLTKForUTK(keyID)
 	if !found {
-		return fmt.Errorf("invalid or expired UTK")
+		return nil, fmt.Errorf("invalid or expired UTK")
 	}
 	ciphertext, err := base64.StdEncoding.DecodeString(encryptedPasswordHash)
 	if err != nil {
-		return fmt.Errorf("invalid encrypted_password_hash encoding")
+		return nil, fmt.Errorf("invalid encrypted_password_hash encoding")
 	}
 	ephPubKey, err := base64.StdEncoding.DecodeString(ephemeralPublicKey)
 	if err != nil {
-		return fmt.Errorf("invalid ephemeral_public_key encoding")
+		return nil, fmt.Errorf("invalid ephemeral_public_key encoding")
 	}
 	nonceBytes, err := base64.StdEncoding.DecodeString(nonce)
 	if err != nil {
-		return fmt.Errorf("invalid nonce encoding")
+		return nil, fmt.Errorf("invalid nonce encoding")
 	}
 	combinedPayload := make([]byte, 0, len(ephPubKey)+len(nonceBytes)+len(ciphertext))
 	combinedPayload = append(combinedPayload, ephPubKey...)
@@ -531,9 +545,14 @@ func (h *VoteHandler) verifyPasswordViaBlob(encryptedCredential, encryptedPasswo
 	combinedPayload = append(combinedPayload, ciphertext...)
 	passwordHashBytes, err := decryptWithUTK(ltk, combinedPayload)
 	if err != nil {
-		return fmt.Errorf("decryption failed: %w", err)
+		return nil, fmt.Errorf("decryption failed: %w", err)
 	}
 	defer zeroBytes(passwordHashBytes)
+
+	// SECURITY (crypto-H2): UTK is single-use on AEAD success — burn
+	// it before evaluating the password match so a leaked UTK can't
+	// be replayed against an online password-guessing oracle.
+	h.bootstrap.MarkUTKUsed(keyID)
 
 	passwordHash := string(passwordHashBytes)
 	var payload struct {
@@ -544,11 +563,16 @@ func (h *VoteHandler) verifyPasswordViaBlob(encryptedCredential, encryptedPasswo
 	}
 
 	if !timingSafeEqualStrings(passwordHash, cred.Auth.Hash) {
-		return fmt.Errorf("incorrect password")
+		return nil, fmt.Errorf("incorrect password")
 	}
 
-	h.bootstrap.MarkUTKUsed(keyID)
-	return nil
+	if len(cred.Identity.PrivateKey) == 0 {
+		return nil, fmt.Errorf("identity key not present in credential")
+	}
+	idKey := make([]byte, len(cred.Identity.PrivateKey))
+	copy(idKey, cred.Identity.PrivateKey)
+
+	return idKey, nil
 }
 
 // deriveVotingKeypair derives a unique Ed25519 keypair for voting on a specific proposal

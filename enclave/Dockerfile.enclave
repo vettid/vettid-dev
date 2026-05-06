@@ -17,6 +17,10 @@ ENV GOARCH=amd64
 WORKDIR /build
 COPY supervisor/ ./supervisor/
 COPY vault-manager/ ./vault-manager/
+# Intra-module packages imported by vault-manager (and supervisor) —
+# Go's -mod=vendor mode still resolves same-module packages from
+# disk, so they have to be present in the build context.
+COPY migration/ ./migration/
 COPY go.mod go.sum ./
 # Vendor directory pre-populated so the Docker build doesn't need
 # network access to the Go module proxy and avoids toolchain

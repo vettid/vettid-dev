@@ -537,14 +537,54 @@ export function hashIdentifier(value: string): string {
 }
 
 /**
+ * Hard caps on request bodies to keep one Lambda invocation from being
+ * pushed into pathological CPU/memory usage by an attacker. SECURITY
+ * (injection-#2). Tunable via env vars in case a specific endpoint
+ * legitimately needs more headroom.
+ *
+ * MAX_BODY_BYTES: rejects oversized payloads before JSON.parse runs.
+ * MAX_JSON_DEPTH: rejects deeply-nested JSON that would otherwise burn
+ *   CPU walking the structure (parser-bomb defence).
+ */
+const MAX_BODY_BYTES = parseInt(process.env.LAMBDA_MAX_BODY_BYTES ?? '1048576', 10); // 1 MiB
+const MAX_JSON_DEPTH = parseInt(process.env.LAMBDA_MAX_JSON_DEPTH ?? '32', 10);
+
+function assertJsonDepth(value: unknown, depth: number): void {
+  if (depth > MAX_JSON_DEPTH) {
+    throw new ValidationError("Request body nesting too deep");
+  }
+  if (value === null || typeof value !== 'object') return;
+  if (Array.isArray(value)) {
+    for (const v of value) assertJsonDepth(v, depth + 1);
+    return;
+  }
+  for (const v of Object.values(value as Record<string, unknown>)) {
+    assertJsonDepth(v, depth + 1);
+  }
+}
+
+function parseAndCheck<T>(body: string): T {
+  const parsed = JSON.parse(body);
+  assertJsonDepth(parsed, 0);
+  return parsed as T;
+}
+
+/**
  * Parse JSON body from API Gateway event (throws ValidationError on failure)
  * Use this when you want validation errors to propagate
+ *
+ * SECURITY (injection-#2): caps body size + JSON depth to prevent
+ * parser-bomb / memory-exhaustion DoS.
  */
 export function parseJsonBody<T = any>(event: APIGatewayProxyEventV2): T {
   if (!event.body) throw new ValidationError("Missing request body");
+  if (event.body.length > MAX_BODY_BYTES) {
+    throw new ValidationError("Request body too large");
+  }
   try {
-    return JSON.parse(event.body) as T;
-  } catch {
+    return parseAndCheck<T>(event.body);
+  } catch (err) {
+    if (err instanceof ValidationError) throw err;
     throw new ValidationError("Invalid JSON in request body");
   }
 }
@@ -552,11 +592,14 @@ export function parseJsonBody<T = any>(event: APIGatewayProxyEventV2): T {
 /**
  * Safely parse JSON body string, returns null if parsing fails
  * Use this when you want to handle parsing errors yourself
+ *
+ * SECURITY (injection-#2): same body-size + depth caps as parseJsonBody.
  */
 export function safeParseJsonBody<T = any>(body: string | undefined | null): T | null {
   if (!body) return null;
+  if (body.length > MAX_BODY_BYTES) return null;
   try {
-    return JSON.parse(body) as T;
+    return parseAndCheck<T>(body);
   } catch {
     return null;
   }

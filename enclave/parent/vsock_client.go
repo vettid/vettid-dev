@@ -173,6 +173,10 @@ const (
 	EnclaveMessageTypeTurnCredentialsGet      EnclaveMessageType = "turn_credentials_get"
 	EnclaveMessageTypeTurnCredentialsResponse EnclaveMessageType = "turn_credentials_response"
 
+	// PCR-signing key fetch (enclave -> parent -> KMS GetPublicKey)
+	EnclaveMessageTypePCRSigningKeyGet      EnclaveMessageType = "pcr_signing_key_get"
+	EnclaveMessageTypePCRSigningKeyResponse EnclaveMessageType = "pcr_signing_key_response"
+
 	// Audit event (org-vault-manager -> parent -> DynamoDB + NATS)
 	EnclaveMessageTypeAuditEvent EnclaveMessageType = "audit_event"
 
@@ -444,15 +448,22 @@ func (c *VsockClient) performHandshake() error {
 		}
 	}
 
-	// 5. SECURITY: Verify attestation document with PCR values
+	// 5. SECURITY: Verify attestation document with PCR values + bind
+	// it to the handshake's combined nonce and the public key the
+	// enclave just sent us. Mismatches mean the document was issued
+	// for a different session — replay or substitution attempt.
 	if response.Attestation != nil {
 		log.Debug().
 			Int("attestation_len", len(response.Attestation.Document)).
 			Msg("Attestation document received")
 
+		expectedNonce := append([]byte{}, nonce...)
+		expectedNonce = append(expectedNonce, response.HandshakeNonce...)
+		expectedPubKey := response.Attestation.PublicKey
+
 		// SECURITY: In production, verify attestation with expected PCRs
 		if !c.devMode && c.expectedPCRs != nil && len(c.expectedPCRs) > 0 {
-			if err := verifyAttestation(response.Attestation, c.expectedPCRs); err != nil {
+			if err := verifyAttestationWithBindings(response.Attestation, c.expectedPCRs, expectedNonce, expectedPubKey); err != nil {
 				log.Error().Err(err).Msg("SECURITY: Enclave attestation verification FAILED")
 				return fmt.Errorf("%w: attestation verification failed: %v", ErrHandshakeFailed, err)
 			}
@@ -766,6 +777,32 @@ type AttestationDocument struct {
 // verifyAttestation verifies a Nitro attestation document
 // SECURITY: This is critical - it validates the enclave's identity
 func verifyAttestation(attestation *HandshakeAttestation, expectedPCRs map[int][]byte) error {
+	return verifyAttestationWithBindings(attestation, expectedPCRs, nil, nil)
+}
+
+// verifyAttestationWithBindings is the version that also binds the
+// attestation to the parent's challenge nonce and the enclave's
+// ephemeral public key.
+//
+// SECURITY (attestation-F5): without this binding the parent used to
+// accept any well-formed Nitro attestation matching the expected PCRs.
+// An attacker on the vsock channel could replay an old attestation
+// (still within freshness) issued for a different challenge, or swap
+// the public key in the response struct without modifying the document
+// the COSE signature covers.
+//
+// expectedNonce: the parent's combined-nonce challenge (parent_nonce ||
+//   enclave_nonce in the handshake flow). Set to nil to skip the check
+//   (legacy callers that don't have the nonce; logged as warning).
+// expectedPublicKey: the X25519 public key the parent received in
+//   attestation.PublicKey alongside the document. Set to nil to skip
+//   the check.
+func verifyAttestationWithBindings(
+	attestation *HandshakeAttestation,
+	expectedPCRs map[int][]byte,
+	expectedNonce []byte,
+	expectedPublicKey []byte,
+) error {
 	if attestation == nil || len(attestation.Document) == 0 {
 		return ErrInvalidAttestation
 	}
@@ -821,9 +858,38 @@ func verifyAttestation(attestation *HandshakeAttestation, expectedPCRs map[int][
 		return err
 	}
 
+	// 5. SECURITY (attestation-F5): the attestation must be bound to
+	// the request that asked for it (nonce) and the public key the
+	// caller will use to encrypt against (PublicKey). A mismatch means
+	// the document was issued for a different session.
+	if expectedNonce != nil {
+		if !bytes.Equal(attDoc.Nonce, expectedNonce) {
+			log.Error().
+				Int("doc_nonce_len", len(attDoc.Nonce)).
+				Int("expected_nonce_len", len(expectedNonce)).
+				Msg("SECURITY: attestation nonce mismatch")
+			return fmt.Errorf("%w: nonce mismatch", ErrInvalidAttestation)
+		}
+	} else {
+		log.Warn().Msg("Attestation nonce binding skipped (caller passed nil)")
+	}
+	if expectedPublicKey != nil {
+		if !bytes.Equal(attDoc.PublicKey, expectedPublicKey) {
+			log.Error().
+				Int("doc_pubkey_len", len(attDoc.PublicKey)).
+				Int("expected_pubkey_len", len(expectedPublicKey)).
+				Msg("SECURITY: attestation public key mismatch")
+			return fmt.Errorf("%w: public key mismatch", ErrInvalidAttestation)
+		}
+	} else {
+		log.Warn().Msg("Attestation public-key binding skipped (caller passed nil)")
+	}
+
 	log.Info().
 		Str("module_id", attDoc.ModuleID).
 		Uint64("timestamp", attDoc.Timestamp).
+		Bool("nonce_bound", expectedNonce != nil).
+		Bool("pubkey_bound", expectedPublicKey != nil).
 		Msg("Attestation verification successful")
 
 	return nil

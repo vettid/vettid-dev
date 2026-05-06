@@ -206,14 +206,18 @@ func (h *ConnectionsHandler) tryActivate(ctx context.Context, connectionID strin
 		// converged at the same instant, that side already activated
 		// and the signal is a no-op.
 		if record.PeerOwnerSpace != "" {
-			signal := map[string]interface{}{
-				"signal":        "peer-accepted",
-				"connection_id": connectionID,
-			}
-			payload, _ := json.Marshal(signal)
-			subject := fmt.Sprintf("MessageSpace.%s.forOwner.connection.signal", record.PeerOwnerSpace)
-			if err := h.publisher.PublishRaw(subject, payload); err != nil {
-				log.Warn().Err(err).Str("connection_id", connectionID).Msg("Failed to publish peer-accepted signal during activation")
+			if !isValidOwnerSpace(record.PeerOwnerSpace) {
+				log.Error().Str("peer_owner_space", record.PeerOwnerSpace).Msg("SECURITY: refusing to publish to malformed peer owner space")
+			} else {
+				signal := map[string]interface{}{
+					"signal":        "peer-accepted",
+					"connection_id": connectionID,
+				}
+				payload, _ := json.Marshal(signal)
+				subject := fmt.Sprintf("MessageSpace.%s.forOwner.connection.signal", record.PeerOwnerSpace)
+				if err := h.publisher.PublishRaw(subject, payload); err != nil {
+					log.Warn().Err(err).Str("connection_id", connectionID).Msg("Failed to publish peer-accepted signal during activation")
+				}
 			}
 		}
 		// 2) Notify our own app.
@@ -286,9 +290,17 @@ func (h *ConnectionsHandler) publishConnectionSignal(peerOwnerSpace, signalType,
 	body := map[string]interface{}{
 		"signal":        signalType,
 		"connection_id": connectionID,
+		// peer_owner_space identifies WHO is sending so the receiver
+		// can verify it matches the connection record's stored peer
+		// owner space (defense against forged signals from anyone
+		// who knows just the connection_id). See verifyPeerSignalOrigin.
+		"peer_owner_space": h.ownerSpace,
 	}
 	if reviewNonce != "" {
 		body["review_nonce"] = reviewNonce
+	}
+	if !isValidOwnerSpace(peerOwnerSpace) {
+		return fmt.Errorf("invalid peer owner space")
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {
@@ -314,16 +326,23 @@ func (h *ConnectionsHandler) publishConnectionSignalWithExtras(
 	body := map[string]interface{}{
 		"signal":        signalType,
 		"connection_id": connectionID,
+		// See publishConnectionSignal — peer_owner_space is the
+		// origin identity the receiver verifies against its stored
+		// PeerOwnerSpace. extras must not clobber it.
+		"peer_owner_space": h.ownerSpace,
 	}
 	if reviewNonce != "" {
 		body["review_nonce"] = reviewNonce
 	}
 	for k, v := range extras {
 		// Don't let extras clobber the routing fields.
-		if k == "signal" || k == "connection_id" || k == "review_nonce" {
+		if k == "signal" || k == "connection_id" || k == "review_nonce" || k == "peer_owner_space" {
 			continue
 		}
 		body[k] = v
+	}
+	if !isValidOwnerSpace(peerOwnerSpace) {
+		return fmt.Errorf("invalid peer owner space")
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {
@@ -730,6 +749,15 @@ type StoreCredentialsRequest struct {
 	E2EPublicKey       string                 `json:"e2e_public_key"`          // Hex-encoded X25519 public key (used by agent/device)
 	ConnectionType     string                 `json:"connection_type,omitempty"` // "peer" (default), "agent", or "device"
 	PeerProfile        map[string]interface{} `json:"peer_profile,omitempty"`
+
+	// InviteCode is the 12-char invite code the caller received via
+	// the out-of-band channel (QR / push / share-link). The vault
+	// rejects this request unless the code matches an InviteCode
+	// previously stamped on a local outbound connection record by
+	// HandleCreateInvite. Without this binding, anyone who can
+	// publish to forOwner.connection.store-credentials could forge
+	// a Status="active" record (audit finding A3).
+	InviteCode string `json:"invite_code,omitempty"`
 }
 
 // StoreCredentialsResponse is the response for connection.store-credentials
@@ -1178,6 +1206,18 @@ func (h *ConnectionsHandler) HandleResolveInvite(msg *IncomingMessage) (*Outgoin
 		return h.errorResponse(msg.GetID(), "cannot resolve your own invitation")
 	}
 
+	// SECURITY (authZ-H1): the broker stores invitation payloads under
+	// the inviter's account, but anyone with broker write would be able
+	// to forge a payload pointing at a different OwnerSpace. Verify
+	// that the embedded JWT (a) is signature-valid, (b) names a user
+	// whose seed we hold, and (c) carries publish/subscribe permissions
+	// scoped to the OwnerSpace claimed in the payload. Any mismatch
+	// means the payload was tampered with.
+	if err := verifyBrokerInviteJWT(brokerPayload.JWT, brokerPayload.Seed, brokerPayload.OwnerSpace); err != nil {
+		log.Warn().Err(err).Str("invite_code", req.InviteCode).Str("owner_space", brokerPayload.OwnerSpace).Msg("Broker invite JWT verification failed")
+		return h.errorResponse(msg.GetID(), "invitation rejected: signature verification failed")
+	}
+
 	peerPubKey, err := decodeHexKey(brokerPayload.E2EPublicKey)
 	if err != nil {
 		return h.errorResponse(msg.GetID(), fmt.Sprintf("invalid inviter pubkey: %v", err))
@@ -1538,12 +1578,18 @@ func (h *ConnectionsHandler) handleResponseReady(ctx context.Context, msg *Incom
 		r.PeerGUID = response.OwnerSpace
 		r.PeerAlias = response.Label
 		r.PeerPublicKey = peerPubKey
+		// SECURITY (crypto-H1): only flip status when we actually
+		// computed a shared secret. A nil SharedSecret with status
+		// peer_reviewing → active misleads the UI into thinking
+		// messaging works when it can't.
 		if len(r.LocalPrivateKey) > 0 {
 			ss, err := curve25519.X25519(r.LocalPrivateKey, peerPubKey)
-			if err == nil {
-				r.SharedSecret = ss
-				r.KeyExchangeAt = time.Now()
+			if err != nil {
+				log.Error().Err(err).Str("connection_id", connectionID).Msg("ECDH derive failed for response-ready")
+				return false, fmt.Errorf("derive shared secret: %w", err)
 			}
+			r.SharedSecret = ss
+			r.KeyExchangeAt = time.Now()
 		}
 		r.ReviewNonce = response.ReviewNonce
 		// Only set peer_reviewing if neither side has decided yet.
@@ -1587,7 +1633,23 @@ func (h *ConnectionsHandler) handleResponseReady(ctx context.Context, msg *Incom
 
 // handlePeerAccepted records that the peer hit Accept on their side.
 // Sets PeerDecision and runs tryActivate. Idempotent.
+//
+// SECURITY (A4): the audit found that this handler was flipping
+// PeerDecision based purely on signal-arrival, with no proof the
+// signal originated from the peer of record. Anyone who could
+// publish to MessageSpace.<us>.forOwner.connection.signal could
+// flip a connection's PeerDecision and trip tryActivate.
+//
+// Defense layer: require the signal payload carry `peer_owner_space`
+// matching the connection record's stored `PeerOwnerSpace`. The
+// attacker now needs both the connection_id AND the peer's owner
+// space ID. (A stronger HMAC-over-SharedSecret authentication is
+// the longer-term plan; this is the immediate harden.)
 func (h *ConnectionsHandler) handlePeerAccepted(ctx context.Context, msg *IncomingMessage, connectionID string) (*OutgoingMessage, error) {
+	if !h.verifyPeerSignalOrigin(msg, connectionID) {
+		log.Warn().Str("connection_id", connectionID).Msg("peer-accepted signal rejected — peer_owner_space mismatch")
+		return &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true,"rejected":"origin_unverified"}`)}, nil
+	}
 	var changed bool
 	_, err := h.withConnectionRecord(connectionID, func(r *ConnectionRecord) (bool, error) {
 		if recordTerminal(r.Status) {
@@ -1612,10 +1674,57 @@ func (h *ConnectionsHandler) handlePeerAccepted(ctx context.Context, msg *Incomi
 	return &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}, nil
 }
 
+// verifyPeerSignalOrigin returns true when the inbound signal claims
+// a peer_owner_space matching the connection record's stored
+// PeerOwnerSpace. Returns false on any mismatch, missing field, or
+// connection lookup failure — caller should ack-and-drop without
+// mutating state.
+//
+// This is one half of the peer-signal trust boundary. The other
+// half (which would tighten further) is an HMAC keyed by the
+// connection's SharedSecret over the signal contents — not yet wired
+// because both sender + receiver need to agree.
+func (h *ConnectionsHandler) verifyPeerSignalOrigin(msg *IncomingMessage, connectionID string) bool {
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(msg.Payload, &probe); err != nil {
+		return false
+	}
+	var claimedPeerOwner string
+	if raw, ok := probe["peer_owner_space"]; ok {
+		_ = json.Unmarshal(raw, &claimedPeerOwner)
+	}
+	if claimedPeerOwner == "" {
+		return false
+	}
+	data, err := h.storage.Get("connections/" + connectionID)
+	if err != nil || len(data) == 0 {
+		return false
+	}
+	var rec ConnectionRecord
+	if err := json.Unmarshal(data, &rec); err != nil {
+		return false
+	}
+	if rec.PeerOwnerSpace == "" {
+		// Record predates peer-owner-space binding (only possible on
+		// legacy records). Strict mode: reject. The user can re-issue
+		// the invite to bind the peer's owner space.
+		return false
+	}
+	return rec.PeerOwnerSpace == claimedPeerOwner
+}
+
 // handlePeerRejected records that the peer declined. Marks the record
 // terminal as declined_by_peer, zeroes shared key material, emits
 // forApp.connection.rejected. Idempotent.
+//
+// SECURITY (A4): destructive op — same origin check as peer-accepted.
+// Refuse to mutate state when the signal's peer_owner_space doesn't
+// match the connection record's stored PeerOwnerSpace.
 func (h *ConnectionsHandler) handlePeerRejected(ctx context.Context, msg *IncomingMessage, connectionID string) (*OutgoingMessage, error) {
+	if !h.verifyPeerSignalOrigin(msg, connectionID) {
+		log.Warn().Str("connection_id", connectionID).Msg("peer-rejected signal rejected — peer_owner_space mismatch")
+		return &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true,"rejected":"origin_unverified"}`)}, nil
+	}
 	var fired bool
 	record, err := h.withConnectionRecord(connectionID, func(r *ConnectionRecord) (bool, error) {
 		if r.Status == ConnStatusDeclinedByPeer {
@@ -1693,15 +1802,18 @@ func (h *ConnectionsHandler) HandlePeerKeyExchange(ctx context.Context, msg *Inc
 	}
 
 	record.PeerPublicKey = peerPublicKey
+	// SECURITY (crypto-H1): without a successful ECDH the connection
+	// can't carry messages. Refuse to persist the half-state — the peer
+	// will retry the key-exchange and we'll reconverge on the next ping.
 	if len(record.LocalPrivateKey) > 0 {
 		sharedSecret, err := curve25519.X25519(record.LocalPrivateKey, peerPublicKey)
-		if err == nil {
-			record.SharedSecret = sharedSecret
-			record.KeyExchangeAt = time.Now()
-			log.Info().Str("connection_id", keyExchange.ConnectionID).Msg("Computed shared secret (B side)")
-		} else {
-			log.Error().Err(err).Msg("Failed to compute shared secret")
+		if err != nil {
+			log.Error().Err(err).Str("connection_id", keyExchange.ConnectionID).Msg("ECDH derive failed (B side)")
+			return &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":false,"error":"derive_shared_secret"}`)}, nil
 		}
+		record.SharedSecret = sharedSecret
+		record.KeyExchangeAt = time.Now()
+		log.Info().Str("connection_id", keyExchange.ConnectionID).Msg("Computed shared secret (B side)")
 	}
 
 	// Save updated record
@@ -1995,6 +2107,54 @@ func (h *ConnectionsHandler) HandleStoreCredentials(msg *IncomingMessage) (*Outg
 		return h.errorResponse(msg.GetID(), "message_space_topic is required")
 	}
 
+	// SECURITY (A3): require the caller to prove possession of the
+	// invite_code we previously issued. Without this, anyone who can
+	// publish to forOwner.connection.store-credentials could forge a
+	// Status="active" record by guessing or replaying a connection_id.
+	//
+	// Look up the existing outbound record (created by
+	// HandleCreateInvite) and require: (1) the record exists, (2) it
+	// is an outbound invite we issued, (3) the wire-supplied
+	// invite_code matches the stored one.
+	storageKey := "connections/" + req.ConnectionID
+	existing, _ := h.storage.Get(storageKey)
+	if len(existing) == 0 {
+		log.Warn().
+			Str("connection_id", req.ConnectionID).
+			Str("peer_guid", req.PeerGUID).
+			Msg("store-credentials refused — no local record for this connection_id")
+		return h.errorResponse(msg.GetID(), "no matching invitation for this connection_id")
+	}
+	var existingRec ConnectionRecord
+	if err := json.Unmarshal(existing, &existingRec); err != nil {
+		return h.errorResponse(msg.GetID(), "stored connection record corrupted")
+	}
+	if existingRec.CredentialsType != "outbound" {
+		log.Warn().
+			Str("connection_id", req.ConnectionID).
+			Str("creds_type", existingRec.CredentialsType).
+			Msg("store-credentials refused — record is not an outbound invite")
+		return h.errorResponse(msg.GetID(), "connection is not in an invitable state")
+	}
+	if existingRec.InviteCode == "" {
+		// Existing record predates invite-code binding. Refuse rather
+		// than silently accept — the user can re-issue a fresh invite.
+		log.Warn().
+			Str("connection_id", req.ConnectionID).
+			Msg("store-credentials refused — existing record has no invite_code (re-issue invite)")
+		return h.errorResponse(msg.GetID(), "invitation not bound to a code; re-issue it")
+	}
+	if req.InviteCode == "" || req.InviteCode != existingRec.InviteCode {
+		log.Warn().
+			Str("connection_id", req.ConnectionID).
+			Bool("code_supplied", req.InviteCode != "").
+			Msg("store-credentials refused — invite_code mismatch")
+		return h.errorResponse(msg.GetID(), "invite_code mismatch")
+	}
+	if recordTerminal(existingRec.Status) {
+		return h.errorResponse(msg.GetID(), "invitation has expired or been revoked")
+	}
+
 	// Generate our X25519 key pair
 	localPrivate := make([]byte, 32)
 	rand.Read(localPrivate)
@@ -2062,20 +2222,28 @@ func (h *ConnectionsHandler) HandleStoreCredentials(msg *IncomingMessage) (*Outg
 		}
 	}
 
-	// If e2e_public_key was provided (agent/device pattern), store it directly
+	// If e2e_public_key was provided (agent/device pattern), store it directly.
+	// SECURITY (crypto-H1): we used to swallow ECDH failures here and
+	// keep the record without a SharedSecret, which let downstream
+	// state flips claim "active" with no working session. Reject the
+	// store-credentials request instead so the caller knows to retry.
 	e2eKeyHex := req.E2EPublicKey
 	if e2eKeyHex == "" {
 		e2eKeyHex = req.PeerE2EPublicKey
 	}
 	if e2eKeyHex != "" {
-		if peerPubBytes, err := hex.DecodeString(e2eKeyHex); err == nil && len(peerPubBytes) == 32 {
-			record.PeerPublicKey = peerPubBytes
-			// Compute shared secret immediately if peer provided their public key
-			if sharedSecret, err := curve25519.X25519(localPrivate, peerPubBytes); err == nil {
-				record.SharedSecret = sharedSecret
-				record.KeyExchangeAt = time.Now()
-			}
+		peerPubBytes, decodeErr := hex.DecodeString(e2eKeyHex)
+		if decodeErr != nil || len(peerPubBytes) != 32 {
+			return h.errorResponse(msg.GetID(), "Invalid peer e2e public key")
 		}
+		record.PeerPublicKey = peerPubBytes
+		sharedSecret, sharedErr := curve25519.X25519(localPrivate, peerPubBytes)
+		if sharedErr != nil {
+			log.Error().Err(sharedErr).Str("connection_id", record.ConnectionID).Msg("ECDH derive failed (store-credentials)")
+			return h.errorResponse(msg.GetID(), "Failed to derive shared secret")
+		}
+		record.SharedSecret = sharedSecret
+		record.KeyExchangeAt = time.Now()
 	}
 
 	data, err := json.Marshal(record)
@@ -2083,7 +2251,6 @@ func (h *ConnectionsHandler) HandleStoreCredentials(msg *IncomingMessage) (*Outg
 		return h.errorResponse(msg.GetID(), "Failed to marshal connection")
 	}
 
-	storageKey := "connections/" + req.ConnectionID
 	if err := h.storage.Put(storageKey, data); err != nil {
 		return h.errorResponse(msg.GetID(), "Failed to store connection")
 	}
@@ -2108,7 +2275,7 @@ func (h *ConnectionsHandler) HandleStoreCredentials(msg *IncomingMessage) (*Outg
 	// Notify the inviter's vault that we accepted the connection.
 	// Include our full published profile (with photo) so the inviter can review it.
 	// Published via parent (backend account) so the parent's MessageSpace subscription receives it.
-	if h.publisher != nil && req.PeerOwnerSpaceID != "" {
+	if h.publisher != nil && req.PeerOwnerSpaceID != "" && isValidOwnerSpace(req.PeerOwnerSpaceID) {
 		fullProfile := h.loadPublishedProfileForPeer()
 		notification := map[string]interface{}{
 			"connection_id":  req.ConnectionID,
@@ -2201,7 +2368,6 @@ func (h *ConnectionsHandler) HandleInitiate(msg *IncomingMessage) (*OutgoingMess
 
 	// Store requester's info in the connection record
 	record.PeerCapabilities = req.RequesterCapabilities
-	record.Status = "pending_our_review" // Inviter (A) needs to review invitee (B)
 
 	// Decode peer's E2E public key and compute shared secret
 	peerPublicKey, err := decodeHexKey(req.RequesterE2EPublicKey)
@@ -2210,14 +2376,19 @@ func (h *ConnectionsHandler) HandleInitiate(msg *IncomingMessage) (*OutgoingMess
 	}
 	record.PeerPublicKey = peerPublicKey
 
-	// Compute shared secret using X25519
+	// SECURITY (crypto-H1): require a successful ECDH before flipping
+	// status to "pending_our_review". Otherwise we ack a request that
+	// the peer can never message us back on.
 	if len(record.LocalPrivateKey) > 0 && len(peerPublicKey) > 0 {
-		sharedSecret, err := curve25519.X25519(record.LocalPrivateKey, peerPublicKey)
-		if err == nil {
-			record.SharedSecret = sharedSecret
-			record.KeyExchangeAt = time.Now()
+		sharedSecret, sharedErr := curve25519.X25519(record.LocalPrivateKey, peerPublicKey)
+		if sharedErr != nil {
+			log.Error().Err(sharedErr).Str("connection_id", record.ConnectionID).Msg("ECDH derive failed (peer-key-exchange)")
+			return h.errorResponse(msg.GetID(), "Failed to derive shared secret")
 		}
+		record.SharedSecret = sharedSecret
+		record.KeyExchangeAt = time.Now()
 	}
+	record.Status = "pending_our_review" // Inviter (A) needs to review invitee (B)
 
 	// Save updated connection record
 	newData, err := json.Marshal(record)
@@ -2522,20 +2693,27 @@ func (h *ConnectionsHandler) HandlePeerConnectionNotification(ctx context.Contex
 		}
 	}
 
-	// Store peer's E2E public key and compute shared secret
+	// Store peer's E2E public key and compute shared secret.
+	// SECURITY (crypto-H1): if the key is malformed or ECDH fails, the
+	// notification is dropped — refuse to flip status to "pending"
+	// without a working session, so the inviter retries instead of
+	// reviewing a profile they can't message.
 	if notification.E2EPublicKey != "" {
-		peerPublicKey, err := decodeHexKey(notification.E2EPublicKey)
-		if err == nil {
-			record.PeerPublicKey = peerPublicKey
-			// Compute shared secret using X25519
-			if len(record.LocalPrivateKey) > 0 {
-				sharedSecret, err := curve25519.X25519(record.LocalPrivateKey, peerPublicKey)
-				if err == nil {
-					record.SharedSecret = sharedSecret
-					record.KeyExchangeAt = time.Now()
-					log.Info().Str("connection_id", notification.ConnectionID).Msg("Computed shared secret (A side)")
-				}
+		peerPublicKey, decodeErr := decodeHexKey(notification.E2EPublicKey)
+		if decodeErr != nil {
+			log.Warn().Err(decodeErr).Str("connection_id", notification.ConnectionID).Msg("Invalid peer e2e key in accepted notification")
+			return &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":false,"error":"invalid_peer_e2e_key"}`)}, nil
+		}
+		record.PeerPublicKey = peerPublicKey
+		if len(record.LocalPrivateKey) > 0 {
+			sharedSecret, sharedErr := curve25519.X25519(record.LocalPrivateKey, peerPublicKey)
+			if sharedErr != nil {
+				log.Error().Err(sharedErr).Str("connection_id", notification.ConnectionID).Msg("ECDH derive failed (A side)")
+				return &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":false,"error":"derive_shared_secret"}`)}, nil
 			}
+			record.SharedSecret = sharedSecret
+			record.KeyExchangeAt = time.Now()
+			log.Info().Str("connection_id", notification.ConnectionID).Msg("Computed shared secret (A side)")
 		}
 	}
 
@@ -2576,7 +2754,7 @@ func (h *ConnectionsHandler) HandlePeerConnectionNotification(ctx context.Contex
 
 	// Send key exchange reply to peer's vault with our public key
 	// This allows B to compute the same shared secret
-	if h.publisher != nil && notification.OwnerSpace != "" && len(record.LocalPublicKey) > 0 {
+	if h.publisher != nil && notification.OwnerSpace != "" && isValidOwnerSpace(notification.OwnerSpace) && len(record.LocalPublicKey) > 0 {
 		keyExchangeReply := map[string]interface{}{
 			"connection_id":  notification.ConnectionID,
 			"peer_guid":      h.ownerSpace,

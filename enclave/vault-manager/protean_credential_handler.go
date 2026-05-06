@@ -39,11 +39,15 @@ func (h *ProteanCredentialHandler) decryptCredentialBlob(encryptedBase64 string)
 		return nil, fmt.Errorf("CEK decryption failed: %w", err)
 	}
 	defer zeroBytes(plaintext)
-	var credV2 ProteanCredentialV2
-	if err := json.Unmarshal(plaintext, &credV2); err != nil {
+
+	var cred ProteanCredentialV2
+	if err := json.Unmarshal(plaintext, &cred); err != nil {
 		return nil, fmt.Errorf("failed to parse credential: %w", err)
 	}
-	return &credV2, nil
+	if cred.FormatVersion < 2 {
+		return nil, fmt.Errorf("unsupported credential format version: %d (need 2)", cred.FormatVersion)
+	}
+	return &cred, nil
 }
 
 // NewProteanCredentialHandler creates a new Protean Credential handler
@@ -157,26 +161,35 @@ func (h *ProteanCredentialHandler) HandleCredentialCreate(ctx context.Context, m
 		return h.errorResponse(msg.GetID(), "secret generation failed")
 	}
 
-	// Create the Protean Credential
-	credential := &UnsealedCredential{
-		IdentityPrivateKey: identityPrivateKey,
-		IdentityPublicKey:  identityPublicKey,
-		VaultMasterSecret:  masterSecret,
-		PasswordHash:       payload.PasswordHash, // PHC string format: $argon2id$v=19$m=65536,t=3,p=4$<salt>$<hash>
-		AuthType:           "password",
-		CryptoKeys:         make([]CryptoKey, 0),
-		CreatedAt:          time.Now().Unix(),
-		Version:            1,
+	// Mint the credential directly in V2 format. Pull whatever PIN
+	// auth hash/salt the PIN setup phase left on vaultState carve-outs
+	// so the on-disk credential blob is the durable backup of the PIN
+	// verifier alongside the password PHC.
+	now := time.Now()
+	h.state.mu.RLock()
+	pinHash := append([]byte(nil), h.state.pinAuthHash...)
+	pinSalt := append([]byte(nil), h.state.pinAuthSalt...)
+	h.state.mu.RUnlock()
+
+	credential := &ProteanCredentialV2{
+		FormatVersion:  2,
+		Identity:       CredentialIdentity{PrivateKey: identityPrivateKey, PublicKey: identityPublicKey},
+		MasterSecret:   masterSecret,
+		Auth:           CredentialAuth{Type: "password", Hash: payload.PasswordHash, PinHash: pinHash, PinSalt: pinSalt},
+		CryptoMetadata: DefaultCryptoMetadata(),
+		Binding:        &CredentialBinding{VaultID: h.ownerSpace, BoundAt: now.Unix()},
+		CryptoKeys:     []CryptoKeyV2{},
+		Timestamps:     CredentialTimestamps{CreatedAt: now.Unix(), LastModified: now.Unix(), AuthChangedAt: now.Unix()},
+		Version:        1,
 	}
 
-	// Phase D: populate the narrow carve-outs (identity keypair +
-	// PIN auth hash/salt) so the rest of the system can read them
-	// without retaining the full credential plaintext in memory.
+	// Phase D: populate the narrow carve-outs.
+	// Phase E: also start the identity-key TTL window — the user just
+	// authenticated to create the credential.
 	h.state.mu.Lock()
-	h.state.identityPrivateKey = append([]byte(nil), credential.IdentityPrivateKey...)
-	h.state.identityPublicKey = append([]byte(nil), credential.IdentityPublicKey...)
-	h.state.pinAuthHash = append([]byte(nil), credential.AuthHash...)
-	h.state.pinAuthSalt = append([]byte(nil), credential.AuthSalt...)
+	h.state.identityPrivateKey = append([]byte(nil), credential.Identity.PrivateKey...)
+	h.state.identityPublicKey = append([]byte(nil), credential.Identity.PublicKey...)
+	h.state.identityKeyExpiresAt = now.Unix() + 300
 	h.state.mu.Unlock()
 
 	// Serialize credential for encryption
@@ -384,6 +397,7 @@ func (h *ProteanCredentialHandler) ClearCredential() {
 		h.state.identityPrivateKey = nil
 	}
 	h.state.identityPublicKey = nil
+	h.state.identityKeyExpiresAt = 0
 	if h.state.pinAuthHash != nil {
 		zeroBytes(h.state.pinAuthHash)
 		h.state.pinAuthHash = nil

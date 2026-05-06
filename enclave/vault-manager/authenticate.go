@@ -135,6 +135,13 @@ func (mh *MessageHandler) handleUTKAuthenticate(requestID string, req *Authentic
 	}
 	defer zeroBytes(passwordHashBytes)
 
+	// SECURITY (crypto-H2): consume the UTK as soon as AEAD decrypt
+	// succeeds, BEFORE the password match. Otherwise an attacker who
+	// leaks one UTK can replay it indefinitely until they guess the
+	// password (online oracle). Single-use semantics on AEAD success
+	// means each guess burns a UTK and the pool drains predictably.
+	mh.bootstrapHandler.MarkUTKUsed(req.KeyID)
+
 	// Parse the decrypted payload - it contains {"password_hash": "PHC string"}
 	var payload struct {
 		PasswordHash string `json:"password_hash"`
@@ -173,34 +180,35 @@ func (mh *MessageHandler) handleUTKAuthenticate(requestID string, req *Authentic
 
 	log.Debug().Int("credential_bytes_len", len(credentialBytes)).Msg("Decrypted credential")
 
-	// Parse the credential
-	var credential struct {
-		PasswordHash string `json:"password_hash"`
-		UserGUID     string `json:"user_guid"`
-	}
+	// Parse the credential (V2 format)
+	var credential ProteanCredentialV2
 	if err := json.Unmarshal(credentialBytes, &credential); err != nil {
 		log.Warn().Err(err).Msg("Failed to parse credential")
 		return mh.authErrorResponse(requestID, "Invalid credential format")
 	}
+	storedHash := credential.Auth.Hash
+	userGUID := ""
+	if credential.Binding != nil {
+		userGUID = credential.Binding.VaultID
+	}
 
 	log.Debug().
-		Bool("has_stored_hash", len(credential.PasswordHash) > 0).
+		Bool("has_stored_hash", len(storedHash) > 0).
 		Msg("Retrieved stored credential for verification")
 
 	// Verify the password hash matches (constant-time for PHC strings)
-	if !timingSafeEqualStrings(payload.PasswordHash, credential.PasswordHash) {
+	if !timingSafeEqualStrings(payload.PasswordHash, storedHash) {
 		log.Warn().
 			Str("device_id", req.DeviceID).
 			Msg("Password verification failed")
 		return mh.authErrorResponse(requestID, "Authentication failed")
 	}
 
-	// Mark UTK as used
-	mh.bootstrapHandler.MarkUTKUsed(req.KeyID)
+	// (UTK already consumed earlier on AEAD-decrypt success.)
 
 	log.Info().
 		Str("device_id", req.DeviceID).
-		Str("user_guid", credential.UserGUID).
+		Str("user_guid", userGUID).
 		Msg("Post-enrollment verification successful")
 
 	// Generate fresh replacement UTKs and return ONLY the new ones.
@@ -216,7 +224,7 @@ func (mh *MessageHandler) handleUTKAuthenticate(requestID string, req *Authentic
 	resp := AuthenticateResponse{
 		Success:    true,
 		Message:    "Authentication successful",
-		UserGUID:   credential.UserGUID,
+		UserGUID:   userGUID,
 		DeviceID:   req.DeviceID,
 		DeviceType: req.DeviceType,
 		NewUTKs:    newUTKs,
@@ -293,6 +301,7 @@ func (mh *MessageHandler) handleRestoreAuthenticate(requestID string, req *Authe
 	}
 	// SECURITY: Zero the credential bytes after parsing
 	defer zeroBytes(credentialBytes)
+	userGUID := credential.UserGUID
 
 	// Step 4: Verify the password hash matches
 	storedHash, err := base64.StdEncoding.DecodeString(credential.PasswordHash)
@@ -305,14 +314,14 @@ func (mh *MessageHandler) handleRestoreAuthenticate(requestID string, req *Authe
 	if !timingSafeEqual(providedHash, storedHash) {
 		log.Warn().
 			Str("device_id", req.DeviceID).
-			Str("user_guid", credential.UserGUID).
+			Str("user_guid", userGUID).
 			Msg("Password verification failed during restore")
 		return mh.authErrorResponse(requestID, "Password verification failed")
 	}
 
 	log.Info().
 		Str("device_id", req.DeviceID).
-		Str("user_guid", credential.UserGUID).
+		Str("user_guid", userGUID).
 		Msg("Password verified successfully in enclave")
 
 	// Step 5: Return success with user_guid
@@ -320,7 +329,7 @@ func (mh *MessageHandler) handleRestoreAuthenticate(requestID string, req *Authe
 	resp := AuthenticateResponse{
 		Success:    true,
 		Message:    "Authentication successful",
-		UserGUID:   credential.UserGUID,
+		UserGUID:   userGUID,
 		DeviceID:   req.DeviceID,
 		DeviceType: req.DeviceType,
 	}

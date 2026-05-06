@@ -187,6 +187,65 @@ func NewPCRConfigVerifier(publicKey []byte, currentPCRs *PCRValues) (*PCRConfigV
 	return nil, fmt.Errorf("unsupported public key format (expected ECDSA P-256 or Ed25519, got %d bytes)", len(publicKey))
 }
 
+// NewSignatureOnlyVerifier builds a verifier that skips the OldPCRs
+// match. Use this when the caller doesn't have access to the running
+// enclave's PCR values (e.g. inside vault-manager, which doesn't talk
+// to NSM directly). The signature + time-window checks alone are
+// enough to reject the F1 attack — an attacker who can write the
+// config but doesn't hold the KMS signing key cannot forge a passing
+// signature.
+//
+// Callers that DO have access to the running PCRs should still prefer
+// `Verify` for full defense-in-depth.
+func NewSignatureOnlyVerifier(publicKey []byte) (*PCRConfigVerifier, error) {
+	v := &PCRConfigVerifier{}
+	if parsed, err := x509.ParsePKIXPublicKey(publicKey); err == nil {
+		if ecKey, ok := parsed.(*ecdsa.PublicKey); ok {
+			v.ecdsaKey = ecKey
+			return v, nil
+		}
+	}
+	if block, _ := pem.Decode(publicKey); block != nil {
+		if parsed, err := x509.ParsePKIXPublicKey(block.Bytes); err == nil {
+			if ecKey, ok := parsed.(*ecdsa.PublicKey); ok {
+				v.ecdsaKey = ecKey
+				return v, nil
+			}
+		}
+	}
+	if len(publicKey) == ed25519.PublicKeySize {
+		v.ed25519Key = publicKey
+		return v, nil
+	}
+	return nil, fmt.Errorf("unsupported public key format (expected ECDSA P-256 or Ed25519, got %d bytes)", len(publicKey))
+}
+
+// VerifySignatureAndTime runs every check Verify does EXCEPT the
+// OldPCRs equality check. See NewSignatureOnlyVerifier for context.
+func (v *PCRConfigVerifier) VerifySignatureAndTime(config *SignedPCRConfig) error {
+	if err := config.NewPCRs.Validate(); err != nil {
+		return fmt.Errorf("invalid new_pcrs: %w", err)
+	}
+	if err := config.OldPCRs.Validate(); err != nil {
+		return fmt.Errorf("invalid old_pcrs: %w", err)
+	}
+	now := time.Now()
+	if now.Before(config.ValidFrom) {
+		return fmt.Errorf("config not yet valid: valid_from is %s", config.ValidFrom.Format(time.RFC3339))
+	}
+	if !config.ExpiresAt.IsZero() && now.After(config.ExpiresAt) {
+		return fmt.Errorf("config has expired: expires_at was %s", config.ExpiresAt.Format(time.RFC3339))
+	}
+	if err := v.verifySignature(config); err != nil {
+		return fmt.Errorf("signature verification failed: %w", err)
+	}
+	log.Info().
+		Str("version", config.Version).
+		Str("valid_from", config.ValidFrom.Format(time.RFC3339)).
+		Msg("PCR config signature + time-window verified")
+	return nil
+}
+
 // Verify validates a signed PCR configuration.
 // Returns nil if the config is valid, or an error describing why it's invalid.
 func (v *PCRConfigVerifier) Verify(config *SignedPCRConfig) error {

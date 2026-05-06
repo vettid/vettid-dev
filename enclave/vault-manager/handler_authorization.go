@@ -574,9 +574,50 @@ func (mh *MessageHandler) gatePeerSubject(operation string, payload []byte, msgI
 	return mh.gateOperation(handlerID, "peer", connID, msgID)
 }
 
+// isValidOwnerSpace returns true when the value is shaped like a
+// UUID-style owner-space identifier and contains no characters that
+// could escape a NATS subject when interpolated.
+//
+// SECURITY (injection-#1): peer-controlled OwnerSpace fields land in
+// fmt.Sprintf("MessageSpace.%s.forOwner.*", peer). NATS subject tokens
+// are dot-delimited; a peer that smuggles a `.` or `>` in their owner
+// space would publish to a subject the receiver never authorized.
+// Constrain to lowercase hex + hyphens (the shape uuid.New() emits).
+//
+// We don't strictly require canonical 36-char UUID — agents and
+// devices use shorter GUID variants — but we reject anything outside
+// [a-zA-Z0-9-_], non-empty, and length-bounded.
+func isValidOwnerSpace(s string) bool {
+	if s == "" || len(s) > 64 {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '-' || r == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // extractSenderGUID looks for a sender identifier in a peer payload.
 // Tries the field names used by the various payload schemas. Returns
 // "" if none are present.
+//
+// SECURITY (A4/H2): `owner_space` is intentionally excluded from the
+// candidate list. The audit found that including it let a peer pick
+// a wrong connection_id by setting `owner_space` to another peer's
+// GUID — `FindConnectionByPeerGUID` would resolve to the wrong
+// record and the gate would consult the wrong connection's policy.
+// The remaining keys are sender-shaped fields the schemas reserve
+// for the actual sender. Even these are still attacker-controlled
+// at this layer; the gate that follows is one of several defense
+// layers (the tighter authentication is the per-message MAC + the
+// authenticated-subject derivation, both being added separately).
 func extractSenderGUID(payload []byte) string {
 	if len(payload) == 0 {
 		return ""
@@ -585,7 +626,7 @@ func extractSenderGUID(payload []byte) string {
 	if err := json.Unmarshal(payload, &probe); err != nil {
 		return ""
 	}
-	for _, key := range []string{"sender_guid", "reader_guid", "from_user_guid", "from_owner_space", "fromOwnerSpace", "sender", "owner_space"} {
+	for _, key := range []string{"sender_guid", "reader_guid", "from_user_guid", "from_owner_space", "fromOwnerSpace", "sender"} {
 		if raw, ok := probe[key]; ok {
 			var s string
 			if err := json.Unmarshal(raw, &s); err == nil && s != "" {

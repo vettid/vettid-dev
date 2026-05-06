@@ -663,33 +663,36 @@ func (h *CredentialSecretHandler) StoreSecretMetadata(record SecretMetadataRecor
 // RevealSecretValue is the read-only counterpart to MutateSecrets.
 // Given the password material the caller already collected, it
 // decrypts the credential blob, finds the entry by ID, returns its
-// value as a string, and zeroes the in-memory credential. Used by
+// value as bytes, and zeroes the in-memory credential. Used by
 // wallet signing when the seed has been moved into the credential.
 //
-// Caller is responsible for zeroing the returned bytes.
+// SECURITY (crypto-H3): returns []byte (not string) so the caller
+// can wipe the canonical copy after use; caller is responsible for
+// zeroing the returned slice.
 func (h *CredentialSecretHandler) RevealSecretValue(
 	secretID, encryptedCredential, encryptedPasswordHash, ephemeralPublicKey, nonce, keyID string,
-) (string, error) {
+) ([]byte, error) {
 	if secretID == "" {
-		return "", fmt.Errorf("secret_id is required")
+		return nil, fmt.Errorf("secret_id is required")
 	}
 	credentialV2, err := h.decryptCredentialBlob(encryptedCredential)
 	if err != nil {
-		return "", fmt.Errorf("decrypt credential: %w", err)
+		return nil, fmt.Errorf("decrypt credential: %w", err)
 	}
 	defer credentialV2.SecureErase()
 
 	if err := h.verifyPasswordAgainstCredential(encryptedPasswordHash, ephemeralPublicKey, nonce, keyID, credentialV2); err != nil {
-		return "", fmt.Errorf("password verification failed")
+		return nil, fmt.Errorf("password verification failed")
 	}
 
 	for i := range credentialV2.Secrets {
 		if credentialV2.Secrets[i].ID == secretID {
-			value := string(credentialV2.Secrets[i].Value)
-			return value, nil
+			out := make([]byte, len(credentialV2.Secrets[i].Value))
+			copy(out, credentialV2.Secrets[i].Value)
+			return out, nil
 		}
 	}
-	return "", fmt.Errorf("secret not found in credential")
+	return nil, fmt.Errorf("secret not found in credential")
 }
 
 // RemoveSecretMetadata is the counterpart to StoreSecretMetadata for
@@ -698,11 +701,41 @@ func (h *CredentialSecretHandler) RemoveSecretMetadata(secretID string) {
 	h.removeMetadataRecord(secretID)
 }
 
+// RevealIdentityPrivateKey decrypts the request-supplied credential
+// blob, verifies the password against it, and returns a fresh copy of
+// the user's Ed25519 identity private key for one-shot signing. The
+// decrypted credential is securely erased before this function
+// returns; the caller is responsible for zeroing the returned slice.
+//
+// Phase E: every signed action / contract / vote / auth-challenge
+// goes through this — the identity key is never retained in vault
+// memory between ops.
+func (h *CredentialSecretHandler) RevealIdentityPrivateKey(
+	encryptedCredential, encryptedPasswordHash, ephemeralPublicKey, nonce, keyID string,
+) ([]byte, error) {
+	credV2, err := h.decryptCredentialBlob(encryptedCredential)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt credential: %w", err)
+	}
+	defer credV2.SecureErase()
+
+	if err := h.verifyPasswordAgainstCredential(encryptedPasswordHash, ephemeralPublicKey, nonce, keyID, credV2); err != nil {
+		return nil, fmt.Errorf("password verification failed")
+	}
+
+	if len(credV2.Identity.PrivateKey) == 0 {
+		return nil, fmt.Errorf("identity key not present in credential")
+	}
+	out := make([]byte, len(credV2.Identity.PrivateKey))
+	copy(out, credV2.Identity.PrivateKey)
+	return out, nil
+}
+
 // --- Credential blob operations ---
 
-// decryptCredentialBlob decrypts a CEK-encrypted credential blob and returns V2 format.
-// Supports both V1 (UnsealedCredential) and V2 (ProteanCredentialV2) blobs.
-// V1 credentials are auto-migrated to V2 using MigrateV1ToV2.
+// decryptCredentialBlob decrypts a CEK-encrypted V2 credential blob.
+// V1 is no longer supported — every minted blob is V2 since
+// HandleCredentialCreate writes V2 directly.
 func (h *CredentialSecretHandler) decryptCredentialBlob(encryptedBase64 string) (*ProteanCredentialV2, error) {
 	encryptedBytes, err := base64.StdEncoding.DecodeString(encryptedBase64)
 	if err != nil {
@@ -723,27 +756,14 @@ func (h *CredentialSecretHandler) decryptCredentialBlob(encryptedBase64 string) 
 	}
 	defer zeroBytes(plaintext)
 
-	// Try V2 format first
-	var credV2 ProteanCredentialV2
-	if err := json.Unmarshal(plaintext, &credV2); err != nil {
+	var cred ProteanCredentialV2
+	if err := json.Unmarshal(plaintext, &cred); err != nil {
 		return nil, fmt.Errorf("failed to parse credential: %w", err)
 	}
-
-	if credV2.FormatVersion >= 2 {
-		return &credV2, nil
+	if cred.FormatVersion < 2 {
+		return nil, fmt.Errorf("unsupported credential format version: %d (need 2)", cred.FormatVersion)
 	}
-
-	// V1 credential (format_version 0 or 1) - auto-migrate to V2
-	log.Info().Int("format_version", credV2.FormatVersion).Str("owner_space", h.ownerSpace).
-		Msg("Auto-migrating V1 credential to V2 format")
-
-	var credV1 UnsealedCredential
-	if err := json.Unmarshal(plaintext, &credV1); err != nil {
-		return nil, fmt.Errorf("failed to parse V1 credential: %w", err)
-	}
-
-	migrated := MigrateV1ToV2(&credV1, h.ownerSpace)
-	return migrated, nil
+	return &cred, nil
 }
 
 // encryptCredentialBlob encrypts a V2 credential with CEK and returns base64
@@ -811,6 +831,12 @@ func (h *CredentialSecretHandler) verifyPasswordAgainstCredential(encryptedPassw
 	}
 	defer zeroBytes(passwordHashBytes)
 
+	// SECURITY (crypto-H2): burn the UTK on AEAD success, BEFORE the
+	// password match. Marking the UTK used only on a correct password
+	// turns a leaked UTK into an online password oracle (each wrong
+	// guess returns the same UTK to the pool).
+	h.bootstrap.MarkUTKUsed(keyID)
+
 	// Parse decrypted payload - the app sends a PHC string (may be raw or JSON-wrapped)
 	passwordHash := string(passwordHashBytes)
 	var payload struct {
@@ -830,9 +856,6 @@ func (h *CredentialSecretHandler) verifyPasswordAgainstCredential(encryptedPassw
 	if !timingSafeEqualStrings(passwordHash, storedHash) {
 		return fmt.Errorf("incorrect password")
 	}
-
-	// Mark UTK as used (single-use for security)
-	h.bootstrap.MarkUTKUsed(keyID)
 
 	return nil
 }

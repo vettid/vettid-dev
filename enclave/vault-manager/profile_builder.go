@@ -326,6 +326,15 @@ func PublishedProfileToMap(p *PublishedProfile) map[string]interface{} {
 			if s.Category != "" {
 				row["category"] = s.Category
 			}
+			// Preserve the asset/wallet grouping alias so peers see the
+			// same "BTC · Blue" card with seed + wallet bullets that the
+			// owner sees on their own profile preview. Without this the
+			// peer-side dialog falls into the no-alias category-bucket
+			// path and renders the wallet, its seed, and its key as
+			// separate rows.
+			if s.Alias != "" {
+				row["alias"] = s.Alias
+			}
 			items = append(items, row)
 		}
 		result["secret_catalog"] = items
@@ -597,39 +606,10 @@ func buildSecretCatalog(storage *EncryptedStorage, vaultState *VaultState) []Cat
 	// as its own row so peers see the full key inventory. Only the
 	// label/type travel; the private material stays sealed.
 	//
-	// Phase D: full credential plaintext is no longer cached on
-	// vaultState, so we can't enumerate credential.CryptoKeys here
-	// for the public catalog any more. Wallet creation routes don't
-	// add to credential.CryptoKeys either (the wallet's signing key
-	// is re-derived from the credential-stored seed every time we
-	// sign), so the only caller that lost a row is the historical
-	// case of an ancient credential containing some manually-added
-	// key. Live secrets enumeration goes through credential.secret.
-	// list (per-op decrypt) instead.
-	if false && vaultState != nil {
-		var credential *UnsealedCredential
-		if credential != nil {
-			for _, k := range credential.CryptoKeys {
-				label := k.Label
-				if label == "" {
-					label = string(k.Type)
-				}
-				if label == "" {
-					continue
-				}
-				keyAlias := k.Label
-				if k.Type == "secp256k1" && keyAlias != "" {
-					keyAlias = "BTC · " + keyAlias
-				}
-				out = append(out, CatalogedSecretItem{
-					Name:     label,
-					Type:     string(k.Type),
-					Category: "Crypto Key",
-					Alias:    keyAlias,
-				})
-			}
-		}
-	}
+	// Phase D: credential plaintext is no longer cached on vaultState.
+	// CryptoKeys enumeration for the public catalog is not wired here —
+	// live secrets enumeration goes through credential.secret.list
+	// (per-op decrypt) instead.
 
 	return out
 }
