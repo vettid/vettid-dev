@@ -174,8 +174,10 @@ const (
 	EnclaveMessageTypeTurnCredentialsResponse EnclaveMessageType = "turn_credentials_response"
 
 	// PCR-signing key fetch (enclave -> parent -> KMS GetPublicKey)
-	EnclaveMessageTypePCRSigningKeyGet      EnclaveMessageType = "pcr_signing_key_get"
-	EnclaveMessageTypePCRSigningKeyResponse EnclaveMessageType = "pcr_signing_key_response"
+	EnclaveMessageTypePCRSigningKeyGet          EnclaveMessageType = "pcr_signing_key_get"
+	EnclaveMessageTypePCRSigningKeyResponse     EnclaveMessageType = "pcr_signing_key_response"
+	EnclaveMessageTypePCRSigningKeySign         EnclaveMessageType = "pcr_signing_key_sign"
+	EnclaveMessageTypePCRSigningKeySignResponse EnclaveMessageType = "pcr_signing_key_sign_response"
 
 	// Audit event (org-vault-manager -> parent -> DynamoDB + NATS)
 	EnclaveMessageTypeAuditEvent EnclaveMessageType = "audit_event"

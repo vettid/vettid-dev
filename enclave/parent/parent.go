@@ -790,6 +790,19 @@ func (p *ParentProcess) sendWithHandlerSupport(ctx context.Context, msg *Enclave
 			continue
 		}
 
+		// PCR-signing key Sign — supervisor calls this to stamp the
+		// migration-completion marker so Lambda can verify enclave origin.
+		if response.Type == EnclaveMessageTypePCRSigningKeySign {
+			log.Debug().Msg("Enclave requested PCR signing-key sign op")
+			signResp := p.handlePCRSigningKeySign(ctx, response)
+			p.vsockClient.writeMu.Lock()
+			if err := p.vsockClient.writeMessage(signResp); err != nil {
+				log.Error().Err(err).Msg("Failed to send PCR signing-key sign response")
+			}
+			p.vsockClient.writeMu.Unlock()
+			continue
+		}
+
 		// Check if this is a proposals list request from the enclave
 		if response.Type == EnclaveMessageTypeProposalsList {
 			log.Debug().Msg("Enclave requested proposals list")

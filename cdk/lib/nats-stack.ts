@@ -314,10 +314,27 @@ export class NatsStack extends cdk.Stack {
       ],
     });
 
-    // Grant access to secrets
+    // Grant access to secrets.
+    //
+    // SECURITY (infra-#3): NATS instances only get read on the
+    // internal CA secret in steady state — write is gated on the
+    // `natsCaBootstrap` CDK context flag (or the env var
+    // VETTID_NATS_CA_BOOTSTRAP=true). Flip it on for the first
+    // deploy so an instance can populate the secret, then redeploy
+    // without it so a later compromised node cannot rotate the CA
+    // out from under the cluster.
     this.operatorSecret.grantRead(natsRole);
     this.internalCaSecret.grantRead(natsRole);
-    this.internalCaSecret.grantWrite(natsRole); // Allow first instance to generate and store CA
+    const allowCaBootstrap =
+      this.node.tryGetContext('natsCaBootstrap') === true ||
+      process.env.VETTID_NATS_CA_BOOTSTRAP === 'true';
+    if (allowCaBootstrap) {
+      this.internalCaSecret.grantWrite(natsRole);
+      cdk.Annotations.of(this).addWarning(
+        'NATS instance role has WRITE on the internal CA secret (natsCaBootstrap=true). ' +
+        'Disable this context flag after the first successful deploy.',
+      );
+    }
 
     // Grant permissions to discover cluster peers
     natsRole.addToPolicy(new iam.PolicyStatement({
@@ -730,11 +747,17 @@ export class NatsStack extends cdk.Stack {
     listener.addTargetGroups('NatsTargets', targetGroup);
     asg.attachToNetworkTargetGroup(targetGroup);
 
-    // Allow NLB to reach NATS instances
+    // SECURITY (infra-#2): allow NATS client traffic on 4222 only
+    // from inside the VPC. Previously this rule was 0.0.0.0/0 on 4222
+    // which let anyone on the internet reach plain-TCP NATS directly,
+    // bypassing the NLB's TLS termination. NLBs in our config are in
+    // public subnets but forward to NATS instances in private subnets;
+    // the NLB itself, the internal NLB, and the vault-side VPC peer
+    // all sit inside the VPC CIDR.
     this.natsSecurityGroup.addIngressRule(
-      ec2.Peer.anyIpv4(),
+      ec2.Peer.ipv4(this.vpc.vpcCidrBlock),
       ec2.Port.tcp(4222),
-      'NATS client connections from NLB'
+      'NATS client connections via NLB (VPC-internal only)'
     );
 
     // ===== INTERNAL NETWORK LOAD BALANCER (for vault-to-NATS via VPC peering) =====

@@ -3,7 +3,9 @@ import {
   GetKeyPolicyCommand,
   PutKeyPolicyCommand,
   DescribeKeyCommand,
+  VerifyCommand,
 } from '@aws-sdk/client-kms';
+import { createHash } from 'crypto';
 import {
   AutoScalingClient,
   DescribeAutoScalingGroupsCommand,
@@ -34,6 +36,7 @@ const events = new EventBridgeClient({});
 
 const VAULT_BUCKET = process.env.VAULT_BUCKET!;
 const KMS_KEY_ALIAS = process.env.KMS_KEY_ALIAS || 'alias/vettid-enclave-sealing';
+const PCR_SIGNING_KEY_ALIAS = process.env.PCR_SIGNING_KEY_ALIAS || 'alias/vettid-pcr-signing';
 const MIGRATION_CONFIG_KEY = '_migration/config.json';
 const MIGRATION_MARKERS_PREFIX = '_migration/completed/';
 const FINALIZE_RULE_NAME = process.env.FINALIZE_RULE_NAME || 'vettid-migration-finalize-schedule';
@@ -252,6 +255,14 @@ async function listOwnerSpacePrefixes(): Promise<Set<string>> {
   return result;
 }
 
+/**
+ * SECURITY (attestation-F3): each migration marker is a JSON object
+ * stamped with an ECDSA signature from the enclave's PCR signing KMS
+ * key. We list, fetch, and KMS Verify every marker before counting it
+ * as a "user X has migrated" claim — anything with a missing or bad
+ * signature is dropped (logged) so a misconfigured S3 writer can't
+ * forge mass markers and trigger early auto-finalize.
+ */
 async function listMigrationMarkers(version: string): Promise<Set<string>> {
   const result = new Set<string>();
   let continuationToken: string | undefined;
@@ -264,11 +275,68 @@ async function listMigrationMarkers(version: string): Promise<Set<string>> {
     }));
     for (const obj of resp.Contents || []) {
       const match = obj.Key?.match(/^_migration\/completed\/[^/]+\/([^/]+)\.json$/);
-      if (match) result.add(match[1]);
+      if (!match || !obj.Key) continue;
+      const ownerSpace = match[1];
+      const verified = await verifyMigrationMarker(obj.Key, version, ownerSpace);
+      if (verified) {
+        result.add(ownerSpace);
+      } else {
+        console.warn(`Skipping unverifiable migration marker: ${obj.Key}`);
+      }
     }
     continuationToken = resp.IsTruncated ? resp.NextContinuationToken : undefined;
   } while (continuationToken);
   return result;
+}
+
+async function verifyMigrationMarker(
+  key: string,
+  expectedVersion: string,
+  expectedOwnerSpace: string,
+): Promise<boolean> {
+  let body: string;
+  try {
+    const resp = await s3.send(new GetObjectCommand({ Bucket: VAULT_BUCKET, Key: key }));
+    body = (await resp.Body?.transformToString()) || '';
+  } catch (e) {
+    console.error(`Failed to fetch marker ${key}:`, e);
+    return false;
+  }
+  let parsed: any;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    console.warn(`Marker ${key} is not valid JSON`);
+    return false;
+  }
+  if (parsed.version !== expectedVersion || parsed.owner_space !== expectedOwnerSpace) {
+    console.warn(
+      `Marker ${key} field mismatch: version=${parsed.version}, owner_space=${parsed.owner_space}`,
+    );
+    return false;
+  }
+  if (typeof parsed.signature !== 'string' || !parsed.signature) {
+    return false;
+  }
+  // Reproduce the canonical bytes the supervisor signed: alphabetical
+  // key order, no whitespace, fields {completed_at, owner_space, version}.
+  const canonical = JSON.stringify(
+    { completed_at: parsed.completed_at, owner_space: parsed.owner_space, version: parsed.version },
+  );
+  const digest = createHash('sha256').update(canonical).digest();
+  try {
+    const result = await kms.send(new VerifyCommand({
+      KeyId: PCR_SIGNING_KEY_ALIAS,
+      Message: digest,
+      MessageType: 'DIGEST',
+      Signature: Buffer.from(parsed.signature, 'base64'),
+      SigningAlgorithm: 'ECDSA_SHA_256',
+    }));
+    return result.SignatureValid === true;
+  } catch (e) {
+    console.error(`KMS Verify failed for marker ${key}:`, e);
+    return false;
+  }
 }
 
 async function deleteMigrationMarkers(version: string): Promise<void> {

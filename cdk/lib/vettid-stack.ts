@@ -1,3 +1,4 @@
+import { grantAuditAppend } from './audit-grants';
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import {
@@ -1199,11 +1200,11 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
     tables.invites.grantReadWriteData(submitRegistration);
     tables.registrations.grantReadWriteData(submitRegistration);
     tables.waitlist.grantReadWriteData(submitWaitlist);
-    tables.audit.grantReadWriteData(submitWaitlist); // For rate limiting
+    grantAuditAppend(tables.audit, submitWaitlist); // For rate limiting
     tables.notificationPreferences.grantReadData(submitWaitlist); // For admin notifications
     tables.supportedServices.grantReadData(listPublicServices); // Public services list
     tables.helpRequests.grantReadWriteData(submitHelpRequest); // Help request submissions
-    tables.audit.grantReadWriteData(submitHelpRequest); // For rate limiting
+    grantAuditAppend(tables.audit, submitHelpRequest); // For rate limiting
     tables.registrations.grantReadWriteData(cancelAccount);
     tables.subscriptions.grantReadWriteData(cancelAccount);
     tables.registrations.grantReadWriteData(cleanupExpiredAccounts);
@@ -1213,28 +1214,28 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
     tables.registrations.grantReadData(getPinStatus);
     tables.registrations.grantReadData(verifyPin);
     tables.audit.grantReadData(getEmailPreferences);
-    tables.audit.grantReadWriteData(updateEmailPreferences);
+    grantAuditAppend(tables.audit, updateEmailPreferences);
     tables.audit.grantReadData(getGettingStartedPreference);
-    tables.audit.grantReadWriteData(updateGettingStartedPreference);
+    grantAuditAppend(tables.audit, updateGettingStartedPreference);
     tables.registrations.grantStreamRead(registrationStreamFn);
     tables.proposals.grantStreamRead(proposalStreamFn); // Read proposal stream events
     tables.subscriptions.grantReadData(proposalStreamFn); // Query active subscriptions
     tables.registrations.grantReadData(proposalStreamFn); // Get user emails
-    tables.audit.grantReadWriteData(proposalStreamFn); // Check email prefs + write auto-publish audit
+    grantAuditAppend(tables.audit, proposalStreamFn); // Check email prefs + write auto-publish audit
     tables.proposals.grantReadWriteData(proposalStreamFn); // Update merkle_root on auto-publish
     tables.votes.grantReadData(proposalStreamFn); // Read votes for auto-publish
     props.infrastructure.publishedVotesBucket.grantReadWrite(proposalStreamFn); // Write results to S3 on auto-publish
-    tables.audit.grantReadWriteData(submitRegistration);
-    tables.audit.grantReadWriteData(registrationStreamFn);
-    tables.audit.grantReadWriteData(cancelAccount);
-    tables.audit.grantReadWriteData(cleanupExpiredAccounts);
-    tables.audit.grantReadWriteData(enablePin);
-    tables.audit.grantReadWriteData(disablePin);
-    tables.audit.grantReadWriteData(updatePin);
-    tables.audit.grantReadWriteData(verifyPin);
+    grantAuditAppend(tables.audit, submitRegistration);
+    grantAuditAppend(tables.audit, registrationStreamFn);
+    grantAuditAppend(tables.audit, cancelAccount);
+    grantAuditAppend(tables.audit, cleanupExpiredAccounts);
+    grantAuditAppend(tables.audit, enablePin);
+    grantAuditAppend(tables.audit, disablePin);
+    grantAuditAppend(tables.audit, updatePin);
+    grantAuditAppend(tables.audit, verifyPin);
     tables.registrations.grantReadWriteData(requestMembership);
     tables.registrations.grantReadData(getMembershipStatus);
-    tables.audit.grantReadWriteData(requestMembership);
+    grantAuditAppend(tables.audit, requestMembership);
     tables.membershipTerms.grantReadData(getMembershipTerms);
     termsBucket.grantRead(getMembershipTerms);
     tables.subscriptions.grantReadWriteData(createSubscription);
@@ -1242,12 +1243,12 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
     tables.subscriptions.grantReadWriteData(cancelSubscription);
     tables.subscriptionTypes.grantReadData(createSubscription);
     tables.registrations.grantReadData(createSubscription); // Validate membership status
-    tables.audit.grantReadWriteData(createSubscription);
-    tables.audit.grantReadWriteData(cancelSubscription);
+    grantAuditAppend(tables.audit, createSubscription);
+    grantAuditAppend(tables.audit, cancelSubscription);
     tables.votes.grantReadWriteData(submitVote);
     tables.proposals.grantReadData(submitVote);
     tables.registrations.grantReadData(submitVote);
-    tables.audit.grantReadWriteData(submitVote);
+    grantAuditAppend(tables.audit, submitVote);
     tables.votes.grantReadData(getVotingHistory);
     tables.proposals.grantReadData(getVotingHistory);
     tables.registrations.grantReadData(getVotingHistory);
@@ -1282,7 +1283,7 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
     // Scheduled job to check for expiring subscriptions and send warning emails
     tables.subscriptions.grantReadWriteData(checkSubscriptionExpiry);
     tables.registrations.grantReadData(checkSubscriptionExpiry);
-    tables.audit.grantReadWriteData(checkSubscriptionExpiry);
+    grantAuditAppend(tables.audit, checkSubscriptionExpiry);
 
     // SECURITY: SES permissions with strict resource constraints
     // - Domain identity for FROM address validation

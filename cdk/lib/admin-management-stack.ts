@@ -1,3 +1,4 @@
+import { grantAuditAppend } from './audit-grants';
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import {
@@ -123,8 +124,8 @@ export class AdminManagementStack extends cdk.Stack {
     tables.registrations.grantReadData(listRegistrations);
     tables.registrations.grantReadWriteData(approveRegistration);
     tables.registrations.grantReadWriteData(rejectRegistration);
-    tables.audit.grantReadWriteData(approveRegistration);
-    tables.audit.grantReadWriteData(rejectRegistration);
+    grantAuditAppend(tables.audit, approveRegistration);
+    grantAuditAppend(tables.audit, rejectRegistration);
 
     // Cognito permissions for approving registrations
     approveRegistration.addToRolePolicy(new iam.PolicyStatement({
@@ -175,9 +176,9 @@ export class AdminManagementStack extends cdk.Stack {
     tables.invites.grantReadData(listInvites);
     tables.invites.grantReadWriteData(expireInvite);
     tables.invites.grantReadWriteData(deleteInvite);
-    tables.audit.grantReadWriteData(createInvite);
-    tables.audit.grantReadWriteData(expireInvite);
-    tables.audit.grantReadWriteData(deleteInvite);
+    grantAuditAppend(tables.audit, createInvite);
+    grantAuditAppend(tables.audit, expireInvite);
+    grantAuditAppend(tables.audit, deleteInvite);
 
     this.createInvite = createInvite;
     this.listInvites = listInvites;
@@ -233,10 +234,10 @@ export class AdminManagementStack extends cdk.Stack {
     tables.registrations.grantReadWriteData(permanentlyDeleteUser);
     tables.subscriptions.grantReadWriteData(permanentlyDeleteUser);
     tables.waitlist.grantReadWriteData(deleteUser);
-    tables.audit.grantReadWriteData(disableUser);
-    tables.audit.grantReadWriteData(enableUser);
-    tables.audit.grantReadWriteData(deleteUser);
-    tables.audit.grantReadWriteData(permanentlyDeleteUser);
+    grantAuditAppend(tables.audit, disableUser);
+    grantAuditAppend(tables.audit, enableUser);
+    grantAuditAppend(tables.audit, deleteUser);
+    grantAuditAppend(tables.audit, permanentlyDeleteUser);
 
     // Cognito permissions
     const cognitoUserPolicy = new iam.PolicyStatement({
@@ -371,14 +372,14 @@ export class AdminManagementStack extends cdk.Stack {
     inviteAdmin.addToRolePolicy(cognitoAdminPolicy);
 
     // Audit permissions
-    tables.audit.grantReadWriteData(addAdmin);
-    tables.audit.grantReadWriteData(removeAdmin);
-    tables.audit.grantReadWriteData(disableAdmin);
-    tables.audit.grantReadWriteData(enableAdmin);
-    tables.audit.grantReadWriteData(updateAdminType);
-    tables.audit.grantReadWriteData(resetAdminPassword);
-    tables.audit.grantReadWriteData(changePassword);
-    tables.audit.grantReadWriteData(inviteAdmin);
+    grantAuditAppend(tables.audit, addAdmin);
+    grantAuditAppend(tables.audit, removeAdmin);
+    grantAuditAppend(tables.audit, disableAdmin);
+    grantAuditAppend(tables.audit, enableAdmin);
+    grantAuditAppend(tables.audit, updateAdminType);
+    grantAuditAppend(tables.audit, resetAdminPassword);
+    grantAuditAppend(tables.audit, changePassword);
+    grantAuditAppend(tables.audit, inviteAdmin);
 
     // Pending admins table for invite flow
     tables.pendingAdmins.grantReadWriteData(inviteAdmin);
@@ -440,8 +441,8 @@ export class AdminManagementStack extends cdk.Stack {
     tables.pendingAdmins.grantReadWriteData(activateAdmin);
     tables.pendingAdmins.grantReadWriteData(cancelPendingAdmin);
     tables.pendingAdmins.grantReadWriteData(resendAdminVerification);
-    tables.audit.grantReadWriteData(activateAdmin);
-    tables.audit.grantReadWriteData(cancelPendingAdmin);
+    grantAuditAppend(tables.audit, activateAdmin);
+    grantAuditAppend(tables.audit, cancelPendingAdmin);
 
     // Cognito permissions for activation
     activateAdmin.addToRolePolicy(cognitoAdminPolicy);
@@ -490,8 +491,8 @@ export class AdminManagementStack extends cdk.Stack {
     tables.notificationPreferences.grantReadData(getNotifications);
     tables.notificationPreferences.grantReadWriteData(addNotification);
     tables.notificationPreferences.grantReadWriteData(removeNotification);
-    tables.audit.grantReadWriteData(addNotification);
-    tables.audit.grantReadWriteData(removeNotification);
+    grantAuditAppend(tables.audit, addNotification);
+    grantAuditAppend(tables.audit, removeNotification);
 
     this.getNotifications = getNotifications;
     this.addNotification = addNotification;
@@ -512,7 +513,7 @@ export class AdminManagementStack extends cdk.Stack {
     // Grant permissions
     tables.registrations.grantReadWriteData(cleanupExpiredAccounts);
     tables.subscriptions.grantReadWriteData(cleanupExpiredAccounts);
-    tables.audit.grantReadWriteData(cleanupExpiredAccounts);
+    grantAuditAppend(tables.audit, cleanupExpiredAccounts);
 
     cleanupExpiredAccounts.addToRolePolicy(new iam.PolicyStatement({
       actions: ['cognito-idp:AdminDeleteUser'],

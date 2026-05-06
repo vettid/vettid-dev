@@ -92,6 +92,38 @@ func (k *KMSClient) GetPCRSigningPublicKey(ctx context.Context) ([]byte, error) 
 	return k.pcrSigningPublicKey, nil
 }
 
+// SignWithPCRSigningKey signs the given message digest with the PCR
+// signing KMS key (alias `vettid-pcr-signing`, ECDSA_SHA_256). Used by
+// the migration-marker writer so Lambda can later verify that each
+// `_migration/completed/{version}/{ownerSpace}.json` came from the
+// enclave (not from any S3 writer with the bucket prefix).
+//
+// SECURITY (attestation-F3): the marker is otherwise an unauthenticated
+// "user X has migrated" claim — anyone with S3 PutObject permission to
+// the prefix could mass-fake markers and fool the auto-finalize Lambda
+// into early scale-down.
+func (k *KMSClient) SignWithPCRSigningKey(ctx context.Context, digest []byte) ([]byte, error) {
+	if k.pcrSigningKeyARN == "" {
+		return nil, fmt.Errorf("PCR signing key ARN not configured")
+	}
+	if len(digest) != 32 {
+		return nil, fmt.Errorf("expected 32-byte SHA-256 digest, got %d", len(digest))
+	}
+	result, err := k.client.Sign(ctx, &kms.SignInput{
+		KeyId:            &k.pcrSigningKeyARN,
+		Message:          digest,
+		MessageType:      types.MessageTypeDigest,
+		SigningAlgorithm: types.SigningAlgorithmSpecEcdsaSha256,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("KMS Sign failed: %w", err)
+	}
+	if len(result.Signature) == 0 {
+		return nil, fmt.Errorf("KMS Sign returned empty signature")
+	}
+	return result.Signature, nil
+}
+
 // Encrypt encrypts data using the sealing key
 // This is used to encrypt the DEK (Data Encryption Key) for envelope encryption
 // No attestation needed for encrypt - anyone can encrypt data to the key

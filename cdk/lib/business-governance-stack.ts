@@ -1,3 +1,4 @@
+import { grantAuditAppend } from './audit-grants';
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import {
@@ -218,10 +219,10 @@ export class BusinessGovernanceStack extends cdk.Stack {
     tables.membershipTerms.grantReadData(listMembershipTerms);
     tables.membershipTerms.grantReadData(getTermsDownloadUrl);
     tables.membershipTerms.grantReadWriteData(regenerateTermsPdf);
-    tables.audit.grantReadWriteData(approveMembership);
-    tables.audit.grantReadWriteData(denyMembership);
-    tables.audit.grantReadWriteData(createMembershipTerms);
-    tables.audit.grantReadWriteData(regenerateTermsPdf);
+    grantAuditAppend(tables.audit, approveMembership);
+    grantAuditAppend(tables.audit, denyMembership);
+    grantAuditAppend(tables.audit, createMembershipTerms);
+    grantAuditAppend(tables.audit, regenerateTermsPdf);
 
     // S3 permissions for terms bucket
     termsBucket.grantReadWrite(createMembershipTerms);
@@ -291,8 +292,8 @@ export class BusinessGovernanceStack extends cdk.Stack {
     tables.proposals.grantReadWriteData(suspendProposal);
     tables.proposals.grantReadData(getProposalVoteCounts);
     tables.votes.grantReadData(getProposalVoteCounts);
-    tables.audit.grantReadWriteData(createProposal);
-    tables.audit.grantReadWriteData(suspendProposal);
+    grantAuditAppend(tables.audit, createProposal);
+    grantAuditAppend(tables.audit, suspendProposal);
 
     // Grant KMS sign permission to createProposal for proposal signing
     votingKey.grant(createProposal, 'kms:Sign');
@@ -300,7 +301,7 @@ export class BusinessGovernanceStack extends cdk.Stack {
     // publishVoteResults needs to read proposals/votes and write to S3
     tables.proposals.grantReadWriteData(publishVoteResults);
     tables.votes.grantReadData(publishVoteResults);
-    tables.audit.grantReadWriteData(publishVoteResults);
+    grantAuditAppend(tables.audit, publishVoteResults);
     publishedVotesBucket.grantReadWrite(publishVoteResults);
 
     this.createProposal = createProposal;
@@ -370,11 +371,11 @@ export class BusinessGovernanceStack extends cdk.Stack {
     tables.subscriptionTypes.grantReadData(listSubscriptionTypes);
     tables.subscriptionTypes.grantReadWriteData(enableSubscriptionType);
     tables.subscriptionTypes.grantReadWriteData(disableSubscriptionType);
-    tables.audit.grantReadWriteData(extendSubscription);
-    tables.audit.grantReadWriteData(reactivateSubscription);
-    tables.audit.grantReadWriteData(createSubscriptionType);
-    tables.audit.grantReadWriteData(enableSubscriptionType);
-    tables.audit.grantReadWriteData(disableSubscriptionType);
+    grantAuditAppend(tables.audit, extendSubscription);
+    grantAuditAppend(tables.audit, reactivateSubscription);
+    grantAuditAppend(tables.audit, createSubscriptionType);
+    grantAuditAppend(tables.audit, enableSubscriptionType);
+    grantAuditAppend(tables.audit, disableSubscriptionType);
 
     this.listSubscriptions = listSubscriptions;
     this.extendSubscription = extendSubscription;
@@ -426,9 +427,9 @@ export class BusinessGovernanceStack extends cdk.Stack {
     tables.invites.grantReadWriteData(sendWaitlistInvites);
     tables.waitlist.grantReadWriteData(deleteWaitlistEntries);
     tables.waitlist.grantReadWriteData(addWaitlistEntry);
-    tables.audit.grantReadWriteData(sendWaitlistInvites);
-    tables.audit.grantReadWriteData(deleteWaitlistEntries);
-    tables.audit.grantReadWriteData(addWaitlistEntry);
+    grantAuditAppend(tables.audit, sendWaitlistInvites);
+    grantAuditAppend(tables.audit, deleteWaitlistEntries);
+    grantAuditAppend(tables.audit, addWaitlistEntry);
 
     // SES and Cognito permissions for waitlist invites
     sendWaitlistInvites.addToRolePolicy(new iam.PolicyStatement({
@@ -471,7 +472,7 @@ export class BusinessGovernanceStack extends cdk.Stack {
     // Grant permissions
     tables.helpRequests.grantReadData(listHelpRequests);
     tables.helpRequests.grantReadWriteData(updateHelpRequest);
-    tables.audit.grantReadWriteData(updateHelpRequest);
+    grantAuditAppend(tables.audit, updateHelpRequest);
 
     this.listHelpRequests = listHelpRequests;
     this.updateHelpRequest = updateHelpRequest;
@@ -498,7 +499,7 @@ export class BusinessGovernanceStack extends cdk.Stack {
     tables.registrations.grantReadData(sendBulkEmail);
     tables.subscriptions.grantReadData(sendBulkEmail);
     tables.sentEmails.grantReadData(listSentEmails);
-    tables.audit.grantReadWriteData(sendBulkEmail);
+    grantAuditAppend(tables.audit, sendBulkEmail);
 
     // SES permissions
     sendBulkEmail.addToRolePolicy(new iam.PolicyStatement({

@@ -31,3 +31,30 @@ func (p *ParentProcess) handlePCRSigningKeyGet(ctx context.Context, msg *Enclave
 	body, _ := json.Marshal(map[string][]byte{"public_key_der": der})
 	return &EnclaveMessage{Type: EnclaveMessageTypePCRSigningKeyResponse, Payload: body}
 }
+
+// handlePCRSigningKeySign asks KMS to sign a SHA-256 digest with the
+// PCR signing key. SECURITY (attestation-F3): the supervisor uses this
+// to stamp migration-completion markers so Lambda can verify that each
+// `_migration/completed/{version}/{ownerSpace}.json` came from an
+// attested enclave instance, not a misconfigured S3 writer.
+func (p *ParentProcess) handlePCRSigningKeySign(ctx context.Context, msg *EnclaveMessage) *EnclaveMessage {
+	if p.kmsClient == nil {
+		errBody, _ := json.Marshal(map[string]string{"error": "kms client not available"})
+		return &EnclaveMessage{Type: EnclaveMessageTypePCRSigningKeySignResponse, Payload: errBody}
+	}
+	var req struct {
+		Digest []byte `json:"digest"`
+	}
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		errBody, _ := json.Marshal(map[string]string{"error": "invalid payload"})
+		return &EnclaveMessage{Type: EnclaveMessageTypePCRSigningKeySignResponse, Payload: errBody}
+	}
+	sig, err := p.kmsClient.SignWithPCRSigningKey(ctx, req.Digest)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to sign with PCR signing key")
+		errBody, _ := json.Marshal(map[string]string{"error": err.Error()})
+		return &EnclaveMessage{Type: EnclaveMessageTypePCRSigningKeySignResponse, Payload: errBody}
+	}
+	body, _ := json.Marshal(map[string][]byte{"signature": sig})
+	return &EnclaveMessage{Type: EnclaveMessageTypePCRSigningKeySignResponse, Payload: body}
+}

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"sync"
@@ -146,6 +148,11 @@ type SealerResponse struct {
 
 	// For fetch_pcr_signing_public_key (DER-encoded SPKI bytes)
 	PCRSigningPublicKey []byte `json:"pcr_signing_public_key,omitempty"`
+
+	// For internal sign-with-PCR-signing-key calls (used by the
+	// migration-marker writer). Caller embeds the bytes in the
+	// outbound JSON; not surfaced to vault-manager.
+	Signature []byte `json:"-"`
 }
 
 // HandleSealerRequest processes a sealer request from vault-manager
@@ -961,10 +968,17 @@ func (sh *SealerHandler) fetchPCRSigningPublicKey(req SealerRequest) SealerRespo
 	return SealerResponse{Success: true, PCRSigningPublicKey: keyEnv.PublicKeyDER}
 }
 
-// writeMigrationMarker publishes an unencrypted "user migrated" signal to S3.
-// Lambda auto-finalize reads these markers to decide when every enrolled user
-// has migrated (instead of relying on the broken "no active users" heuristic).
+// writeMigrationMarker publishes a "user migrated" signal to S3,
+// signed by the enclave's PCR signing KMS key. Lambda auto-finalize
+// reads these markers to decide when every enrolled user has migrated
+// (instead of relying on the broken "no active users" heuristic), and
+// verifies the signature so a misconfigured S3 writer can't forge them.
 // Key: _migration/completed/{version}/{ownerSpace}.json
+//
+// SECURITY (attestation-F3): the marker JSON now contains a `signature`
+// field — base64 ECDSA-SHA-256 over the canonical (sorted-key) form
+// of {version, owner_space, completed_at}. Lambda calls KMS Verify on
+// the same key and rejects any marker with a missing or bad signature.
 func (sh *SealerHandler) writeMigrationMarker(req SealerRequest) SealerResponse {
 	if req.MigrationVersion == "" {
 		return SealerResponse{Success: false, Error: "migration_version is required"}
@@ -972,13 +986,79 @@ func (sh *SealerHandler) writeMigrationMarker(req SealerRequest) SealerResponse 
 	if req.OwnerSpace == "" {
 		return SealerResponse{Success: false, Error: "owner_space is required"}
 	}
+	completedAt := time.Now().UTC().Format(time.RFC3339)
+
+	// Canonical form: keys are alphabetically sorted, no whitespace.
+	// Lambda must reproduce this exact byte sequence to verify.
+	canonical := fmt.Sprintf(`{"completed_at":%q,"owner_space":%q,"version":%q}`,
+		completedAt, req.OwnerSpace, req.MigrationVersion)
+	digest := sha256.Sum256([]byte(canonical))
+
+	sigResp := sh.signWithPCRSigningKey(req.OwnerSpace, digest[:])
+	if !sigResp.Success {
+		log.Error().Str("error", sigResp.Error).Msg("Failed to sign migration marker")
+		return sigResp
+	}
+	sigB64 := base64.StdEncoding.EncodeToString(sigResp.Signature)
+
+	body := fmt.Sprintf(`{"completed_at":%q,"owner_space":%q,"signature":%q,"version":%q}`,
+		completedAt, req.OwnerSpace, sigB64, req.MigrationVersion)
 	key := fmt.Sprintf("_migration/completed/%s/%s.json", req.MigrationVersion, req.OwnerSpace)
-	body := fmt.Sprintf(`{"version":%q,"owner_space":%q,"completed_at":%q}`,
-		req.MigrationVersion, req.OwnerSpace, time.Now().UTC().Format(time.RFC3339))
 	if err := sh.s3Put(key, []byte(body)); err != nil {
 		log.Error().Err(err).Str("key", key).Msg("Failed to write migration marker")
 		return SealerResponse{Success: false, Error: err.Error()}
 	}
-	log.Info().Str("key", key).Msg("Migration marker written")
+	log.Info().Str("key", key).Msg("Migration marker written + signed")
 	return SealerResponse{Success: true}
+}
+
+// signWithPCRSigningKey forwards a digest to the parent for KMS Sign
+// using the PCR signing key. Caller is expected to have hashed the
+// payload with SHA-256.
+func (sh *SealerHandler) signWithPCRSigningKey(ownerSpace string, digest []byte) SealerResponse {
+	sh.connMu.Lock()
+	defer sh.connMu.Unlock()
+
+	if sh.parentConn == nil {
+		return SealerResponse{Success: false, Error: "no parent connection available"}
+	}
+
+	payload, err := json.Marshal(map[string][]byte{"digest": digest})
+	if err != nil {
+		return SealerResponse{Success: false, Error: fmt.Sprintf("marshal digest: %v", err)}
+	}
+	msg := &Message{
+		Type:       MessageTypePCRSigningKeySign,
+		OwnerSpace: ownerSpace,
+		Payload:    payload,
+	}
+	if err := sh.parentConn.WriteMessage(msg); err != nil {
+		return SealerResponse{Success: false, Error: fmt.Sprintf("send sign request: %v", err)}
+	}
+	response, err := sh.parentConn.ReadMessage()
+	if err != nil {
+		return SealerResponse{Success: false, Error: fmt.Sprintf("read sign response: %v", err)}
+	}
+	if response.Type == MessageTypeError {
+		return SealerResponse{Success: false, Error: response.Error}
+	}
+	if response.Type != MessageTypePCRSigningKeySignResponse {
+		return SealerResponse{Success: false, Error: fmt.Sprintf("unexpected response type: %s", response.Type)}
+	}
+	var errPeek struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(response.Payload, &errPeek) == nil && errPeek.Error != "" {
+		return SealerResponse{Success: false, Error: errPeek.Error}
+	}
+	var sigEnv struct {
+		Signature []byte `json:"signature"`
+	}
+	if err := json.Unmarshal(response.Payload, &sigEnv); err != nil {
+		return SealerResponse{Success: false, Error: fmt.Sprintf("invalid sign envelope: %v", err)}
+	}
+	if len(sigEnv.Signature) == 0 {
+		return SealerResponse{Success: false, Error: "empty signature"}
+	}
+	return SealerResponse{Success: true, Signature: sigEnv.Signature}
 }

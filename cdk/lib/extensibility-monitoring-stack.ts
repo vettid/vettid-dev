@@ -1,3 +1,4 @@
+import { grantAuditAppend } from './audit-grants';
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import {
@@ -122,7 +123,7 @@ export class ExtensibilityMonitoringStack extends cdk.Stack {
     // Grant NATS control permissions
     tables.natsAccounts.grantReadData(generateNatsControlToken);
     tables.natsTokens.grantReadWriteData(generateNatsControlToken);
-    tables.audit.grantReadWriteData(generateNatsControlToken);
+    grantAuditAppend(tables.audit, generateNatsControlToken);
 
     // NATS Token Revocation - allows admins to revoke user NATS tokens
     const natsRevokeToken = new lambdaNode.NodejsFunction(this, 'NatsRevokeTokenFn', {
@@ -140,7 +141,7 @@ export class ExtensibilityMonitoringStack extends cdk.Stack {
     // Grant access to NATS tables and operator secret
     tables.natsAccounts.grantReadWriteData(natsRevokeToken);
     tables.natsTokens.grantReadWriteData(natsRevokeToken);
-    tables.audit.grantReadWriteData(natsRevokeToken);
+    grantAuditAppend(tables.audit, natsRevokeToken);
     natsOperatorSecret.grantRead(natsRevokeToken);
 
     this.generateNatsControlToken = generateNatsControlToken;
@@ -272,13 +273,13 @@ export class ExtensibilityMonitoringStack extends cdk.Stack {
     // Service registry permissions
     tables.supportedServices.grantReadData(registerServiceCredentials);
     tables.serviceRegistry.grantReadWriteData(registerServiceCredentials);
-    tables.audit.grantReadWriteData(registerServiceCredentials);
+    grantAuditAppend(tables.audit, registerServiceCredentials);
     natsOperatorSecret.grantRead(registerServiceCredentials);
     // KMS encrypt permission for encrypting NATS seeds
     props.infrastructure.natsSeedEncryptionKey.grantEncrypt(registerServiceCredentials);
 
     tables.serviceRegistry.grantReadWriteData(verifyServiceAttestation);
-    tables.audit.grantReadWriteData(verifyServiceAttestation);
+    grantAuditAppend(tables.audit, verifyServiceAttestation);
 
     tables.supportedServices.grantReadData(listServiceDirectory);
     tables.serviceRegistry.grantReadData(listServiceDirectory);
@@ -300,7 +301,7 @@ export class ExtensibilityMonitoringStack extends cdk.Stack {
     });
 
     tables.serviceRegistry.grantReadWriteData(validateServiceDomains);
-    tables.audit.grantReadWriteData(validateServiceDomains);
+    grantAuditAppend(tables.audit, validateServiceDomains);
 
     // Run domain validation daily at 3 AM UTC
     const domainValidationRule = new events.Rule(this, 'ServiceDomainValidationRule', {
@@ -383,7 +384,7 @@ export class ExtensibilityMonitoringStack extends cdk.Stack {
     tables.profiles.grantReadWriteData(decommissionVault);
     tables.vaultInstances.grantReadWriteData(decommissionVault);
     tables.registrations.grantReadWriteData(decommissionVault);
-    tables.audit.grantReadWriteData(decommissionVault);
+    grantAuditAppend(tables.audit, decommissionVault);
     // S3 permissions for backup cleanup
     props.infrastructure.backupBucket.grantReadWrite(decommissionVault);
     // S3 permissions for vault data cleanup (sealed material, vault state, ECIES keys)
@@ -414,7 +415,7 @@ export class ExtensibilityMonitoringStack extends cdk.Stack {
 
     // Handler permissions
     tables.handlers.grantReadData(listDeployedHandlers);
-    tables.audit.grantReadWriteData(listDeployedHandlers);
+    grantAuditAppend(tables.audit, listDeployedHandlers);
 
     this.listDeployedHandlers = listDeployedHandlers;
 
@@ -452,8 +453,8 @@ export class ExtensibilityMonitoringStack extends cdk.Stack {
     // Broadcast permissions
     tables.vaultBroadcasts.grantReadWriteData(sendVaultBroadcast);
     tables.vaultBroadcasts.grantReadData(listVaultBroadcasts);
-    tables.audit.grantReadWriteData(sendVaultBroadcast);
-    tables.audit.grantReadWriteData(listVaultBroadcasts);
+    grantAuditAppend(tables.audit, sendVaultBroadcast);
+    grantAuditAppend(tables.audit, listVaultBroadcasts);
 
     // Grant access to NATS operator secret for system account credentials
     natsOperatorSecretForBroadcasts.grantRead(sendVaultBroadcast);
@@ -507,8 +508,8 @@ export class ExtensibilityMonitoringStack extends cdk.Stack {
     tables.vaultDeletionRequests.grantReadData(listVaultDeletionRequests);
     tables.credentialRecoveryRequests.grantReadWriteData(cancelRecoveryRequest);
     tables.vaultDeletionRequests.grantReadWriteData(cancelDeletionRequest);
-    tables.audit.grantReadWriteData(cancelRecoveryRequest);
-    tables.audit.grantReadWriteData(cancelDeletionRequest);
+    grantAuditAppend(tables.audit, cancelRecoveryRequest);
+    grantAuditAppend(tables.audit, cancelDeletionRequest);
 
     this.getSecurityEvents = getSecurityEvents;
     this.listCredentialRecoveryRequests = listCredentialRecoveryRequests;

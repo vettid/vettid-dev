@@ -1111,6 +1111,7 @@ export class NitroStack extends cdk.Stack {
       environment: {
         VAULT_BUCKET: this.vaultDataBucket.bucketName,
         KMS_KEY_ALIAS: 'alias/vettid-enclave-sealing',
+        PCR_SIGNING_KEY_ALIAS: 'alias/vettid-pcr-signing',
         FINALIZE_RULE_NAME: 'vettid-migration-finalize-schedule',
         TABLE_REGISTRATIONS: props?.infrastructure?.tables?.registrations?.tableName || '',
       },
@@ -1123,6 +1124,12 @@ export class NitroStack extends cdk.Stack {
     this.vaultDataBucket.grantReadWrite(migrationFinalizeFn);
     sealingKey.grant(migrationFinalizeFn,
       'kms:GetKeyPolicy', 'kms:PutKeyPolicy', 'kms:DescribeKey');
+    // SECURITY (attestation-F3): the Lambda Verify-checks each
+    // migration-completion marker against the same PCR signing key
+    // the enclave used to sign it. Without this, an S3 writer with
+    // PutObject on the marker prefix could forge the entire user
+    // population's "migrated" status and trigger early auto-finalize.
+    this.pcrSigningKey.grant(migrationFinalizeFn, 'kms:Verify', 'kms:DescribeKey');
     migrationFinalizeFn.addToRolePolicy(new iam.PolicyStatement({
       actions: [
         'autoscaling:DescribeAutoScalingGroups',

@@ -1,3 +1,4 @@
+import { grantAuditAppend } from './audit-grants';
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import {
@@ -649,17 +650,17 @@ export class VaultStack extends cdk.Stack {
     tables.enrollmentSessions.grantReadWriteData(this.createEnrollmentSession);
     tables.natsAccounts.grantReadData(this.createEnrollmentSession);
     tables.subscriptions.grantReadData(this.createEnrollmentSession);
-    tables.audit.grantReadWriteData(this.createEnrollmentSession);
+    grantAuditAppend(tables.audit, this.createEnrollmentSession);
     tables.enrollmentSessions.grantReadWriteData(this.cancelEnrollmentSession);
-    tables.audit.grantReadWriteData(this.cancelEnrollmentSession);
+    grantAuditAppend(tables.audit, this.cancelEnrollmentSession);
 
     // Authenticate enrollment permissions
     tables.enrollmentSessions.grantReadWriteData(this.authenticateEnrollment);
-    tables.audit.grantReadWriteData(this.authenticateEnrollment);
+    grantAuditAppend(tables.audit, this.authenticateEnrollment);
 
     // Resolve enrollment code permissions
     tables.enrollmentSessions.grantReadData(this.resolveEnrollmentCode);
-    tables.audit.grantReadWriteData(this.resolveEnrollmentCode);
+    grantAuditAppend(tables.audit, this.resolveEnrollmentCode);
 
     // Enrollment status update permissions (app reports progress)
     tables.enrollmentSessions.grantReadWriteData(this.enrollUpdateStatus);
@@ -678,17 +679,17 @@ export class VaultStack extends cdk.Stack {
     tables.registrations.grantReadData(this.enrollFinalize);
 
     // Grant audit table permissions for vault functions
-    tables.audit.grantReadWriteData(this.enrollFinalize);
+    grantAuditAppend(tables.audit, this.enrollFinalize);
 
     // ===== DEVICE ATTESTATION PERMISSIONS (Phase 2) =====
     tables.enrollmentSessions.grantReadWriteData(this.verifyAndroidAttestation);
     tables.enrollmentSessions.grantReadWriteData(this.verifyIosAttestation);
-    tables.audit.grantReadWriteData(this.verifyAndroidAttestation);
-    tables.audit.grantReadWriteData(this.verifyIosAttestation);
+    grantAuditAppend(tables.audit, this.verifyAndroidAttestation);
+    grantAuditAppend(tables.audit, this.verifyIosAttestation);
 
     // Unified device attestation handler permissions (QR code enrollment flow)
     tables.enrollmentSessions.grantReadWriteData(this.verifyDeviceAttestation);
-    tables.audit.grantReadWriteData(this.verifyDeviceAttestation);
+    grantAuditAppend(tables.audit, this.verifyDeviceAttestation);
     // Grant access to enrollment JWT verification secret
     this.verifyDeviceAttestation.addToRolePolicy(new iam.PolicyStatement({
       actions: ['secretsmanager:GetSecretValue'],
@@ -795,9 +796,9 @@ export class VaultStack extends cdk.Stack {
     tables.natsAccounts.grantReadWriteData(this.natsRevokeToken);
 
     // Grant audit table access for NATS functions
-    tables.audit.grantReadWriteData(this.natsCreateAccount);
-    tables.audit.grantReadWriteData(this.natsGenerateToken);
-    tables.audit.grantReadWriteData(this.natsRevokeToken);
+    grantAuditAppend(tables.audit, this.natsCreateAccount);
+    grantAuditAppend(tables.audit, this.natsGenerateToken);
+    grantAuditAppend(tables.audit, this.natsRevokeToken);
 
     // Grant NATS operator secret access for JWT signing
     natsOperatorSecret.grantRead(this.natsCreateAccount);
@@ -1363,10 +1364,10 @@ export class VaultStack extends cdk.Stack {
     tables.vaultInstances.grantReadWriteData(this.deleteByovVault);
 
     // Grant audit table access for BYOV functions
-    tables.audit.grantReadWriteData(this.registerByovVault);
-    tables.audit.grantReadWriteData(this.verifyByovVault);
-    tables.audit.grantReadWriteData(this.updateByovVault);
-    tables.audit.grantReadWriteData(this.deleteByovVault);
+    grantAuditAppend(tables.audit, this.registerByovVault);
+    grantAuditAppend(tables.audit, this.verifyByovVault);
+    grantAuditAppend(tables.audit, this.updateByovVault);
+    grantAuditAppend(tables.audit, this.deleteByovVault);
 
     // ===== TEST AUTOMATION ENDPOINTS =====
     // These endpoints enable automated E2E testing for Android app
@@ -1424,13 +1425,13 @@ export class VaultStack extends cdk.Stack {
 
     tables.invites.grantReadWriteData(this.testCreateInvitation);
     tables.enrollmentSessions.grantReadWriteData(this.testCreateInvitation);
-    tables.audit.grantReadWriteData(this.testCreateInvitation);
+    grantAuditAppend(tables.audit, this.testCreateInvitation);
 
     tables.invites.grantReadWriteData(this.testCleanup);
     tables.enrollmentSessions.grantReadWriteData(this.testCleanup);
     tables.natsAccounts.grantReadWriteData(this.testCleanup);
     tables.actionTokens.grantReadWriteData(this.testCleanup);
-    tables.audit.grantReadWriteData(this.testCleanup);
+    grantAuditAppend(tables.audit, this.testCleanup);
 
     // Note: Ledger (Protean Credential System) section removed
     // Legacy PostgreSQL ledger replaced by vault-manager JetStream storage
