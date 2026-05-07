@@ -4635,7 +4635,7 @@ func (h *ConnectionsHandler) getLastActivity(connectionID string) lastActivityIn
 				if rec.ConnectionID != connectionID {
 					continue
 				}
-				if rec.Direction == "incoming" && rec.Status == "missed" {
+				if rec.Direction == "incoming" && rec.Status == "missed" && rec.SeenAt == 0 {
 					out.MissedCallCount++
 				}
 				started := time.Unix(rec.StartedAt, 0)

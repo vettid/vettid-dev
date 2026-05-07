@@ -65,6 +65,13 @@ type CallRecord struct {
 	EndedAt      int64         `json:"ended_at,omitempty"`
 	DurationSecs int           `json:"duration_secs,omitempty"`
 	BlockReason  string        `json:"block_reason,omitempty"`
+	// SeenAt is the unix-epoch timestamp at which the user acknowledged
+	// this call (typically by opening Call History or completing a
+	// follow-up call with the same peer). Records with SeenAt > 0 are
+	// excluded from the per-connection MissedCallCount even if their
+	// Status is still "missed" — this is how a connection card's bold
+	// "Missed call" badge clears once the user has actually noticed it.
+	SeenAt int64 `json:"seen_at,omitempty"`
 }
 
 // BlockListEntry represents a blocked caller
@@ -802,6 +809,82 @@ func (ch *CallHandler) HandleGetCallHistory(ctx context.Context, msg *IncomingMe
 	}
 	respBytes, _ := json.Marshal(resp)
 
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// MarkCallsSeenRequest acknowledges all currently-unseen incoming
+// missed calls for the given connection. Empty connection_id marks
+// every connection's missed calls seen — useful when the user opens
+// the global Call History screen.
+type MarkCallsSeenRequest struct {
+	ConnectionID string `json:"connection_id,omitempty"`
+}
+
+// MarkCallsSeenResponse reports how many records were updated.
+type MarkCallsSeenResponse struct {
+	Marked int `json:"marked"`
+}
+
+// HandleMarkCallsSeen sets SeenAt=now() on every CallRecord matching
+// the request that is still unseen and was an incoming missed call.
+// Drives the connection card's bold "Missed call" badge clearing —
+// MissedCallCount in connection.list excludes records with SeenAt>0.
+func (ch *CallHandler) HandleMarkCallsSeen(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req MarkCallsSeenRequest
+	if err := unmarshalRequest(msg.Payload, &req, "HandleMarkCallsSeen"); err != nil {
+		// Allow empty payload (mark-all)
+		req = MarkCallsSeenRequest{}
+	}
+
+	indexData, err := ch.storage.Get("calls/_index")
+	if err != nil {
+		// No calls yet — nothing to mark.
+		respBytes, _ := json.Marshal(MarkCallsSeenResponse{Marked: 0})
+		return &OutgoingMessage{
+			RequestID: msg.GetID(),
+			Type:      MessageTypeResponse,
+			Payload:   respBytes,
+		}, nil
+	}
+
+	var callIDs []string
+	if err := json.Unmarshal(indexData, &callIDs); err != nil {
+		return ch.errorResponse(msg.GetID(), "failed to read call index")
+	}
+
+	now := time.Now().Unix()
+	marked := 0
+	for _, callID := range callIDs {
+		data, err := ch.storage.Get("calls/" + callID)
+		if err != nil {
+			continue
+		}
+		var rec CallRecord
+		if json.Unmarshal(data, &rec) != nil {
+			continue
+		}
+		if rec.Direction != "incoming" || rec.Status != "missed" || rec.SeenAt != 0 {
+			continue
+		}
+		if req.ConnectionID != "" && rec.ConnectionID != req.ConnectionID {
+			continue
+		}
+		rec.SeenAt = now
+		out, err := json.Marshal(&rec)
+		if err != nil {
+			continue
+		}
+		if err := ch.storage.Put("calls/"+callID, out); err != nil {
+			continue
+		}
+		marked++
+	}
+
+	respBytes, _ := json.Marshal(MarkCallsSeenResponse{Marked: marked})
 	return &OutgoingMessage{
 		RequestID: msg.GetID(),
 		Type:      MessageTypeResponse,

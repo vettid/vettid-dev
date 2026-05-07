@@ -449,42 +449,42 @@ do_deploy() {
     PHASE="scale-up"
     log_step "Phase 4: Scaling ASG to 2 (old + new enclave)"
 
-    # First, check if existing instances are running an old AMI from a previous deploy.
-    # If so, refresh them first so we don't end up with stale instances.
-    local expected_ami current_instances stale_found
-    expected_ami=$(aws ec2 describe-launch-template-versions \
-        --launch-template-id "$(aws autoscaling describe-auto-scaling-groups \
-            --auto-scaling-group-names "$asg_name" \
-            --query 'AutoScalingGroups[0].LaunchTemplate.LaunchTemplateId' \
-            --output text --region "$REGION")" \
-        --versions '$Latest' \
-        --query 'LaunchTemplateVersions[0].LaunchTemplateData.ImageId' \
-        --output text --region "$REGION")
-
-    stale_found=false
+    # CRITICAL: this is the migration branch. We just bumped the launch
+    # template to point at the NEW AMI in Phase 2; the existing instance
+    # is therefore on the OLD AMI by design — that's the source of the
+    # migration. Do NOT run an instance refresh here. Doing so would
+    # replace the only enclave that can unseal existing user data, and
+    # connecting users would land on the new (empty-state) enclave with
+    # no path back. (See incident 2026-05-06: a stale-AMI heuristic
+    # mistook the migration source for leftover state and refreshed it,
+    # destroying both phones' vault state in S3 on first contact.)
+    #
+    # ASG scale-up below brings up the NEW AMI as a SECOND instance
+    # alongside the existing OLD one — exactly what migration needs.
+    local current_instances current_inst_id current_inst_ami expected_old_ami
     current_instances=$(aws autoscaling describe-auto-scaling-groups \
         --auto-scaling-group-names "$asg_name" \
         --query 'AutoScalingGroups[0].Instances[*].InstanceId' \
         --output text --region "$REGION")
 
+    # Pre-flight: there should be exactly one instance on the OLD AMI.
+    # The OLD AMI is whatever the running enclave was on before Phase 2
+    # bumped the launch template — i.e. the instance's actual ImageId.
+    # If we see anything other than one instance on a single AMI here,
+    # a previous deploy didn't complete cleanly and migration would be
+    # ambiguous; abort so the operator can investigate.
+    local inst_count=0
     for inst_id in $current_instances; do
-        inst_ami=$(aws ec2 describe-instances --instance-ids "$inst_id" \
+        inst_count=$((inst_count + 1))
+        current_inst_id="$inst_id"
+        current_inst_ami=$(aws ec2 describe-instances --instance-ids "$inst_id" \
             --query 'Reservations[0].Instances[0].ImageId' --output text --region "$REGION" 2>/dev/null)
-        if [[ "$inst_ami" != "$expected_ami" ]]; then
-            log_warn "Instance $inst_id running stale AMI $inst_ami (expected $expected_ami)"
-            stale_found=true
-        fi
     done
-
-    if $stale_found; then
-        log_info "Refreshing stale instances before scaling..."
-        aws autoscaling start-instance-refresh \
-            --auto-scaling-group-name "$asg_name" \
-            --preferences '{"MinHealthyPercentage": 0, "InstanceWarmup": 120}' \
-            --region "$REGION" >/dev/null 2>&1 || true
-        wait_for_refresh "$asg_name"
-        log_info "Stale instances replaced"
+    if [[ "$inst_count" -ne 1 ]]; then
+        log_error "Expected exactly 1 enclave instance before scale-up; saw $inst_count. Aborting migration to avoid ambiguous state."
+        exit 1
     fi
+    log_info "Pre-flight: existing instance $current_inst_id on AMI $current_inst_ami (will be the migration source)"
 
     # Update ASG max if needed
     local current_max
@@ -571,6 +571,41 @@ do_deploy() {
     else
         log_warn "Could not send verification command to instance — verify PCR0 manually"
     fi
+
+    # ------------------------------------------------------------------
+    # Pre-Phase-5 gate: confirm BOTH old and new PCR0s have a healthy
+    # enclave behind them before publishing the migration config.
+    #
+    # This is the safety net for the regression that destroyed two users'
+    # data in the 2026-05-06-v2 deploy: Phase 4 erroneously refreshed the
+    # old instance, leaving only the new PCR0 alive. Migration config got
+    # published anyway, telling phones to migrate — they connected to the
+    # new (empty-state) enclave and overwrote their S3 vault state. Refuse
+    # to publish the config unless we can prove both PCR0s are reachable.
+    # ------------------------------------------------------------------
+    PHASE="verify-dual-pcr"
+    log_step "Verifying both old and new enclaves are running before publishing migration config"
+
+    local current_inst_ids ami_set
+    current_inst_ids=$(aws autoscaling describe-auto-scaling-groups \
+        --auto-scaling-group-names "$asg_name" \
+        --query 'AutoScalingGroups[0].Instances[?LifecycleState==`InService`].InstanceId' \
+        --output text --region "$REGION")
+    ami_set=""
+    for inst_id in $current_inst_ids; do
+        inst_ami=$(aws ec2 describe-instances --instance-ids "$inst_id" \
+            --query 'Reservations[0].Instances[0].ImageId' --output text --region "$REGION" 2>/dev/null)
+        ami_set="${ami_set}${inst_ami}\n"
+    done
+    distinct_amis=$(printf "%b" "$ami_set" | sort -u | grep -c .)
+    if [[ "$distinct_amis" -lt 2 ]]; then
+        log_error "Refusing to publish migration config — only $distinct_amis distinct AMI(s) running."
+        log_error "Migration requires both old and new enclaves alive simultaneously."
+        log_error "Running instances:"
+        printf "%b" "$ami_set" | sort -u | sed 's/^/  /'
+        exit 1
+    fi
+    log_info "Verified: $distinct_amis distinct enclave AMIs running (migration safe)"
 
     # ------------------------------------------------------------------
     # Phase 5: Publish migration config
