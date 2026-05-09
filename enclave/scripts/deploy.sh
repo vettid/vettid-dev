@@ -486,18 +486,23 @@ do_deploy() {
     fi
     log_info "Pre-flight: existing instance $current_inst_id on AMI $current_inst_ami (will be the migration source)"
 
-    # Update ASG max if needed
-    local current_max
-    current_max=$(aws autoscaling describe-auto-scaling-groups \
-        --auto-scaling-group-names "$asg_name" \
-        --query 'AutoScalingGroups[0].MaxSize' \
-        --output text --region "$REGION")
-    if [[ "$current_max" -lt 2 ]]; then
-        aws autoscaling update-auto-scaling-group \
-            --auto-scaling-group-name "$asg_name" \
-            --max-size 2 \
-            --region "$REGION"
-    fi
+    # Pin BOTH MinSize and MaxSize to 2 for the duration of the migration
+    # window. Without MinSize=2, the CPU-based scaleOnCpuUtilization policy
+    # (target 70%, defined in nitro-stack.ts) sees low CPU on the freshly-
+    # scaled-up pair and triggers AlarmLow within ~5-6 minutes, scaling
+    # DesiredCapacity from 2 back to 1 and terminating one of the instances.
+    # If that instance happens to be the OLD migration source, users can no
+    # longer re-seal via the old PCR0 (KMS still allows both, so they CAN
+    # connect to the new enclave — but a stale migration check that came
+    # back BEFORE the new config was published, or any other timing edge,
+    # leaves them in an ambiguous "logged in but never prompted" state).
+    # The auto-finalize Lambda restores MinSize=1 when it scales down at
+    # the end of the migration window.
+    aws autoscaling update-auto-scaling-group \
+        --auto-scaling-group-name "$asg_name" \
+        --min-size 2 \
+        --max-size 2 \
+        --region "$REGION"
 
     aws autoscaling set-desired-capacity \
         --auto-scaling-group-name "$asg_name" \

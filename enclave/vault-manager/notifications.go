@@ -229,7 +229,14 @@ func BroadcastPublishedProfile(
 		if json.Unmarshal(data, &conn) != nil {
 			continue
 		}
-		if conn.Status != "active" || conn.CredentialsType != "inbound" {
+		// Status must be active and we must have a peer to address.
+		// Earlier code also required CredentialsType == "inbound", but
+		// that excluded the inviter side of every successfully-paired
+		// connection — wallet visibility / profile changes never made
+		// it back to the peer. PublishToVault doesn't depend on the
+		// per-connection creds_type bookkeeping; it routes by peer
+		// OwnerSpace through the parent's NATS account.
+		if conn.Status != "active" || conn.PeerGUID == "" {
 			continue
 		}
 		total++

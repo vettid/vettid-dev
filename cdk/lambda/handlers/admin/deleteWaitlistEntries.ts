@@ -26,24 +26,35 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   const deleted: string[] = [];
   const failed: { id: string; error: string }[] = [];
 
-  // Delete items one by one (scan for waitlist_id to get email, then delete by email)
+  // Delete items one by one (scan for waitlist_id to get email, then delete by email).
+  // No GSI on waitlist_id today, so we scan with a filter expression. Earlier this
+  // had `Limit: 1` which is a Scan-level cap, applied BEFORE the filter — so if the
+  // matching item wasn't the first record DynamoDB happened to scan, the filter
+  // returned nothing and the entry was silently skipped. We now page through the
+  // table until we find the match (or exhaust the table). For a waitlist of any
+  // realistic size this is fine; if it grows, add a waitlist_id GSI.
   for (const id of waitlist_ids) {
     try {
-      // Find the waitlist entry by waitlist_id to get the email (partition key)
-      const scanResult = await ddb.send(new ScanCommand({
-        TableName: TABLE_WAITLIST,
-        FilterExpression: 'waitlist_id = :wid',
-        ExpressionAttributeValues: marshall({ ':wid': id }),
-        Limit: 1,
-      }));
+      let email: string | undefined;
+      let exclusiveStartKey: Record<string, any> | undefined;
+      do {
+        const scanResult = await ddb.send(new ScanCommand({
+          TableName: TABLE_WAITLIST,
+          FilterExpression: 'waitlist_id = :wid',
+          ExpressionAttributeValues: marshall({ ':wid': id }),
+          ExclusiveStartKey: exclusiveStartKey,
+        }));
+        if (scanResult.Items && scanResult.Items.length > 0) {
+          email = unmarshall(scanResult.Items[0]).email;
+          break;
+        }
+        exclusiveStartKey = scanResult.LastEvaluatedKey;
+      } while (exclusiveStartKey);
 
-      if (!scanResult.Items || scanResult.Items.length === 0) {
+      if (!email) {
         failed.push({ id, error: "Waitlist entry not found" });
         continue;
       }
-
-      const entry = unmarshall(scanResult.Items[0]);
-      const email = entry.email;
 
       // Delete using email as partition key
       await ddb.send(new DeleteItemCommand({

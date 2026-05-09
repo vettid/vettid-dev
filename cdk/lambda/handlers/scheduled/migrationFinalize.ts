@@ -119,17 +119,22 @@ export const handler = async (): Promise<void> => {
     return;
   }
 
-  // Step 5: Scale ASG to 1
+  // Step 5: Scale ASG back to 1.
+  // deploy.sh pins MinSize=2 during the migration window so the CPU
+  // target-tracking AlarmLow policy can't kill the OLD instance before
+  // users have re-sealed. We restore MinSize=1 here so steady-state
+  // capacity tracking can scale freely again.
   try {
+    await autoscaling.send(new UpdateAutoScalingGroupCommand({
+      AutoScalingGroupName: asgName,
+      MinSize: 1,
+      MaxSize: 1,
+    }));
     await autoscaling.send(new SetDesiredCapacityCommand({
       AutoScalingGroupName: asgName,
       DesiredCapacity: 1,
     }));
-    await autoscaling.send(new UpdateAutoScalingGroupCommand({
-      AutoScalingGroupName: asgName,
-      MaxSize: 1,
-    }));
-    console.log('ASG scaled to 1');
+    console.log('ASG scaled to 1 (Min=1, Max=1)');
   } catch (err) {
     console.error('Failed to scale ASG — will retry next cycle', err);
     return;

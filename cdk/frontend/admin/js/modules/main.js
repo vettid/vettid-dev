@@ -1716,15 +1716,6 @@ function setupWaitlistActionButtons() {
     };
   }
 
-  // Reject waitlist button - Note: No backend endpoint exists for reject
-  // Use delete instead to remove unwanted entries
-  const rejectBtn = document.getElementById('rejectWaitlistBtn');
-  if (rejectBtn) {
-    rejectBtn.onclick = () => {
-      showToast('Reject functionality not implemented. Use Delete to remove entries.', 'warning');
-    };
-  }
-
   // Delete waitlist button
   const deleteBtn = document.getElementById('deleteWaitlistBtn');
   if (deleteBtn) {
@@ -1739,12 +1730,23 @@ function setupWaitlistActionButtons() {
       }
 
       try {
-        await api('/admin/waitlist', {
+        // Backend returns { deleted: [...], failed: [{id, error}] }.
+        // Use those counts so the toast doesn't lie when the lookup
+        // fails for some entries.
+        const res = await api('/admin/waitlist', {
           method: 'DELETE',
           body: JSON.stringify({ waitlist_ids: waitlistIds })
         });
+        const deletedCount = Array.isArray(res?.deleted) ? res.deleted.length : 0;
+        const failedCount = Array.isArray(res?.failed) ? res.failed.length : 0;
 
-        showToast(`Deleted ${waitlistIds.length} entr${waitlistIds.length === 1 ? 'y' : 'ies'}`, 'success');
+        if (deletedCount > 0 && failedCount === 0) {
+          showToast(`Deleted ${deletedCount} entr${deletedCount === 1 ? 'y' : 'ies'}`, 'success');
+        } else if (deletedCount > 0 && failedCount > 0) {
+          showToast(`Deleted ${deletedCount}, failed to delete ${failedCount}`, 'warning');
+        } else {
+          showToast(`Failed to delete ${failedCount} entr${failedCount === 1 ? 'y' : 'ies'}`, 'error');
+        }
         loadWaitlist(false);
       } catch (err) {
         showToast(err.message || 'Failed to delete entries', 'error');
