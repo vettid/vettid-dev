@@ -127,6 +127,21 @@ hardened so that no future bug can silently destroy data:
 3. **S3 versioning** is already enabled — recovery from any future
    corruption is possible, but only if we notice quickly.
 
+## Operational failure mode added 2026-05-09 afternoon
+
+A third failure surfaced after the brief was first drafted — not a migration-flow bug but a deploy-script footgun that takes down the entire vault:
+
+`deploy.sh` writes the new PCR0 to SSM `/vettid/enclave/pcr/pcr0` (and the JSON `/vettid/enclave/pcr/current`) early in Phase 2, after the EIF build completes but BEFORE any new instance has been launched and verified. The parent process on the EXISTING running instance reads SSM to know what PCR0 to expect during its vsock attestation handshake.
+
+When the deploy is aborted (operator Ctrl-C, build instance killed, instance refresh fails) AFTER the SSM write but BEFORE a new instance with the matching AMI is in service, SSM is now pointing at a PCR0 that nothing in the fleet attests to. The parent process on the still-running OLD instance starts failing every handshake at startup. systemd restarts vettid-parent. It crash-loops every ~5 seconds — silently, with no monitoring alert.
+
+We hit this 2026-05-09: parent crash-looped ~10,000 times over several hours before the operator tried to enroll and noticed everything was broken.
+
+The architect should consider:
+- Move the SSM PCR0 write to AFTER a new instance is fully healthy (post-Phase-4, before Phase 5).
+- OR change parent to read PCR0 from a per-instance source (`/vettid/enclave/pcr/{instance-id}/pcr0`, or NSM, or instance metadata) instead of a global SSM parameter — the global parameter becomes informational only.
+- OR add a CloudWatch alarm on `vettid-parent` restart count exceeding N per hour, paging the operator.
+
 ## What this redesign eliminates
 
 | Failure mode | Today | After |
