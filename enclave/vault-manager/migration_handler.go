@@ -290,7 +290,7 @@ func (h *MigrationHandler) HandleStart(ctx context.Context, msg *IncomingMessage
 	}
 
 	// 1. Re-seal the sealed material (contains KMS-encrypted random bytes for DEK derivation)
-	if err := h.resealMaterial(ctx); err != nil {
+	if err := h.resealMaterial(ctx, verifiedConfig.Version); err != nil {
 		log.Error().Err(err).Str("owner_space", h.ownerSpace).Msg("Failed to re-seal material")
 		return h.errorResponse(msg.GetID(), "migration failed: "+err.Error())
 	}
@@ -389,16 +389,61 @@ func (h *MigrationHandler) HandleStart(ctx context.Context, msg *IncomingMessage
 	}, nil
 }
 
+// sealedMaterialWrapper mirrors supervisor.SealedMaterialData (M3 v2
+// format). Defined locally because vault-manager and supervisor are
+// separate Go packages but share the on-disk JSON shape. Legacy v1
+// wrappers (no Generation/SealedToPCR0/SealedToVersion fields) parse
+// cleanly via json.Unmarshal — missing keys default to zero values.
+type sealedMaterialWrapper struct {
+	Version         int    `json:"version"`
+	SealedMaterial  []byte `json:"sealed_material"`
+	OwnerID         string `json:"owner_id"`
+	CreatedAt       int64  `json:"created_at"`
+	Generation      int    `json:"generation,omitempty"`
+	SealedToPCR0    string `json:"sealed_to_pcr0,omitempty"`
+	SealedToVersion string `json:"sealed_to_version,omitempty"`
+}
+
 // resealMaterial loads sealed material from S3, unseals with current enclave
-// attestation, re-seals (no attestation), and stores the new version.
-func (h *MigrationHandler) resealMaterial(ctx context.Context) error {
+// attestation, re-seals against the running enclave's PCR0, and stores
+// the new wrapper with Generation+1, SealedToPCR0 = running PCR0, and
+// SealedToVersion = migrationVersion.
+//
+// Idempotency guard (M3 §3): if the existing wrapper's SealedToPCR0
+// already equals the running PCR0, this is a no-op. Logs and returns
+// nil. The caller's outer flow handles "already migrated" reporting.
+func (h *MigrationHandler) resealMaterial(ctx context.Context, migrationVersion string) error {
+	runningPCR0, err := h.sealerProxy.GetRunningPCR0()
+	if err != nil {
+		return fmt.Errorf("failed to read running PCR0: %w", err)
+	}
+
 	// Load current sealed material blob from S3
 	sealedBlob, err := h.sealerProxy.LoadSealedMaterial()
 	if err != nil {
 		return fmt.Errorf("failed to load sealed material: %w", err)
 	}
 
-	// Unseal the inner sealed material using the new UnsealMaterial operation.
+	// Parse the existing wrapper (handles both v1 legacy and v2 new
+	// format because the new fields are omitempty + tolerated as
+	// missing on read).
+	var existing sealedMaterialWrapper
+	if err := json.Unmarshal(sealedBlob, &existing); err != nil {
+		return fmt.Errorf("failed to parse sealed material metadata: %w", err)
+	}
+
+	// Idempotency: nothing to do if material is already bound to our
+	// PCR0. Don't burn KMS quota or risk a needless write race.
+	if existing.SealedToPCR0 != "" && existing.SealedToPCR0 == runningPCR0 {
+		log.Info().
+			Str("owner_space", h.ownerSpace).
+			Str("running_pcr0", runningPCR0).
+			Int("generation", existing.Generation).
+			Msg("Sealed material already bound to running PCR0; skipping re-seal")
+		return nil
+	}
+
+	// Unseal the inner sealed material using the existing UnsealMaterial operation.
 	// This passes the full blob via SealedMaterial field (same path as DeriveDEKFromPIN)
 	// to avoid base64-encoding issues with the Data []byte field.
 	plaintext, err := h.sealerProxy.UnsealMaterial(sealedBlob)
@@ -406,7 +451,11 @@ func (h *MigrationHandler) resealMaterial(ctx context.Context) error {
 		return fmt.Errorf("failed to unseal material: %w", err)
 	}
 
-	// Re-seal with KMS Encrypt
+	// Re-seal with KMS Encrypt — succeeds only if the running enclave
+	// can produce an attestation matching the KMS Encrypt policy
+	// condition. This is the cryptographic gate that ensures only an
+	// enclave attesting to the new PCR0 can produce NEW-bound
+	// ciphertext.
 	newSealedData, err := h.sealerProxy.SealCredential(plaintext)
 
 	// SECURITY: Zero plaintext immediately regardless of seal success
@@ -418,29 +467,26 @@ func (h *MigrationHandler) resealMaterial(ctx context.Context) error {
 		return fmt.Errorf("failed to re-seal material: %w", err)
 	}
 
-	// Parse original blob to preserve owner_id and version
-	var smData struct {
-		Version int    `json:"version"`
-		OwnerID string `json:"owner_id"`
+	// Reassemble the wrapper with the new sealed data and M3 stamps.
+	// Generation increments monotonically; legacy v1 wrappers parse as
+	// Generation=0, so the first re-seal yields Generation=1.
+	updated := sealedMaterialWrapper{
+		Version:         existing.Version,
+		SealedMaterial:  newSealedData,
+		OwnerID:         existing.OwnerID,
+		CreatedAt:       time.Now().Unix(),
+		Generation:      existing.Generation + 1,
+		SealedToPCR0:    runningPCR0,
+		SealedToVersion: migrationVersion,
 	}
-	if err := json.Unmarshal(sealedBlob, &smData); err != nil {
-		return fmt.Errorf("failed to parse sealed material metadata: %w", err)
-	}
-
-	// Reassemble the SealedMaterialData with the new sealed data
-	newSmData := struct {
-		Version        int    `json:"version"`
-		SealedMaterial []byte `json:"sealed_material"`
-		OwnerID        string `json:"owner_id"`
-		CreatedAt      int64  `json:"created_at"`
-	}{
-		Version:        smData.Version,
-		SealedMaterial: newSealedData,
-		OwnerID:        smData.OwnerID,
-		CreatedAt:      time.Now().Unix(),
+	if updated.Version == 0 {
+		// Legacy wrappers may have set Version=0 (or omitted the
+		// field). Promote to 1 so the on-disk layout matches what
+		// fresh enrollments produce.
+		updated.Version = 1
 	}
 
-	newBlob, err := json.Marshal(newSmData)
+	newBlob, err := json.Marshal(updated)
 	if err != nil {
 		return fmt.Errorf("failed to marshal new sealed material: %w", err)
 	}
@@ -452,7 +498,10 @@ func (h *MigrationHandler) resealMaterial(ctx context.Context) error {
 
 	log.Info().
 		Str("owner_space", h.ownerSpace).
-		Str("owner_id", smData.OwnerID).
+		Str("owner_id", existing.OwnerID).
+		Int("generation", updated.Generation).
+		Str("sealed_to_pcr0", runningPCR0).
+		Str("sealed_to_version", migrationVersion).
 		Msg("Sealed material re-sealed successfully")
 
 	return nil

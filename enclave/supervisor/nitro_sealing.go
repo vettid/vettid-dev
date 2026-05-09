@@ -710,12 +710,35 @@ func removePKCS7Padding(data []byte) ([]byte, error) {
 // PIN-Based DEK Derivation (Architecture v2.0 Section 5.7)
 // ============================================================================
 
-// SealedMaterialData contains the KMS-sealed random material used for DEK derivation
+// SealedMaterialData contains the KMS-sealed random material used for DEK derivation.
+//
+// Wrapper format v2 (2026-05-09 architect M3 redesign) adds three
+// fields used to make migration re-seals safe under concurrent
+// writers and to detect already-migrated material on cold-load:
+//
+//   - Generation: monotonically incremented on every write. The
+//     migration handler reads N, writes N+1 with an S3 If-Match
+//     conditional so a concurrent writer's overwrite fails fast
+//     instead of last-writer-wins corruption.
+//   - SealedToPCR0: hex of the running PCR0 the inner ciphertext was
+//     KMS-encrypted against. Any enclave reading the wrapper can tell
+//     whether re-seal has already happened by comparing this to its
+//     own running PCR0 — no KMS round-trip needed.
+//   - SealedToVersion: human-readable migration version
+//     (e.g. "2026-05-09-v3"); informational, may be empty.
+//
+// Backward compatibility: legacy v1 wrappers without these fields
+// parse cleanly via json.Unmarshal (missing fields default to zero).
+// Generation==0 + SealedToPCR0=="" indicates a legacy wrapper; the
+// next write upgrades it in-place.
 type SealedMaterialData struct {
-	Version        int    `json:"version"`
-	SealedMaterial []byte `json:"sealed_material"` // KMS-sealed random bytes
-	OwnerID        string `json:"owner_id"`        // User GUID (for key binding)
-	CreatedAt      int64  `json:"created_at"`
+	Version          int    `json:"version"`
+	SealedMaterial   []byte `json:"sealed_material"` // KMS-sealed random bytes
+	OwnerID          string `json:"owner_id"`        // User GUID (for key binding)
+	CreatedAt        int64  `json:"created_at"`
+	Generation       int    `json:"generation,omitempty"`
+	SealedToPCR0     string `json:"sealed_to_pcr0,omitempty"`
+	SealedToVersion  string `json:"sealed_to_version,omitempty"`
 }
 
 // GenerateSealedMaterial creates new random material and seals it with KMS
@@ -745,12 +768,30 @@ func (s *NitroSealer) GenerateSealedMaterial(ownerID string) ([]byte, error) {
 		randomMaterial[i] = 0
 	}
 
+	// Stamp the wrapper with the running enclave's PCR0 so any later
+	// reader can recognize whether re-seal has already happened
+	// without doing a KMS round-trip. M3 wrapper invariant.
+	pcr0Hex, err := GetRunningPCR0Hex()
+	if err != nil {
+		// Don't fail enrollment on a self-attestation error — leave
+		// the field blank and let the next write fill it in. The
+		// inner ciphertext is still bound to the running PCR0 by KMS;
+		// SealedToPCR0 is only an optimization hint.
+		log.Warn().Err(err).Msg("Could not read running PCR0 for sealed_material stamp; leaving blank")
+		pcr0Hex = ""
+	}
+
 	// Wrap in SealedMaterialData for storage
 	smData := SealedMaterialData{
 		Version:        1,
 		SealedMaterial: sealedData,
 		OwnerID:        ownerID,
 		CreatedAt:      getCurrentTimestamp(),
+		Generation:     1,
+		SealedToPCR0:   pcr0Hex,
+		// SealedToVersion is left empty at fresh enrollment — there is
+		// no migration version yet. The first migration re-seal will
+		// stamp this from the verified migration config.
 	}
 
 	result, err := json.Marshal(smData)
@@ -761,6 +802,7 @@ func (s *NitroSealer) GenerateSealedMaterial(ownerID string) ([]byte, error) {
 	log.Info().
 		Str("owner_id", ownerID).
 		Int("sealed_len", len(sealedData)).
+		Str("sealed_to_pcr0", pcr0Hex).
 		Msg("Sealed material generated successfully")
 
 	return result, nil

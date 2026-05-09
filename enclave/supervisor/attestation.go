@@ -14,6 +14,7 @@ import (
 	"math/big"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/fxamacker/cbor/v2"
@@ -443,4 +444,55 @@ func LoadExpectedPCRs(configPath string) (*PCRValues, error) {
 	// and stored in the SSM parameter /vettid/enclave/pcr0
 	// The KMS key policy references this value for attestation-based decryption
 	return &PCRValues{}, nil
+}
+
+var (
+	runningPCR0Once sync.Once
+	runningPCR0Hex  string
+	runningPCR0Err  error
+)
+
+// GetRunningPCR0Hex returns the hex-encoded PCR0 of the running enclave.
+//
+// In a real Nitro enclave, this asks NSM for an attestation document and
+// extracts PCR0 from the COSE-CBOR payload. In dev mode, it returns the
+// mock PCR0 (matching what GenerateAttestation produces).
+//
+// The result is cached on first successful read; PCR0 doesn't change for
+// the lifetime of an enclave instance.
+//
+// Used by the migration redesign (M3) to stamp `sealed_to_pcr0` into the
+// SealedMaterialData wrapper, so any enclave reading the wrapper can
+// determine which PCR0 the inner ciphertext was bound to without a KMS
+// round-trip.
+func GetRunningPCR0Hex() (string, error) {
+	runningPCR0Once.Do(func() {
+		runningPCR0Hex, runningPCR0Err = readRunningPCR0Hex()
+	})
+	return runningPCR0Hex, runningPCR0Err
+}
+
+func readRunningPCR0Hex() (string, error) {
+	if !isNitroEnclave() {
+		return hex.EncodeToString(mockPCR(0)), nil
+	}
+
+	att, err := generateNitroAttestation(nil)
+	if err != nil {
+		return "", fmt.Errorf("self-attestation failed: %w", err)
+	}
+
+	var coseSign1 COSESign1
+	if err := cbor.Unmarshal(att.Document, &coseSign1); err != nil {
+		return "", fmt.Errorf("failed to parse COSE_Sign1: %w", err)
+	}
+	var attDoc AttestationDocument
+	if err := cbor.Unmarshal(coseSign1.Payload, &attDoc); err != nil {
+		return "", fmt.Errorf("failed to parse attestation document: %w", err)
+	}
+	pcr0, ok := attDoc.PCRs[0]
+	if !ok || len(pcr0) == 0 {
+		return "", fmt.Errorf("PCR0 missing from attestation document")
+	}
+	return hex.EncodeToString(pcr0), nil
 }

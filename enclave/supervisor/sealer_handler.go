@@ -80,6 +80,12 @@ const (
 	// the pcr-signing key, returns DER-encoded SPKI bytes). Used by
 	// the migration handler to verify config signatures.
 	SealerOpFetchPCRSigningPublicKey SealerOperation = "fetch_pcr_signing_public_key"
+	// Running PCR0 hex of the executing enclave. Cached at first
+	// read. Used by the migration handler (M3) to stamp
+	// `sealed_to_pcr0` into the SealedMaterialData wrapper after
+	// re-seal so future readers can identify the bound PCR0
+	// without a KMS round-trip.
+	SealerOpGetRunningPCR0 SealerOperation = "get_running_pcr0"
 )
 
 // SealerRequest is received from vault-manager
@@ -149,6 +155,9 @@ type SealerResponse struct {
 	// For fetch_pcr_signing_public_key (DER-encoded SPKI bytes)
 	PCRSigningPublicKey []byte `json:"pcr_signing_public_key,omitempty"`
 
+	// For get_running_pcr0 (hex-encoded running PCR0)
+	RunningPCR0 string `json:"running_pcr0,omitempty"`
+
 	// For internal sign-with-PCR-signing-key calls (used by the
 	// migration-marker writer). Caller embeds the bytes in the
 	// outbound JSON; not surfaced to vault-manager.
@@ -211,6 +220,8 @@ func (sh *SealerHandler) HandleSealerRequest(msg *Message) *Message {
 		resp = sh.unsealMaterial(req)
 	case SealerOpFetchPCRSigningPublicKey:
 		resp = sh.fetchPCRSigningPublicKey(req)
+	case SealerOpGetRunningPCR0:
+		resp = sh.getRunningPCR0(req)
 	default:
 		resp = SealerResponse{
 			Success: false,
@@ -966,6 +977,18 @@ func (sh *SealerHandler) fetchPCRSigningPublicKey(req SealerRequest) SealerRespo
 		return SealerResponse{Success: false, Error: "empty pcr signing public key"}
 	}
 	return SealerResponse{Success: true, PCRSigningPublicKey: keyEnv.PublicKeyDER}
+}
+
+// getRunningPCR0 returns the hex-encoded PCR0 of the running
+// enclave so the migration handler can stamp `sealed_to_pcr0` into
+// the SealedMaterialData wrapper after a re-seal. The result is
+// cached inside the supervisor; PCR0 is immutable per instance.
+func (sh *SealerHandler) getRunningPCR0(_ SealerRequest) SealerResponse {
+	pcr0, err := GetRunningPCR0Hex()
+	if err != nil {
+		return SealerResponse{Success: false, Error: err.Error()}
+	}
+	return SealerResponse{Success: true, RunningPCR0: pcr0}
 }
 
 // writeMigrationMarker publishes a "user migrated" signal to S3,

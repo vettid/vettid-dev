@@ -73,6 +73,8 @@ const (
 	SealerOpUnsealMaterial SealerOperation = "unseal_material"
 	// PCR signing public key fetch (returns DER-encoded SPKI bytes)
 	SealerOpFetchPCRSigningPublicKey SealerOperation = "fetch_pcr_signing_public_key"
+	// Running PCR0 hex of the executing enclave (M3 wrapper stamping).
+	SealerOpGetRunningPCR0 SealerOperation = "get_running_pcr0"
 )
 
 // SealerRequest is sent from vault-manager to supervisor
@@ -141,6 +143,9 @@ type SealerResponse struct {
 
 	// For fetch_pcr_signing_public_key (DER-encoded SPKI bytes)
 	PCRSigningPublicKey []byte `json:"pcr_signing_public_key,omitempty"`
+
+	// For get_running_pcr0 (hex-encoded running PCR0)
+	RunningPCR0 string `json:"running_pcr0,omitempty"`
 }
 
 // GenerateSealedMaterial requests the supervisor to generate PCR-bound sealed material
@@ -641,6 +646,28 @@ func (p *SealerProxy) FetchPCRSigningPublicKey() ([]byte, error) {
 		return nil, fmt.Errorf("empty pcr signing public key response")
 	}
 	return resp.PCRSigningPublicKey, nil
+}
+
+// GetRunningPCR0 returns the hex-encoded PCR0 of the running enclave.
+// Used by the migration handler (M3) to stamp `sealed_to_pcr0` into
+// the SealedMaterialData wrapper after re-seal. The supervisor caches
+// the value, so this is cheap.
+func (p *SealerProxy) GetRunningPCR0() (string, error) {
+	req := SealerRequest{
+		Operation:  SealerOpGetRunningPCR0,
+		OwnerSpace: p.ownerSpace,
+	}
+	resp, err := p.sendRequest(req)
+	if err != nil {
+		return "", err
+	}
+	if !resp.Success {
+		return "", fmt.Errorf("get_running_pcr0 error: %s", resp.Error)
+	}
+	if resp.RunningPCR0 == "" {
+		return "", fmt.Errorf("empty running_pcr0 response")
+	}
+	return resp.RunningPCR0, nil
 }
 
 // FetchMigrationConfig loads the signed migration config from S3 via the supervisor.
