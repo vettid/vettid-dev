@@ -20,7 +20,6 @@ type MigrationHandler struct {
 	vaultState   *VaultState
 	sealerProxy  *SealerProxy
 	auditLog     *AuditLog
-	persistFn    func()                            // callback to persist vault state after migration re-seal
 	sendToParent func(msg *OutgoingMessage) error // callback to emit routing-handoff to parent
 
 	// pcrSigningPublicKey is the DER-encoded SPKI bytes for the
@@ -49,12 +48,6 @@ func NewMigrationHandler(
 		vaultState:  vaultState,
 		sealerProxy: sealerProxy,
 	}
-}
-
-// SetPersistFn sets the callback used to persist vault state to S3.
-// This is called after successful migration re-seal to ensure durability.
-func (h *MigrationHandler) SetPersistFn(fn func()) {
-	h.persistFn = fn
 }
 
 // SetSendToParent wires the callback used to emit routing-handoff
@@ -502,10 +495,12 @@ func (h *MigrationHandler) HandleStart(ctx context.Context, msg *IncomingMessage
 		log.Error().Err(err).Msg("Failed to save migration state")
 	}
 
-	// Persist vault state to S3 after successful re-seal for durability
-	if h.persistFn != nil {
-		h.persistFn()
-	}
+	// SECURITY: migration MUST NOT call persistVaultStateToS3.
+	// Re-sealing only modifies sealed_material.bin and sealed_ecies.bin;
+	// vault_state.enc is unchanged. Two data-loss incidents (2026-05-08,
+	// 2026-05-09) traced to a stale-enclave persistFn here overwriting
+	// a healthy ~220KB vault_state.enc with a ~12KB stub. The marker
+	// write below is the only durability artifact migration produces.
 
 	// Publish an unencrypted marker so the auto-finalize Lambda can tell that
 	// this user is done. The marker is per-version, so old markers don't

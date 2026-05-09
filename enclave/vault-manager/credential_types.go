@@ -106,12 +106,12 @@ type VaultState struct {
 	// SECURITY: persistVaultStateToS3 refuses to write when this is
 	// false. The 2026-05-09 incident: a migration-start request landed
 	// on the same enclave that handled PIN unlock, but somehow the
-	// in-memory storage was incomplete; persistFn ran and overwrote a
-	// 220KB S3 vault_state with a 12KB stub, wiping the user's data.
-	// In any code path where we'd persist without first having loaded
-	// the user's existing data, we must refuse — the alternative is
-	// silent data loss when migration / re-seal / any persisting op
-	// runs on an enclave that hasn't yet seen the user's S3 state.
+	// in-memory storage was incomplete; the migration's gratuitous
+	// persistFn ran and overwrote a 220KB S3 vault_state with a 12KB
+	// stub, wiping the user's data. Migration no longer calls persist
+	// (M4 / 2026-05-09 architect redesign), but this guard remains as
+	// defense-in-depth against any future code path that would persist
+	// without first having loaded the user's existing data.
 	vaultDataLoaded bool
 }
 

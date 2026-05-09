@@ -418,10 +418,11 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 	// after the struct literal above has ConnectionsHandler populated.
 	mh.presenceHandler = NewPresenceHandler(ownerSpace, storage, publisher, mh.connectionsHandler)
 
-	// Wire up migration handler's persist callback so it can save vault state after re-seal
-	migrationHandler.SetPersistFn(mh.persistVaultStateToS3)
 	// Wire the routing-handoff callback so the parent can update the
 	// vault-routing KV after a successful migration re-seal.
+	// NOTE: migration intentionally has no persist callback. Re-sealing
+	// only touches sealed_material.bin / sealed_ecies.bin, never
+	// vault_state.enc. See SECURITY comment in HandleStart.
 	migrationHandler.SetSendToParent(sendFn)
 
 	// Audit read-path wiring: handler reads, log writes. No backfill —
