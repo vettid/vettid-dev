@@ -917,6 +917,12 @@ type PublishedProfile struct {
 	EmailVerified bool                      `json:"email_verified"`            // From registration
 	Photo         string                    `json:"photo,omitempty"`           // Base64-encoded JPEG profile photo
 	Fields        map[string]PublishedField `json:"fields"`                    // Personal data fields the user marked Public — value visible
+	// FieldOrder is the user-intended display order of the keys in
+	// Fields. Old clients that ignore this render in JSON-map order
+	// (Go encodes maps with keys sorted alphabetically); new clients
+	// iterate FieldOrder and look up Fields[name] so the user's
+	// drag-to-reorder propagates to peer + own preview alike.
+	FieldOrder    []string                  `json:"field_order,omitempty"`
 	Wallets       []PublishedWallet         `json:"wallets,omitempty"`         // Public wallet addresses
 	Handlers      []PublishedHandler        `json:"handlers,omitempty"`        // Vault capability catalog (shareable handlers only)
 	Actions       []PublishedAction         `json:"actions,omitempty"`         // Shared-action catalog (Phase 1: visibility-filtered per viewer)

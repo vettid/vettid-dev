@@ -808,6 +808,7 @@ func (h *ProfileHandler) HandleGetPublished(msg *IncomingMessage) (*OutgoingMess
 		"public_key":      profile.PublicKey,
 		"email_verified":  profile.EmailVerified,
 		"fields":          profile.Fields,
+		"field_order":     profile.FieldOrder,
 		"wallets":         profile.Wallets,
 		"handlers":        profile.Handlers,
 		"actions":         profile.Actions,

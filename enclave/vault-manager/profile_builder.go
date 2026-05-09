@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/base64"
 	"encoding/json"
+	"sort"
 	"strings"
 	"time"
 
@@ -118,6 +119,7 @@ func BuildPublishedProfile(
 					Value:       field.Value,
 					FieldType:   string(field.FieldType),
 				}
+				profile.FieldOrder = append(profile.FieldOrder, fieldName)
 				continue
 			}
 
@@ -132,6 +134,15 @@ func BuildPublishedProfile(
 				Value:       entry.Value,
 				FieldType:   string(FieldTypeText),
 			}
+			profile.FieldOrder = append(profile.FieldOrder, fieldName)
+		}
+
+		// If the user has a sort_order set, re-sort FieldOrder by it.
+		// Field ranks come from the same `profile/_sort_order` map the
+		// catalog uses — so a single reorder action propagates to both
+		// surfaces (own preview, peer view, public profile, catalog).
+		if ranks := loadSortOrderRanks(storage); ranks != nil && len(profile.FieldOrder) > 1 {
+			profile.FieldOrder = sortFieldOrder(profile.FieldOrder, ranks)
 		}
 	}
 
@@ -378,6 +389,16 @@ func buildPublishedHandlerList(storage *EncryptedStorage) []PublishedHandler {
 // cataloged, or unset — which defaults to cataloged) appears so
 // peers can see "Al has a Mobile Phone" and request the value
 // through the capability flow.
+//
+// Ordering: deterministic by design (incident 2026-05-09 testing
+// observation). Iterates `profile/_index` then `personal-data/_index`
+// in stored array order, deduping but preserving first-seen
+// position. If `profile/_sort_order` is present, applies it as a
+// stable sort: entries with a sort key keep their assigned position
+// in the array; entries missing from the sort map go to the back in
+// their existing first-seen order. Owner's own preview and peer
+// renderings therefore see identical orderings, and that ordering
+// reflects user intent when the sort_order has been set.
 func buildDataCatalog(storage *EncryptedStorage) []CatalogedDataItem {
 	if storage == nil {
 		return nil
@@ -386,19 +407,24 @@ func buildDataCatalog(storage *EncryptedStorage) []CatalogedDataItem {
 	// older fields landed in profile/_index, newer ones in
 	// personal-data/_index, and both are still active sources of
 	// truth (see profile.HandleGet for the same union pattern).
-	fieldNames := make(map[string]bool)
+	// Use a slice + dedupe-set so first-seen order is preserved.
+	seen := make(map[string]bool)
+	orderedNames := make([]string, 0, 32)
 	for _, key := range []string{"profile/_index", "personal-data/_index"} {
 		if data, err := storage.Get(key); err == nil && len(data) > 0 {
 			var names []string
 			if json.Unmarshal(data, &names) == nil {
 				for _, n := range names {
-					fieldNames[n] = true
+					if !seen[n] {
+						seen[n] = true
+						orderedNames = append(orderedNames, n)
+					}
 				}
 			}
 		}
 	}
-	out := make([]CatalogedDataItem, 0, len(fieldNames))
-	for name := range fieldNames {
+	out := make([]CatalogedDataItem, 0, len(orderedNames))
+	for _, name := range orderedNames {
 		// Internal bookkeeping (timestamps, verification flags) is
 		// system-only and stays out of the catalog. The user-visible
 		// name + email values stored under `_system_first_name` etc.
@@ -457,7 +483,114 @@ func buildDataCatalog(storage *EncryptedStorage) []CatalogedDataItem {
 			Alias:       alias,
 		})
 	}
+
+	// Apply user-defined sort order if present. The sort_order map is
+	// {namespace -> rank}; lower rank renders earlier. Entries not
+	// listed in the map preserve their first-seen position and go
+	// after all ranked entries.
+	return applyUserSortOrder(storage, out)
+}
+
+// applyUserSortOrder reorders catalog items per the user-stored
+// `profile/_sort_order` JSON map (`{namespace: rank}`). Stable: items
+// with equal rank keep input order; missing items go after ranked
+// items in input order. No-op if the map is missing.
+func applyUserSortOrder(storage *EncryptedStorage, items []CatalogedDataItem) []CatalogedDataItem {
+	ranks := loadSortOrderRanks(storage)
+	if ranks == nil || len(items) == 0 {
+		return items
+	}
+	// Bucket: ranked items first (stable by rank, preserving input
+	// position on ties), then unranked items in their input order.
+	known := make([]bool, len(items))
+	rank := make([]int, len(items))
+	for i, item := range items {
+		// Composite key (namespace::alias) is what the reorder UI
+		// tracks for entries with aliases (e.g. multiple phone
+		// numbers). Try composite first, fall back to plain namespace.
+		if item.Alias != "" {
+			if r, ok := ranks[item.Name+"::"+item.Alias]; ok {
+				known[i] = true
+				rank[i] = r
+				continue
+			}
+		}
+		if r, ok := ranks[item.Name]; ok {
+			known[i] = true
+			rank[i] = r
+		}
+	}
+	indices := make([]int, len(items))
+	for i := range indices {
+		indices[i] = i
+	}
+	sort.SliceStable(indices, func(a, b int) bool {
+		ia, ib := indices[a], indices[b]
+		if known[ia] != known[ib] {
+			return known[ia] // ranked entries come first
+		}
+		if known[ia] {
+			return rank[ia] < rank[ib]
+		}
+		return false // both unranked → preserve input order via stable sort
+	})
+	out := make([]CatalogedDataItem, len(items))
+	for newIdx, oldIdx := range indices {
+		out[newIdx] = items[oldIdx]
+	}
 	return out
+}
+
+// sortFieldOrder re-sorts a list of field names by the user's sort
+// order map. Stable: ranked entries first by rank, unranked entries
+// preserve their input position after.
+func sortFieldOrder(names []string, ranks map[string]int) []string {
+	known := make([]bool, len(names))
+	rank := make([]int, len(names))
+	for i, n := range names {
+		if r, ok := ranks[n]; ok {
+			known[i] = true
+			rank[i] = r
+		}
+	}
+	indices := make([]int, len(names))
+	for i := range indices {
+		indices[i] = i
+	}
+	sort.SliceStable(indices, func(a, b int) bool {
+		ia, ib := indices[a], indices[b]
+		if known[ia] != known[ib] {
+			return known[ia]
+		}
+		if known[ia] {
+			return rank[ia] < rank[ib]
+		}
+		return false
+	})
+	out := make([]string, len(names))
+	for newIdx, oldIdx := range indices {
+		out[newIdx] = names[oldIdx]
+	}
+	return out
+}
+
+// loadSortOrderRanks reads profile/_sort_order from storage and
+// returns the {namespace: rank} map, or nil if absent / malformed.
+// Centralised so both DataCatalog and Fields ordering pull from the
+// same source of truth.
+func loadSortOrderRanks(storage *EncryptedStorage) map[string]int {
+	if storage == nil {
+		return nil
+	}
+	data, err := storage.Get("personal-data/_sort_order")
+	if err != nil || len(data) == 0 {
+		return nil
+	}
+	var ranks map[string]int
+	if err := json.Unmarshal(data, &ranks); err != nil || len(ranks) == 0 {
+		return nil
+	}
+	return ranks
 }
 
 // categoryFromNamespace maps a personal-data namespace to its
