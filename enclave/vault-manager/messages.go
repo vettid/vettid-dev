@@ -1623,10 +1623,27 @@ func (mh *MessageHandler) PersistVaultStateToS3() {
 func (mh *MessageHandler) persistVaultStateToS3() {
 	mh.vaultState.mu.RLock()
 	dek := mh.vaultState.dek
+	dataLoaded := mh.vaultState.vaultDataLoaded
 	mh.vaultState.mu.RUnlock()
 
 	if dek == nil || mh.sealerProxy == nil {
 		log.Warn().Str("owner_space", mh.ownerSpace).Msg("Cannot persist vault state — DEK not available (vault locked)")
+		return
+	}
+
+	// SECURITY: refuse to persist if this instance has not loaded the
+	// user's vault state. The 2026-05-09 incident: a credential.migration.start
+	// request landed on an enclave instance whose in-memory storage was
+	// stale/empty for this user; persistFn ran and overwrote a 220KB S3
+	// vault_state with a 12KB stub, wiping the user's data. The flag is
+	// set on cold-unlock-from-S3, on warm-unlock (already loaded), and
+	// on fresh enrollment. Any other code path that tries to persist
+	// without going through one of those is by definition writing
+	// incomplete state and would silently corrupt S3.
+	if !dataLoaded {
+		log.Warn().
+			Str("owner_space", mh.ownerSpace).
+			Msg("REFUSING to persist vault state — this instance has not loaded the user's data from S3 (would overwrite with stale/empty state)")
 		return
 	}
 

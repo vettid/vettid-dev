@@ -96,6 +96,23 @@ type VaultState struct {
 
 	// Call history for rate limiting
 	callHistory []*CallRecord
+
+	// vaultDataLoaded is set true once this enclave instance has loaded
+	// the user's persistent data into memory — either by cold-unlocking
+	// from S3 (PIN unlock decrypts vault_state.enc + restores SQLite
+	// backup) or by completing a fresh enrollment that wrote the initial
+	// state.
+	//
+	// SECURITY: persistVaultStateToS3 refuses to write when this is
+	// false. The 2026-05-09 incident: a migration-start request landed
+	// on the same enclave that handled PIN unlock, but somehow the
+	// in-memory storage was incomplete; persistFn ran and overwrote a
+	// 220KB S3 vault_state with a 12KB stub, wiping the user's data.
+	// In any code path where we'd persist without first having loaded
+	// the user's existing data, we must refuse — the alternative is
+	// silent data loss when migration / re-seal / any persisting op
+	// runs on an enclave that hasn't yet seen the user's S3 state.
+	vaultDataLoaded bool
 }
 
 // CEKPair holds the Credential Encryption Key pair (X25519)

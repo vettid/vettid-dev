@@ -135,6 +135,10 @@ func (h *PINHandler) HandlePINSetup(ctx context.Context, msg *IncomingMessage) (
 	}
 	h.state.pinAuthHash = pinSetupAuthHash
 	h.state.pinAuthSalt = pinSetupSalt
+	// Fresh enrollment: this instance "owns" the user's data from the
+	// moment of pin-setup forward, so persistVaultStateToS3 is allowed
+	// to write the initial state.
+	h.state.vaultDataLoaded = true
 	h.state.mu.Unlock()
 
 	// Initialize encrypted storage with DEK so feed/events are accessible
@@ -486,11 +490,16 @@ func (h *PINHandler) HandlePINUnlock(ctx context.Context, msg *IncomingMessage) 
 		return h.errorResponse(msg.GetID(), "storage initialization failed")
 	}
 
-	// Store DEK in vault state so persistVaultStateToS3 and vault_locked checks work
+	// Store DEK in vault state so persistVaultStateToS3 and vault_locked checks work.
+	// Also flag that this instance has loaded the user's data — required for any
+	// later persistVaultStateToS3 to actually write (see VaultState.vaultDataLoaded
+	// docstring). For cold unlock the SQLite backup restore happens just below;
+	// for warm unlock storage was already populated on a prior unlock.
 	dekCopy := make([]byte, len(dek))
 	copy(dekCopy, dek)
 	h.state.mu.Lock()
 	h.state.dek = dekCopy
+	h.state.vaultDataLoaded = true
 	h.state.mu.Unlock()
 
 	log.Info().Str("owner_space", h.ownerSpace).Msg("Storage initialized with DEK on unlock")
