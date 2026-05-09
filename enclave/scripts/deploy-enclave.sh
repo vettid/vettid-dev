@@ -332,18 +332,42 @@ echo "PCR0: $PCR0"
 echo "PCR1: $PCR1"
 echo "PCR2: $PCR2"
 
-# Store PCR values in SSM (individual parameters - new path structure)
-aws ssm put-parameter --name "/vettid/enclave/pcr/pcr0" --value "$PCR0" --type String --overwrite --region "$REGION"
-aws ssm put-parameter --name "/vettid/enclave/pcr/pcr1" --value "$PCR1" --type String --overwrite --region "$REGION"
-aws ssm put-parameter --name "/vettid/enclave/pcr/pcr2" --value "$PCR2" --type String --overwrite --region "$REGION"
-
-# NOTE: Parent now reads from /vettid/enclave/pcr/pcr0 (consistent with above)
-# Legacy /vettid/enclave/pcr0 path is deprecated
+# Store PCR values in SSM under STAGED paths only (architect F6.5
+# fix). The "live" paths /vettid/enclave/pcr/pcr0 and
+# /vettid/enclave/pcr/current are NOT touched here. They are promoted
+# from staged → live by the orchestrator (deploy.sh) only AFTER a
+# new instance attesting to these PCRs is verified healthy. Without
+# this gating, an aborted deploy leaves SSM pointing at a PCR0 that
+# nothing in the fleet attests to — and any vettid-parent restart
+# (systemd, OOM, instance reboot) reads SSM and crash-loops because
+# its handshake against the running enclave's actual PCR0 fails.
+# See 2026-05-09 incident: parent crash-looped ~10,000 times silently
+# before discovery.
+aws ssm put-parameter --name "/vettid/enclave/pcr/staged-pcr0" --value "$PCR0" --type String --overwrite --region "$REGION"
+aws ssm put-parameter --name "/vettid/enclave/pcr/staged-pcr1" --value "$PCR1" --type String --overwrite --region "$REGION"
+aws ssm put-parameter --name "/vettid/enclave/pcr/staged-pcr2" --value "$PCR2" --type String --overwrite --region "$REGION"
 
 # Store combined PCR values for /vault/pcrs/current API endpoint
 # Auto-increment version: 2026-04-13-v1, 2026-04-13-v2, etc.
+# Read both staged-current and current to find the highest existing
+# version; this avoids collisions when consecutive deploys happen
+# before the previous one promoted (e.g., abort/retry sequences).
 TODAY="$(date +%Y-%m-%d)"
-EXISTING_VERSION=$(aws ssm get-parameter --name "/vettid/enclave/pcr/current" --query 'Parameter.Value' --output text --region "$REGION" 2>/dev/null | jq -r '.version // empty' 2>/dev/null || echo "")
+LIVE_VERSION=$(aws ssm get-parameter --name "/vettid/enclave/pcr/current" --query 'Parameter.Value' --output text --region "$REGION" 2>/dev/null | jq -r '.version // empty' 2>/dev/null || echo "")
+STAGED_VERSION=$(aws ssm get-parameter --name "/vettid/enclave/pcr/staged-current" --query 'Parameter.Value' --output text --region "$REGION" 2>/dev/null | jq -r '.version // empty' 2>/dev/null || echo "")
+EXISTING_VERSION="$LIVE_VERSION"
+if [[ -n "$STAGED_VERSION" ]]; then
+    # Pick whichever has a higher trailing version number for today.
+    if [[ "$LIVE_VERSION" =~ ^${TODAY}-v([0-9]+)$ ]] && [[ "$STAGED_VERSION" =~ ^${TODAY}-v([0-9]+)$ ]]; then
+        LIVE_NUM=$(echo "$LIVE_VERSION" | sed "s/${TODAY}-v//")
+        STAGED_NUM=$(echo "$STAGED_VERSION" | sed "s/${TODAY}-v//")
+        if [[ "$STAGED_NUM" -gt "$LIVE_NUM" ]]; then
+            EXISTING_VERSION="$STAGED_VERSION"
+        fi
+    elif [[ "$STAGED_VERSION" =~ ^${TODAY}-v([0-9]+)$ ]]; then
+        EXISTING_VERSION="$STAGED_VERSION"
+    fi
+fi
 if echo "$EXISTING_VERSION" | grep -q "^${TODAY}-v"; then
     CURRENT_NUM=$(echo "$EXISTING_VERSION" | sed "s/${TODAY}-v//")
     NEXT_NUM=$((CURRENT_NUM + 1))
@@ -356,8 +380,8 @@ PCR_JSON=$(cat <<PCRJSON
 {"PCR0":"$PCR0","PCR1":"$PCR1","PCR2":"$PCR2","version":"$VERSION","published_at":"$PUBLISHED_AT"}
 PCRJSON
 )
-aws ssm put-parameter --name "/vettid/enclave/pcr/current" --value "$PCR_JSON" --type String --overwrite --region "$REGION"
-echo "Updated /vettid/enclave/pcr/current with version $VERSION"
+aws ssm put-parameter --name "/vettid/enclave/pcr/staged-current" --value "$PCR_JSON" --type String --overwrite --region "$REGION"
+echo "Updated /vettid/enclave/pcr/staged-current with version $VERSION (will be promoted to /current after instance verification)"
 
 # Install EIF to standard location
 mkdir -p /opt/vettid/enclave
@@ -661,32 +685,43 @@ for i in $(seq 1 6); do
     log_info "Waiting for PCR0 verification (attempt $i/6, status=$CMD_STATUS)..."
 done
 
-SSM_PCR0=$(aws ssm get-parameter --name "/vettid/enclave/pcr/pcr0" --query 'Parameter.Value' --output text --region "$REGION")
+# Reads + corrective writes target staged-* keys (architect F6.5
+# fix). Live /vettid/enclave/pcr/pcr0 / /current are untouched until
+# the orchestrator promotes after instance verify.
+SSM_PCR0=$(aws ssm get-parameter --name "/vettid/enclave/pcr/staged-pcr0" --query 'Parameter.Value' --output text --region "$REGION")
 
 if [ -z "$ACTUAL_PCR0" ] || [ ${#ACTUAL_PCR0} -lt 40 ]; then
     log_warn "Could not read PCR0 from build instance — verify manually"
-    log_warn "  SSM parameter: $SSM_PCR0"
+    log_warn "  SSM staged parameter: $SSM_PCR0"
 elif [ "$ACTUAL_PCR0" != "$SSM_PCR0" ]; then
     log_warn "PCR0 MISMATCH DETECTED!"
-    log_warn "  EIF on instance: $ACTUAL_PCR0"
-    log_warn "  SSM parameter:   $SSM_PCR0"
-    log_info "Updating SSM parameters to match actual EIF..."
-    aws ssm put-parameter --name "/vettid/enclave/pcr/pcr0" --value "$ACTUAL_PCR0" --type String --overwrite --region "$REGION"
-    # Also update the combined /current parameter
-    CURRENT_JSON=$(aws ssm get-parameter --name "/vettid/enclave/pcr/current" --query 'Parameter.Value' --output text --region "$REGION" 2>/dev/null || echo "{}")
+    log_warn "  EIF on instance:        $ACTUAL_PCR0"
+    log_warn "  SSM staged parameter:   $SSM_PCR0"
+    log_info "Updating staged SSM parameters to match actual EIF..."
+    aws ssm put-parameter --name "/vettid/enclave/pcr/staged-pcr0" --value "$ACTUAL_PCR0" --type String --overwrite --region "$REGION"
+    # Also update the staged combined parameter
+    CURRENT_JSON=$(aws ssm get-parameter --name "/vettid/enclave/pcr/staged-current" --query 'Parameter.Value' --output text --region "$REGION" 2>/dev/null || echo "{}")
     UPDATED_JSON=$(echo "$CURRENT_JSON" | jq --arg pcr0 "$ACTUAL_PCR0" '.PCR0 = $pcr0' 2>/dev/null || echo "$CURRENT_JSON")
-    aws ssm put-parameter --name "/vettid/enclave/pcr/current" --value "$UPDATED_JSON" --type String --overwrite --region "$REGION"
-    log_info "SSM parameters corrected"
+    aws ssm put-parameter --name "/vettid/enclave/pcr/staged-current" --value "$UPDATED_JSON" --type String --overwrite --region "$REGION"
+    log_info "Staged SSM parameters corrected"
 else
-    log_info "PCR0 verified: build instance EIF matches SSM"
+    log_info "PCR0 verified: build instance EIF matches staged SSM"
 fi
 
-# Get PCR values for verification and manifest publishing
-PCR0_VALUE=$(aws ssm get-parameter --name "/vettid/enclave/pcr/pcr0" --query 'Parameter.Value' --output text --region "$REGION")
-PCR1_VALUE=$(aws ssm get-parameter --name "/vettid/enclave/pcr/pcr1" --query 'Parameter.Value' --output text --region "$REGION")
-PCR2_VALUE=$(aws ssm get-parameter --name "/vettid/enclave/pcr/pcr2" --query 'Parameter.Value' --output text --region "$REGION")
-VERSION_ID=$(aws ssm get-parameter --name "/vettid/enclave/pcr/current" --query 'Parameter.Value' --output text --region "$REGION" | jq -r '.version')
-log_info "PCR0 value: $PCR0_VALUE"
+# Get PCR values from STAGED for verification and manifest publishing.
+# Manifest publish happens here so the mobile app sees the new PCR0
+# in the public manifest as soon as the build is done — the user can
+# pre-approve the new PCR0 via the EnclaveUpdateRequired screen even
+# before the new instance is verified. The actual re-seal still
+# requires running on the new instance, so a pre-approve before
+# verify is harmless: pin-unlock with migrate_consent=true on the
+# OLD enclave returns pending_new_enclave; the user retries after
+# the new instance comes up.
+PCR0_VALUE=$(aws ssm get-parameter --name "/vettid/enclave/pcr/staged-pcr0" --query 'Parameter.Value' --output text --region "$REGION")
+PCR1_VALUE=$(aws ssm get-parameter --name "/vettid/enclave/pcr/staged-pcr1" --query 'Parameter.Value' --output text --region "$REGION")
+PCR2_VALUE=$(aws ssm get-parameter --name "/vettid/enclave/pcr/staged-pcr2" --query 'Parameter.Value' --output text --region "$REGION")
+VERSION_ID=$(aws ssm get-parameter --name "/vettid/enclave/pcr/staged-current" --query 'Parameter.Value' --output text --region "$REGION" | jq -r '.version')
+log_info "Staged PCR0 value: $PCR0_VALUE"
 
 # Publish PCR values to the public manifest (for mobile apps and PCR verification page)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -759,7 +794,29 @@ if [ -n "$ASG_NAME" ] && [ "$ASG_NAME" != "None" ]; then
 
     if [[ "$SKIP_REFRESH" == "true" ]]; then
         log_info "Skipping instance refresh (--skip-refresh). Launch template updated for new instances."
+        log_info "Staged SSM PCR0 left in /vettid/enclave/pcr/staged-* — orchestrator (deploy.sh) will promote post-verify."
     else
+        # Standalone path (simple-refresh, single-instance deploy with
+        # PCR0 unchanged or operator-driven non-migration deploy):
+        # promote staged → live BEFORE the instance refresh terminates
+        # the old instance. The new AMI's parent reads /vettid/enclave/pcr/pcr0
+        # at startup, so it must already be the new value when the
+        # new instance comes up. F6.5 doesn't apply here because the
+        # refresh tears down the old instance before bringing up the
+        # new one (MinHealthyPercentage=0), so there's no overlap window
+        # where parent on the OLD instance might restart and pick up
+        # the wrong PCR0.
+        log_info "Promoting staged SSM PCR0 to live before instance refresh..."
+        STAGED_PCR0=$(aws ssm get-parameter --name "/vettid/enclave/pcr/staged-pcr0" --query 'Parameter.Value' --output text --region "$REGION")
+        STAGED_PCR1=$(aws ssm get-parameter --name "/vettid/enclave/pcr/staged-pcr1" --query 'Parameter.Value' --output text --region "$REGION")
+        STAGED_PCR2=$(aws ssm get-parameter --name "/vettid/enclave/pcr/staged-pcr2" --query 'Parameter.Value' --output text --region "$REGION")
+        STAGED_CURRENT=$(aws ssm get-parameter --name "/vettid/enclave/pcr/staged-current" --query 'Parameter.Value' --output text --region "$REGION")
+        aws ssm put-parameter --name "/vettid/enclave/pcr/pcr0" --value "$STAGED_PCR0" --type String --overwrite --region "$REGION" > /dev/null
+        aws ssm put-parameter --name "/vettid/enclave/pcr/pcr1" --value "$STAGED_PCR1" --type String --overwrite --region "$REGION" > /dev/null
+        aws ssm put-parameter --name "/vettid/enclave/pcr/pcr2" --value "$STAGED_PCR2" --type String --overwrite --region "$REGION" > /dev/null
+        aws ssm put-parameter --name "/vettid/enclave/pcr/current" --value "$STAGED_CURRENT" --type String --overwrite --region "$REGION" > /dev/null
+        log_info "Staged → live PCR0 promotion complete"
+
         log_info "Starting instance refresh..."
 
         aws autoscaling start-instance-refresh \

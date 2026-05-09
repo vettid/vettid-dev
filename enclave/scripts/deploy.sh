@@ -127,6 +127,33 @@ get_current_pcrs() {
         --query 'Parameter.Value' --output text --region "$REGION"
 }
 
+# get_staged_pcrs reads the post-build, pre-promotion PCR values.
+# deploy-enclave.sh writes its build output to /vettid/enclave/pcr/staged-*
+# instead of the live keys; this function is how deploy.sh learns the
+# new PCR0 between Phase 2 (build) and Phase 4 (verify+promote).
+get_staged_pcrs() {
+    aws ssm get-parameter --name "/vettid/enclave/pcr/staged-current" \
+        --query 'Parameter.Value' --output text --region "$REGION"
+}
+
+# promote_staged_pcrs copies /vettid/enclave/pcr/staged-* → live keys.
+# Called only after a new instance attesting to the staged PCR0 has
+# been launched and verified healthy (architect F6.5 fix). Promoting
+# earlier would cause vettid-parent on the old instance to crash-loop
+# at startup if it ever restarted before the new instance came up.
+promote_staged_pcrs() {
+    local pcr0 pcr1 pcr2 current_json
+    pcr0=$(aws ssm get-parameter --name "/vettid/enclave/pcr/staged-pcr0" --query 'Parameter.Value' --output text --region "$REGION")
+    pcr1=$(aws ssm get-parameter --name "/vettid/enclave/pcr/staged-pcr1" --query 'Parameter.Value' --output text --region "$REGION")
+    pcr2=$(aws ssm get-parameter --name "/vettid/enclave/pcr/staged-pcr2" --query 'Parameter.Value' --output text --region "$REGION")
+    current_json=$(aws ssm get-parameter --name "/vettid/enclave/pcr/staged-current" --query 'Parameter.Value' --output text --region "$REGION")
+
+    aws ssm put-parameter --name "/vettid/enclave/pcr/pcr0" --value "$pcr0" --type String --overwrite --region "$REGION" > /dev/null
+    aws ssm put-parameter --name "/vettid/enclave/pcr/pcr1" --value "$pcr1" --type String --overwrite --region "$REGION" > /dev/null
+    aws ssm put-parameter --name "/vettid/enclave/pcr/pcr2" --value "$pcr2" --type String --overwrite --region "$REGION" > /dev/null
+    aws ssm put-parameter --name "/vettid/enclave/pcr/current" --value "$current_json" --type String --overwrite --region "$REGION" > /dev/null
+}
+
 get_asg_desired() {
     aws autoscaling describe-auto-scaling-groups \
         --auto-scaling-group-names "$1" \
@@ -396,8 +423,12 @@ do_deploy() {
     log_step "Phase 2: Building new enclave (this takes ~15 minutes)"
     "$SCRIPT_DIR/deploy-enclave.sh" --skip-refresh
 
+    # Read new PCR values from STAGED keys. deploy-enclave.sh writes
+    # to /staged-* (architect F6.5 fix); live keys are still pointing
+    # at the old PCR0 here, by design — promotion happens after the
+    # new instance is verified in Phase 4.
     local new_pcrs_json new_pcr0 new_pcr1 new_pcr2
-    new_pcrs_json=$(get_current_pcrs)
+    new_pcrs_json=$(get_staged_pcrs)
     new_pcr0=$(echo "$new_pcrs_json" | jq -r '.PCR0')
     new_pcr1=$(echo "$new_pcrs_json" | jq -r '.PCR1')
     new_pcr2=$(echo "$new_pcrs_json" | jq -r '.PCR2')
@@ -546,16 +577,17 @@ do_deploy() {
             log_warn "PCR0 MISMATCH: SSM has ${new_pcr0:0:16}... but actual enclave is ${actual_pcr0:0:16}..."
             log_info "Correcting SSM and KMS to match actual enclave PCR0"
 
-            # Update SSM
-            aws ssm put-parameter --name "/vettid/enclave/pcr/pcr0" \
+            # Update STAGED SSM. Live keys are not touched here —
+            # they will be promoted from staged after the Pre-Phase-5
+            # dual-enclave gate succeeds. Architect F6.5 fix.
+            aws ssm put-parameter --name "/vettid/enclave/pcr/staged-pcr0" \
                 --value "$actual_pcr0" --type String --overwrite --region "$REGION"
 
-            # Update /vettid/enclave/pcr/current
             local current_json
-            current_json=$(aws ssm get-parameter --name "/vettid/enclave/pcr/current" \
+            current_json=$(aws ssm get-parameter --name "/vettid/enclave/pcr/staged-current" \
                 --query 'Parameter.Value' --output text --region "$REGION")
             updated_json=$(echo "$current_json" | jq --arg pcr0 "$actual_pcr0" '.PCR0 = $pcr0')
-            aws ssm put-parameter --name "/vettid/enclave/pcr/current" \
+            aws ssm put-parameter --name "/vettid/enclave/pcr/staged-current" \
                 --value "$updated_json" --type String --overwrite --region "$REGION"
 
             # Update KMS policy to AnyOf [old, actual]
@@ -611,6 +643,27 @@ do_deploy() {
         exit 1
     fi
     log_info "Verified: $distinct_amis distinct enclave AMIs running (migration safe)"
+
+    # ------------------------------------------------------------------
+    # Promote staged SSM PCR0 → live
+    # ------------------------------------------------------------------
+    # Architect F6.5 fix: deploy-enclave.sh writes the new build's PCR
+    # values to /vettid/enclave/pcr/staged-* instead of the live
+    # /vettid/enclave/pcr/pcr0 + /current. The "live" keys must only
+    # update once we've confirmed (a) the new instance is healthy and
+    # attesting to the staged PCR0 (Phase 4), AND (b) both old and new
+    # enclaves are running so any vettid-parent that reads the new
+    # SSM PCR0 has a matching enclave to handshake against (above).
+    #
+    # Aborting at any earlier point leaves the live keys pointing at
+    # the OLD PCR0, which still matches the running fleet — no
+    # crash-loop risk. (See incident 2026-05-09: SSM PCR0 was poisoned
+    # to a never-deployed AMI's PCR0 and parent crash-looped ~10,000
+    # times silently before discovery.)
+    PHASE="promote-staged-pcr"
+    log_step "Promoting staged SSM PCR0 → live"
+    promote_staged_pcrs
+    log_info "Live SSM PCR0 now reflects new enclave (${new_pcr0:0:24}...)"
 
     # ------------------------------------------------------------------
     # Phase 5: Publish migration config
