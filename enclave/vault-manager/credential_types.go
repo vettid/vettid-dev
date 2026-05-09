@@ -398,6 +398,14 @@ type CredentialCreateResponse struct {
 type PINUnlockRequest struct {
 	UTKID            string `json:"utk_id"`
 	EncryptedPayload string `json:"encrypted_payload"`
+	// MigrateConsent (M1, 2026-05-09 architect redesign): when true,
+	// the user has approved the post-deploy migration via the unified
+	// PIN screen. After successful PIN verify, the handler will
+	// re-seal sealed_material.bin against the running PCR0 (if it
+	// matches the published migration config's NewPCR0) or emit a
+	// routing handoff so the NEW enclave reclaims the user (if the
+	// request landed on OLD). Either way the unlock itself succeeds.
+	MigrateConsent bool `json:"migrate_consent,omitempty"`
 }
 
 // PINUnlockResponse is returned after successful unlock
@@ -412,6 +420,21 @@ type PINUnlockResponse struct {
 	OwnerSpace      string `json:"owner_space,omitempty"`
 	MessageSpace    string `json:"message_space,omitempty"`
 	CredentialsTTL  int    `json:"credentials_ttl_seconds,omitempty"`
+	// MigrationStatus (M1) is the canonical signal the app uses to
+	// learn the result of a migrate_consent=true unlock. Values:
+	//   "completed"            - re-seal landed on this enclave; user
+	//                            is fully migrated to MigrationVersion.
+	//   "pending_new_enclave"  - request landed on the OLD enclave;
+	//                            handoff was emitted, app should retry.
+	//                            Unlock itself still succeeded.
+	//   "failed"               - re-seal attempted but errored. Unlock
+	//                            still succeeded. App can retry next
+	//                            session.
+	//   "not_requested"        - migrate_consent=false, or no signed
+	//                            migration config is published.
+	//   "" (omitted)           - no migration in flight at all.
+	MigrationStatus  string `json:"migration_status,omitempty"`
+	MigrationVersion string `json:"migration_version,omitempty"`
 }
 
 // PINChangeRequest is the request to change PIN

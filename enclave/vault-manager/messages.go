@@ -297,6 +297,10 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 	// Create migration handler for migration status and recovery
 	migrationHandler := NewMigrationHandler(ownerSpace, storage, vaultState, sealerProxy)
 
+	// Wire migration handler into pin handler so HandlePINUnlock can
+	// drive the M1 PIN-coupled re-seal when migrate_consent=true.
+	pinHandler.SetMigrationHandler(migrationHandler)
+
 	// Create profile handler (needed by service contracts)
 	profileHandler := NewProfileHandler(ownerSpace, storage)
 	profileHandler.SetPublisher(publisher)

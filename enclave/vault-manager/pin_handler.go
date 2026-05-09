@@ -14,12 +14,13 @@ import (
 // PINHandler handles PIN-related operations (setup, unlock, change)
 // PIN operations require the sealer proxy because DEK derivation uses KMS
 type PINHandler struct {
-	ownerSpace   string
-	state        *VaultState
-	bootstrap    *BootstrapHandler
-	sealerProxy  *SealerProxy
-	storage      *EncryptedStorage
-	natsProxy    *NATSProxy
+	ownerSpace       string
+	state            *VaultState
+	bootstrap        *BootstrapHandler
+	sealerProxy      *SealerProxy
+	storage          *EncryptedStorage
+	natsProxy        *NATSProxy
+	migrationHandler *MigrationHandler // wired post-construction; may be nil before SetMigrationHandler
 }
 
 // NewPINHandler creates a new PIN handler
@@ -32,6 +33,14 @@ func NewPINHandler(ownerSpace string, state *VaultState, bootstrap *BootstrapHan
 		storage:     storage,
 		natsProxy:   natsProxy,
 	}
+}
+
+// SetMigrationHandler wires the migration handler so HandlePINUnlock
+// can dispatch the M1 PIN-coupled re-seal flow when the request
+// carries migrate_consent=true. Wiring is deferred because
+// PINHandler is constructed before MigrationHandler in messages.go.
+func (h *PINHandler) SetMigrationHandler(m *MigrationHandler) {
+	h.migrationHandler = m
 }
 
 // HandlePINSetup processes initial PIN setup (Phase 2 of enrollment)
@@ -545,6 +554,11 @@ func (h *PINHandler) HandlePINUnlock(ctx context.Context, msg *IncomingMessage) 
 		log.Debug().Str("owner_space", h.ownerSpace).Msg("Cold-unlock proved PIN via DEK-decrypt; skipping hash check (carve-out empty)")
 	}
 
+	// M1: PIN-coupled migration dispatch. Runs only after PIN has been
+	// proven (above). Failures here never invalidate the unlock — the
+	// user is auth'd; we just report what happened in migration_status.
+	migrationStatus, migrationVersion := h.dispatchMigrateConsent(ctx, req.MigrateConsent)
+
 	// Generate more UTKs and return ONLY those to the app.
 	// Returning GetUnusedUTKs() here caused the app pool to balloon to ~14k
 	// entries because it appended the full vault pool on every unlock.
@@ -554,8 +568,10 @@ func (h *PINHandler) HandlePINUnlock(ctx context.Context, msg *IncomingMessage) 
 	}
 
 	response := PINUnlockResponse{
-		Status:  "unlocked",
-		NewUTKs: EncodeUTKs(newPairs),
+		Status:           "unlocked",
+		NewUTKs:          EncodeUTKs(newPairs),
+		MigrationStatus:  migrationStatus,
+		MigrationVersion: migrationVersion,
 	}
 
 	// SECURITY: Issue full NATS credentials from the vault.
@@ -887,6 +903,134 @@ func (h *PINHandler) errorResponse(requestID string, errMsg string) (*OutgoingMe
 		Type:      MessageTypeError,
 		Error:     errMsg,
 	}, nil
+}
+
+// dispatchMigrateConsent implements the M1 PIN-coupled migration flow.
+// Called from HandlePINUnlock after the PIN has been proven (DEK derive
+// + auth-hash verify). Returns (status, version) for the response.
+//
+// Branches:
+//   - migrate_consent=false (or no migration handler wired): "" / ""
+//   - no published / verifiable migration config: "not_requested"
+//   - running_pcr0 == config.NewPCR0: re-seal + write marker → "completed"
+//   - running_pcr0 != config.NewPCR0: emit routing handoff → "pending_new_enclave"
+//
+// SECURITY invariant: regardless of branch, this function never calls
+// persistVaultStateToS3, never returns an error to the caller, and
+// never invalidates the successful unlock above. The unlock has
+// already happened; migration is best-effort tacked on. App reports
+// the result as a hint; failure just means user retries next session.
+func (h *PINHandler) dispatchMigrateConsent(ctx context.Context, consent bool) (string, string) {
+	if !consent {
+		return "", ""
+	}
+	if h.migrationHandler == nil {
+		log.Warn().Str("owner_space", h.ownerSpace).Msg("migrate_consent received but no migration handler wired")
+		return "not_requested", ""
+	}
+
+	verifiedConfig, _, err := h.migrationHandler.fetchAndVerifyMigrationConfig()
+	if err != nil {
+		log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("migrate_consent: config verification failed; treating as not_requested")
+		return "not_requested", ""
+	}
+	if verifiedConfig == nil {
+		log.Debug().Str("owner_space", h.ownerSpace).Msg("migrate_consent: no migration config published; nothing to do")
+		return "not_requested", ""
+	}
+
+	runningPCR0, err := h.sealerProxy.GetRunningPCR0()
+	if err != nil {
+		log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("migrate_consent: could not read running PCR0; treating as not_requested")
+		return "not_requested", ""
+	}
+
+	configVersion := verifiedConfig.Version
+	newPCR0 := verifiedConfig.NewPCRs.PCR0
+
+	// Branch B (architect M1): request landed on the OLD enclave. Don't
+	// re-seal — only NEW can produce NEW-bound ciphertext. Emit a
+	// routing handoff so NEW reclaims the user, return
+	// pending_new_enclave so the app retries.
+	if runningPCR0 != newPCR0 {
+		log.Info().
+			Str("owner_space", h.ownerSpace).
+			Str("running_pcr0", runningPCR0).
+			Str("new_pcr0", newPCR0).
+			Msg("migrate_consent: landed on OLD enclave; emitting routing handoff for NEW reclaim")
+		if h.migrationHandler.sendToParent != nil && newPCR0 != "" {
+			handoffMsg := &OutgoingMessage{
+				Type:             MessageTypeRoutingHandoff,
+				OwnerSpace:       h.ownerSpace,
+				TargetInstanceID: "",
+				NewPCR0:          newPCR0,
+			}
+			if err := h.migrationHandler.sendToParent(handoffMsg); err != nil {
+				log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("routing handoff failed (non-fatal — lease expiry covers it)")
+			}
+		}
+		return "pending_new_enclave", configVersion
+	}
+
+	// Branch A (architect M1): we are NEW. Re-seal inline.
+	//
+	// resealMaterial is idempotent: if the wrapper's SealedToPCR0
+	// already equals our running PCR0, it returns nil without burning
+	// KMS quota. That handles the F4/F5 partial-failure recovery case
+	// where re-seal succeeded on a previous unlock but the marker
+	// write didn't land — we still write the marker below.
+	log.Info().
+		Str("owner_space", h.ownerSpace).
+		Str("running_pcr0", runningPCR0).
+		Str("version", configVersion).
+		Msg("migrate_consent: re-sealing on NEW enclave")
+
+	if err := h.migrationHandler.resealMaterial(ctx, configVersion); err != nil {
+		log.Error().Err(err).Str("owner_space", h.ownerSpace).Msg("inline re-seal failed; user remains on OLD-bound material")
+		return "failed", configVersion
+	}
+
+	// resealECIES has no idempotency guard (the format is raw KMS
+	// ciphertext, no wrapper to inspect) but unseal+reseal under the
+	// AnyOf KMS policy is harmless on either branch. Failure is
+	// non-fatal because the user can re-derive ECIES from scratch on
+	// next unlock.
+	if err := h.migrationHandler.resealECIES(ctx); err != nil {
+		log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("inline ECIES re-seal failed (non-fatal)")
+	}
+
+	// Marker write is idempotent at S3 (same key, same content). Always
+	// (re-)write so F5 ("re-seal succeeded but marker missing") self-heals.
+	if configVersion != "" {
+		if err := h.sealerProxy.WriteMigrationMarker(configVersion); err != nil {
+			log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("migration marker write failed (non-fatal — next unlock retries)")
+		}
+	}
+
+	// Audit entry on the system connection so the user has a history
+	// row for this update. Mirrors the legacy HandleStart behavior.
+	if h.migrationHandler.auditLog != nil {
+		title := "Vault security update applied"
+		if configVersion != "" {
+			title = title + " (" + configVersion + ")"
+		}
+		refs := map[string]string{}
+		if configVersion != "" {
+			refs["version"] = configVersion
+		}
+		h.migrationHandler.auditLog.AppendSystem(AuditEntry{
+			EventType: AuditTypeSystemMigrationFinalized,
+			Title:     title,
+			Body:      "The vault has been re-sealed for the new enclave version.",
+			Refs:      refs,
+		})
+	}
+
+	log.Info().
+		Str("owner_space", h.ownerSpace).
+		Str("version", configVersion).
+		Msg("migrate_consent: re-seal completed inline with PIN unlock")
+	return "completed", configVersion
 }
 
 // decryptMobileFormat handles the mobile app's attestation-based PIN encryption
