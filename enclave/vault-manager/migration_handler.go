@@ -13,7 +13,13 @@ import (
 )
 
 // MigrationHandler handles migration-related NATS operations.
-// Provides status checks, acknowledgments, and emergency recovery for migrated users.
+// Provides config retrieval and the deprecated start/status endpoints.
+// Per the 2026-05-09 architect redesign, migration is coupled to PIN
+// unlock (M1); this handler retains the legacy entry points for the
+// deprecation window. There is no longer any in-vault migration state
+// (M2) — the per-version S3 marker at
+// `_migration/completed/{version}/{ownerSpace}.json` is the sole
+// record of completion.
 type MigrationHandler struct {
 	ownerSpace   string
 	storage      *EncryptedStorage
@@ -116,17 +122,20 @@ func (h *MigrationHandler) fetchAndVerifyMigrationConfig() (*migration.SignedPCR
 	return parsed, configData, nil
 }
 
-// MigrationUserStatus represents the status of a user's migration.
+// MigrationUserStatus represents a user's migration status as
+// reported by the deprecated credential.migration.status endpoint.
+// Post-redesign, completion is signaled via the pin-unlock response;
+// this enum exists only to preserve wire compatibility with older apps.
 type MigrationUserStatus string
 
 const (
-	MigrationUserStatusNone                      MigrationUserStatus = "none"
-	MigrationUserStatusInProgress                MigrationUserStatus = "in_progress"
-	MigrationUserStatusComplete                  MigrationUserStatus = "complete"
-	MigrationUserStatusEmergencyRecoveryRequired MigrationUserStatus = "emergency_recovery_required"
+	MigrationUserStatusNone     MigrationUserStatus = "none"
+	MigrationUserStatusComplete MigrationUserStatus = "complete"
 )
 
-// MigrationStatusResponse is the response for migration.status requests.
+// MigrationStatusResponse is the response for the deprecated
+// migration.status request. Only Status is populated post-M2; the
+// other fields stay on the wire as zero values for backward compat.
 type MigrationStatusResponse struct {
 	Status         MigrationUserStatus `json:"status"`
 	MigratedAt     *time.Time          `json:"migrated_at,omitempty"`
@@ -135,184 +144,21 @@ type MigrationStatusResponse struct {
 	ToPCRVersion   string              `json:"to_pcr_version,omitempty"`
 }
 
-// MigrationState is stored per-user to track their migration status.
-type MigrationState struct {
-	Status           MigrationUserStatus `json:"status"`
-	MigratedAt       *time.Time          `json:"migrated_at,omitempty"`
-	UserNotified     bool                `json:"user_notified"`
-	UserAcknowledged bool                `json:"user_acknowledged"`
-	AcknowledgedAt   *time.Time          `json:"acknowledged_at,omitempty"`
-	FromPCRVersion   string              `json:"from_pcr_version,omitempty"`
-	ToPCRVersion     string              `json:"to_pcr_version,omitempty"`
-}
-
-const migrationStateKey = "migration_state"
-
 // HandleStatus handles credential.migration.status requests.
-// Returns the current migration status for the user.
+//
+// Deprecated. Per the 2026-05-09 architect redesign, the canonical
+// migration completion signal is the `migration_status` field in the
+// pin-unlock response (M1). With M2, there is no in-vault state to
+// query — the per-version S3 marker is the sole record of completion.
+// This handler returns "none" so that old clients still polling it
+// stay quiet; they will learn about an available migration via
+// credential.migration.config and complete it via the unlock flow.
 func (h *MigrationHandler) HandleStatus(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	log.Debug().
 		Str("owner_space", h.ownerSpace).
-		Msg("Handling migration.status request")
+		Msg("Handling deprecated migration.status request — returning 'none'")
 
-	// Load migration state from storage
-	state, err := h.loadMigrationState(ctx)
-	if err != nil {
-		log.Warn().Err(err).Msg("No migration state found, assuming none")
-		state = &MigrationState{
-			Status: MigrationUserStatusNone,
-		}
-	}
-
-	resp := MigrationStatusResponse{
-		Status:         state.Status,
-		MigratedAt:     state.MigratedAt,
-		UserNotified:   state.UserNotified,
-		FromPCRVersion: state.FromPCRVersion,
-		ToPCRVersion:   state.ToPCRVersion,
-	}
-
-	respBytes, _ := json.Marshal(resp)
-	return &OutgoingMessage{
-		RequestID: msg.GetID(),
-		Type:      MessageTypeResponse,
-		Payload:   respBytes,
-	}, nil
-}
-
-// AcknowledgeRequest is the request format for migration.acknowledge.
-type AcknowledgeRequest struct {
-	Acknowledged   bool  `json:"acknowledged"`
-	AcknowledgedAt int64 `json:"acknowledged_at,omitempty"`
-}
-
-// AcknowledgeResponse is the response for migration.acknowledge requests.
-type AcknowledgeResponse struct {
-	Success bool `json:"success"`
-}
-
-// HandleAcknowledge handles credential.migration.acknowledge requests.
-// Marks the user as having acknowledged the migration notification.
-func (h *MigrationHandler) HandleAcknowledge(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
-	log.Debug().
-		Str("owner_space", h.ownerSpace).
-		Msg("Handling migration.acknowledge request")
-
-	var req AcknowledgeRequest
-	if err := unmarshalRequest(msg.Payload, &req, "HandleAcknowledge"); err != nil {
-		return h.errorResponse(msg.GetID(), "invalid request format")
-	}
-
-	// Load existing state
-	state, err := h.loadMigrationState(ctx)
-	if err != nil {
-		state = &MigrationState{
-			Status: MigrationUserStatusNone,
-		}
-	}
-
-	// Update acknowledgment
-	state.UserAcknowledged = req.Acknowledged
-	if req.Acknowledged {
-		now := time.Now()
-		if req.AcknowledgedAt > 0 {
-			// Use provided timestamp if given
-			ackTime := time.UnixMilli(req.AcknowledgedAt)
-			state.AcknowledgedAt = &ackTime
-		} else {
-			state.AcknowledgedAt = &now
-		}
-		state.UserNotified = true
-	}
-
-	// Save state
-	if err := h.saveMigrationState(ctx, state); err != nil {
-		return h.errorResponse(msg.GetID(), "failed to save state")
-	}
-
-	log.Info().
-		Str("owner_space", h.ownerSpace).
-		Bool("acknowledged", req.Acknowledged).
-		Msg("Migration acknowledgment recorded")
-
-	resp := AcknowledgeResponse{Success: true}
-	respBytes, _ := json.Marshal(resp)
-	return &OutgoingMessage{
-		RequestID: msg.GetID(),
-		Type:      MessageTypeResponse,
-		Payload:   respBytes,
-	}, nil
-}
-
-// EmergencyRecoveryRequest is the request format for emergency_recovery.
-type EmergencyRecoveryRequest struct {
-	EncryptedPINHash   string `json:"encrypted_pin_hash"`
-	EphemeralPublicKey string `json:"ephemeral_public_key"`
-	Nonce              string `json:"nonce"`
-}
-
-// EmergencyRecoveryResponse is the response for emergency_recovery requests.
-type EmergencyRecoveryResponse struct {
-	Success bool   `json:"success"`
-	Message string `json:"message"`
-}
-
-// HandleEmergencyRecovery handles credential.emergency_recovery requests.
-// This is used when both old and new enclaves are unavailable.
-// The user provides their PIN to re-derive the DEK.
-func (h *MigrationHandler) HandleEmergencyRecovery(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
-	log.Info().
-		Str("owner_space", h.ownerSpace).
-		Msg("Handling emergency_recovery request")
-
-	var req EmergencyRecoveryRequest
-	if err := unmarshalRequest(msg.Payload, &req, "HandleEmergencyRecovery"); err != nil {
-		return h.errorResponse(msg.GetID(), "invalid request format")
-	}
-
-	// Validate required fields
-	if req.EncryptedPINHash == "" || req.EphemeralPublicKey == "" || req.Nonce == "" {
-		return h.errorResponse(msg.GetID(), "missing required fields")
-	}
-
-	// Rate limiting check
-	// TODO: Implement rate limiting for emergency recovery attempts
-	// to prevent PIN brute force attacks
-
-	// Device attestation check
-	// TODO: Verify device attestation to ensure request is from legitimate device
-
-	// Emergency recovery process:
-	// 1. Decrypt PIN hash using attestation private key
-	// 2. Re-derive DEK from PIN
-	// 3. Verify DEK by attempting to decrypt vault data
-	// 4. If successful, update vault state and mark as recovered
-
-	// For now, return a placeholder response indicating the operation
-	// is not yet fully implemented but the structure is in place
-	log.Warn().
-		Str("owner_space", h.ownerSpace).
-		Msg("Emergency recovery requested - full implementation pending")
-
-	// Check migration state
-	state, err := h.loadMigrationState(ctx)
-	if err != nil || state.Status != MigrationUserStatusEmergencyRecoveryRequired {
-		return h.errorResponse(msg.GetID(), "emergency recovery not applicable")
-	}
-
-	// TODO: Implement actual PIN verification and DEK re-derivation
-	// This requires:
-	// 1. Decrypting the PIN hash using the attestation key
-	// 2. Re-deriving the DEK using the PIN-based KDF
-	// 3. Verifying the DEK works by decrypting test data
-	// 4. Updating vault state with the recovered DEK
-
-	// For now, indicate success structure (implementation in follow-up)
-	resp := EmergencyRecoveryResponse{
-		Success: false,
-		Message: "Emergency recovery requires PIN verification - implementation pending",
-	}
-
+	resp := MigrationStatusResponse{Status: MigrationUserStatusNone}
 	respBytes, _ := json.Marshal(resp)
 	return &OutgoingMessage{
 		RequestID: msg.GetID(),
@@ -345,12 +191,19 @@ type MigrationStartResponse struct {
 
 // HandleGetConfig handles credential.migration.config requests.
 // Returns the current migration config if an update is available.
+//
+// Post-M2 there is no in-vault state; the per-version S3 marker is the
+// only completion record. The "already migrated" short-circuit was
+// removed here because it depended on `migration_state`. The trade-off:
+// a user who has already migrated still sees a published config as
+// "available". The pin-unlock dispatcher (M1) is the authoritative
+// gate — when it sees `sealed_to_pcr0 == running PCR0`, it skips
+// re-seal and reports `migration_status: completed` to the app, which
+// then dismisses the prompt and adds the PCR0 to its trusted set.
 func (h *MigrationHandler) HandleGetConfig(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	log.Debug().
 		Str("owner_space", h.ownerSpace).
 		Msg("Handling migration.config request")
-
-	state, _ := h.loadMigrationState(ctx)
 
 	// Fetch + verify migration config (signature + time window). Any
 	// integrity failure surfaces as "not available" — same shape as
@@ -359,17 +212,6 @@ func (h *MigrationHandler) HandleGetConfig(ctx context.Context, msg *IncomingMes
 	// fetchAndVerifyMigrationConfig.
 	verifiedConfig, _, err := h.fetchAndVerifyMigrationConfig()
 	if err != nil || verifiedConfig == nil {
-		resp := MigrationConfigResponse{Available: false}
-		respBytes, _ := json.Marshal(resp)
-		return &OutgoingMessage{
-			RequestID: msg.GetID(),
-			Type:      MessageTypeResponse,
-			Payload:   respBytes,
-		}, nil
-	}
-
-	// User already migrated to THIS published version — nothing to do.
-	if state != nil && state.Status == MigrationUserStatusComplete && state.ToPCRVersion == verifiedConfig.Version {
 		resp := MigrationConfigResponse{Available: false}
 		respBytes, _ := json.Marshal(resp)
 		return &OutgoingMessage{
@@ -411,18 +253,21 @@ func (h *MigrationHandler) HandleGetConfig(ctx context.Context, msg *IncomingMes
 }
 
 // HandleStart handles credential.migration.start requests.
-// Unseals current sealed material and ECIES keys, re-seals them (KMS Encrypt
-// without attestation), and stores the new versions. The new sealed blobs can
-// be decrypted by any enclave whose PCR0 is in the KMS key policy.
+// Unseals current sealed material and ECIES keys, re-seals them, and
+// stores the new versions. The new sealed blobs can be decrypted only
+// by enclaves whose PCR0 is in the KMS key policy.
+//
+// Deprecated. The 2026-05-09 architect redesign couples re-seal to PIN
+// unlock (M1). This entry point is kept for the deprecation window so
+// older app builds that still call `credential.migration.start`
+// continue to work. New apps should not call it. With M2 there is no
+// in-vault migration state to maintain — the only durability artifact
+// is the per-version S3 marker written below.
 func (h *MigrationHandler) HandleStart(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	log.Info().
 		Str("owner_space", h.ownerSpace).
-		Msg("Handling migration.start request — re-sealing vault for new enclave")
+		Msg("Handling deprecated migration.start request — re-sealing vault for new enclave")
 
-	// Check current migration state. Only short-circuit when the user already
-	// migrated to the CURRENTLY-published version; a new published version
-	// should re-run migration.
-	state, _ := h.loadMigrationState(ctx)
 	verifiedConfig, _, err := h.fetchAndVerifyMigrationConfig()
 	if err != nil {
 		// Verification failed — refuse the migration. Without a signed
@@ -443,31 +288,9 @@ func (h *MigrationHandler) HandleStart(ctx context.Context, msg *IncomingMessage
 			Payload:   respBytes,
 		}, nil
 	}
-	currentVersion := verifiedConfig.Version
-	if state != nil && state.Status == MigrationUserStatusComplete && currentVersion != "" && state.ToPCRVersion == currentVersion {
-		resp := MigrationStartResponse{
-			Success: true,
-			Message: "Migration already completed",
-		}
-		respBytes, _ := json.Marshal(resp)
-		return &OutgoingMessage{
-			RequestID: msg.GetID(),
-			Type:      MessageTypeResponse,
-			Payload:   respBytes,
-		}, nil
-	}
-
-	// Mark migration as in progress
-	if state == nil {
-		state = &MigrationState{}
-	}
-	state.Status = MigrationUserStatusInProgress
-	h.saveMigrationState(ctx, state)
 
 	// 1. Re-seal the sealed material (contains KMS-encrypted random bytes for DEK derivation)
 	if err := h.resealMaterial(ctx); err != nil {
-		state.Status = MigrationUserStatusNone
-		h.saveMigrationState(ctx, state)
 		log.Error().Err(err).Str("owner_space", h.ownerSpace).Msg("Failed to re-seal material")
 		return h.errorResponse(msg.GetID(), "migration failed: "+err.Error())
 	}
@@ -480,20 +303,10 @@ func (h *MigrationHandler) HandleStart(ctx context.Context, msg *IncomingMessage
 	}
 
 	// 3. Use the already-verified config from earlier in this handler
-	// for state tracking + routing handoff. Re-fetching here would
-	// just re-run the verifier; the values can't change mid-call.
+	// for routing handoff. Re-fetching here would just re-run the
+	// verifier; the values can't change mid-call.
 	configVersion := verifiedConfig.Version
 	newPCR0 := verifiedConfig.NewPCRs.PCR0
-
-	// 4. Mark migration complete
-	now := time.Now()
-	state.Status = MigrationUserStatusComplete
-	state.MigratedAt = &now
-	state.UserNotified = false
-	state.ToPCRVersion = configVersion
-	if err := h.saveMigrationState(ctx, state); err != nil {
-		log.Error().Err(err).Msg("Failed to save migration state")
-	}
 
 	// SECURITY: migration MUST NOT call persistVaultStateToS3.
 	// Re-sealing only modifies sealed_material.bin and sealed_ecies.bin;
@@ -686,77 +499,6 @@ func (h *MigrationHandler) resealECIES(ctx context.Context) error {
 		Msg("ECIES keys re-sealed successfully")
 
 	return nil
-}
-
-// MarkMigrationComplete marks a user's migration as complete.
-// Called by the migration system after successful verification.
-func (h *MigrationHandler) MarkMigrationComplete(ctx context.Context, fromPCR, toPCR string) error {
-	now := time.Now()
-	state := &MigrationState{
-		Status:         MigrationUserStatusComplete,
-		MigratedAt:     &now,
-		UserNotified:   false,
-		FromPCRVersion: fromPCR,
-		ToPCRVersion:   toPCR,
-	}
-
-	if err := h.saveMigrationState(ctx, state); err != nil {
-		return err
-	}
-
-	log.Info().
-		Str("owner_space", h.ownerSpace).
-		Str("from_pcr", fromPCR).
-		Str("to_pcr", toPCR).
-		Msg("User migration marked as complete")
-
-	return nil
-}
-
-// MarkEmergencyRecoveryRequired marks a user as needing emergency recovery.
-// Called when both enclaves become unavailable.
-func (h *MigrationHandler) MarkEmergencyRecoveryRequired(ctx context.Context) error {
-	state, _ := h.loadMigrationState(ctx)
-	if state == nil {
-		state = &MigrationState{}
-	}
-
-	state.Status = MigrationUserStatusEmergencyRecoveryRequired
-
-	if err := h.saveMigrationState(ctx, state); err != nil {
-		return err
-	}
-
-	log.Warn().
-		Str("owner_space", h.ownerSpace).
-		Msg("User marked as requiring emergency recovery")
-
-	return nil
-}
-
-// loadMigrationState loads the migration state from storage.
-func (h *MigrationHandler) loadMigrationState(_ context.Context) (*MigrationState, error) {
-	data, err := h.storage.Get(migrationStateKey)
-	if err != nil {
-		return nil, err
-	}
-
-	var state MigrationState
-	if err := json.Unmarshal(data, &state); err != nil {
-		return nil, err
-	}
-
-	return &state, nil
-}
-
-// saveMigrationState saves the migration state to storage.
-func (h *MigrationHandler) saveMigrationState(_ context.Context, state *MigrationState) error {
-	data, err := json.Marshal(state)
-	if err != nil {
-		return err
-	}
-
-	return h.storage.Put(migrationStateKey, data)
 }
 
 // errorResponse creates an error response.

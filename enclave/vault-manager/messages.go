@@ -1736,11 +1736,11 @@ func (mh *MessageHandler) handleCredentialOperation(ctx context.Context, msg *In
 		// Critical secrets stored within Protean Credential
 		return mh.handleCredentialSecretOperation(ctx, msg, opParts[1:])
 	case "migration":
-		// Migration status and acknowledgment
+		// Migration status, config, and the deprecated start endpoint.
+		// The acknowledge sub-op was removed in M2 (architect redesign,
+		// 2026-05-09); old apps that still call it will receive an
+		// "unknown credential.migration operation" error.
 		return mh.handleCredentialMigrationOperation(ctx, msg, opParts[1:])
-	case "emergency_recovery":
-		// Emergency recovery when both enclaves unavailable
-		return mh.migrationHandler.HandleEmergencyRecovery(ctx, msg)
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown credential operation: %s", opType))
 	}
@@ -1781,12 +1781,13 @@ func (mh *MessageHandler) handleCredentialMigrationOperation(ctx context.Context
 
 	switch opType {
 	case "status":
+		// Deprecated; returns "none" stub. Pin-unlock response is the
+		// canonical migration completion signal post-redesign.
 		return mh.migrationHandler.HandleStatus(ctx, msg)
-	case "acknowledge":
-		return mh.migrationHandler.HandleAcknowledge(ctx, msg)
 	case "config":
 		return mh.migrationHandler.HandleGetConfig(ctx, msg)
 	case "start":
+		// Deprecated; PIN-unlock-coupled re-seal (M1) is the new path.
 		return mh.migrationHandler.HandleStart(ctx, msg)
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown credential.migration operation: %s", opType))
