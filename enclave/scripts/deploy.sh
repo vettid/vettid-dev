@@ -543,12 +543,40 @@ do_deploy() {
     log_info "Waiting for both instances to be healthy..."
     wait_for_instances "$asg_name" 2
 
-    # Verify new instance health and PCR0
-    local new_instance_id
-    new_instance_id=$(aws autoscaling describe-auto-scaling-groups \
+    # Identify the new instance by AMI, NOT by ASG list ordering.
+    # Incident 2026-05-09: the previous heuristic `tail -1` of the ASG
+    # instance list picked the OLD instance (list order isn't
+    # guaranteed to be by launch time). The downstream "actual PCR0"
+    # verification then read OLD's PCR0, the corrective code rewrote
+    # staged SSM with OLD, and the promoted live PCR0 ended up wrong
+    # on a fleet that auto-finalize then collapsed to a single NEW
+    # instance — every vettid-parent restart on that instance read
+    # SSM=OLD and crash-looped against the actual NEW enclave.
+    #
+    # The pre-flight loop above already captured `current_inst_ami` =
+    # the OLD AMI (whatever the lone pre-scale instance was running).
+    # The new instance is the one whose AMI is NOT that.
+    local new_instance_id new_inst_ami all_instances inst_ami
+    new_instance_id=""
+    all_instances=$(aws autoscaling describe-auto-scaling-groups \
         --auto-scaling-group-names "$asg_name" \
         --query 'AutoScalingGroups[0].Instances[*].InstanceId' \
-        --output text --region "$REGION" | tr '\t' '\n' | tail -1)
+        --output text --region "$REGION")
+    for inst_id in $all_instances; do
+        inst_ami=$(aws ec2 describe-instances --instance-ids "$inst_id" \
+            --query 'Reservations[0].Instances[0].ImageId' --output text --region "$REGION" 2>/dev/null)
+        if [[ "$inst_ami" != "$current_inst_ami" ]]; then
+            new_instance_id="$inst_id"
+            new_inst_ami="$inst_ami"
+            break
+        fi
+    done
+    if [[ -z "$new_instance_id" ]]; then
+        log_error "Could not identify new instance — every ASG instance is still on the migration-source AMI ($current_inst_ami)."
+        log_error "This means the launch template did not pick up the new AMI before scale-up. Aborting."
+        exit 1
+    fi
+    log_info "Identified new instance $new_instance_id on AMI $new_inst_ami (migration source: $current_inst_id on $current_inst_ami)"
     log_info "Verifying new instance health ($new_instance_id)..."
     verify_enclave_health "$new_instance_id" || log_warn "Health check inconclusive — continuing (both PCR0s in KMS)"
 
