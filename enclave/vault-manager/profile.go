@@ -51,14 +51,25 @@ type ProfileGetRequest struct {
 	Fields []string `json:"fields,omitempty"` // Specific fields (empty = all known)
 }
 
-// ProfileGetResponse is the response for profile.get
+// ProfileGetResponse is the response for profile.get.
+//
+// PublicFields carries the authoritative list of field namespaces the
+// user has selected for their public profile (i.e. what
+// BuildPublishedProfile reads from profile/_public.Fields). Android
+// uses this to render the visibility indicator on the data tab.
+// Without it, the UI fell back to a local-only cache that drifted from
+// the vault — a field would show as "in catalog" while the preview
+// rendered it as on-profile, because the local cache and vault state
+// disagreed (see "no user data on device" working principle:
+// vault is the single source of truth).
 type ProfileGetResponse struct {
-	Success   bool                            `json:"success"`
-	FirstName string                          `json:"first_name,omitempty"`
-	LastName  string                          `json:"last_name,omitempty"`
-	Email     string                          `json:"email,omitempty"`
-	Fields    map[string]ProfileFieldResponse `json:"fields"`
-	Error     string                          `json:"error,omitempty"`
+	Success      bool                            `json:"success"`
+	FirstName    string                          `json:"first_name,omitempty"`
+	LastName     string                          `json:"last_name,omitempty"`
+	Email        string                          `json:"email,omitempty"`
+	Fields       map[string]ProfileFieldResponse `json:"fields"`
+	PublicFields []string                        `json:"public_fields"`
+	Error        string                          `json:"error,omitempty"`
 }
 
 // ProfileFieldResponse represents a single profile field
@@ -109,6 +120,22 @@ func (h *ProfileHandler) HandleGet(msg *IncomingMessage) (*OutgoingMessage, erro
 	result := ProfileGetResponse{
 		Success: true,
 		Fields:  make(map[string]ProfileFieldResponse),
+	}
+
+	// Authoritative public-fields list. profile/_public.Fields is the
+	// same list BuildPublishedProfile walks when assembling the public
+	// profile — emit it here so Android's data-tab visibility indicator
+	// can be driven from vault state instead of a local-only cache that
+	// drifts. Failure to read is non-fatal: an empty list means "nothing
+	// selected as public" which renders consistently with a fresh user.
+	if pubData, err := h.storage.Get("profile/_public"); err == nil && len(pubData) > 0 {
+		var settings PublicProfileSettings
+		if json.Unmarshal(pubData, &settings) == nil {
+			result.PublicFields = settings.Fields
+		}
+	}
+	if result.PublicFields == nil {
+		result.PublicFields = []string{}
 	}
 
 	// Load system fields (registration info) - these are returned at top level
