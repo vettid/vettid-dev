@@ -321,6 +321,78 @@ func (h *PINHandler) writeFreshEnrollmentMigrationMarker() {
 	log.Info().Str("owner_space", h.ownerSpace).Str("version", cfg.Version).Msg("Migration marker written (fresh enrollment / self-heal)")
 }
 
+// restoreCredentialCarveOuts decrypts the CEK-sealed credential blob
+// from `credential/sealed_blob` and populates vaultState's narrow
+// carve-outs (identity keypair, PIN auth hash + salt). Used by the
+// cold-unlock path to fix the Phase D refactor gap where the credential
+// plaintext was moved out of the persisted vault state but the cold-load
+// restore was never updated to read the sealed blob back. Without this,
+// every cold-unlock leaves identityPublicKey empty and the user's own
+// profile preview shows "..." for the identity public key, while peer
+// broadcasts omit public_key entirely.
+//
+// Best-effort: any failure (no blob, missing CEK, decrypt error) leaves
+// vaultState as-is and logs a warning. The unlock itself is not
+// invalidated — non-warm vaults still satisfy the PIN check via DEK
+// decryption of vault_state.enc earlier in the flow.
+func (h *PINHandler) restoreCredentialCarveOuts() {
+	if h.storage == nil {
+		return
+	}
+	sealed, err := h.storage.Get("credential/sealed_blob")
+	if err != nil || len(sealed) == 0 {
+		log.Debug().Str("owner_space", h.ownerSpace).Msg("No credential/sealed_blob to restore (legacy or pre-credential-create unlock)")
+		return
+	}
+
+	// Pull the CEK private key from the just-restored vaultState.
+	h.state.mu.RLock()
+	cekPair := h.state.cekPair
+	h.state.mu.RUnlock()
+	if cekPair == nil || len(cekPair.PrivateKey) == 0 {
+		log.Warn().Str("owner_space", h.ownerSpace).Msg("restoreCredentialCarveOuts: CEK not loaded — skipping (warm vault?)")
+		return
+	}
+
+	// The blob is stored as base64-encoded ECIES ciphertext (matching
+	// what credential_secret_handler / authenticate.go decode).
+	encBytes, err := base64.StdEncoding.DecodeString(string(sealed))
+	if err != nil {
+		log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("restoreCredentialCarveOuts: invalid base64 in sealed blob")
+		return
+	}
+	plaintext, err := decryptWithCEK(cekPair.PrivateKey, encBytes)
+	if err != nil {
+		log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("restoreCredentialCarveOuts: CEK decrypt failed")
+		return
+	}
+	defer zeroBytes(plaintext)
+
+	var cred ProteanCredentialV2
+	if err := json.Unmarshal(plaintext, &cred); err != nil {
+		log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("restoreCredentialCarveOuts: credential unmarshal failed")
+		return
+	}
+
+	h.state.mu.Lock()
+	h.state.identityPrivateKey = append([]byte(nil), cred.Identity.PrivateKey...)
+	h.state.identityPublicKey = append([]byte(nil), cred.Identity.PublicKey...)
+	h.state.pinAuthHash = append([]byte(nil), cred.Auth.PinHash...)
+	h.state.pinAuthSalt = append([]byte(nil), cred.Auth.PinSalt...)
+	h.state.identityKeyExpiresAt = time.Now().Unix() + loadSessionTTLSeconds(h.storage)
+	h.state.mu.Unlock()
+
+	// Persist identity_public_key as a storage fallback for
+	// BuildPublishedProfile (in case a future profile.publish lands
+	// on an enclave instance that hasn't loaded vaultState).
+	if err := h.storage.Put("identity_public_key", cred.Identity.PublicKey); err != nil {
+		log.Debug().Err(err).Str("owner_space", h.ownerSpace).Msg("restoreCredentialCarveOuts: identity_public_key fallback write failed (non-fatal)")
+	}
+
+	cred.SecureErase()
+	log.Info().Str("owner_space", h.ownerSpace).Int("id_pub_len", len(h.state.identityPublicKey)).Msg("Credential carve-outs restored from credential/sealed_blob")
+}
+
 // HandlePINUnlock processes PIN unlock requests
 // Supports two modes:
 // 1. Warm vault: ECIES keys are in memory, standard unlock flow
@@ -582,6 +654,26 @@ func (h *PINHandler) HandlePINUnlock(ctx context.Context, msg *IncomingMessage) 
 				log.Info().Str("owner_space", h.ownerSpace).Msg("Database backup restored successfully - vault data recovered")
 			}
 		}
+	}
+
+	// Phase D restore (gap fix, 2026-05-10): the encrypted vault state
+	// no longer carries the credential plaintext (createEncryptedVaultState
+	// in messages.go declares the field as `omitempty` but never
+	// populates it — the comment there says "PIN unlock reads it back
+	// from `credential/sealed_blob`"). The cold-load path here was
+	// updated to consult persistedState.Credential, but never to read
+	// the sealed blob from storage. Net effect: every cold-unlock left
+	// vaultState.identityPublicKey + identityPrivateKey + pinAuthHash
+	// + pinAuthSalt empty. Symptoms: own profile preview rendered "..."
+	// for the identity public key; profile broadcasts went out without
+	// public_key; warm-vault auth fell back to the hash-empty branch
+	// (which currently lets unlock through on cold-via-DEK proof).
+	//
+	// Restore the carve-outs here. Storage is initialized + backup
+	// restored above, so credential/sealed_blob is readable. We CEK-
+	// decrypt with the just-restored CEK pair.
+	if !isWarmVault {
+		h.restoreCredentialCarveOuts()
 	}
 
 	// Verify the PIN against the carve-out auth hash.
