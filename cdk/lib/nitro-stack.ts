@@ -1112,7 +1112,6 @@ export class NitroStack extends cdk.Stack {
         VAULT_BUCKET: this.vaultDataBucket.bucketName,
         KMS_KEY_ALIAS: 'alias/vettid-enclave-sealing',
         PCR_SIGNING_KEY_ALIAS: 'alias/vettid-pcr-signing',
-        FINALIZE_RULE_NAME: 'vettid-migration-finalize-schedule',
         TABLE_REGISTRATIONS: props?.infrastructure?.tables?.registrations?.tableName || '',
       },
       timeout: cdk.Duration.minutes(2),
@@ -1142,13 +1141,13 @@ export class NitroStack extends cdk.Stack {
       actions: ['ssm:GetParameter'],
       resources: [`arn:aws:ssm:${this.region}:${this.account}:parameter/vettid/enclave/*`],
     }));
-    migrationFinalizeFn.addToRolePolicy(new iam.PolicyStatement({
-      actions: [
-        'events:RemoveTargets',
-        'events:DeleteRule',
-      ],
-      resources: [`arn:aws:events:${this.region}:${this.account}:rule/vettid-migration-finalize-schedule`],
-    }));
+    // Note: this Lambda used to tear down its own EventBridge rule on
+    // successful finalize and needed events:RemoveTargets / DeleteRule.
+    // That self-teardown caused every subsequent migration to ship
+    // without an auto-finalize schedule until a fresh `cdk deploy`
+    // re-provisioned the rule. The rule is now durable and owned
+    // exclusively by this stack (see MigrationFinalizeSchedule below),
+    // so the IAM permission is dropped.
 
     // Grant access to registrations table if available (for checking migration progress)
     if (props?.infrastructure?.tables?.registrations) {

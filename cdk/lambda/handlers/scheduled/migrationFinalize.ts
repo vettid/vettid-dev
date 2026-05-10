@@ -23,23 +23,16 @@ import {
   SSMClient,
   GetParameterCommand,
 } from '@aws-sdk/client-ssm';
-import {
-  EventBridgeClient,
-  RemoveTargetsCommand,
-  DeleteRuleCommand,
-} from '@aws-sdk/client-eventbridge';
 const kms = new KMSClient({});
 const autoscaling = new AutoScalingClient({});
 const s3 = new S3Client({});
 const ssm = new SSMClient({});
-const events = new EventBridgeClient({});
 
 const VAULT_BUCKET = process.env.VAULT_BUCKET!;
 const KMS_KEY_ALIAS = process.env.KMS_KEY_ALIAS || 'alias/vettid-enclave-sealing';
 const PCR_SIGNING_KEY_ALIAS = process.env.PCR_SIGNING_KEY_ALIAS || 'alias/vettid-pcr-signing';
 const MIGRATION_CONFIG_KEY = '_migration/config.json';
 const MIGRATION_MARKERS_PREFIX = '_migration/completed/';
-const FINALIZE_RULE_NAME = process.env.FINALIZE_RULE_NAME || 'vettid-migration-finalize-schedule';
 
 interface MigrationConfig {
   new_pcrs: { pcr0: string; pcr1: string; pcr2: string };
@@ -53,12 +46,19 @@ interface MigrationConfig {
 /**
  * Auto-finalize Lambda for enclave migration.
  *
- * Triggered every 5 minutes by EventBridge. Checks if migration should
- * be finalized (all users migrated or deadline passed), then:
+ * Triggered every 5 minutes by EventBridge (always-on rule provisioned
+ * in cdk/lib/nitro-stack.ts as MigrationFinalizeSchedule). Checks if
+ * migration should be finalized (all users migrated or deadline passed),
+ * then:
  * 1. Removes old PCR0 from KMS policy
  * 2. Scales ASG to 1
- * 3. Deletes migration config from S3
- * 4. Cleans up the EventBridge rule (self-cleanup)
+ * 3. Deletes migration config from S3 (subsequent pollls become no-ops)
+ *
+ * The EventBridge rule is intentionally NOT torn down on success — it
+ * stays running so the next migration is immediately monitored. Earlier
+ * versions of this Lambda deleted the rule and required a `cdk deploy`
+ * to re-create it, which is why so many deploys shipped with no
+ * auto-finalize scheduled.
  */
 export const handler = async (): Promise<void> => {
   console.log('Migration finalize check starting');
@@ -80,8 +80,7 @@ export const handler = async (): Promise<void> => {
     console.log(`Migration active: version=${config.version}, deadline=${config.mandatory_after}`);
   } catch (err: any) {
     if (err.name === 'NotFound' || err.name === 'NoSuchKey' || err.$metadata?.httpStatusCode === 404) {
-      console.log('No migration config found — cleaning up schedule and exiting');
-      await cleanupSchedule();
+      console.log('No migration config found — nothing to do');
       return;
     }
     throw err;
@@ -159,9 +158,6 @@ export const handler = async (): Promise<void> => {
   } catch (err) {
     console.error('Failed to clean up migration markers', err);
   }
-
-  // Step 8: Clean up EventBridge rule (self-cleanup)
-  await cleanupSchedule();
 
   console.log(`Migration finalized successfully (version: ${config.version})`);
 };
@@ -361,22 +357,11 @@ async function deleteMigrationMarkers(version: string): Promise<void> {
   } while (continuationToken);
 }
 
-async function cleanupSchedule(): Promise<void> {
-  try {
-    await events.send(new RemoveTargetsCommand({
-      Rule: FINALIZE_RULE_NAME,
-      Ids: ['migration-finalize'],
-    }));
-  } catch {
-    // Ignore — target may not exist
-  }
-
-  try {
-    await events.send(new DeleteRuleCommand({
-      Name: FINALIZE_RULE_NAME,
-    }));
-    console.log('EventBridge schedule cleaned up');
-  } catch {
-    // Ignore — rule may not exist
-  }
-}
+// cleanupSchedule was removed 2026-05-10. It used to delete the
+// EventBridge rule + target after a successful finalize, which left
+// every subsequent migration with no auto-finalize schedule until a
+// full `cdk deploy` re-created it — that's why so many deploys
+// shipped with the rule missing. The rule is now owned by CDK
+// (nitro-stack.ts: MigrationFinalizeSchedule), runs every 5 min
+// always-on, and this Lambda returns "no migration config found" as
+// its no-op response when there is nothing to do.

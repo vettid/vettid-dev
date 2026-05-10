@@ -417,6 +417,32 @@ do_deploy() {
     fi
 
     # ------------------------------------------------------------------
+    # Phase 1.5: Pre-build test gate
+    # ------------------------------------------------------------------
+    # Run the Go unit tests before the ~15 minute EIF build. This
+    # catches the class of wire-contract drift that previously shipped
+    # silently — IncomingProfileUpdateNotification.Fields was typed as
+    # map[string]string while senders emitted map[string]ProfileFieldValue,
+    # and the receiver dropped every peer broadcast that carried any
+    # public fields. enclave/vault-manager/peer_wire_contract_test.go
+    # exercises the marshal-then-unmarshal contract for every peer
+    # subject; any new sender/receiver pair must add a test there.
+    #
+    # No --skip-tests flag by design. If tests are failing, the right
+    # fix is to fix the tests (or the code), not to bypass the gate.
+    # An emergency-rollback path runs an OLD known-good build — it
+    # does not need to re-run this script's build phase.
+    PHASE="pretest"
+    log_step "Phase 1.5: Running Go unit tests (pre-build gate)"
+    local enclave_dir="$SCRIPT_DIR/.."
+    if ! (cd "$enclave_dir" && go test ./vault-manager/ ./supervisor/ -count=1 -timeout 120s); then
+        log_error "Go tests failed — aborting build."
+        log_error "Fix the failing tests, then re-run $0 --summary '...'"
+        exit 1
+    fi
+    log_info "Tests passed; proceeding to build."
+
+    # ------------------------------------------------------------------
     # Phase 2: Build new enclave
     # ------------------------------------------------------------------
     PHASE="build"
@@ -638,6 +664,55 @@ do_deploy() {
     fi
 
     # ------------------------------------------------------------------
+    # Phase 4.5: Journal scan for handler errors on the new instance
+    # ------------------------------------------------------------------
+    # Liveness (verify_enclave_health) only confirms the parent is
+    # responding on :8080. It says nothing about whether the enclave
+    # is correctly handling forwarded vault traffic. Today's class of
+    # bug — sender/receiver wire-schema drift — surfaces as a stream
+    # of "Sanitized error returned to client" lines in the parent
+    # journal as broadcasts pile up and get dropped. The wire-contract
+    # Go tests at Phase 1.5 catch it at build time; this scan is the
+    # belt-and-suspenders runtime check, in case a future regression
+    # slips past unit tests (e.g. a code path only exercised at scale).
+    #
+    # Window: the new instance has had at least the time it took to
+    # come InService + verify_enclave_health (~30-90s of real traffic
+    # if any peer messages have arrived). Anything in the journal from
+    # the new instance's boot to now is fair game.
+    PHASE="post-launch-journal-scan"
+    log_step "Phase 4.5: Scanning new instance journal for handler errors"
+    local scan_cmd scan_out scan_err_count
+    scan_cmd=$(aws ssm send-command \
+        --instance-ids "$new_instance_id" \
+        --document-name "AWS-RunShellScript" \
+        --parameters 'commands=["journalctl -u vettid-parent --no-pager --since \"15 minutes ago\" | grep -cE \"Sanitized error returned to client|cannot unmarshal|message replay detected\" || true"]' \
+        --query 'Command.CommandId' --output text --region "$REGION" 2>/dev/null || echo "")
+    if [[ -n "$scan_cmd" ]]; then
+        sleep 5
+        scan_out=$(aws ssm get-command-invocation --command-id "$scan_cmd" \
+            --instance-id "$new_instance_id" --query 'StandardOutputContent' \
+            --output text --region "$REGION" 2>/dev/null | tr -d '[:space:]')
+        scan_err_count="${scan_out:-0}"
+        # Replay-detected lines are tolerable in small numbers during ASG
+        # churn (duplicate JetStream redeliveries). Sanitized-error lines
+        # are not — they indicate a handler is rejecting valid traffic.
+        # Threshold of 0 is intentionally strict.
+        if [[ "$scan_err_count" =~ ^[0-9]+$ ]] && [[ "$scan_err_count" -gt 0 ]]; then
+            log_error "New instance journal shows $scan_err_count handler-error / replay-rejection line(s)."
+            log_error "This is the failure mode that dropped every peer profile-update broadcast on 2026-05-10."
+            log_error "Fetch the journal and investigate before promoting:"
+            log_error "  aws ssm send-command --instance-ids $new_instance_id --document-name AWS-RunShellScript \\"
+            log_error "    --parameters 'commands=[\"journalctl -u vettid-parent --since 15min --no-pager | grep -E \\\"Sanitized error|cannot unmarshal|replay detected\\\" | tail -40\"]' --region $REGION"
+            log_error "Aborting; old PCR0 is still live, KMS allows both — no user-visible damage."
+            exit 1
+        fi
+        log_info "New instance journal is clean (no handler errors or replay rejections)"
+    else
+        log_warn "Could not send SSM command for journal scan — verify manually"
+    fi
+
+    # ------------------------------------------------------------------
     # Pre-Phase-5 gate: confirm BOTH old and new PCR0s have a healthy
     # enclave behind them before publishing the migration config.
     #
@@ -847,13 +922,13 @@ finalize_migration() {
     aws s3 rm "s3://${bucket}/${MIGRATION_CONFIG_S3_KEY}" --region "$REGION"
     log_info "Migration config deleted"
 
-    log_step "4/4 Cleaning up EventBridge rule"
-    # Remove targets then delete rule
-    aws events remove-targets --rule "$FINALIZE_RULE_NAME" --ids "migration-finalize" \
-        --region "$REGION" 2>/dev/null || true
-    aws events delete-rule --name "$FINALIZE_RULE_NAME" \
-        --region "$REGION" 2>/dev/null || true
-    log_info "Auto-finalize schedule removed"
+    # NOTE: The auto-finalize EventBridge rule is intentionally left
+    # in place. It used to be torn down here (and by the Lambda on
+    # successful auto-finalize) which is why every subsequent migration
+    # shipped without a schedule. The rule is now CDK-owned, durable,
+    # and a no-op when no migration config is active.
+    log_step "4/4 Auto-finalize rule"
+    log_info "Auto-finalize schedule left in place (CDK-owned, no-op when idle)"
 
     echo ""
     log_info "=== Migration Finalized ==="
