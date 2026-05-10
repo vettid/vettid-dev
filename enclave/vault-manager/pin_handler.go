@@ -383,9 +383,12 @@ func (h *PINHandler) restoreCredentialCarveOuts() {
 	h.state.mu.Unlock()
 
 	// Persist identity_public_key as a storage fallback for
-	// BuildPublishedProfile (in case a future profile.publish lands
-	// on an enclave instance that hasn't loaded vaultState).
-	if err := h.storage.Put("identity_public_key", cred.Identity.PublicKey); err != nil {
+	// BuildPublishedProfile. Must be base64-encoded — the fallback
+	// reads via `string(pkData)` and broadcasts whatever comes out.
+	// Raw bytes here would render as garbled characters on the
+	// peer's connection-detail view.
+	pkB64 := base64.StdEncoding.EncodeToString(cred.Identity.PublicKey)
+	if err := h.storage.Put("identity_public_key", []byte(pkB64)); err != nil {
 		log.Debug().Err(err).Str("owner_space", h.ownerSpace).Msg("restoreCredentialCarveOuts: identity_public_key fallback write failed (non-fatal)")
 	}
 
@@ -600,7 +603,12 @@ func (h *PINHandler) HandlePINUnlock(ctx context.Context, msg *IncomingMessage) 
 				// carve-out yet (multi-instance migration window).
 				// Existing users enrolled before this lands need a
 				// PIN-unlock to populate the fallback.
-				if err := h.storage.Put("identity_public_key", persistedState.Credential.Identity.PublicKey); err != nil {
+				// Base64-encoded form for the fallback path; raw bytes
+				// would be misinterpreted as a UTF-8 string by
+				// BuildPublishedProfile and rendered as garbled output
+				// on the peer-side connection detail.
+				pkB64 := base64.StdEncoding.EncodeToString(persistedState.Credential.Identity.PublicKey)
+				if err := h.storage.Put("identity_public_key", []byte(pkB64)); err != nil {
 					log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("Failed to persist identity_public_key fallback at cold-load (non-fatal)")
 				}
 				persistedState.Credential.SecureErase()

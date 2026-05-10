@@ -212,7 +212,15 @@ func (h *ProteanCredentialHandler) HandleCredentialCreate(ctx context.Context, m
 	// identity key. Public material; no encryption needed beyond the
 	// at-rest DEK already covering the SQLite store.
 	if h.storage != nil {
-		if err := h.storage.Put("identity_public_key", credential.Identity.PublicKey); err != nil {
+		// Write the base64-encoded form so BuildPublishedProfile's
+		// fallback (which reads via `string(pkData)`) returns a
+		// proper base64 string. Writing raw bytes here would
+		// silently corrupt the broadcast: the fallback would
+		// interpret raw bytes as UTF-8, producing garbled
+		// characters on the peer's connection-detail view
+		// (observed 2026-05-10 testing).
+		pkB64 := base64.StdEncoding.EncodeToString(credential.Identity.PublicKey)
+		if err := h.storage.Put("identity_public_key", []byte(pkB64)); err != nil {
 			log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("Failed to persist identity_public_key for storage fallback (non-fatal)")
 		}
 	}
