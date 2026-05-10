@@ -87,14 +87,25 @@ type RevocationNotification struct {
 	Reason       string `json:"reason,omitempty"`
 }
 
-// IncomingProfileUpdateNotification is received from peers
+// IncomingProfileUpdateNotification is received from peers.
+//
+// `Fields` carries the per-field {value, updated_at} shape emitted by
+// senders (BroadcastPublishedProfile builds it from ProfileFieldValue).
+// Earlier this was typed as `map[string]string` to match a legacy sender
+// schema that no longer exists; once senders started emitting the object
+// form, every broadcast with at least one published field hit
+// `json: cannot unmarshal object into Go struct field ... of type string`
+// at the receiver and the entire profile-update — including the `profile`
+// snapshot used to refresh `connections/<id>/_peer_profile` — was dropped.
+// Result: peers saw mangled identity keys and missing fields in connection
+// detail until reconnect or app restart triggered a fresh fetch.
 type IncomingProfileUpdateNotification struct {
-	EventID        string                 `json:"event_id,omitempty"` // For replay prevention
-	ConnectionID   string                 `json:"connection_id"`      // Legacy; senders don't set it (the sender's id wouldn't match ours)
-	Fields         map[string]string      `json:"fields"`
-	Profile        map[string]interface{} `json:"profile,omitempty"`
-	FromOwnerSpace string                 `json:"from_owner_space,omitempty"`
-	UpdatedAt      string                 `json:"updated_at"`
+	EventID        string                       `json:"event_id,omitempty"` // For replay prevention
+	ConnectionID   string                       `json:"connection_id"`      // Legacy; senders don't set it (the sender's id wouldn't match ours)
+	Fields         map[string]ProfileFieldValue `json:"fields"`
+	Profile        map[string]interface{}       `json:"profile,omitempty"`
+	FromOwnerSpace string                       `json:"from_owner_space,omitempty"`
+	UpdatedAt      string                       `json:"updated_at"`
 }
 
 // IncomingRevocationNotification is received from peers
