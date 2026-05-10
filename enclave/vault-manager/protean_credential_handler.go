@@ -16,6 +16,16 @@ type ProteanCredentialHandler struct {
 	ownerSpace string
 	state      *VaultState
 	bootstrap  *BootstrapHandler
+	storage    *EncryptedStorage // for identity_public_key fallback (set via SetStorage)
+}
+
+// SetStorage wires the encrypted storage so HandleCredentialCreate can
+// persist the identity public key as a fallback for BuildPublishedProfile
+// when vaultState.identityPublicKey is empty (multi-instance migration
+// window). Wired post-construction because messages.go creates this
+// handler before storage is available in some paths.
+func (h *ProteanCredentialHandler) SetStorage(s *EncryptedStorage) {
+	h.storage = s
 }
 
 // decryptCredentialBlob decrypts a CEK-encrypted credential blob the
@@ -191,6 +201,21 @@ func (h *ProteanCredentialHandler) HandleCredentialCreate(ctx context.Context, m
 	h.state.identityPublicKey = append([]byte(nil), credential.Identity.PublicKey...)
 	h.state.identityKeyExpiresAt = now.Unix() + 300
 	h.state.mu.Unlock()
+
+	// Persist the identity public key to vault storage too. Used as a
+	// fallback by BuildPublishedProfile when vaultState.identityPublicKey
+	// is empty — which can happen when profile.publish lands on an
+	// enclave instance that hasn't loaded the user's vault state for
+	// this session (multi-instance ASG during a migration window). Without
+	// this, the broadcast cache on peers ends up with no public_key and
+	// the connection-detail screen on the peer side can't render the
+	// identity key. Public material; no encryption needed beyond the
+	// at-rest DEK already covering the SQLite store.
+	if h.storage != nil {
+		if err := h.storage.Put("identity_public_key", credential.Identity.PublicKey); err != nil {
+			log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("Failed to persist identity_public_key for storage fallback (non-fatal)")
+		}
+	}
 
 	// Serialize credential for encryption
 	credentialBytes, err := json.Marshal(credential)

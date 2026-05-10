@@ -249,6 +249,17 @@ func (h *PINHandler) HandlePINSetup(ctx context.Context, msg *IncomingMessage) (
 		eciesPublicB64 = base64.StdEncoding.EncodeToString(eciesPublic)
 	}
 
+	// Architect F4/F5 — fresh enrollment doesn't trigger
+	// migrate_consent (the EnclaveUpdateRequired prompt only fires
+	// when current PCR0 isn't in the user's trusted set, and a
+	// fresh enrollment bootstraps trust to the running PCR0). So
+	// the M1 PIN-unlock-coupled path never has a chance to write a
+	// marker for these users — they'd remain "pending" forever from
+	// auto-finalize's view, blocking ASG scale-down. Idempotently
+	// write the marker here when a migration config is published
+	// and our running PCR0 matches the config's NewPCR0.
+	h.writeFreshEnrollmentMigrationMarker()
+
 	response := PINSetupResponse{
 		Status:         "vault_ready",
 		UTKs:           utkPublics,
@@ -271,6 +282,43 @@ func (h *PINHandler) HandlePINSetup(ctx context.Context, msg *IncomingMessage) (
 		Type:      MessageTypeResponse,
 		Payload:   responseBytes,
 	}, nil
+}
+
+// writeFreshEnrollmentMigrationMarker writes the per-version migration
+// marker for the currently-published migration config, if any, when the
+// running enclave's PCR0 matches that config's NewPCR0. Idempotent;
+// safe to call from both fresh enrollment and unlock paths.
+//
+// Architect F5 self-heal: even when the M1 PIN-unlock-coupled flow
+// completes a re-seal, the marker write itself is non-fatal and may
+// have failed (transient S3, KMS Sign hiccup). Calling this from the
+// unlock path on every successful unlock recovers without operator
+// intervention. Multiple writes hit the same S3 key with the same
+// content — no extra cost, no race.
+func (h *PINHandler) writeFreshEnrollmentMigrationMarker() {
+	if h.migrationHandler == nil {
+		return
+	}
+	cfg, _, err := h.migrationHandler.fetchAndVerifyMigrationConfig()
+	if err != nil || cfg == nil || cfg.Version == "" {
+		return
+	}
+	runningPCR0, err := h.sealerProxy.GetRunningPCR0()
+	if err != nil || runningPCR0 == "" {
+		return
+	}
+	if runningPCR0 != cfg.NewPCRs.PCR0 {
+		// We're on OLD enclave. The user hasn't actually migrated to
+		// the new version — don't claim they have. The M1 dispatch
+		// will write the marker after re-seal lands on a NEW
+		// instance (or, post-finalize, this branch goes away).
+		return
+	}
+	if err := h.sealerProxy.WriteMigrationMarker(cfg.Version); err != nil {
+		log.Warn().Err(err).Str("owner_space", h.ownerSpace).Str("version", cfg.Version).Msg("Migration marker write failed (non-fatal — will retry on next unlock)")
+		return
+	}
+	log.Info().Str("owner_space", h.ownerSpace).Str("version", cfg.Version).Msg("Migration marker written (fresh enrollment / self-heal)")
 }
 
 // HandlePINUnlock processes PIN unlock requests
@@ -474,6 +522,15 @@ func (h *PINHandler) HandlePINUnlock(ctx context.Context, msg *IncomingMessage) 
 				// PIN unlock starts the window; subsequent signed ops slide
 				// it forward via consumeIdentityKey().
 				h.state.identityKeyExpiresAt = time.Now().Unix() + loadSessionTTLSeconds(h.storage)
+				// Self-heal: persist identity public key as a storage
+				// fallback so BuildPublishedProfile can find it even
+				// from instances that haven't loaded the credential
+				// carve-out yet (multi-instance migration window).
+				// Existing users enrolled before this lands need a
+				// PIN-unlock to populate the fallback.
+				if err := h.storage.Put("identity_public_key", persistedState.Credential.Identity.PublicKey); err != nil {
+					log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("Failed to persist identity_public_key fallback at cold-load (non-fatal)")
+				}
 				persistedState.Credential.SecureErase()
 			}
 			if len(persistedState.SealedMaterial) > 0 {
@@ -558,6 +615,15 @@ func (h *PINHandler) HandlePINUnlock(ctx context.Context, msg *IncomingMessage) 
 	// proven (above). Failures here never invalidate the unlock — the
 	// user is auth'd; we just report what happened in migration_status.
 	migrationStatus, migrationVersion := h.dispatchMigrateConsent(ctx, req.MigrateConsent)
+
+	// Architect F5 self-heal: write the migration marker on every
+	// successful unlock when the running PCR0 matches the published
+	// config's NewPCR0. Idempotent. Recovers from cases where the
+	// initial M1 dispatch's marker write failed (transient S3 / KMS
+	// hiccup), AND covers fresh enrollments that never trigger
+	// migrate_consent (current PCR0 already trusted, no
+	// EnclaveUpdateRequired prompt).
+	h.writeFreshEnrollmentMigrationMarker()
 
 	// Generate more UTKs and return ONLY those to the app.
 	// Returning GetUnusedUTKs() here caused the app pool to balloon to ~14k

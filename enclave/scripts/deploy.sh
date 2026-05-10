@@ -829,15 +829,18 @@ finalize_migration() {
     log_info "KMS policy updated — only current PCR0: ${current_pcr0:0:24}..."
 
     log_step "2/4 Scaling ASG to 1"
-    aws autoscaling set-desired-capacity \
-        --auto-scaling-group-name "$asg_name" \
-        --desired-capacity 1 \
-        --region "$REGION"
-    # Restore max to 1
+    # Drop MinSize FIRST. The deploy phase pinned MinSize=2 to keep
+    # both PCR0s alive during the migration window; SetDesiredCapacity
+    # to 1 here would otherwise fail with
+    #   ValidationError: New SetDesiredCapacity value 1 is below min
+    #   value 2 for the AutoScalingGroup
+    # leaving the ASG stuck at 2 with the OLD PCR0 already evicted
+    # from KMS (step 1 ran). Update min/max/desired in one call so
+    # there's no intermediate state where the parameters disagree.
     aws autoscaling update-auto-scaling-group \
         --auto-scaling-group-name "$asg_name" \
-        --max-size 1 \
-        --region "$REGION" 2>/dev/null || true
+        --min-size 1 --max-size 1 --desired-capacity 1 \
+        --region "$REGION"
     log_info "ASG scaled to 1 instance"
 
     log_step "3/4 Removing migration config"

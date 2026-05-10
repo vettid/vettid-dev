@@ -276,6 +276,7 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 
 	// Create Protean Credential handler - handles credential creation (Phase 3)
 	proteanCredentialHandler := NewProteanCredentialHandler(ownerSpace, vaultState, bootstrapHandler)
+	proteanCredentialHandler.SetStorage(storage)
 
 	// Create vote handler for vault-signed voting
 	voteHandler := NewVoteHandler(ownerSpace, vaultState, storage, bootstrapHandler)

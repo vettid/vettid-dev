@@ -258,6 +258,18 @@ func PublishedProfileToMap(p *PublishedProfile) map[string]interface{} {
 		result["fields"] = fields
 	}
 
+	// FieldOrder is the user-intended display order of the public-
+	// profile fields (M3 / 2026-05-09 architect redesign). Without
+	// this, peer caches and inviter-broker payloads received an
+	// alphabetically-keyed map and rendered fields in the wrong order
+	// — owner saw their reorder, peer saw alphabetical. Mirror it
+	// here so anywhere a peer reads a cached profile (connection
+	// detail, invitation review, connection-list peer_profile) lines
+	// up with what the owner sees on their own preview.
+	if len(p.FieldOrder) > 0 {
+		result["field_order"] = p.FieldOrder
+	}
+
 	// Wallets as array
 	if len(p.Wallets) > 0 {
 		var wallets []map[string]string
