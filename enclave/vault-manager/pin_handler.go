@@ -534,6 +534,14 @@ func (h *PINHandler) HandlePINUnlock(ctx context.Context, msg *IncomingMessage) 
 			}
 			defer zeroBytes(stateData)
 
+			// Record the size of what we just loaded so the shrink guard
+			// in persistVaultStateToS3 has a reference for "this instance
+			// previously knew the state was N bytes." See architect §3
+			// storage invariants.
+			h.state.mu.Lock()
+			h.state.loadedVaultStateSize = int64(len(encryptedStateBytes))
+			h.state.mu.Unlock()
+
 			// Parse and restore vault state
 			var persistedState struct {
 				CEKPrivateKey  []byte `json:"cek_private_key"`

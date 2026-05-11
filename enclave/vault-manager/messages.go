@@ -1624,12 +1624,33 @@ func (mh *MessageHandler) PersistVaultStateToS3() {
 	mh.persistVaultStateToS3()
 }
 
+// shouldRefuseShrink returns true when the new vault-state payload is
+// drastically smaller than what this instance previously saw — the
+// shape of the 2026-05-06 / 2026-05-09 data-loss incidents (220 KB
+// vault_state.enc clobbered by a 12 KB stub from an instance that
+// hadn't fully loaded the user's data). prevSize == 0 means we have
+// no reference point (fresh enrollment, first write) and the guard
+// is a no-op.
+//
+// Threshold: existing must be at least 50 KB AND new must be less
+// than half. Below 50 KB everything is small enough that legitimate
+// edits could halve the size; above that floor a 50% drop strongly
+// implies state loss.
+func shouldRefuseShrink(prevSize, newSize int64) bool {
+	const shrinkGuardFloor = int64(50 * 1024)
+	if prevSize < shrinkGuardFloor {
+		return false
+	}
+	return newSize*2 < prevSize
+}
+
 // persistVaultStateToS3 persists the current vault state to S3 for durability.
 // This ensures that data modifications are not lost if the vault-manager is restarted.
 func (mh *MessageHandler) persistVaultStateToS3() {
 	mh.vaultState.mu.RLock()
 	dek := mh.vaultState.dek
 	dataLoaded := mh.vaultState.vaultDataLoaded
+	prevSize := mh.vaultState.loadedVaultStateSize
 	mh.vaultState.mu.RUnlock()
 
 	if dek == nil || mh.sealerProxy == nil {
@@ -1659,11 +1680,36 @@ func (mh *MessageHandler) persistVaultStateToS3() {
 		return
 	}
 
+	// SECURITY: shrink guard (architect §3). If we previously loaded
+	// (or wrote) >= 50 KB of state and the new payload is < 50% of that,
+	// the write looks like the 2026-05-06 / 2026-05-09 incident shape:
+	// in-memory state was incomplete and we're about to clobber a
+	// healthy S3 object with a stub. Refuse and log loudly so the
+	// operator notices in CloudWatch. Legitimate edits (delete one
+	// field, shrink a single record) stay well above 50% — only
+	// catastrophic state loss trips this threshold.
+	newSize := int64(len(encryptedState))
+	if shouldRefuseShrink(prevSize, newSize) {
+		log.Error().
+			Str("owner_space", mh.ownerSpace).
+			Int64("previous_size", prevSize).
+			Int64("new_size", newSize).
+			Msg("SECURITY: REFUSING to persist vault state — payload shrunk drastically (possible data-loss bug). Investigate before retrying.")
+		return
+	}
+
 	if err := mh.sealerProxy.StoreVaultState(encryptedState); err != nil {
 		log.Error().Err(err).Str("owner_space", mh.ownerSpace).Msg("Failed to persist vault state to S3")
-	} else {
-		log.Info().Str("owner_space", mh.ownerSpace).Msg("Vault state persisted to S3")
+		return
 	}
+	log.Info().Str("owner_space", mh.ownerSpace).Int64("size", newSize).Msg("Vault state persisted to S3")
+
+	// Track the size we just wrote so subsequent writes have a
+	// reference point. If we never load again before the next write,
+	// the shrink guard still works against this size.
+	mh.vaultState.mu.Lock()
+	mh.vaultState.loadedVaultStateSize = newSize
+	mh.vaultState.mu.Unlock()
 }
 
 // handleCredentialOperation routes credential-related operations

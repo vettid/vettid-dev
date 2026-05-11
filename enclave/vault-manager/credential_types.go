@@ -113,6 +113,17 @@ type VaultState struct {
 	// defense-in-depth against any future code path that would persist
 	// without first having loaded the user's existing data.
 	vaultDataLoaded bool
+
+	// loadedVaultStateSize tracks the byte size of the encrypted vault
+	// state this instance most recently loaded or wrote. Used by
+	// persistVaultStateToS3's shrink guard (architect §3 storage
+	// invariants): refuse to overwrite when an existing object >= 50 KB
+	// would shrink to < 50% of its size. Zero means we don't know the
+	// previous size (e.g. fresh enrollment before first persist) — in
+	// that case the shrink guard is a no-op. Set on cold-unlock S3
+	// load, on fresh-enrollment first write, and on every successful
+	// persistVaultStateToS3.
+	loadedVaultStateSize int64
 }
 
 // CEKPair holds the Credential Encryption Key pair (X25519)

@@ -905,6 +905,47 @@ export class NitroStack extends cdk.Stack {
       treatMissingData: cloudwatch.TreatMissingData.BREACHING,
     });
 
+    // Vault-data noncurrent-version alarm (architect §3 storage invariants).
+    // Each overwrite of an S3 object under versioning produces a noncurrent
+    // version. The data-loss incidents on 2026-05-06 / 2026-05-09 wrote
+    // ~12 KB stubs over ~220 KB vault_state.enc objects, spiking the
+    // noncurrent-version count for affected users. The shrink guard in
+    // persistVaultStateToS3 (vault-manager) now refuses those writes
+    // inline, but a future regression that bypasses the guard would
+    // show up here as a sudden surge in noncurrent versions. The
+    // metric is bucket-level, not per-key — AWS doesn't expose per-key
+    // version-count as a standard CloudWatch metric — so this is a
+    // surge detector for the bucket as a whole.
+    //
+    // Daily storage metrics are emitted once per day on a ~24-hour
+    // delay; this is an early-warning alarm, not real-time. For
+    // real-time per-write visibility we'd need Storage Lens Advanced
+    // or a custom metric emitted from the parent's S3 PUT path.
+    new cloudwatch.Alarm(this, 'VaultDataNoncurrentVersionsAlarm', {
+      alarmName: 'VettID-VaultData-NoncurrentVersions-Surge',
+      alarmDescription:
+        'Noncurrent-version count on vault-data bucket grew suddenly — possible data-loss bug overwriting healthy state. Investigate logs for "REFUSING to persist vault state" and S3 object versions for vault_state.enc shrinkage.',
+      metric: new cloudwatch.Metric({
+        namespace: 'AWS/S3',
+        metricName: 'NumberOfObjects',
+        dimensionsMap: {
+          BucketName: this.vaultDataBucket.bucketName,
+          StorageType: 'AllStorageTypes',
+        },
+        statistic: 'Maximum',
+        period: cdk.Duration.days(1),
+      }),
+      // Threshold is intentionally generous: a single user's vault rotates
+      // its various state objects (vault_state.enc, sealed_material.bin,
+      // sealed_ecies.bin, migration markers) at most a few times per day.
+      // For an N-user fleet, expect ~10*N steady-state objects-per-day
+      // ceiling. A sudden jump well above that floor indicates a bug.
+      threshold: 1000,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+
     // High CPU alarm
     new cloudwatch.Alarm(this, 'HighCpuAlarm', {
       alarmName: 'VettID-Enclave-HighCPU',
@@ -1114,7 +1155,9 @@ export class NitroStack extends cdk.Stack {
         PCR_SIGNING_KEY_ALIAS: 'alias/vettid-pcr-signing',
         TABLE_REGISTRATIONS: props?.infrastructure?.tables?.registrations?.tableName || '',
       },
-      timeout: cdk.Duration.minutes(2),
+      // 3-min budget covers: ASG scale-down + 60s architect §5 quiescence
+      // delay + KMS tighten + S3 cleanup with margin.
+      timeout: cdk.Duration.minutes(3),
       memorySize: 256,
       description: 'Auto-finalize enclave migration when users have migrated or deadline passed',
     });

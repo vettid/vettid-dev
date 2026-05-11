@@ -108,17 +108,25 @@ export const handler = async (): Promise<void> => {
     return;
   }
 
-  // Step 4: Update KMS policy to single PCR0
-  try {
-    const currentPcr0 = await getCurrentPcr0();
-    await updateKmsToSinglePcr0(currentPcr0);
-    console.log(`KMS policy updated to single PCR0: ${currentPcr0.substring(0, 24)}...`);
-  } catch (err) {
-    console.error('Failed to update KMS policy — will retry next cycle', err);
-    return;
-  }
-
-  // Step 5: Scale ASG back to 1.
+  // Step 4: Scale ASG back to 1 (terminate OLD instance).
+  //
+  // Order matters: scale-down BEFORE KMS tighten. The architect's
+  // §5 quiescence recommendation: an in-flight PIN unlock on OLD
+  // must be allowed to complete before OLD is forbidden from KMS.
+  // If we tightened KMS first, any user mid-unlock on OLD would see
+  // KMS Decrypt denied and have to retry on NEW (45-60s of failed
+  // requests). Terminating OLD first lets ASG cleanly stop the
+  // process; users get a NATS disconnect, their app's retry loop
+  // re-publishes the unlock, NATS routing reclaim brings them to
+  // NEW where KMS still has the PCR0 alone (we're about to tighten
+  // anyway, but NEW's PCR0 stays in policy throughout).
+  //
+  // The brief quiescence sleep below gives a 60s buffer: in-flight
+  // KMS Decrypt calls finish, the OLD's TerminateLifecycleHook
+  // (none configured today) would also have time to run, and the
+  // NATS routing manager on NEW has time to detect lease expiry
+  // and reclaim sessions before we tighten KMS.
+  //
   // deploy.sh pins MinSize=2 during the migration window so the CPU
   // target-tracking AlarmLow policy can't kill the OLD instance before
   // users have re-sealed. We restore MinSize=1 here so steady-state
@@ -133,9 +141,25 @@ export const handler = async (): Promise<void> => {
       AutoScalingGroupName: asgName,
       DesiredCapacity: 1,
     }));
-    console.log('ASG scaled to 1 (Min=1, Max=1)');
+    console.log('ASG scaled to 1 (Min=1, Max=1) — OLD instance will drain');
   } catch (err) {
     console.error('Failed to scale ASG — will retry next cycle', err);
+    return;
+  }
+
+  // 60-second quiescence per architect §5. Lambda timeout is 2 min;
+  // this fits with margin.
+  const QUIESCENCE_MS = 60_000;
+  console.log(`Quiescing for ${QUIESCENCE_MS / 1000}s before tightening KMS`);
+  await new Promise((resolve) => setTimeout(resolve, QUIESCENCE_MS));
+
+  // Step 5: Update KMS policy to single PCR0
+  try {
+    const currentPcr0 = await getCurrentPcr0();
+    await updateKmsToSinglePcr0(currentPcr0);
+    console.log(`KMS policy updated to single PCR0: ${currentPcr0.substring(0, 24)}...`);
+  } catch (err) {
+    console.error('Failed to update KMS policy — will retry next cycle', err);
     return;
   }
 
