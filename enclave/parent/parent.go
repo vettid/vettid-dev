@@ -119,6 +119,23 @@ func (p *ParentProcess) Run(ctx context.Context) error {
 	p.vsockClient = vsockClient
 	defer vsockClient.Close()
 
+	// Stamp our PCR0 onto the parent. The vsock handshake binds this
+	// instance to the PCR0 it just loaded from SSM (or static config in
+	// dev), so the same value is what the routing manager should write
+	// onto every claim. Before this line landed (2026-05-11), p.pcr0
+	// stayed "" and every routing entry shipped with PCR0="", which
+	// silently no-op'd deploy.sh Phase 4.6 ReclaimUsersFromPCR0
+	// (`claimed:0` because no entries matched the OLD hex) and forced
+	// every migration through OLD-instance termination to unstick.
+	p.pcr0 = vsockClient.GetExpectedPCR0Hex()
+	if p.pcr0 != "" {
+		log.Info().Str("pcr0", p.pcr0[:16]+"...").Msg("Parent PCR0 stamped for routing claims")
+	} else if !p.config.DevMode {
+		// Production must have a PCR0 — loadExpectedPCRs already errors
+		// before this, but defense-in-depth in case the contract drifts.
+		return fmt.Errorf("parent PCR0 not populated after vsock init (production mode requires non-empty PCR0)")
+	}
+
 	log.Info().
 		Uint32("cid", p.config.Enclave.CID).
 		Uint32("port", p.config.Enclave.Port).

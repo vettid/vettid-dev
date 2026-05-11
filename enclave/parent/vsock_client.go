@@ -254,15 +254,16 @@ type Challenge struct {
 
 // VsockClient handles communication with the enclave
 type VsockClient struct {
-	conn          net.Conn
-	config        EnclaveConfig
-	devMode       bool
-	readMu        sync.Mutex // Mutex for read operations
-	writeMu       sync.Mutex // Mutex for write operations
-	requestMu     sync.Mutex // Mutex for serializing complete request-response cycles (prevents response interleaving)
-	authenticated bool       // SECURITY: True if handshake completed
-	sharedSecret  []byte     // Pre-shared key for authentication
-	expectedPCRs  map[int][]byte // SECURITY: Expected PCR values for attestation verification
+	conn             net.Conn
+	config           EnclaveConfig
+	devMode          bool
+	readMu           sync.Mutex // Mutex for read operations
+	writeMu          sync.Mutex // Mutex for write operations
+	requestMu        sync.Mutex // Mutex for serializing complete request-response cycles (prevents response interleaving)
+	authenticated    bool       // SECURITY: True if handshake completed
+	sharedSecret     []byte     // Pre-shared key for authentication
+	expectedPCRs     map[int][]byte // SECURITY: Expected PCR values for attestation verification
+	expectedPCR0Hex  string         // Hex form of PCR0 — exposed for the routing manager and other callers that need the value as a string. Populated alongside expectedPCRs in loadExpectedPCRs.
 }
 
 // NewVsockClient creates a new vsock client to communicate with the enclave
@@ -364,9 +365,21 @@ func (c *VsockClient) loadExpectedPCRs() error {
 	c.expectedPCRs = map[int][]byte{
 		0: pcr0,
 	}
+	c.expectedPCR0Hex = pcr0Hex
 
 	log.Info().Str("pcr0", pcr0Hex[:16]+"...").Msg("PCR0 loaded for attestation verification")
 	return nil
+}
+
+// GetExpectedPCR0Hex returns the hex form of the PCR0 this parent
+// expects (and therefore is bound to via attestation verification). On
+// a healthy instance this is identical to the running enclave's PCR0,
+// because the attestation handshake rejects any mismatch. Used by the
+// parent's routing manager to stamp the PCR0 hex on routing claims —
+// without this, deploy.sh's Phase 4.6 eager reclaim cannot find OLD
+// entries to claim, blocking migration handoff.
+func (c *VsockClient) GetExpectedPCR0Hex() string {
+	return c.expectedPCR0Hex
 }
 
 // performHandshake performs the client-side (parent) mutual authentication
