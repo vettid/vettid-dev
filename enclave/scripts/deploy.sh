@@ -236,11 +236,31 @@ wait_for_instances() {
     return 1
 }
 
-# Verify enclave health via SSM
+# Verify enclave health via SSM.
+#
+# The old cadence (3 retries × 30s = 90s wall budget) was racing the
+# parent's actual boot sequence and false-failing every deploy. ASG
+# flips the instance to "InService" as soon as EC2 status checks pass,
+# but vettid-parent still has to: read SSM config, fetch the vsock
+# secret from Secrets Manager, connect to NATS (with backoff on cold
+# JetStream), boot the enclave EIF, complete the vsock handshake, and
+# only THEN flip Healthy=true on /health. That regularly takes 2-3
+# minutes, well past the old 90s budget.
+#
+# New cadence: poll every 5s for up to 5 minutes (60 attempts).
+# Exits immediately on first healthy response, so a fast boot still
+# returns in seconds. The longer budget covers real-world cold starts
+# (cold JetStream connect can take ~90s on its own) without
+# false-failing into Phase 4.5's journal-scan gate (which then has
+# to be the real safety net — wasted work).
+#
+# curl -sf returns non-zero on HTTP >= 400, so a 503 (Healthy=false
+# during boot) triggers the "HEALTH_FAIL" branch. That's correct
+# behavior: we want to keep polling until 200.
 verify_enclave_health() {
     local instance_id="$1"
-    local retries=3
-    local delay=30
+    local retries=60
+    local delay=5
 
     for attempt in $(seq 1 $retries); do
         # Check SSM agent is available
@@ -251,7 +271,10 @@ verify_enclave_health() {
             --output text --region "$REGION" 2>/dev/null || echo "Unknown")
 
         if [[ "$ssm_status" != "Online" ]]; then
-            log_warn "SSM not online for $instance_id (attempt $attempt/$retries)"
+            # Only log every 6th attempt (~30s) to keep deploy output readable.
+            if (( attempt % 6 == 1 )); then
+                log_warn "SSM not online for $instance_id yet (attempt $attempt/$retries, $((attempt*delay))s elapsed)"
+            fi
             [[ $attempt -lt $retries ]] && sleep $delay
             continue
         fi
@@ -266,12 +289,15 @@ verify_enclave_health() {
             --output text --region "$REGION" 2>/dev/null || echo "")
 
         if [[ -z "$cmd_id" ]]; then
-            log_warn "Failed to send SSM command (attempt $attempt/$retries)"
+            if (( attempt % 6 == 1 )); then
+                log_warn "Failed to send SSM command (attempt $attempt/$retries)"
+            fi
             [[ $attempt -lt $retries ]] && sleep $delay
             continue
         fi
 
-        sleep 5
+        # SSM command typically lands in <2s; give it 3 to leave headroom.
+        sleep 3
         local health_output
         health_output=$(aws ssm get-command-invocation \
             --command-id "$cmd_id" \
@@ -280,15 +306,19 @@ verify_enclave_health() {
             --output text --region "$REGION" 2>/dev/null || echo "HEALTH_FAIL")
 
         if echo "$health_output" | grep -q '"Healthy":true\|"healthy":true'; then
-            log_info "Enclave health check passed for $instance_id"
+            log_info "Enclave health check passed for $instance_id ($((attempt*delay))s elapsed)"
             return 0
         fi
 
-        log_warn "Health check failed (attempt $attempt/$retries): ${health_output:0:100}"
+        # Same throttled logging — surface the first failure and one
+        # every ~30s after, not every attempt.
+        if (( attempt == 1 || attempt % 6 == 0 )); then
+            log_info "Waiting for $instance_id to report healthy (attempt $attempt/$retries, $((attempt*delay))s elapsed)"
+        fi
         [[ $attempt -lt $retries ]] && sleep $delay
     done
 
-    log_error "Enclave health check failed after $retries attempts"
+    log_error "Enclave health check did not pass within $((retries*delay))s — Phase 4.5 journal scan is the remaining gate."
     return 1
 }
 
