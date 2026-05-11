@@ -190,8 +190,19 @@ type IncomingLocationUpdate struct {
 	Latitude       float64  `json:"latitude"`
 	Longitude      float64  `json:"longitude"`
 	Accuracy       *float32 `json:"accuracy,omitempty"`
-	Timestamp      int64    `json:"timestamp"`
-	UpdatedAt      string   `json:"updated_at"`
+	// Timestamp is the GPS sample epoch (when the location was
+	// measured on the sender's device). The JSON tag is
+	// `captured_at` rather than `timestamp` to avoid colliding with
+	// the parent's replay-prevention layer, which reads any
+	// top-level `timestamp` field as the message send time and
+	// drops messages older than 5 minutes. A cached point from
+	// earlier in the day would always trip that check. The send
+	// time travels in `UpdatedAt` (RFC3339 string, which the
+	// replay layer ignores). Older senders that still emitted
+	// `timestamp` were silently rejected at the parent boundary
+	// (production incident 2026-05-11).
+	Timestamp int64  `json:"captured_at"`
+	UpdatedAt string `json:"updated_at"`
 }
 
 // --- Response types ---

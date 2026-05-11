@@ -29,6 +29,7 @@ package main
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -151,6 +152,21 @@ func TestLocationUpdateWire(t *testing.T) {
 	// fails this test instead of silently breaking the V2 cache.
 	if receiver.FromOwnerSpace != sender.FromOwnerSpace {
 		t.Errorf("from_owner_space lost: got %q want %q", receiver.FromOwnerSpace, sender.FromOwnerSpace)
+	}
+	// The GPS-sample epoch ships as `captured_at`, NOT `timestamp` —
+	// renamed 2026-05-11 because the parent's replay-prevention layer
+	// drops any message whose top-level `timestamp` field is older
+	// than 5 minutes. A renamed-back regression would let a peer
+	// location older than 5 min sneak through replay-prevention as
+	// a "fresh" message, AND would silently break location.send-once
+	// once the field crossed the parent boundary.
+	raw, _ := json.Marshal(sender)
+	rawStr := string(raw)
+	if !strings.Contains(rawStr, `"captured_at":`) {
+		t.Errorf("expected captured_at on wire; got: %s", rawStr)
+	}
+	if strings.Contains(rawStr, `"timestamp":`) {
+		t.Errorf("unexpected top-level `timestamp` field on the wire — replay-prevention will eat it: %s", rawStr)
 	}
 	// Compare value-equal fields (can't compare with pointer fields)
 	if receiver.EventID != sender.EventID || receiver.Latitude != sender.Latitude ||
