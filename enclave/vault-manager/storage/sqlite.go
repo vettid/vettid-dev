@@ -1010,8 +1010,35 @@ func (s *SQLiteStorage) GetRollbackCounter() int64 {
 func (s *SQLiteStorage) exportData() ([]byte, error) {
 	export := make(map[string]interface{})
 
-	// Export each table (excluding processed_events which is ephemeral)
-	tables := []string{"cek_keypairs", "transport_keys", "ledger_entries", "handler_state", "_metadata"}
+	// Tables to round-trip through the backup. Anything that's actively
+	// written to and must survive an enclave migration (cold-load
+	// restore) belongs here.
+	//
+	//   cek_keypairs / transport_keys — credential blobs.
+	//   ledger_entries / handler_state / _metadata — vault-manager state.
+	//   connection_audit — per-connection interaction history (the
+	//     "Interaction History" screen reads this). Pre-2026-05-11 this
+	//     was omitted from the list, so every migration wiped users'
+	//     audit trail on cold-load (incident 2026-05-11).
+	//   events — feed/audit event stream (same restore semantics).
+	//
+	// FTS shadow tables (connection_audit_fts, secrets_fts) are NOT in
+	// the list — they're maintained by AFTER INSERT triggers, so
+	// re-INSERTing the base rows during importData repopulates the FTS
+	// index automatically.
+	//
+	// Excluded: processed_events (ephemeral replay-prevention cache,
+	// rebuilt from message stream). secrets table is schema-only and
+	// not written to by current code paths.
+	tables := []string{
+		"cek_keypairs",
+		"transport_keys",
+		"ledger_entries",
+		"handler_state",
+		"_metadata",
+		"connection_audit",
+		"events",
+	}
 	for _, table := range tables {
 		rows, err := s.db.Query(fmt.Sprintf("SELECT * FROM %s", table))
 		if err != nil {
@@ -1055,15 +1082,27 @@ func (s *SQLiteStorage) importData(data []byte) error {
 
 	// BLOB columns per table - these are base64-encoded in JSON and need decoding
 	blobColumns := map[string]map[string]bool{
-		"handler_state":  {"state": true},
-		"cek_keypairs":   {"private_key": true, "public_key": true},
-		"transport_keys": {"private_key": true, "public_key": true},
-		"ledger_entries": {"payload": true},
-		"_metadata":      {},
+		"handler_state":    {"state": true},
+		"cek_keypairs":     {"private_key": true, "public_key": true},
+		"transport_keys":   {"private_key": true, "public_key": true},
+		"ledger_entries":   {"payload": true},
+		"_metadata":        {},
+		"connection_audit": {"payload": true},
+		"events":           {"payload": true},
 	}
 
-	// Clear existing data
-	tables := []string{"cek_keypairs", "transport_keys", "ledger_entries", "handler_state", "_metadata"}
+	// Clear existing data. Keep in sync with the exportData() table
+	// list; new tables added there need a matching DELETE here so an
+	// import wipes any stale rows the in-memory DB might still hold.
+	tables := []string{
+		"cek_keypairs",
+		"transport_keys",
+		"ledger_entries",
+		"handler_state",
+		"_metadata",
+		"connection_audit",
+		"events",
+	}
 	for _, table := range tables {
 		if _, err := s.db.Exec(fmt.Sprintf("DELETE FROM %s", table)); err != nil {
 			return fmt.Errorf("failed to clear table %s: %w", table, err)
