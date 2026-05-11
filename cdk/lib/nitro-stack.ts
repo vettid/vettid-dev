@@ -145,8 +145,17 @@ export class NitroStack extends cdk.Stack {
       enforceSSL: true,
       lifecycleRules: [
         {
-          // Delete old versions after 30 days
-          noncurrentVersionExpiration: cdk.Duration.days(30),
+          // Retain noncurrent versions for 7 days. Originally 30 days,
+          // trimmed 2026-05-11 after the bucket grew to ~175k objects
+          // (mostly noncurrent vault_state.enc revisions from frequent
+          // auto-saves). 7 days is still longer than any realistic
+          // window for noticing and recovering from a vault-state
+          // corruption: the data-loss-incident class is now caught
+          // inline by the shrink guard + vaultDataLoaded gate
+          // (vault-manager), and an in-flight regression would be
+          // visible within hours via user reports, not days.
+          // See task #123.
+          noncurrentVersionExpiration: cdk.Duration.days(7),
         },
       ],
       removalPolicy: cdk.RemovalPolicy.RETAIN, // Keep data on stack deletion
@@ -905,46 +914,17 @@ export class NitroStack extends cdk.Stack {
       treatMissingData: cloudwatch.TreatMissingData.BREACHING,
     });
 
-    // Vault-data noncurrent-version alarm (architect §3 storage invariants).
-    // Each overwrite of an S3 object under versioning produces a noncurrent
-    // version. The data-loss incidents on 2026-05-06 / 2026-05-09 wrote
-    // ~12 KB stubs over ~220 KB vault_state.enc objects, spiking the
-    // noncurrent-version count for affected users. The shrink guard in
-    // persistVaultStateToS3 (vault-manager) now refuses those writes
-    // inline, but a future regression that bypasses the guard would
-    // show up here as a sudden surge in noncurrent versions. The
-    // metric is bucket-level, not per-key — AWS doesn't expose per-key
-    // version-count as a standard CloudWatch metric — so this is a
-    // surge detector for the bucket as a whole.
-    //
-    // Daily storage metrics are emitted once per day on a ~24-hour
-    // delay; this is an early-warning alarm, not real-time. For
-    // real-time per-write visibility we'd need Storage Lens Advanced
-    // or a custom metric emitted from the parent's S3 PUT path.
-    new cloudwatch.Alarm(this, 'VaultDataNoncurrentVersionsAlarm', {
-      alarmName: 'VettID-VaultData-NoncurrentVersions-Surge',
-      alarmDescription:
-        'Noncurrent-version count on vault-data bucket grew suddenly — possible data-loss bug overwriting healthy state. Investigate logs for "REFUSING to persist vault state" and S3 object versions for vault_state.enc shrinkage.',
-      metric: new cloudwatch.Metric({
-        namespace: 'AWS/S3',
-        metricName: 'NumberOfObjects',
-        dimensionsMap: {
-          BucketName: this.vaultDataBucket.bucketName,
-          StorageType: 'AllStorageTypes',
-        },
-        statistic: 'Maximum',
-        period: cdk.Duration.days(1),
-      }),
-      // Threshold is intentionally generous: a single user's vault rotates
-      // its various state objects (vault_state.enc, sealed_material.bin,
-      // sealed_ecies.bin, migration markers) at most a few times per day.
-      // For an N-user fleet, expect ~10*N steady-state objects-per-day
-      // ceiling. A sudden jump well above that floor indicates a bug.
-      threshold: 1000,
-      evaluationPeriods: 1,
-      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-    });
+    // Architect §3 called for a CloudWatch alarm on noncurrent-version
+    // surges as defense-in-depth against data-loss bugs. The bucket-level
+    // metric AWS exposes (NumberOfObjects per AllStorageTypes) has a
+    // ~175k baseline that mixes vault_state.enc revisions with audit
+    // logs, JetStream messages, build artifacts, etc., so neither a
+    // fixed threshold nor an anomaly band produced a useful signal.
+    // The shrink guard in persistVaultStateToS3 is the actual defense
+    // for the data-loss class; this alarm slot is intentionally left
+    // empty until we either enable S3 Storage Lens Advanced (per-prefix
+    // metrics) or emit a custom CloudWatch metric from the parent's
+    // vault_state.enc PUT path.
 
     // High CPU alarm
     new cloudwatch.Alarm(this, 'HighCpuAlarm', {

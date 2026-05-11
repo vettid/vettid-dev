@@ -184,7 +184,28 @@ type MessageHandler struct {
 	// invocations awaiting owner decision.
 	enabledActions   *EnabledActionState
 	pendingApprovals *ActionPendingApprovalQueue
+
+	// Auto-persist throttle. main.go's request loop persists after
+	// every successful message, plus several handlers add their own
+	// explicit persistVaultStateToS3() calls — a single user session
+	// can produce hundreds of writes per minute against the same
+	// vault_state.enc key. The bucket accumulated ~4800 noncurrent
+	// versions of vault_state.enc (~1 GB) over 30 days as a result.
+	// persistMu + lastPersistTime throttle non-forced calls to at
+	// most one S3 PUT per persistDebounceInterval; the exported
+	// PersistVaultStateToS3 (shutdown path) bypasses the throttle so
+	// no data is left in memory at exit.
+	persistMu       sync.Mutex
+	lastPersistTime time.Time
 }
+
+// persistDebounceInterval bounds the rate of vault_state.enc writes.
+// Set to 15 s as a balance: short enough that a crash during a single
+// user session loses at most one session's-worth of edits since the
+// last persist; long enough to coalesce bursts of mutations (profile
+// updates, secret edits, message sends, presence ticks) that today
+// each trigger their own redundant write.
+const persistDebounceInterval = 15 * time.Second
 
 // VsockPublisher implements CallPublisher using vsock to parent
 type VsockPublisher struct {
@@ -1618,10 +1639,15 @@ func (mh *MessageHandler) handlePersonalDataOperation(ctx context.Context, msg *
 	}
 }
 
-// PersistVaultStateToS3 is the exported wrapper for persistVaultStateToS3.
-// Called by the auto-save ticker and graceful shutdown in main.go.
+// PersistVaultStateToS3 is the exported, force-flush variant. Bypasses
+// the throttle in persistVaultStateToS3 so callers that need a
+// guaranteed flush — graceful shutdown, decommission, post-PIN
+// commit points — actually land on S3 before they return.
+//
+// Use this sparingly. The throttled variant is correct for the
+// "after every request" hot path.
 func (mh *MessageHandler) PersistVaultStateToS3() {
-	mh.persistVaultStateToS3()
+	mh.flushVaultStateToS3()
 }
 
 // shouldRefuseShrink returns true when the new vault-state payload is
@@ -1644,9 +1670,40 @@ func shouldRefuseShrink(prevSize, newSize int64) bool {
 	return newSize*2 < prevSize
 }
 
-// persistVaultStateToS3 persists the current vault state to S3 for durability.
-// This ensures that data modifications are not lost if the vault-manager is restarted.
+// persistVaultStateToS3 is the throttled wrapper used by the main
+// request loop and every handler-level persist site. Persists are
+// rate-limited to one per persistDebounceInterval — a burst of
+// mutations within the window collapses into a single S3 write,
+// cutting the noncurrent-version count and storage cost dramatically
+// without changing the "auto-persist after every successful request"
+// semantics callers expect.
+//
+// If the throttle skips, the data sits in vault-manager memory
+// (encrypted SQLite + crypto carve-outs) until the next non-throttled
+// persist or a graceful shutdown via PersistVaultStateToS3. A crash
+// inside the throttle window loses at most that window's worth of
+// edits — acceptable given the alternative (~one S3 write per
+// handler call, ~hundreds per session).
 func (mh *MessageHandler) persistVaultStateToS3() {
+	mh.persistMu.Lock()
+	if time.Since(mh.lastPersistTime) < persistDebounceInterval {
+		mh.persistMu.Unlock()
+		return
+	}
+	// Update lastPersistTime BEFORE the flush so concurrent callers
+	// land on the throttled branch even while this flush is in flight.
+	// On flush failure we leave the timestamp set: the next call within
+	// the window is still skipped; retries continue at the cadence.
+	mh.lastPersistTime = time.Now()
+	mh.persistMu.Unlock()
+	mh.flushVaultStateToS3()
+}
+
+// flushVaultStateToS3 is the unconditional flush: dek/loaded gates,
+// shrink guard, S3 PUT, size update. Called by both the throttled
+// path (persistVaultStateToS3) after the throttle window opens, and
+// by PersistVaultStateToS3 (shutdown/decommission) directly.
+func (mh *MessageHandler) flushVaultStateToS3() {
 	mh.vaultState.mu.RLock()
 	dek := mh.vaultState.dek
 	dataLoaded := mh.vaultState.vaultDataLoaded
