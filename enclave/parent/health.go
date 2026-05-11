@@ -11,22 +11,54 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// HealthServer provides HTTP health check endpoints
+// HealthServer provides HTTP health check endpoints. The same server
+// also serves the /internal/reclaim-from-pcr0 admin endpoint used by
+// deploy.sh during Phase 4.5 to drain users from OLD to NEW without
+// waiting for OLD's M1 handoff (which OLD can't emit if its vault-
+// manager has a verification bug). The endpoint binds to localhost
+// only — SSM RunShellScript is the auth boundary.
 type HealthServer struct {
-	port   int
-	server *http.Server
-	status *HealthStatus
-	mu     sync.RWMutex
+	port    int
+	server  *http.Server
+	status  *HealthStatus
+	mu      sync.RWMutex
+	routing *RoutingManager // wired post-construction via SetRouting
+}
+
+// SetRouting wires the routing manager so the /internal/reclaim-from-pcr0
+// admin endpoint can act on it. Called after Start() — the http handler
+// guards against nil so the endpoint just 503s before routing is up.
+func (h *HealthServer) SetRouting(r *RoutingManager) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.routing = r
 }
 
 // HealthStatus represents the current health status
+//
+// `Healthy` is the liveness signal: true from process start until
+// shutdown, regardless of whether NATS / vsock are connected. It
+// flips to false only when the process is in a known-bad state
+// (currently unused — process exit is the only such signal today).
+//
+// `Ready` is the readiness signal: true only when both NATS and the
+// enclave are connected. The deploy script probes /ready after a
+// new instance comes InService; /health is for systemd / liveness
+// probes that just need to know the process is alive.
+//
+// Earlier versions conflated the two — Healthy = natsConnected &&
+// enclaveConnected — so the endpoint returned 503 for the entire
+// vsock handshake window (1-3 min on cold boot). The deploy script's
+// 5-min budget intermittently won that race, producing loud
+// false-failure ERROR lines on every deploy.
 type HealthStatus struct {
-	Healthy       bool      `json:"healthy"`
-	NATSConnected bool      `json:"nats_connected"`
-	EnclaveConnected bool   `json:"enclave_connected"`
-	LastCheck     time.Time `json:"last_check"`
-	Uptime        string    `json:"uptime"`
-	Version       string    `json:"version"`
+	Healthy          bool      `json:"healthy"`
+	Ready            bool      `json:"ready"`
+	NATSConnected    bool      `json:"nats_connected"`
+	EnclaveConnected bool      `json:"enclave_connected"`
+	LastCheck        time.Time `json:"last_check"`
+	Uptime           string    `json:"uptime"`
+	Version          string    `json:"version"`
 }
 
 var startTime = time.Now()
@@ -36,7 +68,8 @@ func NewHealthServer(port int) *HealthServer {
 	return &HealthServer{
 		port: port,
 		status: &HealthStatus{
-			Healthy: true,
+			Healthy: true, // liveness — true from start
+			Ready:   false, // readiness — flips true once both connections land
 			Version: Version,
 		},
 	}
@@ -48,9 +81,13 @@ func (h *HealthServer) Start() {
 	mux.HandleFunc("/health", h.handleHealth)
 	mux.HandleFunc("/ready", h.handleReady)
 	mux.HandleFunc("/metrics", h.handleMetrics)
+	mux.HandleFunc("/internal/reclaim-from-pcr0", h.handleReclaimFromPCR0)
 
 	h.server = &http.Server{
-		Addr:    fmt.Sprintf(":%d", h.port),
+		// Localhost-only — the reclaim endpoint is unauthenticated and
+		// must not be reachable from outside this host. SSM
+		// RunShellScript bridges deploy.sh through to here.
+		Addr:    fmt.Sprintf("127.0.0.1:%d", h.port),
 		Handler: mux,
 	}
 
@@ -70,26 +107,32 @@ func (h *HealthServer) Stop() {
 	}
 }
 
-// UpdateStatus updates the health status
+// UpdateStatus updates the readiness status from the connection
+// state callback chain. Liveness (Healthy) stays true throughout —
+// only the readiness signal tracks whether the parent has finished
+// its boot handshake. See HealthStatus doc comment for the split.
 func (h *HealthServer) UpdateStatus(natsConnected, enclaveConnected bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	h.status.NATSConnected = natsConnected
 	h.status.EnclaveConnected = enclaveConnected
-	h.status.Healthy = natsConnected && enclaveConnected
+	h.status.Ready = natsConnected && enclaveConnected
 	h.status.LastCheck = time.Now()
 	h.status.Uptime = time.Since(startTime).String()
 }
 
-// handleHealth handles the /health endpoint
+// handleHealth handles the /health endpoint — liveness only. Returns
+// 200 if the process is alive (which it is, by virtue of serving the
+// request). Used by systemd-style liveness probes that want to know
+// "is the process running" not "has it finished booting". The
+// deploy.sh enclave-health gate should probe /ready instead.
 func (h *HealthServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	h.mu.RLock()
 	status := *h.status
 	h.mu.RUnlock()
 
 	status.Uptime = time.Since(startTime).String()
-
 	w.Header().Set("Content-Type", "application/json")
 	if !status.Healthy {
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -97,19 +140,77 @@ func (h *HealthServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(status)
 }
 
-// handleReady handles the /ready endpoint (for Kubernetes readiness probes)
+// handleReady handles the /ready endpoint — readiness signal.
+// Returns 200 only when both NATS and the enclave are connected.
+// Used by deploy.sh's post-launch verification (the parent's boot
+// sequence takes 1-3 min cold; until then this returns 503).
 func (h *HealthServer) handleReady(w http.ResponseWriter, r *http.Request) {
 	h.mu.RLock()
-	healthy := h.status.Healthy
+	status := *h.status
 	h.mu.RUnlock()
 
-	if healthy {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ready"))
-	} else {
+	status.Uptime = time.Since(startTime).String()
+	w.Header().Set("Content-Type", "application/json")
+	if !status.Ready {
 		w.WriteHeader(http.StatusServiceUnavailable)
-		w.Write([]byte("not ready"))
 	}
+	json.NewEncoder(w).Encode(status)
+}
+
+// handleReclaimFromPCR0 is the admin endpoint that deploy.sh Phase 4.5
+// calls to drain users from OLD to NEW during the migration window.
+// Query param `pcr0` is the OLD PCR0 (hex). Returns the number of
+// users reclaimed and the running PCR0 for sanity-check.
+//
+// Bound to 127.0.0.1 only — auth boundary is "you must be on this
+// host to call it" which during deploys = "SSM RunShellScript".
+//
+// Background: the M1 routing handoff fires from OLD's
+// dispatchMigrateConsent when a user accepts the migration prompt.
+// OLD-with-broken-vault-manager (yesterday's case) couldn't verify
+// the config and short-circuited before reaching the handoff branch,
+// so users stayed pinned to OLD forever and required manual ASG
+// termination to flip them to NEW. This endpoint lets the deploy
+// script proactively trigger the move once Phase 4.5 has confirmed
+// NEW is healthy.
+func (h *HealthServer) handleReclaimFromPCR0(w http.ResponseWriter, r *http.Request) {
+	h.mu.RLock()
+	routing := h.routing
+	h.mu.RUnlock()
+	if routing == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":"routing not yet initialized"}`))
+		return
+	}
+	oldPCR0 := r.URL.Query().Get("pcr0")
+	if oldPCR0 == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"missing pcr0 query parameter"}`))
+		return
+	}
+	claimed, err := routing.ReclaimUsersFromPCR0(oldPCR0)
+	w.Header().Set("Content-Type", "application/json")
+	if err != nil {
+		log.Error().Err(err).Str("old_pcr0", oldPCR0).Msg("reclaim-from-pcr0 failed")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"error":         err.Error(),
+			"claimed":       claimed,
+			"running_pcr0":  routing.pcr0,
+			"requested_old": oldPCR0,
+		})
+		return
+	}
+	log.Info().
+		Int("claimed", claimed).
+		Str("old_pcr0", oldPCR0).
+		Str("new_pcr0", routing.pcr0).
+		Msg("Admin reclaim-from-pcr0 completed")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"claimed":       claimed,
+		"running_pcr0":  routing.pcr0,
+		"requested_old": oldPCR0,
+	})
 }
 
 // handleMetrics handles the /metrics endpoint (Prometheus format)

@@ -205,6 +205,12 @@ func (p *ParentProcess) routeNATSToEnclave(ctx context.Context) error {
 	if err := p.routing.Start(ctx); err != nil {
 		return fmt.Errorf("failed to start routing manager: %w", err)
 	}
+	// Wire routing into the health server so the
+	// /internal/reclaim-from-pcr0 admin endpoint can call it.
+	// Until this runs the endpoint returns 503 with a clear message.
+	if p.healthSrv != nil {
+		p.healthSrv.SetRouting(p.routing)
+	}
 
 	// Narrow wildcards for pre-enrollment operations that any instance
 	// may accept. The routing manager handles the handoff once a user

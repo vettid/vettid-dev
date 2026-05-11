@@ -279,12 +279,17 @@ verify_enclave_health() {
             continue
         fi
 
-        # Check parent health endpoint
+        # Check parent readiness endpoint. /ready returns 200 only after
+        # NATS + vsock handshake complete (the actual "ready to serve
+        # traffic" signal). Earlier we probed /health which conflated
+        # liveness with readiness — /health returned 503 during the
+        # 1-3 minute vsock-handshake window of every cold boot,
+        # producing false-failure ERROR lines on every deploy.
         local cmd_id
         cmd_id=$(aws ssm send-command \
             --instance-ids "$instance_id" \
             --document-name "AWS-RunShellScript" \
-            --parameters 'commands=["curl -sf http://localhost:8080/health 2>/dev/null || echo HEALTH_FAIL"]' \
+            --parameters 'commands=["curl -sf http://localhost:8080/ready 2>/dev/null || curl -sf http://localhost:8080/health 2>/dev/null || echo HEALTH_FAIL"]' \
             --query 'Command.CommandId' \
             --output text --region "$REGION" 2>/dev/null || echo "")
 
@@ -305,8 +310,12 @@ verify_enclave_health() {
             --query 'StandardOutputContent' \
             --output text --region "$REGION" 2>/dev/null || echo "HEALTH_FAIL")
 
-        if echo "$health_output" | grep -q '"Healthy":true\|"healthy":true'; then
-            log_info "Enclave health check passed for $instance_id ($((attempt*delay))s elapsed)"
+        # /ready returns the same envelope; "ready":true is the new gate.
+        # Fall back to "healthy":true for backwards compat with parents
+        # built before the liveness/readiness split — those don't expose
+        # `ready` but their `healthy` field carries the same semantic.
+        if echo "$health_output" | grep -q '"ready":true\|"Healthy":true\|"healthy":true'; then
+            log_info "Enclave readiness check passed for $instance_id ($((attempt*delay))s elapsed)"
             return 0
         fi
 
@@ -740,6 +749,55 @@ do_deploy() {
         log_info "New instance journal is clean (no handler errors or replay rejections)"
     else
         log_warn "Could not send SSM command for journal scan — verify manually"
+    fi
+
+    # ------------------------------------------------------------------
+    # Phase 4.6: Force-reclaim routing claims from OLD → NEW
+    # ------------------------------------------------------------------
+    # Architect §1 / open question #1: NEW should not have to wait for
+    # OLD to emit the M1 routing handoff. The 2026-05-11 deploys had
+    # the same recurring failure mode — OLD's vault-manager couldn't
+    # verify the migration config (pcr_signing_key_arn missing or
+    # canonicalization bug), so dispatchMigrateConsent's "OLD-branch
+    # handoff" never fired, users stayed pinned to OLD, and the
+    # operator had to manually TerminateInstanceInAutoScalingGroup OLD
+    # to force routing failover.
+    #
+    # This phase triggers the new /internal/reclaim-from-pcr0 admin
+    # endpoint on NEW. NEW walks the routing KV and force-claims
+    # every entry whose PCR0 == OLD's. KMS AnyOf is still in effect
+    # so both sides can decrypt user material; the routing claim is
+    # just a NATS subscription target. Users mid-session see a brief
+    # NATS disconnect, app retries on NEW, F5 self-heal writes the
+    # marker on the next PIN unlock. No operator intervention needed.
+    #
+    # Non-blocking: if the reclaim call fails, we log + continue.
+    # Phase 5 still publishes the migration config and users would
+    # eventually move to NEW via app-driven migrate_consent, just
+    # slower and possibly requiring manual OLD termination.
+    PHASE="post-launch-routing-reclaim"
+    log_step "Phase 4.6: Force-reclaiming routing claims from OLD ($old_pcr0...) → NEW"
+    local reclaim_cmd reclaim_out reclaim_count
+    reclaim_cmd=$(aws ssm send-command \
+        --instance-ids "$new_instance_id" \
+        --document-name "AWS-RunShellScript" \
+        --parameters "commands=[\"curl -s --max-time 10 'http://127.0.0.1:8080/internal/reclaim-from-pcr0?pcr0=$old_pcr0' || echo RECLAIM_FAIL\"]" \
+        --query 'Command.CommandId' --output text --region "$REGION" 2>/dev/null || echo "")
+    if [[ -n "$reclaim_cmd" ]]; then
+        sleep 5
+        reclaim_out=$(aws ssm get-command-invocation --command-id "$reclaim_cmd" \
+            --instance-id "$new_instance_id" --query 'StandardOutputContent' \
+            --output text --region "$REGION" 2>/dev/null || echo "")
+        if echo "$reclaim_out" | grep -q '"claimed"'; then
+            reclaim_count=$(echo "$reclaim_out" | grep -oE '"claimed":[0-9]+' | head -1 | cut -d: -f2)
+            log_info "Routing reclaim: ${reclaim_count:-0} users moved from OLD to NEW"
+        else
+            # Endpoint may 503 if routing not yet up, or 400/500 on bad
+            # input. Either way, non-fatal — log and proceed.
+            log_warn "Routing reclaim returned unexpected response: ${reclaim_out:0:200}"
+        fi
+    else
+        log_warn "Could not send SSM command for routing reclaim — users will migrate via app prompt instead"
     fi
 
     # ------------------------------------------------------------------

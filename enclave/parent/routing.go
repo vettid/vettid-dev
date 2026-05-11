@@ -257,6 +257,92 @@ func (r *RoutingManager) canClaim(entryPCR string) bool {
 	return entryPCR == r.pcr0
 }
 
+// ReclaimUsersFromPCR0 force-claims every routing entry whose PCR0
+// equals the argument. Intended for the migration window only:
+// deploy.sh Phase 4.5 triggers this on the NEW instance after the
+// journal-scan gate has proven NEW is healthy, so users currently
+// pinned to OLD's routing claim get moved to NEW without waiting
+// for OLD to emit the M1 handoff (which OLD can't do if its
+// vault-manager has the verification bug that broke today's deploys).
+//
+// Safety: the routing claim is just a NATS subscription target.
+// KMS AnyOf during the migration window means BOTH instances can
+// decrypt the user's material; moving the claim doesn't grant new
+// privilege. The user's app may see a brief NATS disconnect when
+// its routing flips; the next message lands on NEW and proceeds
+// normally. F5 self-heal on NEW writes the migration marker on the
+// user's next PIN unlock, then auto-finalize tightens KMS to NEW only.
+//
+// Returns the number of users actually reclaimed. CAS-safe: an entry
+// that changes underneath us between Get and Update simply isn't
+// claimed this pass (we'll re-encounter it on the next call).
+func (r *RoutingManager) ReclaimUsersFromPCR0(oldPCR0 string) (int, error) {
+	if oldPCR0 == "" {
+		return 0, fmt.Errorf("oldPCR0 must be non-empty")
+	}
+	if oldPCR0 == r.pcr0 {
+		return 0, fmt.Errorf("oldPCR0 == our PCR0 (%s) — refusing to reclaim from self", truncPCR(r.pcr0))
+	}
+	kv, err := r.kv()
+	if err != nil {
+		return 0, err
+	}
+	keys, err := kv.Keys()
+	if err != nil {
+		if err == nats.ErrNoKeysFound {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("list routing keys: %w", err)
+	}
+	claimed := 0
+	for _, key := range keys {
+		if len(key) <= len(routingKeyPrefix) || key[:len(routingKeyPrefix)] != routingKeyPrefix {
+			continue
+		}
+		guid := key[len(routingKeyPrefix):]
+		current, err := kv.Get(key)
+		if err != nil {
+			continue
+		}
+		var existing routingEntry
+		if err := json.Unmarshal(current.Value(), &existing); err != nil {
+			continue
+		}
+		if existing.PCR0 != oldPCR0 {
+			continue
+		}
+		// Force-claim: bump revision via CAS. If someone else (OLD
+		// heartbeating, race with another NEW) bumps the row between
+		// our Get and Update, we lose cleanly — next pass picks up.
+		entry := routingEntry{
+			InstanceID: r.enclaveID,
+			PCR0:       r.pcr0,
+			LeaseUntil: time.Now().Add(leaseTTL).Unix(),
+		}
+		data, _ := json.Marshal(&entry)
+		rev, err := kv.Update(key, data, current.Revision())
+		if err != nil {
+			continue
+		}
+		r.mu.Lock()
+		r.owned[guid] = &ownedUser{
+			revision:   rev,
+			leaseUntil: time.Unix(entry.LeaseUntil, 0),
+		}
+		r.mu.Unlock()
+		if err := r.subscribeUser(guid); err != nil {
+			log.Warn().Err(err).Str("user_guid", guid).Msg("routing: subscribe failed after force-reclaim")
+		}
+		claimed++
+		log.Info().
+			Str("user_guid", guid).
+			Str("old_pcr0", truncPCR(oldPCR0)).
+			Str("new_pcr0", truncPCR(r.pcr0)).
+			Msg("routing: force-reclaimed for migration")
+	}
+	return claimed, nil
+}
+
 // ReclaimIfExpiredOrVacant tries to take over a user whose row is
 // either lease-expired (owner dead) or vacant (explicit release via
 // HandoffToPeer with empty target). CAS on the observed revision
