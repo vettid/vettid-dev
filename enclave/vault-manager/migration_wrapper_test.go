@@ -121,27 +121,11 @@ func TestSealedMaterialWrapper_OmitemptyHidesZeroNewFields(t *testing.T) {
 	}
 }
 
-func TestSealedMaterialWrapper_GenerationIncrementsFromLegacy(t *testing.T) {
-	// First re-seal of a legacy wrapper should produce Generation=1.
-	// Subsequent re-seals increment monotonically. Mirrors the
-	// `existing.Generation + 1` line in resealMaterial.
-	cases := []struct {
-		name           string
-		startGeneration int
-		wantNext       int
-	}{
-		{"legacy-zero", 0, 1},
-		{"first-stamp", 1, 2},
-		{"high-generation", 42, 43},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			existing := sealedMaterialWrapper{Generation: tc.startGeneration}
-			updated := sealedMaterialWrapper{Generation: existing.Generation + 1}
-			if updated.Generation != tc.wantNext {
-				t.Errorf("got generation %d, want %d", updated.Generation, tc.wantNext)
-			}
-		})
-	}
-}
+// (Removed 2026-05-11) TestSealedMaterialWrapper_GenerationIncrementsFromLegacy
+// was a tautology — it asserted `existing.Generation+1 == expected` by
+// computing both sides in the test body, never touching production
+// code. Real coverage of the increment behavior lives in the Tier-2
+// docker-pair harness (enclave/tests/migration/) which exercises
+// resealMaterial against fake-KMS and asserts the actual generation
+// stamped on the stored sealed_material wrapper.
 

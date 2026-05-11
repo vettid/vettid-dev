@@ -20,13 +20,9 @@ import (
 	"time"
 )
 
-// shouldThrottle is the policy decision inside persistVaultStateToS3.
-// Extracted here for testing because the actual persist function
-// requires a real MessageHandler with KMS/storage wired up.
-func shouldThrottle(now, last time.Time, window time.Duration) bool {
-	return now.Sub(last) < window
-}
-
+// Calls the production shouldThrottlePersist function (in messages.go),
+// not a parallel copy. If someone flips the comparison direction in
+// production, this test fails.
 func TestThrottlePolicy(t *testing.T) {
 	const window = 15 * time.Second
 	t0 := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
@@ -47,9 +43,9 @@ func TestThrottlePolicy(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := shouldThrottle(tc.now, tc.last, window)
+			got := shouldThrottlePersist(tc.now, tc.last, window)
 			if got != tc.throttle {
-				t.Errorf("shouldThrottle(now=%v, last=%v, window=%v) = %v, want %v",
+				t.Errorf("shouldThrottlePersist(now=%v, last=%v, window=%v) = %v, want %v",
 					tc.now, tc.last, window, got, tc.throttle)
 			}
 		})

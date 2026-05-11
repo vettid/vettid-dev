@@ -688,6 +688,19 @@ func (h *PINHandler) HandlePINUnlock(ctx context.Context, msg *IncomingMessage) 
 	// Restore the carve-outs here. Storage is initialized + backup
 	// restored above, so credential/sealed_blob is readable. We CEK-
 	// decrypt with the just-restored CEK pair.
+	//
+	// Two-tier fallback: the block ~80 lines above (line 599-622)
+	// ALREADY populates the same carve-outs from
+	// persistedState.Credential when present (legacy vault_state.enc
+	// blobs from the pre-Phase-D era still carry that field).
+	// restoreCredentialCarveOuts is the fallback for the
+	// post-Phase-D case where persistedState.Credential is nil and
+	// the carve-outs must come from credential/sealed_blob. Both
+	// paths populate the SAME vaultState fields with the SAME data;
+	// running the fallback after the primary is harmless (it just
+	// re-reads + re-writes the same bytes). When both vaults
+	// migrate off the legacy format the primary path will become
+	// dead code.
 	if !isWarmVault {
 		h.restoreCredentialCarveOuts()
 	}
@@ -1173,13 +1186,15 @@ func (h *PINHandler) dispatchMigrateConsent(ctx context.Context, consent bool) (
 		log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("inline ECIES re-seal failed (non-fatal)")
 	}
 
-	// Marker write is idempotent at S3 (same key, same content). Always
-	// (re-)write so F5 ("re-seal succeeded but marker missing") self-heals.
-	if configVersion != "" {
-		if err := h.sealerProxy.WriteMigrationMarker(configVersion); err != nil {
-			log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("migration marker write failed (non-fatal — next unlock retries)")
-		}
-	}
+	// Marker write intentionally NOT done here. HandlePINUnlock's
+	// next step calls writeFreshEnrollmentMigrationMarker (F5
+	// self-heal) which does exactly the same WriteMigrationMarker
+	// call with the same preconditions (config verified + running
+	// PCR0 == NewPCR0). Doing it twice produced two KMS Sign + two
+	// S3 PUT per unlock for no benefit. F5 is the single canonical
+	// marker-writer; if its write fails, the next unlock retries
+	// naturally because F5 fires on every successful unlock that
+	// matches the gate.
 
 	// Audit entry on the system connection so the user has a history
 	// row for this update. Mirrors the legacy HandleStart behavior.

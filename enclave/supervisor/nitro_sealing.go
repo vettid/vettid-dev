@@ -716,14 +716,28 @@ func removePKCS7Padding(data []byte) ([]byte, error) {
 // fields used to make migration re-seals safe under concurrent
 // writers and to detect already-migrated material on cold-load:
 //
-//   - Generation: monotonically incremented on every write. The
-//     migration handler reads N, writes N+1 with an S3 If-Match
-//     conditional so a concurrent writer's overwrite fails fast
-//     instead of last-writer-wins corruption.
+//   - Generation: monotonically incremented on every write.
+//     INFORMATIONAL ONLY. The architect's §M3 design called for an
+//     S3 If-Match conditional PUT keyed on the prior ETag, with the
+//     migration handler reading N, writing N+1, and bailing on
+//     PreconditionFailed. That conditional plumbing was NOT
+//     implemented (`StoreSealedMaterial` calls a plain
+//     `s3.PutObject`, no IfMatch in the sealer-request envelope).
+//     Concurrent-writer safety today comes from a different layer:
+//     KMS attestation gates Sign/Encrypt to the running PCR0, so a
+//     stale OLD enclave physically cannot produce a NEW-bound
+//     ciphertext to overwrite ours. Concurrent NEW-side writes are
+//     short-circuited by the SealedToPCR0 idempotency check in
+//     `resealMaterial` — second writer sees its own PCR already
+//     stamped and returns without a re-seal. Generation remains
+//     useful for forensics and would-be-useful for a future
+//     If-Match implementation; until then, the comment field below
+//     does not lie but does not load-bear either.
 //   - SealedToPCR0: hex of the running PCR0 the inner ciphertext was
 //     KMS-encrypted against. Any enclave reading the wrapper can tell
 //     whether re-seal has already happened by comparing this to its
-//     own running PCR0 — no KMS round-trip needed.
+//     own running PCR0 — no KMS round-trip needed. THIS is the field
+//     that provides the concurrent-write CAS via KMS attestation.
 //   - SealedToVersion: human-readable migration version
 //     (e.g. "2026-05-09-v3"); informational, may be empty.
 //

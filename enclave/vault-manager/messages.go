@@ -1670,6 +1670,16 @@ func shouldRefuseShrink(prevSize, newSize int64) bool {
 	return newSize*2 < prevSize
 }
 
+// shouldThrottlePersist returns true when a non-forced persist call
+// arriving at `now` should be skipped because the previous flush was
+// less than `window` ago. Extracted as a pure function so the
+// regression test in persist_throttle_test.go exercises THIS check
+// directly rather than a parallel copy that could drift under future
+// edits.
+func shouldThrottlePersist(now, lastPersist time.Time, window time.Duration) bool {
+	return now.Sub(lastPersist) < window
+}
+
 // persistVaultStateToS3 is the throttled wrapper used by the main
 // request loop and every handler-level persist site. Persists are
 // rate-limited to one per persistDebounceInterval — a burst of
@@ -1686,7 +1696,7 @@ func shouldRefuseShrink(prevSize, newSize int64) bool {
 // handler call, ~hundreds per session).
 func (mh *MessageHandler) persistVaultStateToS3() {
 	mh.persistMu.Lock()
-	if time.Since(mh.lastPersistTime) < persistDebounceInterval {
+	if shouldThrottlePersist(time.Now(), mh.lastPersistTime, persistDebounceInterval) {
 		mh.persistMu.Unlock()
 		return
 	}

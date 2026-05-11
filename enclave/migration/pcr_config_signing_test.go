@@ -17,7 +17,9 @@ package migration
 // no unit test compared signer vs verifier bytes.
 
 import (
+	"bytes"
 	"encoding/json"
+	"os"
 	"reflect"
 	"sort"
 	"strings"
@@ -98,12 +100,57 @@ func TestSignedPayloadCanonical_AlphabeticalKeys(t *testing.T) {
 	}
 }
 
-// TestSignedPayloadCanonical_MatchesJqOutput exists to document — for
-// any future maintainer who adds a field — that the test fixture
-// above must stay in lockstep with sign-pcr-config.sh's
-// `jq -cS 'del(.signature)'`. A failing TestSignedPayloadCanonical_AlphabeticalKeys
-// on a new field means either the struct field needs to be added
-// here, or the signer canonicalization has drifted.
+// TestSignedPayloadCanonical_MatchesJqOutput compares signedPayload's
+// output byte-for-byte against the canonical form produced by
+// `jq -cS 'del(.signature)'` (the exact transform sign-pcr-config.sh
+// runs before hashing). The fixture in testdata/canonical-fixture.json
+// is the SOURCE; testdata/canonical-fixture.canonical is the EXPECTED
+// canonical bytes, generated once at commit time by:
+//
+//	jq -cS 'del(.signature)' canonical-fixture.json > canonical-fixture.canonical
+//
+// If `signedPayload` ever diverges from jq -cS — top-level reorder,
+// new struct field added without testdata update, nested PCRValues
+// reorder, time-marshaling change — this test fails with a byte-level
+// diff. That's the regression net that the pre-2026-05-11 codebase
+// lacked.
 func TestSignedPayloadCanonical_MatchesJqOutput(t *testing.T) {
-	t.Skip("documentation-only: see comment above")
+	rawJSON, err := os.ReadFile("testdata/canonical-fixture.json")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	expected, err := os.ReadFile("testdata/canonical-fixture.canonical")
+	if err != nil {
+		t.Fatalf("read expected canonical: %v", err)
+	}
+	// Strip the trailing newline jq adds (`echo -n` in sign-pcr-config.sh
+	// drops it before hashing — see HASH=$(echo -n "$CANONICAL" | …)).
+	expected = bytes.TrimRight(expected, "\n")
+
+	var cfg SignedPCRConfig
+	if err := json.Unmarshal(rawJSON, &cfg); err != nil {
+		t.Fatalf("unmarshal fixture: %v", err)
+	}
+
+	got, err := cfg.signedPayload()
+	if err != nil {
+		t.Fatalf("signedPayload: %v", err)
+	}
+
+	if !bytes.Equal(got, expected) {
+		// Show the divergence position so the next maintainer can
+		// see exactly where signer/verifier drifted.
+		divergeAt := -1
+		for i := 0; i < len(got) && i < len(expected); i++ {
+			if got[i] != expected[i] {
+				divergeAt = i
+				break
+			}
+		}
+		if divergeAt < 0 {
+			divergeAt = min(len(got), len(expected))
+		}
+		t.Errorf("signedPayload bytes diverge from jq -cS at offset %d (len got=%d, len want=%d)\n got: %s\nwant: %s",
+			divergeAt, len(got), len(expected), got, expected)
+	}
 }
