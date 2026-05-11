@@ -342,21 +342,29 @@ Their `sealed_material.bin` would be in the legacy wrapper (no `generation`, no 
 
 ---
 
-## Open questions
+## Open questions (resolved 2026-05-11)
 
-1. **NATS routing race window during a fresh deploy.** When NEW enclave starts, the routing watcher reconciles. Does it eagerly reclaim all users on startup, or wait for the OLD instance's lease to expire? If eager: NEW takes ownership immediately, and the first `pin-unlock { migrate_consent: true }` lands on NEW directly — the F6 OLD-branch is rare. If lazy: OLD branch is the common case for the first few minutes. Reading `routing.go` it looks like reconcile-on-start does try to claim, but only via `ReclaimIfExpiredOrVacant` which requires the row to be vacant or lease-expired. So during normal handoff timing, NEW will NOT claim a healthy-leased user. **Need to verify** whether the brief's flow assumes eager reclaim. If not, F6's OLD-branch is the dominant first-unlock outcome and the app's retry logic must be tight.
+1. **NATS routing race window during a fresh deploy. [RESOLVED]** Resolution: implement explicit Phase 4.6 force-reclaim in `deploy.sh`. After Phase 4.5 confirms NEW is healthy, `deploy.sh` calls `/internal/reclaim-from-pcr0?pcr0=<OLD>` on NEW. NEW walks the routing KV and force-claims every entry whose PCR0 matches OLD's. This bypasses the "wait for OLD's M1 handoff" dependency entirely — important because OLD's vault-manager may have bugs that prevent it from emitting the handoff (2026-05-11 incidents). KMS AnyOf during the migration window means NEW can decrypt user material; routing is just a NATS subscription target. See `enclave/parent/routing.go: ReclaimUsersFromPCR0` and `enclave/scripts/deploy.sh: Phase 4.6`.
 
-2. **Android app retry semantics on `migration_status: pending_new_enclave`.** The proposal above adds an automatic retry. Is the latency acceptable (PIN screen "verifying" for 2–5 seconds)? If not, an alternative is to fail the unlock with a specific error code and let the user re-tap "Approve" — slower UX but more transparent. Operator preference required.
+2. **Android app retry semantics on `migration_status: pending_new_enclave`. [RESOLVED]** Resolution: 3 retries × 1.5s = up to 4.5s of automatic retry in `PinUnlockViewModel`. Confirmed acceptable UX in practice — users don't perceive the delay. The `_pendingMigrationApproval` flag stays armed across retries; consumed only on `"completed"` (see `vettid-android 129f101`).
 
-3. **Quiescence on auto-finalize.** Standby for 60s before terminate is a guess; the right number depends on how long an in-flight unlock can take (PIN entry to response). Currently the Android timeout is 30 s for `pin-unlock`. So 60 s standby is conservative but means finalize takes 60 s longer; acceptable.
+3. **Quiescence on auto-finalize. [RESOLVED]** 60s is in production (`migrationFinalize.ts`). Lambda timeout bumped 2 → 3 min to cover the new sleep. Order is now scale-down → 60s quiescence → KMS tighten → config delete, which lets in-flight unlocks complete on OLD before OLD becomes KMS-denied.
 
-4. **`MaxSize=2` cap during migration.** If real load spikes during a 72-hour migration window, no headroom. Recommendation: bump `MaxSize` to 3 during migration (allow scale-out) but keep `MinSize=2` (prevent scale-in below the dual-PCR0 minimum). I haven't proposed this in the body because it's an operational tweak, not an architectural one.
+4. **`MaxSize=2` cap during migration. [DEFERRED]** No load issues observed in 2-user testing. Revisit when fleet > 100 users. Recommendation when needed: bump MaxSize to 3 during the migration window, keep MinSize=2.
 
-5. **PCR1 / PCR2 changes without PCR0 change.** Today's deploy.sh treats PCR0 as the single migration trigger. PCR1 (kernel) or PCR2 (apps/init) can change while PCR0 stays the same in some build scenarios. KMS policy keys off PCR0 only. Is that correct? The brief implicitly assumes PCR0-only. If a PCR1 change should require migration consent, the design needs extension. Operator should confirm PCR0 is the canonical "did the enclave change in a way that requires re-trust" signal.
+5. **PCR1 / PCR2 changes without PCR0 change. [RESOLVED — PCR0 is sufficient]**
+   - Our EIF build process bundles kernel (PCR1) and init (PCR2) into the same Docker image hash that becomes PCR0. Any change to either also changes PCR0 by construction.
+   - The only realistic way PCR1/PCR2 could change WITHOUT PCR0 changing would be a runtime kernel hot-patch (e.g., kpatch/livepatch), which our enclave doesn't support.
+   - KMS policy keys off PCR0 only. This is sufficient: an attacker who could alter PCR1/PCR2 without altering PCR0 would already have arbitrary code execution inside the enclave, well past the trust boundary we're defending.
+   - Decision: **PCR0 stays as the sole migration trigger.** Document this assumption breaks if we ever add kernel hot-patching to the enclave runtime.
 
-6. **Emergency recovery (`HandleEmergencyRecovery`).** Currently a stub. The redesign doesn't change this; it remains an unimplemented escape hatch. Decide whether to invest in completing it or remove it for clarity.
+6. **Emergency recovery (`HandleEmergencyRecovery`). [DECIDED — REMOVE]**
+   - The handler is a stub with no real behavior. Keeping it around suggests a recovery path exists; in practice there is none.
+   - Real recovery today is: `scripts/decommission-vault.sh <user_guid>` + re-enroll. User loses any data not backed up out-of-band.
+   - Designing a proper recovery escape hatch would require: stamping a recovery secret at enrollment, accepting it as an alternative to PIN, deriving a fresh DEK, letting the user reset their PIN. That's a feature, not a bug fix — call it out as a separate plan when prioritized.
+   - **Action:** remove the stub handler. The migration redesign doesn't depend on it.
 
-7. **PCR signing key compromise.** The trust root for the migration config is the KMS PCR-signing key. If that key's signing capability leaks (KMS misconfig, IAM mistake), an attacker can mint forged `_migration/config.json` blobs. We accept this as an out-of-scope risk because compromising the IAM principal that can `kms:Sign` against `alias/vettid-pcr-signing` is roughly equivalent to compromising the deployer. Should this be hardened with a dual-signature scheme (e.g., a second offline signing key)? Probably not for the threat model; flagging for completeness.
+7. **PCR signing key compromise. [RESOLVED — accept]** Confirmed acceptable: compromising the IAM principal that can `kms:Sign` against `alias/vettid-pcr-signing` is roughly equivalent to compromising the deployer (same blast radius). Dual-signature would harden against a partial breach, but the cost/complexity isn't justified for the current threat model. Flag if compliance ever requires it.
 
 ---
 
