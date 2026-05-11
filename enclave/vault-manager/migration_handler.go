@@ -12,6 +12,25 @@ import (
 	"github.com/vettid/vettid-dev/enclave/migration"
 )
 
+// MigrationSealer is the subset of SealerProxy that MigrationHandler
+// uses. Extracted as an interface so unit tests can mock the KMS / S3
+// surface (handler tests need to assert "this method was called with
+// this argument" without standing up a real supervisor). *SealerProxy
+// satisfies it by inheritance.
+type MigrationSealer interface {
+	FetchMigrationConfig() ([]byte, error)
+	FetchPCRSigningPublicKey() ([]byte, error)
+	GetRunningPCR0() (string, error)
+	LoadSealedECIES() ([]byte, error)
+	LoadSealedMaterial() ([]byte, error)
+	SealCredential(data []byte) ([]byte, error)
+	StoreSealedECIES(sealedECIES []byte) error
+	StoreSealedMaterial(sealedMaterial []byte) error
+	UnsealCredential(sealedData []byte) ([]byte, error)
+	UnsealMaterial(sealedMaterialBlob []byte) ([]byte, error)
+	WriteMigrationMarker(version string) error
+}
+
 // MigrationHandler handles migration-related NATS operations.
 // Provides config retrieval and the deprecated start/status endpoints.
 // Per the 2026-05-09 architect redesign, migration is coupled to PIN
@@ -24,7 +43,7 @@ type MigrationHandler struct {
 	ownerSpace   string
 	storage      *EncryptedStorage
 	vaultState   *VaultState
-	sealerProxy  *SealerProxy
+	sealerProxy  MigrationSealer
 	auditLog     *AuditLog
 	sendToParent func(msg *OutgoingMessage) error // callback to emit routing-handoff to parent
 
@@ -46,7 +65,7 @@ func NewMigrationHandler(
 	ownerSpace string,
 	storage *EncryptedStorage,
 	vaultState *VaultState,
-	sealerProxy *SealerProxy,
+	sealerProxy MigrationSealer,
 ) *MigrationHandler {
 	return &MigrationHandler{
 		ownerSpace:  ownerSpace,
