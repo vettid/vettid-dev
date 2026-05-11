@@ -107,31 +107,61 @@ type SignedPCRConfig struct {
 
 // signedPayload returns the canonical bytes to be signed/verified.
 // This excludes the signature field itself.
+//
+// CRITICAL: must produce byte-for-byte the same output as the signer
+// (enclave/scripts/sign-pcr-config.sh) — `jq -cS 'del(.signature)'`,
+// which emits compact JSON with **alphabetically-sorted** top-level
+// keys. Go's default struct marshal emits fields in declaration
+// order; before this change the verifier's canonical bytes differed
+// from the signer's, every signature failed verification, and
+// dispatchMigrateConsent silently returned "not_requested" — every
+// migration was a no-op (incident 2026-05-11).
+//
+// The fix uses the standard marshal-into-map-then-marshal trick:
+// json.Marshal of a `map[string]json.RawMessage` emits keys in
+// sorted order. PCRValues nested keys (pcr0/pcr1/pcr2) are already
+// in alphabetical declaration order, so the inner objects match
+// jq's recursive sort automatically. A test in
+// pcr_config_signing_test.go pins this byte-for-byte against the
+// jq output so a future struct reorder can't silently break it.
 func (c *SignedPCRConfig) signedPayload() ([]byte, error) {
-	// Create a copy without the signature for canonical serialization
-	payload := struct {
-		NewPCRs        PCRValues `json:"new_pcrs"`
-		OldPCRs        PCRValues `json:"old_pcrs"`
-		ValidFrom      time.Time `json:"valid_from"`
-		ExpiresAt      time.Time `json:"expires_at,omitempty"`
-		Version        string    `json:"version"`
-		Summary        string    `json:"summary,omitempty"`
-		DetailsURL     string    `json:"details_url,omitempty"`
-		PublishedAt    time.Time `json:"published_at,omitempty"`
-		MandatoryAfter time.Time `json:"mandatory_after,omitempty"`
-	}{
-		NewPCRs:        c.NewPCRs,
-		OldPCRs:        c.OldPCRs,
-		ValidFrom:      c.ValidFrom,
-		ExpiresAt:      c.ExpiresAt,
-		Version:        c.Version,
-		Summary:        c.Summary,
-		DetailsURL:     c.DetailsURL,
-		PublishedAt:    c.PublishedAt,
-		MandatoryAfter: c.MandatoryAfter,
+	// Build directly as a map for two reasons:
+	//
+	// 1. json.Marshal of map[string]interface{} sorts keys
+	//    alphabetically; struct marshal emits them in declaration
+	//    order. The signer uses `jq -cS` (recursive sort) so we
+	//    must match.
+	//
+	// 2. `json:",omitempty"` on time.Time is a well-known Go
+	//    gotcha — it does NOT omit zero times; the marshaler emits
+	//    `"0001-01-01T00:00:00Z"`. The signer's source JSON simply
+	//    has no such field for zero values, so jq doesn't see one.
+	//    A struct-based approach therefore injects a phantom
+	//    `expires_at` and breaks signature verification. Building
+	//    the map manually with explicit IsZero() / != "" checks
+	//    keeps the canonical bytes byte-for-byte aligned.
+	m := map[string]interface{}{
+		"new_pcrs":   c.NewPCRs,
+		"old_pcrs":   c.OldPCRs,
+		"valid_from": c.ValidFrom,
+		"version":    c.Version,
 	}
-
-	return json.Marshal(payload)
+	if !c.ExpiresAt.IsZero() {
+		m["expires_at"] = c.ExpiresAt
+	}
+	if c.Summary != "" {
+		m["summary"] = c.Summary
+	}
+	if c.DetailsURL != "" {
+		m["details_url"] = c.DetailsURL
+	}
+	if !c.PublishedAt.IsZero() {
+		m["published_at"] = c.PublishedAt
+	}
+	if !c.MandatoryAfter.IsZero() {
+		m["mandatory_after"] = c.MandatoryAfter
+	}
+	return json.Marshal(m)
 }
 
 // PCRConfigVerifier verifies signed PCR configurations.
