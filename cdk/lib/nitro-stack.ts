@@ -1064,17 +1064,25 @@ export class NitroStack extends cdk.Stack {
       description: 'KMS Key ARN for PCR manifest signing — used by vault-manager migration-config verification',
     });
 
-    // Grant the enclave parent process read-only access to the PCR
-    // signing key's public material. The parent caches the DER at
-    // startup and forwards it to the vault-manager so the migration
-    // handler can verify the signature on every fetched migration
-    // config (defense against an attacker who can write to S3 but
-    // cannot sign with this key).
+    // Grant the enclave parent process:
+    //  - kms:GetPublicKey / kms:DescribeKey to verify the migration
+    //    config signature (defense against an attacker who can write
+    //    to S3 but cannot sign with this key).
+    //  - kms:Sign to write per-version migration markers. Each marker
+    //    at _migration/completed/{version}/{ownerSpace}.json is
+    //    KMS-Sign-signed under this key so the auto-finalize Lambda
+    //    can KMS-Verify it before counting it (architect §F3:
+    //    prevents a forged marker from prematurely triggering
+    //    finalize).
+    //
+    // Sign was missing in the original deploy — F5 self-heal markers
+    // failed with AccessDeniedException, blocking auto-finalize
+    // entirely (incident 2026-05-11).
     this.pcrSigningKey.addToResourcePolicy(new iam.PolicyStatement({
       sid: 'AllowEnclaveReadPublicKey',
       effect: iam.Effect.ALLOW,
       principals: [new iam.ArnPrincipal(this.enclaveInstanceRole.roleArn)],
-      actions: ['kms:GetPublicKey', 'kms:DescribeKey'],
+      actions: ['kms:GetPublicKey', 'kms:DescribeKey', 'kms:Sign'],
       resources: ['*'],
     }));
 
