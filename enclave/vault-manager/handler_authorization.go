@@ -644,7 +644,7 @@ func peerHandlerForIncomingSubject(operation string) string {
 	switch operation {
 	case "new-message", "read-receipt":
 		return "message"
-	case "location-update":
+	case "location-update", "location-stop", "location-request-ping":
 		return "location"
 	case "btc-address-request", "btc-payment-request", "btc-payment-receipt", "btc-address-response":
 		return "wallet"

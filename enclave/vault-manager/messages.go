@@ -832,6 +832,18 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 			return gateResp, nil
 		}
 		return mh.handleIncomingLocationUpdate(ctx, msg)
+	case "location-stop":
+		// Incoming stop-sharing notice from peer vault (V5).
+		if gateResp := mh.gatePeerSubject(operation, msg.Payload, msg.GetID()); gateResp != nil {
+			return gateResp, nil
+		}
+		return mh.handleIncomingLocationStop(ctx, msg)
+	case "location-request-ping":
+		// Incoming one-shot location-request ping from peer vault (V6).
+		if gateResp := mh.gatePeerSubject(operation, msg.Payload, msg.GetID()); gateResp != nil {
+			return gateResp, nil
+		}
+		return mh.handleIncomingLocationRequest(ctx, msg)
 	case "presence.heartbeat":
 		// Incoming presence heartbeat from peer vault — re-emit to
 		// our app so the UI can render "online" for that connection.
@@ -2344,6 +2356,20 @@ func (mh *MessageHandler) handleLocationOperation(ctx context.Context, msg *Inco
 		default:
 			return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown location sharing operation: %s", opParts[2]))
 		}
+	case "peer":
+		if len(opParts) < 3 {
+			return mh.errorResponse(msg.GetID(), "missing peer operation")
+		}
+		switch opParts[2] {
+		case "get":
+			return mh.locationHandler.HandlePeerGet(msg)
+		default:
+			return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown location peer operation: %s", opParts[2]))
+		}
+	case "request":
+		return mh.locationHandler.HandleRequest(msg)
+	case "send-once":
+		return mh.locationHandler.HandleSendOnce(msg)
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown location operation: %s", opType))
 	}
@@ -2651,6 +2677,22 @@ func (mh *MessageHandler) handleIncomingReadReceipt(ctx context.Context, msg *In
 func (mh *MessageHandler) handleIncomingLocationUpdate(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	if err := mh.locationHandler.HandleIncomingLocationUpdate(ctx, msg.Payload); err != nil {
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("failed to handle location update: %v", err))
+	}
+	return mh.successResponse(msg.GetID(), nil)
+}
+
+// handleIncomingLocationStop handles stop-sharing notices from peer vaults (V5).
+func (mh *MessageHandler) handleIncomingLocationStop(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	if err := mh.locationHandler.HandleIncomingLocationStop(ctx, msg.Payload); err != nil {
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("failed to handle location-stop: %v", err))
+	}
+	return mh.successResponse(msg.GetID(), nil)
+}
+
+// handleIncomingLocationRequest handles one-shot location-request pings (V6).
+func (mh *MessageHandler) handleIncomingLocationRequest(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	if err := mh.locationHandler.HandleIncomingLocationRequest(ctx, msg.Payload); err != nil {
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("failed to handle location-request-ping: %v", err))
 	}
 	return mh.successResponse(msg.GetID(), nil)
 }

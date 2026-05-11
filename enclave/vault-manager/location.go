@@ -39,6 +39,27 @@ const (
 	locationLatestKey       = "location/_latest"
 )
 
+// peerLocationCacheKey returns the storage key for the latest peer
+// location cached against a given local connection. Mirrors the
+// `connections/<id>/_peer_profile` pattern used by HandleIncomingProfileUpdate.
+func peerLocationCacheKey(connID string) string {
+	return "connections/" + connID + "/_peer_location"
+}
+
+// CachedPeerLocation is the JSON blob stored at peerLocationCacheKey.
+// One per connection; overwritten on every received location-update.
+// `FirstReceivedAt` is set on the initial write and never overwritten —
+// it's the transition marker the start-sharing notification (V3)
+// uses to decide whether this is the first observation of the share.
+type CachedPeerLocation struct {
+	Latitude        float64  `json:"latitude"`
+	Longitude       float64  `json:"longitude"`
+	Accuracy        *float32 `json:"accuracy,omitempty"`
+	Timestamp       int64    `json:"timestamp"`
+	UpdatedAt       string   `json:"updated_at"`
+	FirstReceivedAt string   `json:"first_received_at"`
+}
+
 // --- Data types ---
 
 // LocationSettings holds user preferences for location tracking
@@ -94,15 +115,83 @@ type LocationSharingListResponse struct {
 	SharedWith []string `json:"shared_with"`
 }
 
-// IncomingLocationUpdate is received from a peer vault
+// LocationPeerGetRequest reads the cached peer-shared location for a
+// single local connection. The connection_id is the LOCAL id (the one
+// the owner's vault assigned), not the peer's.
+type LocationPeerGetRequest struct {
+	ConnectionID string `json:"connection_id"`
+}
+
+// LocationPeerGetResponse carries the cached peer location, or
+// Shared=false if no cache row exists. Callers should treat absence
+// as "peer is not sharing right now" — V5 stop-sharing deletes the
+// row, and an unobserved peer never had one.
+type LocationPeerGetResponse struct {
+	Shared   bool                `json:"shared"`
+	Location *CachedPeerLocation `json:"location,omitempty"`
+}
+
+// LocationRequestRequest is the app-side payload for the
+// `location.request` op: ask a connected peer to send their current
+// location once. Maps to a `location-request-ping` peer broadcast.
+type LocationRequestRequest struct {
+	ConnectionID string `json:"connection_id"`
+}
+
+// LocationRequestPing is the peer-broadcast payload for a one-shot
+// request. Receiver forwards to its app as
+// `connection.peer-location-requested`; the receiver's user decides
+// whether to fulfill (typically via `location.send-once`).
+type LocationRequestPing struct {
+	EventID        string `json:"event_id,omitempty"`
+	FromOwnerSpace string `json:"from_owner_space"`
+	RequestedAt    string `json:"requested_at"`
+}
+
+// LocationSendOnceRequest is the app-side payload for the
+// `location.send-once` op: push the cached latest location point to a
+// single peer WITHOUT adding the peer to the sharing index. Used by
+// the receiver to satisfy a `location.request` ping without enabling
+// continuous sharing.
+type LocationSendOnceRequest struct {
+	ConnectionID string `json:"connection_id"`
+}
+
+// LocationStopBroadcast is sent by a vault to a single peer when the
+// owner toggles sharing off for that peer's connection. The peer
+// clears its cached peer-location row for the resolved connection
+// (see HandleIncomingLocationStop) and emits a one-shot system-card
+// notification so the receiver UI can take down "View Location"
+// without waiting for a poll. Single-typed peer subject — sender
+// marshals, receiver unmarshals into the same struct.
+type LocationStopBroadcast struct {
+	EventID        string `json:"event_id,omitempty"`
+	FromOwnerSpace string `json:"from_owner_space"`
+	StoppedAt      string `json:"stopped_at"`
+}
+
+// IncomingLocationUpdate is received from a peer vault.
+//
+// `ConnectionID` is the SENDER'S local connection id. Each vault
+// assigns its own connection id, so this value is meaningless to
+// the receiver and is kept only for backwards-compat logging.
+// `FromOwnerSpace` is the field the receiver actually uses to
+// resolve the local connection record via
+// FindConnectionByPeerGUID — same pattern as
+// ProfileUpdateNotification. Older senders that predate this
+// field will produce updates with FromOwnerSpace="" which the
+// receiver handles by skipping the cache write (V2) and the
+// transition notification (V3); the legacy forward-to-app path
+// still fires.
 type IncomingLocationUpdate struct {
-	EventID      string   `json:"event_id,omitempty"`
-	ConnectionID string   `json:"connection_id"`
-	Latitude     float64  `json:"latitude"`
-	Longitude    float64  `json:"longitude"`
-	Accuracy     *float32 `json:"accuracy,omitempty"`
-	Timestamp    int64    `json:"timestamp"`
-	UpdatedAt    string   `json:"updated_at"`
+	EventID        string   `json:"event_id,omitempty"`
+	ConnectionID   string   `json:"connection_id"`
+	FromOwnerSpace string   `json:"from_owner_space,omitempty"`
+	Latitude       float64  `json:"latitude"`
+	Longitude      float64  `json:"longitude"`
+	Accuracy       *float32 `json:"accuracy,omitempty"`
+	Timestamp      int64    `json:"timestamp"`
+	UpdatedAt      string   `json:"updated_at"`
 }
 
 // --- Response types ---
@@ -561,12 +650,22 @@ func (h *LocationHandler) HandleSharingToggle(msg *IncomingMessage) (*OutgoingMe
 	} else {
 		// Remove connection
 		var updated []string
+		wasShared := false
 		for _, id := range sharedWith {
-			if id != req.ConnectionID {
-				updated = append(updated, id)
+			if id == req.ConnectionID {
+				wasShared = true
+				continue
 			}
+			updated = append(updated, id)
 		}
 		sharedWith = updated
+		// V5: tell the peer right away so it can clear its cache and
+		// drop the "View Location" affordance. Only fire if the
+		// connection was actually in the sharing index — toggling
+		// off something that was never on shouldn't generate noise.
+		if wasShared {
+			h.pushStopToSharedConnection(context.Background(), req.ConnectionID)
+		}
 	}
 
 	// Persist
@@ -635,6 +734,325 @@ func (h *LocationHandler) HandleSharingPush(msg *IncomingMessage) (*OutgoingMess
 	}, nil
 }
 
+// HandleRequest publishes a one-shot location-request ping to a
+// single connected peer. The peer's vault forwards the ping to its
+// app, which can then call `location.send-once` to fulfill the
+// request without enabling continuous sharing.
+func (h *LocationHandler) HandleRequest(msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req LocationRequestRequest
+	if err := unmarshalRequest(msg.Payload, &req, "HandleRequest"); err != nil {
+		return h.errorResponse(msg.GetID(), "invalid request format")
+	}
+	if req.ConnectionID == "" {
+		return h.errorResponse(msg.GetID(), "connection_id is required")
+	}
+
+	connData, err := h.storage.Get("connections/" + req.ConnectionID)
+	if err != nil {
+		return h.errorResponse(msg.GetID(), "connection not found")
+	}
+	var conn ConnectionRecord
+	if err := json.Unmarshal(connData, &conn); err != nil {
+		return h.errorResponse(msg.GetID(), "failed to parse connection record")
+	}
+	if conn.Status != "active" || conn.PeerGUID == "" {
+		return h.errorResponse(msg.GetID(), "connection is not active")
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	ping := LocationRequestPing{
+		EventID:        fmt.Sprintf("loc-req:%s:%d", h.ownerSpace, time.Now().UnixNano()),
+		FromOwnerSpace: h.ownerSpace,
+		RequestedAt:    now,
+	}
+	payload, _ := json.Marshal(ping)
+	if err := h.publisher.PublishToVault(context.Background(), conn.PeerGUID, "location-request-ping", payload); err != nil {
+		log.Warn().Err(err).Str("connection_id", req.ConnectionID).Msg("Failed to publish location-request-ping")
+		return h.errorResponse(msg.GetID(), "failed to send location request")
+	}
+
+	resp := map[string]interface{}{
+		"success":      true,
+		"connection_id": req.ConnectionID,
+		"requested_at": now,
+	}
+	respBytes, _ := json.Marshal(resp)
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// HandleSendOnce pushes the latest cached location point to a single
+// peer without modifying the sharing index. Companion to HandleRequest:
+// the receiver of a `location-request-ping` calls this to fulfill the
+// request once without enabling continuous sharing.
+func (h *LocationHandler) HandleSendOnce(msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req LocationSendOnceRequest
+	if err := unmarshalRequest(msg.Payload, &req, "HandleSendOnce"); err != nil {
+		return h.errorResponse(msg.GetID(), "invalid request format")
+	}
+	if req.ConnectionID == "" {
+		return h.errorResponse(msg.GetID(), "connection_id is required")
+	}
+
+	connData, err := h.storage.Get("connections/" + req.ConnectionID)
+	if err != nil {
+		return h.errorResponse(msg.GetID(), "connection not found")
+	}
+	var conn ConnectionRecord
+	if err := json.Unmarshal(connData, &conn); err != nil {
+		return h.errorResponse(msg.GetID(), "failed to parse connection record")
+	}
+	if conn.Status != "active" || conn.PeerGUID == "" {
+		return h.errorResponse(msg.GetID(), "connection is not active")
+	}
+
+	latestData, err := h.storage.Get(locationLatestKey)
+	if err != nil || len(latestData) == 0 {
+		return h.errorResponse(msg.GetID(), "no location data available to send")
+	}
+	var point LocationPoint
+	if err := json.Unmarshal(latestData, &point); err != nil {
+		return h.errorResponse(msg.GetID(), "failed to read latest location")
+	}
+
+	settings := h.getSettings()
+	lat, lon := applyPrecision(point.Latitude, point.Longitude, settings)
+	now := time.Now().UTC()
+	update := IncomingLocationUpdate{
+		EventID:        fmt.Sprintf("loc-once:%s:%d", h.ownerSpace, time.Now().UnixNano()),
+		ConnectionID:   req.ConnectionID,
+		FromOwnerSpace: h.ownerSpace,
+		Latitude:       lat,
+		Longitude:      lon,
+		Accuracy:       point.Accuracy,
+		Timestamp:      point.Timestamp,
+		UpdatedAt:      now.Format(time.RFC3339),
+	}
+	updateData, _ := json.Marshal(update)
+	if err := h.publisher.PublishToVault(context.Background(), conn.PeerGUID, "location-update", updateData); err != nil {
+		log.Warn().Err(err).Str("connection_id", req.ConnectionID).Msg("Failed to send one-shot location")
+		return h.errorResponse(msg.GetID(), "failed to send location")
+	}
+
+	resp := map[string]interface{}{
+		"success":      true,
+		"connection_id": req.ConnectionID,
+	}
+	respBytes, _ := json.Marshal(resp)
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// HandleIncomingLocationRequest processes a one-shot location-request
+// ping from a peer vault. Forwards to the receiver app as
+// `connection.peer-location-requested` so the UI can prompt the user
+// to fulfill (via `location.send-once`) or ignore.
+func (h *LocationHandler) HandleIncomingLocationRequest(ctx context.Context, data []byte) error {
+	var ping LocationRequestPing
+	if err := json.Unmarshal(data, &ping); err != nil {
+		return err
+	}
+
+	eventID := ping.EventID
+	if eventID == "" {
+		eventID = fmt.Sprintf("location-request:%s:%s", ping.FromOwnerSpace, ping.RequestedAt)
+	}
+	if alreadyProcessed, err := h.storage.IsEventProcessed(eventID); err == nil && alreadyProcessed {
+		log.Info().Str("from_owner_space", ping.FromOwnerSpace).Msg("Duplicate location-request detected - ignoring replay")
+		return nil
+	}
+	if err := h.storage.MarkEventProcessed(eventID, "location_request"); err != nil {
+		log.Warn().Err(err).Msg("Failed to mark location-request as processed")
+	}
+
+	if ping.FromOwnerSpace == "" {
+		log.Debug().Msg("location-request-ping missing from_owner_space — dropping")
+		return nil
+	}
+	connID := h.findConnectionByPeerGUID(ping.FromOwnerSpace)
+	if connID == "" {
+		log.Debug().Str("from_owner_space", ping.FromOwnerSpace).Msg("location-request-ping for unknown peer — skipping")
+		return nil
+	}
+
+	requestedAt := ping.RequestedAt
+	if requestedAt == "" {
+		requestedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	payload, _ := json.Marshal(map[string]string{
+		"connection_id":    connID,
+		"from_owner_space": ping.FromOwnerSpace,
+		"requested_at":     requestedAt,
+	})
+	if err := h.publisher.PublishToApp(ctx, "connection.peer-location-requested", payload); err != nil {
+		log.Warn().Err(err).Str("connection_id", connID).Msg("Failed to forward location-request-ping to app")
+	}
+	return nil
+}
+
+// HandleIncomingLocationStop processes a stop-sharing notice from a
+// peer vault. Clears the cached peer-location row for the resolved
+// connection (V2 cache key) and emits the V5
+// `connection.peer-location-share-stopped` notification to the app
+// so the UI can drop the "View Location" affordance immediately.
+// Legacy senders (no FromOwnerSpace) are ignored — there's no way
+// to resolve the local connection without it.
+func (h *LocationHandler) HandleIncomingLocationStop(ctx context.Context, data []byte) error {
+	var stop LocationStopBroadcast
+	if err := json.Unmarshal(data, &stop); err != nil {
+		return err
+	}
+
+	eventID := stop.EventID
+	if eventID == "" {
+		eventID = fmt.Sprintf("location-stop:%s:%s", stop.FromOwnerSpace, stop.StoppedAt)
+	}
+	if alreadyProcessed, err := h.storage.IsEventProcessed(eventID); err == nil && alreadyProcessed {
+		log.Info().Str("from_owner_space", stop.FromOwnerSpace).Msg("Duplicate location-stop detected - ignoring replay")
+		return nil
+	}
+	if err := h.storage.MarkEventProcessed(eventID, "location_stop"); err != nil {
+		log.Warn().Err(err).Msg("Failed to mark location-stop as processed")
+	}
+
+	if stop.FromOwnerSpace == "" {
+		log.Debug().Msg("location-stop missing from_owner_space — cannot resolve connection, dropping")
+		return nil
+	}
+
+	connID := h.findConnectionByPeerGUID(stop.FromOwnerSpace)
+	if connID == "" {
+		log.Debug().Str("from_owner_space", stop.FromOwnerSpace).Msg("location-stop for unknown peer — skipping")
+		return nil
+	}
+
+	key := peerLocationCacheKey(connID)
+	hadCache := false
+	if existing, err := h.storage.Get(key); err == nil && len(existing) > 0 {
+		hadCache = true
+	}
+	if hadCache {
+		if err := h.storage.Delete(key); err != nil {
+			log.Warn().Err(err).Str("connection_id", connID).Msg("Failed to clear cached peer location on stop")
+		}
+	}
+	log.Info().
+		Str("connection_id", connID).
+		Str("from_owner_space", stop.FromOwnerSpace).
+		Bool("had_cache", hadCache).
+		Msg("Processed peer location-stop")
+
+	// Always emit the app notification, even if cache was absent:
+	// the receiver-side UI may have been showing a stale "shared"
+	// indicator derived from elsewhere, and the system-card row is
+	// part of the activity feed regardless of cache state.
+	stoppedAt := stop.StoppedAt
+	if stoppedAt == "" {
+		stoppedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	h.emitPeerLocationShareStopped(ctx, connID, stop.FromOwnerSpace, stoppedAt)
+	return nil
+}
+
+// emitPeerLocationShareStopped publishes a one-shot notification to
+// the owner's app announcing that a peer just stopped sharing their
+// location. Mirrors emitPeerLocationShareStarted (V3).
+func (h *LocationHandler) emitPeerLocationShareStopped(ctx context.Context, connID, fromOwnerSpace, stoppedAt string) {
+	payload, err := json.Marshal(map[string]string{
+		"connection_id":    connID,
+		"from_owner_space": fromOwnerSpace,
+		"stopped_at":       stoppedAt,
+	})
+	if err != nil {
+		return
+	}
+	if err := h.publisher.PublishToApp(ctx, "connection.peer-location-share-stopped", payload); err != nil {
+		log.Warn().Err(err).Str("connection_id", connID).Msg("Failed to publish peer-location-share-stopped notification")
+	}
+}
+
+// pushStopToSharedConnection sends a single location-stop broadcast
+// to the peer for the given connection id. Used by HandleSharingToggle
+// when sharing is being turned off; the explicit signal lets the peer
+// clear its cache and update its UI without waiting for a poll.
+// Non-fatal on failure — the sender's sharing-index update is the
+// canonical state; the peer will eventually time out its cache.
+func (h *LocationHandler) pushStopToSharedConnection(ctx context.Context, connID string) {
+	data, err := h.storage.Get("connections/" + connID)
+	if err != nil {
+		log.Warn().Err(err).Str("connection_id", connID).Msg("Failed to load connection for stop push")
+		return
+	}
+	var conn ConnectionRecord
+	if err := json.Unmarshal(data, &conn); err != nil {
+		log.Warn().Err(err).Str("connection_id", connID).Msg("Failed to parse connection for stop push")
+		return
+	}
+	if conn.Status != "active" || conn.PeerGUID == "" {
+		return
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	stop := LocationStopBroadcast{
+		EventID:        fmt.Sprintf("loc-stop:%s:%d", h.ownerSpace, time.Now().UnixNano()),
+		FromOwnerSpace: h.ownerSpace,
+		StoppedAt:      now,
+	}
+	payload, _ := json.Marshal(stop)
+	if err := h.publisher.PublishToVault(ctx, conn.PeerGUID, "location-stop", payload); err != nil {
+		log.Warn().Err(err).Str("connection_id", connID).Msg("Failed to push location-stop to peer")
+	}
+}
+
+// HandlePeerGet returns the cached peer location for a single
+// connection. This is what powers the "View Location" action on the
+// Connection Detail screen — the cache is written on every received
+// location-update (see HandleIncomingLocationUpdate) and removed by
+// V5 stop-sharing, so reading it is the cheapest way to ask "is this
+// peer currently sharing?".
+func (h *LocationHandler) HandlePeerGet(msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req LocationPeerGetRequest
+	if err := unmarshalRequest(msg.Payload, &req, "HandlePeerGet"); err != nil {
+		return h.errorResponse(msg.GetID(), "invalid request format")
+	}
+	if req.ConnectionID == "" {
+		return h.errorResponse(msg.GetID(), "connection_id is required")
+	}
+
+	key := peerLocationCacheKey(req.ConnectionID)
+	data, err := h.storage.Get(key)
+	if err != nil || len(data) == 0 {
+		respBytes, _ := json.Marshal(LocationPeerGetResponse{Shared: false})
+		return &OutgoingMessage{
+			RequestID: msg.GetID(),
+			Type:      MessageTypeResponse,
+			Payload:   respBytes,
+		}, nil
+	}
+
+	var cached CachedPeerLocation
+	if err := json.Unmarshal(data, &cached); err != nil {
+		log.Warn().Err(err).Str("connection_id", req.ConnectionID).Msg("Failed to decode cached peer location")
+		return h.errorResponse(msg.GetID(), "failed to decode cached peer location")
+	}
+
+	respBytes, _ := json.Marshal(LocationPeerGetResponse{
+		Shared:   true,
+		Location: &cached,
+	})
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
 // HandleIncomingLocationUpdate processes a location update from a peer vault.
 // The update is ephemeral — it is NOT stored, only forwarded to the app.
 func (h *LocationHandler) HandleIncomingLocationUpdate(ctx context.Context, data []byte) error {
@@ -666,12 +1084,137 @@ func (h *LocationHandler) HandleIncomingLocationUpdate(ctx context.Context, data
 		log.Warn().Err(err).Str("connection_id", update.ConnectionID).Msg("Failed to mark location update as processed")
 	}
 
-	// Forward to app (ephemeral — not stored)
+	// V2 (2026-05-11): cache the latest point under the LOCAL connection
+	// id so Connection Detail can render it without subscribing to live
+	// broadcasts. The sender's `update.ConnectionID` is useless — each
+	// vault assigns its own connection id — so resolve via
+	// FromOwnerSpace → local connID. Legacy senders (no FromOwnerSpace)
+	// skip the cache write; the legacy forward-to-app branch below
+	// still fires so existing clients aren't regressed.
+	//
+	// V3 transition detection lands in the same write: if the cache
+	// key didn't previously exist, FirstReceivedAt is stamped and the
+	// "started sharing" notification fires (see emitPeerLocationShareStarted).
+	if update.FromOwnerSpace != "" {
+		if connID := h.findConnectionByPeerGUID(update.FromOwnerSpace); connID != "" {
+			h.cachePeerLocationAndMaybeNotify(ctx, connID, update)
+		} else {
+			log.Debug().
+				Str("from_owner_space", update.FromOwnerSpace).
+				Msg("Peer location update for unknown peer — skipping cache (not a connected peer)")
+		}
+	}
+
+	// Forward to app (ephemeral — kept for legacy subscribers that
+	// want push-driven live updates; the cache above is the durable
+	// source of truth for "what was the last shared location".)
 	if err := h.publisher.PublishToApp(ctx, "location-update", data); err != nil {
 		log.Warn().Err(err).Msg("Failed to notify app of location update")
 	}
 
 	return nil
+}
+
+// findConnectionByPeerGUID walks the connection index and returns the
+// local connection id whose `PeerGUID` matches the argument. Returns
+// "" if no match. Inlined here rather than imported from
+// NotificationsHandler to keep LocationHandler self-contained — the
+// lookup is a pure storage read.
+func (h *LocationHandler) findConnectionByPeerGUID(peerGUID string) string {
+	indexData, err := h.storage.Get("connections/_index")
+	if err != nil {
+		return ""
+	}
+	var connectionIDs []string
+	if json.Unmarshal(indexData, &connectionIDs) != nil {
+		return ""
+	}
+	for _, connID := range connectionIDs {
+		data, err := h.storage.Get("connections/" + connID)
+		if err != nil {
+			continue
+		}
+		var conn ConnectionRecord
+		if json.Unmarshal(data, &conn) != nil {
+			continue
+		}
+		if conn.PeerGUID == peerGUID {
+			return connID
+		}
+	}
+	return ""
+}
+
+// cachePeerLocationAndMaybeNotify writes the latest peer location to
+// connections/<connID>/_peer_location. On the first write for this
+// connection (key absent, or last entry was explicitly cleared by
+// V5 stop-sharing), it stamps FirstReceivedAt and emits the V3
+// "started sharing" system-card notification to the app.
+func (h *LocationHandler) cachePeerLocationAndMaybeNotify(ctx context.Context, connID string, update IncomingLocationUpdate) {
+	key := peerLocationCacheKey(connID)
+	now := update.UpdatedAt
+	if now == "" {
+		now = time.Now().UTC().Format(time.RFC3339)
+	}
+
+	// Try to read existing cache to decide transition.
+	existed := false
+	firstReceivedAt := now
+	if existing, err := h.storage.Get(key); err == nil && len(existing) > 0 {
+		var prev CachedPeerLocation
+		if json.Unmarshal(existing, &prev) == nil && prev.FirstReceivedAt != "" {
+			existed = true
+			firstReceivedAt = prev.FirstReceivedAt
+		}
+	}
+
+	cache := CachedPeerLocation{
+		Latitude:        update.Latitude,
+		Longitude:       update.Longitude,
+		Accuracy:        update.Accuracy,
+		Timestamp:       update.Timestamp,
+		UpdatedAt:       now,
+		FirstReceivedAt: firstReceivedAt,
+	}
+	cacheBytes, err := json.Marshal(cache)
+	if err != nil {
+		log.Warn().Err(err).Str("connection_id", connID).Msg("Failed to marshal cached peer location")
+		return
+	}
+	if err := h.storage.Put(key, cacheBytes); err != nil {
+		log.Warn().Err(err).Str("connection_id", connID).Msg("Failed to cache peer location")
+		return
+	}
+	log.Info().
+		Str("connection_id", connID).
+		Str("from_owner_space", update.FromOwnerSpace).
+		Bool("first_share_observation", !existed).
+		Msg("Cached peer location")
+
+	// V3: on transition (first observation, or first after a V5 stop),
+	// emit the system-card notification. Idempotent absence of the
+	// cache key is the trigger.
+	if !existed {
+		h.emitPeerLocationShareStarted(ctx, connID, update.FromOwnerSpace, now)
+	}
+}
+
+// emitPeerLocationShareStarted publishes a one-shot notification to
+// the owner's app announcing that a peer just started sharing their
+// location. Used for the system-card activity-feed row + UI badge
+// refresh. Non-fatal on failure — the cache write already landed.
+func (h *LocationHandler) emitPeerLocationShareStarted(ctx context.Context, connID, fromOwnerSpace, startedAt string) {
+	payload, err := json.Marshal(map[string]string{
+		"connection_id":    connID,
+		"from_owner_space": fromOwnerSpace,
+		"started_at":       startedAt,
+	})
+	if err != nil {
+		return
+	}
+	if err := h.publisher.PublishToApp(ctx, "connection.peer-location-share-started", payload); err != nil {
+		log.Warn().Err(err).Str("connection_id", connID).Msg("Failed to publish peer-location-share-started notification")
+	}
 }
 
 // --- Sharing internal helpers ---
@@ -723,13 +1266,14 @@ func (h *LocationHandler) pushToSharedConnections(ctx context.Context, point Loc
 		}
 
 		update := IncomingLocationUpdate{
-			EventID:      fmt.Sprintf("loc:%s:%d", h.ownerSpace, point.Timestamp),
-			ConnectionID: connID,
-			Latitude:     lat,
-			Longitude:    lon,
-			Accuracy:     point.Accuracy,
-			Timestamp:    point.Timestamp,
-			UpdatedAt:    now.Format(time.RFC3339),
+			EventID:        fmt.Sprintf("loc:%s:%d", h.ownerSpace, point.Timestamp),
+			ConnectionID:   connID,
+			FromOwnerSpace: h.ownerSpace, // V1 (2026-05-11): receiver resolves via this
+			Latitude:       lat,
+			Longitude:      lon,
+			Accuracy:       point.Accuracy,
+			Timestamp:      point.Timestamp,
+			UpdatedAt:      now.Format(time.RFC3339),
 		}
 		updateData, _ := json.Marshal(update)
 

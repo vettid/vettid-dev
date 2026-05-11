@@ -131,24 +131,65 @@ func TestRevocationNoticeWire(t *testing.T) {
 func TestLocationUpdateWire(t *testing.T) {
 	accuracy := float32(12.5)
 	sender := IncomingLocationUpdate{
-		EventID:      "loc:owner:1234567890",
-		ConnectionID: "conn-1234",
-		Latitude:     37.7749,
-		Longitude:    -122.4194,
-		Accuracy:     &accuracy,
-		Timestamp:    1715369336,
-		UpdatedAt:    "2026-05-10T20:00:00Z",
+		EventID:        "loc:owner:1234567890",
+		ConnectionID:   "conn-1234",
+		FromOwnerSpace: "af44310d-2051-46a1-afd8-ee275b53f804",
+		Latitude:       37.7749,
+		Longitude:      -122.4194,
+		Accuracy:       &accuracy,
+		Timestamp:      1715369336,
+		UpdatedAt:      "2026-05-10T20:00:00Z",
 	}
 	var receiver IncomingLocationUpdate
 	roundTrip(t, "location-update", sender, &receiver)
 	if receiver.Accuracy == nil || *receiver.Accuracy != *sender.Accuracy {
 		t.Errorf("accuracy pointer round-trip failed (got %v want %v)", receiver.Accuracy, sender.Accuracy)
 	}
+	// FromOwnerSpace is the load-bearing receiver-side field for
+	// resolving the local connection id (V1 2026-05-11). Pin it so
+	// a future struct change that drops or renames the json tag
+	// fails this test instead of silently breaking the V2 cache.
+	if receiver.FromOwnerSpace != sender.FromOwnerSpace {
+		t.Errorf("from_owner_space lost: got %q want %q", receiver.FromOwnerSpace, sender.FromOwnerSpace)
+	}
 	// Compare value-equal fields (can't compare with pointer fields)
 	if receiver.EventID != sender.EventID || receiver.Latitude != sender.Latitude ||
 		receiver.Longitude != sender.Longitude || receiver.Timestamp != sender.Timestamp ||
 		receiver.UpdatedAt != sender.UpdatedAt || receiver.ConnectionID != sender.ConnectionID {
 		t.Errorf("location-update non-pointer fields lost\n got: %+v\nwant: %+v", receiver, sender)
+	}
+}
+
+func TestLocationStopWire(t *testing.T) {
+	sender := LocationStopBroadcast{
+		EventID:        "loc-stop:owner:1234567890",
+		FromOwnerSpace: "af44310d-2051-46a1-afd8-ee275b53f804",
+		StoppedAt:      "2026-05-11T20:00:00Z",
+	}
+	var receiver LocationStopBroadcast
+	roundTrip(t, "location-stop", sender, &receiver)
+	if receiver != sender {
+		t.Errorf("location-stop round-trip mismatch\n got: %+v\nwant: %+v", receiver, sender)
+	}
+	// FromOwnerSpace is the load-bearing receiver-side field for
+	// resolving the local connection (V5). Pin it explicitly even
+	// though the struct-eq check above already covers it — the
+	// pinned assertion documents why the field matters.
+	if receiver.FromOwnerSpace == "" {
+		t.Error("from_owner_space lost — V5 receiver cannot resolve local connection without it")
+	}
+}
+
+func TestLocationRequestPingWire(t *testing.T) {
+	sender := LocationRequestPing{
+		EventID:        "loc-req:owner:1234567890",
+		FromOwnerSpace: "af44310d-2051-46a1-afd8-ee275b53f804",
+		RequestedAt:    "2026-05-11T20:00:00Z",
+	}
+	var receiver LocationRequestPing
+	roundTrip(t, "location-request-ping", sender, &receiver)
+	if receiver != sender {
+		t.Errorf("location-request-ping round-trip mismatch\n got: %+v\nwant: %+v", receiver, sender)
 	}
 }
 
