@@ -1052,6 +1052,18 @@ export class NitroStack extends cdk.Stack {
       description: 'KMS Key ID for PCR manifest signing',
     });
 
+    // ARN form of the same key, consumed by the enclave parent's
+    // user-data script and templated into /etc/vettid/parent.yaml as
+    // `kms.pcr_signing_key_arn`. Without this, fetchAndVerifyMigrationConfig
+    // in the vault-manager fails with "PCR signing key ARN not configured",
+    // dispatchMigrateConsent returns "not_requested", and every
+    // migration accept silently no-ops (incident 2026-05-11).
+    new ssm.StringParameter(this, 'PcrSigningKeyArnParam', {
+      parameterName: '/vettid/attestation/pcr-signing-key-arn',
+      stringValue: this.pcrSigningKey.keyArn,
+      description: 'KMS Key ARN for PCR manifest signing — used by vault-manager migration-config verification',
+    });
+
     // Grant the enclave parent process read-only access to the PCR
     // signing key's public material. The parent caches the DER at
     // startup and forwards it to the vault-manager so the migration
@@ -1236,6 +1248,16 @@ export class NitroStack extends cdk.Stack {
       'KMS_SEALING_KEY_ARN=$(aws ssm get-parameter --name /vettid/nitro/sealing-key-arn --region $REGION --query Parameter.Value --output text)',
       'echo "KMS sealing key ARN: $KMS_SEALING_KEY_ARN"',
       '',
+      '# Fetch PCR signing key ARN from SSM. The vault-manager needs',
+      '# this so fetchAndVerifyMigrationConfig can KMS-Verify the',
+      '# signed _migration/config.json. Without it,',
+      '# dispatchMigrateConsent treats every migrate_consent request as',
+      '# "not_requested" — migration silently no-ops on accept.',
+      '# Incident 2026-05-11.',
+      'echo "Fetching PCR signing key ARN from SSM..."',
+      'PCR_SIGNING_KEY_ARN=$(aws ssm get-parameter --name /vettid/attestation/pcr-signing-key-arn --region $REGION --query Parameter.Value --output text 2>/dev/null || echo "")',
+      'echo "PCR signing key ARN: $PCR_SIGNING_KEY_ARN"',
+      '',
       '# Fetch vault data bucket from SSM for cold vault recovery',
       'echo "Fetching vault data bucket from SSM..."',
       'VAULT_DATA_BUCKET=$(aws ssm get-parameter --name /vettid/nitro/vault-data-bucket --region $REGION --query Parameter.Value --output text 2>/dev/null || echo "")',
@@ -1288,6 +1310,7 @@ export class NitroStack extends cdk.Stack {
       'kms:',
       '  sealing_key_arn: $KMS_SEALING_KEY_ARN',
       '  nats_seed_key_arn: $NATS_SEED_KEY_ARN',
+      '  pcr_signing_key_arn: $PCR_SIGNING_KEY_ARN',
       '  region: $REGION',
       '',
       'dynamodb:',
