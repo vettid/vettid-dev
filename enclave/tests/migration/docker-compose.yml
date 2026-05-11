@@ -1,0 +1,95 @@
+# Tier-2 migration test harness — STUB
+#
+# Status: scaffolded but not yet runnable. See README.md for the
+# required production-code dev-mode hooks (supervisor FAKE_PCR0,
+# KMS bypass) that need to land before this compose file actually
+# runs.
+#
+# When complete this stands up:
+#   - LocalStack (S3 + KMS + SSM endpoints)
+#   - NATS with JetStream (single-node)
+#   - Two vettid-parent containers, each attesting to a different
+#     fake PCR0, both running the supervisor + vault-manager binaries
+#     against the shared LocalStack + NATS.
+#   - A test driver container that publishes vault RPCs and asserts
+#     the post-conditions.
+
+version: "3.9"
+
+services:
+  localstack:
+    image: localstack/localstack:3.7
+    container_name: vettid-migration-localstack
+    environment:
+      - SERVICES=s3,kms,ssm
+      - DEBUG=1
+      - PERSISTENCE=0
+    ports:
+      - "4566:4566"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:4566/_localstack/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  nats:
+    image: nats:2.10-alpine
+    container_name: vettid-migration-nats
+    command: ["-js", "-sd", "/data"]
+    ports:
+      - "4222:4222"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  init:
+    image: amazon/aws-cli:2.15.0
+    container_name: vettid-migration-init
+    depends_on:
+      localstack:
+        condition: service_healthy
+    environment:
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - AWS_DEFAULT_REGION=us-east-1
+      - AWS_ENDPOINT_URL=http://localstack:4566
+    volumes:
+      - ./fixtures/localstack-init.sh:/init.sh:ro
+    entrypoint: ["/bin/bash", "/init.sh"]
+
+  # parent-old and parent-new are placeholder service definitions.
+  # They reference Dockerfile.parent-dev which doesn't exist yet —
+  # building it requires the FAKE_PCR0 + KMS-bypass dev-mode hooks
+  # documented in README.md.
+  #
+  # parent-old:
+  #   build:
+  #     context: ../..
+  #     dockerfile: tests/migration/Dockerfile.parent-dev
+  #   environment:
+  #     - FAKE_PCR0_HEX=aaaaaaaa00000000aaaaaaaa00000000aaaaaaaa00000000aaaaaaaa00000000aaaaaaaa00000000aaaaaaaa00000000
+  #     - AWS_ENDPOINT_URL=http://localstack:4566
+  #     - NATS_URL=nats://nats:4222
+  #     - VETTID_DEV_MODE=true
+  #   depends_on:
+  #     init:
+  #       condition: service_completed_successfully
+  #     nats:
+  #       condition: service_healthy
+  #
+  # parent-new:
+  #   build:
+  #     context: ../..
+  #     dockerfile: tests/migration/Dockerfile.parent-dev
+  #   environment:
+  #     - FAKE_PCR0_HEX=bbbbbbbb00000000bbbbbbbb00000000bbbbbbbb00000000bbbbbbbb00000000bbbbbbbb00000000bbbbbbbb00000000
+  #     - AWS_ENDPOINT_URL=http://localstack:4566
+  #     - NATS_URL=nats://nats:4222
+  #     - VETTID_DEV_MODE=true
+  #   depends_on:
+  #     init:
+  #       condition: service_completed_successfully
+  #     nats:
+  #       condition: service_healthy
