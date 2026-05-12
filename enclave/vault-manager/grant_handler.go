@@ -1198,6 +1198,51 @@ func (h *GrantHandler) HandleIncomingGrantRevoked(ctx context.Context, dec *decr
 	return nil
 }
 
+// HandleRenew is the receiver-side app op that re-asks the owner for
+// a fresh expiry on an existing grant. Reuses the request flow: we
+// emit a new DataAccessRequest with the same item_ref and a flag
+// indicating this is a renewal (Reason starts with "renew:").
+// The owner sees a slightly different approval prompt and on approve
+// the existing GrantRecord is updated in place (single-grant-per-
+// (item, peer) policy already in HandleApprove).
+func (h *GrantHandler) HandleRenew(msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req struct {
+		GrantID            string `json:"grant_id"`
+		RequestedExpiresAt int64  `json:"requested_expires_at,omitempty"`
+		RequestedMaxUses   int    `json:"requested_max_uses,omitempty"`
+	}
+	if err := unmarshalRequest(msg.Payload, &req, "GrantRenew"); err != nil {
+		return errorMsg(msg.GetID(), "invalid renew payload"), nil
+	}
+	r, err := h.loadReceivedGrant(req.GrantID)
+	if err != nil {
+		return errorMsg(msg.GetID(), "received grant not found"), nil
+	}
+	wire := DataAccessRequest{
+		RequestID:          newID("renew-"),
+		ItemKind:           r.ItemKind,
+		ItemRef:            r.ItemRef,
+		ItemLabel:          r.ItemLabel,
+		Mode:               r.Mode,
+		DeliverTo:          GrantDeliverSelf,
+		RequestedExpiresAt: req.RequestedExpiresAt,
+		RequestedMaxUses:   req.RequestedMaxUses,
+		Reason:             "renew:" + req.GrantID,
+	}
+	payload, _ := json.Marshal(&wire)
+	if err := encryptAndPublishToPeer(
+		context.Background(), h.storage, h.publisher, h.ownerSpace,
+		r.ConnectionID, "data.request", "req:"+wire.RequestID, payload, time.Now().Unix(),
+	); err != nil {
+		return errorMsg(msg.GetID(), "failed to publish renew: "+err.Error()), nil
+	}
+	respBytes, _ := json.Marshal(map[string]interface{}{
+		"success":    true,
+		"request_id": wire.RequestID,
+	})
+	return successMsg(msg.GetID(), respBytes), nil
+}
+
 // HandleFetchRemote is the receiver-side app op that issues a
 // forVault.data.grant.fetch to the owner. The eventual fetch-response
 // arrives asynchronously and is forwarded to the app via

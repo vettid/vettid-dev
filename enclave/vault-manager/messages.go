@@ -3995,6 +3995,8 @@ func (mh *MessageHandler) handleGrantOperation(ctx context.Context, msg *Incomin
 		return mh.grantHandler.HandleRevoke(msg)
 	case "fetch-remote":
 		return mh.grantHandler.HandleFetchRemote(msg)
+	case "renew":
+		return mh.grantHandler.HandleRenew(msg)
 	case "list-outbound":
 		return mh.grantHandler.HandleListOutbound(msg)
 	case "list-inbound":

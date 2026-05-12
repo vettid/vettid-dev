@@ -174,7 +174,7 @@ func HandlerCatalog() []HandlerCatalogEntry {
 		{
 			ID: "grant", Name: "Data Sharing",
 			Description: "Reference-based data sharing — peers can request access to your cataloged items; you approve, revoke, or deny on a per-item basis.",
-			Operations:  []string{"request", "approve", "deny", "revoke", "fetch-remote", "list-outbound", "list-inbound", "list-pending"},
+			Operations:  []string{"request", "approve", "deny", "revoke", "fetch-remote", "renew", "list-outbound", "list-inbound", "list-pending"},
 			Category:    HandlerCategoryDefault, Required: false, Shareable: true, Surfaced: true,
 		},
 		{

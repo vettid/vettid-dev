@@ -441,6 +441,105 @@ func TestGrantItemMarkedPrivate(t *testing.T) {
 	}
 }
 
+// TestGrantAgentDeliverToPreserved: a request with deliver_to="agent:..."
+// produces a grant whose DeliverTo field reflects the requested
+// destination. Agent-routing semantics are layered on top — Phase 5
+// only requires the field to round-trip correctly so future routing
+// logic has the input it needs.
+func TestGrantAgentDeliverToPreserved(t *testing.T) {
+	th := newGrantTestHarness(t)
+	defer th.close()
+
+	req := DataAccessRequest{
+		RequestID: "req-agent",
+		ItemKind:  GrantItemKindData,
+		ItemRef:   "contact.phone.mobile",
+		ItemLabel: "Mobile",
+		Mode:      GrantModeAgentRenewable,
+		DeliverTo: "agent:agent-billing-7",
+	}
+	env := fakeEnv("conn-peer-a", "peer-a-guid", req)
+	_ = th.h.HandleIncomingRequest(context.Background(), env)
+
+	approve, _ := json.Marshal(map[string]interface{}{"request_id": "req-agent"})
+	resp, _ := th.h.HandleApprove(&IncomingMessage{ID: "m", Payload: approve})
+	if resp.Type == MessageTypeError {
+		t.Fatalf("approve: %s", string(resp.Payload))
+	}
+
+	ids := th.h.loadIndex("connections/conn-peer-a" + outboundGrantsIndexSuffix)
+	if len(ids) != 1 {
+		t.Fatalf("expected 1 outbound grant, got %d", len(ids))
+	}
+	g, _ := th.h.loadGrant(ids[0])
+	if g.DeliverTo != "agent:agent-billing-7" {
+		t.Errorf("expected deliver_to to round-trip to grant, got %q", g.DeliverTo)
+	}
+	if g.Mode != GrantModeAgentRenewable {
+		t.Errorf("expected mode agent-renewable, got %q", g.Mode)
+	}
+}
+
+// TestGrantRenewEmitsRequest: the receiver-side renew op publishes a
+// fresh forVault.data.request with Reason starting with "renew:" so
+// the owner's UI can render a distinct renewal prompt.
+func TestGrantRenewEmitsRequest(t *testing.T) {
+	th := newGrantTestHarness(t)
+	defer th.close()
+
+	// Seed a received grant.
+	r := &ReceivedGrantRecord{
+		GrantID:      "grant-existing",
+		GranterGUID:  "peer-a-guid",
+		ConnectionID: "conn-peer-a",
+		ItemKind:     GrantItemKindData,
+		ItemRef:      "contact.phone.mobile",
+		ItemLabel:    "Mobile",
+		Mode:         GrantModeRenewable,
+		Status:       GrantStatusActive,
+		GrantedAt:    time.Now().Unix(),
+	}
+	_ = th.h.saveReceivedGrant(r)
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"grant_id":              r.GrantID,
+		"requested_expires_at":  time.Now().Add(time.Hour).Unix(),
+		"requested_max_uses":    5,
+	})
+	resp, _ := th.h.HandleRenew(&IncomingMessage{ID: "m", Payload: body})
+	if resp.Type == MessageTypeError {
+		t.Fatalf("renew: %s", string(resp.Payload))
+	}
+
+	pub := th.findLastSubject(".forVault.data.request")
+	if pub == nil {
+		t.Fatalf("expected data.request publish on renew, subjects=%v", th.capturedSubjects())
+	}
+	// Decrypt + verify Reason starts with "renew:"
+	connData, _ := th.encStor.Get("connections/conn-peer-a")
+	var conn ConnectionRecord
+	_ = json.Unmarshal(connData, &conn)
+	var env EncryptedPeerEnvelope
+	_ = json.Unmarshal(pub.Payload, &env)
+	key, _ := deriveConnectionKey(conn.SharedSecret)
+	nonce, _ := base64.StdEncoding.DecodeString(env.Nonce)
+	ct, _ := base64.StdEncoding.DecodeString(env.EncryptedPayload)
+	plaintext, err := decryptXChaCha20(key, append(nonce, ct...))
+	if err != nil {
+		t.Fatalf("decrypt renew payload: %v", err)
+	}
+	var dar DataAccessRequest
+	if err := json.Unmarshal(plaintext, &dar); err != nil {
+		t.Fatalf("parse renew payload: %v", err)
+	}
+	if !strings.HasPrefix(dar.Reason, "renew:") {
+		t.Errorf("expected reason to start with 'renew:', got %q", dar.Reason)
+	}
+	if dar.ItemRef != r.ItemRef {
+		t.Errorf("expected renew to carry the original item_ref, got %q", dar.ItemRef)
+	}
+}
+
 // TestGrantSecretFetchHappyPath: minor secret can be requested + fetched.
 func TestGrantSecretFetchHappyPath(t *testing.T) {
 	th := newGrantTestHarness(t)
