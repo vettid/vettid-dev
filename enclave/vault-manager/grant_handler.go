@@ -386,20 +386,32 @@ func (h *GrantHandler) resolveLocalConnectionForPeer(peerGUID string) string {
 }
 
 // resolveItemValue returns the current value for the (kind, ref) pair.
-// Phase 1: data kind only. The reference is the dotted namespace name
-// stored on PersonalDataField.Name — we read from profile/<name> first
-// (legacy path) then personal-data/<name>.
+// - GrantItemKindData: ref is the dotted namespace name (or composite
+//   key including alias). Read from profile/<name> or personal-data/<name>.
+// - GrantItemKindSecret: ref is the secret ID. Read from secrets/<key>
+//   (scanning the index since key may include an alias suffix). HARD
+//   REJECT if the same ID is registered under credential-secrets/_metadata
+//   — critical secrets MUST NOT leave the owner's vault. The owner-side
+//   "use on my behalf" path (Phase 6) is the only route for them.
 //
 // Returns ("", "item_not_found") if the item no longer exists, which
-// is converted to a fetch denial. Other errors are bubbled as wire
-// errors so the receiver sees something specific.
+// is converted to a fetch denial. Other reasons:
+//   item_kind_not_supported, item_marked_private, critical_secret_not_requestable.
 func (h *GrantHandler) resolveItemValue(kind, ref string) (value string, reason string, err error) {
-	if kind != GrantItemKindData {
-		return "", "item_kind_not_supported", nil
-	}
 	if ref == "" {
 		return "", "item_ref_empty", nil
 	}
+	switch kind {
+	case GrantItemKindData:
+		return h.resolveDataValue(ref)
+	case GrantItemKindSecret:
+		return h.resolveSecretValue(ref)
+	default:
+		return "", "item_kind_not_supported", nil
+	}
+}
+
+func (h *GrantHandler) resolveDataValue(ref string) (string, string, error) {
 	candidates := []string{"profile/" + ref, "personal-data/" + ref}
 	for _, key := range candidates {
 		data, err := h.storage.Get(key)
@@ -409,9 +421,6 @@ func (h *GrantHandler) resolveItemValue(kind, ref string) (value string, reason 
 		var pdf PersonalDataField
 		if json.Unmarshal(data, &pdf) == nil && pdf.Name != "" {
 			if pdf.Discoverability == DiscoverabilityPrivate {
-				// Owner has marked this private since the grant was
-				// created. Treat as "no longer requestable" — fetch
-				// fails and the receiver sees a clear reason.
 				return "", "item_marked_private", nil
 			}
 			return pdf.Value, "", nil
@@ -422,6 +431,79 @@ func (h *GrantHandler) resolveItemValue(kind, ref string) (value string, reason 
 		}
 	}
 	return "", "item_not_found", nil
+}
+
+// resolveSecretValue resolves a minor secret by ID. Critical secrets
+// (registered under credential-secrets/_metadata) are hard-rejected so
+// the data-request flow can never leak a credential or wallet seed.
+// The matching TestSecretRequestRejectsCritical pins this invariant.
+func (h *GrantHandler) resolveSecretValue(ref string) (string, string, error) {
+	// Critical-secret hard cutoff: scan the credential-secrets metadata
+	// before doing ANY value lookup. If the same ID is registered as a
+	// critical secret, refuse — even if it also happens to live in
+	// secrets/ for whatever reason.
+	if h.isCriticalSecretID(ref) {
+		return "", "critical_secret_not_requestable", nil
+	}
+	// Minor-secret storage uses secrets/<id> or secrets/<id>::<alias>.
+	// Scan the index so we find a composite-keyed record without
+	// requiring the requester to know the alias.
+	idxData, err := h.storage.Get("secrets/_index")
+	if err == nil && len(idxData) > 0 {
+		var keys []string
+		if json.Unmarshal(idxData, &keys) == nil {
+			for _, k := range keys {
+				if k != ref && !strings.HasPrefix(k, ref+FieldKeySeparator) {
+					continue
+				}
+				data, err := h.storage.Get("secrets/" + k)
+				if err != nil || len(data) == 0 {
+					continue
+				}
+				var rec SecretRecord
+				if json.Unmarshal(data, &rec) != nil {
+					continue
+				}
+				if rec.Discoverability == DiscoverabilityPrivate {
+					return "", "item_marked_private", nil
+				}
+				return rec.Value, "", nil
+			}
+		}
+	}
+	// Direct-key fallback (records inserted before the index was set
+	// up, or test fixtures).
+	if data, err := h.storage.Get("secrets/" + ref); err == nil && len(data) > 0 {
+		var rec SecretRecord
+		if json.Unmarshal(data, &rec) == nil {
+			if rec.Discoverability == DiscoverabilityPrivate {
+				return "", "item_marked_private", nil
+			}
+			return rec.Value, "", nil
+		}
+	}
+	return "", "item_not_found", nil
+}
+
+// isCriticalSecretID returns true if the given ID appears in the
+// critical-secrets metadata index. Reading the value would require
+// password-gated credential decryption — we only need to know the ID
+// exists to reject the request.
+func (h *GrantHandler) isCriticalSecretID(id string) bool {
+	data, err := h.storage.Get("credential-secrets/_metadata")
+	if err != nil || len(data) == 0 {
+		return false
+	}
+	var records []SecretMetadataRecord
+	if json.Unmarshal(data, &records) != nil {
+		return false
+	}
+	for _, r := range records {
+		if r.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 // ------------------------------------------------------------------

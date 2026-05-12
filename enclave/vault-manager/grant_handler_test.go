@@ -441,6 +441,118 @@ func TestGrantItemMarkedPrivate(t *testing.T) {
 	}
 }
 
+// TestGrantSecretFetchHappyPath: minor secret can be requested + fetched.
+func TestGrantSecretFetchHappyPath(t *testing.T) {
+	th := newGrantTestHarness(t)
+	defer th.close()
+
+	// Seed a minor secret.
+	rec := SecretRecord{
+		ID:              "sec-mobile-pass",
+		Name:            "WiFi password",
+		Value:           "hunter2",
+		Category:        "Other",
+		Discoverability: DiscoverabilityCataloged,
+		CreatedAt:       time.Now().Unix(),
+	}
+	data, _ := json.Marshal(&rec)
+	_ = th.encStor.Put("secrets/sec-mobile-pass", data)
+	idx, _ := json.Marshal([]string{"sec-mobile-pass"})
+	_ = th.encStor.Put("secrets/_index", idx)
+
+	g := &GrantRecord{
+		GrantID:       "grant-secret-1",
+		OwnerGUID:     th.h.ownerSpace,
+		RequesterGUID: "peer-a-guid",
+		ConnectionID:  "conn-peer-a",
+		ItemKind:      GrantItemKindSecret,
+		ItemRef:       "sec-mobile-pass",
+		ItemLabel:     "WiFi password",
+		Mode:          GrantModeOneShot,
+		MaxUses:       1,
+		Status:        GrantStatusActive,
+		CreatedAt:     time.Now().Unix(),
+	}
+	_ = th.h.saveGrant(g)
+	_ = th.h.appendToIndex(grantsIndexKey, g.GrantID)
+
+	env := fakeEnv("conn-peer-a", "peer-a-guid", GrantFetch{
+		RequestID: "fetch-secret-1",
+		GrantID:   g.GrantID,
+	})
+	_ = th.h.HandleIncomingFetch(context.Background(), env)
+
+	resp := th.decryptCapturedFetchResponse("conn-peer-a")
+	if resp.Status != "ok" {
+		t.Fatalf("expected ok, got status=%q error=%q", resp.Status, resp.Error)
+	}
+	if resp.Value != "hunter2" {
+		t.Errorf("expected hunter2, got %q", resp.Value)
+	}
+}
+
+// TestSecretRequestRejectsCritical pins the load-bearing safety
+// invariant from plans/data-request-grants.md Phase 4: a request for
+// a secret whose ID is registered as a critical secret MUST be
+// rejected, no value resolution attempted.
+func TestSecretRequestRejectsCritical(t *testing.T) {
+	th := newGrantTestHarness(t)
+	defer th.close()
+
+	// Register the ID as a critical secret in the metadata index.
+	meta := []SecretMetadataRecord{{
+		ID:              "sec-wallet-seed-1",
+		Name:            "Wallet seed phrase",
+		Category:        "SEED_PHRASE",
+		Owner:           "user",
+		Discoverability: DiscoverabilityCataloged,
+		CreatedAt:       time.Now().Unix(),
+	}}
+	metaData, _ := json.Marshal(&meta)
+	_ = th.encStor.Put("credential-secrets/_metadata", metaData)
+
+	// Seed an active grant pointing at that ID. (In practice the grant
+	// shouldn't ever be created in the first place — the catalog rows
+	// are critical-flagged on the requester's side — but the resolver
+	// is the load-bearing safety net and the test pins it here.)
+	g := &GrantRecord{
+		GrantID:       "grant-bad-critical",
+		OwnerGUID:     th.h.ownerSpace,
+		RequesterGUID: "peer-a-guid",
+		ConnectionID:  "conn-peer-a",
+		ItemKind:      GrantItemKindSecret,
+		ItemRef:       "sec-wallet-seed-1",
+		ItemLabel:     "Wallet seed phrase",
+		Mode:          GrantModeOneShot,
+		MaxUses:       1,
+		Status:        GrantStatusActive,
+		CreatedAt:     time.Now().Unix(),
+	}
+	_ = th.h.saveGrant(g)
+	_ = th.h.appendToIndex(grantsIndexKey, g.GrantID)
+
+	env := fakeEnv("conn-peer-a", "peer-a-guid", GrantFetch{
+		RequestID: "fetch-critical",
+		GrantID:   g.GrantID,
+	})
+	_ = th.h.HandleIncomingFetch(context.Background(), env)
+
+	resp := th.decryptCapturedFetchResponse("conn-peer-a")
+	if resp.Status != "denied" || resp.Error != "critical_secret_not_requestable" {
+		t.Errorf("expected denied/critical_secret_not_requestable — value MUST NOT leak — got %+v", resp)
+	}
+	if resp.Value != "" {
+		t.Errorf("CRITICAL FAILURE: critical secret value present in response: %q", resp.Value)
+	}
+
+	// The counter MUST NOT have advanced — a denied fetch should not
+	// consume the grant's max-uses budget.
+	stored, _ := th.h.loadGrant(g.GrantID)
+	if stored.UsesSoFar != 0 {
+		t.Errorf("expected uses_so_far=0 after critical-secret denial, got %d", stored.UsesSoFar)
+	}
+}
+
 func TestApproveSingleGrantPerItemPeer(t *testing.T) {
 	th := newGrantTestHarness(t)
 	defer th.close()
