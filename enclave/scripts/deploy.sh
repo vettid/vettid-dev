@@ -777,14 +777,25 @@ do_deploy() {
     # slower and possibly requiring manual OLD termination.
     PHASE="post-launch-routing-reclaim"
     log_step "Phase 4.6: Force-reclaiming routing claims from OLD ($old_pcr0...) → NEW"
-    local reclaim_cmd reclaim_out reclaim_count
+    local reclaim_cmd reclaim_out reclaim_status reclaim_count
     reclaim_cmd=$(aws ssm send-command \
         --instance-ids "$new_instance_id" \
         --document-name "AWS-RunShellScript" \
         --parameters "commands=[\"curl -s --max-time 10 'http://127.0.0.1:8080/internal/reclaim-from-pcr0?pcr0=$old_pcr0' || echo RECLAIM_FAIL\"]" \
         --query 'Command.CommandId' --output text --region "$REGION" 2>/dev/null || echo "")
     if [[ -n "$reclaim_cmd" ]]; then
-        sleep 5
+        # Wait for the SSM run to reach a terminal state before reading
+        # output. The previous `sleep 5` raced the command — when the
+        # invocation was still InProgress, StandardOutputContent came back
+        # empty and we logged a misleading RECLAIM_FAIL warning even
+        # though the reclaim eventually succeeded. `wait command-executed`
+        # exits non-zero on Failed/TimedOut, so swallow that and read the
+        # status explicitly below — we want to log it, not abort here.
+        aws ssm wait command-executed --command-id "$reclaim_cmd" \
+            --instance-id "$new_instance_id" --region "$REGION" 2>/dev/null || true
+        reclaim_status=$(aws ssm get-command-invocation --command-id "$reclaim_cmd" \
+            --instance-id "$new_instance_id" --query 'Status' \
+            --output text --region "$REGION" 2>/dev/null || echo "Unknown")
         reclaim_out=$(aws ssm get-command-invocation --command-id "$reclaim_cmd" \
             --instance-id "$new_instance_id" --query 'StandardOutputContent' \
             --output text --region "$REGION" 2>/dev/null || echo "")
@@ -794,7 +805,7 @@ do_deploy() {
         else
             # Endpoint may 503 if routing not yet up, or 400/500 on bad
             # input. Either way, non-fatal — log and proceed.
-            log_warn "Routing reclaim returned unexpected response: ${reclaim_out:0:200}"
+            log_warn "Routing reclaim returned unexpected response (status=$reclaim_status): ${reclaim_out:0:200}"
         fi
     else
         log_warn "Could not send SSM command for routing reclaim — users will migrate via app prompt instead"
