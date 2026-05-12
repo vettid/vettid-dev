@@ -682,10 +682,20 @@ func buildSecretCatalog(storage *EncryptedStorage, vaultState *VaultState) []Cat
 				if r.Discoverability == DiscoverabilityPrivate {
 					continue
 				}
+				// Critical secrets tagged "cataloged-for-use" surface
+				// as "Critical Secret · Use-only" so peers know they
+				// can ASK the owner to operate with the secret but
+				// can't request the value. Resolver hard-rejects any
+				// grant.fetch on a critical-secret ID either way; the
+				// label here is purely a UX signal.
+				category := "Critical Secret"
+				if r.Discoverability == DiscoverabilityCatalogedForUse {
+					category = "Critical Secret · Use-only"
+				}
 				out = append(out, CatalogedSecretItem{
 					Name:     r.Name,
 					Type:     r.Category,
-					Category: "Critical Secret",
+					Category: category,
 					Alias:    r.Alias,
 				})
 			}

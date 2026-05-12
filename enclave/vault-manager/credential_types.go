@@ -807,6 +807,15 @@ const (
 	DiscoverabilityPublic    Discoverability = "public"
 	DiscoverabilityCataloged Discoverability = "cataloged"
 	DiscoverabilityPrivate   Discoverability = "private"
+	// DiscoverabilityCatalogedForUse is a distinct state for critical
+	// secrets (plans/data-request-grants.md Phase 6 — 2026-05-12 UX
+	// refinement): peers see the secret exists and can request the
+	// owner to USE it on their behalf (sign / decrypt / derive / auth),
+	// but the value itself stays in the vault forever. The grant
+	// resolver still hard-rejects critical secrets, so this state is
+	// "metadata visible, value never leaves" — strictly more restrictive
+	// than cataloged.
+	DiscoverabilityCatalogedForUse Discoverability = "cataloged-for-use"
 )
 
 // PersonalDataField represents a user's personal data field stored in the vault

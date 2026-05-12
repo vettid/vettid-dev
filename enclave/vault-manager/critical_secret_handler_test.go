@@ -191,11 +191,18 @@ func TestCriticalUseApproveWithoutPerformer(t *testing.T) {
 	d, _ := json.Marshal(&pending)
 	_ = th.encStor.Put(criticalUseRequestsKeyPrefix+pending.RequestID, d)
 
-	body, _ := json.Marshal(map[string]string{"request_id": pending.RequestID})
+	// Approve carries the password fields; with no performer AND no
+	// CredentialSecretHandler wired (test harness omits it), the
+	// inline path can't proceed and returns an error response.
+	body, _ := json.Marshal(map[string]string{
+		"request_id":              pending.RequestID,
+		"encrypted_credential":    "stub",
+		"encrypted_password_hash": "stub",
+		"key_id":                  "stub",
+	})
 	resp, _ := th.h.HandleApproveUse(&IncomingMessage{ID: "m", Payload: body})
 
-	// The op-level response should report success=false in the inner
-	// payload, and the outbound use-response should be status=error.
+	// Result should reflect the missing crypto glue, not silently succeed.
 	var inner map[string]interface{}
 	_ = json.Unmarshal(resp.Payload, &inner)
 	if inner["status"] != "error" {

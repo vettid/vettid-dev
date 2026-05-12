@@ -23,6 +23,8 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -122,11 +124,15 @@ type CriticalSecretHandler struct {
 	publisher  *VsockPublisher
 	auditLog   *AuditLog
 
-	// Hook into the existing signing/decryption layer. Phase 6 ships
-	// the wire + lifecycle; the actual crypto glue is wired in once
-	// the credential-decrypt path is refactored to be callable without
-	// the full wallet handler scaffold. Nil in tests; tests exercise
-	// the lifecycle, audit, and gate paths.
+	// credSecretHandler exposes decryptCredentialBlob +
+	// verifyPasswordAgainstCredential. We don't take an interface
+	// because the underlying password-gate semantics are shared with
+	// HandleGet — pivoting to a separate impl would duplicate a
+	// load-bearing security check.
+	credSecretHandler *CredentialSecretHandler
+
+	// performer override for tests. Production sets this to nil and the
+	// handler does the credential decrypt + sign inline.
 	performer CriticalOperationPerformer
 
 	mu sync.Mutex
@@ -153,6 +159,9 @@ func NewCriticalSecretHandler(ownerSpace string, storage *EncryptedStorage, publ
 
 func (h *CriticalSecretHandler) SetAuditLog(a *AuditLog) { h.auditLog = a }
 func (h *CriticalSecretHandler) SetPerformer(p CriticalOperationPerformer) { h.performer = p }
+func (h *CriticalSecretHandler) SetCredentialSecretHandler(c *CredentialSecretHandler) {
+	h.credSecretHandler = c
+}
 
 // HandleRequestUse is the receiver-side app op that publishes a
 // forVault.critical_secret.use request to the owner.
@@ -274,16 +283,29 @@ func (h *CriticalSecretHandler) HandleIncomingUseRequest(ctx context.Context, de
 	return nil
 }
 
-// HandleApproveUse runs the operation and ships the result back. The
-// password gate is enforced by the performer (which decrypts the
-// credential blob); without a performer wired in, this returns an
-// error so the missing glue is loud.
+// HandleApproveUse runs the operation under password gate and ships
+// the result back. The password gate decrypts the credential blob,
+// verifies the password hash matches Auth, then finds the named
+// critical secret and performs the operation locally. Every approve
+// requires fresh password — there is intentionally no TTL session
+// for critical-secret ops (plans/data-request-grants.md Phase 6).
 func (h *CriticalSecretHandler) HandleApproveUse(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req struct {
-		RequestID string `json:"request_id"`
+		RequestID             string `json:"request_id"`
+		EncryptedCredential   string `json:"encrypted_credential"`
+		EncryptedPasswordHash string `json:"encrypted_password_hash"`
+		EphemeralPublicKey    string `json:"ephemeral_public_key"`
+		Nonce                 string `json:"nonce"`
+		KeyID                 string `json:"key_id"`
 	}
 	if err := unmarshalRequest(msg.Payload, &req, "CriticalUseApprove"); err != nil {
 		return errorMsg(msg.GetID(), "invalid approve payload"), nil
+	}
+	// Password gate required for production paths. Tests inject a
+	// performer (h.performer != nil) and skip the password fields —
+	// the performer bypass is the test-only seam.
+	if h.performer == nil && (req.EncryptedCredential == "" || req.EncryptedPasswordHash == "" || req.KeyID == "") {
+		return errorMsg(msg.GetID(), "password authorization required: encrypted_credential + encrypted_password_hash + key_id"), nil
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -300,10 +322,12 @@ func (h *CriticalSecretHandler) HandleApproveUse(msg *IncomingMessage) (*Outgoin
 	var result string
 	var perfErr error
 	if h.performer != nil {
+		// Test-only override path.
 		result, perfErr = h.performer.Perform(context.Background(), pending.ItemRef, pending.Operation, pending.Payload)
+	} else if h.credSecretHandler == nil {
+		perfErr = fmt.Errorf("credential-secret handler not wired; operation cannot proceed")
 	} else {
-		// No performer wired — refuse rather than silently no-op.
-		perfErr = fmt.Errorf("critical-secret performer not wired; operation cannot proceed")
+		result, perfErr = h.performInline(req.EncryptedCredential, req.EncryptedPasswordHash, req.EphemeralPublicKey, req.Nonce, req.KeyID, &pending)
 	}
 
 	resp := CriticalSecretUseResponse{RequestID: pending.RequestID}
@@ -485,6 +509,87 @@ func (h *CriticalSecretHandler) removeFromIndex(key, id string) error {
 		return err
 	}
 	return h.storage.Put(key, encoded)
+}
+
+// performInline decrypts the credential blob, verifies the password,
+// finds the named critical secret, and runs the requested op.
+// Phase 6 MVP supports `sign` and `auth` (Ed25519 over the payload /
+// domain-separated challenge); `decrypt` and `derive` return a clear
+// "not yet implemented" — each needs a per-secret-format binding that
+// isn't wired here.
+//
+// Result encoding: base64 — the caller's wire payload is also base64.
+func (h *CriticalSecretHandler) performInline(
+	encryptedCred, encPwdHash, ephPub, nonce, keyID string,
+	pending *PendingCriticalUseRequest,
+) (string, error) {
+	cred, err := h.credSecretHandler.decryptCredentialBlob(encryptedCred)
+	if err != nil {
+		return "", fmt.Errorf("decrypt credential: %w", err)
+	}
+	defer cred.SecureErase()
+
+	if err := h.credSecretHandler.verifyPasswordAgainstCredential(encPwdHash, ephPub, nonce, keyID, cred); err != nil {
+		return "", fmt.Errorf("password verification failed: %w", err)
+	}
+
+	// Find the named critical secret in cred.Secrets[].
+	var secret *CredentialSecretEntry
+	for i := range cred.Secrets {
+		if cred.Secrets[i].ID == pending.ItemRef {
+			secret = &cred.Secrets[i]
+			break
+		}
+	}
+	if secret == nil {
+		return "", fmt.Errorf("critical secret %s not found in credential", pending.ItemRef)
+	}
+
+	payloadBytes, err := base64.StdEncoding.DecodeString(pending.Payload)
+	if err != nil {
+		return "", fmt.Errorf("invalid base64 payload: %w", err)
+	}
+
+	switch pending.Operation {
+	case CriticalUseOpSign:
+		// Expect secret.Value to be an Ed25519 private key (32 or 64
+		// bytes). Sign payload bytes directly — caller is responsible
+		// for any domain separation in the payload itself.
+		if len(secret.Value) != ed25519.PrivateKeySize && len(secret.Value) != ed25519.SeedSize {
+			return "", fmt.Errorf("secret format not suitable for ed25519 sign (got %d bytes)", len(secret.Value))
+		}
+		priv := secret.Value
+		if len(priv) == ed25519.SeedSize {
+			priv = ed25519.NewKeyFromSeed(priv)
+		}
+		sig := ed25519.Sign(priv, payloadBytes)
+		return base64.StdEncoding.EncodeToString(sig), nil
+
+	case CriticalUseOpAuth:
+		// Domain-separated auth challenge sign — same primitive, but
+		// the payload is prefixed with "vettid-critical-auth-v1|<owner>|"
+		// to prevent reuse against `sign`. The caller supplies the
+		// challenge bytes only; we add the prefix here so neither side
+		// can be confused about what's being signed.
+		if len(secret.Value) != ed25519.PrivateKeySize && len(secret.Value) != ed25519.SeedSize {
+			return "", fmt.Errorf("secret format not suitable for ed25519 auth (got %d bytes)", len(secret.Value))
+		}
+		priv := secret.Value
+		if len(priv) == ed25519.SeedSize {
+			priv = ed25519.NewKeyFromSeed(priv)
+		}
+		prefix := []byte(fmt.Sprintf("vettid-critical-auth-v1|%s|", h.ownerSpace))
+		full := append([]byte{}, prefix...)
+		full = append(full, payloadBytes...)
+		sig := ed25519.Sign(priv, full)
+		return base64.StdEncoding.EncodeToString(sig), nil
+
+	case CriticalUseOpDecrypt:
+		return "", fmt.Errorf("decrypt not yet implemented in Phase 6 MVP")
+	case CriticalUseOpDerive:
+		return "", fmt.Errorf("derive not yet implemented in Phase 6 MVP")
+	}
+	return "", fmt.Errorf("unknown operation: %s", pending.Operation)
 }
 
 func isWhitelistedCriticalOp(op string) bool {

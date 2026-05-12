@@ -411,14 +411,16 @@ func (h *CredentialSecretHandler) HandleSetDiscoverability(msg *IncomingMessage)
 	}
 	// Critical secret VALUES must never reach the published profile —
 	// the credential is the trust boundary, not the broadcast surface.
-	// Only "cataloged" (peers see metadata: this secret exists) or
-	// "private" (peers see nothing) are valid here. "public" is
-	// rejected even if the client tries.
+	// Valid states:
+	//   - cataloged           peers see metadata; can request copy → resolver hard-rejects anyway
+	//   - cataloged-for-use   peers see metadata; can ASK owner to use the secret on their behalf
+	//   - private             peers see nothing
+	// "public" is rejected even if the client tries.
 	switch req.Discoverability {
-	case DiscoverabilityCataloged, DiscoverabilityPrivate:
+	case DiscoverabilityCataloged, DiscoverabilityCatalogedForUse, DiscoverabilityPrivate:
 		// ok
 	default:
-		return h.errorResponse(msg.GetID(), "discoverability must be cataloged or private")
+		return h.errorResponse(msg.GetID(), "discoverability must be cataloged, cataloged-for-use, or private")
 	}
 
 	records := h.getAllMetadataRecords()
