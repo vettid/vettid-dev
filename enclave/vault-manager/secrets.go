@@ -157,7 +157,11 @@ func (h *SecretsHandler) HandleAdd(msg *IncomingMessage) (*OutgoingMessage, erro
 		return h.errorResponse(msg.GetID(), "name is required")
 	}
 	if req.Discoverability == "" {
-		req.Discoverability = DiscoverabilityCataloged
+		// Default-hidden (plans/data-request-grants.md Phase 3): a fresh
+		// secret stays invisible to peers unless the user opts it into
+		// the catalog. Existing records are unaffected — only secrets
+		// created without an explicit discoverability land here.
+		req.Discoverability = DiscoverabilityPrivate
 	}
 
 	now := time.Now().UTC()

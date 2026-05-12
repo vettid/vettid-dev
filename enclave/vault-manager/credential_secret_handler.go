@@ -147,16 +147,17 @@ func (h *CredentialSecretHandler) HandleAdd(msg *IncomingMessage) (*OutgoingMess
 
 	// Store metadata in vault SQLite (NO values - just metadata for listing).
 	// Default discoverability to "cataloged" — peers see the metadata
-	// row and can request the value through a future capability flow.
-	// Owners can flip it to "public" (publish on profile) or "private"
-	// (hide from any peer-visible catalog).
+	// row and can request the value through the grant flow. Default
+	// flipped to "private" 2026-05-12 (plans/data-request-grants.md
+	// Phase 3) so critical secrets stay invisible until the user
+	// proactively reveals them.
 	metadataRecord := SecretMetadataRecord{
 		ID:              secretID,
 		Name:            req.Name,
 		Category:        req.Category,
 		Description:     req.Description,
 		Owner:           "user",
-		Discoverability: DiscoverabilityCataloged,
+		Discoverability: DiscoverabilityPrivate,
 		Alias:           req.Alias,
 		CreatedAt:       now.Unix(),
 	}
