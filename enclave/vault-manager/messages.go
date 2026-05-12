@@ -641,7 +641,7 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 						log.Debug().Err(hbErr).Msg("Failed to forward peer presence heartbeat")
 					}
 				}
-				resp = &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}
+				resp = &OutgoingMessage{RequestID: msg.GetID(), Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}
 			} else if i+1 < len(parts) && parts[i+1] == "connection" {
 				// Connection messages from peers, agents, and devices.
 				// Parallel-review handshake (plans/parallel-review-handshake.md):
@@ -659,10 +659,10 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 						resp, err = mh.connectionsHandler.HandleStoreCredentials(msg)
 					default:
 						log.Debug().Str("subject", parts[i+2]).Msg("Unknown peer connection subject — dropping")
-						resp = &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}
+						resp = &OutgoingMessage{RequestID: msg.GetID(), Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}
 					}
 				} else {
-					resp = &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}
+					resp = &OutgoingMessage{RequestID: msg.GetID(), Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}
 				}
 			} else {
 				// Agent messages (default forOwner routing)
