@@ -171,6 +171,10 @@ func SignContract(mh *MessageHandler, ownerSpace string, contract *ServiceDataCo
 
 	// Sign with Ed25519
 	signature := ed25519.Sign(idKey, []byte(signingPayload))
+	mh.auditIdentityKey("service_contract_sign", "", map[string]string{
+		"contract_id": contract.ContractID,
+		"version":     fmt.Sprintf("%d", contract.Version),
+	})
 
 	// Get public key
 	publicKey := idPub
@@ -285,6 +289,9 @@ func SignAuthChallenge(mh *MessageHandler, ownerSpace string, challenge string, 
 	// Sign
 	signature := ed25519.Sign(idKey, []byte(signingPayload))
 	_ = idPub // surfaced for symmetry with SignContract; not needed here
+	mh.auditIdentityKey("service_auth_challenge", "", map[string]string{
+		"service_guid": serviceGUID,
+	})
 
 	return base64.StdEncoding.EncodeToString(signature), timestamp, nil
 }

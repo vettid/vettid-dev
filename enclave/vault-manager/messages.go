@@ -958,6 +958,34 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 		}
 		ack, _ := json.Marshal(map[string]string{"status": "received"})
 		return mh.successResponse(msg.GetID(), ack)
+	case "connection.authenticate.challenge":
+		// Peer wants proof we hold the credential bound to our identity key.
+		if gateResp := mh.gatePeerSubject(operation, msg.Payload, msg.GetID()); gateResp != nil {
+			return gateResp, nil
+		}
+		dec, derr := decryptIncomingPeerEnvelope(mh.storage, msg.Payload)
+		if derr != nil {
+			return mh.errorResponse(msg.GetID(), fmt.Sprintf("decrypt auth challenge: %v", derr))
+		}
+		if err := mh.HandleIncomingAuthChallenge(ctx, dec); err != nil {
+			log.Warn().Err(err).Msg("auth challenge handler failed")
+		}
+		ack, _ := json.Marshal(map[string]string{"status": "received"})
+		return mh.successResponse(msg.GetID(), ack)
+	case "connection.authenticate.response":
+		// Peer signed our challenge — verify + emit verdict to app.
+		if gateResp := mh.gatePeerSubject(operation, msg.Payload, msg.GetID()); gateResp != nil {
+			return gateResp, nil
+		}
+		dec, derr := decryptIncomingPeerEnvelope(mh.storage, msg.Payload)
+		if derr != nil {
+			return mh.errorResponse(msg.GetID(), fmt.Sprintf("decrypt auth response: %v", derr))
+		}
+		if err := mh.HandleIncomingAuthResponse(ctx, dec); err != nil {
+			log.Warn().Err(err).Msg("auth response handler failed")
+		}
+		ack, _ := json.Marshal(map[string]string{"status": "received"})
+		return mh.successResponse(msg.GetID(), ack)
 	case "critical_secret.use":
 		// Peer asks us to perform an operation using one of our critical secrets.
 		if gateResp := mh.gatePeerSubject(operation, msg.Payload, msg.GetID()); gateResp != nil {
@@ -1090,6 +1118,15 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 	case "critical-secret-use":
 		// Use-on-my-behalf for critical secrets (Phase 6).
 		return mh.handleCriticalSecretUseOperation(ctx, msg, parts[opIndex+1:])
+	case "connection-authenticate":
+		// Challenge/response proof-of-credential between connections.
+		// Today the only app-side op is "request" — receivers initiate;
+		// challenge handling is automatic on the owner side via peer
+		// subjects above.
+		if len(parts) > opIndex+2 && parts[opIndex+2] == "request" {
+			return mh.HandleAuthRequest(msg)
+		}
+		return mh.errorResponse(msg.GetID(), "unknown connection-authenticate op")
 	case "audit":
 		// Audit log operations
 		return mh.handleAuditOperation(ctx, msg, parts[opIndex+1:])

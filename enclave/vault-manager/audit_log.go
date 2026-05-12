@@ -88,6 +88,25 @@ const (
 	AuditTypeCriticalSecretUsed         = "critical_secret.used"
 	AuditTypeCriticalSecretUseDenied    = "critical_secret.use.denied"
 
+	// Identity-key usage. Every site that consumes the user's Ed25519
+	// identity private key for signing emits this — votes, shared-
+	// action invocations + results, service-contract signatures,
+	// connection.authenticate challenges. Audit metadata carries
+	// "purpose" so the user can see WHY their key was used, not just
+	// THAT it was. Direction is internal (the act is by the user's
+	// vault on the user's behalf); ConnectionID is populated when the
+	// signing was for a specific peer relationship.
+	AuditTypeIdentityKeyUsed = "identity_key.used"
+
+	// connection.authenticate (2026-05-12) — challenge/response proof
+	// that a peer holds the credential bound to their identity key.
+	// Eventually load-bearing for service-vault auth flows; today it
+	// surfaces in the audit trail as a record that authentication was
+	// requested + completed.
+	AuditTypeConnectionAuthenticated     = "connection.authenticated"
+	AuditTypeConnectionAuthenticateRequested = "connection.authenticate.requested"
+	AuditTypeConnectionAuthenticateFailed = "connection.authenticate.failed"
+
 	// System connection events — originate from the VettID service
 	// itself (not a peer) and all land on the reserved system
 	// connection. See plans/luminous-unifying-manatee.md.

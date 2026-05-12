@@ -141,7 +141,26 @@ func (p *ParentProcess) Run(ctx context.Context) error {
 		Uint32("port", p.config.Enclave.Port).
 		Msg("Connected to enclave")
 
+	// Initialize RoutingManager + wire it into the health server
+	// BEFORE flipping /ready to 200. Without this, deploy.sh Phase 4.6
+	// races the routing-wire goroutine: /ready returns 200 once NATS
+	// and vsock are connected, but the routing pointer the
+	// /internal/reclaim-from-pcr0 endpoint needs is only set inside
+	// routeNATSToEnclave. Doing it here closes the window — by the
+	// time updateHealthStatus emits 200, routing is reachable.
+	// See task #170 (2026-05-12) and the symptom retry in
+	// enclave/scripts/deploy.sh Phase 4.6.
+	msgChan := make(chan *NATSMessage, 1000)
+	p.routing = NewRoutingManager(p.enclaveID, p.pcr0, p.natsClient, msgChan)
+	if err := p.routing.Start(ctx); err != nil {
+		return fmt.Errorf("failed to start routing manager: %w", err)
+	}
+	if p.healthSrv != nil {
+		p.healthSrv.SetRouting(p.routing)
+	}
+
 	// Update health status now that all connections are established
+	// AND routing is wired. /ready can safely return 200 from here.
 	p.updateHealthStatus()
 
 	// Start message routing
@@ -149,7 +168,7 @@ func (p *ParentProcess) Run(ctx context.Context) error {
 
 	// Route NATS → Enclave
 	go func() {
-		err := p.routeNATSToEnclave(ctx)
+		err := p.routeNATSToEnclave(ctx, msgChan)
 		if err != nil && ctx.Err() == nil {
 			errChan <- fmt.Errorf("NATS→Enclave routing error: %w", err)
 		}
@@ -182,7 +201,7 @@ func (p *ParentProcess) Run(ctx context.Context) error {
 }
 
 // routeNATSToEnclave subscribes to NATS topics and forwards messages to enclave
-func (p *ParentProcess) routeNATSToEnclave(ctx context.Context) error {
+func (p *ParentProcess) routeNATSToEnclave(ctx context.Context, msgChan chan *NATSMessage) error {
 	// Subscribe to vault-related topics
 	// Namespace patterns:
 	//   OwnerSpace.{guid}.forVault.> - Messages from mobile apps (includes call signaling)
@@ -198,9 +217,12 @@ func (p *ParentProcess) routeNATSToEnclave(ctx context.Context) error {
 	//   - Verify caller identity
 	//   - Enforce block lists
 	//   - Log call attempts
-
-	msgChan := make(chan *NATSMessage, 1000) // Increased from 100 to prevent drops under load
-
+	//
+	// RoutingManager is created + started + wired into the health
+	// server synchronously in Run() before /ready returns 200. This
+	// function just sets up the remaining subscriptions and drives
+	// the dispatch loop using the shared msgChan.
+	//
 	// Per-user routing: forVault traffic only arrives here through
 	// subscriptions owned by the RoutingManager — one per user we
 	// own. The routing manager's heartbeat + KV watcher keep the
@@ -218,16 +240,6 @@ func (p *ParentProcess) routeNATSToEnclave(ctx context.Context) error {
 	// new instance replayed weeks of credential.migration.start
 	// messages and overwrote user state. Neither pattern is coming
 	// back — the per-user subscription is the only correct shape.
-	p.routing = NewRoutingManager(p.enclaveID, p.pcr0, p.natsClient, msgChan)
-	if err := p.routing.Start(ctx); err != nil {
-		return fmt.Errorf("failed to start routing manager: %w", err)
-	}
-	// Wire routing into the health server so the
-	// /internal/reclaim-from-pcr0 admin endpoint can call it.
-	// Until this runs the endpoint returns 503 with a clear message.
-	if p.healthSrv != nil {
-		p.healthSrv.SetRouting(p.routing)
-	}
 
 	// Narrow wildcards for pre-enrollment operations that any instance
 	// may accept. The routing manager handles the handoff once a user

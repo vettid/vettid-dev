@@ -67,6 +67,24 @@ func (h *VoteHandler) consumeIdentityKey() ([]byte, error) {
 	return consumeIdentityKeyFromState(h.state, h.storage)
 }
 
+// auditIdentityKey records identity-key use for voting operations.
+// Mirrors MessageHandler.auditIdentityKey so the same event type
+// (AuditTypeIdentityKeyUsed) shows up regardless of which subsystem
+// signed. VoteHandler stays self-contained — it doesn't borrow the
+// MessageHandler reference just for audit.
+func (h *VoteHandler) auditIdentityKey(purpose string, refs map[string]string) {
+	if h.auditLog == nil {
+		return
+	}
+	h.auditLog.AppendSystem(AuditEntry{
+		EventType: AuditTypeIdentityKeyUsed,
+		Direction: AuditDirectionInternal,
+		Title:     "Identity key used: " + purpose,
+		Refs:      refs,
+		Metadata:  map[string]string{"purpose": purpose},
+	})
+}
+
 // SetSealerProxy sets the sealer proxy for proposals list access
 func (h *VoteHandler) SetSealerProxy(sp *SealerProxy) {
 	h.sealerProxy = sp
@@ -195,6 +213,13 @@ func (h *VoteHandler) HandleCastVote(ctx context.Context, msg *IncomingMessage) 
 
 	// Sign with Ed25519
 	signature := ed25519.Sign(votingPrivateKey, []byte(signedPayload))
+	// Identity-key audit: the vote signing uses an HKDF-derived child of
+	// the user's identity key, but the act of voting still pivots on
+	// the identity key being unlocked. Audit the act so the user sees
+	// "vote cast" reflected in their identity-key usage trail.
+	h.auditIdentityKey("vote_cast", map[string]string{
+		"proposal_id": req.ProposalID,
+	})
 
 	// Encode results as base64
 	votingPublicKeyB64 := base64.StdEncoding.EncodeToString(votingPublicKey)

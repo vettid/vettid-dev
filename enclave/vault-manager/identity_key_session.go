@@ -110,6 +110,31 @@ func (mh *MessageHandler) clearIdentityKey() {
 	clearIdentityKeyFromState(mh.vaultState)
 }
 
+// auditIdentityKey records that the user's identity key was used for
+// a specific purpose. Call this once per successful consumeIdentityKey
+// at every signing site — votes, shared-action invocations + results,
+// service-contract signatures, connection.authenticate. The audit trail
+// then reflects WHY the key was touched, not just that it was. If
+// connectionID is "", the row lands on the system connection.
+func (mh *MessageHandler) auditIdentityKey(purpose, connectionID string, refs map[string]string) {
+	if mh.auditLog == nil {
+		return
+	}
+	entry := AuditEntry{
+		EventType: AuditTypeIdentityKeyUsed,
+		Direction: AuditDirectionInternal,
+		Title:     "Identity key used: " + purpose,
+		Refs:      refs,
+		Metadata:  map[string]string{"purpose": purpose},
+	}
+	if connectionID != "" {
+		entry.ConnectionID = connectionID
+		mh.auditLog.Append(entry)
+		return
+	}
+	mh.auditLog.AppendSystem(entry)
+}
+
 // IdentityUnlockRequest is the payload for credential.identity-unlock.
 type IdentityUnlockRequest struct {
 	EncryptedCredential   string `json:"encrypted_credential"`

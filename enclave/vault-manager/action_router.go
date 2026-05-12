@@ -172,6 +172,10 @@ func (mh *MessageHandler) handleActionInvokeOnPeer(ctx context.Context, msg *Inc
 	}
 	envelope.InvokerPubKey = mh.ownerEd25519PubKeyBase64(idKey)
 	envelope.InvokerSig = mh.signInvokerEnvelope(idKey, &envelope)
+	mh.auditIdentityKey("action_invoke_sign", req.ConnectionID, map[string]string{
+		"invocation_id": envelope.InvocationID,
+		"action_id":     req.ActionID,
+	})
 
 	if err := mh.sendInvokeActionToPeer(ctx, req.ConnectionID, &envelope); err != nil {
 		return mh.errorResponse(msg.GetID(), "send peer: "+err.Error())

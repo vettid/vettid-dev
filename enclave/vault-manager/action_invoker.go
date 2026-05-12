@@ -396,6 +396,13 @@ func (mh *MessageHandler) signResult(r *InvocationResult) *InvocationResult {
 	}
 	defer zeroBytes(idKey)
 	r.PeerSig = base64.StdEncoding.EncodeToString(ed25519.Sign(idKey, canonical))
+	// Identity-key use audit: the result signature is the moment the
+	// user's key actually touched bytes for this invocation. Connection
+	// not in scope here (signResult is called after the per-connection
+	// audit chain for the invocation has already logged InvocationSigOK).
+	mh.auditIdentityKey("action_result_sign", "", map[string]string{
+		"invocation_id": r.InvocationID,
+	})
 	return r
 }
 

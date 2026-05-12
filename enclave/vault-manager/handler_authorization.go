@@ -668,6 +668,12 @@ func peerHandlerForIncomingSubject(operation string) string {
 	if strings.HasPrefix(operation, "critical_secret.") {
 		return "critical-secret-use"
 	}
+	// connection.authenticate is gated by the connection handler — if
+	// you've severed a connection you don't want to be challenged or
+	// to be able to challenge.
+	if strings.HasPrefix(operation, "connection.authenticate.") {
+		return "connection"
+	}
 	return ""
 }
 
