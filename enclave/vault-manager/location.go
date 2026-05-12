@@ -699,6 +699,7 @@ func (h *LocationHandler) HandleSharingToggle(msg *IncomingMessage) (*OutgoingMe
 	// Load current sharing index
 	sharedWith := h.getSharingIndex()
 
+	wasAlreadyShared := false
 	if req.Enabled {
 		// Add connection if not already present
 		found := false
@@ -708,6 +709,7 @@ func (h *LocationHandler) HandleSharingToggle(msg *IncomingMessage) (*OutgoingMe
 				break
 			}
 		}
+		wasAlreadyShared = found
 		if !found {
 			sharedWith = append(sharedWith, req.ConnectionID)
 		}
@@ -733,26 +735,41 @@ func (h *LocationHandler) HandleSharingToggle(msg *IncomingMessage) (*OutgoingMe
 	}
 
 	// Audit entry — show up in Interaction History as "Started/Stopped
-	// sharing location". Skip the no-op case (toggle to the state we
-	// were already in) so the trail doesn't fill with duplicates.
-	if h.auditLog != nil {
-		eventType := AuditTypeLocationShareStarted
-		title := "Started sharing location"
-		if !req.Enabled {
-			eventType = AuditTypeLocationShareStopped
-			title = "Stopped sharing location"
-		}
+	// sharing location". On toggle-ON, the inline push below routes
+	// through sendLocationOnceInternal which writes its own
+	// "Started sharing location" audit row, so skip here to avoid
+	// duplicate entries. Toggle-OFF still audits here (the stop
+	// broadcast path doesn't write audit rows).
+	if h.auditLog != nil && !req.Enabled {
 		h.auditLog.Append(AuditEntry{
 			ConnectionID: req.ConnectionID,
-			EventType:    eventType,
+			EventType:    AuditTypeLocationShareStopped,
 			Direction:    AuditDirectionOutbound,
-			Title:        title,
+			Title:        "Stopped sharing location",
 		})
 	}
 
 	// Persist
 	if err := h.storage.PutJSON(locationSharingIndexKey, &sharedWith); err != nil {
 		return h.errorResponse(msg.GetID(), "failed to save sharing index")
+	}
+
+	// Toggle-ON: immediately push the latest cached location point to
+	// the peer so their cache populates AND the share-started
+	// notification fires right away. Without this, the start-sharing
+	// notification only fires when the LocationCollectionWorker's
+	// next periodic push lands — which could be ~15 minutes after
+	// the toggle. Skip on toggle-OFF (the stop broadcast handles it)
+	// and skip the no-op toggle-ON case (avoids spam if the user
+	// flips an already-on toggle).
+	if req.Enabled && !wasAlreadyShared {
+		if err := h.sendLocationOnceInternal(req.ConnectionID, "Started sharing location"); err != nil {
+			// Non-fatal: the toggle still landed; the worker's next
+			// push will be the share-started trigger. Common reason
+			// for failure: no cached location point yet (user just
+			// enrolled, hasn't moved).
+			log.Info().Err(err).Str("connection_id", req.ConnectionID).Msg("Could not immediately push location on toggle-on; will wait for next collector tick")
+		}
 	}
 
 	log.Info().
