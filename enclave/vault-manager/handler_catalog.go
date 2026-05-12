@@ -172,6 +172,12 @@ func HandlerCatalog() []HandlerCatalogEntry {
 			Category:    HandlerCategoryDefault, Required: false, Shareable: true, Surfaced: true,
 		},
 		{
+			ID: "grant", Name: "Data Sharing",
+			Description: "Reference-based data sharing — peers can request access to your cataloged items; you approve, revoke, or deny on a per-item basis.",
+			Operations:  []string{"request", "approve", "deny", "revoke", "fetch-remote", "list-outbound", "list-inbound", "list-pending"},
+			Category:    HandlerCategoryDefault, Required: false, Shareable: true, Surfaced: true,
+		},
+		{
 			ID: "agent", Name: "AI Agents",
 			Description: "Manage AI agent connections",
 			Operations:  []string{"approval", "list", "revoke", "info"},

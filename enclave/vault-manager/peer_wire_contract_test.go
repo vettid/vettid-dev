@@ -353,6 +353,94 @@ func TestBtcPaymentReceiptWire(t *testing.T) {
 	}
 }
 
+func TestDataAccessRequestWire(t *testing.T) {
+	sender := DataAccessRequest{
+		RequestID:          "req-abc123",
+		ItemKind:           GrantItemKindData,
+		ItemRef:            "contact.phone.mobile",
+		ItemLabel:          "Mobile Phone",
+		Mode:               GrantModeOneShot,
+		DeliverTo:          GrantDeliverSelf,
+		RequestedExpiresAt: 1715369336,
+		RequestedMaxUses:   1,
+		Reason:             "need it for booking",
+	}
+	var receiver DataAccessRequest
+	roundTrip(t, "data.request", sender, &receiver)
+	if receiver != sender {
+		t.Errorf("data.request round-trip mismatch\n got: %+v\nwant: %+v", receiver, sender)
+	}
+}
+
+func TestGrantCreatedWire(t *testing.T) {
+	sender := GrantCreated{
+		RequestID: "req-abc",
+		GrantID:   "grant-xyz",
+		ItemKind:  GrantItemKindData,
+		ItemRef:   "contact.email",
+		ItemLabel: "Email",
+		Mode:      GrantModeRenewable,
+		ExpiresAt: 1715369336,
+		MaxUses:   0,
+		GrantedAt: 1715365000,
+	}
+	var receiver GrantCreated
+	roundTrip(t, "data.grant.created", sender, &receiver)
+	if receiver != sender {
+		t.Errorf("data.grant.created round-trip mismatch\n got: %+v\nwant: %+v", receiver, sender)
+	}
+}
+
+func TestGrantDeniedWire(t *testing.T) {
+	sender := GrantDenied{
+		RequestID: "req-abc",
+		Reason:    "no_thanks",
+	}
+	var receiver GrantDenied
+	roundTrip(t, "data.grant.denied", sender, &receiver)
+	if receiver != sender {
+		t.Errorf("data.grant.denied round-trip mismatch\n got: %+v\nwant: %+v", receiver, sender)
+	}
+}
+
+func TestGrantFetchWire(t *testing.T) {
+	sender := GrantFetch{
+		RequestID: "fetch-abc",
+		GrantID:   "grant-xyz",
+	}
+	var receiver GrantFetch
+	roundTrip(t, "data.grant.fetch", sender, &receiver)
+	if receiver != sender {
+		t.Errorf("data.grant.fetch round-trip mismatch\n got: %+v\nwant: %+v", receiver, sender)
+	}
+}
+
+func TestGrantFetchResponseWire(t *testing.T) {
+	sender := GrantFetchResponse{
+		RequestID: "fetch-abc",
+		GrantID:   "grant-xyz",
+		Status:    "ok",
+		Value:     "+15551234567",
+	}
+	var receiver GrantFetchResponse
+	roundTrip(t, "data.grant.fetch-response", sender, &receiver)
+	if receiver != sender {
+		t.Errorf("data.grant.fetch-response round-trip mismatch\n got: %+v\nwant: %+v", receiver, sender)
+	}
+}
+
+func TestGrantRevokedWire(t *testing.T) {
+	sender := GrantRevoked{
+		GrantID: "grant-xyz",
+		Reason:  "user_changed_mind",
+	}
+	var receiver GrantRevoked
+	roundTrip(t, "data.grant.revoked", sender, &receiver)
+	if receiver != sender {
+		t.Errorf("data.grant.revoked round-trip mismatch\n got: %+v\nwant: %+v", receiver, sender)
+	}
+}
+
 func TestBtcAddressContentWire(t *testing.T) {
 	sender := BtcAddressContent{
 		Address:    "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",

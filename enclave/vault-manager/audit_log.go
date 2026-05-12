@@ -67,6 +67,19 @@ const (
 	AuditTypeActionExpired             = "action.expired"
 	AuditTypeActionFailed              = "action.failed"
 
+	// Reference-based data sharing (see plans/data-request-grants.md
+	// Phase 1). One entry per lifecycle transition + one per fetch.
+	// Fetches accumulate quickly on a renewable grant; if audit log
+	// volume becomes a problem, add a daily rollup.
+	AuditTypeDataRequestSent     = "data.request.sent"
+	AuditTypeDataRequestReceived = "data.request.received"
+	AuditTypeDataGranted         = "data.granted"
+	AuditTypeDataGrantDenied     = "data.grant.denied"
+	AuditTypeDataFetched         = "data.fetched"
+	AuditTypeDataFetchDenied     = "data.fetch.denied"
+	AuditTypeDataRevoked         = "data.revoked"
+	AuditTypeDataExpired         = "data.expired"
+
 	// System connection events — originate from the VettID service
 	// itself (not a peer) and all land on the reserved system
 	// connection. See plans/luminous-unifying-manatee.md.

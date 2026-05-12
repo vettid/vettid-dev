@@ -656,6 +656,12 @@ func peerHandlerForIncomingSubject(operation string) string {
 	if strings.HasPrefix(operation, "presence.") {
 		return "presence"
 	}
+	// Reference-based data-sharing peer ops (plans/data-request-grants.md).
+	// Gated under the "grant" handler — the user can toggle data
+	// sharing per-connection without affecting messaging / calls / etc.
+	if operation == "data.request" || strings.HasPrefix(operation, "data.grant.") {
+		return "grant"
+	}
 	return ""
 }
 

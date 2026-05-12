@@ -161,6 +161,10 @@ type MessageHandler struct {
 	// Presence handler (opt-in online/offline signal to peers)
 	presenceHandler *PresenceHandler
 
+	// Grant handler (reference-based data sharing — Phase 1 of
+	// plans/data-request-grants.md).
+	grantHandler *GrantHandler
+
 	// Agent handlers (AI agent connections)
 	agentHandler        *AgentHandler
 	agentSecretsHandler *AgentSecretsHandler
@@ -428,6 +432,9 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 		// Location handler
 		locationHandler: NewLocationHandler(ownerSpace, storage, publisher),
 
+		// Grant handler (data request/grant flow)
+		grantHandler: NewGrantHandler(ownerSpace, storage, publisher),
+
 		// Agent handlers
 		agentHandler:        agentHandler,
 		agentSecretsHandler: agentSecretsHandler,
@@ -479,6 +486,7 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 	mh.migrationHandler.SetAuditLog(mh.auditLog)
 	mh.voteHandler.SetAuditLog(mh.auditLog)
 	mh.locationHandler.SetAuditLog(mh.auditLog)
+	mh.grantHandler.SetAuditLog(mh.auditLog)
 
 	return mh
 }
@@ -858,6 +866,91 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 		}
 		ack, _ := json.Marshal(map[string]string{"status": "received"})
 		return mh.successResponse(msg.GetID(), ack)
+	case "data.request":
+		// Peer is requesting access to one of our cataloged items.
+		// Store as pending + surface to the app for owner approval.
+		if gateResp := mh.gatePeerSubject(operation, msg.Payload, msg.GetID()); gateResp != nil {
+			return gateResp, nil
+		}
+		dec, derr := decryptIncomingPeerEnvelope(mh.storage, msg.Payload)
+		if derr != nil {
+			return mh.errorResponse(msg.GetID(), fmt.Sprintf("decrypt data.request envelope: %v", derr))
+		}
+		if err := mh.grantHandler.HandleIncomingRequest(ctx, dec); err != nil {
+			log.Warn().Err(err).Msg("data.request handler failed")
+		}
+		ack, _ := json.Marshal(map[string]string{"status": "received"})
+		return mh.successResponse(msg.GetID(), ack)
+	case "data.grant.created":
+		// Owner approved our prior data request — mirror as a received grant.
+		if gateResp := mh.gatePeerSubject(operation, msg.Payload, msg.GetID()); gateResp != nil {
+			return gateResp, nil
+		}
+		dec, derr := decryptIncomingPeerEnvelope(mh.storage, msg.Payload)
+		if derr != nil {
+			return mh.errorResponse(msg.GetID(), fmt.Sprintf("decrypt data.grant.created envelope: %v", derr))
+		}
+		if err := mh.grantHandler.HandleIncomingGrantCreated(ctx, dec); err != nil {
+			log.Warn().Err(err).Msg("data.grant.created handler failed")
+		}
+		ack, _ := json.Marshal(map[string]string{"status": "received"})
+		return mh.successResponse(msg.GetID(), ack)
+	case "data.grant.denied":
+		// Owner denied our prior request — forward to app.
+		if gateResp := mh.gatePeerSubject(operation, msg.Payload, msg.GetID()); gateResp != nil {
+			return gateResp, nil
+		}
+		dec, derr := decryptIncomingPeerEnvelope(mh.storage, msg.Payload)
+		if derr != nil {
+			return mh.errorResponse(msg.GetID(), fmt.Sprintf("decrypt data.grant.denied envelope: %v", derr))
+		}
+		if err := mh.grantHandler.HandleIncomingGrantDenied(ctx, dec); err != nil {
+			log.Warn().Err(err).Msg("data.grant.denied handler failed")
+		}
+		ack, _ := json.Marshal(map[string]string{"status": "received"})
+		return mh.successResponse(msg.GetID(), ack)
+	case "data.grant.fetch":
+		// Receiver is asking us to resolve a grant_id to its current value.
+		if gateResp := mh.gatePeerSubject(operation, msg.Payload, msg.GetID()); gateResp != nil {
+			return gateResp, nil
+		}
+		dec, derr := decryptIncomingPeerEnvelope(mh.storage, msg.Payload)
+		if derr != nil {
+			return mh.errorResponse(msg.GetID(), fmt.Sprintf("decrypt data.grant.fetch envelope: %v", derr))
+		}
+		if err := mh.grantHandler.HandleIncomingFetch(ctx, dec); err != nil {
+			log.Warn().Err(err).Msg("data.grant.fetch handler failed")
+		}
+		ack, _ := json.Marshal(map[string]string{"status": "received"})
+		return mh.successResponse(msg.GetID(), ack)
+	case "data.grant.fetch-response":
+		// Owner returned the value (or denial) for a fetch we issued.
+		if gateResp := mh.gatePeerSubject(operation, msg.Payload, msg.GetID()); gateResp != nil {
+			return gateResp, nil
+		}
+		dec, derr := decryptIncomingPeerEnvelope(mh.storage, msg.Payload)
+		if derr != nil {
+			return mh.errorResponse(msg.GetID(), fmt.Sprintf("decrypt data.grant.fetch-response envelope: %v", derr))
+		}
+		if err := mh.grantHandler.HandleIncomingFetchResponse(ctx, dec); err != nil {
+			log.Warn().Err(err).Msg("data.grant.fetch-response handler failed")
+		}
+		ack, _ := json.Marshal(map[string]string{"status": "received"})
+		return mh.successResponse(msg.GetID(), ack)
+	case "data.grant.revoked":
+		// Owner revoked a grant — flip mirror to revoked + notify app.
+		if gateResp := mh.gatePeerSubject(operation, msg.Payload, msg.GetID()); gateResp != nil {
+			return gateResp, nil
+		}
+		dec, derr := decryptIncomingPeerEnvelope(mh.storage, msg.Payload)
+		if derr != nil {
+			return mh.errorResponse(msg.GetID(), fmt.Sprintf("decrypt data.grant.revoked envelope: %v", derr))
+		}
+		if err := mh.grantHandler.HandleIncomingGrantRevoked(ctx, dec); err != nil {
+			log.Warn().Err(err).Msg("data.grant.revoked handler failed")
+		}
+		ack, _ := json.Marshal(map[string]string{"status": "received"})
+		return mh.successResponse(msg.GetID(), ack)
 	case "btc-address-request":
 		// Incoming BTC address request from peer vault — auto-respond
 		if gateResp := mh.gatePeerSubject(operation, msg.Payload, msg.GetID()); gateResp != nil {
@@ -956,6 +1049,9 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 	case "feed":
 		// Feed operations (unified event feed)
 		return mh.handleFeedOperation(ctx, msg, parts[opIndex+1:])
+	case "grant":
+		// Reference-based data sharing (plans/data-request-grants.md).
+		return mh.handleGrantOperation(ctx, msg, parts[opIndex+1:])
 	case "audit":
 		// Audit log operations
 		return mh.handleAuditOperation(ctx, msg, parts[opIndex+1:])
@@ -3874,5 +3970,38 @@ func (mh *MessageHandler) handleFromServiceCall(ctx context.Context, msg *Incomi
 		return mh.callHandler.HandleServiceCallEnd(ctx, msg, conn)
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown service call operation: %s", opType))
+	}
+}
+
+// handleGrantOperation routes grant lifecycle ops from the app to the
+// GrantHandler. Owner-side: approve / deny / revoke / list-outbound /
+// list-pending. Receiver-side: request / fetch-remote / list-inbound.
+// See plans/data-request-grants.md Phase 1.
+func (mh *MessageHandler) handleGrantOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
+	if len(opParts) < 2 {
+		return mh.errorResponse(msg.GetID(), "missing grant operation")
+	}
+	if mh.grantHandler == nil {
+		return mh.errorResponse(msg.GetID(), "grant handler not initialized")
+	}
+	switch opParts[1] {
+	case "request":
+		return mh.grantHandler.HandleRequest(msg)
+	case "approve":
+		return mh.grantHandler.HandleApprove(msg)
+	case "deny":
+		return mh.grantHandler.HandleDeny(msg)
+	case "revoke":
+		return mh.grantHandler.HandleRevoke(msg)
+	case "fetch-remote":
+		return mh.grantHandler.HandleFetchRemote(msg)
+	case "list-outbound":
+		return mh.grantHandler.HandleListOutbound(msg)
+	case "list-inbound":
+		return mh.grantHandler.HandleListInbound(msg)
+	case "list-pending":
+		return mh.grantHandler.HandleListPending(msg)
+	default:
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown grant operation: %s", opParts[1]))
 	}
 }
