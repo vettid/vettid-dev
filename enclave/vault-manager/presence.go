@@ -308,8 +308,18 @@ func (h *PresenceHandler) broadcast(ctx context.Context) {
 			Status:       "online",
 			At:           now,
 		}
-		payload, err := json.Marshal(&hb)
+		inner, err := json.Marshal(&hb)
 		if err != nil {
+			continue
+		}
+		// Wrap in the standard peer envelope so the inner heartbeat is
+		// sealed under the connection's shared secret. The NATS broker
+		// (operator-controlled) sees only ciphertext + the envelope's
+		// from_owner_space + timestamp; the "X is online" signal stays
+		// between the two vaults that already share a connection.
+		envData, _, err := buildEncryptedEnvelope(h.storage, h.ownerSpace, record.ConnectionID, "", inner, now)
+		if err != nil {
+			log.Debug().Err(err).Str("connection_id", record.ConnectionID).Msg("Presence envelope build failed")
 			continue
 		}
 		// SECURITY/ROUTING: Publish via the parent's backend NATS
@@ -321,7 +331,7 @@ func (h *PresenceHandler) broadcast(ctx context.Context) {
 		// were dropped at the NATS account boundary, leaving the
 		// presence ring permanently dark.
 		subject := fmt.Sprintf("MessageSpace.%s.forOwner.presence.heartbeat", record.PeerGUID)
-		if err := h.publisher.PublishRaw(subject, payload); err != nil {
+		if err := h.publisher.PublishRaw(subject, envData); err != nil {
 			log.Debug().Err(err).Str("connection_id", record.ConnectionID).Msg("Presence heartbeat publish failed")
 		}
 	}
@@ -330,9 +340,17 @@ func (h *PresenceHandler) broadcast(ctx context.Context) {
 // HandleIncomingPeerHeartbeat is called from the message router when
 // a peer vault sends us their "I'm online" signal. We re-emit it to
 // our app so the UI can render the ring around the peer's avatar.
+//
+// The peer wraps the heartbeat in EncryptedPeerEnvelope before publish,
+// so we decrypt the envelope first and parse the inner PresenceHeartbeat
+// from the plaintext.
 func (h *PresenceHandler) HandleIncomingPeerHeartbeat(ctx context.Context, payload []byte) error {
+	dec, err := decryptIncomingPeerEnvelope(h.storage, payload)
+	if err != nil {
+		return fmt.Errorf("decrypt presence envelope: %w", err)
+	}
 	var hb PresenceHeartbeat
-	if err := json.Unmarshal(payload, &hb); err != nil {
+	if err := json.Unmarshal(dec.InnerPayload, &hb); err != nil {
 		return fmt.Errorf("invalid presence heartbeat: %w", err)
 	}
 	if hb.ConnectionID == "" {

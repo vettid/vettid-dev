@@ -54,6 +54,69 @@ type peerPublisher interface {
 	PublishToVault(ctx context.Context, targetOwnerSpace string, eventType string, payload []byte) error
 }
 
+// buildEncryptedEnvelope loads the local connection record, derives
+// the per-connection symmetric key, seals payload with XChaCha20-Poly1305,
+// and marshals the resulting EncryptedPeerEnvelope JSON.
+//
+// Returns the envelope bytes (for the caller to publish) plus the peer's
+// owner-space GUID (so a caller routing via the forOwner cross-account
+// subject can format the destination without re-loading the connection).
+//
+// Most senders want encryptAndPublishToPeer, which wraps this and routes
+// via the standard forVault path. Presence is the one carve-out — its
+// heartbeat publishes via MessageSpace.{peer}.forOwner.presence.heartbeat
+// (parent's backend NATS account), so it calls this helper directly and
+// then PublishRaw with its own subject.
+func buildEncryptedEnvelope(
+	storage *EncryptedStorage,
+	ownerSpace string,
+	connID string,
+	eventID string,
+	payload []byte,
+	sentAt int64,
+) (envelopeData []byte, peerGUID string, err error) {
+	connData, err := storage.Get("connections/" + connID)
+	if err != nil {
+		return nil, "", fmt.Errorf("load connection %s: %w", connID, err)
+	}
+	var conn ConnectionRecord
+	if err := json.Unmarshal(connData, &conn); err != nil {
+		return nil, "", fmt.Errorf("parse connection %s: %w", connID, err)
+	}
+	if conn.PeerGUID == "" {
+		return nil, "", fmt.Errorf("connection %s has no peer GUID", connID)
+	}
+	if len(conn.SharedSecret) == 0 {
+		return nil, "", fmt.Errorf("connection %s has no shared secret (key exchange not complete)", connID)
+	}
+
+	key, err := deriveConnectionKey(conn.SharedSecret)
+	if err != nil {
+		return nil, "", fmt.Errorf("derive connection key: %w", err)
+	}
+	sealed, err := encryptXChaCha20(key, payload)
+	if err != nil {
+		return nil, "", fmt.Errorf("encrypt: %w", err)
+	}
+	// encryptXChaCha20 returns nonce || ciphertext+tag.
+	const nonceLen = 24
+	if len(sealed) < nonceLen {
+		return nil, "", fmt.Errorf("ciphertext shorter than nonce length")
+	}
+	envelope := EncryptedPeerEnvelope{
+		EventID:          eventID,
+		FromOwnerSpace:   ownerSpace,
+		Timestamp:        sentAt,
+		Nonce:            base64.StdEncoding.EncodeToString(sealed[:nonceLen]),
+		EncryptedPayload: base64.StdEncoding.EncodeToString(sealed[nonceLen:]),
+	}
+	envData, err := json.Marshal(envelope)
+	if err != nil {
+		return nil, "", fmt.Errorf("marshal envelope: %w", err)
+	}
+	return envData, conn.PeerGUID, nil
+}
+
 // encryptAndPublishToPeer encrypts payload with the connection's
 // shared secret and publishes it to the peer's forVault.<eventType>
 // subject. Use this for every peer broadcast that carries sensitive
@@ -73,46 +136,11 @@ func encryptAndPublishToPeer(
 	payload []byte,
 	sentAt int64,
 ) error {
-	connData, err := storage.Get("connections/" + connID)
+	envData, peerGUID, err := buildEncryptedEnvelope(storage, ownerSpace, connID, eventID, payload, sentAt)
 	if err != nil {
-		return fmt.Errorf("load connection %s: %w", connID, err)
+		return err
 	}
-	var conn ConnectionRecord
-	if err := json.Unmarshal(connData, &conn); err != nil {
-		return fmt.Errorf("parse connection %s: %w", connID, err)
-	}
-	if conn.PeerGUID == "" {
-		return fmt.Errorf("connection %s has no peer GUID", connID)
-	}
-	if len(conn.SharedSecret) == 0 {
-		return fmt.Errorf("connection %s has no shared secret (key exchange not complete)", connID)
-	}
-
-	key, err := deriveConnectionKey(conn.SharedSecret)
-	if err != nil {
-		return fmt.Errorf("derive connection key: %w", err)
-	}
-	sealed, err := encryptXChaCha20(key, payload)
-	if err != nil {
-		return fmt.Errorf("encrypt: %w", err)
-	}
-	// encryptXChaCha20 returns nonce || ciphertext+tag.
-	const nonceLen = 24
-	if len(sealed) < nonceLen {
-		return fmt.Errorf("ciphertext shorter than nonce length")
-	}
-	envelope := EncryptedPeerEnvelope{
-		EventID:          eventID,
-		FromOwnerSpace:   ownerSpace,
-		Timestamp:        sentAt,
-		Nonce:            base64.StdEncoding.EncodeToString(sealed[:nonceLen]),
-		EncryptedPayload: base64.StdEncoding.EncodeToString(sealed[nonceLen:]),
-	}
-	envData, err := json.Marshal(envelope)
-	if err != nil {
-		return fmt.Errorf("marshal envelope: %w", err)
-	}
-	return publisher.PublishToVault(ctx, conn.PeerGUID, eventType, envData)
+	return publisher.PublishToVault(ctx, peerGUID, eventType, envData)
 }
 
 // encryptAndPublishToPeerByGUID is the peerGUID-keyed variant of

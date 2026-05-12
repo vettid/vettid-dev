@@ -248,6 +248,19 @@ func TestLocationRequestPingWire(t *testing.T) {
 	}
 }
 
+func TestPresenceHeartbeatWire(t *testing.T) {
+	sender := PresenceHeartbeat{
+		ConnectionID: "conn-1234",
+		Status:       "online",
+		At:           1715369336,
+	}
+	var receiver PresenceHeartbeat
+	roundTrip(t, "presence.heartbeat", sender, &receiver)
+	if receiver != sender {
+		t.Errorf("presence-heartbeat round-trip mismatch\n got: %+v\nwant: %+v", receiver, sender)
+	}
+}
+
 func TestPeerMessageWire(t *testing.T) {
 	sender := PeerMessage{
 		MessageID:        "msg-1234",

@@ -242,8 +242,18 @@ func (h *MessagingHandler) HandleSend(msg *IncomingMessage) (*OutgoingMessage, e
 
 	peerMsgData, _ := json.Marshal(peerMsg)
 
-	// Publish to peer's vault as an incoming message
-	if err := h.publisher.PublishToVault(context.Background(), conn.PeerGUID, "message.incoming", peerMsgData); err != nil {
+	// Wrap the PeerMessage in the encrypted peer envelope so the
+	// envelope metadata (sender_guid, connection_id, content_type,
+	// sent_at, message_id) is sealed under the connection's shared
+	// secret on the NATS hop. The inner EncryptedContent stays
+	// encrypted on its own — different rotation semantics, and the
+	// receiver still decrypts it via deriveConnectionKey for app
+	// display.
+	envEventID := fmt.Sprintf("msg:%s", messageID)
+	if err := encryptAndPublishToPeer(
+		context.Background(), h.storage, h.publisher, h.ownerSpace,
+		req.ConnectionID, "message.incoming", envEventID, peerMsgData, now.Unix(),
+	); err != nil {
 		// Update local status to failed
 		localMsg.Status = MessageStatusFailed
 		msgData, _ = json.Marshal(localMsg)
@@ -292,11 +302,19 @@ func (h *MessagingHandler) HandleSend(msg *IncomingMessage) (*OutgoingMessage, e
 }
 
 // HandleIncomingPeerMessage processes an encrypted message from a peer's vault.
-// The peer's vault encrypted it with the shared secret and published to our forVault.message.incoming.
-// We store it locally and notify our app.
+// The peer's vault encrypted the body with the shared secret and wrapped the
+// whole PeerMessage in EncryptedPeerEnvelope so the metadata (sender_guid,
+// connection_id, content_type, sent_at, message_id) is also sealed on the
+// NATS hop. We decrypt the envelope, parse the inner PeerMessage, store the
+// (still-encrypted) body locally, decrypt for the app, and notify.
 func (h *MessagingHandler) HandleIncomingPeerMessage(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	dec, err := decryptIncomingPeerEnvelope(h.storage, msg.Payload)
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to decrypt incoming peer message envelope")
+		return h.errorResponse(msg.GetID(), "Invalid peer message envelope")
+	}
 	var peerMsg PeerMessage
-	if err := unmarshalRequest(msg.Payload, &peerMsg, "HandleIncomingPeerMessage"); err != nil {
+	if err := json.Unmarshal(dec.InnerPayload, &peerMsg); err != nil {
 		log.Warn().Err(err).Msg("Failed to parse incoming peer message")
 		return h.errorResponse(msg.GetID(), "Invalid peer message format")
 	}
@@ -711,10 +729,17 @@ func (h *MessagingHandler) HandleReadReceipt(msg *IncomingMessage) (*OutgoingMes
 	}, nil
 }
 
-// HandleIncomingMessage processes a message received from a peer vault
+// HandleIncomingMessage processes a message received from a peer vault.
+// Legacy entry point still wired under the forVault.new-message subject;
+// kept envelope-aware so a stray broadcast can't bypass the metadata
+// encryption added 2026-05-12.
 func (h *MessagingHandler) HandleIncomingMessage(ctx context.Context, data []byte) error {
+	dec, err := decryptIncomingPeerEnvelope(h.storage, data)
+	if err != nil {
+		return fmt.Errorf("decrypt envelope: %w", err)
+	}
 	var peerMsg PeerMessage
-	if err := json.Unmarshal(data, &peerMsg); err != nil {
+	if err := json.Unmarshal(dec.InnerPayload, &peerMsg); err != nil {
 		return fmt.Errorf("invalid message format: %w", err)
 	}
 
@@ -786,8 +811,10 @@ func (h *MessagingHandler) HandleIncomingMessage(ctx context.Context, data []byt
 		log.Warn().Msg("eventHandler is nil — cannot log message.received event")
 	}
 
-	// Notify app about new message
-	if err := h.publisher.PublishToApp(ctx, "new-message", data); err != nil {
+	// Notify app about new message. The app expects the PeerMessage
+	// JSON (decrypted from the envelope) — don't pass the envelope
+	// bytes through, the app has no shared secret to unwrap them.
+	if err := h.publisher.PublishToApp(ctx, "new-message", dec.InnerPayload); err != nil {
 		log.Warn().Err(err).Msg("Failed to notify app of new message")
 	}
 
