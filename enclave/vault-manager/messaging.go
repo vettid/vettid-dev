@@ -677,9 +677,13 @@ func (h *MessagingHandler) HandleReadReceipt(msg *IncomingMessage) (*OutgoingMes
 	receiptData, _ := json.Marshal(receipt)
 
 	// Send to peer with retry (read receipts are important for UX)
+	eventID := fmt.Sprintf("read-receipt:%s:%s", req.ConnectionID, req.MessageID)
 	sent := false
 	for attempt := 0; attempt < 3; attempt++ {
-		if err := h.publisher.PublishToVault(context.Background(), conn.PeerGUID, "read-receipt", receiptData); err != nil {
+		if err := encryptAndPublishToPeer(
+			context.Background(), h.storage, h.publisher, h.ownerSpace,
+			req.ConnectionID, "read-receipt", eventID, receiptData, time.Now().Unix(),
+		); err != nil {
 			log.Warn().Err(err).Int("attempt", attempt+1).Str("message_id", req.MessageID).Msg("Read receipt delivery failed, retrying")
 			if attempt < 2 {
 				time.Sleep(2 * time.Second)
@@ -792,8 +796,13 @@ func (h *MessagingHandler) HandleIncomingMessage(ctx context.Context, data []byt
 
 // HandleIncomingReadReceipt processes a read receipt from a peer vault
 func (h *MessagingHandler) HandleIncomingReadReceipt(ctx context.Context, data []byte) error {
+	dec, err := decryptIncomingPeerEnvelope(h.storage, data)
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to decrypt incoming read-receipt envelope")
+		return err
+	}
 	var receipt PeerReadReceipt
-	if err := json.Unmarshal(data, &receipt); err != nil {
+	if err := json.Unmarshal(dec.InnerPayload, &receipt); err != nil {
 		return fmt.Errorf("invalid read receipt format: %w", err)
 	}
 

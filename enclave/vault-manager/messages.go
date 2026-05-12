@@ -865,12 +865,16 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 		}
 		return mh.walletHandler.HandleIncomingAddressRequest(ctx, msg)
 	case "btc-payment-request":
-		// Incoming BTC payment request from peer vault — forward to app
+		// Incoming BTC payment request from peer vault — decrypt and
+		// forward the plaintext inner payload to the app.
 		if gateResp := mh.gatePeerSubject(operation, msg.Payload, msg.GetID()); gateResp != nil {
 			return gateResp, nil
 		}
-		if mh.publisher != nil {
-			_ = mh.publisher.PublishToApp(ctx, "message.btc-payment-request", msg.Payload)
+		btcDec, btcErr := decryptIncomingPeerEnvelope(mh.storage, msg.Payload)
+		if btcErr != nil {
+			log.Warn().Err(btcErr).Msg("Failed to decrypt btc-payment-request envelope")
+		} else if mh.publisher != nil {
+			_ = mh.publisher.PublishToApp(ctx, "message.btc-payment-request", btcDec.InnerPayload)
 		}
 		if mh.eventHandler != nil {
 			mh.eventHandler.LogEvent(ctx, &Event{EventType: EventTypePaymentReceived})
@@ -878,12 +882,15 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 		ack, _ := json.Marshal(map[string]string{"status": "received"})
 		return mh.successResponse(msg.GetID(), ack)
 	case "btc-payment-receipt":
-		// Incoming BTC payment receipt from peer vault — forward to app
+		// Incoming BTC payment receipt from peer vault — decrypt + forward.
 		if gateResp := mh.gatePeerSubject(operation, msg.Payload, msg.GetID()); gateResp != nil {
 			return gateResp, nil
 		}
-		if mh.publisher != nil {
-			_ = mh.publisher.PublishToApp(ctx, "message.btc-payment-receipt", msg.Payload)
+		receiptDec, receiptErr := decryptIncomingPeerEnvelope(mh.storage, msg.Payload)
+		if receiptErr != nil {
+			log.Warn().Err(receiptErr).Msg("Failed to decrypt btc-payment-receipt envelope")
+		} else if mh.publisher != nil {
+			_ = mh.publisher.PublishToApp(ctx, "message.btc-payment-receipt", receiptDec.InnerPayload)
 		}
 		if mh.eventHandler != nil {
 			mh.eventHandler.LogEvent(ctx, &Event{EventType: EventTypeWalletTxReceived})
@@ -891,9 +898,9 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 		// Per-connection audit: record the inbound transfer. sender_guid
 		// travels in the receipt so we can resolve a local connection_id
 		// without asking NATS (accounts may differ across peers).
-		if mh.auditLog != nil {
+		if mh.auditLog != nil && receiptErr == nil {
 			var receipt BtcPaymentReceiptContent
-			if err := json.Unmarshal(msg.Payload, &receipt); err == nil && receipt.SenderGUID != "" {
+			if err := json.Unmarshal(receiptDec.InnerPayload, &receipt); err == nil && receipt.SenderGUID != "" {
 				connID := ""
 				if mh.notificationsHandler != nil {
 					connID = mh.notificationsHandler.FindConnectionByPeerGUID(receipt.SenderGUID)
@@ -919,12 +926,15 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 		ack, _ := json.Marshal(map[string]string{"status": "received"})
 		return mh.successResponse(msg.GetID(), ack)
 	case "btc-address-response":
-		// Incoming BTC address response from peer vault — forward to app
+		// Incoming BTC address response from peer vault — decrypt + forward.
 		if gateResp := mh.gatePeerSubject(operation, msg.Payload, msg.GetID()); gateResp != nil {
 			return gateResp, nil
 		}
-		if mh.publisher != nil {
-			_ = mh.publisher.PublishToApp(ctx, "message.btc-address-response", msg.Payload)
+		addrDec, addrErr := decryptIncomingPeerEnvelope(mh.storage, msg.Payload)
+		if addrErr != nil {
+			log.Warn().Err(addrErr).Msg("Failed to decrypt btc-address-response envelope")
+		} else if mh.publisher != nil {
+			_ = mh.publisher.PublishToApp(ctx, "message.btc-address-response", addrDec.InnerPayload)
 		}
 		ack, _ := json.Marshal(map[string]string{"status": "received"})
 		return mh.successResponse(msg.GetID(), ack)
@@ -1263,8 +1273,15 @@ func (mh *MessageHandler) handleCallOperation(ctx context.Context, msg *Incoming
 	}
 
 	// Incoming events from other vaults (call.initiate, call.offer, etc.)
+	// Wire format is the encrypted envelope. Unwrap with the peer
+	// connection's shared secret first; the inner payload is the
+	// CallEvent JSON.
+	dec, derr := decryptIncomingPeerEnvelope(mh.storage, msg.Payload)
+	if derr != nil {
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("failed to decrypt call event envelope: %v", derr))
+	}
 	var event CallEvent
-	if err := unmarshalRequest(msg.Payload, &event, "handleCallOperation"); err != nil {
+	if err := json.Unmarshal(dec.InnerPayload, &event); err != nil {
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("invalid call event payload: %v", err))
 	}
 

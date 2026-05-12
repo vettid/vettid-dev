@@ -723,7 +723,12 @@ func (h *WalletHandler) HandleSendToConnection(ctx context.Context, msg *Incomin
 		}
 		reqData, _ := json.Marshal(addrReq)
 		if h.publisher != nil {
-			_ = h.publisher.PublishToVault(ctx, conn.PeerGUID, "btc-address-request", reqData)
+			_ = encryptAndPublishToPeer(
+				ctx, h.storage, h.publisher, h.ownerSpace,
+				req.ConnectionID, "btc-address-request",
+				fmt.Sprintf("btc-addr-req:%s:%d", h.ownerSpace, time.Now().UnixNano()),
+				reqData, time.Now().Unix(),
+			)
 		}
 		return errorResponse(msg.GetID(), "peer has no public BTC address — address request sent to peer; retry after they respond"), nil
 	}
@@ -760,7 +765,12 @@ func (h *WalletHandler) HandleSendToConnection(ctx context.Context, msg *Incomin
 			}
 			receiptData, _ := json.Marshal(receipt)
 			if h.publisher != nil {
-				_ = h.publisher.PublishToVault(ctx, conn.PeerGUID, "btc-payment-receipt", receiptData)
+				_ = encryptAndPublishToPeer(
+					ctx, h.storage, h.publisher, h.ownerSpace,
+					req.ConnectionID, "btc-payment-receipt",
+					fmt.Sprintf("btc-receipt:%s:%s", h.ownerSpace, sendResp.TxID),
+					receiptData, time.Now().Unix(),
+				)
 			}
 
 			// Also publish to our app for conversation display
@@ -842,9 +852,14 @@ func (h *WalletHandler) HandleRequestPayment(ctx context.Context, msg *IncomingM
 	}
 	paymentData, _ := json.Marshal(paymentReq)
 
-	// Send to peer vault as a payment request message
+	// Send to peer vault as a payment request message (encrypted)
 	if h.publisher != nil {
-		err = h.publisher.PublishToVault(ctx, conn.PeerGUID, "btc-payment-request", paymentData)
+		err = encryptAndPublishToPeer(
+			ctx, h.storage, h.publisher, h.ownerSpace,
+			req.ConnectionID, "btc-payment-request",
+			fmt.Sprintf("btc-pay-req:%s:%d", h.ownerSpace, time.Now().UnixNano()),
+			paymentData, time.Now().Unix(),
+		)
 		if err != nil {
 			return errorResponse(msg.GetID(), "failed to send payment request: "+err.Error()), nil
 		}
@@ -890,9 +905,17 @@ func (h *WalletHandler) HandleRequestPayment(ctx context.Context, msg *IncomingM
 // `active` peer connection or the request is dropped silently. Without
 // this check, a malformed request used to be answered to ourselves.
 func (h *WalletHandler) HandleIncomingAddressRequest(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	dec, derr := decryptIncomingPeerEnvelope(h.storage, msg.Payload)
+	if derr != nil {
+		log.Warn().Err(derr).Msg("Failed to decrypt incoming btc-address-request envelope")
+		return successResponse(msg.GetID(), map[string]string{"status": "decrypt_failed"})
+	}
 	var req BtcAddressContent
-	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+	if err := json.Unmarshal(dec.InnerPayload, &req); err != nil {
 		return successResponse(msg.GetID(), map[string]string{"status": "invalid_request"})
+	}
+	if req.SenderGUID == "" {
+		req.SenderGUID = dec.FromOwnerSpace
 	}
 	senderGUID := strings.TrimSpace(req.SenderGUID)
 	if senderGUID == "" || senderGUID == h.ownerSpace {
@@ -947,7 +970,12 @@ func (h *WalletHandler) HandleIncomingAddressRequest(ctx context.Context, msg *I
 	respData, _ := json.Marshal(addrResp)
 
 	if h.publisher != nil {
-		_ = h.publisher.PublishToVault(ctx, senderGUID, "btc-address-response", respData)
+		_ = encryptAndPublishToPeerByGUID(
+			ctx, h.storage, h.publisher, h.ownerSpace,
+			senderGUID, "btc-address-response",
+			fmt.Sprintf("btc-addr-resp:%s:%d", h.ownerSpace, time.Now().UnixNano()),
+			respData, time.Now().Unix(),
+		)
 	}
 
 	log.Info().

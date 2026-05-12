@@ -196,6 +196,45 @@ func TestLocationStopWire(t *testing.T) {
 	}
 }
 
+// TestEncryptedPeerEnvelopeShape pins the on-wire JSON shape of the
+// envelope so a future struct change can't silently drop a field the
+// parent's replay-prevention layer (or the receiver) depends on.
+// We don't roundtrip through actual encryption here — that requires
+// a live storage with a ConnectionRecord — but we DO verify the
+// envelope JSON has the four load-bearing keys at the top level.
+func TestEncryptedPeerEnvelopeShape(t *testing.T) {
+	env := EncryptedPeerEnvelope{
+		EventID:          "test-event",
+		FromOwnerSpace:   "af44310d-2051-46a1-afd8-ee275b53f804",
+		Timestamp:        1715369336,
+		Nonce:            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+		EncryptedPayload: "ZW5jcnlwdGVk",
+	}
+	raw, err := json.Marshal(env)
+	if err != nil {
+		t.Fatalf("marshal envelope: %v", err)
+	}
+	got := string(raw)
+	for _, key := range []string{
+		`"from_owner_space":`, // receiver needs this to find the shared key
+		`"timestamp":`,        // parent replay-prevention reads this top-level
+		`"nonce":`,            // decrypt depends on this
+		`"encrypted_payload":`,
+	} {
+		if !strings.Contains(got, key) {
+			t.Errorf("envelope JSON missing %s — wire: %s", key, got)
+		}
+	}
+	// Round-trip parse so a typo in the json tag also fails.
+	var parsed EncryptedPeerEnvelope
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if parsed != env {
+		t.Errorf("envelope round-trip mismatch\n got: %+v\nwant: %+v", parsed, env)
+	}
+}
+
 func TestLocationRequestPingWire(t *testing.T) {
 	sender := LocationRequestPing{
 		EventID:        "loc-req:owner:1234567890",

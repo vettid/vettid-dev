@@ -842,13 +842,17 @@ func (h *LocationHandler) HandleRequest(msg *IncomingMessage) (*OutgoingMessage,
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
+	eventID := fmt.Sprintf("loc-req:%s:%d", h.ownerSpace, time.Now().UnixNano())
 	ping := LocationRequestPing{
-		EventID:        fmt.Sprintf("loc-req:%s:%d", h.ownerSpace, time.Now().UnixNano()),
+		EventID:        eventID,
 		FromOwnerSpace: h.ownerSpace,
 		RequestedAt:    now,
 	}
 	payload, _ := json.Marshal(ping)
-	if err := h.publisher.PublishToVault(context.Background(), conn.PeerGUID, "location-request-ping", payload); err != nil {
+	if err := encryptAndPublishToPeer(
+		context.Background(), h.storage, h.publisher, h.ownerSpace,
+		req.ConnectionID, "location-request-ping", eventID, payload, time.Now().Unix(),
+	); err != nil {
 		log.Warn().Err(err).Str("connection_id", req.ConnectionID).Msg("Failed to publish location-request-ping")
 		return h.errorResponse(msg.GetID(), "failed to send location request")
 	}
@@ -936,8 +940,9 @@ func (h *LocationHandler) sendLocationOnceInternal(connID, auditTitle string) er
 	settings := h.getSettings()
 	lat, lon := applyPrecision(point.Latitude, point.Longitude, settings)
 	now := time.Now().UTC()
+	eventID := fmt.Sprintf("loc-once:%s:%d", h.ownerSpace, time.Now().UnixNano())
 	update := IncomingLocationUpdate{
-		EventID:        fmt.Sprintf("loc-once:%s:%d", h.ownerSpace, time.Now().UnixNano()),
+		EventID:        eventID,
 		ConnectionID:   connID,
 		FromOwnerSpace: h.ownerSpace,
 		Latitude:       lat,
@@ -947,7 +952,10 @@ func (h *LocationHandler) sendLocationOnceInternal(connID, auditTitle string) er
 		UpdatedAt:      now.Format(time.RFC3339),
 	}
 	updateData, _ := json.Marshal(update)
-	if err := h.publisher.PublishToVault(context.Background(), conn.PeerGUID, "location-update", updateData); err != nil {
+	if err := encryptAndPublishToPeer(
+		context.Background(), h.storage, h.publisher, h.ownerSpace,
+		connID, "location-update", eventID, updateData, now.Unix(),
+	); err != nil {
 		log.Warn().Err(err).Str("connection_id", connID).Msg("Failed to send one-shot location")
 		return fmt.Errorf("failed to send location")
 	}
@@ -1068,9 +1076,19 @@ func (h *LocationHandler) recordAutoFulfillFire(connID string) {
 // `connection.peer-location-requested` so the UI can prompt the user
 // to fulfill (via `location.send-once`) or ignore.
 func (h *LocationHandler) HandleIncomingLocationRequest(ctx context.Context, data []byte) error {
-	var ping LocationRequestPing
-	if err := json.Unmarshal(data, &ping); err != nil {
+	// Encrypted-envelope wire format (2026-05-12+). Decrypt first; the
+	// inner payload is the original LocationRequestPing JSON.
+	dec, err := decryptIncomingPeerEnvelope(h.storage, data)
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to decrypt incoming location-request-ping envelope")
 		return err
+	}
+	var ping LocationRequestPing
+	if err := json.Unmarshal(dec.InnerPayload, &ping); err != nil {
+		return err
+	}
+	if ping.FromOwnerSpace == "" {
+		ping.FromOwnerSpace = dec.FromOwnerSpace
 	}
 
 	eventID := ping.EventID
@@ -1151,9 +1169,17 @@ func (h *LocationHandler) HandleIncomingLocationRequest(ctx context.Context, dat
 // Legacy senders (no FromOwnerSpace) are ignored — there's no way
 // to resolve the local connection without it.
 func (h *LocationHandler) HandleIncomingLocationStop(ctx context.Context, data []byte) error {
-	var stop LocationStopBroadcast
-	if err := json.Unmarshal(data, &stop); err != nil {
+	dec, err := decryptIncomingPeerEnvelope(h.storage, data)
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to decrypt incoming location-stop envelope")
 		return err
+	}
+	var stop LocationStopBroadcast
+	if err := json.Unmarshal(dec.InnerPayload, &stop); err != nil {
+		return err
+	}
+	if stop.FromOwnerSpace == "" {
+		stop.FromOwnerSpace = dec.FromOwnerSpace
 	}
 
 	eventID := stop.EventID
@@ -1242,28 +1268,18 @@ func (h *LocationHandler) emitPeerLocationShareStopped(ctx context.Context, conn
 // Non-fatal on failure — the sender's sharing-index update is the
 // canonical state; the peer will eventually time out its cache.
 func (h *LocationHandler) pushStopToSharedConnection(ctx context.Context, connID string) {
-	data, err := h.storage.Get("connections/" + connID)
-	if err != nil {
-		log.Warn().Err(err).Str("connection_id", connID).Msg("Failed to load connection for stop push")
-		return
-	}
-	var conn ConnectionRecord
-	if err := json.Unmarshal(data, &conn); err != nil {
-		log.Warn().Err(err).Str("connection_id", connID).Msg("Failed to parse connection for stop push")
-		return
-	}
-	if conn.Status != "active" || conn.PeerGUID == "" {
-		return
-	}
-
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := time.Now().UTC()
+	eventID := fmt.Sprintf("loc-stop:%s:%d", h.ownerSpace, time.Now().UnixNano())
 	stop := LocationStopBroadcast{
-		EventID:        fmt.Sprintf("loc-stop:%s:%d", h.ownerSpace, time.Now().UnixNano()),
+		EventID:        eventID,
 		FromOwnerSpace: h.ownerSpace,
-		StoppedAt:      now,
+		StoppedAt:      now.Format(time.RFC3339),
 	}
 	payload, _ := json.Marshal(stop)
-	if err := h.publisher.PublishToVault(ctx, conn.PeerGUID, "location-stop", payload); err != nil {
+	if err := encryptAndPublishToPeer(
+		ctx, h.storage, h.publisher, h.ownerSpace,
+		connID, "location-stop", eventID, payload, now.Unix(),
+	); err != nil {
 		log.Warn().Err(err).Str("connection_id", connID).Msg("Failed to push location-stop to peer")
 	}
 }
@@ -1342,9 +1358,17 @@ func (h *LocationHandler) HandlePeerGet(msg *IncomingMessage) (*OutgoingMessage,
 // HandleIncomingLocationUpdate processes a location update from a peer vault.
 // The update is ephemeral — it is NOT stored, only forwarded to the app.
 func (h *LocationHandler) HandleIncomingLocationUpdate(ctx context.Context, data []byte) error {
-	var update IncomingLocationUpdate
-	if err := json.Unmarshal(data, &update); err != nil {
+	dec, err := decryptIncomingPeerEnvelope(h.storage, data)
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to decrypt incoming location-update envelope")
 		return err
+	}
+	var update IncomingLocationUpdate
+	if err := json.Unmarshal(dec.InnerPayload, &update); err != nil {
+		return err
+	}
+	if update.FromOwnerSpace == "" {
+		update.FromOwnerSpace = dec.FromOwnerSpace
 	}
 
 	// SECURITY: Replay attack prevention
@@ -1564,8 +1588,9 @@ func (h *LocationHandler) pushToSharedConnections(ctx context.Context, point Loc
 			continue
 		}
 
+		eventID := fmt.Sprintf("loc:%s:%d", h.ownerSpace, point.Timestamp)
 		update := IncomingLocationUpdate{
-			EventID:        fmt.Sprintf("loc:%s:%d", h.ownerSpace, point.Timestamp),
+			EventID:        eventID,
 			ConnectionID:   connID,
 			FromOwnerSpace: h.ownerSpace, // V1 (2026-05-11): receiver resolves via this
 			Latitude:       lat,
@@ -1576,7 +1601,10 @@ func (h *LocationHandler) pushToSharedConnections(ctx context.Context, point Loc
 		}
 		updateData, _ := json.Marshal(update)
 
-		if err := h.publisher.PublishToVault(ctx, conn.PeerGUID, "location-update", updateData); err != nil {
+		if err := encryptAndPublishToPeer(
+			ctx, h.storage, h.publisher, h.ownerSpace,
+			connID, "location-update", eventID, updateData, now.Unix(),
+		); err != nil {
 			log.Warn().Err(err).Str("connection_id", connID).Msg("Failed to push location to peer")
 			failCount++
 		} else {

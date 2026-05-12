@@ -1481,14 +1481,23 @@ func (ch *CallHandler) resolveCallerDisplayName(callerGUID string) string {
 	return ""
 }
 
-// publishCallEventToVault sends a call event to another vault
+// publishCallEventToVault sends a call event to another vault.
+// SDPs (offer/answer) carry local IP / ICE candidates, so the
+// payload is encrypted with the per-connection shared secret before
+// publish — the NATS operator sees only ciphertext + subject.
 func (ch *CallHandler) publishCallEventToVault(ctx context.Context, targetOwnerSpace string, event *CallEvent) error {
 	eventData, err := json.Marshal(event)
 	if err != nil {
 		return fmt.Errorf("failed to marshal call event: %w", err)
 	}
-
-	return ch.publisher.PublishToVault(ctx, targetOwnerSpace, fmt.Sprintf("call.%s", event.EventType), eventData)
+	eventID := event.EventID
+	if eventID == "" && event.CallID != "" {
+		eventID = fmt.Sprintf("call:%s:%s", event.CallID, event.EventType)
+	}
+	return encryptAndPublishToPeerByGUID(
+		ctx, ch.storage, ch.publisher, ch.ownerSpace,
+		targetOwnerSpace, fmt.Sprintf("call.%s", event.EventType), eventID, eventData, time.Now().Unix(),
+	)
 }
 
 // loadCallRecord returns the stored CallRecord for a given call_id, or
