@@ -777,11 +777,23 @@ do_deploy() {
     # slower and possibly requiring manual OLD termination.
     PHASE="post-launch-routing-reclaim"
     log_step "Phase 4.6: Force-reclaiming routing claims from OLD ($old_pcr0...) → NEW"
+    # Retry inside the SSM script so we ride out the brief window where
+    # /ready returns 200 (NATS + vsock connected — line 145 of parent.go)
+    # but RoutingManager hasn't finished Start() yet, so SetRouting
+    # hasn't wired the routing pointer into the health server. During
+    # that window /internal/reclaim-from-pcr0 either 503s with
+    # "routing not yet initialized" OR a transient connection error
+    # silences (-s drops the message). Both 2026-05-12 deploys hit it.
+    #
+    # 3 attempts × 3s ≈ 9s extra wait. Manual reclaim succeeded ~10s
+    # after each deploy run, so this comfortably covers the gap. -sS
+    # keeps curl's stderr visible on the last attempt so we can see
+    # the actual failure reason if all retries fail.
     local reclaim_cmd reclaim_out reclaim_status reclaim_count
     reclaim_cmd=$(aws ssm send-command \
         --instance-ids "$new_instance_id" \
         --document-name "AWS-RunShellScript" \
-        --parameters "commands=[\"curl -s --max-time 10 'http://127.0.0.1:8080/internal/reclaim-from-pcr0?pcr0=$old_pcr0' || echo RECLAIM_FAIL\"]" \
+        --parameters "commands=[\"for i in 1 2 3; do out=\\\$(curl -sS --max-time 10 'http://127.0.0.1:8080/internal/reclaim-from-pcr0?pcr0=$old_pcr0' 2>&1); echo \\\"attempt \\\$i: \\\$out\\\"; if echo \\\"\\\$out\\\" | grep -q claimed; then exit 0; fi; sleep 3; done; exit 1\"]" \
         --query 'Command.CommandId' --output text --region "$REGION" 2>/dev/null || echo "")
     if [[ -n "$reclaim_cmd" ]]; then
         # Wait for the SSM run to reach a terminal state before reading
@@ -803,9 +815,12 @@ do_deploy() {
             reclaim_count=$(echo "$reclaim_out" | grep -oE '"claimed":[0-9]+' | head -1 | cut -d: -f2)
             log_info "Routing reclaim: ${reclaim_count:-0} users moved from OLD to NEW"
         else
-            # Endpoint may 503 if routing not yet up, or 400/500 on bad
-            # input. Either way, non-fatal — log and proceed.
-            log_warn "Routing reclaim returned unexpected response (status=$reclaim_status): ${reclaim_out:0:200}"
+            # All 3 retries exhausted; endpoint never returned a claimed
+            # response. Non-fatal — Phase 5 publishes migration config
+            # anyway and users self-reclaim on next PIN-unlock dispatch.
+            # The attempt log goes into reclaim_out so we can see WHY
+            # each curl failed (HTTP body, connection error, etc.).
+            log_warn "Routing reclaim exhausted retries (status=$reclaim_status): ${reclaim_out:0:400}"
         fi
     else
         log_warn "Could not send SSM command for routing reclaim — users will migrate via app prompt instead"
