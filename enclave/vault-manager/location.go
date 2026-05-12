@@ -18,6 +18,7 @@ type LocationHandler struct {
 	ownerSpace string
 	storage    *EncryptedStorage
 	publisher  *VsockPublisher
+	auditLog   *AuditLog
 }
 
 // NewLocationHandler creates a new location handler
@@ -28,6 +29,12 @@ func NewLocationHandler(ownerSpace string, storage *EncryptedStorage, publisher 
 		publisher:  publisher,
 	}
 }
+
+// SetAuditLog wires the per-connection audit trail so location
+// lifecycle events (request, share-started, share-stopped) show up
+// in Interaction History. nil-safe — the Append callers below check
+// h.auditLog before writing.
+func (h *LocationHandler) SetAuditLog(a *AuditLog) { h.auditLog = a }
 
 // --- Storage keys ---
 
@@ -679,6 +686,24 @@ func (h *LocationHandler) HandleSharingToggle(msg *IncomingMessage) (*OutgoingMe
 		}
 	}
 
+	// Audit entry — show up in Interaction History as "Started/Stopped
+	// sharing location". Skip the no-op case (toggle to the state we
+	// were already in) so the trail doesn't fill with duplicates.
+	if h.auditLog != nil {
+		eventType := AuditTypeLocationShareStarted
+		title := "Started sharing location"
+		if !req.Enabled {
+			eventType = AuditTypeLocationShareStopped
+			title = "Stopped sharing location"
+		}
+		h.auditLog.Append(AuditEntry{
+			ConnectionID: req.ConnectionID,
+			EventType:    eventType,
+			Direction:    AuditDirectionOutbound,
+			Title:        title,
+		})
+	}
+
 	// Persist
 	if err := h.storage.PutJSON(locationSharingIndexKey, &sharedWith); err != nil {
 		return h.errorResponse(msg.GetID(), "failed to save sharing index")
@@ -782,6 +807,17 @@ func (h *LocationHandler) HandleRequest(msg *IncomingMessage) (*OutgoingMessage,
 		return h.errorResponse(msg.GetID(), "failed to send location request")
 	}
 
+	// Audit: "Asked for location" (outbound on this peer's connection)
+	if h.auditLog != nil {
+		h.auditLog.Append(AuditEntry{
+			ConnectionID: req.ConnectionID,
+			PeerGUID:     conn.PeerGUID,
+			EventType:    AuditTypeLocationRequest,
+			Direction:    AuditDirectionOutbound,
+			Title:        "Asked for location",
+		})
+	}
+
 	resp := map[string]interface{}{
 		"success":      true,
 		"connection_id": req.ConnectionID,
@@ -848,6 +884,20 @@ func (h *LocationHandler) HandleSendOnce(msg *IncomingMessage) (*OutgoingMessage
 		return h.errorResponse(msg.GetID(), "failed to send location")
 	}
 
+	// Audit: "Sent location" (outbound). Uses the share.started event
+	// type — from an Interaction History perspective, sending a
+	// one-shot is the same as "you shared your location" (the receiver
+	// can't distinguish one-shot from continuous on their side either).
+	if h.auditLog != nil {
+		h.auditLog.Append(AuditEntry{
+			ConnectionID: req.ConnectionID,
+			PeerGUID:     conn.PeerGUID,
+			EventType:    AuditTypeLocationShareStarted,
+			Direction:    AuditDirectionOutbound,
+			Title:        "Sent location",
+		})
+	}
+
 	resp := map[string]interface{}{
 		"success":      true,
 		"connection_id": req.ConnectionID,
@@ -903,6 +953,18 @@ func (h *LocationHandler) HandleIncomingLocationRequest(ctx context.Context, dat
 	})
 	if err := h.publisher.PublishToApp(ctx, "connection.peer-location-requested", payload); err != nil {
 		log.Warn().Err(err).Str("connection_id", connID).Msg("Failed to forward location-request-ping to app")
+	}
+
+	// Audit: peer asked us for our location (inbound). Shows up in
+	// the receiver's Interaction History under that peer's connection.
+	if h.auditLog != nil {
+		h.auditLog.Append(AuditEntry{
+			ConnectionID: connID,
+			PeerGUID:     ping.FromOwnerSpace,
+			EventType:    AuditTypeLocationRequest,
+			Direction:    AuditDirectionInbound,
+			Title:        "Asked for your location",
+		})
 	}
 	return nil
 }
@@ -968,6 +1030,17 @@ func (h *LocationHandler) HandleIncomingLocationStop(ctx context.Context, data [
 		stoppedAt = time.Now().UTC().Format(time.RFC3339)
 	}
 	h.emitPeerLocationShareStopped(ctx, connID, stop.FromOwnerSpace, stoppedAt)
+
+	// Audit: peer stopped sharing (inbound).
+	if h.auditLog != nil {
+		h.auditLog.Append(AuditEntry{
+			ConnectionID: connID,
+			PeerGUID:     stop.FromOwnerSpace,
+			EventType:    AuditTypeLocationShareStopped,
+			Direction:    AuditDirectionInbound,
+			Title:        "Stopped sharing location",
+		})
+	}
 	return nil
 }
 
@@ -1207,6 +1280,19 @@ func (h *LocationHandler) cachePeerLocationAndMaybeNotify(ctx context.Context, c
 	// cache key is the trigger.
 	if !existed {
 		h.emitPeerLocationShareStarted(ctx, connID, update.FromOwnerSpace, now)
+		// Audit: peer started sharing with us (or sent a one-shot —
+		// indistinguishable on the receiver side). Same transition
+		// gate as the system-card notification so the audit trail
+		// and the activity feed agree.
+		if h.auditLog != nil {
+			h.auditLog.Append(AuditEntry{
+				ConnectionID: connID,
+				PeerGUID:     update.FromOwnerSpace,
+				EventType:    AuditTypeLocationShareStarted,
+				Direction:    AuditDirectionInbound,
+				Title:        "Shared their location",
+			})
+		}
 	}
 }
 

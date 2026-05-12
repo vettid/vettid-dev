@@ -42,6 +42,21 @@ const (
 	AuditTypeAgentActionExecuted = "agent.action.executed"
 	AuditTypeAgentSecretAccessed = "agent.secret.accessed"
 
+	// Location lifecycle (peer-connection scoped). Direction encodes
+	// who initiated the action:
+	//   outbound: owner did it (sent the request, toggled sharing on/off, sent one-shot)
+	//   inbound:  peer did it (asked us, started sharing with us, stopped, etc.)
+	//
+	// Continuous-share start/stop and one-shot location-update share the
+	// same `location.share.started` event on the receiver side because
+	// the receiver can't distinguish them locally — the cache write
+	// path fires either way. UX consequence: a one-shot reads as
+	// "started sharing" with no follow-up "stopped" entry until the
+	// cache row ages out or the peer explicitly stops.
+	AuditTypeLocationRequest      = "location.request"
+	AuditTypeLocationShareStarted = "location.share.started"
+	AuditTypeLocationShareStopped = "location.share.stopped"
+
 	// Shared-action invocations (action_invoker.go). These land on the
 	// connection that drove the invocation — both sides see the trail.
 	AuditTypeActionInvocationSigOK     = "action.invocation.sig_ok"

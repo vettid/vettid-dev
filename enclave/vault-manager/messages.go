@@ -478,6 +478,7 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 	mh.guideHandler.SetAuditLog(mh.auditLog)
 	mh.migrationHandler.SetAuditLog(mh.auditLog)
 	mh.voteHandler.SetAuditLog(mh.auditLog)
+	mh.locationHandler.SetAuditLog(mh.auditLog)
 
 	return mh
 }
