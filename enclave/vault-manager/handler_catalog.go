@@ -178,6 +178,12 @@ func HandlerCatalog() []HandlerCatalogEntry {
 			Category:    HandlerCategoryDefault, Required: false, Shareable: true, Surfaced: true,
 		},
 		{
+			ID: "critical-secret-use", Name: "Critical Secret Use",
+			Description: "Let connections ask you to perform operations (sign / decrypt / derive / auth) using your critical secrets. The secret material never leaves your vault — only the operation's result is returned.",
+			Operations:  []string{"request-use", "approve", "deny"},
+			Category:    HandlerCategoryDefault, Required: false, Shareable: true, Surfaced: true,
+		},
+		{
 			ID: "agent", Name: "AI Agents",
 			Description: "Manage AI agent connections",
 			Operations:  []string{"approval", "list", "revoke", "info"},

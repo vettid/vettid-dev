@@ -662,6 +662,12 @@ func peerHandlerForIncomingSubject(operation string) string {
 	if operation == "data.request" || strings.HasPrefix(operation, "data.grant.") {
 		return "grant"
 	}
+	// Critical-secret use-on-my-behalf (plans/data-request-grants.md
+	// Phase 6) is its own handler so users can disable "let peers ask
+	// me to sign / decrypt" independently of normal data sharing.
+	if strings.HasPrefix(operation, "critical_secret.") {
+		return "critical-secret-use"
+	}
 	return ""
 }
 

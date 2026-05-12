@@ -80,6 +80,14 @@ const (
 	AuditTypeDataRevoked         = "data.revoked"
 	AuditTypeDataExpired         = "data.expired"
 
+	// Critical-secret use-on-my-behalf (plans/data-request-grants.md
+	// Phase 6). Direction:
+	//   outbound: peer asked us / we performed for peer (depending on
+	//             which side of the connection logged it)
+	AuditTypeCriticalSecretUseRequested = "critical_secret.use.requested"
+	AuditTypeCriticalSecretUsed         = "critical_secret.used"
+	AuditTypeCriticalSecretUseDenied    = "critical_secret.use.denied"
+
 	// System connection events — originate from the VettID service
 	// itself (not a peer) and all land on the reserved system
 	// connection. See plans/luminous-unifying-manatee.md.

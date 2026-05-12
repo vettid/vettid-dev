@@ -165,6 +165,9 @@ type MessageHandler struct {
 	// plans/data-request-grants.md).
 	grantHandler *GrantHandler
 
+	// Critical-secret use-on-my-behalf — Phase 6.
+	criticalSecretUseHandler *CriticalSecretHandler
+
 	// Agent handlers (AI agent connections)
 	agentHandler        *AgentHandler
 	agentSecretsHandler *AgentSecretsHandler
@@ -435,6 +438,9 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 		// Grant handler (data request/grant flow)
 		grantHandler: NewGrantHandler(ownerSpace, storage, publisher),
 
+		// Critical-secret use-on-my-behalf handler
+		criticalSecretUseHandler: NewCriticalSecretHandler(ownerSpace, storage, publisher),
+
 		// Agent handlers
 		agentHandler:        agentHandler,
 		agentSecretsHandler: agentSecretsHandler,
@@ -487,6 +493,7 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 	mh.voteHandler.SetAuditLog(mh.auditLog)
 	mh.locationHandler.SetAuditLog(mh.auditLog)
 	mh.grantHandler.SetAuditLog(mh.auditLog)
+	mh.criticalSecretUseHandler.SetAuditLog(mh.auditLog)
 
 	return mh
 }
@@ -951,6 +958,34 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 		}
 		ack, _ := json.Marshal(map[string]string{"status": "received"})
 		return mh.successResponse(msg.GetID(), ack)
+	case "critical_secret.use":
+		// Peer asks us to perform an operation using one of our critical secrets.
+		if gateResp := mh.gatePeerSubject(operation, msg.Payload, msg.GetID()); gateResp != nil {
+			return gateResp, nil
+		}
+		dec, derr := decryptIncomingPeerEnvelope(mh.storage, msg.Payload)
+		if derr != nil {
+			return mh.errorResponse(msg.GetID(), fmt.Sprintf("decrypt critical_secret.use envelope: %v", derr))
+		}
+		if err := mh.criticalSecretUseHandler.HandleIncomingUseRequest(ctx, dec); err != nil {
+			log.Warn().Err(err).Msg("critical_secret.use handler failed")
+		}
+		ack, _ := json.Marshal(map[string]string{"status": "received"})
+		return mh.successResponse(msg.GetID(), ack)
+	case "critical_secret.use-response":
+		// Owner returned the operation result.
+		if gateResp := mh.gatePeerSubject(operation, msg.Payload, msg.GetID()); gateResp != nil {
+			return gateResp, nil
+		}
+		dec, derr := decryptIncomingPeerEnvelope(mh.storage, msg.Payload)
+		if derr != nil {
+			return mh.errorResponse(msg.GetID(), fmt.Sprintf("decrypt critical_secret.use-response envelope: %v", derr))
+		}
+		if err := mh.criticalSecretUseHandler.HandleIncomingUseResponse(ctx, dec); err != nil {
+			log.Warn().Err(err).Msg("critical_secret.use-response handler failed")
+		}
+		ack, _ := json.Marshal(map[string]string{"status": "received"})
+		return mh.successResponse(msg.GetID(), ack)
 	case "btc-address-request":
 		// Incoming BTC address request from peer vault — auto-respond
 		if gateResp := mh.gatePeerSubject(operation, msg.Payload, msg.GetID()); gateResp != nil {
@@ -1052,6 +1087,9 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 	case "grant":
 		// Reference-based data sharing (plans/data-request-grants.md).
 		return mh.handleGrantOperation(ctx, msg, parts[opIndex+1:])
+	case "critical-secret-use":
+		// Use-on-my-behalf for critical secrets (Phase 6).
+		return mh.handleCriticalSecretUseOperation(ctx, msg, parts[opIndex+1:])
 	case "audit":
 		// Audit log operations
 		return mh.handleAuditOperation(ctx, msg, parts[opIndex+1:])
@@ -4005,5 +4043,27 @@ func (mh *MessageHandler) handleGrantOperation(ctx context.Context, msg *Incomin
 		return mh.grantHandler.HandleListPending(msg)
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown grant operation: %s", opParts[1]))
+	}
+}
+
+// handleCriticalSecretUseOperation dispatches app-side critical-secret
+// use ops. Owner-side: approve / deny. Receiver-side: request-use.
+// Plans/data-request-grants.md Phase 6.
+func (mh *MessageHandler) handleCriticalSecretUseOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
+	if len(opParts) < 2 {
+		return mh.errorResponse(msg.GetID(), "missing critical-secret-use operation")
+	}
+	if mh.criticalSecretUseHandler == nil {
+		return mh.errorResponse(msg.GetID(), "critical-secret-use handler not initialized")
+	}
+	switch opParts[1] {
+	case "request-use":
+		return mh.criticalSecretUseHandler.HandleRequestUse(msg)
+	case "approve":
+		return mh.criticalSecretUseHandler.HandleApproveUse(msg)
+	case "deny":
+		return mh.criticalSecretUseHandler.HandleDenyUse(msg)
+	default:
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown critical-secret-use operation: %s", opParts[1]))
 	}
 }
