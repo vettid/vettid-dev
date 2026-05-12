@@ -308,7 +308,17 @@ func (r *RoutingManager) ReclaimUsersFromPCR0(oldPCR0 string) (int, error) {
 		if err := json.Unmarshal(current.Value(), &existing); err != nil {
 			continue
 		}
-		if existing.PCR0 != oldPCR0 {
+		// Reclaim entries that either match the OLD PCR0 explicitly OR
+		// have an empty PCR0. Empty PCR0 entries are transitional
+		// orphans from parents pre-vettid-dev ab0e034 (when p.pcr0
+		// was never populated, so every claim shipped with PCR0=""
+		// regardless of which enclave wrote it). Treating them as
+		// orphans-of-the-old-instance is safe: if a parent CURRENTLY
+		// running on OLD with the new fix has the entry, its
+		// heartbeat will re-claim it before this pass's CAS update
+		// can land. If OLD is gone, the row is genuinely orphaned
+		// and we're the rightful claimant.
+		if existing.PCR0 != oldPCR0 && existing.PCR0 != "" {
 			continue
 		}
 		// Force-claim: bump revision via CAS. If someone else (OLD

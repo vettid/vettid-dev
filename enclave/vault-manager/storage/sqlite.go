@@ -1038,6 +1038,9 @@ func (s *SQLiteStorage) exportData() ([]byte, error) {
 		"_metadata",
 		"connection_audit",
 		"events",
+		"service_contracts",
+		"service_connection_keys",
+		"service_auth_requests",
 	}
 	for _, table := range tables {
 		rows, err := s.db.Query(fmt.Sprintf("SELECT * FROM %s", table))
@@ -1082,13 +1085,16 @@ func (s *SQLiteStorage) importData(data []byte) error {
 
 	// BLOB columns per table - these are base64-encoded in JSON and need decoding
 	blobColumns := map[string]map[string]bool{
-		"handler_state":    {"state": true},
-		"cek_keypairs":     {"private_key": true, "public_key": true},
-		"transport_keys":   {"private_key": true, "public_key": true},
-		"ledger_entries":   {"payload": true},
-		"_metadata":        {},
-		"connection_audit": {"payload": true},
-		"events":           {"payload": true},
+		"handler_state":           {"state": true},
+		"cek_keypairs":            {"private_key": true, "public_key": true},
+		"transport_keys":          {"private_key": true, "public_key": true},
+		"ledger_entries":          {"payload": true},
+		"_metadata":               {},
+		"connection_audit":        {"payload": true},
+		"events":                  {"payload": true},
+		"service_contracts":       {"contract_data": true, "user_signature": true, "service_signature": true},
+		"service_connection_keys": {"private_key": true, "public_key": true, "service_public_key": true, "shared_secret": true},
+		"service_auth_requests":   {"challenge": true, "response_signature": true},
 	}
 
 	// Clear existing data. Keep in sync with the exportData() table
@@ -1102,6 +1108,9 @@ func (s *SQLiteStorage) importData(data []byte) error {
 		"_metadata",
 		"connection_audit",
 		"events",
+		"service_contracts",
+		"service_connection_keys",
+		"service_auth_requests",
 	}
 	for _, table := range tables {
 		if _, err := s.db.Exec(fmt.Sprintf("DELETE FROM %s", table)); err != nil {

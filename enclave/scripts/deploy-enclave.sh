@@ -527,24 +527,18 @@ cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json << 'CWCO
 }
 CWCONFIG
 
-# Create systemd service for CloudWatch agent
-cat > /etc/systemd/system/amazon-cloudwatch-agent.service << 'CWSVC'
-[Unit]
-Description=Amazon CloudWatch Agent
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-CWSVC
-
-systemctl daemon-reload
-systemctl enable amazon-cloudwatch-agent.service
+# Apply the JSON config via amazon-cloudwatch-agent-ctl. The ctl
+# script translates JSON → the agent's internal TOML and writes it to
+# /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.toml,
+# then starts the agent through the package-provided systemd unit.
+# The previous custom unit invoked the binary with `-c file:...` —
+# the agent binary doesn't recognize `-c` (it wants `-config`) and
+# exited with status 2 every 5 seconds in a restart loop, spamming
+# the journal with the usage banner. See journal noise discovered
+# 2026-05-12.
+/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+    -a fetch-config -m ec2 -s \
+    -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json || true
 echo "CloudWatch agent configured for log streaming"
 
 # Flush filesystem buffers to ensure service files are persisted before AMI creation

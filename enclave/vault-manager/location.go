@@ -62,6 +62,20 @@ func autoFulfillLocationKey(connID string) string {
 	return "connections/" + connID + "/_auto_fulfill_location_requests"
 }
 
+// autoFulfillLastFireKey records the Unix-epoch second of the most
+// recent auto-fulfilled location-request for this connection. Used by
+// the rate-limit guard: a malicious peer with auto-fulfill enabled
+// could otherwise spam `location.request` and harvest unlimited
+// samples. We cap auto-fires to one per autoFulfillCooldown so the
+// privacy ceiling is bounded regardless of ping cadence; over-limit
+// requests fall through to the prompt path so the user can still
+// respond manually.
+func autoFulfillLastFireKey(connID string) string {
+	return "connections/" + connID + "/_auto_fulfill_last_at"
+}
+
+const autoFulfillCooldown = 60 * time.Second
+
 // peerLocationStaleAfter is how long a cached peer location stays
 // valid before HandlePeerGet treats it as expired. The pin indicator
 // on the connection card and the "View location" action label
@@ -1022,6 +1036,33 @@ func (h *LocationHandler) isAutoFulfillEnabled(connID string) bool {
 	return v.Enabled
 }
 
+// autoFulfillRateLimitOK returns true when enough time has passed
+// since the last auto-fulfilled fire on this connection to send
+// another one. The fixed-window approach is good enough at the
+// expected scale — we're not trying to defend against high-frequency
+// attackers, just bounded against a peer who tries to harvest
+// continuous location by spamming requests.
+func (h *LocationHandler) autoFulfillRateLimitOK(connID string) bool {
+	raw, err := h.storage.Get(autoFulfillLastFireKey(connID))
+	if err != nil || len(raw) == 0 {
+		return true
+	}
+	last, perr := strconv.ParseInt(string(raw), 10, 64)
+	if perr != nil {
+		return true
+	}
+	return time.Since(time.Unix(last, 0)) >= autoFulfillCooldown
+}
+
+// recordAutoFulfillFire stamps the current epoch second so the next
+// invocation's rate-limit check sees it.
+func (h *LocationHandler) recordAutoFulfillFire(connID string) {
+	now := strconv.FormatInt(time.Now().Unix(), 10)
+	if err := h.storage.Put(autoFulfillLastFireKey(connID), []byte(now)); err != nil {
+		log.Warn().Err(err).Str("connection_id", connID).Msg("Failed to record auto-fulfill timestamp")
+	}
+}
+
 // HandleIncomingLocationRequest processes a one-shot location-request
 // ping from a peer vault. Forwards to the receiver app as
 // `connection.peer-location-requested` so the UI can prompt the user
@@ -1073,15 +1114,19 @@ func (h *LocationHandler) HandleIncomingLocationRequest(ctx context.Context, dat
 	}
 
 	// Auto-fulfill branch: when the user has pre-approved this peer,
-	// silently send the latest location instead of prompting. The
-	// sendLocationOnceInternal audit row distinguishes auto-sent from
-	// user-approved on the outbound side.
+	// silently send the latest location instead of prompting. Rate
+	// limit guards against a peer spamming requests and harvesting
+	// unlimited samples — over-cap requests fall through to the
+	// prompt path so the user sees them and can investigate.
 	if h.isAutoFulfillEnabled(connID) {
-		if err := h.sendLocationOnceInternal(connID, "Auto-sent location on request"); err != nil {
+		if !h.autoFulfillRateLimitOK(connID) {
+			log.Warn().Str("connection_id", connID).Msg("Auto-fulfill rate-limited; falling back to prompt for this request")
+		} else if err := h.sendLocationOnceInternal(connID, "Auto-sent location on request"); err != nil {
 			log.Warn().Err(err).Str("connection_id", connID).Msg("Auto-fulfill failed; falling back to prompt")
 			// Fall through to the prompt path so the user can still
 			// respond manually if auto-send fails for any reason.
 		} else {
+			h.recordAutoFulfillFire(connID)
 			log.Info().Str("connection_id", connID).Msg("Auto-fulfilled location request without prompting")
 			return nil
 		}
