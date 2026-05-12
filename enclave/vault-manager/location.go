@@ -1435,7 +1435,9 @@ func (h *LocationHandler) HandleIncomingLocationUpdate(ctx context.Context, data
 	// Forward to app (ephemeral — kept for legacy subscribers that
 	// want push-driven live updates; the cache above is the durable
 	// source of truth for "what was the last shared location".)
-	if err := h.publisher.PublishToApp(ctx, "location-update", data); err != nil {
+	// Send the decrypted IncomingLocationUpdate JSON, not the envelope
+	// bytes — the app has no shared secret to unwrap them.
+	if err := h.publisher.PublishToApp(ctx, "location-update", dec.InnerPayload); err != nil {
 		log.Warn().Err(err).Msg("Failed to notify app of location update")
 	}
 

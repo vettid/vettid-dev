@@ -866,8 +866,9 @@ func (h *MessagingHandler) HandleIncomingReadReceipt(ctx context.Context, data [
 		log.Warn().Err(err).Str("message_id", receipt.MessageID).Msg("Failed to mark receipt as processed")
 	}
 
-	// Notify app about read receipt
-	if err := h.publisher.PublishToApp(ctx, "read-receipt", data); err != nil {
+	// Notify app about read receipt. Pass the decrypted PeerReadReceipt
+	// JSON — the app has no shared secret to unwrap the envelope.
+	if err := h.publisher.PublishToApp(ctx, "read-receipt", dec.InnerPayload); err != nil {
 		log.Warn().Err(err).Msg("Failed to notify app of read receipt")
 	}
 
