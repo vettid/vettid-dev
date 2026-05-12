@@ -2354,6 +2354,15 @@ func (mh *MessageHandler) handleLocationOperation(ctx context.Context, msg *Inco
 			}
 			mh.persistVaultStateToS3()
 			return response, nil
+		case "set-auto-fulfill":
+			response, err := mh.locationHandler.HandleSetAutoFulfill(msg)
+			if err != nil {
+				return response, err
+			}
+			mh.persistVaultStateToS3()
+			return response, nil
+		case "get-auto-fulfill":
+			return mh.locationHandler.HandleGetAutoFulfill(msg)
 		default:
 			return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown location sharing operation: %s", opParts[2]))
 		}

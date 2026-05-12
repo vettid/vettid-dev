@@ -53,6 +53,23 @@ func peerLocationCacheKey(connID string) string {
 	return "connections/" + connID + "/_peer_location"
 }
 
+// autoFulfillLocationKey returns the storage key for the per-connection
+// auto-fulfill flag. When the JSON value is {"enabled":true} the
+// receiver-side HandleIncomingLocationRequest skips the forApp prompt
+// and silently invokes send-once. Default off — incoming requests
+// always prompt unless the user has explicitly opted in for this peer.
+func autoFulfillLocationKey(connID string) string {
+	return "connections/" + connID + "/_auto_fulfill_location_requests"
+}
+
+// peerLocationStaleAfter is how long a cached peer location stays
+// valid before HandlePeerGet treats it as expired. The pin indicator
+// on the connection card and the "View location" action label
+// disappear after this window — anything older isn't a useful
+// "current location" answer. Peer broadcasts that re-arrive update
+// the cache UpdatedAt and restart the clock.
+const peerLocationStaleAfter = 6 * time.Hour
+
 // CachedPeerLocation is the JSON blob stored at peerLocationCacheKey.
 // One per connection; overwritten on every received location-update.
 // `FirstReceivedAt` is set on the initial write and never overwritten —
@@ -153,6 +170,21 @@ type LocationRequestPing struct {
 	EventID        string `json:"event_id,omitempty"`
 	FromOwnerSpace string `json:"from_owner_space"`
 	RequestedAt    string `json:"requested_at"`
+}
+
+// LocationAutoFulfillRequest is the app-side payload for setting the
+// per-connection auto-fulfill flag.
+type LocationAutoFulfillRequest struct {
+	ConnectionID string `json:"connection_id"`
+	Enabled      bool   `json:"enabled"`
+}
+
+// LocationAutoFulfillResponse is what `location.sharing.get-auto-fulfill`
+// returns. Separate get/set ops keep the optimistic-toggle pattern
+// the Android side already uses for other per-connection toggles.
+type LocationAutoFulfillResponse struct {
+	ConnectionID string `json:"connection_id"`
+	Enabled      bool   `json:"enabled"`
 }
 
 // LocationSendOnceRequest is the app-side payload for the
@@ -844,58 +876,8 @@ func (h *LocationHandler) HandleSendOnce(msg *IncomingMessage) (*OutgoingMessage
 		return h.errorResponse(msg.GetID(), "connection_id is required")
 	}
 
-	connData, err := h.storage.Get("connections/" + req.ConnectionID)
-	if err != nil {
-		return h.errorResponse(msg.GetID(), "connection not found")
-	}
-	var conn ConnectionRecord
-	if err := json.Unmarshal(connData, &conn); err != nil {
-		return h.errorResponse(msg.GetID(), "failed to parse connection record")
-	}
-	if conn.Status != "active" || conn.PeerGUID == "" {
-		return h.errorResponse(msg.GetID(), "connection is not active")
-	}
-
-	latestData, err := h.storage.Get(locationLatestKey)
-	if err != nil || len(latestData) == 0 {
-		return h.errorResponse(msg.GetID(), "no location data available to send")
-	}
-	var point LocationPoint
-	if err := json.Unmarshal(latestData, &point); err != nil {
-		return h.errorResponse(msg.GetID(), "failed to read latest location")
-	}
-
-	settings := h.getSettings()
-	lat, lon := applyPrecision(point.Latitude, point.Longitude, settings)
-	now := time.Now().UTC()
-	update := IncomingLocationUpdate{
-		EventID:        fmt.Sprintf("loc-once:%s:%d", h.ownerSpace, time.Now().UnixNano()),
-		ConnectionID:   req.ConnectionID,
-		FromOwnerSpace: h.ownerSpace,
-		Latitude:       lat,
-		Longitude:      lon,
-		Accuracy:       point.Accuracy,
-		Timestamp:      point.Timestamp,
-		UpdatedAt:      now.Format(time.RFC3339),
-	}
-	updateData, _ := json.Marshal(update)
-	if err := h.publisher.PublishToVault(context.Background(), conn.PeerGUID, "location-update", updateData); err != nil {
-		log.Warn().Err(err).Str("connection_id", req.ConnectionID).Msg("Failed to send one-shot location")
-		return h.errorResponse(msg.GetID(), "failed to send location")
-	}
-
-	// Audit: "Sent location" (outbound). Uses the share.started event
-	// type — from an Interaction History perspective, sending a
-	// one-shot is the same as "you shared your location" (the receiver
-	// can't distinguish one-shot from continuous on their side either).
-	if h.auditLog != nil {
-		h.auditLog.Append(AuditEntry{
-			ConnectionID: req.ConnectionID,
-			PeerGUID:     conn.PeerGUID,
-			EventType:    AuditTypeLocationShareStarted,
-			Direction:    AuditDirectionOutbound,
-			Title:        "Sent location",
-		})
+	if err := h.sendLocationOnceInternal(req.ConnectionID, "Sent location"); err != nil {
+		return h.errorResponse(msg.GetID(), err.Error())
 	}
 
 	resp := map[string]interface{}{
@@ -908,6 +890,136 @@ func (h *LocationHandler) HandleSendOnce(msg *IncomingMessage) (*OutgoingMessage
 		Type:      MessageTypeResponse,
 		Payload:   respBytes,
 	}, nil
+}
+
+// sendLocationOnceInternal pushes the latest cached point to one peer
+// and writes the audit entry. Shared by HandleSendOnce (user-approved)
+// and HandleIncomingLocationRequest's auto-fulfill branch — auditTitle
+// distinguishes the two on the trail so the user can tell which path
+// fired (e.g., "Sent location" vs "Auto-sent location on request").
+func (h *LocationHandler) sendLocationOnceInternal(connID, auditTitle string) error {
+	connData, err := h.storage.Get("connections/" + connID)
+	if err != nil {
+		return fmt.Errorf("connection not found")
+	}
+	var conn ConnectionRecord
+	if err := json.Unmarshal(connData, &conn); err != nil {
+		return fmt.Errorf("failed to parse connection record")
+	}
+	if conn.Status != "active" || conn.PeerGUID == "" {
+		return fmt.Errorf("connection is not active")
+	}
+
+	latestData, err := h.storage.Get(locationLatestKey)
+	if err != nil || len(latestData) == 0 {
+		return fmt.Errorf("no location data available to send")
+	}
+	var point LocationPoint
+	if err := json.Unmarshal(latestData, &point); err != nil {
+		return fmt.Errorf("failed to read latest location")
+	}
+
+	settings := h.getSettings()
+	lat, lon := applyPrecision(point.Latitude, point.Longitude, settings)
+	now := time.Now().UTC()
+	update := IncomingLocationUpdate{
+		EventID:        fmt.Sprintf("loc-once:%s:%d", h.ownerSpace, time.Now().UnixNano()),
+		ConnectionID:   connID,
+		FromOwnerSpace: h.ownerSpace,
+		Latitude:       lat,
+		Longitude:      lon,
+		Accuracy:       point.Accuracy,
+		Timestamp:      point.Timestamp,
+		UpdatedAt:      now.Format(time.RFC3339),
+	}
+	updateData, _ := json.Marshal(update)
+	if err := h.publisher.PublishToVault(context.Background(), conn.PeerGUID, "location-update", updateData); err != nil {
+		log.Warn().Err(err).Str("connection_id", connID).Msg("Failed to send one-shot location")
+		return fmt.Errorf("failed to send location")
+	}
+
+	if h.auditLog != nil {
+		h.auditLog.Append(AuditEntry{
+			ConnectionID: connID,
+			PeerGUID:     conn.PeerGUID,
+			EventType:    AuditTypeLocationShareStarted,
+			Direction:    AuditDirectionOutbound,
+			Title:        auditTitle,
+		})
+	}
+	return nil
+}
+
+// HandleSetAutoFulfill flips the per-connection auto-fulfill flag.
+// When enabled, incoming location-request pings on this connection
+// are silently fulfilled by the vault (send-once internally) without
+// surfacing a prompt to the user.
+func (h *LocationHandler) HandleSetAutoFulfill(msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req LocationAutoFulfillRequest
+	if err := unmarshalRequest(msg.Payload, &req, "HandleSetAutoFulfill"); err != nil {
+		return h.errorResponse(msg.GetID(), "invalid request format")
+	}
+	if req.ConnectionID == "" {
+		return h.errorResponse(msg.GetID(), "connection_id is required")
+	}
+
+	data, _ := json.Marshal(map[string]bool{"enabled": req.Enabled})
+	if err := h.storage.Put(autoFulfillLocationKey(req.ConnectionID), data); err != nil {
+		return h.errorResponse(msg.GetID(), "failed to persist auto-fulfill setting")
+	}
+
+	log.Info().Str("connection_id", req.ConnectionID).Bool("enabled", req.Enabled).Msg("Auto-fulfill location toggled")
+
+	resp := map[string]interface{}{
+		"success":       true,
+		"connection_id": req.ConnectionID,
+		"enabled":       req.Enabled,
+	}
+	respBytes, _ := json.Marshal(resp)
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// HandleGetAutoFulfill reads the per-connection auto-fulfill flag.
+// Returns enabled=false when the key isn't set (default off).
+func (h *LocationHandler) HandleGetAutoFulfill(msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req LocationAutoFulfillRequest
+	if err := unmarshalRequest(msg.Payload, &req, "HandleGetAutoFulfill"); err != nil {
+		return h.errorResponse(msg.GetID(), "invalid request format")
+	}
+	if req.ConnectionID == "" {
+		return h.errorResponse(msg.GetID(), "connection_id is required")
+	}
+
+	resp := LocationAutoFulfillResponse{
+		ConnectionID: req.ConnectionID,
+		Enabled:      h.isAutoFulfillEnabled(req.ConnectionID),
+	}
+	respBytes, _ := json.Marshal(resp)
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// isAutoFulfillEnabled returns the stored boolean for this connection,
+// defaulting to false when the key is missing or malformed.
+func (h *LocationHandler) isAutoFulfillEnabled(connID string) bool {
+	raw, err := h.storage.Get(autoFulfillLocationKey(connID))
+	if err != nil || len(raw) == 0 {
+		return false
+	}
+	var v struct {
+		Enabled bool `json:"enabled"`
+	}
+	if json.Unmarshal(raw, &v) != nil {
+		return false
+	}
+	return v.Enabled
 }
 
 // HandleIncomingLocationRequest processes a one-shot location-request
@@ -946,17 +1058,10 @@ func (h *LocationHandler) HandleIncomingLocationRequest(ctx context.Context, dat
 	if requestedAt == "" {
 		requestedAt = time.Now().UTC().Format(time.RFC3339)
 	}
-	payload, _ := json.Marshal(map[string]string{
-		"connection_id":    connID,
-		"from_owner_space": ping.FromOwnerSpace,
-		"requested_at":     requestedAt,
-	})
-	if err := h.publisher.PublishToApp(ctx, "connection.peer-location-requested", payload); err != nil {
-		log.Warn().Err(err).Str("connection_id", connID).Msg("Failed to forward location-request-ping to app")
-	}
 
-	// Audit: peer asked us for our location (inbound). Shows up in
-	// the receiver's Interaction History under that peer's connection.
+	// Audit the inbound request unconditionally — the user wants the
+	// trail to show "X asked for your location" whether or not the
+	// vault auto-fulfilled it.
 	if h.auditLog != nil {
 		h.auditLog.Append(AuditEntry{
 			ConnectionID: connID,
@@ -965,6 +1070,30 @@ func (h *LocationHandler) HandleIncomingLocationRequest(ctx context.Context, dat
 			Direction:    AuditDirectionInbound,
 			Title:        "Asked for your location",
 		})
+	}
+
+	// Auto-fulfill branch: when the user has pre-approved this peer,
+	// silently send the latest location instead of prompting. The
+	// sendLocationOnceInternal audit row distinguishes auto-sent from
+	// user-approved on the outbound side.
+	if h.isAutoFulfillEnabled(connID) {
+		if err := h.sendLocationOnceInternal(connID, "Auto-sent location on request"); err != nil {
+			log.Warn().Err(err).Str("connection_id", connID).Msg("Auto-fulfill failed; falling back to prompt")
+			// Fall through to the prompt path so the user can still
+			// respond manually if auto-send fails for any reason.
+		} else {
+			log.Info().Str("connection_id", connID).Msg("Auto-fulfilled location request without prompting")
+			return nil
+		}
+	}
+
+	payload, _ := json.Marshal(map[string]string{
+		"connection_id":    connID,
+		"from_owner_space": ping.FromOwnerSpace,
+		"requested_at":     requestedAt,
+	})
+	if err := h.publisher.PublishToApp(ctx, "connection.peer-location-requested", payload); err != nil {
+		log.Warn().Err(err).Str("connection_id", connID).Msg("Failed to forward location-request-ping to app")
 	}
 	return nil
 }
@@ -1124,6 +1253,34 @@ func (h *LocationHandler) HandlePeerGet(msg *IncomingMessage) (*OutgoingMessage,
 	if err := json.Unmarshal(data, &cached); err != nil {
 		log.Warn().Err(err).Str("connection_id", req.ConnectionID).Msg("Failed to decode cached peer location")
 		return h.errorResponse(msg.GetID(), "failed to decode cached peer location")
+	}
+
+	// Stale-cache cleanup: peer broadcasts populate UpdatedAt on every
+	// receive, so anything older than peerLocationStaleAfter means the
+	// peer hasn't pushed in 6h+ (uninstalled, sharing toggled off
+	// without a stop broadcast, network drop). Return shared:false so
+	// the connection-card pin and "View location" affordance fall
+	// back to the request flow rather than showing a stale point as
+	// if it were current. Delete the row lazily so the next fresh
+	// broadcast counts as a new share-started transition.
+	if cached.UpdatedAt != "" {
+		if updated, perr := time.Parse(time.RFC3339, cached.UpdatedAt); perr == nil {
+			if time.Since(updated) > peerLocationStaleAfter {
+				log.Info().
+					Str("connection_id", req.ConnectionID).
+					Str("updated_at", cached.UpdatedAt).
+					Msg("Peer location cache stale — deleting and returning shared:false")
+				if delErr := h.storage.Delete(key); delErr != nil {
+					log.Warn().Err(delErr).Str("connection_id", req.ConnectionID).Msg("Failed to delete stale peer-location row (continuing)")
+				}
+				respBytes, _ := json.Marshal(LocationPeerGetResponse{Shared: false})
+				return &OutgoingMessage{
+					RequestID: msg.GetID(),
+					Type:      MessageTypeResponse,
+					Payload:   respBytes,
+				}, nil
+			}
+		}
 	}
 
 	respBytes, _ := json.Marshal(LocationPeerGetResponse{
