@@ -494,6 +494,7 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 	mh.locationHandler.SetAuditLog(mh.auditLog)
 	mh.grantHandler.SetAuditLog(mh.auditLog)
 	mh.criticalSecretUseHandler.SetAuditLog(mh.auditLog)
+	mh.criticalSecretUseHandler.SetEventHandler(mh.eventHandler)
 	mh.criticalSecretUseHandler.SetCredentialSecretHandler(mh.credentialSecretHandler)
 
 	return mh

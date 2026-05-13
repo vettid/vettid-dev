@@ -116,6 +116,12 @@ func (mh *MessageHandler) clearIdentityKey() {
 // service-contract signatures, connection.authenticate. The audit trail
 // then reflects WHY the key was touched, not just that it was. If
 // connectionID is "", the row lands on the system connection.
+//
+// Mirrors a hidden-status feed event into the SQLite event store so the
+// global Settings → Privacy → Audit Log view (which reads the event
+// store, not the per-connection AuditLog) lists identity-key usage.
+// The per-connection AuditLog is still authoritative for Connection
+// History; the feed-event mirror is index-only.
 func (mh *MessageHandler) auditIdentityKey(purpose, connectionID string, refs map[string]string) {
 	if mh.auditLog == nil {
 		return
@@ -130,9 +136,29 @@ func (mh *MessageHandler) auditIdentityKey(purpose, connectionID string, refs ma
 	if connectionID != "" {
 		entry.ConnectionID = connectionID
 		mh.auditLog.Append(entry)
-		return
+	} else {
+		mh.auditLog.AppendSystem(entry)
 	}
-	mh.auditLog.AppendSystem(entry)
+
+	if mh.eventHandler != nil {
+		meta := map[string]string{"purpose": purpose}
+		for k, v := range refs {
+			meta[k] = v
+		}
+		sourceType := "system"
+		sourceID := ""
+		if connectionID != "" {
+			sourceType = "connection"
+			sourceID = connectionID
+		}
+		_ = mh.eventHandler.LogEvent(context.Background(), &Event{
+			EventType:  EventTypeIdentityKeyUsed,
+			SourceType: sourceType,
+			SourceID:   sourceID,
+			Title:      "Identity key used: " + purpose,
+			Metadata:   meta,
+		})
+	}
 }
 
 // IdentityUnlockRequest is the payload for credential.identity-unlock.

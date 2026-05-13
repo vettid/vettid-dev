@@ -274,6 +274,10 @@ func (mh *MessageHandler) HandleApproveVerify(msg *IncomingMessage) (*OutgoingMe
 			Refs:         map[string]string{"request_id": req.RequestID},
 		})
 	}
+	mh.mirrorVerifyEvent(EventTypeConnectionVerified, pending["connection_id"], "Signed identity proof for peer", map[string]string{
+		"request_id": req.RequestID,
+		"direction":  "outbound",
+	})
 	_ = mh.storage.Delete("pending_verify_in/" + req.RequestID)
 
 	out, _ := json.Marshal(map[string]interface{}{"success": true})
@@ -406,20 +410,48 @@ func (mh *MessageHandler) HandleIncomingAuthResponse(ctx context.Context, dec *d
 			Refs:         map[string]string{"request_id": resp.RequestID},
 		})
 	}
+	mh.mirrorVerifyEvent(EventTypeConnectionVerified, dec.LocalConnID, "Peer proved their identity", map[string]string{
+		"request_id": resp.RequestID,
+		"direction":  "inbound",
+	})
 	return mh.publishAuthVerdict(ctx, dec.LocalConnID, dec.FromOwnerSpace, resp.RequestID, true, "")
 }
 
 func (mh *MessageHandler) auditAuthFailed(connID, peerGUID, requestID, reason string) {
-	if mh.auditLog == nil {
+	if mh.auditLog != nil {
+		mh.auditLog.Append(AuditEntry{
+			ConnectionID: connID,
+			PeerGUID:     peerGUID,
+			EventType:    AuditTypeConnectionAuthenticateFailed,
+			Direction:    AuditDirectionInbound,
+			Title:        "Authentication failed: " + reason,
+			Refs:         map[string]string{"request_id": requestID},
+		})
+	}
+	mh.mirrorVerifyEvent(EventTypeConnectionVerifyDenied, connID, "Authentication failed: "+reason, map[string]string{
+		"request_id":     requestID,
+		"failure_reason": reason,
+	})
+}
+
+// mirrorVerifyEvent writes a hidden feed event so the global audit log
+// shows verify-identity outcomes. The per-connection AuditLog row is
+// still the source of truth for Connection History; the feed-event
+// mirror is read-only by Settings → Privacy → Audit Log.
+func (mh *MessageHandler) mirrorVerifyEvent(eventType EventType, connectionID, title string, refs map[string]string) {
+	if mh.eventHandler == nil {
 		return
 	}
-	mh.auditLog.Append(AuditEntry{
-		ConnectionID: connID,
-		PeerGUID:     peerGUID,
-		EventType:    AuditTypeConnectionAuthenticateFailed,
-		Direction:    AuditDirectionInbound,
-		Title:        "Authentication failed: " + reason,
-		Refs:         map[string]string{"request_id": requestID},
+	meta := map[string]string{}
+	for k, v := range refs {
+		meta[k] = v
+	}
+	_ = mh.eventHandler.LogEvent(context.Background(), &Event{
+		EventType:  eventType,
+		SourceType: "connection",
+		SourceID:   connectionID,
+		Title:      title,
+		Metadata:   meta,
 	})
 }
 

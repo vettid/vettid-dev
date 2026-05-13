@@ -39,9 +39,13 @@ const (
 	EventTypeSecretDeleted  EventType = "secret.deleted"
 
 	// Security events
-	EventTypeSecurityAlert     EventType = "security.alert"
-	EventTypeAuthAttemptFailed EventType = "auth.attempt_failed"
-	EventTypeAuthSuccess       EventType = "auth.success"
+	EventTypeSecurityAlert       EventType = "security.alert"
+	EventTypeAuthAttemptFailed   EventType = "auth.attempt_failed"
+	EventTypeAuthSuccess         EventType = "auth.success"
+	EventTypeIdentityKeyUsed     EventType = "identity.key.used"
+	EventTypeCriticalSecretUsed  EventType = "critical_secret.used"
+	EventTypeConnectionVerified  EventType = "connection.verified"
+	EventTypeConnectionVerifyDenied EventType = "connection.verify.denied"
 
 	// Transfer events
 	EventTypeTransferRequest EventType = "transfer.request"
@@ -288,9 +292,17 @@ var eventClassifications = map[EventType]EventClassification{
 	EventTypeSecretDeleted:  {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionPermanent},
 
 	// Security events
-	EventTypeSecurityAlert:     {FeedStatusActive, ActionTypeAcknowledge, PriorityUrgent, RetentionPermanent},
-	EventTypeAuthAttemptFailed: {FeedStatusActive, ActionTypeAcknowledge, PriorityHigh, RetentionPermanent},
-	EventTypeAuthSuccess:       {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
+	EventTypeSecurityAlert:           {FeedStatusActive, ActionTypeAcknowledge, PriorityUrgent, RetentionPermanent},
+	EventTypeAuthAttemptFailed:       {FeedStatusActive, ActionTypeAcknowledge, PriorityHigh, RetentionPermanent},
+	EventTypeAuthSuccess:             {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
+	// Identity-key + critical-secret use are audit-only — every use is
+	// already password-gated and surfaced to the user via the in-app
+	// approve screen; the feed entry exists so the global audit log can
+	// list them alongside other security-sensitive operations.
+	EventTypeIdentityKeyUsed:         {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionPermanent},
+	EventTypeCriticalSecretUsed:      {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionPermanent},
+	EventTypeConnectionVerified:      {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionPermanent},
+	EventTypeConnectionVerifyDenied:  {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionPermanent},
 
 	// Transfer events
 	EventTypeTransferRequest: {FeedStatusActive, ActionTypeAcceptDecline, PriorityHigh, RetentionStandard},

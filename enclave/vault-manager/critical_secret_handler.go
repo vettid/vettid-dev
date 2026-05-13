@@ -119,10 +119,11 @@ type PendingCriticalUseRequest struct {
 // disjoint set of records — the two flows never read each other's
 // state.
 type CriticalSecretHandler struct {
-	ownerSpace string
-	storage    *EncryptedStorage
-	publisher  *VsockPublisher
-	auditLog   *AuditLog
+	ownerSpace   string
+	storage      *EncryptedStorage
+	publisher    *VsockPublisher
+	auditLog     *AuditLog
+	eventHandler *EventHandler
 
 	// credSecretHandler exposes decryptCredentialBlob +
 	// verifyPasswordAgainstCredential. We don't take an interface
@@ -158,9 +159,34 @@ func NewCriticalSecretHandler(ownerSpace string, storage *EncryptedStorage, publ
 }
 
 func (h *CriticalSecretHandler) SetAuditLog(a *AuditLog) { h.auditLog = a }
+func (h *CriticalSecretHandler) SetEventHandler(e *EventHandler) { h.eventHandler = e }
 func (h *CriticalSecretHandler) SetPerformer(p CriticalOperationPerformer) { h.performer = p }
 func (h *CriticalSecretHandler) SetCredentialSecretHandler(c *CredentialSecretHandler) {
 	h.credSecretHandler = c
+}
+
+// mirrorCriticalSecretUseEvent writes a hidden feed event so global
+// Settings → Privacy → Audit Log shows critical-secret usage. The
+// per-connection auditLog row remains authoritative for Connection
+// History; this is a one-way index mirror, never read back.
+func (h *CriticalSecretHandler) mirrorCriticalSecretUseEvent(eventType EventType, connectionID, title, body string, refs map[string]string) {
+	if h.eventHandler == nil {
+		return
+	}
+	meta := map[string]string{}
+	for k, v := range refs {
+		meta[k] = v
+	}
+	if body != "" {
+		meta["context"] = body
+	}
+	_ = h.eventHandler.LogEvent(context.Background(), &Event{
+		EventType:  eventType,
+		SourceType: "connection",
+		SourceID:   connectionID,
+		Title:      title,
+		Metadata:   meta,
+	})
 }
 
 // HandleRequestUse is the receiver-side app op that publishes a
@@ -346,13 +372,18 @@ func (h *CriticalSecretHandler) HandleApproveUse(msg *IncomingMessage) (*Outgoin
 		log.Warn().Err(err).Str("request_id", pending.RequestID).Msg("critical-secret use-response publish failed")
 	}
 
+	evt := AuditTypeCriticalSecretUsed
+	title := fmt.Sprintf("Performed %s using %s", pending.Operation, safeLabel(pending.ItemLabel, pending.ItemRef))
+	if perfErr != nil {
+		evt = AuditTypeCriticalSecretUseDenied
+		title = fmt.Sprintf("Failed to %s using %s: %v", pending.Operation, safeLabel(pending.ItemLabel, pending.ItemRef), perfErr)
+	}
+	refs := map[string]string{
+		"request_id": pending.RequestID,
+		"operation":  pending.Operation,
+		"item_ref":   pending.ItemRef,
+	}
 	if h.auditLog != nil {
-		evt := AuditTypeCriticalSecretUsed
-		title := fmt.Sprintf("Performed %s using %s", pending.Operation, safeLabel(pending.ItemLabel, pending.ItemRef))
-		if perfErr != nil {
-			evt = AuditTypeCriticalSecretUseDenied
-			title = fmt.Sprintf("Failed to %s using %s: %v", pending.Operation, safeLabel(pending.ItemLabel, pending.ItemRef), perfErr)
-		}
 		h.auditLog.Append(AuditEntry{
 			ConnectionID: pending.ConnectionID,
 			PeerGUID:     pending.RequesterGUID,
@@ -360,13 +391,10 @@ func (h *CriticalSecretHandler) HandleApproveUse(msg *IncomingMessage) (*Outgoin
 			Direction:    AuditDirectionOutbound,
 			Title:        title,
 			Body:         pending.Context,
-			Refs: map[string]string{
-				"request_id": pending.RequestID,
-				"operation":  pending.Operation,
-				"item_ref":   pending.ItemRef,
-			},
+			Refs:         refs,
 		})
 	}
+	h.mirrorCriticalSecretUseEvent(EventTypeCriticalSecretUsed, pending.ConnectionID, title, pending.Context, refs)
 
 	_ = h.removeFromIndex(criticalUseRequestsIndexKey, pending.RequestID)
 	_ = h.storage.Delete(criticalUseRequestsKeyPrefix + pending.RequestID)
@@ -411,17 +439,20 @@ func (h *CriticalSecretHandler) HandleDenyUse(msg *IncomingMessage) (*OutgoingMe
 		log.Warn().Err(err).Msg("critical-secret deny publish failed")
 	}
 
+	denyTitle := fmt.Sprintf("Denied %s using %s", pending.Operation, safeLabel(pending.ItemLabel, pending.ItemRef))
+	denyRefs := map[string]string{"request_id": req.RequestID, "operation": pending.Operation}
 	if h.auditLog != nil {
 		h.auditLog.Append(AuditEntry{
 			ConnectionID: pending.ConnectionID,
 			PeerGUID:     pending.RequesterGUID,
 			EventType:    AuditTypeCriticalSecretUseDenied,
 			Direction:    AuditDirectionOutbound,
-			Title:        fmt.Sprintf("Denied %s using %s", pending.Operation, safeLabel(pending.ItemLabel, pending.ItemRef)),
+			Title:        denyTitle,
 			Body:         req.Reason,
-			Refs: map[string]string{"request_id": req.RequestID, "operation": pending.Operation},
+			Refs:         denyRefs,
 		})
 	}
+	h.mirrorCriticalSecretUseEvent(EventTypeCriticalSecretUsed, pending.ConnectionID, denyTitle, req.Reason, denyRefs)
 	_ = h.removeFromIndex(criticalUseRequestsIndexKey, req.RequestID)
 	_ = h.storage.Delete(criticalUseRequestsKeyPrefix + req.RequestID)
 
@@ -451,23 +482,25 @@ func (h *CriticalSecretHandler) HandleIncomingUseResponse(ctx context.Context, d
 		})
 		_ = h.publisher.PublishToApp(ctx, "connection.critical-secret-use-response", appPayload)
 	}
+	respTitle := "Operation completed"
+	respEvt := AuditTypeCriticalSecretUsed
+	if resp.Status != "ok" {
+		respTitle = "Operation refused"
+		respEvt = AuditTypeCriticalSecretUseDenied
+	}
+	respRefs := map[string]string{"request_id": resp.RequestID}
 	if h.auditLog != nil {
-		title := "Operation completed"
-		evt := AuditTypeCriticalSecretUsed
-		if resp.Status != "ok" {
-			title = "Operation refused"
-			evt = AuditTypeCriticalSecretUseDenied
-		}
 		h.auditLog.Append(AuditEntry{
 			ConnectionID: dec.LocalConnID,
 			PeerGUID:     dec.FromOwnerSpace,
-			EventType:    evt,
+			EventType:    respEvt,
 			Direction:    AuditDirectionInbound,
-			Title:        title,
+			Title:        respTitle,
 			Body:         resp.Error,
-			Refs:         map[string]string{"request_id": resp.RequestID},
+			Refs:         respRefs,
 		})
 	}
+	h.mirrorCriticalSecretUseEvent(EventTypeCriticalSecretUsed, dec.LocalConnID, respTitle, resp.Error, respRefs)
 	return nil
 }
 
