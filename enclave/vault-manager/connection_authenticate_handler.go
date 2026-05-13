@@ -46,11 +46,17 @@ type ConnectionAuthChallenge struct {
 }
 
 // ConnectionAuthResponse is the owner → requester payload.
+// Status carries the explicit verdict from the receiver:
+//   "signed"          — IdentityPubKey + Signature populated; requester verifies
+//   "identity_locked" — receiver's identity key is currently locked (TTL expired);
+//                       user needs to unlock their identity to prove it
+//   "denied"          — receiver explicitly refused (future user-toggle)
 type ConnectionAuthResponse struct {
 	RequestID      string `json:"request_id"`
-	IdentityPubKey string `json:"identity_pub_key"` // base64 ed25519 pubkey
-	Signature      string `json:"signature"`         // base64 ed25519 sig over domain-separated payload
-	SignedAt       string `json:"signed_at"`         // RFC3339
+	Status         string `json:"status,omitempty"`
+	IdentityPubKey string `json:"identity_pub_key,omitempty"` // base64 ed25519 pubkey
+	Signature      string `json:"signature,omitempty"`         // base64 ed25519 sig over domain-separated payload
+	SignedAt       string `json:"signed_at,omitempty"`         // RFC3339
 }
 
 // HandleAuthRequest is the receiver-side app op that sends a challenge.
@@ -127,11 +133,14 @@ func (mh *MessageHandler) HandleIncomingAuthChallenge(ctx context.Context, dec *
 	// Pull our identity public key + private key.
 	idKey, err := mh.consumeIdentityKey()
 	if err != nil {
-		// Identity locked — emit a denial response so the requester can
-		// surface "the peer's vault is locked" rather than hang.
+		// Identity locked — emit an explicit identity_locked status so
+		// the requester can surface "peer's identity is locked, ask
+		// them to unlock and retry" rather than a generic verification
+		// failure.
 		log.Warn().Str("request_id", challenge.RequestID).Msg("auth challenge: identity locked")
 		denial := ConnectionAuthResponse{
 			RequestID: challenge.RequestID,
+			Status:    "identity_locked",
 		}
 		payload, _ := json.Marshal(&denial)
 		_ = encryptAndPublishToPeer(
@@ -187,6 +196,19 @@ func (mh *MessageHandler) HandleIncomingAuthChallenge(ctx context.Context, dec *
 			Refs:         map[string]string{"request_id": challenge.RequestID},
 		})
 	}
+	// Notify the receiver's app that a verify just happened, so the
+	// user knows a peer challenged them. Informational — no decision
+	// needed since the response went out automatically.
+	if mh.publisher != nil {
+		appPayload, _ := json.Marshal(map[string]interface{}{
+			"connection_id":  dec.LocalConnID,
+			"challenger_guid": dec.FromOwnerSpace,
+			"request_id":     challenge.RequestID,
+			"context":        challenge.Context,
+			"verified_at":    resp.SignedAt,
+		})
+		_ = mh.publisher.PublishToApp(ctx, "connection.identity-verify-challenged", appPayload)
+	}
 	return nil
 }
 
@@ -212,6 +234,15 @@ func (mh *MessageHandler) HandleIncomingAuthResponse(ctx context.Context, dec *d
 		return fmt.Errorf("corrupt pending record: %w", err)
 	}
 	_ = mh.storage.Delete("conn_auth_pending/" + resp.RequestID)
+
+	// Explicit "identity_locked" from peer — they got the challenge
+	// but their identity key TTL had expired. Surface a meaningful
+	// reason rather than treating the empty-pubkey response as a
+	// signature failure.
+	if resp.Status == "identity_locked" {
+		mh.auditAuthFailed(dec.LocalConnID, dec.FromOwnerSpace, resp.RequestID, "peer_identity_locked")
+		return mh.publishAuthVerdict(ctx, dec.LocalConnID, dec.FromOwnerSpace, resp.RequestID, false, "peer_identity_locked")
+	}
 
 	// Verify the peer's identity public key matches what we have cached
 	// for the connection (prevents a man-in-the-middle from substituting
