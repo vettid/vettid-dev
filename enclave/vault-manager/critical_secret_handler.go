@@ -171,6 +171,7 @@ func (h *CriticalSecretHandler) SetCredentialSecretHandler(c *CredentialSecretHa
 // History; this is a one-way index mirror, never read back.
 func (h *CriticalSecretHandler) mirrorCriticalSecretUseEvent(eventType EventType, connectionID, title, body string, refs map[string]string) {
 	if h.eventHandler == nil {
+		log.Warn().Str("event_type", string(eventType)).Str("connection_id", connectionID).Msg("critical-secret audit mirror skipped: eventHandler nil")
 		return
 	}
 	meta := map[string]string{}
@@ -180,13 +181,15 @@ func (h *CriticalSecretHandler) mirrorCriticalSecretUseEvent(eventType EventType
 	if body != "" {
 		meta["context"] = body
 	}
-	_ = h.eventHandler.LogEvent(context.Background(), &Event{
+	if err := h.eventHandler.LogEvent(context.Background(), &Event{
 		EventType:  eventType,
 		SourceType: "connection",
 		SourceID:   connectionID,
 		Title:      title,
 		Metadata:   meta,
-	})
+	}); err != nil {
+		log.Warn().Err(err).Str("event_type", string(eventType)).Str("connection_id", connectionID).Msg("critical-secret audit mirror failed")
+	}
 }
 
 // HandleRequestUse is the receiver-side app op that publishes a

@@ -151,13 +151,17 @@ func (mh *MessageHandler) auditIdentityKey(purpose, connectionID string, refs ma
 			sourceType = "connection"
 			sourceID = connectionID
 		}
-		_ = mh.eventHandler.LogEvent(context.Background(), &Event{
+		if err := mh.eventHandler.LogEvent(context.Background(), &Event{
 			EventType:  EventTypeIdentityKeyUsed,
 			SourceType: sourceType,
 			SourceID:   sourceID,
 			Title:      "Identity key used: " + purpose,
 			Metadata:   meta,
-		})
+		}); err != nil {
+			log.Warn().Err(err).Str("purpose", purpose).Msg("identity-key audit event mirror failed")
+		}
+	} else {
+		log.Warn().Str("purpose", purpose).Msg("identity-key audit event mirror skipped: eventHandler nil")
 	}
 }
 

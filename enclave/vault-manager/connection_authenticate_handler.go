@@ -449,19 +449,22 @@ func (mh *MessageHandler) auditAuthFailed(connID, peerGUID, requestID, reason st
 // mirror is read-only by Settings → Privacy → Audit Log.
 func (mh *MessageHandler) mirrorVerifyEvent(eventType EventType, connectionID, title string, refs map[string]string) {
 	if mh.eventHandler == nil {
+		log.Warn().Str("event_type", string(eventType)).Str("connection_id", connectionID).Msg("verify audit mirror skipped: eventHandler nil")
 		return
 	}
 	meta := map[string]string{}
 	for k, v := range refs {
 		meta[k] = v
 	}
-	_ = mh.eventHandler.LogEvent(context.Background(), &Event{
+	if err := mh.eventHandler.LogEvent(context.Background(), &Event{
 		EventType:  eventType,
 		SourceType: "connection",
 		SourceID:   connectionID,
 		Title:      title,
 		Metadata:   meta,
-	})
+	}); err != nil {
+		log.Warn().Err(err).Str("event_type", string(eventType)).Str("connection_id", connectionID).Msg("verify audit mirror failed")
+	}
 }
 
 func (mh *MessageHandler) publishAuthVerdict(ctx context.Context, connID, peerGUID, requestID string, ok bool, reason string) error {

@@ -94,7 +94,20 @@ func (h *EventHandler) UpdateSettings(settings *FeedSettings) error {
 
 // LogEvent records an event with automatic feed classification.
 // This is the primary method for logging events in the system.
+//
+// Defensive: every read path on EventHandler gates on storageReady(),
+// but LogEvent historically did not. Callers that fire from incoming
+// peer-message goroutines (e.g. the verify-identity / critical-secret
+// audit mirrors) can race startup and end up calling this before
+// h.storage.SQLite() is non-nil — at which point IncrementSyncSequence
+// panics on the nil pointer and the audit row disappears silently. Add
+// the same guard the read path uses so a not-yet-initialized storage
+// just returns an error instead of crashing the goroutine.
 func (h *EventHandler) LogEvent(ctx context.Context, e *Event) error {
+	if !h.storageReady() {
+		return ErrStorageNotReady
+	}
+
 	// Generate event ID if not provided
 	if e.EventID == "" {
 		e.EventID = fmt.Sprintf("evt-%d-%s", time.Now().UnixNano(), randomSuffix())
