@@ -278,6 +278,7 @@ func (mh *MessageHandler) HandleApproveVerify(msg *IncomingMessage) (*OutgoingMe
 		"request_id": req.RequestID,
 		"direction":  "outbound",
 	})
+	mh.recordVerifyInbound(pending["connection_id"], req.RequestID, "", true)
 	_ = mh.storage.Delete("pending_verify_in/" + req.RequestID)
 
 	out, _ := json.Marshal(map[string]interface{}{"success": true})
@@ -323,6 +324,12 @@ func (mh *MessageHandler) HandleDenyVerify(msg *IncomingMessage) (*OutgoingMessa
 			Refs:         map[string]string{"request_id": req.RequestID},
 		})
 	}
+	mh.mirrorVerifyEvent(EventTypeConnectionVerifyDenied, pending["connection_id"], "Refused identity verification", map[string]string{
+		"request_id": req.RequestID,
+		"direction":  "outbound",
+		"reason":     req.Reason,
+	})
+	mh.recordVerifyInbound(pending["connection_id"], req.RequestID, req.Reason, false)
 	_ = mh.storage.Delete("pending_verify_in/" + req.RequestID)
 
 	out, _ := json.Marshal(map[string]interface{}{"success": true})
@@ -414,6 +421,7 @@ func (mh *MessageHandler) HandleIncomingAuthResponse(ctx context.Context, dec *d
 		"request_id": resp.RequestID,
 		"direction":  "inbound",
 	})
+	mh.recordVerifyOutbound(dec.LocalConnID, resp.RequestID, "", true)
 	return mh.publishAuthVerdict(ctx, dec.LocalConnID, dec.FromOwnerSpace, resp.RequestID, true, "")
 }
 
@@ -432,6 +440,7 @@ func (mh *MessageHandler) auditAuthFailed(connID, peerGUID, requestID, reason st
 		"request_id":     requestID,
 		"failure_reason": reason,
 	})
+	mh.recordVerifyOutbound(connID, requestID, reason, false)
 }
 
 // mirrorVerifyEvent writes a hidden feed event so the global audit log

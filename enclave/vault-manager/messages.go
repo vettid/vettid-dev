@@ -979,10 +979,12 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 		return mh.handleCriticalSecretUseOperation(ctx, msg, parts[opIndex+1:])
 	case "connection-authenticate":
 		// Challenge/response proof-of-credential between connections.
-		// Three app-side ops:
+		// App-side ops:
 		//   - request: requester sends a nonce challenge
 		//   - approve: receiver authorizes signing under password
 		//   - deny:    receiver explicitly refuses
+		//   - get:     read cached verify-state for one connection
+		//   - list:    read cached verify-state across all connections
 		if len(parts) > opIndex+2 {
 			switch parts[opIndex+2] {
 			case "request":
@@ -991,6 +993,10 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 				return mh.HandleApproveVerify(msg)
 			case "deny":
 				return mh.HandleDenyVerify(msg)
+			case "get":
+				return mh.HandleVerifyStateGet(ctx, msg)
+			case "list":
+				return mh.HandleVerifyStateList(ctx, msg)
 			}
 		}
 		return mh.errorResponse(msg.GetID(), "unknown connection-authenticate op")
