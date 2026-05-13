@@ -713,6 +713,17 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 
 	operation := parts[opIndex+1]
 
+	// Multi-token peer subjects need the joined-tokens form because
+	// strings.Split breaks them apart. `data.request` becomes parts
+	// [..., forVault, data, request] so operation alone is "data" and
+	// `case "data.request"` would never match. Reconstruct the full
+	// path and route those subjects explicitly here before falling
+	// through to the single-token switch below.
+	fullOp := strings.Join(parts[opIndex+1:], ".")
+	if resp, handled := mh.dispatchMultiTokenPeerSubject(ctx, msg, fullOp); handled {
+		return resp, nil
+	}
+
 	// Check if vault is locked (DEK not available) for operations that need it.
 	// After an enclave instance refresh, the vault-manager restarts with no DEK.
 	// The DEK is derived from PIN + sealed material during PIN unlock.
@@ -861,160 +872,6 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 			return gateResp, nil
 		}
 		return mh.handleIncomingLocationRequest(ctx, msg)
-	case "presence.heartbeat":
-		// Incoming presence heartbeat from peer vault — re-emit to
-		// our app so the UI can render "online" for that connection.
-		if gateResp := mh.gatePeerSubject(operation, msg.Payload, msg.GetID()); gateResp != nil {
-			return gateResp, nil
-		}
-		if mh.presenceHandler != nil {
-			if err := mh.presenceHandler.HandleIncomingPeerHeartbeat(ctx, msg.Payload); err != nil {
-				log.Debug().Err(err).Msg("Failed to forward presence heartbeat to app")
-			}
-		}
-		ack, _ := json.Marshal(map[string]string{"status": "received"})
-		return mh.successResponse(msg.GetID(), ack)
-	case "data.request":
-		// Peer is requesting access to one of our cataloged items.
-		// Store as pending + surface to the app for owner approval.
-		if gateResp := mh.gatePeerSubject(operation, msg.Payload, msg.GetID()); gateResp != nil {
-			return gateResp, nil
-		}
-		dec, derr := decryptIncomingPeerEnvelope(mh.storage, msg.Payload)
-		if derr != nil {
-			return mh.errorResponse(msg.GetID(), fmt.Sprintf("decrypt data.request envelope: %v", derr))
-		}
-		if err := mh.grantHandler.HandleIncomingRequest(ctx, dec); err != nil {
-			log.Warn().Err(err).Msg("data.request handler failed")
-		}
-		ack, _ := json.Marshal(map[string]string{"status": "received"})
-		return mh.successResponse(msg.GetID(), ack)
-	case "data.grant.created":
-		// Owner approved our prior data request — mirror as a received grant.
-		if gateResp := mh.gatePeerSubject(operation, msg.Payload, msg.GetID()); gateResp != nil {
-			return gateResp, nil
-		}
-		dec, derr := decryptIncomingPeerEnvelope(mh.storage, msg.Payload)
-		if derr != nil {
-			return mh.errorResponse(msg.GetID(), fmt.Sprintf("decrypt data.grant.created envelope: %v", derr))
-		}
-		if err := mh.grantHandler.HandleIncomingGrantCreated(ctx, dec); err != nil {
-			log.Warn().Err(err).Msg("data.grant.created handler failed")
-		}
-		ack, _ := json.Marshal(map[string]string{"status": "received"})
-		return mh.successResponse(msg.GetID(), ack)
-	case "data.grant.denied":
-		// Owner denied our prior request — forward to app.
-		if gateResp := mh.gatePeerSubject(operation, msg.Payload, msg.GetID()); gateResp != nil {
-			return gateResp, nil
-		}
-		dec, derr := decryptIncomingPeerEnvelope(mh.storage, msg.Payload)
-		if derr != nil {
-			return mh.errorResponse(msg.GetID(), fmt.Sprintf("decrypt data.grant.denied envelope: %v", derr))
-		}
-		if err := mh.grantHandler.HandleIncomingGrantDenied(ctx, dec); err != nil {
-			log.Warn().Err(err).Msg("data.grant.denied handler failed")
-		}
-		ack, _ := json.Marshal(map[string]string{"status": "received"})
-		return mh.successResponse(msg.GetID(), ack)
-	case "data.grant.fetch":
-		// Receiver is asking us to resolve a grant_id to its current value.
-		if gateResp := mh.gatePeerSubject(operation, msg.Payload, msg.GetID()); gateResp != nil {
-			return gateResp, nil
-		}
-		dec, derr := decryptIncomingPeerEnvelope(mh.storage, msg.Payload)
-		if derr != nil {
-			return mh.errorResponse(msg.GetID(), fmt.Sprintf("decrypt data.grant.fetch envelope: %v", derr))
-		}
-		if err := mh.grantHandler.HandleIncomingFetch(ctx, dec); err != nil {
-			log.Warn().Err(err).Msg("data.grant.fetch handler failed")
-		}
-		ack, _ := json.Marshal(map[string]string{"status": "received"})
-		return mh.successResponse(msg.GetID(), ack)
-	case "data.grant.fetch-response":
-		// Owner returned the value (or denial) for a fetch we issued.
-		if gateResp := mh.gatePeerSubject(operation, msg.Payload, msg.GetID()); gateResp != nil {
-			return gateResp, nil
-		}
-		dec, derr := decryptIncomingPeerEnvelope(mh.storage, msg.Payload)
-		if derr != nil {
-			return mh.errorResponse(msg.GetID(), fmt.Sprintf("decrypt data.grant.fetch-response envelope: %v", derr))
-		}
-		if err := mh.grantHandler.HandleIncomingFetchResponse(ctx, dec); err != nil {
-			log.Warn().Err(err).Msg("data.grant.fetch-response handler failed")
-		}
-		ack, _ := json.Marshal(map[string]string{"status": "received"})
-		return mh.successResponse(msg.GetID(), ack)
-	case "data.grant.revoked":
-		// Owner revoked a grant — flip mirror to revoked + notify app.
-		if gateResp := mh.gatePeerSubject(operation, msg.Payload, msg.GetID()); gateResp != nil {
-			return gateResp, nil
-		}
-		dec, derr := decryptIncomingPeerEnvelope(mh.storage, msg.Payload)
-		if derr != nil {
-			return mh.errorResponse(msg.GetID(), fmt.Sprintf("decrypt data.grant.revoked envelope: %v", derr))
-		}
-		if err := mh.grantHandler.HandleIncomingGrantRevoked(ctx, dec); err != nil {
-			log.Warn().Err(err).Msg("data.grant.revoked handler failed")
-		}
-		ack, _ := json.Marshal(map[string]string{"status": "received"})
-		return mh.successResponse(msg.GetID(), ack)
-	case "connection.authenticate.challenge":
-		// Peer wants proof we hold the credential bound to our identity key.
-		if gateResp := mh.gatePeerSubject(operation, msg.Payload, msg.GetID()); gateResp != nil {
-			return gateResp, nil
-		}
-		dec, derr := decryptIncomingPeerEnvelope(mh.storage, msg.Payload)
-		if derr != nil {
-			return mh.errorResponse(msg.GetID(), fmt.Sprintf("decrypt auth challenge: %v", derr))
-		}
-		if err := mh.HandleIncomingAuthChallenge(ctx, dec); err != nil {
-			log.Warn().Err(err).Msg("auth challenge handler failed")
-		}
-		ack, _ := json.Marshal(map[string]string{"status": "received"})
-		return mh.successResponse(msg.GetID(), ack)
-	case "connection.authenticate.response":
-		// Peer signed our challenge — verify + emit verdict to app.
-		if gateResp := mh.gatePeerSubject(operation, msg.Payload, msg.GetID()); gateResp != nil {
-			return gateResp, nil
-		}
-		dec, derr := decryptIncomingPeerEnvelope(mh.storage, msg.Payload)
-		if derr != nil {
-			return mh.errorResponse(msg.GetID(), fmt.Sprintf("decrypt auth response: %v", derr))
-		}
-		if err := mh.HandleIncomingAuthResponse(ctx, dec); err != nil {
-			log.Warn().Err(err).Msg("auth response handler failed")
-		}
-		ack, _ := json.Marshal(map[string]string{"status": "received"})
-		return mh.successResponse(msg.GetID(), ack)
-	case "critical_secret.use":
-		// Peer asks us to perform an operation using one of our critical secrets.
-		if gateResp := mh.gatePeerSubject(operation, msg.Payload, msg.GetID()); gateResp != nil {
-			return gateResp, nil
-		}
-		dec, derr := decryptIncomingPeerEnvelope(mh.storage, msg.Payload)
-		if derr != nil {
-			return mh.errorResponse(msg.GetID(), fmt.Sprintf("decrypt critical_secret.use envelope: %v", derr))
-		}
-		if err := mh.criticalSecretUseHandler.HandleIncomingUseRequest(ctx, dec); err != nil {
-			log.Warn().Err(err).Msg("critical_secret.use handler failed")
-		}
-		ack, _ := json.Marshal(map[string]string{"status": "received"})
-		return mh.successResponse(msg.GetID(), ack)
-	case "critical_secret.use-response":
-		// Owner returned the operation result.
-		if gateResp := mh.gatePeerSubject(operation, msg.Payload, msg.GetID()); gateResp != nil {
-			return gateResp, nil
-		}
-		dec, derr := decryptIncomingPeerEnvelope(mh.storage, msg.Payload)
-		if derr != nil {
-			return mh.errorResponse(msg.GetID(), fmt.Sprintf("decrypt critical_secret.use-response envelope: %v", derr))
-		}
-		if err := mh.criticalSecretUseHandler.HandleIncomingUseResponse(ctx, dec); err != nil {
-			log.Warn().Err(err).Msg("critical_secret.use-response handler failed")
-		}
-		ack, _ := json.Marshal(map[string]string{"status": "received"})
-		return mh.successResponse(msg.GetID(), ack)
 	case "btc-address-request":
 		// Incoming BTC address request from peer vault — auto-respond
 		if gateResp := mh.gatePeerSubject(operation, msg.Payload, msg.GetID()); gateResp != nil {
@@ -4104,4 +3961,167 @@ func (mh *MessageHandler) handleCriticalSecretUseOperation(ctx context.Context, 
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown critical-secret-use operation: %s", opParts[1]))
 	}
+}
+
+// dispatchMultiTokenPeerSubject handles peer-direction subjects whose
+// eventType contains one or more dots (so strings.Split breaks them
+// into multiple tokens and the main switch on parts[opIndex+1] can't
+// match them). Returns (response, true) when it handled the subject
+// and (nil, false) when nothing matched so the caller falls through.
+//
+// Bug context: every multi-dot peer subject below was previously a
+// dead `case` in handleVaultOp's switch (2026-05-12). Symptom: data
+// requests showed as pending on the requester but the owner never
+// received a notification because HandleIncomingRequest never ran.
+// All grant flow, connection.authenticate, critical_secret.use, and
+// presence.heartbeat subjects route here now.
+func (mh *MessageHandler) dispatchMultiTokenPeerSubject(ctx context.Context, msg *IncomingMessage, fullOp string) (*OutgoingMessage, bool) {
+	// Common ack shape — every multi-token peer subject is fire-and-
+	// forget from the publisher's perspective; we only return "received".
+	ack := func() *OutgoingMessage {
+		body, _ := json.Marshal(map[string]string{"status": "received"})
+		out, _ := mh.successResponse(msg.GetID(), body)
+		return out
+	}
+	decryptEnvelope := func(tag string) (*decryptedPeerEnvelope, *OutgoingMessage) {
+		dec, err := decryptIncomingPeerEnvelope(mh.storage, msg.Payload)
+		if err != nil {
+			errOut, _ := mh.errorResponse(msg.GetID(), fmt.Sprintf("decrypt %s envelope: %v", tag, err))
+			return nil, errOut
+		}
+		return dec, nil
+	}
+	switch fullOp {
+	case "presence.heartbeat":
+		if gateResp := mh.gatePeerSubject(fullOp, msg.Payload, msg.GetID()); gateResp != nil {
+			return gateResp, true
+		}
+		if mh.presenceHandler != nil {
+			if err := mh.presenceHandler.HandleIncomingPeerHeartbeat(ctx, msg.Payload); err != nil {
+				log.Debug().Err(err).Msg("Failed to forward presence heartbeat to app")
+			}
+		}
+		return ack(), true
+	case "data.request":
+		if gateResp := mh.gatePeerSubject(fullOp, msg.Payload, msg.GetID()); gateResp != nil {
+			return gateResp, true
+		}
+		dec, errResp := decryptEnvelope("data.request")
+		if errResp != nil {
+			return errResp, true
+		}
+		if err := mh.grantHandler.HandleIncomingRequest(ctx, dec); err != nil {
+			log.Warn().Err(err).Msg("data.request handler failed")
+		}
+		return ack(), true
+	case "data.grant.created":
+		if gateResp := mh.gatePeerSubject(fullOp, msg.Payload, msg.GetID()); gateResp != nil {
+			return gateResp, true
+		}
+		dec, errResp := decryptEnvelope("data.grant.created")
+		if errResp != nil {
+			return errResp, true
+		}
+		if err := mh.grantHandler.HandleIncomingGrantCreated(ctx, dec); err != nil {
+			log.Warn().Err(err).Msg("data.grant.created handler failed")
+		}
+		return ack(), true
+	case "data.grant.denied":
+		if gateResp := mh.gatePeerSubject(fullOp, msg.Payload, msg.GetID()); gateResp != nil {
+			return gateResp, true
+		}
+		dec, errResp := decryptEnvelope("data.grant.denied")
+		if errResp != nil {
+			return errResp, true
+		}
+		if err := mh.grantHandler.HandleIncomingGrantDenied(ctx, dec); err != nil {
+			log.Warn().Err(err).Msg("data.grant.denied handler failed")
+		}
+		return ack(), true
+	case "data.grant.fetch":
+		if gateResp := mh.gatePeerSubject(fullOp, msg.Payload, msg.GetID()); gateResp != nil {
+			return gateResp, true
+		}
+		dec, errResp := decryptEnvelope("data.grant.fetch")
+		if errResp != nil {
+			return errResp, true
+		}
+		if err := mh.grantHandler.HandleIncomingFetch(ctx, dec); err != nil {
+			log.Warn().Err(err).Msg("data.grant.fetch handler failed")
+		}
+		return ack(), true
+	case "data.grant.fetch-response":
+		if gateResp := mh.gatePeerSubject(fullOp, msg.Payload, msg.GetID()); gateResp != nil {
+			return gateResp, true
+		}
+		dec, errResp := decryptEnvelope("data.grant.fetch-response")
+		if errResp != nil {
+			return errResp, true
+		}
+		if err := mh.grantHandler.HandleIncomingFetchResponse(ctx, dec); err != nil {
+			log.Warn().Err(err).Msg("data.grant.fetch-response handler failed")
+		}
+		return ack(), true
+	case "data.grant.revoked":
+		if gateResp := mh.gatePeerSubject(fullOp, msg.Payload, msg.GetID()); gateResp != nil {
+			return gateResp, true
+		}
+		dec, errResp := decryptEnvelope("data.grant.revoked")
+		if errResp != nil {
+			return errResp, true
+		}
+		if err := mh.grantHandler.HandleIncomingGrantRevoked(ctx, dec); err != nil {
+			log.Warn().Err(err).Msg("data.grant.revoked handler failed")
+		}
+		return ack(), true
+	case "connection.authenticate.challenge":
+		if gateResp := mh.gatePeerSubject(fullOp, msg.Payload, msg.GetID()); gateResp != nil {
+			return gateResp, true
+		}
+		dec, errResp := decryptEnvelope("auth challenge")
+		if errResp != nil {
+			return errResp, true
+		}
+		if err := mh.HandleIncomingAuthChallenge(ctx, dec); err != nil {
+			log.Warn().Err(err).Msg("auth challenge handler failed")
+		}
+		return ack(), true
+	case "connection.authenticate.response":
+		if gateResp := mh.gatePeerSubject(fullOp, msg.Payload, msg.GetID()); gateResp != nil {
+			return gateResp, true
+		}
+		dec, errResp := decryptEnvelope("auth response")
+		if errResp != nil {
+			return errResp, true
+		}
+		if err := mh.HandleIncomingAuthResponse(ctx, dec); err != nil {
+			log.Warn().Err(err).Msg("auth response handler failed")
+		}
+		return ack(), true
+	case "critical_secret.use":
+		if gateResp := mh.gatePeerSubject(fullOp, msg.Payload, msg.GetID()); gateResp != nil {
+			return gateResp, true
+		}
+		dec, errResp := decryptEnvelope("critical_secret.use")
+		if errResp != nil {
+			return errResp, true
+		}
+		if err := mh.criticalSecretUseHandler.HandleIncomingUseRequest(ctx, dec); err != nil {
+			log.Warn().Err(err).Msg("critical_secret.use handler failed")
+		}
+		return ack(), true
+	case "critical_secret.use-response":
+		if gateResp := mh.gatePeerSubject(fullOp, msg.Payload, msg.GetID()); gateResp != nil {
+			return gateResp, true
+		}
+		dec, errResp := decryptEnvelope("critical_secret.use-response")
+		if errResp != nil {
+			return errResp, true
+		}
+		if err := mh.criticalSecretUseHandler.HandleIncomingUseResponse(ctx, dec); err != nil {
+			log.Warn().Err(err).Msg("critical_secret.use-response handler failed")
+		}
+		return ack(), true
+	}
+	return nil, false
 }
