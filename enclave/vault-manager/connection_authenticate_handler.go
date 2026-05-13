@@ -117,8 +117,19 @@ func (mh *MessageHandler) HandleAuthRequest(msg *IncomingMessage) (*OutgoingMess
 	return mh.successResponse(msg.GetID(), respBytes)
 }
 
-// HandleIncomingAuthChallenge is the owner-side peer-subject handler.
-// Decrypted envelope; we sign the canonical payload and emit a response.
+// HandleIncomingAuthChallenge is the receiver-side peer-subject handler.
+//
+// 2026-05-13 redesign: the receiver no longer auto-signs with a TTL-
+// cached identity key. That shortcut weakened the security property
+// of "this human approved this signing right now" — the lightweight
+// flow only proved "the vault is alive and the key was unlocked
+// recently," which is what presence heartbeats already cover.
+//
+// New flow: store the challenge as pending + surface a full-screen
+// prompt on the receiver's app. The user reviews who's asking and
+// enters their password; vault decrypts the credential once, signs
+// the nonce with the identity key, wipes the key, and emits the
+// response. Every verify requires explicit awareness + authorization.
 func (mh *MessageHandler) HandleIncomingAuthChallenge(ctx context.Context, dec *decryptedPeerEnvelope) error {
 	if dec == nil {
 		return fmt.Errorf("nil envelope")
@@ -130,86 +141,188 @@ func (mh *MessageHandler) HandleIncomingAuthChallenge(ctx context.Context, dec *
 	if challenge.RequestID == "" || challenge.Nonce == "" {
 		return fmt.Errorf("auth challenge missing required fields")
 	}
-	// Pull our identity public key + private key.
-	idKey, err := mh.consumeIdentityKey()
-	if err != nil {
-		// Identity locked — emit an explicit identity_locked status so
-		// the requester can surface "peer's identity is locked, ask
-		// them to unlock and retry" rather than a generic verification
-		// failure.
-		log.Warn().Str("request_id", challenge.RequestID).Msg("auth challenge: identity locked")
-		denial := ConnectionAuthResponse{
-			RequestID: challenge.RequestID,
-			Status:    "identity_locked",
-		}
-		payload, _ := json.Marshal(&denial)
-		_ = encryptAndPublishToPeer(
-			ctx, mh.storage, mh.publisher, mh.ownerSpace,
-			dec.LocalConnID, "connection.authenticate.response", "conn-auth-resp:"+challenge.RequestID,
-			payload, time.Now().Unix(),
-		)
-		return nil
-	}
-	defer zeroBytes(idKey)
 
-	// Identity public key — derive from private if not cached.
-	mh.vaultState.mu.RLock()
-	idPub := append([]byte(nil), mh.vaultState.identityPublicKey...)
-	mh.vaultState.mu.RUnlock()
-	if len(idPub) == 0 {
-		idPub = ed25519.PrivateKey(idKey).Public().(ed25519.PublicKey)
+	// Persist the pending challenge so HandleApproveVerify can sign it
+	// after the user authenticates with their password. Stored under
+	// pending_verify_in/<request_id> on the RECEIVER side (mirrors the
+	// pending_verify_out/<request_id> the requester writes for response
+	// correlation).
+	pending := map[string]string{
+		"connection_id":  dec.LocalConnID,
+		"requester_guid": dec.FromOwnerSpace,
+		"nonce":          challenge.Nonce,
+		"context":        challenge.Context,
+		"received_at":    time.Now().UTC().Format(time.RFC3339),
+	}
+	pendingData, _ := json.Marshal(pending)
+	if err := mh.storage.Put("pending_verify_in/"+challenge.RequestID, pendingData); err != nil {
+		log.Warn().Err(err).Str("request_id", challenge.RequestID).Msg("failed to persist pending verify challenge")
 	}
 
-	signingPayload := fmt.Sprintf("%s|%s|%s|%s",
-		connectionAuthDomain,
-		mh.ownerSpace,
-		dec.FromOwnerSpace,
-		challenge.Nonce,
-	)
-	sig := ed25519.Sign(idKey, []byte(signingPayload))
-	mh.auditIdentityKey("connection_authenticate", dec.LocalConnID, map[string]string{
-		"request_id":    challenge.RequestID,
-		"challenger":    dec.FromOwnerSpace,
-	})
-
-	resp := ConnectionAuthResponse{
-		RequestID:      challenge.RequestID,
-		IdentityPubKey: base64.StdEncoding.EncodeToString(idPub),
-		Signature:      base64.StdEncoding.EncodeToString(sig),
-		SignedAt:       time.Now().UTC().Format(time.RFC3339),
-	}
-	payload, _ := json.Marshal(&resp)
-	if err := encryptAndPublishToPeer(
-		ctx, mh.storage, mh.publisher, mh.ownerSpace,
-		dec.LocalConnID, "connection.authenticate.response", "conn-auth-resp:"+challenge.RequestID,
-		payload, time.Now().Unix(),
-	); err != nil {
-		log.Warn().Err(err).Str("request_id", challenge.RequestID).Msg("auth response publish failed")
-	}
 	if mh.auditLog != nil {
 		mh.auditLog.Append(AuditEntry{
 			ConnectionID: dec.LocalConnID,
 			PeerGUID:     dec.FromOwnerSpace,
-			EventType:    AuditTypeConnectionAuthenticated,
-			Direction:    AuditDirectionOutbound,
-			Title:        "Proved identity to peer",
+			EventType:    AuditTypeConnectionAuthenticateRequested,
+			Direction:    AuditDirectionInbound,
+			Title:        "Asked you to prove your identity",
+			Body:         challenge.Context,
 			Refs:         map[string]string{"request_id": challenge.RequestID},
 		})
 	}
-	// Notify the receiver's app that a verify just happened, so the
-	// user knows a peer challenged them. Informational — no decision
-	// needed since the response went out automatically.
+	// Notify the receiver's app so the full-screen prompt opens.
 	if mh.publisher != nil {
 		appPayload, _ := json.Marshal(map[string]interface{}{
 			"connection_id":  dec.LocalConnID,
 			"challenger_guid": dec.FromOwnerSpace,
 			"request_id":     challenge.RequestID,
 			"context":        challenge.Context,
-			"verified_at":    resp.SignedAt,
+			"received_at":    pending["received_at"],
 		})
 		_ = mh.publisher.PublishToApp(ctx, "connection.identity-verify-challenged", appPayload)
 	}
 	return nil
+}
+
+// HandleApproveVerify is the receiver-side app op: user has entered
+// their password to authorize signing the pending challenge. Mirrors
+// the vote-casting password gate — decrypts the credential, pulls the
+// identity key, signs the nonce ONCE, wipes the key, publishes the
+// response. No TTL caching for this op: the key is consumed only for
+// the duration of the signature computation.
+//
+// Payload mirrors vote.cast / credential.secret.get:
+//   {request_id, encrypted_credential, encrypted_password_hash,
+//    ephemeral_public_key, nonce, key_id}
+func (mh *MessageHandler) HandleApproveVerify(msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req struct {
+		RequestID             string `json:"request_id"`
+		EncryptedCredential   string `json:"encrypted_credential"`
+		EncryptedPasswordHash string `json:"encrypted_password_hash"`
+		EphemeralPublicKey    string `json:"ephemeral_public_key"`
+		Nonce                 string `json:"nonce"`
+		KeyID                 string `json:"key_id"`
+	}
+	if err := unmarshalRequest(msg.Payload, &req, "ApproveVerify"); err != nil {
+		return mh.errorResponse(msg.GetID(), "invalid approve payload")
+	}
+	if req.RequestID == "" || req.EncryptedCredential == "" || req.EncryptedPasswordHash == "" || req.KeyID == "" {
+		return mh.errorResponse(msg.GetID(), "password authorization required")
+	}
+
+	pendingData, err := mh.storage.Get("pending_verify_in/" + req.RequestID)
+	if err != nil || len(pendingData) == 0 {
+		return mh.errorResponse(msg.GetID(), "pending verify request not found")
+	}
+	var pending map[string]string
+	if err := json.Unmarshal(pendingData, &pending); err != nil {
+		return mh.errorResponse(msg.GetID(), "corrupt pending verify record")
+	}
+
+	// Decrypt + verify password → identity key. One-shot, no caching.
+	// Reuses the same password-gate primitive vote.cast uses, which
+	// pulls the identity key directly from the password-decrypted
+	// credential blob rather than the in-memory TTL carve-out.
+	cred, err := mh.credentialSecretHandler.decryptCredentialBlob(req.EncryptedCredential)
+	if err != nil {
+		return mh.errorResponse(msg.GetID(), "credential decrypt failed")
+	}
+	defer cred.SecureErase()
+	if err := mh.credentialSecretHandler.verifyPasswordAgainstCredential(req.EncryptedPasswordHash, req.EphemeralPublicKey, req.Nonce, req.KeyID, cred); err != nil {
+		return mh.errorResponse(msg.GetID(), "password verification failed")
+	}
+	idKey := append([]byte{}, cred.Identity.PrivateKey...)
+	defer zeroBytes(idKey)
+	idPub := append([]byte{}, cred.Identity.PublicKey...)
+	if len(idPub) == 0 && len(idKey) >= ed25519.PublicKeySize {
+		idPub = ed25519.PrivateKey(idKey).Public().(ed25519.PublicKey)
+	}
+
+	signingPayload := fmt.Sprintf("%s|%s|%s|%s",
+		connectionAuthDomain,
+		mh.ownerSpace,
+		pending["requester_guid"],
+		pending["nonce"],
+	)
+	sig := ed25519.Sign(idKey, []byte(signingPayload))
+	mh.auditIdentityKey("connection_authenticate", pending["connection_id"], map[string]string{
+		"request_id": req.RequestID,
+		"challenger": pending["requester_guid"],
+	})
+
+	resp := ConnectionAuthResponse{
+		RequestID:      req.RequestID,
+		IdentityPubKey: base64.StdEncoding.EncodeToString(idPub),
+		Signature:      base64.StdEncoding.EncodeToString(sig),
+		SignedAt:       time.Now().UTC().Format(time.RFC3339),
+	}
+	payload, _ := json.Marshal(&resp)
+	if err := encryptAndPublishToPeer(
+		context.Background(), mh.storage, mh.publisher, mh.ownerSpace,
+		pending["connection_id"], "connection.authenticate.response", "conn-auth-resp:"+req.RequestID,
+		payload, time.Now().Unix(),
+	); err != nil {
+		log.Warn().Err(err).Str("request_id", req.RequestID).Msg("auth response publish failed")
+	}
+	if mh.auditLog != nil {
+		mh.auditLog.Append(AuditEntry{
+			ConnectionID: pending["connection_id"],
+			PeerGUID:     pending["requester_guid"],
+			EventType:    AuditTypeConnectionAuthenticated,
+			Direction:    AuditDirectionOutbound,
+			Title:        "Signed identity proof for peer",
+			Refs:         map[string]string{"request_id": req.RequestID},
+		})
+	}
+	_ = mh.storage.Delete("pending_verify_in/" + req.RequestID)
+
+	out, _ := json.Marshal(map[string]interface{}{"success": true})
+	return mh.successResponse(msg.GetID(), out)
+}
+
+// HandleDenyVerify is the receiver-side app op: user explicitly
+// refused to prove identity. Emit an explicit denial back so the
+// requester sees a clear reason rather than a hang.
+func (mh *MessageHandler) HandleDenyVerify(msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req struct {
+		RequestID string `json:"request_id"`
+		Reason    string `json:"reason,omitempty"`
+	}
+	if err := unmarshalRequest(msg.Payload, &req, "DenyVerify"); err != nil {
+		return mh.errorResponse(msg.GetID(), "invalid deny payload")
+	}
+	pendingData, err := mh.storage.Get("pending_verify_in/" + req.RequestID)
+	if err != nil || len(pendingData) == 0 {
+		return mh.errorResponse(msg.GetID(), "pending verify request not found")
+	}
+	var pending map[string]string
+	_ = json.Unmarshal(pendingData, &pending)
+
+	denial := ConnectionAuthResponse{
+		RequestID: req.RequestID,
+		Status:    "denied_by_user",
+	}
+	payload, _ := json.Marshal(&denial)
+	_ = encryptAndPublishToPeer(
+		context.Background(), mh.storage, mh.publisher, mh.ownerSpace,
+		pending["connection_id"], "connection.authenticate.response", "conn-auth-resp:"+req.RequestID,
+		payload, time.Now().Unix(),
+	)
+	if mh.auditLog != nil {
+		mh.auditLog.Append(AuditEntry{
+			ConnectionID: pending["connection_id"],
+			PeerGUID:     pending["requester_guid"],
+			EventType:    AuditTypeConnectionAuthenticateFailed,
+			Direction:    AuditDirectionOutbound,
+			Title:        "Refused identity verification",
+			Body:         req.Reason,
+			Refs:         map[string]string{"request_id": req.RequestID},
+		})
+	}
+	_ = mh.storage.Delete("pending_verify_in/" + req.RequestID)
+
+	out, _ := json.Marshal(map[string]interface{}{"success": true})
+	return mh.successResponse(msg.GetID(), out)
 }
 
 // HandleIncomingAuthResponse is the requester-side handler. Verifies
@@ -242,6 +355,10 @@ func (mh *MessageHandler) HandleIncomingAuthResponse(ctx context.Context, dec *d
 	if resp.Status == "identity_locked" {
 		mh.auditAuthFailed(dec.LocalConnID, dec.FromOwnerSpace, resp.RequestID, "peer_identity_locked")
 		return mh.publishAuthVerdict(ctx, dec.LocalConnID, dec.FromOwnerSpace, resp.RequestID, false, "peer_identity_locked")
+	}
+	if resp.Status == "denied_by_user" {
+		mh.auditAuthFailed(dec.LocalConnID, dec.FromOwnerSpace, resp.RequestID, "denied_by_user")
+		return mh.publishAuthVerdict(ctx, dec.LocalConnID, dec.FromOwnerSpace, resp.RequestID, false, "denied_by_user")
 	}
 
 	// Verify the peer's identity public key matches what we have cached

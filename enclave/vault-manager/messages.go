@@ -978,11 +978,19 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 		return mh.handleCriticalSecretUseOperation(ctx, msg, parts[opIndex+1:])
 	case "connection-authenticate":
 		// Challenge/response proof-of-credential between connections.
-		// Today the only app-side op is "request" — receivers initiate;
-		// challenge handling is automatic on the owner side via peer
-		// subjects above.
-		if len(parts) > opIndex+2 && parts[opIndex+2] == "request" {
-			return mh.HandleAuthRequest(msg)
+		// Three app-side ops:
+		//   - request: requester sends a nonce challenge
+		//   - approve: receiver authorizes signing under password
+		//   - deny:    receiver explicitly refuses
+		if len(parts) > opIndex+2 {
+			switch parts[opIndex+2] {
+			case "request":
+				return mh.HandleAuthRequest(msg)
+			case "approve":
+				return mh.HandleApproveVerify(msg)
+			case "deny":
+				return mh.HandleDenyVerify(msg)
+			}
 		}
 		return mh.errorResponse(msg.GetID(), "unknown connection-authenticate op")
 	case "audit":
