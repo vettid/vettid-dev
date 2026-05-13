@@ -76,6 +76,28 @@ type VaultState struct {
 	identityPublicKey    []byte // ed25519.PublicKey (32 bytes)
 	identityKeyExpiresAt int64  // unix seconds; zero == not unlocked / expired
 
+	// Audit-key derivation — see audit_key.go for the rationale.
+	//
+	// Derived once per PIN unlock via HKDF(identity_priv, "vettid-audit-key-v1")
+	// and held in vault memory for the session (no TTL — wiped only on
+	// PIN-lock alongside identity_priv). Every audit-log write is signed
+	// with audit_priv so the resulting chain is independently verifiable
+	// by anyone who has the user's identity_pub (via the one-time
+	// audit.binding event the vault emits on first derivation).
+	//
+	// The point of a *derived* signing key rather than reusing identity
+	// directly: identity-key use is intentionally gated by a per-event
+	// password prompt for vote / verify / contract signing — wiring
+	// every audit row through that gate would either kill performance
+	// or force us to TTL-cache the identity key (which we explicitly
+	// don't want, see feedback-audit-log-mirroring.md). The audit key
+	// is a derivative that lives in vault memory only and can be used
+	// without prompting, while still being bound to the identity key.
+	auditPrivateKey       []byte // ed25519.PrivateKey (64 bytes); derived
+	auditPublicKey        []byte // ed25519.PublicKey (32 bytes); derived
+	auditBindingSignature []byte // ed25519 sig of "vettid-audit-binding-v1" || audit_pub by identity_priv
+	auditBindingEmitted   bool   // whether the binding event has been written this session
+
 	// PIN auth carve-out (Phase D). Populated at PIN unlock so PIN
 	// change can verify the old PIN without retaining the full
 	// credential plaintext. Updated atomically with the credential

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -480,6 +481,54 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 	// trail too — the existing LogCallEvent / LogConnectionEvent call
 	// sites get audit coverage for free.
 	eventHandler.SetAuditLog(mh.auditLog)
+
+	// Register the audit-chain signer on the SQLite layer. The closure
+	// reads the current audit_priv from vault state on every call —
+	// pre-unlock writes get a nil signature (storage leaves entry_sig
+	// blank, clients render "unsigned"); post-unlock writes are signed
+	// with the user's derived audit key. Idempotent setter so reloads
+	// don't need a teardown step.
+	if sqlite := storage.SQLite(); sqlite != nil {
+		sqlite.SetEntrySigner(func(hashBytes []byte) []byte {
+			if mh.vaultState == nil {
+				return nil
+			}
+			mh.vaultState.mu.RLock()
+			priv := append([]byte(nil), mh.vaultState.auditPrivateKey...)
+			mh.vaultState.mu.RUnlock()
+			if len(priv) == 0 {
+				return nil
+			}
+			defer zeroBytes(priv)
+			return ed25519.Sign(ed25519.PrivateKey(priv), hashBytes)
+		})
+	}
+	// Lazy audit-binding emit. Fires at the top of every LogEvent;
+	// internal flag guards recursion (the binding event itself is a
+	// LogEvent and would otherwise re-enter the hook). Net effect:
+	// first audit write per PIN-unlock session is the binding event,
+	// every subsequent write chains after it.
+	eventHandler.SetPreLogEventHook(func(ctx context.Context) {
+		mh.ensureBindingEmitted(ctx)
+	})
+	// Anchor getter so audit.query responses ship audit_pub +
+	// binding_sig alongside the events. Client uses these to verify
+	// (a) the chain is bound to this user's identity and (b) each
+	// row's entry_sig was produced by the bound audit_priv.
+	eventHandler.SetAuditAnchorFn(func() (string, string) {
+		if mh.vaultState == nil {
+			return "", ""
+		}
+		mh.vaultState.mu.RLock()
+		pub := append([]byte(nil), mh.vaultState.auditPublicKey...)
+		sig := append([]byte(nil), mh.vaultState.auditBindingSignature...)
+		mh.vaultState.mu.RUnlock()
+		if len(pub) == 0 || len(sig) == 0 {
+			return "", ""
+		}
+		return base64.StdEncoding.EncodeToString(pub),
+			base64.StdEncoding.EncodeToString(sig)
+	})
 	// WalletHandler emits transfer.btc.sent inline; transfer.btc.received
 	// is appended in the inbound `btc-payment-receipt` case below using
 	// the same shared log.

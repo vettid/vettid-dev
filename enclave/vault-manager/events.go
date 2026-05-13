@@ -25,9 +25,36 @@ type EventHandler struct {
 	// via SetAuditLog after the MessageHandler has built the log.
 	auditLog *AuditLog
 
+	// Hook fired before LogEvent processes any event. Used by
+	// MessageHandler to lazily emit the audit.binding event on the
+	// first write per PIN-unlock session — the binding then anchors
+	// every subsequent row in the chain. nil is fine (skip).
+	preLogEventHook func(ctx context.Context)
+
+	// auditAnchorFn returns the current session's audit_pub +
+	// binding_sig so QueryAudit / ExportAudit responses can ship them
+	// alongside the events for client-side verification. nil = anchor
+	// not yet available (vault locked) — response omits the fields.
+	auditAnchorFn func() (auditPub string, bindingSig string)
+
 	// Sync sequence is managed atomically
 	mu           sync.Mutex
 	syncSequence int64
+}
+
+// SetPreLogEventHook registers a callback fired at the top of LogEvent
+// before any storage write. Designed for the audit.binding emit path —
+// the hook is responsible for guarding against recursion via its own
+// "already emitted" flag.
+func (h *EventHandler) SetPreLogEventHook(fn func(ctx context.Context)) {
+	h.preLogEventHook = fn
+}
+
+// SetAuditAnchorFn registers a getter for audit_pub + binding_sig so
+// QueryAudit / ExportAudit can ship the anchor alongside per-row
+// chain fields for client-side verification.
+func (h *EventHandler) SetAuditAnchorFn(fn func() (auditPub, bindingSig string)) {
+	h.auditAnchorFn = fn
 }
 
 // SetAuditLog wires the per-connection audit log. Safe to call after
@@ -106,6 +133,15 @@ func (h *EventHandler) UpdateSettings(settings *FeedSettings) error {
 func (h *EventHandler) LogEvent(ctx context.Context, e *Event) error {
 	if !h.storageReady() {
 		return ErrStorageNotReady
+	}
+
+	// Lazy audit-binding emission. The hook ensures the audit.binding
+	// event (carrying audit_pub + identity-key signature over it) is
+	// written before any signed audit row in this session — so the
+	// chain has a verifiable anchor before any other event references
+	// it. The hook is recursion-guarded by its own emitted flag.
+	if h.preLogEventHook != nil {
+		h.preLogEventHook(ctx)
 	}
 
 	// Generate event ID if not provided
@@ -500,11 +536,15 @@ func (h *EventHandler) QueryAudit(ctx context.Context, req *AuditQueryRequest) (
 		events[i] = h.recordToEvent(&rec)
 	}
 
-	return &AuditQueryResponse{
+	resp := &AuditQueryResponse{
 		Events:  events,
 		Total:   total,
 		HasMore: len(events) == limit && req.Offset+limit < total,
-	}, nil
+	}
+	if h.auditAnchorFn != nil {
+		resp.AuditPub, resp.BindingSig = h.auditAnchorFn()
+	}
+	return resp, nil
 }
 
 // ExportAudit exports events for audit purposes (max 1000)
@@ -636,6 +676,11 @@ func (h *EventHandler) recordToEvent(rec *storage.EventRecord) Event {
 	if rec.ExpiresAt != nil {
 		event.ExpiresAt = *rec.ExpiresAt
 	}
+
+	// Chain anchors — clients read these to verify tamper-evidence.
+	event.PreviousHash = rec.PreviousHash
+	event.EntryHash = rec.EntryHash
+	event.EntrySig = rec.EntrySig
 
 	return event
 }

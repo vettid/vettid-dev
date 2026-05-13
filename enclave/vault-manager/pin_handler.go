@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -380,6 +381,21 @@ func (h *PINHandler) restoreCredentialCarveOuts() {
 	h.state.pinAuthHash = append([]byte(nil), cred.Auth.PinHash...)
 	h.state.pinAuthSalt = append([]byte(nil), cred.Auth.PinSalt...)
 	h.state.identityKeyExpiresAt = time.Now().Unix() + loadSessionTTLSeconds(h.storage)
+	// Derive the audit-signing subkey from the identity key while we
+	// still hold the plaintext. See audit_key.go — this lives in
+	// vault memory for the session so audit writes can sign without
+	// the per-event password prompt that gates identity-key use.
+	if auditPriv, auditPub, derr := deriveAuditKey(cred.Identity.PrivateKey); derr == nil {
+		h.state.auditPrivateKey = append([]byte(nil), auditPriv...)
+		h.state.auditPublicKey = append([]byte(nil), auditPub...)
+		h.state.auditBindingSignature = computeAuditBindingSignature(
+			ed25519.PrivateKey(cred.Identity.PrivateKey),
+			auditPub,
+		)
+		h.state.auditBindingEmitted = false
+	} else {
+		log.Warn().Err(derr).Str("owner_space", h.ownerSpace).Msg("audit key derivation failed; audit chain will be unsigned for this session")
+	}
 	h.state.mu.Unlock()
 
 	// Persist identity_public_key as a storage fallback for

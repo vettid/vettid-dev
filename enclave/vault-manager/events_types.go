@@ -46,6 +46,10 @@ const (
 	EventTypeCriticalSecretUsed  EventType = "critical_secret.used"
 	EventTypeConnectionVerified  EventType = "connection.verified"
 	EventTypeConnectionVerifyDenied EventType = "connection.verify.denied"
+	// Emitted once per PIN-unlock session: identity-key signature
+	// over the derived audit_pub, proving the audit chain head is
+	// bound to the user's identity.
+	EventTypeAuditBinding        EventType = "audit.binding"
 
 	// Transfer events
 	EventTypeTransferRequest EventType = "transfer.request"
@@ -224,6 +228,13 @@ type Event struct {
 
 	// Retention control
 	RetentionClass RetentionClass `json:"retention_class"`
+
+	// Audit chain fields. Populated from storage at read time so the
+	// client can verify the chain without trusting the vault. Empty
+	// for rows written before the chain shipped (legacy / pre-unlock).
+	PreviousHash string `json:"previous_hash,omitempty"` // hex SHA-256 of prior entry
+	EntryHash    string `json:"entry_hash,omitempty"`    // hex SHA-256 of this entry
+	EntrySig     string `json:"entry_sig,omitempty"`     // hex ed25519 sig over entry_hash by audit_priv
 }
 
 // EventPayload is the encrypted portion of an event
@@ -480,6 +491,14 @@ type AuditQueryResponse struct {
 	Events  []Event `json:"events"`
 	Total   int     `json:"total"`
 	HasMore bool    `json:"has_more"`
+
+	// Audit-chain anchor for client-side verification. AuditPub is the
+	// derived audit public key for this session; BindingSig is
+	// ed25519_sign(identity_priv, "vettid-audit-binding-v1" || audit_pub).
+	// Both are hex-encoded; both empty when the user hasn't unlocked
+	// in the current session (chain rows will likewise be unsigned).
+	AuditPub   string `json:"audit_pub,omitempty"`
+	BindingSig string `json:"binding_sig,omitempty"`
 }
 
 // AuditExportRequest is the payload for audit.export

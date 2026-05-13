@@ -35,7 +35,27 @@ type SQLiteStorage struct {
 	// Prevents replay attacks where attacker restores old backup
 	rollbackCounter int64
 
+	// Audit-chain signer set by MessageHandler at PIN unlock once the
+	// audit key has been derived from identity_priv. StoreEvent / the
+	// connection-audit Append path call this on every write so each
+	// row carries a signature over its entry_hash. nil = no signer yet
+	// (storage was initialized before audit_priv was loaded — rows
+	// written in that window stay unsigned and are rendered as such).
+	entrySigner func(entryHashBytes []byte) []byte
+
 	mu sync.RWMutex
+}
+
+// SetEntrySigner registers an audit-key signing closure used by the
+// event store + connection-audit Append paths to sign each row's
+// entry_hash. Idempotent. Calling with nil clears the signer (used
+// on PIN-lock; writes after that point land unsigned, which matches
+// the chain semantics — anyone reading the chain will see a clean
+// "unsigned" boundary that aligns with the missing audit_pub).
+func (s *SQLiteStorage) SetEntrySigner(fn func(entryHashBytes []byte) []byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.entrySigner = fn
 }
 
 // NewSQLiteStorage creates a new encrypted SQLite storage
@@ -196,7 +216,15 @@ func (s *SQLiteStorage) initSchema() error {
 		-- Hash chain for tamper evidence (DEV-025)
 		-- Each entry includes hash of previous entry
 		previous_hash TEXT,              -- SHA-256 hash of previous entry (hex)
-		entry_hash TEXT                  -- SHA-256 hash of this entry (hex)
+		entry_hash TEXT,                 -- SHA-256 hash of this entry (hex)
+
+		-- Audit-key signature over entry_hash for third-party verifiability.
+		-- Populated when the vault has a derived audit_priv loaded (see
+		-- audit_key.go). Empty for legacy rows pre-shipment and any row
+		-- written while the audit key wasn't derivable (e.g., a bug in
+		-- derivation). Clients render an "unsigned" indicator in that
+		-- case rather than silently treating those rows as verified.
+		entry_sig TEXT DEFAULT ''        -- ed25519 sig of entry_hash bytes, hex
 	);
 
 	-- Index for feed queries (most common: list active items)
@@ -426,6 +454,24 @@ func (s *SQLiteStorage) initSchema() error {
 		return fmt.Errorf("failed to create schema: %w", err)
 	}
 
+	// Idempotent column-level migration for audit signature support.
+	// SQLite's CREATE TABLE IF NOT EXISTS won't add new columns to a
+	// pre-existing events table, so a fresh deploy against an existing
+	// vault DB won't pick up entry_sig from the schema literal above.
+	// Probe sqlite_master for the column and ALTER if absent.
+	if err := s.addColumnIfMissing("events", "entry_sig", "TEXT DEFAULT ''"); err != nil {
+		return fmt.Errorf("failed to migrate events.entry_sig: %w", err)
+	}
+	if err := s.addColumnIfMissing("connection_audit", "previous_hash", "TEXT DEFAULT ''"); err != nil {
+		return fmt.Errorf("failed to migrate connection_audit.previous_hash: %w", err)
+	}
+	if err := s.addColumnIfMissing("connection_audit", "entry_hash", "TEXT DEFAULT ''"); err != nil {
+		return fmt.Errorf("failed to migrate connection_audit.entry_hash: %w", err)
+	}
+	if err := s.addColumnIfMissing("connection_audit", "entry_sig", "TEXT DEFAULT ''"); err != nil {
+		return fmt.Errorf("failed to migrate connection_audit.entry_sig: %w", err)
+	}
+
 	// Initialize rollback counter if not exists
 	_, err := s.db.Exec(`
 		INSERT OR IGNORE INTO _metadata (key, value, updated_at)
@@ -453,6 +499,33 @@ func (s *SQLiteStorage) initSchema() error {
 	fmt.Sscanf(counterStr, "%d", &s.rollbackCounter)
 
 	return nil
+}
+
+// addColumnIfMissing adds a column to an existing table only when it
+// isn't already present, by probing PRAGMA table_info. Use for
+// non-destructive schema migrations on a vault DB created by an
+// older schema literal.
+func (s *SQLiteStorage) addColumnIfMissing(table, column, def string) error {
+	rows, err := s.db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == column {
+			return nil // already exists
+		}
+	}
+	stmt := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, def)
+	_, err = s.db.Exec(stmt)
+	return err
 }
 
 // CEKKeypair represents a CEK keypair stored in the database
@@ -1351,6 +1424,13 @@ type EventRecord struct {
 	// Hash chain for tamper evidence (DEV-025)
 	PreviousHash string // SHA-256 hash of previous entry (hex)
 	EntryHash    string // SHA-256 hash of this entry (hex)
+
+	// Ed25519 signature over EntryHash by the user's derived audit key.
+	// Populated by StoreEvent when an EntrySigner is registered on the
+	// storage (set by MessageHandler at PIN unlock once audit_priv has
+	// been derived). Empty for legacy rows and any row written before
+	// the user has unlocked their vault in the current session.
+	EntrySig string // hex
 }
 
 // StoreEvent stores a new event in the events table with hash chain integrity
@@ -1383,18 +1463,29 @@ func (s *SQLiteStorage) StoreEvent(event *EventRecord) error {
 	event.PreviousHash = previousHash
 	event.EntryHash = entryHash
 
+	// Sign entry_hash with the audit key if a signer is registered.
+	// The signer is set on the storage instance by MessageHandler once
+	// audit_priv has been derived (post-PIN-unlock). Pre-unlock writes
+	// stay unsigned — clients render those rows as "unsigned" rather
+	// than silently claiming verification.
+	if s.entrySigner != nil {
+		if sig := s.entrySigner([]byte(entryHash)); len(sig) > 0 {
+			event.EntrySig = fmt.Sprintf("%x", sig)
+		}
+	}
+
 	_, err = s.db.Exec(`
 		INSERT INTO events (
 			event_id, event_type, source_type, source_id, payload,
 			feed_status, action_type, priority,
 			created_at, read_at, actioned_at, archived_at, expires_at,
-			sync_sequence, retention_class, previous_hash, entry_hash
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			sync_sequence, retention_class, previous_hash, entry_hash, entry_sig
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		event.EventID, event.EventType, event.SourceType, event.SourceID, encPayload,
 		event.FeedStatus, event.ActionType, event.Priority,
 		event.CreatedAt, event.ReadAt, event.ActionedAt, event.ArchivedAt, event.ExpiresAt,
-		event.SyncSequence, event.RetentionClass, event.PreviousHash, event.EntryHash,
+		event.SyncSequence, event.RetentionClass, event.PreviousHash, event.EntryHash, event.EntrySig,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to store event: %w", err)
@@ -1413,11 +1504,12 @@ func (s *SQLiteStorage) GetEvent(eventID string) (*EventRecord, error) {
 	var encPayload []byte
 	var readAt, actionedAt, archivedAt, expiresAt sql.NullInt64
 
+	var previousHash, entryHash, entrySig sql.NullString
 	err := s.db.QueryRow(`
 		SELECT event_id, event_type, source_type, source_id, payload,
 		       feed_status, action_type, priority,
 		       created_at, read_at, actioned_at, archived_at, expires_at,
-		       sync_sequence, retention_class
+		       sync_sequence, retention_class, previous_hash, entry_hash, entry_sig
 		FROM events
 		WHERE event_id = ?
 	`, eventID).Scan(
@@ -1425,7 +1517,11 @@ func (s *SQLiteStorage) GetEvent(eventID string) (*EventRecord, error) {
 		&event.FeedStatus, &event.ActionType, &event.Priority,
 		&event.CreatedAt, &readAt, &actionedAt, &archivedAt, &expiresAt,
 		&event.SyncSequence, &event.RetentionClass,
+		&previousHash, &entryHash, &entrySig,
 	)
+	event.PreviousHash = previousHash.String
+	event.EntryHash = entryHash.String
+	event.EntrySig = entrySig.String
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -1492,7 +1588,7 @@ func (s *SQLiteStorage) ListFeedEvents(statuses []string, limit, offset int) ([]
 		SELECT event_id, event_type, source_type, source_id, payload,
 		       feed_status, action_type, priority,
 		       created_at, read_at, actioned_at, archived_at, expires_at,
-		       sync_sequence, retention_class
+		       sync_sequence, retention_class, previous_hash, entry_hash, entry_sig
 		FROM events
 		WHERE feed_status IN %s
 		ORDER BY priority DESC, created_at DESC
@@ -1571,7 +1667,7 @@ func (s *SQLiteStorage) QueryAuditEvents(eventTypes []string, startTime, endTime
 		SELECT event_id, event_type, source_type, source_id, payload,
 		       feed_status, action_type, priority,
 		       created_at, read_at, actioned_at, archived_at, expires_at,
-		       sync_sequence, retention_class
+		       sync_sequence, retention_class, previous_hash, entry_hash, entry_sig
 		FROM events
 		%s
 		ORDER BY created_at DESC
@@ -1612,7 +1708,7 @@ func (s *SQLiteStorage) GetEventsSince(lastSeq int64, limit int, includeHidden b
 		SELECT event_id, event_type, source_type, source_id, payload,
 		       feed_status, action_type, priority,
 		       created_at, read_at, actioned_at, archived_at, expires_at,
-		       sync_sequence, retention_class
+		       sync_sequence, retention_class, previous_hash, entry_hash, entry_sig
 		FROM events
 		WHERE sync_sequence > ? AND feed_status != 'deleted'
 		      AND (feed_status != 'hidden' OR ? = 1)
@@ -1893,14 +1989,19 @@ func (s *SQLiteStorage) scanEventRows(rows *sql.Rows) ([]EventRecord, error) {
 		var encPayload []byte
 		var readAt, actionedAt, archivedAt, expiresAt sql.NullInt64
 
+		var previousHash, entryHash, entrySig sql.NullString
 		if err := rows.Scan(
 			&event.EventID, &event.EventType, &event.SourceType, &event.SourceID, &encPayload,
 			&event.FeedStatus, &event.ActionType, &event.Priority,
 			&event.CreatedAt, &readAt, &actionedAt, &archivedAt, &expiresAt,
 			&event.SyncSequence, &event.RetentionClass,
+			&previousHash, &entryHash, &entrySig,
 		); err != nil {
 			return nil, fmt.Errorf("failed to scan event row: %w", err)
 		}
+		event.PreviousHash = previousHash.String
+		event.EntryHash = entryHash.String
+		event.EntrySig = entrySig.String
 
 		// Decrypt payload
 		var err error

@@ -88,12 +88,24 @@ func consumeIdentityKeyFromState(state *VaultState, storage *EncryptedStorage) (
 
 // clearIdentityKeyFromState wipes the in-memory identity private key.
 // The public key remains so non-signing reads keep working.
+//
+// Also clears the derived audit key — its lifetime is tied to the
+// identity key, and re-deriving on the next PIN unlock is cheap.
+// Keeping audit_priv alive while identity_priv is zeroed would leave
+// a usable signing key hanging in memory longer than the user expects.
 func clearIdentityKeyFromState(state *VaultState) {
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	zeroBytes(state.identityPrivateKey)
 	state.identityPrivateKey = nil
 	state.identityKeyExpiresAt = 0
+	zeroBytes(state.auditPrivateKey)
+	state.auditPrivateKey = nil
+	zeroBytes(state.auditPublicKey)
+	state.auditPublicKey = nil
+	zeroBytes(state.auditBindingSignature)
+	state.auditBindingSignature = nil
+	state.auditBindingEmitted = false
 }
 
 // MessageHandler-bound shims for callers that already hold mh.
