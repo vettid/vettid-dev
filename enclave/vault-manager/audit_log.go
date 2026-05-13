@@ -164,6 +164,15 @@ type AuditEntry struct {
 	CreatedAt    int64             `json:"created_at"`
 	Refs         map[string]string `json:"refs,omitempty"`
 	Metadata     map[string]string `json:"metadata,omitempty"`
+
+	// Per-connection hash chain + signature. Each entry's hash
+	// includes the previous entry's hash for this connection, so any
+	// row insertion/deletion/reorder breaks the chain. Sig is
+	// produced by the audit_priv derived from identity (see audit_key.go).
+	// Empty for legacy rows / rows written pre-PIN-unlock.
+	PreviousHash string `json:"previous_hash,omitempty"`
+	EntryHash    string `json:"entry_hash,omitempty"`
+	EntrySig     string `json:"entry_sig,omitempty"`
 }
 
 // ----------------------------------------------------------------------
@@ -284,6 +293,12 @@ func decodeAuditEntries(rows []storage.AuditEntryRecord) []AuditEntry {
 				CreatedAt:    r.CreatedAt,
 			}
 		}
+		// Chain fields live on the storage row, not the embedded payload
+		// — copy them out so the JSON response carries the chain anchors
+		// the client uses to verify integrity.
+		e.PreviousHash = r.PreviousHash
+		e.EntryHash = r.EntryHash
+		e.EntrySig = r.EntrySig
 		out = append(out, e)
 	}
 	return out

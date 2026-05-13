@@ -515,7 +515,7 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 	// binding_sig alongside the events. Client uses these to verify
 	// (a) the chain is bound to this user's identity and (b) each
 	// row's entry_sig was produced by the bound audit_priv.
-	eventHandler.SetAuditAnchorFn(func() (string, string) {
+	anchorFn := func() (string, string) {
 		if mh.vaultState == nil {
 			return "", ""
 		}
@@ -528,7 +528,13 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 		}
 		return base64.StdEncoding.EncodeToString(pub),
 			base64.StdEncoding.EncodeToString(sig)
-	})
+	}
+	eventHandler.SetAuditAnchorFn(anchorFn)
+	// Same anchor for the per-connection audit response so Connection
+	// History can verify against the same key the global Audit Log uses.
+	if mh.auditHandler != nil {
+		mh.auditHandler.SetAuditAnchorFn(anchorFn)
+	}
 	// WalletHandler emits transfer.btc.sent inline; transfer.btc.received
 	// is appended in the inbound `btc-payment-receipt` case below using
 	// the same shared log.

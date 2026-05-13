@@ -13,6 +13,7 @@ import (
 type AuditHandler struct {
 	ownerSpace string
 	auditLog   *AuditLog
+	anchorFn   func() (auditPub, bindingSig string)
 }
 
 // NewAuditHandler constructs the handler. A non-nil AuditLog is required.
@@ -21,6 +22,13 @@ func NewAuditHandler(ownerSpace string, auditLog *AuditLog) *AuditHandler {
 		ownerSpace: ownerSpace,
 		auditLog:   auditLog,
 	}
+}
+
+// SetAuditAnchorFn registers the same anchor getter EventHandler uses
+// so connection.audit.list responses can ship audit_pub + binding_sig
+// alongside per-row chain fields for client-side verification.
+func (h *AuditHandler) SetAuditAnchorFn(fn func() (auditPub, bindingSig string)) {
+	h.anchorFn = fn
 }
 
 // ----------------------------------------------------------------------
@@ -50,6 +58,12 @@ type AuditListResponse struct {
 	Entries       []AuditEntry `json:"entries"`
 	NextCursor    *AuditCursor `json:"next_cursor,omitempty"`
 	TotalEstimate int          `json:"total_estimate"`
+
+	// Audit-chain anchor for client-side verification (mirrors the
+	// audit.query response shape — see events_types.go). Both empty
+	// when the user hasn't unlocked their vault this session.
+	AuditPub   string `json:"audit_pub,omitempty"`
+	BindingSig string `json:"binding_sig,omitempty"`
 }
 
 type AuditCursor struct {
@@ -131,6 +145,9 @@ func (h *AuditHandler) respond(requestID string, entries []AuditEntry, cursor *s
 			CreatedAt: cursor.CreatedAt,
 			EntryID:   cursor.EntryID,
 		}
+	}
+	if h.anchorFn != nil {
+		resp.AuditPub, resp.BindingSig = h.anchorFn()
 	}
 
 	payload, err := json.Marshal(resp)

@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"crypto/sha256"
 	"database/sql"
 	"fmt"
 	"strings"
@@ -21,6 +22,15 @@ type AuditEntryRecord struct {
 	Body         string
 	CreatedAt    int64
 	Payload      []byte
+
+	// Per-connection chain. previous_hash points at the latest entry
+	// for this ConnectionID at append time; entry_hash includes that
+	// + the row contents; entry_sig is an ed25519 signature over
+	// entry_hash by audit_priv (populated by the storage signer
+	// closure). Empty for legacy rows / writes pre-PIN-unlock.
+	PreviousHash string
+	EntryHash    string
+	EntrySig     string
 }
 
 // AuditListOptions controls list pagination and filtering.
@@ -70,15 +80,43 @@ func (s *SQLiteStorage) AppendAuditEntry(r AuditEntryRecord) error {
 		r.CreatedAt = time.Now().Unix()
 	}
 
+	// Per-connection chain: read the latest entry_hash for this
+	// connection and use it as previous_hash for the row we're about
+	// to insert. Genesis row gets the literal "genesis" so the chain
+	// has an unambiguous anchor.
+	previousHash := ""
+	row := s.db.QueryRow(
+		`SELECT COALESCE(entry_hash, '') FROM connection_audit
+		 WHERE connection_id = ?
+		 ORDER BY created_at DESC, entry_id DESC LIMIT 1`,
+		r.ConnectionID,
+	)
+	_ = row.Scan(&previousHash)
+	if previousHash == "" {
+		previousHash = "genesis"
+	}
+	hashInput := fmt.Sprintf("%s|%s|%s|%s|%x|%d",
+		previousHash, r.EntryID, r.EventType, r.ConnectionID, r.Payload, r.CreatedAt)
+	entryHash := fmt.Sprintf("%x", sha256.Sum256([]byte(hashInput)))
+	r.PreviousHash = previousHash
+	r.EntryHash = entryHash
+	if s.entrySigner != nil {
+		if sig := s.entrySigner([]byte(entryHash)); len(sig) > 0 {
+			r.EntrySig = fmt.Sprintf("%x", sig)
+		}
+	}
+
 	_, err := s.db.Exec(`
 		INSERT INTO connection_audit
 			(entry_id, connection_id, peer_guid, event_type, direction,
-			 title, body, created_at, payload)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			 title, body, created_at, payload,
+			 previous_hash, entry_hash, entry_sig)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		r.EntryID, r.ConnectionID, nullIfEmpty(r.PeerGUID), r.EventType,
 		nullIfEmpty(r.Direction), r.Title, nullIfEmpty(r.Body),
 		r.CreatedAt, r.Payload,
+		r.PreviousHash, r.EntryHash, r.EntrySig,
 	)
 	if err != nil {
 		return fmt.Errorf("append audit entry: %w", err)
@@ -167,7 +205,8 @@ func (s *SQLiteStorage) ListAuditEntries(opts AuditListOptions) (*AuditListResul
 
 	q := `
 		SELECT entry_id, connection_id, peer_guid, event_type, direction,
-		       title, body, created_at, payload
+		       title, body, created_at, payload,
+		       COALESCE(previous_hash, ''), COALESCE(entry_hash, ''), COALESCE(entry_sig, '')
 		FROM connection_audit
 		WHERE ` + strings.Join(where, " AND ") + `
 		ORDER BY created_at DESC, entry_id DESC
@@ -186,7 +225,8 @@ func (s *SQLiteStorage) ListAuditEntries(opts AuditListOptions) (*AuditListResul
 		var r AuditEntryRecord
 		var peer, dir, body sql.NullString
 		if err := rows.Scan(&r.EntryID, &r.ConnectionID, &peer, &r.EventType,
-			&dir, &r.Title, &body, &r.CreatedAt, &r.Payload); err != nil {
+			&dir, &r.Title, &body, &r.CreatedAt, &r.Payload,
+			&r.PreviousHash, &r.EntryHash, &r.EntrySig); err != nil {
 			return nil, fmt.Errorf("scan audit row: %w", err)
 		}
 		r.PeerGUID = peer.String
@@ -266,7 +306,8 @@ func (s *SQLiteStorage) SearchAuditEntries(opts AuditSearchOptions) (*AuditListR
 
 	q := `
 		SELECT ca.entry_id, ca.connection_id, ca.peer_guid, ca.event_type,
-		       ca.direction, ca.title, ca.body, ca.created_at, ca.payload
+		       ca.direction, ca.title, ca.body, ca.created_at, ca.payload,
+		       COALESCE(ca.previous_hash, ''), COALESCE(ca.entry_hash, ''), COALESCE(ca.entry_sig, '')
 		FROM connection_audit_fts fts
 		JOIN connection_audit ca ON ca.rowid = fts.rowid
 		WHERE fts.connection_audit_fts MATCH ?
@@ -289,7 +330,8 @@ func (s *SQLiteStorage) SearchAuditEntries(opts AuditSearchOptions) (*AuditListR
 		var r AuditEntryRecord
 		var peer, dir, body sql.NullString
 		if err := rows.Scan(&r.EntryID, &r.ConnectionID, &peer, &r.EventType,
-			&dir, &r.Title, &body, &r.CreatedAt, &r.Payload); err != nil {
+			&dir, &r.Title, &body, &r.CreatedAt, &r.Payload,
+			&r.PreviousHash, &r.EntryHash, &r.EntrySig); err != nil {
 			return nil, fmt.Errorf("scan audit search row: %w", err)
 		}
 		r.PeerGUID = peer.String
