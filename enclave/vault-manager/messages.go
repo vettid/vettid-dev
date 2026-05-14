@@ -491,27 +491,35 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 	// sites get audit coverage for free.
 	eventHandler.SetAuditLog(mh.auditLog)
 
-	// Register the audit-chain signer on the SQLite layer. The closure
-	// reads the current audit_priv from vault state on every call —
-	// pre-unlock writes get a nil signature (storage leaves entry_sig
-	// blank, clients render "unsigned"); post-unlock writes are signed
-	// with the user's derived audit key. Idempotent setter so reloads
-	// don't need a teardown step.
-	if sqlite := storage.SQLite(); sqlite != nil {
-		sqlite.SetEntrySigner(func(hashBytes []byte) []byte {
-			if mh.vaultState == nil {
-				return nil
-			}
-			mh.vaultState.mu.RLock()
-			priv := append([]byte(nil), mh.vaultState.auditPrivateKey...)
-			mh.vaultState.mu.RUnlock()
-			if len(priv) == 0 {
-				return nil
-			}
-			defer zeroBytes(priv)
-			return ed25519.Sign(ed25519.PrivateKey(priv), hashBytes)
-		})
-	}
+	// Register the audit-chain signer. The closure reads the current
+	// audit_priv from vault state on every call — pre-unlock writes
+	// get a nil signature (storage leaves entry_sig blank, clients
+	// render "unsigned"); post-unlock writes are signed with the
+	// user's derived audit key.
+	//
+	// Registered on EncryptedStorage, NOT storage.SQLite(): on a
+	// fresh-spawned subprocess the SQLite doesn't exist yet at
+	// MessageHandler-init time (it's created lazily by
+	// InitializeWithDEK / ResetWithDEK at pin-setup / cold-unlock).
+	// The old `if sqlite := storage.SQLite(); sqlite != nil` guard
+	// silently skipped the registration in that (universal, for cold
+	// vaults) case, so the real SQLite came up signer-less and every
+	// audit row was written unsigned — the "chain unsigned" pill on
+	// 2026-05-14. EncryptedStorage.SetEntrySigner stores the closure
+	// and re-applies it to every SQLiteStorage it creates.
+	storage.SetEntrySigner(func(hashBytes []byte) []byte {
+		if mh.vaultState == nil {
+			return nil
+		}
+		mh.vaultState.mu.RLock()
+		priv := append([]byte(nil), mh.vaultState.auditPrivateKey...)
+		mh.vaultState.mu.RUnlock()
+		if len(priv) == 0 {
+			return nil
+		}
+		defer zeroBytes(priv)
+		return ed25519.Sign(ed25519.PrivateKey(priv), hashBytes)
+	})
 	// Lazy audit-binding emit. Fires at the top of every LogEvent;
 	// internal flag guards recursion (the binding event itself is a
 	// LogEvent and would otherwise re-enter the hook). Net effect:

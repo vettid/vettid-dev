@@ -108,6 +108,53 @@ func TestResetWithDEK_DiscardsStaleKeyedStorage(t *testing.T) {
 	}
 }
 
+func TestSetEntrySigner_SurvivesLazyStorageCreation(t *testing.T) {
+	// Regression for the "chain unsigned" bug (2026-05-14): the audit
+	// signer is registered at MessageHandler-init time, but on a
+	// fresh-spawned subprocess the SQLite doesn't exist yet — it's
+	// created lazily by InitializeWithDEK / ResetWithDEK. The signer
+	// must be owned by EncryptedStorage and re-applied to every
+	// SQLiteStorage it creates, or every audit row writes unsigned.
+	es, err := NewEncryptedStorage("user-signertest")
+	if err != nil {
+		t.Fatalf("NewEncryptedStorage: %v", err)
+	}
+
+	called := false
+	signer := func(b []byte) []byte { called = true; return []byte("sig") }
+
+	// Register BEFORE any SQLite exists — the realistic ordering.
+	es.SetEntrySigner(signer)
+	if es.sqlite != nil {
+		t.Fatal("precondition: SQLite should not exist yet")
+	}
+
+	// InitializeWithDEK creates the SQLite — the signer must be on it.
+	if err := es.InitializeWithDEK(dek32(0xC3)); err != nil {
+		t.Fatalf("InitializeWithDEK: %v", err)
+	}
+	if !es.sqlite.HasEntrySigner() {
+		t.Fatal("InitializeWithDEK must re-apply the EncryptedStorage entrySigner to the new SQLite")
+	}
+
+	// ResetWithDEK re-creates the SQLite — the signer must follow.
+	if err := es.ResetWithDEK(dek32(0xD4)); err != nil {
+		t.Fatalf("ResetWithDEK: %v", err)
+	}
+	if !es.sqlite.HasEntrySigner() {
+		t.Fatal("ResetWithDEK must re-apply the entrySigner to the fresh SQLite")
+	}
+
+	// Registering again after the SQLite already exists also applies
+	// straight through (the warm-vault path).
+	called = false
+	es.SetEntrySigner(signer)
+	es.sqlite.InvokeEntrySignerForTest([]byte("hash"))
+	if !called {
+		t.Error("SetEntrySigner on an already-created SQLite should apply the closure through")
+	}
+}
+
 func TestResetWithDEK_NoOpWhenAlreadyCorrectlyKeyed(t *testing.T) {
 	es, err := NewEncryptedStorage("user-resetnoop")
 	if err != nil {

@@ -70,6 +70,28 @@ func (s *SQLiteStorage) DEKEquals(dek []byte) bool {
 	return hmac.Equal(s.dek, dek)
 }
 
+// HasEntrySigner reports whether an audit-chain signer is registered.
+// Used by tests + diagnostics to confirm the signer survived lazy
+// storage creation (the 2026-05-14 "chain unsigned" bug).
+func (s *SQLiteStorage) HasEntrySigner() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.entrySigner != nil
+}
+
+// InvokeEntrySignerForTest calls the registered signer. Test-only
+// helper so the storage_adapter test can confirm the closure that
+// was applied is the one it registered.
+func (s *SQLiteStorage) InvokeEntrySignerForTest(hashBytes []byte) []byte {
+	s.mu.RLock()
+	fn := s.entrySigner
+	s.mu.RUnlock()
+	if fn == nil {
+		return nil
+	}
+	return fn(hashBytes)
+}
+
 // NewSQLiteStorage creates a new encrypted SQLite storage
 // The database is stored in memory and synced to S3 periodically
 func NewSQLiteStorage(ownerSpace string, dek []byte) (*SQLiteStorage, error) {

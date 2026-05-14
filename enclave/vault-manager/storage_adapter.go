@@ -13,6 +13,18 @@ import (
 type EncryptedStorage struct {
 	sqlite     *storage.SQLiteStorage
 	ownerSpace string
+
+	// entrySigner is the audit-chain signing closure. It is OWNED here
+	// (not just on the SQLiteStorage) because the SQLiteStorage is
+	// created lazily — InitializeWithDEK / ResetWithDEK build it at
+	// pin-setup / cold-unlock time, long AFTER MessageHandler wires up
+	// the signer. Holding it on EncryptedStorage lets every freshly
+	// created SQLiteStorage inherit it. Without this, a fresh-spawned
+	// subprocess registered the signer against a nil SQLite (skipped),
+	// the real SQLite came up signer-less, and every audit row was
+	// written unsigned → client shows a spurious "chain unsigned" pill
+	// (2026-05-14).
+	entrySigner func(entryHashBytes []byte) []byte
 }
 
 // NewEncryptedStorage creates a new encrypted storage for the vault
@@ -22,6 +34,19 @@ func NewEncryptedStorage(ownerSpace string) (*EncryptedStorage, error) {
 	return &EncryptedStorage{
 		ownerSpace: ownerSpace,
 	}, nil
+}
+
+// SetEntrySigner registers the audit-chain signing closure. Stored on
+// EncryptedStorage AND applied to the current SQLiteStorage if one
+// exists; InitializeWithDEK / ResetWithDEK re-apply it to every
+// SQLiteStorage they create, so the signer survives lazy storage
+// creation and cold-unlock storage resets. Safe to call before the
+// SQLite exists — it'll be applied when it's created.
+func (s *EncryptedStorage) SetEntrySigner(fn func(entryHashBytes []byte) []byte) {
+	s.entrySigner = fn
+	if s.sqlite != nil {
+		s.sqlite.SetEntrySigner(fn)
+	}
 }
 
 // InitializeWithDEK initializes storage with the data encryption key.
@@ -52,6 +77,12 @@ func (s *EncryptedStorage) InitializeWithDEK(dek []byte) error {
 		return err
 	}
 	s.sqlite = sqlite
+	// Re-apply the audit-chain signer to the freshly-created SQLite —
+	// it was registered on EncryptedStorage before this storage
+	// existed (see SetEntrySigner).
+	if s.entrySigner != nil {
+		s.sqlite.SetEntrySigner(s.entrySigner)
+	}
 	log.Info().Str("owner_space", s.ownerSpace).Msg("Storage initialized with DEK")
 	return nil
 }
@@ -84,6 +115,10 @@ func (s *EncryptedStorage) ResetWithDEK(dek []byte) error {
 		return err
 	}
 	s.sqlite = sqlite
+	// Re-apply the audit-chain signer to the freshly-created SQLite.
+	if s.entrySigner != nil {
+		s.sqlite.SetEntrySigner(s.entrySigner)
+	}
 	log.Info().Str("owner_space", s.ownerSpace).Msg("Storage (re)initialized fresh with DEK for cold unlock")
 	return nil
 }
