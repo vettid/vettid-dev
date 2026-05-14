@@ -207,6 +207,7 @@ func (h *ProteanCredentialHandler) HandleCredentialCreate(ctx context.Context, m
 	// are unsigned — the client then shows an alarming "chain unsigned"
 	// pill for what are really just the first legitimate rows. See
 	// audit_key.go; mirrors restoreCredentialCarveOuts in pin_handler.go.
+	var auditPubForPersist, auditSigForPersist []byte
 	if auditPriv, auditPub, derr := deriveAuditKey(credential.Identity.PrivateKey); derr == nil {
 		h.state.auditPrivateKey = append([]byte(nil), auditPriv...)
 		h.state.auditPublicKey = append([]byte(nil), auditPub...)
@@ -215,11 +216,18 @@ func (h *ProteanCredentialHandler) HandleCredentialCreate(ctx context.Context, m
 			auditPub,
 		)
 		h.state.auditBindingEmitted = false
+		auditPubForPersist = append([]byte(nil), h.state.auditPublicKey...)
+		auditSigForPersist = append([]byte(nil), h.state.auditBindingSignature...)
 	} else {
 		log.Warn().Err(derr).Str("owner_space", h.ownerSpace).
 			Msg("audit key derivation failed at credential.create; audit chain unsigned until next PIN unlock")
 	}
 	h.state.mu.Unlock()
+
+	// Persist the (public) audit anchor so audit.query can serve a
+	// verifiable anchor even after vault state cycles. Outside the
+	// lock — it does storage I/O.
+	persistAuditAnchor(h.storage, h.ownerSpace, auditPubForPersist, auditSigForPersist)
 
 	// Persist the identity public key to vault storage too. Used as a
 	// fallback by BuildPublishedProfile when vaultState.identityPublicKey

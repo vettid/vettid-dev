@@ -385,6 +385,7 @@ func (h *PINHandler) restoreCredentialCarveOuts() {
 	// still hold the plaintext. See audit_key.go — this lives in
 	// vault memory for the session so audit writes can sign without
 	// the per-event password prompt that gates identity-key use.
+	var auditPubForPersist, auditSigForPersist []byte
 	if auditPriv, auditPub, derr := deriveAuditKey(cred.Identity.PrivateKey); derr == nil {
 		h.state.auditPrivateKey = append([]byte(nil), auditPriv...)
 		h.state.auditPublicKey = append([]byte(nil), auditPub...)
@@ -393,10 +394,16 @@ func (h *PINHandler) restoreCredentialCarveOuts() {
 			auditPub,
 		)
 		h.state.auditBindingEmitted = false
+		auditPubForPersist = append([]byte(nil), h.state.auditPublicKey...)
+		auditSigForPersist = append([]byte(nil), h.state.auditBindingSignature...)
 	} else {
 		log.Warn().Err(derr).Str("owner_space", h.ownerSpace).Msg("audit key derivation failed; audit chain will be unsigned for this session")
 	}
 	h.state.mu.Unlock()
+
+	// Persist the (public) audit anchor so audit.query can serve a
+	// verifiable anchor even when the in-memory carve-out isn't loaded.
+	persistAuditAnchor(h.storage, h.ownerSpace, auditPubForPersist, auditSigForPersist)
 
 	// Persist identity_public_key as a storage fallback for
 	// BuildPublishedProfile. Must be base64-encoded — the fallback

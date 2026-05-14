@@ -533,12 +533,23 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 		sig := append([]byte(nil), mh.vaultState.auditBindingSignature...)
 		idPub := append([]byte(nil), mh.vaultState.identityPublicKey...)
 		mh.vaultState.mu.RUnlock()
-		if len(pub) == 0 || len(sig) == 0 {
+		idPubB64 := base64.StdEncoding.EncodeToString(idPub)
+		if len(pub) != 0 && len(sig) != 0 {
+			return base64.StdEncoding.EncodeToString(pub),
+				base64.StdEncoding.EncodeToString(sig),
+				idPubB64
+		}
+		// In-memory audit key isn't loaded (vault state cycled, or a
+		// query landed before carve-outs were re-derived). Fall back
+		// to the persisted anchor — audit_pub + binding_sig are public
+		// data, written by persistAuditAnchor at every derivation. This
+		// is what keeps audit.query from returning an empty anchor and
+		// the client showing a spurious "chain unsigned" pill.
+		pubB64, sigB64 := loadAuditAnchorFromStorage(mh.storage)
+		if pubB64 == "" || sigB64 == "" {
 			return "", "", ""
 		}
-		return base64.StdEncoding.EncodeToString(pub),
-			base64.StdEncoding.EncodeToString(sig),
-			base64.StdEncoding.EncodeToString(idPub)
+		return pubB64, sigB64, idPubB64
 	}
 	eventHandler.SetAuditAnchorFn(anchorFn)
 	// Same anchor for the per-connection audit response so Connection

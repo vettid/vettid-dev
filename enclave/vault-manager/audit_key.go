@@ -48,7 +48,50 @@ const (
 	// audit_pub once per derivation so any third party can verify
 	// the audit key is bound to the user.
 	auditBindingDomain = "vettid-audit-binding-v1"
+
+	// Storage keys for the persisted audit anchor. audit_pub and
+	// binding_sig are PUBLIC data — persisting them (base64) lets
+	// audit.query serve a verifiable anchor even when the in-memory
+	// audit key isn't loaded (vault state cycled / cold-ish vault).
+	// Without this, a query landing on a vault whose carve-outs
+	// haven't been re-derived returns an empty anchor and the client
+	// shows a spurious "chain unsigned" pill.
+	storageKeyAuditPub        = "audit_pub"
+	storageKeyAuditBindingSig = "audit_binding_sig"
 )
+
+// persistAuditAnchor writes the (public) audit_pub + binding_sig to
+// vault storage as base64. Best-effort — failures are logged, not
+// fatal; the in-memory anchor still works for the current session.
+// Called from every audit-key derivation site so anchorFn always has
+// a storage fallback.
+func persistAuditAnchor(storage *EncryptedStorage, ownerSpace string, auditPub, bindingSig []byte) {
+	if storage == nil || len(auditPub) == 0 || len(bindingSig) == 0 {
+		return
+	}
+	if err := storage.Put(storageKeyAuditPub, []byte(base64.StdEncoding.EncodeToString(auditPub))); err != nil {
+		log.Debug().Err(err).Str("owner_space", ownerSpace).Msg("persistAuditAnchor: audit_pub write failed (non-fatal)")
+	}
+	if err := storage.Put(storageKeyAuditBindingSig, []byte(base64.StdEncoding.EncodeToString(bindingSig))); err != nil {
+		log.Debug().Err(err).Str("owner_space", ownerSpace).Msg("persistAuditAnchor: audit_binding_sig write failed (non-fatal)")
+	}
+}
+
+// loadAuditAnchorFromStorage reads the base64 audit_pub + binding_sig
+// fallback persisted by persistAuditAnchor. Returns ("","") when
+// either is absent. The values are already base64 strings ready to go
+// straight into the audit.query response.
+func loadAuditAnchorFromStorage(storage *EncryptedStorage) (auditPubB64, bindingSigB64 string) {
+	if storage == nil {
+		return "", ""
+	}
+	pub, perr := storage.Get(storageKeyAuditPub)
+	sig, serr := storage.Get(storageKeyAuditBindingSig)
+	if perr != nil || serr != nil || len(pub) == 0 || len(sig) == 0 {
+		return "", ""
+	}
+	return string(pub), string(sig)
+}
 
 // deriveAuditKey runs HKDF-SHA256 over the identity private key to
 // produce a 32-byte Ed25519 seed, then expands the seed into a full

@@ -1662,7 +1662,19 @@ func (s *SQLiteStorage) QueryAuditEvents(eventTypes []string, startTime, endTime
 		return nil, 0, fmt.Errorf("failed to count audit events: %w", err)
 	}
 
-	// Get events
+	// Get events.
+	//
+	// ORDER BY sync_sequence (NOT created_at): sync_sequence is the
+	// strictly-monotonic per-event counter, and the tamper-evident
+	// hash chain is built in exactly that order — StoreEvent reads the
+	// previous entry_hash via `ORDER BY sync_sequence DESC LIMIT 1`.
+	// created_at is wall-clock SECONDS, so a burst of events in the
+	// same second (routine on a fresh enrollment) tie under
+	// `created_at DESC` and SQLite returns them in arbitrary order —
+	// which the client's AuditChainVerifier then reads as a
+	// previous_hash discontinuity and flags "chain integrity broken".
+	// Ordering by sync_sequence makes the returned order match the
+	// chain order exactly.
 	query := fmt.Sprintf(`
 		SELECT event_id, event_type, source_type, source_id, payload,
 		       feed_status, action_type, priority,
@@ -1670,7 +1682,7 @@ func (s *SQLiteStorage) QueryAuditEvents(eventTypes []string, startTime, endTime
 		       sync_sequence, retention_class, previous_hash, entry_hash, entry_sig
 		FROM events
 		%s
-		ORDER BY created_at DESC
+		ORDER BY sync_sequence DESC
 		LIMIT ? OFFSET ?
 	`, whereClause)
 	args = append(args, limit, offset)
