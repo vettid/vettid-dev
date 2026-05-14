@@ -61,10 +61,23 @@ const (
 	outboundGrantsIndexSuffix = "/_outbound_grants"
 	inboundGrantsIndexSuffix  = "/_inbound_grants"
 
+	// Requester-side record of requests we've sent — lets the
+	// requester answer "what have I asked for, and was it answered?".
+	// The owner side never sees these; they're updated in place when
+	// the peer's grant.created / grant.denied echo arrives.
+	outgoingRequestsIndexKey  = "outgoing_requests/_index"
+	outgoingRequestsKeyPrefix = "outgoing_requests/"
+	myRequestsIndexSuffix     = "/_my_requests"
+
 	// Grant lifecycle states.
 	GrantStatusActive  = "active"
 	GrantStatusRevoked = "revoked"
 	GrantStatusExpired = "expired"
+
+	// Outgoing-request lifecycle (requester side).
+	OutgoingRequestStatusPending  = "pending"
+	OutgoingRequestStatusApproved = "approved"
+	OutgoingRequestStatusDenied   = "denied"
 
 	// Grant modes. one-shot expires on first fetch (MaxUses=1) and is
 	// the default for unspecified requests. renewable / agent-renewable
@@ -136,6 +149,27 @@ type PendingRequest struct {
 	DeliverTo          string `json:"deliver_to"`
 	Reason             string `json:"reason,omitempty"`
 	ReceivedAt         int64  `json:"received_at"`
+}
+
+// OutgoingRequestRecord is the requester-side local record of a
+// request we've SENT to a peer. Created on grant.request, updated to
+// approved (with the grant_id) or denied when the peer's echo lands.
+// Powers the "Requested" tab + the peer-catalog "already requested"
+// badge — surfaces that are otherwise blind because the request only
+// lives in the peer's vault until they answer.
+type OutgoingRequestRecord struct {
+	RequestID    string `json:"request_id"`
+	ConnectionID string `json:"connection_id"`
+	ItemKind     string `json:"item_kind"`
+	ItemRef      string `json:"item_ref"`
+	ItemLabel    string `json:"item_label"`
+	Mode         string `json:"mode"`
+	Reason       string `json:"reason,omitempty"`
+	Status       string `json:"status"` // pending | approved | denied
+	GrantID      string `json:"grant_id,omitempty"`      // set on approval
+	DenialReason string `json:"denial_reason,omitempty"` // set on denial
+	CreatedAt    int64  `json:"created_at"`
+	RespondedAt  int64  `json:"responded_at,omitempty"`
 }
 
 // DataAccessRequest is the wire payload the requester ships to the
@@ -279,6 +313,26 @@ func (h *GrantHandler) saveReceivedGrant(r *ReceivedGrantRecord) error {
 		return fmt.Errorf("marshal received grant: %w", err)
 	}
 	return h.storage.Put(receivedGrantsKeyPrefix+r.GrantID, data)
+}
+
+func (h *GrantHandler) loadOutgoingRequest(requestID string) (*OutgoingRequestRecord, error) {
+	data, err := h.storage.Get(outgoingRequestsKeyPrefix + requestID)
+	if err != nil {
+		return nil, err
+	}
+	var r OutgoingRequestRecord
+	if err := json.Unmarshal(data, &r); err != nil {
+		return nil, fmt.Errorf("parse outgoing request %s: %w", requestID, err)
+	}
+	return &r, nil
+}
+
+func (h *GrantHandler) saveOutgoingRequest(r *OutgoingRequestRecord) error {
+	data, err := json.Marshal(r)
+	if err != nil {
+		return fmt.Errorf("marshal outgoing request: %w", err)
+	}
+	return h.storage.Put(outgoingRequestsKeyPrefix+r.RequestID, data)
 }
 
 func (h *GrantHandler) loadPending(requestID string) (*PendingRequest, error) {
@@ -1041,6 +1095,31 @@ func (h *GrantHandler) HandleRequest(msg *IncomingMessage) (*OutgoingMessage, er
 		})
 	}
 
+	// Persist a local record of the request we just sent. Until the
+	// peer answers, the request only lives in their vault — this is
+	// what lets the requester see it in the "Requested" tab and lets
+	// the peer-catalog grey out already-requested items. Updated to
+	// approved/denied when the grant.created / grant.denied echo lands.
+	h.indexMu.Lock()
+	outRec := &OutgoingRequestRecord{
+		RequestID:    wire.RequestID,
+		ConnectionID: req.ConnectionID,
+		ItemKind:     req.ItemKind,
+		ItemRef:      req.ItemRef,
+		ItemLabel:    req.ItemLabel,
+		Mode:         req.Mode,
+		Reason:       req.Reason,
+		Status:       OutgoingRequestStatusPending,
+		CreatedAt:    time.Now().Unix(),
+	}
+	if err := h.saveOutgoingRequest(outRec); err != nil {
+		log.Warn().Err(err).Msg("failed to persist outgoing request record")
+	} else {
+		_ = h.appendToIndex(outgoingRequestsIndexKey, outRec.RequestID)
+		_ = h.appendToIndex("connections/"+req.ConnectionID+myRequestsIndexSuffix, outRec.RequestID)
+	}
+	h.indexMu.Unlock()
+
 	respBytes, _ := json.Marshal(map[string]interface{}{
 		"success":    true,
 		"request_id": wire.RequestID,
@@ -1090,6 +1169,18 @@ func (h *GrantHandler) HandleIncomingGrantCreated(ctx context.Context, dec *decr
 		log.Warn().Err(err).Msg("failed to update inbound grants index")
 	}
 
+	// Mark our local outgoing-request record as approved. Best effort —
+	// a request from before this record existed (or one whose echo
+	// dropped the request_id) simply won't have a row to update.
+	if created.RequestID != "" {
+		if outRec, err := h.loadOutgoingRequest(created.RequestID); err == nil && outRec != nil {
+			outRec.Status = OutgoingRequestStatusApproved
+			outRec.GrantID = created.GrantID
+			outRec.RespondedAt = time.Now().Unix()
+			_ = h.saveOutgoingRequest(outRec)
+		}
+	}
+
 	if h.auditLog != nil {
 		h.auditLog.Append(AuditEntry{
 			ConnectionID: r.ConnectionID,
@@ -1135,6 +1226,20 @@ func (h *GrantHandler) HandleIncomingGrantDenied(ctx context.Context, dec *decry
 	if err := json.Unmarshal(dec.InnerPayload, &denied); err != nil {
 		return fmt.Errorf("invalid grant-denied: %w", err)
 	}
+
+	// Mark our local outgoing-request record as denied so the
+	// "Requested" tab shows the outcome instead of a stuck "pending".
+	if denied.RequestID != "" {
+		h.indexMu.Lock()
+		if outRec, err := h.loadOutgoingRequest(denied.RequestID); err == nil && outRec != nil {
+			outRec.Status = OutgoingRequestStatusDenied
+			outRec.DenialReason = denied.Reason
+			outRec.RespondedAt = time.Now().Unix()
+			_ = h.saveOutgoingRequest(outRec)
+		}
+		h.indexMu.Unlock()
+	}
+
 	if h.auditLog != nil {
 		h.auditLog.Append(AuditEntry{
 			ConnectionID: dec.LocalConnID,
@@ -1420,6 +1525,37 @@ func (h *GrantHandler) HandleListPending(msg *IncomingMessage) (*OutgoingMessage
 	respBytes, _ := json.Marshal(map[string]interface{}{
 		"success":  true,
 		"pending":  out,
+	})
+	return successMsg(msg.GetID(), respBytes), nil
+}
+
+// HandleListMyRequests lists requests this vault has SENT to peers,
+// with their current status (pending / approved / denied). Scoped to
+// a connection if connection_id is provided — that's how the Them-tab
+// "Requested" sub-tab and the peer-catalog "already requested" badge
+// stay connection-specific.
+func (h *GrantHandler) HandleListMyRequests(msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req struct {
+		ConnectionID string `json:"connection_id,omitempty"`
+	}
+	_ = unmarshalRequest(msg.Payload, &req, "GrantListMyRequests")
+	var ids []string
+	if req.ConnectionID != "" {
+		ids = h.loadIndex("connections/" + req.ConnectionID + myRequestsIndexSuffix)
+	} else {
+		ids = h.loadIndex(outgoingRequestsIndexKey)
+	}
+	out := make([]*OutgoingRequestRecord, 0, len(ids))
+	for _, id := range ids {
+		r, err := h.loadOutgoingRequest(id)
+		if err != nil {
+			continue
+		}
+		out = append(out, r)
+	}
+	respBytes, _ := json.Marshal(map[string]interface{}{
+		"success":     true,
+		"my_requests": out,
 	})
 	return successMsg(msg.GetID(), respBytes), nil
 }

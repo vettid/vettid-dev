@@ -4107,6 +4107,8 @@ func (mh *MessageHandler) handleGrantOperation(ctx context.Context, msg *Incomin
 		return mh.grantHandler.HandleListInbound(msg)
 	case "list-pending":
 		return mh.grantHandler.HandleListPending(msg)
+	case "list-my-requests":
+		return mh.grantHandler.HandleListMyRequests(msg)
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown grant operation: %s", opParts[1]))
 	}
