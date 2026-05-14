@@ -495,10 +495,13 @@ type AuditQueryResponse struct {
 	// Audit-chain anchor for client-side verification. AuditPub is the
 	// derived audit public key for this session; BindingSig is
 	// ed25519_sign(identity_priv, "vettid-audit-binding-v1" || audit_pub).
-	// Both are hex-encoded; both empty when the user hasn't unlocked
-	// in the current session (chain rows will likewise be unsigned).
-	AuditPub   string `json:"audit_pub,omitempty"`
-	BindingSig string `json:"binding_sig,omitempty"`
+	// IdentityPub is the user's Ed25519 identity public key — the
+	// trust root the user can confirm against their own profile (or
+	// export for third-party verification). All three base64. All
+	// empty when the user hasn't unlocked their vault this session.
+	AuditPub    string `json:"audit_pub,omitempty"`
+	BindingSig  string `json:"binding_sig,omitempty"`
+	IdentityPub string `json:"identity_pub,omitempty"`
 }
 
 // AuditExportRequest is the payload for audit.export

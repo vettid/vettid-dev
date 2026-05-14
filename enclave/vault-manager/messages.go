@@ -515,19 +515,21 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 	// binding_sig alongside the events. Client uses these to verify
 	// (a) the chain is bound to this user's identity and (b) each
 	// row's entry_sig was produced by the bound audit_priv.
-	anchorFn := func() (string, string) {
+	anchorFn := func() (string, string, string) {
 		if mh.vaultState == nil {
-			return "", ""
+			return "", "", ""
 		}
 		mh.vaultState.mu.RLock()
 		pub := append([]byte(nil), mh.vaultState.auditPublicKey...)
 		sig := append([]byte(nil), mh.vaultState.auditBindingSignature...)
+		idPub := append([]byte(nil), mh.vaultState.identityPublicKey...)
 		mh.vaultState.mu.RUnlock()
 		if len(pub) == 0 || len(sig) == 0 {
-			return "", ""
+			return "", "", ""
 		}
 		return base64.StdEncoding.EncodeToString(pub),
-			base64.StdEncoding.EncodeToString(sig)
+			base64.StdEncoding.EncodeToString(sig),
+			base64.StdEncoding.EncodeToString(idPub)
 	}
 	eventHandler.SetAuditAnchorFn(anchorFn)
 	// Same anchor for the per-connection audit response so Connection

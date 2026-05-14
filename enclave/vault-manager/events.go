@@ -32,10 +32,11 @@ type EventHandler struct {
 	preLogEventHook func(ctx context.Context)
 
 	// auditAnchorFn returns the current session's audit_pub +
-	// binding_sig so QueryAudit / ExportAudit responses can ship them
-	// alongside the events for client-side verification. nil = anchor
-	// not yet available (vault locked) — response omits the fields.
-	auditAnchorFn func() (auditPub string, bindingSig string)
+	// binding_sig + identity_pub so QueryAudit / ExportAudit responses
+	// can ship them alongside the events for client-side verification.
+	// nil = anchor not yet available (vault locked) — response omits
+	// the fields.
+	auditAnchorFn func() (auditPub string, bindingSig string, identityPub string)
 
 	// Sync sequence is managed atomically
 	mu           sync.Mutex
@@ -50,10 +51,10 @@ func (h *EventHandler) SetPreLogEventHook(fn func(ctx context.Context)) {
 	h.preLogEventHook = fn
 }
 
-// SetAuditAnchorFn registers a getter for audit_pub + binding_sig so
-// QueryAudit / ExportAudit can ship the anchor alongside per-row
-// chain fields for client-side verification.
-func (h *EventHandler) SetAuditAnchorFn(fn func() (auditPub, bindingSig string)) {
+// SetAuditAnchorFn registers a getter for audit_pub + binding_sig +
+// identity_pub so QueryAudit / ExportAudit can ship the anchor
+// alongside per-row chain fields for client-side verification.
+func (h *EventHandler) SetAuditAnchorFn(fn func() (auditPub, bindingSig, identityPub string)) {
 	h.auditAnchorFn = fn
 }
 
@@ -542,7 +543,7 @@ func (h *EventHandler) QueryAudit(ctx context.Context, req *AuditQueryRequest) (
 		HasMore: len(events) == limit && req.Offset+limit < total,
 	}
 	if h.auditAnchorFn != nil {
-		resp.AuditPub, resp.BindingSig = h.auditAnchorFn()
+		resp.AuditPub, resp.BindingSig, resp.IdentityPub = h.auditAnchorFn()
 	}
 	return resp, nil
 }
