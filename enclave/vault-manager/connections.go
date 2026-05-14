@@ -857,14 +857,17 @@ type ConnectionInfo struct {
 	LastMessageDirection string `json:"last_message_direction,omitempty"` // "incoming" | "outgoing"
 	UnreadCount          int    `json:"unread_count"`
 
-	// Last activity — merges messages and calls so the card icon can
-	// reflect whatever the user did most recently, not just the last
-	// message. The app picks a glyph from Type + Subtype + Direction +
-	// Outcome. MissedCallCount is the number of unanswered incoming
-	// calls in the record so the Voice action button can show a badge.
-	LastActivityType      string `json:"last_activity_type,omitempty"`      // "message" | "call"
+	// Last activity — merges the per-connection AuditLog (interaction
+	// history) and calls so the card reflects whatever the user did
+	// most recently. Type=="activity" carries LastActivityTitle (the
+	// AuditLog entry's human-readable title — same text the history
+	// screen's top row shows); Type=="call" carries Subtype+Outcome.
+	// MissedCallCount is the number of unanswered incoming calls so
+	// the Voice action button can show a badge.
+	LastActivityType      string `json:"last_activity_type,omitempty"`      // "activity" | "call"
 	LastActivityAt        string `json:"last_activity_at,omitempty"`        // RFC3339
 	LastActivityDirection string `json:"last_activity_direction,omitempty"` // "incoming" | "outgoing"
+	LastActivityTitle     string `json:"last_activity_title,omitempty"`     // for activity: AuditLog entry title
 	LastActivitySubtype   string `json:"last_activity_subtype,omitempty"`   // for calls: "voice" | "video"
 	LastActivityOutcome   string `json:"last_activity_outcome,omitempty"`   // for calls: "completed" | "missed" | "rejected"
 	MissedCallCount       int    `json:"missed_call_count,omitempty"`
@@ -3051,6 +3054,7 @@ func (h *ConnectionsHandler) HandleList(msg *IncomingMessage) (*OutgoingMessage,
 		info.LastActivityType = activity.Type
 		info.LastActivityAt = activity.At
 		info.LastActivityDirection = activity.Direction
+		info.LastActivityTitle = activity.Title
 		info.LastActivitySubtype = activity.Subtype
 		info.LastActivityOutcome = activity.Outcome
 		info.MissedCallCount = activity.MissedCallCount
@@ -4557,20 +4561,27 @@ func RepublishOutstandingInvites(ownerSpace string, storage *EncryptedStorage, p
 // lastActivityInfo aggregates the bits HandleList needs to paint a
 // connection card's last-activity icon + badges.
 type lastActivityInfo struct {
-	// Message fields (still surfaced separately for the preview text).
+	// Message fields (still surfaced separately for the unread badge).
 	MessagePreview   string
 	MessageAt        string // RFC3339
 	MessageDirection string // "incoming" | "outgoing"
 	UnreadCount      int    // unread incoming messages
 
-	// Activity fields — whichever of (latest message, latest call) is
-	// most recent wins Type + At + Direction; the call-only fields
-	// (Subtype, Outcome) populate when Type == "call".
-	Type      string // "message" | "call"
+	// Activity fields — whichever of (latest per-connection AuditLog
+	// entry, latest call) is most recent wins Type + At + Direction.
+	// The AuditLog IS the interaction-history feed, so taking its
+	// latest entry keeps the card's last-activity line in lockstep
+	// with the top of Connection History (the 2026-05-14 mismatch:
+	// getLastActivity used to only consider messages + calls + verify
+	// events, missing grants / data-shares / location / critical-
+	// secret / action entries that the history screen shows). Calls
+	// are NOT written to the AuditLog, so they merge separately.
+	Type      string // "activity" | "call"
 	At        string // RFC3339
 	Direction string // "incoming" | "outgoing"
-	Subtype   string // "voice" | "video"
-	Outcome   string // "completed" | "missed" | "rejected"
+	Title     string // human-readable AuditLog entry title (Type=="activity")
+	Subtype   string // "voice" | "video"  (Type=="call")
+	Outcome   string // "completed" | "missed" | "rejected" | "cancelled" (Type=="call")
 
 	MissedCallCount int
 }
@@ -4649,47 +4660,38 @@ func (h *ConnectionsHandler) getLastActivity(connectionID string) lastActivityIn
 		}
 	}
 
-	// --- Identity verification ---
-	// Verify-identity challenges land in the per-connection AuditLog,
-	// not the message or call indexes, so they were invisible to the
-	// connection card's last-activity line — they only showed in
-	// Connection History. Pull the most recent connection.authenticate.*
-	// entry so a verify request/response can win the card preview like
-	// a message or call would.
-	var latestVerifyTime time.Time
-	var latestVerifyDirection string
+	// --- Interaction history (per-connection AuditLog) ---
+	// The AuditLog IS the Connection History feed — messages, verify
+	// challenges, data-shares, grants, location, critical-secret use,
+	// action invocations all land here. Take its latest entry of ANY
+	// type so the card's last-activity line matches the top of the
+	// history screen. (Calls are the one interaction NOT written to
+	// the AuditLog; they merge in via latestCallTime below.)
+	var latestAuditTime time.Time
+	var latestAuditDirection, latestAuditTitle string
 	if h.auditLog != nil {
 		entries, _, err := h.auditLog.List(storage.AuditListOptions{
-			ConnectionID:      connectionID,
-			Limit:             1,
-			EventTypePrefixes: []string{"connection.authenticate."},
+			ConnectionID: connectionID,
+			Limit:        1,
 		})
 		if err == nil && len(entries) > 0 {
-			latestVerifyTime = time.Unix(entries[0].CreatedAt, 0)
+			latestAuditTime = time.Unix(entries[0].CreatedAt, 0)
+			latestAuditTitle = entries[0].Title
 			// AuditLog direction is inbound/outbound; the card speaks
 			// incoming/outgoing like messages + calls.
 			switch entries[0].Direction {
 			case AuditDirectionInbound:
-				latestVerifyDirection = "incoming"
+				latestAuditDirection = "incoming"
 			case AuditDirectionOutbound:
-				latestVerifyDirection = "outgoing"
+				latestAuditDirection = "outgoing"
 			}
 		}
 	}
 
 	// --- Choose winner for Activity* fields ---
-	// Pick whichever of message / call / verify is most recent.
-	messageWins := !latestMessageTime.IsZero() &&
-		latestMessageTime.After(latestCallTime) &&
-		latestMessageTime.After(latestVerifyTime)
-	callWins := latestCall != nil &&
-		!latestCallTime.Before(latestMessageTime) &&
-		latestCallTime.After(latestVerifyTime)
-	if messageWins {
-		out.Type = "message"
-		out.At = out.MessageAt
-		out.Direction = out.MessageDirection
-	} else if callWins {
+	// Latest AuditLog entry vs latest call — whichever is more recent.
+	callWins := latestCall != nil && latestCallTime.After(latestAuditTime)
+	if callWins {
 		out.Type = "call"
 		out.At = latestCallTime.Format(time.RFC3339)
 		out.Direction = latestCall.Direction
@@ -4708,13 +4710,14 @@ func (h *ConnectionsHandler) getLastActivity(connectionID string) lastActivityIn
 		case "rejected", "blocked":
 			out.Outcome = "rejected"
 		}
-	} else if !latestVerifyTime.IsZero() {
-		// Verify wins: most recent of the three. The card renders the
-		// preview text from Type + Direction ("Asked to verify your
-		// identity" / "You asked to verify their identity").
-		out.Type = "verify"
-		out.At = latestVerifyTime.Format(time.RFC3339)
-		out.Direction = latestVerifyDirection
+	} else if !latestAuditTime.IsZero() {
+		// AuditLog entry wins: carry its human-readable Title straight
+		// through so the card shows exactly what the history screen's
+		// top row says.
+		out.Type = "activity"
+		out.At = latestAuditTime.Format(time.RFC3339)
+		out.Direction = latestAuditDirection
+		out.Title = latestAuditTitle
 	}
 
 	return out
