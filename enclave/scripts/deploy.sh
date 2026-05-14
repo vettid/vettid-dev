@@ -779,21 +779,23 @@ do_deploy() {
     log_step "Phase 4.6: Force-reclaiming routing claims from OLD ($old_pcr0...) → NEW"
     # Retry inside the SSM script so we ride out the brief window where
     # /ready returns 200 (NATS + vsock connected — line 145 of parent.go)
-    # but RoutingManager hasn't finished Start() yet, so SetRouting
-    # hasn't wired the routing pointer into the health server. During
-    # that window /internal/reclaim-from-pcr0 either 503s with
-    # "routing not yet initialized" OR a transient connection error
-    # silences (-s drops the message). Both 2026-05-12 deploys hit it.
+    # but RoutingManager hasn't finished Start() yet. The deeper race is
+    # already closed at the source (#170: SetRouting now runs before
+    # updateHealthStatus in parent.go), so a single curl would usually
+    # suffice — the 3× retry is belt-and-suspenders for instance warm-up.
     #
-    # 3 attempts × 3s ≈ 9s extra wait. Manual reclaim succeeded ~10s
-    # after each deploy run, so this comfortably covers the gap. -sS
-    # keeps curl's stderr visible on the last attempt so we can see
-    # the actual failure reason if all retries fail.
+    # IMPORTANT: this SSM script must NOT use $(...) command substitution.
+    # The previous form (out=\\\$(curl ...)) collapsed to a literal
+    # `out=\$(curl ...)` in the script SSM wrote to disk; bash parsed the
+    # `\$(` as a syntax error and aborted at line 1 — every retry silently
+    # no-op'd (2026-05-13 deploys). We redirect curl's body+stderr to a
+    # temp file and grep the file instead — no command substitution, so
+    # nothing to mis-escape through the bash → JSON → SSM layers.
     local reclaim_cmd reclaim_out reclaim_status reclaim_count
     reclaim_cmd=$(aws ssm send-command \
         --instance-ids "$new_instance_id" \
         --document-name "AWS-RunShellScript" \
-        --parameters "commands=[\"for i in 1 2 3; do out=\\\$(curl -sS --max-time 10 'http://127.0.0.1:8080/internal/reclaim-from-pcr0?pcr0=$old_pcr0' 2>&1); echo \\\"attempt \\\$i: \\\$out\\\"; if echo \\\"\\\$out\\\" | grep -q claimed; then exit 0; fi; sleep 3; done; exit 1\"]" \
+        --parameters "commands=[\"for i in 1 2 3; do curl -sS --max-time 10 'http://127.0.0.1:8080/internal/reclaim-from-pcr0?pcr0=$old_pcr0' > /tmp/reclaim_out 2>&1; if grep -q claimed /tmp/reclaim_out; then cat /tmp/reclaim_out; exit 0; fi; sleep 3; done; cat /tmp/reclaim_out; exit 1\"]" \
         --query 'Command.CommandId' --output text --region "$REGION" 2>/dev/null || echo "")
     if [[ -n "$reclaim_cmd" ]]; then
         # Wait for the SSM run to reach a terminal state before reading
