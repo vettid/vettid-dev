@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -200,6 +201,24 @@ func (h *ProteanCredentialHandler) HandleCredentialCreate(ctx context.Context, m
 	h.state.identityPrivateKey = append([]byte(nil), credential.Identity.PrivateKey...)
 	h.state.identityPublicKey = append([]byte(nil), credential.Identity.PublicKey...)
 	h.state.identityKeyExpiresAt = now.Unix() + 300
+	// Derive the audit-signing subkey here too, not only at PIN unlock.
+	// Without this, the audit events written during the rest of
+	// enrollment (and the first session before any lock/unlock cycle)
+	// are unsigned — the client then shows an alarming "chain unsigned"
+	// pill for what are really just the first legitimate rows. See
+	// audit_key.go; mirrors restoreCredentialCarveOuts in pin_handler.go.
+	if auditPriv, auditPub, derr := deriveAuditKey(credential.Identity.PrivateKey); derr == nil {
+		h.state.auditPrivateKey = append([]byte(nil), auditPriv...)
+		h.state.auditPublicKey = append([]byte(nil), auditPub...)
+		h.state.auditBindingSignature = computeAuditBindingSignature(
+			ed25519.PrivateKey(credential.Identity.PrivateKey),
+			auditPub,
+		)
+		h.state.auditBindingEmitted = false
+	} else {
+		log.Warn().Err(derr).Str("owner_space", h.ownerSpace).
+			Msg("audit key derivation failed at credential.create; audit chain unsigned until next PIN unlock")
+	}
 	h.state.mu.Unlock()
 
 	// Persist the identity public key to vault storage too. Used as a
