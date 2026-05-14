@@ -112,6 +112,20 @@ const (
 	// a successful migration re-seal, vault-manager asks parent to
 	// transfer ownership via the `vault-routing` JetStream KV.
 	MessageTypeRoutingHandoff MessageType = "routing_handoff"
+
+	// Evict vault (parent -> supervisor): the parent's RoutingManager
+	// lost the routing claim for this user (handoff, reclaim, or
+	// lease-loss), so the warm vault-manager subprocess must be killed
+	// to stop it serving / force-flushing a stale vault_state.enc.
+	// First parent-initiated (downward) control message; fire-and-
+	// forget, no response. See the split-brain fix (D1, 2026-05-14).
+	MessageTypeEvictVault MessageType = "evict_vault"
+
+	// Revoke ownership (supervisor -> vault-manager subprocess): sent
+	// just before MessageTypeEvictVault's kill so the subprocess stops
+	// persisting vault_state.enc immediately, even if the supervisor's
+	// request loop is mid-flight on this user. See D2 (2026-05-14).
+	MessageTypeRevokeOwnership MessageType = "revoke_ownership"
 )
 
 // SECURITY: Handshake constants

@@ -227,6 +227,9 @@ func (s *Supervisor) processMessage(ctx context.Context, msg *Message) (*Message
 	case MessageTypeHealthCheck:
 		return s.handleHealthCheck(ctx, msg)
 
+	case MessageTypeEvictVault:
+		return s.handleEvictVault(ctx, msg)
+
 	case MessageTypeStorageResponse:
 		// Storage responses should be handled by the sealer handler's synchronous S3 operations.
 		// If we receive one here, it means there was a race condition or message ordering issue.
@@ -373,6 +376,61 @@ func (s *Supervisor) handleVaultOp(ctx context.Context, msg *Message) (*Message,
 func isPinOperation(subject string) bool {
 	// Match: forVault.pin, forVault.pin-setup, forVault.pin-unlock, forVault.pin-change
 	return strings.Contains(subject, "forVault.pin")
+}
+
+// handleEvictVault kills the warm vault-manager subprocess for a user
+// whose routing claim the parent just lost (handoff / reclaim / lease
+// loss). This is the load-bearing half of the split-brain fix (D1):
+// without eviction, OLD keeps a warm subprocess that serves requests
+// and force-flushes a stale vault_state.enc, racing NEW for the same
+// S3 key.
+//
+// Before the kill we forward a revoke_ownership message into the
+// subprocess pipe (D2). The subprocess's own receive goroutine reads
+// that independently of the supervisor's request loop, so it can set
+// its ownershipRevoked flag even while a request is in flight — the
+// flag suppresses that request's tail-end force-flush. The kill then
+// drops the warm state entirely.
+//
+// Fire-and-forget from the parent's side: returns nil, nil so the
+// supervisor loop writes no response.
+func (s *Supervisor) handleEvictVault(ctx context.Context, msg *Message) (*Message, error) {
+	ownerSpace := msg.OwnerSpace
+	if ownerSpace == "" {
+		log.Warn().Msg("evict_vault: missing owner_space — ignoring")
+		return nil, nil
+	}
+
+	// D2: signal the warm subprocess to stop persisting BEFORE we kill
+	// it, so an in-flight request's tail-end flush is suppressed. The
+	// subprocess pipe has a dedicated writeMu (separate from readMu),
+	// so this write is framing-safe even mid-request. Best-effort —
+	// the kill below is the hard guarantee.
+	if vp := s.vaults.Get(ownerSpace); vp != nil {
+		if conn := vp.PipeConn(); conn != nil {
+			if err := conn.WriteMessage(&Message{
+				Type:       MessageTypeRevokeOwnership,
+				OwnerSpace: ownerSpace,
+			}); err != nil {
+				log.Warn().Err(err).Str("owner_space", ownerSpace).
+					Msg("evict_vault: failed to forward revoke_ownership to subprocess (proceeding to evict)")
+			} else {
+				log.Info().Str("owner_space", ownerSpace).
+					Msg("evict_vault: forwarded revoke_ownership to subprocess")
+			}
+		}
+	}
+
+	// D1: kill the subprocess. Idempotent — Evict/evictVault no-ops if
+	// the vault isn't resident, so a double release (heartbeat CAS-fail
+	// then a watcher event for the same user) is harmless.
+	s.vaults.Evict(ownerSpace)
+	// Migration handoff is user-vault-scoped; org vaults are not part
+	// of the per-user routing model, so they are intentionally not
+	// evicted here.
+	log.Info().Str("owner_space", ownerSpace).
+		Msg("evict_vault: evicted vault subprocess on routing-claim loss")
+	return nil, nil
 }
 
 // handleAttestationRequest generates an attestation document

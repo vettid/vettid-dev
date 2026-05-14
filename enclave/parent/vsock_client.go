@@ -188,6 +188,14 @@ const (
 	// enclave instance. Parent executes the CAS-update on the
 	// `vault-routing` KV bucket and drops its per-user subscription.
 	EnclaveMessageTypeRoutingHandoff EnclaveMessageType = "routing_handoff"
+
+	// Evict vault (parent -> enclave): the parent's RoutingManager lost
+	// the routing claim for this OwnerSpace, so the supervisor must
+	// kill the warm vault-manager subprocess before it can serve or
+	// force-flush a stale vault_state.enc. First parent-initiated
+	// (downward) control message — fire-and-forget, no response is
+	// read. See the split-brain fix (D1, 2026-05-14).
+	EnclaveMessageTypeEvictVault EnclaveMessageType = "evict_vault"
 )
 
 // Attestation holds a Nitro attestation document

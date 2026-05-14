@@ -152,6 +152,12 @@ func (p *ParentProcess) Run(ctx context.Context) error {
 	// enclave/scripts/deploy.sh Phase 4.6.
 	msgChan := make(chan *NATSMessage, 1000)
 	p.routing = NewRoutingManager(p.enclaveID, p.pcr0, p.natsClient, msgChan)
+	// Wire the ownership-loss callback BEFORE Start so the initial
+	// reconcile's releases are covered. When this instance loses a
+	// routing claim, evict the warm vault-manager subprocess so it
+	// can't keep serving / force-flushing a stale vault_state.enc
+	// (split-brain fix, D1 2026-05-14).
+	p.routing.SetOnRelease(p.evictVaultInEnclave)
 	if err := p.routing.Start(ctx); err != nil {
 		return fmt.Errorf("failed to start routing manager: %w", err)
 	}
@@ -597,6 +603,40 @@ func (p *ParentProcess) forwardToEnclave(ctx context.Context, msg *NATSMessage) 
 	}
 
 	return nil
+}
+
+// evictVaultInEnclave tells the supervisor to kill the warm
+// vault-manager subprocess for userGuid. Wired as the RoutingManager's
+// onRelease callback: when this instance loses a routing claim, the
+// OLD subprocess must stop serving / force-flushing a stale
+// vault_state.enc (split-brain fix, D1 2026-05-14).
+//
+// This is the FIRST parent-initiated (downward) control message. It is
+// fire-and-forget: we take only writeMu (NOT requestMu — that would
+// block on the entire in-flight request cycle and deadlock against the
+// heartbeat/watcher goroutine this runs on; NOT readMu — there is no
+// response). The supervisor's top-level read loop picks the message up
+// independently of any request/response pairing. This mirrors the
+// bare-writeMu sub-response pattern already used inside
+// sendWithHandlerSupport for KMS/storage replies.
+func (p *ParentProcess) evictVaultInEnclave(userGuid string) {
+	if userGuid == "" || p.vsockClient == nil {
+		return
+	}
+	msg := &EnclaveMessage{
+		Type:       EnclaveMessageTypeEvictVault,
+		OwnerSpace: userGuid,
+	}
+	p.vsockClient.writeMu.Lock()
+	err := p.vsockClient.writeMessage(msg)
+	p.vsockClient.writeMu.Unlock()
+	if err != nil {
+		log.Warn().Err(err).Str("owner_space", userGuid).
+			Msg("routing: failed to send evict_vault to supervisor — subprocess may keep stale state until next handoff")
+		return
+	}
+	log.Info().Str("owner_space", userGuid).
+		Msg("routing: sent evict_vault to supervisor (ownership released)")
 }
 
 // sendWithHandlerSupport sends a message to the enclave and handles any nested

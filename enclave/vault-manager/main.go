@@ -277,6 +277,17 @@ func (vm *VaultManager) receiveMessages(ctx context.Context, msgChan chan<- *Inc
 				continue
 			}
 
+			// Apply routing-ownership revocation immediately — do NOT
+			// route through msgChan/HandleMessage. The supervisor sends
+			// this when the parent lost our routing claim; the whole
+			// point is that it lands even while the main loop is blocked
+			// mid-request, so the in-flight request's tail-end
+			// force-flush sees the fence. See split-brain fix (D2).
+			if vm.messageHandler.IsRevokeOwnership(msg) {
+				vm.messageHandler.MarkOwnershipRevoked()
+				continue
+			}
+
 			// Send regular messages to processing channel
 			select {
 			case msgChan <- msg:

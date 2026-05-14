@@ -41,6 +41,14 @@ type RoutingManager struct {
 	mu    sync.RWMutex
 	owned map[string]*ownedUser
 
+	// onRelease is invoked exactly once per genuine ownership-loss
+	// transition (handoff, watcher-observed steal, heartbeat CAS-fail,
+	// reconcile stale-drop). The parent wires this to evict the warm
+	// vault-manager subprocess so OLD can't keep serving / flushing a
+	// stale vault_state.enc after NEW takes over. nil = no-op.
+	// See the split-brain fix (D1, 2026-05-14).
+	onRelease func(userGuid string)
+
 	stopCh chan struct{}
 	wg     sync.WaitGroup
 }
@@ -82,6 +90,15 @@ func NewRoutingManager(enclaveID, pcr0 string, natsClient *NATSClient, msgChan c
 		owned:      make(map[string]*ownedUser),
 		stopCh:     make(chan struct{}),
 	}
+}
+
+// SetOnRelease registers the ownership-loss callback. Call once,
+// post-construction, before Start — mirrors the SetRouting wiring
+// style. The callback fires on the heartbeat/watcher goroutines, so
+// the parent's implementation must not block (it launches its own
+// goroutine for the vsock write).
+func (r *RoutingManager) SetOnRelease(fn func(userGuid string)) {
+	r.onRelease = fn
 }
 
 // Start kicks off the background goroutines: heartbeat loop, KV
@@ -783,6 +800,15 @@ func (r *RoutingManager) releaseLocally(userGuid string) {
 	r.mu.Unlock()
 	if ok && entry.subscription != nil {
 		_ = entry.subscription.Unsubscribe()
+	}
+	// Fire the ownership-loss callback ONLY when we genuinely held the
+	// entry — gating on `ok` makes this exactly-once per real
+	// transition, so a double-release (e.g. heartbeat CAS-fail then a
+	// watcher event for the same user) doesn't double-evict. Run it on
+	// a goroutine so a slow/contended vsock write can't stall the
+	// heartbeat or watcher loop that called us.
+	if ok && r.onRelease != nil {
+		go r.onRelease(userGuid)
 	}
 }
 

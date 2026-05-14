@@ -146,6 +146,27 @@ type VaultState struct {
 	// load, on fresh-enrollment first write, and on every successful
 	// persistVaultStateToS3.
 	loadedVaultStateSize int64
+
+	// ownershipRevoked fences off this subprocess once the parent's
+	// RoutingManager has lost this user's routing claim (handoff /
+	// reclaim / lease loss). Set by MarkOwnershipRevoked when a
+	// revoke_ownership message arrives — applied immediately in
+	// receiveMessages, so it lands even while the main loop is blocked
+	// mid-request.
+	//
+	// SECURITY: once true, flushVaultStateToS3 refuses to write and
+	// HandleMessage refuses new ops (the app retries and lands on the
+	// new owner). This is the in-window half of the split-brain fix
+	// (D2, 2026-05-14): the 2026-05-13 audit-chain migration left OLD's
+	// warm subprocess alive and serving, and both OLD and NEW
+	// force-flushed the whole vault_state.enc to one S3 key — last
+	// writer won, corrupting the UTK pool + credential blob.
+	//
+	// Never cleared: a revoked subprocess is killed by the supervisor
+	// immediately after the revoke. If the user is ever handed back,
+	// a FRESH subprocess is spawned with this flag false by default —
+	// so there is intentionally no un-revoke path.
+	ownershipRevoked bool
 }
 
 // CEKPair holds the Credential Encryption Key pair (X25519)

@@ -539,8 +539,20 @@ func (h *PINHandler) HandlePINUnlock(ctx context.Context, msg *IncomingMessage) 
 	if !isWarmVault {
 		encryptedStateBytes, err := h.sealerProxy.LoadVaultState()
 		if err != nil {
-			log.Warn().Err(err).Msg("Failed to load encrypted vault state from S3 - vault may have incomplete state")
-			// Don't fail - we can still continue with just ECIES and sealed material
+			// SECURITY: fail-closed. A cold vault has, by definition,
+			// been enrolled + persisted before, so it MUST have a
+			// vault_state.enc in S3. If the load errors (transport
+			// failure, transient S3 error, or a genuinely-missing
+			// object), continuing would leave this instance with
+			// empty in-memory state yet — once vaultDataLoaded is set
+			// below — fully able to persist, clobbering the real S3
+			// object with a stub. That is the 2026-05 corruption
+			// shape. Refuse the unlock; the app retries and either
+			// gets a clean load or keeps retrying without corrupting
+			// anything. (D2, 2026-05-14.)
+			log.Error().Err(err).Str("owner_space", h.ownerSpace).
+				Msg("SECURITY: cold-unlock REFUSED — failed to load vault_state.enc from S3 (would risk persisting stale/empty state). App should retry.")
+			return h.errorResponse(msg.GetID(), "vault state unavailable — retry")
 		} else {
 			// Decrypt vault state with DEK
 			stateData, err := decryptWithDEK(dek, encryptedStateBytes)

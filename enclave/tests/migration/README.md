@@ -125,6 +125,24 @@ From `docs/MIGRATION-TARGET-ARCHITECTURE.md` §7:
    partly covered by Tier-1 `pcr_config_signing_test.go`; Tier-2
    exercises the full sign→S3→fetch→verify cycle.)
 
+8. **split-brain-eviction** *(added 2026-05-14)* — the test that would
+   have caught the 2026-05-13 audit-chain corruption. Enroll a user on
+   OLD and keep a warm subprocess there. Bring up NEW and run
+   `ReclaimUsersFromPCR0(OLD_PCR0)` so NEW force-claims the routing
+   entry. Assert: (a) the parent on OLD sends `evict_vault` and the
+   supervisor kills OLD's vault-manager subprocess; (b) OLD writes
+   **zero** new `vault_state.enc` versions after the reclaim — even if
+   a request was in flight on OLD at reclaim time, the `revoke_ownership`
+   message fences `flushVaultStateToS3` and `HandleMessage`; (c) the
+   surviving `vault_state.enc` is the generation NEW cold-loaded, with
+   the UTK pool and `credential/sealed_blob` intact. Tier-1 already
+   pins the unit-level pieces (`parent/routing_release_test.go`,
+   `vault-manager/ownership_revoked_test.go`); this scenario exercises
+   the full parent→supervisor→subprocess eviction path end-to-end.
+   The known sub-millisecond residual race on a single final in-flight
+   flush is intentionally left for D3 (generation-stamp + S3 CAS) — a
+   tracked fast-follow.
+
 ## How to run (once built)
 
 ```bash

@@ -290,6 +290,22 @@ func (vp *VaultProcess) touch() {
 	vp.mu.Unlock()
 }
 
+// PipeConn returns the subprocess pipe connection, or nil if the
+// process isn't running. Used by handleEvictVault to forward a
+// revoke_ownership message into the subprocess before killing it.
+// PipeConnection.WriteMessage has a dedicated writeMu (separate from
+// readMu), so a write here is framing-safe even if the supervisor's
+// request loop is concurrently blocked in a ReadMessageWithTimeout
+// for the same subprocess.
+func (vp *VaultProcess) PipeConn() *PipeConnection {
+	vp.mu.RLock()
+	defer vp.mu.RUnlock()
+	if vp.process == nil {
+		return nil
+	}
+	return vp.process.Conn
+}
+
 // ProcessMessage sends a message to the vault process and waits for response.
 // Handles sealer requests from the vault-manager during the response wait.
 func (vp *VaultProcess) ProcessMessage(ctx context.Context, msg *Message) (*Message, error) {

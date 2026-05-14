@@ -38,6 +38,15 @@ const (
 	// so the parent can transfer ownership in the routing KV. Use
 	// TargetInstanceID="" for release-for-reclaim semantics.
 	MessageTypeRoutingHandoff MessageType = "routing_handoff"
+
+	// Revoke ownership (supervisor -> vault-manager): the parent's
+	// RoutingManager lost this user's routing claim. Intercepted in
+	// receiveMessages and applied immediately (NOT routed through
+	// HandleMessage) so it lands even while the main loop is blocked
+	// mid-request. Sets ownershipRevoked, which fences off all
+	// vault_state.enc persistence and refuses new ops. See the
+	// split-brain fix (D2, 2026-05-14).
+	MessageTypeRevokeOwnership MessageType = "revoke_ownership"
 )
 
 // IncomingMessage is a message from the supervisor/parent
@@ -617,6 +626,44 @@ func (mh *MessageHandler) IsSealerResponse(msg *IncomingMessage) bool {
 	return msg.Type == MessageTypeSealerResponse || msg.Type == MessageTypeStorageResponse
 }
 
+// IsRevokeOwnership checks if a message is a routing-ownership revocation
+// from the supervisor. receiveMessages intercepts these and applies them
+// via MarkOwnershipRevoked directly — they must NOT be routed through
+// HandleMessage, because the whole point is to land while the main loop
+// is blocked mid-request. See the split-brain fix (D2, 2026-05-14).
+func (mh *MessageHandler) IsRevokeOwnership(msg *IncomingMessage) bool {
+	return msg.Type == MessageTypeRevokeOwnership
+}
+
+// MarkOwnershipRevoked fences off this subprocess: flushVaultStateToS3
+// will refuse to persist and HandleMessage will refuse new ops. Called
+// when a revoke_ownership message arrives because the parent's
+// RoutingManager lost this user's routing claim. Idempotent.
+func (mh *MessageHandler) MarkOwnershipRevoked() {
+	if mh.vaultState == nil {
+		return
+	}
+	mh.vaultState.mu.Lock()
+	already := mh.vaultState.ownershipRevoked
+	mh.vaultState.ownershipRevoked = true
+	mh.vaultState.mu.Unlock()
+	if !already {
+		log.Warn().Str("owner_space", mh.ownerSpace).
+			Msg("SECURITY: routing ownership REVOKED — vault_state persistence fenced off, new ops will be refused (split-brain guard)")
+	}
+}
+
+// isOwnershipRevoked reports whether this subprocess has been fenced
+// off by a revoke_ownership message.
+func (mh *MessageHandler) isOwnershipRevoked() bool {
+	if mh.vaultState == nil {
+		return false
+	}
+	mh.vaultState.mu.RLock()
+	defer mh.vaultState.mu.RUnlock()
+	return mh.vaultState.ownershipRevoked
+}
+
 // HandleMessage processes an incoming message
 func (mh *MessageHandler) HandleMessage(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	log.Debug().
@@ -624,6 +671,17 @@ func (mh *MessageHandler) HandleMessage(ctx context.Context, msg *IncomingMessag
 		Str("type", string(msg.Type)).
 		Str("subject", msg.Subject).
 		Msg("Handling message")
+
+	// SECURITY: once routing ownership is revoked, refuse to serve new
+	// ops — don't just decline to persist, decline to act. The parent
+	// has already handed this user to another enclave; the app retries
+	// and lands on the new owner. Serving here would mutate in-memory
+	// state that can never be safely persisted (split-brain fix, D2).
+	if mh.isOwnershipRevoked() {
+		log.Warn().Str("owner_space", mh.ownerSpace).Str("id", msg.GetID()).
+			Msg("refusing vault op — routing ownership revoked; app should retry on the new owner")
+		return mh.errorResponse(msg.GetID(), "vault ownership transferred — retry")
+	}
 
 	switch msg.Type {
 	case MessageTypeVaultOp:
@@ -1849,7 +1907,22 @@ func (mh *MessageHandler) flushVaultStateToS3() {
 	dek := mh.vaultState.dek
 	dataLoaded := mh.vaultState.vaultDataLoaded
 	prevSize := mh.vaultState.loadedVaultStateSize
+	revoked := mh.vaultState.ownershipRevoked
 	mh.vaultState.mu.RUnlock()
+
+	// SECURITY: refuse to persist once routing ownership is revoked.
+	// This is the in-window half of the split-brain fix (D2): when
+	// this user is handed off / reclaimed, the parent sends
+	// revoke_ownership and this flag goes up. Without this guard, the
+	// OLD subprocess's in-flight request would still run its tail-end
+	// force-flush and clobber the NEW owner's vault_state.enc — exactly
+	// the 2026-05-13 corruption (stale UTK pool + credential blob).
+	// Checked FIRST so it short-circuits before createEncryptedVaultState.
+	if revoked {
+		log.Error().Str("owner_space", mh.ownerSpace).
+			Msg("SECURITY: REFUSING to persist vault state — routing ownership has been revoked (split-brain guard)")
+		return
+	}
 
 	if dek == nil || mh.sealerProxy == nil {
 		log.Warn().Str("owner_space", mh.ownerSpace).Msg("Cannot persist vault state — DEK not available (vault locked)")
@@ -1929,9 +2002,16 @@ func (mh *MessageHandler) handleCredentialOperation(ctx context.Context, msg *In
 		// Persist vault state to S3 for cold vault recovery
 		mh.vaultState.mu.RLock()
 		dek := mh.vaultState.dek
+		revoked := mh.vaultState.ownershipRevoked
 		mh.vaultState.mu.RUnlock()
 
-		if dek != nil && mh.sealerProxy != nil {
+		// SECURITY: same split-brain guard as flushVaultStateToS3 — this
+		// inline enrollment-time persist bypasses flushVaultStateToS3, so
+		// it needs its own ownershipRevoked check.
+		if revoked {
+			log.Error().Str("owner_space", mh.ownerSpace).
+				Msg("SECURITY: REFUSING to persist vault state after credential.create — routing ownership revoked (split-brain guard)")
+		} else if dek != nil && mh.sealerProxy != nil {
 			// Create encrypted vault state for S3 storage
 			encryptedState, err := mh.createEncryptedVaultState(dek)
 			if err != nil {
