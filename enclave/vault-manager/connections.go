@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/rs/zerolog/log"
+	"github.com/vettid/vettid-dev/enclave/vault-manager/storage"
 	"golang.org/x/crypto/curve25519"
 )
 
@@ -4648,13 +4649,47 @@ func (h *ConnectionsHandler) getLastActivity(connectionID string) lastActivityIn
 		}
 	}
 
+	// --- Identity verification ---
+	// Verify-identity challenges land in the per-connection AuditLog,
+	// not the message or call indexes, so they were invisible to the
+	// connection card's last-activity line — they only showed in
+	// Connection History. Pull the most recent connection.authenticate.*
+	// entry so a verify request/response can win the card preview like
+	// a message or call would.
+	var latestVerifyTime time.Time
+	var latestVerifyDirection string
+	if h.auditLog != nil {
+		entries, _, err := h.auditLog.List(storage.AuditListOptions{
+			ConnectionID:      connectionID,
+			Limit:             1,
+			EventTypePrefixes: []string{"connection.authenticate."},
+		})
+		if err == nil && len(entries) > 0 {
+			latestVerifyTime = time.Unix(entries[0].CreatedAt, 0)
+			// AuditLog direction is inbound/outbound; the card speaks
+			// incoming/outgoing like messages + calls.
+			switch entries[0].Direction {
+			case AuditDirectionInbound:
+				latestVerifyDirection = "incoming"
+			case AuditDirectionOutbound:
+				latestVerifyDirection = "outgoing"
+			}
+		}
+	}
+
 	// --- Choose winner for Activity* fields ---
-	messageWins := !latestMessageTime.IsZero() && latestMessageTime.After(latestCallTime)
+	// Pick whichever of message / call / verify is most recent.
+	messageWins := !latestMessageTime.IsZero() &&
+		latestMessageTime.After(latestCallTime) &&
+		latestMessageTime.After(latestVerifyTime)
+	callWins := latestCall != nil &&
+		!latestCallTime.Before(latestMessageTime) &&
+		latestCallTime.After(latestVerifyTime)
 	if messageWins {
 		out.Type = "message"
 		out.At = out.MessageAt
 		out.Direction = out.MessageDirection
-	} else if latestCall != nil {
+	} else if callWins {
 		out.Type = "call"
 		out.At = latestCallTime.Format(time.RFC3339)
 		out.Direction = latestCall.Direction
@@ -4673,6 +4708,13 @@ func (h *ConnectionsHandler) getLastActivity(connectionID string) lastActivityIn
 		case "rejected", "blocked":
 			out.Outcome = "rejected"
 		}
+	} else if !latestVerifyTime.IsZero() {
+		// Verify wins: most recent of the three. The card renders the
+		// preview text from Type + Direction ("Asked to verify your
+		// identity" / "You asked to verify their identity").
+		out.Type = "verify"
+		out.At = latestVerifyTime.Format(time.RFC3339)
+		out.Direction = latestVerifyDirection
 	}
 
 	return out
