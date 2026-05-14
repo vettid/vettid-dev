@@ -26,13 +26,24 @@ func NewEncryptedStorage(ownerSpace string) (*EncryptedStorage, error) {
 
 // InitializeWithDEK initializes storage with the data encryption key.
 // This creates the SQLite database with the DEK for encryption.
-// If storage is already initialized, it is preserved (idempotent).
+// If storage is already initialized, it is preserved (idempotent) —
+// but ONLY when the DEK matches. A mismatch means the existing
+// storage was keyed with a stale DEK (see ResetWithDEK + the
+// 2026-05-14 migration corruption); preserving it would silently
+// keep encrypting row payloads + HMACing the backup with the wrong
+// key. The warm-unlock path is the only legitimate caller that hits
+// the already-initialized branch, and there the DEK always matches —
+// so a mismatch here is a bug worth shouting about. Callers that
+// MUST get fresh storage keyed to a freshly-derived DEK (the
+// cold-unlock path) should use ResetWithDEK instead.
 func (s *EncryptedStorage) InitializeWithDEK(dek []byte) error {
-	// If already initialized, don't recreate (preserve existing data)
-	// This is important because the SQLite database is in-memory
-	// and recreating it would lose all stored data
 	if s.sqlite != nil {
-		log.Debug().Str("owner_space", s.ownerSpace).Msg("Storage already initialized, preserving existing data")
+		if !s.sqlite.DEKEquals(dek) {
+			log.Error().Str("owner_space", s.ownerSpace).
+				Msg("SECURITY: InitializeWithDEK called with a DEK that does NOT match existing storage — keeping existing (stale) storage; cold-unlock paths must use ResetWithDEK")
+		} else {
+			log.Debug().Str("owner_space", s.ownerSpace).Msg("Storage already initialized with matching DEK, preserving existing data")
+		}
 		return nil
 	}
 
@@ -42,6 +53,38 @@ func (s *EncryptedStorage) InitializeWithDEK(dek []byte) error {
 	}
 	s.sqlite = sqlite
 	log.Info().Str("owner_space", s.ownerSpace).Msg("Storage initialized with DEK")
+	return nil
+}
+
+// ResetWithDEK forces fresh SQLite storage keyed to dek, discarding
+// any existing in-memory database. Used by the cold-unlock path:
+// a "cold" vault (ECIES not in memory) may still carry an s.sqlite
+// from an earlier lifecycle of the SAME subprocess, keyed with a
+// now-stale DEK. The idempotent InitializeWithDEK would keep that
+// stale storage, so the cold-load's RestoreBackup would verify the
+// backup HMAC against the wrong key and every restored row payload
+// would be undecryptable — the 2026-05-14 migration corruption
+// ("backup HMAC verification failed", empty vault). Discarding the
+// stale DB is correct: the cold path's whole job is to rebuild from
+// the S3 backup, and stale-keyed rows are unrecoverable anyway.
+func (s *EncryptedStorage) ResetWithDEK(dek []byte) error {
+	if s.sqlite != nil {
+		if s.sqlite.DEKEquals(dek) {
+			// Already fresh-and-correct (e.g. a retried cold unlock
+			// within the same subprocess). Nothing to discard.
+			return nil
+		}
+		log.Warn().Str("owner_space", s.ownerSpace).
+			Msg("ResetWithDEK: discarding stale-keyed storage and re-creating with the freshly-derived DEK (cold unlock)")
+		_ = s.sqlite.Close()
+		s.sqlite = nil
+	}
+	sqlite, err := storage.NewSQLiteStorage(s.ownerSpace, dek)
+	if err != nil {
+		return err
+	}
+	s.sqlite = sqlite
+	log.Info().Str("owner_space", s.ownerSpace).Msg("Storage (re)initialized fresh with DEK for cold unlock")
 	return nil
 }
 

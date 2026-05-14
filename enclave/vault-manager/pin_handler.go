@@ -672,10 +672,28 @@ func (h *PINHandler) HandlePINUnlock(ctx context.Context, msg *IncomingMessage) 
 		}
 	}
 
-	// Initialize encrypted storage with DEK so feed/events are accessible
-	// This must happen before any storage operations
-	if err := h.storage.InitializeWithDEK(dek); err != nil {
-		log.Error().Err(err).Str("owner_space", h.ownerSpace).Msg("Failed to initialize storage with DEK on unlock")
+	// Initialize encrypted storage with DEK so feed/events are accessible.
+	// This must happen before any storage operations.
+	//
+	// Cold unlock vs warm unlock matters here. A "cold" vault (ECIES
+	// not in memory) may still carry an s.sqlite from an EARLIER
+	// lifecycle of this same subprocess, keyed with a now-stale DEK.
+	// The idempotent InitializeWithDEK would keep that stale storage,
+	// so the RestoreBackup below would HMAC-verify against the wrong
+	// key and every restored row payload would be undecryptable — the
+	// 2026-05-14 migration corruption. The cold path therefore forces
+	// FRESH storage keyed to the freshly-derived DEK; the cold-load's
+	// RestoreBackup rebuilds the contents from the S3 backup anyway.
+	// The warm path keeps the idempotent call (storage is live + the
+	// DEK matches; recreating would wrongly drop in-memory data).
+	var storageErr error
+	if !isWarmVault {
+		storageErr = h.storage.ResetWithDEK(dek)
+	} else {
+		storageErr = h.storage.InitializeWithDEK(dek)
+	}
+	if storageErr != nil {
+		log.Error().Err(storageErr).Str("owner_space", h.ownerSpace).Msg("Failed to initialize storage with DEK on unlock")
 		return h.errorResponse(msg.GetID(), "storage initialization failed")
 	}
 

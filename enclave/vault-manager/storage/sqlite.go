@@ -58,6 +58,18 @@ func (s *SQLiteStorage) SetEntrySigner(fn func(entryHashBytes []byte) []byte) {
 	s.entrySigner = fn
 }
 
+// DEKEquals reports whether this storage's DEK matches dek, in
+// constant time. Used by the storage adapter to detect a stale-DEK
+// situation: every row payload and the SQLite backup HMAC are keyed
+// by s.dek, so if it ever drifts from the PIN-derived DEK the data
+// becomes unrecoverable on the next cold-load (the 2026-05-14
+// migration corruption — see ResetWithDEK).
+func (s *SQLiteStorage) DEKEquals(dek []byte) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return hmac.Equal(s.dek, dek)
+}
+
 // NewSQLiteStorage creates a new encrypted SQLite storage
 // The database is stored in memory and synced to S3 periodically
 func NewSQLiteStorage(ownerSpace string, dek []byte) (*SQLiteStorage, error) {
