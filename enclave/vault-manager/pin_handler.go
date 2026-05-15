@@ -323,27 +323,43 @@ func (h *PINHandler) writeFreshEnrollmentMigrationMarker() {
 }
 
 // restoreCredentialCarveOuts decrypts the CEK-sealed credential blob
-// from `credential/sealed_blob` and populates vaultState's narrow
-// carve-outs (identity keypair, PIN auth hash + salt). Used by the
-// cold-unlock path to fix the Phase D refactor gap where the credential
-// plaintext was moved out of the persisted vault state but the cold-load
-// restore was never updated to read the sealed blob back. Without this,
-// every cold-unlock leaves identityPublicKey empty and the user's own
-// profile preview shows "..." for the identity public key, while peer
-// broadcasts omit public_key entirely.
+// and populates vaultState's narrow carve-outs (identity keypair, PIN
+// auth hash + salt, audit key + binding signature). Two sources, tried
+// in order:
 //
-// Best-effort: any failure (no blob, missing CEK, decrypt error) leaves
-// vaultState as-is and logs a warning. The unlock itself is not
-// invalidated — non-warm vaults still satisfy the PIN check via DEK
-// decryption of vault_state.enc earlier in the flow.
-func (h *PINHandler) restoreCredentialCarveOuts() {
+//  1. suppliedBlobB64 — the encrypted credential the app sent on this
+//     PIN unlock request (PINUnlockRequest.EncryptedCredential). This
+//     is the unified self-heal path — works on every unlock, cold or
+//     warm, regardless of what's in storage.
+//  2. credential/sealed_blob from EncryptedStorage — durable backup
+//     copy written by credential.create / critical-secret ops.
+//
+// On success returns true and, if storage was missing the blob, writes
+// the supplied one so future cold-loads have a durable copy too.
+//
+// Best-effort: any failure leaves vaultState's carve-outs untouched
+// and returns false. The unlock itself isn't invalidated — cold
+// unlocks still satisfy the PIN check via DEK-decryption of
+// vault_state.enc, and warm unlocks have their own gate one layer up
+// in HandlePINUnlock.
+func (h *PINHandler) restoreCredentialCarveOuts(suppliedBlobB64 string) bool {
 	if h.storage == nil {
-		return
+		return false
 	}
-	sealed, err := h.storage.Get("credential/sealed_blob")
-	if err != nil || len(sealed) == 0 {
-		log.Debug().Str("owner_space", h.ownerSpace).Msg("No credential/sealed_blob to restore (legacy or pre-credential-create unlock)")
-		return
+
+	var encB64 string
+	suppliedUsed := false
+	switch {
+	case suppliedBlobB64 != "":
+		encB64 = suppliedBlobB64
+		suppliedUsed = true
+	default:
+		sealed, err := h.storage.Get("credential/sealed_blob")
+		if err != nil || len(sealed) == 0 {
+			log.Debug().Str("owner_space", h.ownerSpace).Msg("No credential/sealed_blob to restore (legacy or pre-credential-create unlock)")
+			return false
+		}
+		encB64 = string(sealed)
 	}
 
 	// Pull the CEK private key from the just-restored vaultState.
@@ -352,27 +368,27 @@ func (h *PINHandler) restoreCredentialCarveOuts() {
 	h.state.mu.RUnlock()
 	if cekPair == nil || len(cekPair.PrivateKey) == 0 {
 		log.Warn().Str("owner_space", h.ownerSpace).Msg("restoreCredentialCarveOuts: CEK not loaded — skipping (warm vault?)")
-		return
+		return false
 	}
 
 	// The blob is stored as base64-encoded ECIES ciphertext (matching
 	// what credential_secret_handler / authenticate.go decode).
-	encBytes, err := base64.StdEncoding.DecodeString(string(sealed))
+	encBytes, err := base64.StdEncoding.DecodeString(encB64)
 	if err != nil {
-		log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("restoreCredentialCarveOuts: invalid base64 in sealed blob")
-		return
+		log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("restoreCredentialCarveOuts: invalid base64 in credential blob")
+		return false
 	}
 	plaintext, err := decryptWithCEK(cekPair.PrivateKey, encBytes)
 	if err != nil {
 		log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("restoreCredentialCarveOuts: CEK decrypt failed")
-		return
+		return false
 	}
 	defer zeroBytes(plaintext)
 
 	var cred ProteanCredentialV2
 	if err := json.Unmarshal(plaintext, &cred); err != nil {
 		log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("restoreCredentialCarveOuts: credential unmarshal failed")
-		return
+		return false
 	}
 
 	h.state.mu.Lock()
@@ -415,8 +431,27 @@ func (h *PINHandler) restoreCredentialCarveOuts() {
 		log.Debug().Err(err).Str("owner_space", h.ownerSpace).Msg("restoreCredentialCarveOuts: identity_public_key fallback write failed (non-fatal)")
 	}
 
+	// When the blob came from the app, also self-heal the durable copy
+	// in storage if it's missing. Legacy vaults enrolled before
+	// credential.create wrote the blob get repaired on first PIN unlock
+	// from the new client. Never overwrites a newer in-storage copy.
+	if suppliedUsed {
+		if _, getErr := h.storage.Get("credential/sealed_blob"); getErr != nil {
+			if pErr := h.storage.Put("credential/sealed_blob", []byte(encB64)); pErr != nil {
+				log.Debug().Err(pErr).Str("owner_space", h.ownerSpace).Msg("Self-heal credential/sealed_blob write failed (non-fatal)")
+			} else {
+				log.Info().Str("owner_space", h.ownerSpace).Msg("Self-heal: wrote credential/sealed_blob from PIN-unlock request")
+			}
+		}
+	}
+
 	cred.SecureErase()
-	log.Info().Str("owner_space", h.ownerSpace).Int("id_pub_len", len(h.state.identityPublicKey)).Msg("Credential carve-outs restored from credential/sealed_blob")
+	log.Info().
+		Str("owner_space", h.ownerSpace).
+		Int("id_pub_len", len(h.state.identityPublicKey)).
+		Bool("from_supplied", suppliedUsed).
+		Msg("Credential carve-outs restored")
+	return true
 }
 
 // HandlePINUnlock processes PIN unlock requests
@@ -755,7 +790,10 @@ func (h *PINHandler) HandlePINUnlock(ctx context.Context, msg *IncomingMessage) 
 	// migrate off the legacy format the primary path will become
 	// dead code.
 	if !isWarmVault {
-		h.restoreCredentialCarveOuts()
+		// Cold-unlock: prefer the app-supplied credential blob (always
+		// available from a current client); fall back to storage. Same
+		// helper handles both. See restoreCredentialCarveOuts.
+		h.restoreCredentialCarveOuts(req.EncryptedCredential)
 	}
 
 	// Verify the PIN against the carve-out auth hash.
@@ -763,15 +801,29 @@ func (h *PINHandler) HandlePINUnlock(ctx context.Context, msg *IncomingMessage) 
 	// SECURITY: in cold-unlock, DEK decryption of the persisted vault
 	// state at line 377 already proved the PIN was right (a wrong DEK
 	// can't decrypt). In warm-unlock no decrypt happens — the only
-	// gate left is this hash check, so it MUST be present. If the
-	// carve-out is empty in warm mode, fail closed: the user's
-	// credential was minted before PIN-setup hash stamping landed and
-	// needs to be re-enrolled. Letting them through would let any
-	// random PIN warm-unlock the vault.
+	// gate left is this hash check, so it MUST be present. The warm
+	// path below has one recovery move: if the request carries
+	// EncryptedCredential, decrypt it now and rebuild the carve-outs
+	// (this is the unified self-heal for vaults that were enrolled
+	// before credential/sealed_blob was written at create-time and
+	// therefore have empty carve-outs in their warm in-memory state).
+	// If that still leaves the hash empty, fail closed — letting a
+	// random PIN through a warm vault with no hash is unsafe.
 	h.state.mu.RLock()
 	pinAuthHash := append([]byte(nil), h.state.pinAuthHash...)
 	pinAuthSalt := append([]byte(nil), h.state.pinAuthSalt...)
 	h.state.mu.RUnlock()
+	if (len(pinAuthHash) == 0 || len(pinAuthSalt) == 0) && isWarmVault && req.EncryptedCredential != "" {
+		// Warm-vault self-heal: app supplied the credential, the vault
+		// can rebuild every carve-out from it. Reload hash + salt after.
+		if h.restoreCredentialCarveOuts(req.EncryptedCredential) {
+			h.state.mu.RLock()
+			pinAuthHash = append([]byte(nil), h.state.pinAuthHash...)
+			pinAuthSalt = append([]byte(nil), h.state.pinAuthSalt...)
+			h.state.mu.RUnlock()
+			log.Info().Str("owner_space", h.ownerSpace).Msg("Warm-unlock self-heal: carve-outs rebuilt from supplied credential")
+		}
+	}
 	if len(pinAuthHash) > 0 && len(pinAuthSalt) > 0 {
 		if !verifyAuthHash(payload.PIN, pinAuthSalt, pinAuthHash) {
 			log.Warn().Str("owner_space", h.ownerSpace).Msg("PIN auth hash verification failed")

@@ -460,6 +460,16 @@ type PINUnlockRequest struct {
 	// routing handoff so the NEW enclave reclaims the user (if the
 	// request landed on OLD). Either way the unlock itself succeeds.
 	MigrateConsent bool `json:"migrate_consent,omitempty"`
+
+	// EncryptedCredential is the app-supplied ECIES-sealed credential
+	// blob (the same one credential.create returned + the app uses on
+	// authenticate). Carrying it on every PIN unlock lets the vault
+	// rebuild the narrow carve-outs (identity keys, pinAuthHash/Salt,
+	// audit key) without depending on credential/sealed_blob being
+	// present in storage — the unified self-heal for both cold and
+	// warm unlock paths. Older clients may omit it; the vault then
+	// falls back to reading credential/sealed_blob from storage.
+	EncryptedCredential string `json:"encrypted_credential,omitempty"`
 }
 
 // PINUnlockResponse is returned after successful unlock
