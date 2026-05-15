@@ -268,6 +268,24 @@ func (h *ProteanCredentialHandler) HandleCredentialCreate(ctx context.Context, m
 		return h.errorResponse(msg.GetID(), "encryption failed")
 	}
 
+	// Phase D persistence: store the sealed credential blob in vault
+	// storage so cold-unlock's restoreCredentialCarveOuts can rebuild
+	// the narrow carve-outs (identity keys + PIN verifier) on a fresh
+	// enclave after migration. Previously this only happened when a
+	// critical secret was added/refreshed — users who never touched a
+	// critical secret had no blob, so the post-migration cold-unlock
+	// left identityPublicKey empty and audit.query returned an empty
+	// identity_pub → the client showed a spurious "chain unsigned"
+	// pill. The stored form is base64 to match the read path in
+	// restoreCredentialCarveOuts (and the writes in
+	// credential_secret_handler.encryptCredentialBlob → Put).
+	encryptedCredentialB64 := base64.StdEncoding.EncodeToString(encryptedCredential)
+	if h.storage != nil {
+		if err := h.storage.Put("credential/sealed_blob", []byte(encryptedCredentialB64)); err != nil {
+			log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("Failed to persist credential/sealed_blob at credential.create (non-fatal)")
+		}
+	}
+
 	// NOTE: DEK is NOT cleared here - it's needed for vault state persistence
 	// The caller (messages.go) will clear DEK after persisting vault state for cold recovery
 

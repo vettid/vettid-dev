@@ -187,6 +187,24 @@ func (mh *MessageHandler) handleUTKAuthenticate(requestID string, req *Authentic
 		return mh.authErrorResponse(requestID, "Invalid credential format")
 	}
 	storedHash := credential.Auth.Hash
+
+	// Self-heal for vaults enrolled before credential/sealed_blob was
+	// written at credential.create. Without the blob, cold-unlock on a
+	// fresh enclave (post-migration) leaves identityPublicKey empty and
+	// audit.query returns no identity_pub → client shows a spurious
+	// "chain unsigned". Authenticate already has the app-supplied
+	// encrypted credential decrypted + verified, so writing the blob
+	// here closes the gap on the next cold-unlock. Only fills a missing
+	// slot — won't overwrite a newer blob from a credential-touching op.
+	if mh.storage != nil {
+		if _, getErr := mh.storage.Get("credential/sealed_blob"); getErr != nil {
+			if pErr := mh.storage.Put("credential/sealed_blob", []byte(req.EncryptedCredential)); pErr != nil {
+				log.Debug().Err(pErr).Str("owner_space", mh.ownerSpace).Msg("Self-heal credential/sealed_blob write failed (non-fatal)")
+			} else {
+				log.Info().Str("owner_space", mh.ownerSpace).Msg("Self-heal: wrote credential/sealed_blob from authenticate request")
+			}
+		}
+	}
 	userGUID := ""
 	if credential.Binding != nil {
 		userGUID = credential.Binding.VaultID
