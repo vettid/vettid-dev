@@ -346,7 +346,8 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       }
     }
 
-    // 9. Delete S3 backup blobs
+    // 9. Delete S3 backup blobs (separate bucket — no race with the
+    // enclave; it just stores user-uploaded backup material).
     if (BACKUP_BUCKET) {
       const s3Result = await deleteS3Objects(BACKUP_BUCKET, `${userGuid}/`);
       result.s3_objects_deleted = s3Result.count;
@@ -356,19 +357,15 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       console.log(`Deleted ${s3Result.count} S3 backup objects`);
     }
 
-    // 9b. Delete vault data from enclave storage bucket
-    // This includes sealed_material.bin, vault_state.enc, sealed_ecies.bin
-    if (VAULT_DATA_BUCKET) {
-      const vaultDataResult = await deleteS3Objects(VAULT_DATA_BUCKET, `vaults/${userGuid}/`);
-      result.vault_data_deleted = vaultDataResult.count;
-      if (vaultDataResult.error) {
-        result.errors.push(`S3 Vault Data: ${vaultDataResult.error}`);
-      }
-      console.log(`Deleted ${vaultDataResult.count} vault data files`);
-    }
-
-    // 10. Delete credential from enclave via vault reset
-    // This clears the credential from the enclave's SQLite storage
+    // 10. Delete credential from enclave via vault reset BEFORE we
+    // touch the vault-data bucket. The credential.delete handler may
+    // trigger a final auto-persist of vault_state.enc as the
+    // vault-manager subprocess winds down (auto-persist runs on the
+    // request loop). Earlier this Lambda deleted S3 first and the
+    // enclave then wrote a brand-new vault_state.enc on top of the
+    // gap, leaving stale state behind (#240, surfaced 2026-05-16
+    // when mesmer's re-enrollment hit a D3 first-write conflict on
+    // a vault_state.enc that should have been gone).
     try {
       const natsResult = await publishToNats('enclave.vault.reset', {
         user_guid: userGuid,
@@ -383,6 +380,26 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     } catch (error: any) {
       result.errors.push(`Enclave: ${error.message}`);
       console.error('Error sending vault reset:', error);
+    }
+
+    // Give the reset + any tail-end persist a moment to flush before
+    // we sweep the bucket. The auto-persist throttle window is small
+    // (sub-second) and the supervisor's eviction is synchronous from
+    // the parent's POV; 3 seconds is generous belt-and-suspenders.
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+
+    // 11. Delete vault data from enclave storage bucket. Runs AFTER
+    // the reset so any final auto-persist by the dying vault-manager
+    // subprocess gets caught by this sweep. Includes sealed_material.bin,
+    // vault_state.enc, sealed_ecies.bin, and anything else under the
+    // user's per-vault prefix.
+    if (VAULT_DATA_BUCKET) {
+      const vaultDataResult = await deleteS3Objects(VAULT_DATA_BUCKET, `vaults/${userGuid}/`);
+      result.vault_data_deleted = vaultDataResult.count;
+      if (vaultDataResult.error) {
+        result.errors.push(`S3 Vault Data: ${vaultDataResult.error}`);
+      }
+      console.log(`Deleted ${vaultDataResult.count} vault data files (post-reset sweep)`);
     }
 
     // Audit log
