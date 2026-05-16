@@ -2199,6 +2199,13 @@ func (p *ParentProcess) handleCredentialDeleteCommand(ctx context.Context, msg *
 		}
 	}
 
+	// Release the routing claim. See handleVaultReset for rationale (#238).
+	if p.routing != nil {
+		if err := p.routing.ReleaseUser(userGuid); err != nil {
+			log.Warn().Err(err).Str("user_guid", userGuid).Msg("credential.delete: routing release failed (KV entry will expire on lease TTL)")
+		}
+	}
+
 	log.Info().
 		Str("user_guid", userGuid).
 		Str("command_id", cmd.CommandID).
@@ -2280,6 +2287,18 @@ func (p *ParentProcess) handleVaultReset(ctx context.Context, msg *NATSMessage) 
 	if response != nil && msg.Reply != "" {
 		responseData := p.formatEnclaveResponse(response, "")
 		p.natsClient.Publish(msg.Reply, responseData)
+	}
+
+	// Release the routing claim. credential.delete already wiped the
+	// vault material in the enclave; without this the parent would
+	// keep heartbeating "I own user X" in the vault-routing KV until
+	// the next process restart (~45s lease TTL), leaving a re-
+	// enrollment with the same user_guid landing in a fragile state.
+	// Non-fatal: log on failure but don't fail the decommission. (#238)
+	if p.routing != nil {
+		if err := p.routing.ReleaseUser(req.UserGuid); err != nil {
+			log.Warn().Err(err).Str("user_guid", req.UserGuid).Msg("Vault reset: routing release failed (KV entry will expire on lease TTL)")
+		}
 	}
 
 	log.Info().

@@ -791,6 +791,48 @@ func (r *RoutingManager) subscribeUser(userGuid string) error {
 	return nil
 }
 
+// ReleaseUser is the decommission-time release: drops local
+// subscription + ownership AND deletes the KV entry so no instance
+// keeps heartbeating for a user whose vault no longer exists.
+//
+// Distinct from HandoffToPeer (which leaves the row marked vacant for
+// peer reclaim — wrong for decommission, the user is gone) and from
+// releaseLocally (which only touches in-memory state, leaving the KV
+// entry to expire on its own ~45s later via lease TTL after the
+// parent stops heartbeating).
+//
+// Idempotent: works whether or not we currently own the claim, and
+// treats "key not found" as the desired end state. Safe to call from
+// any instance, owner or not — if some other instance is heartbeating
+// the entry, its next CAS-update will fail and it will release
+// locally too (heartbeatLoop:497).
+//
+// Closes #238: prior decommission flow wiped vault material (S3 +
+// DynamoDB) but left the routing claim alive, so re-enrollment with
+// the same user_guid landed in a fragile state until the next parent
+// restart.
+func (r *RoutingManager) ReleaseUser(userGuid string) error {
+	kv, err := r.kv()
+	if err != nil {
+		return err
+	}
+	// Drop local state + unsubscribe first so we stop heartbeating
+	// before the delete; otherwise the next heartbeat tick could race
+	// the delete and recreate the row.
+	r.releaseLocally(userGuid)
+	if err := kv.Delete(routingKeyPrefix + userGuid); err != nil {
+		if err == nats.ErrKeyNotFound {
+			return nil
+		}
+		return fmt.Errorf("routing KV delete: %w", err)
+	}
+	log.Info().
+		Str("user_guid", userGuid).
+		Str("enclave_id", r.enclaveID).
+		Msg("routing: released decommissioned user (KV entry deleted)")
+	return nil
+}
+
 func (r *RoutingManager) releaseLocally(userGuid string) {
 	r.mu.Lock()
 	entry, ok := r.owned[userGuid]
