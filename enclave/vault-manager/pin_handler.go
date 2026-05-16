@@ -579,7 +579,7 @@ func (h *PINHandler) HandlePINUnlock(ctx context.Context, msg *IncomingMessage) 
 	// For cold vault, restore full vault state from S3
 	var databaseBackup json.RawMessage // Captured from persisted state for post-init restore
 	if !isWarmVault {
-		encryptedStateBytes, err := h.sealerProxy.LoadVaultState()
+		loadedBlob, loadedETag, err := h.sealerProxy.LoadVaultState()
 		if err != nil {
 			// SECURITY: fail-closed. A cold vault has, by definition,
 			// been enrolled + persisted before, so it MUST have a
@@ -596,6 +596,23 @@ func (h *PINHandler) HandlePINUnlock(ctx context.Context, msg *IncomingMessage) 
 				Msg("SECURITY: cold-unlock REFUSED — failed to load vault_state.enc from S3 (would risk persisting stale/empty state). App should retry.")
 			return h.errorResponse(msg.GetID(), "vault state unavailable — retry")
 		} else {
+			// D3: peel the wrapper (or accept legacy raw bytes from a
+			// pre-D3 store). The encrypted payload is what we feed into
+			// the DEK decrypt path; the generation+ETag pair becomes
+			// the floor for our next conditional store. Legacy blobs
+			// land at generation 0; the next persist re-wraps them at
+			// generation 1 so subsequent boots see a valid wrapper.
+			encryptedStateBytes, loadedGen, isLegacy, werr := unwrapVaultState(loadedBlob)
+			if werr != nil {
+				log.Error().Err(werr).Str("owner_space", h.ownerSpace).
+					Msg("SECURITY: cold-unlock REFUSED — vault_state.enc wrapper unparseable (format drift?)")
+				return h.errorResponse(msg.GetID(), "vault state format invalid")
+			}
+			if isLegacy {
+				log.Info().Str("owner_space", h.ownerSpace).
+					Msg("Loaded pre-D3 vault_state.enc (no wrapper); next persist will write inside the v1 envelope")
+			}
+
 			// Decrypt vault state with DEK
 			stateData, err := decryptWithDEK(dek, encryptedStateBytes)
 			if err != nil {
@@ -607,9 +624,13 @@ func (h *PINHandler) HandlePINUnlock(ctx context.Context, msg *IncomingMessage) 
 			// Record the size of what we just loaded so the shrink guard
 			// in persistVaultStateToS3 has a reference for "this instance
 			// previously knew the state was N bytes." See architect §3
-			// storage invariants.
+			// storage invariants. Also stamp the loaded ETag + generation
+			// so the next conditional store can prove no other writer
+			// has touched the object since this load (D3 CAS).
 			h.state.mu.Lock()
-			h.state.loadedVaultStateSize = int64(len(encryptedStateBytes))
+			h.state.loadedVaultStateSize = int64(len(loadedBlob))
+			h.state.loadedVaultStateETag = loadedETag
+			h.state.vaultStateGeneration = loadedGen
 			h.state.mu.Unlock()
 
 			// Parse and restore vault state

@@ -101,6 +101,12 @@ type SealerRequest struct {
 	// For get_vote_proof
 	ProposalID      string `json:"proposal_id,omitempty"`
 	VotingPublicKey string `json:"voting_public_key,omitempty"`
+
+	// D3 conditional-storage fields (vault_state.enc split-brain guard).
+	// For store_vault_state: ExpectedETag from the prior load enforces
+	// compare-and-swap; IfNoneMatchAny=true requests first-write semantics.
+	ExpectedETag   string `json:"expected_etag,omitempty"`
+	IfNoneMatchAny bool   `json:"if_none_match_any,omitempty"`
 }
 
 // SealerResponse is returned from supervisor to vault-manager
@@ -146,6 +152,15 @@ type SealerResponse struct {
 
 	// For get_running_pcr0 (hex-encoded running PCR0)
 	RunningPCR0 string `json:"running_pcr0,omitempty"`
+
+	// D3 conditional-storage fields (vault_state.enc).
+	// For load_vault_state: ETag of the loaded object — pass back as
+	// ExpectedETag on the next store. For store_vault_state: ETag of
+	// the newly-written object. ConditionFailed=true means the supervisor
+	// got a 412 from S3 (another writer raced this object); the caller
+	// MUST NOT retry and should treat it as a split-brain signal.
+	ETag            string `json:"etag,omitempty"`
+	ConditionFailed bool   `json:"condition_failed,omitempty"`
 }
 
 // GenerateSealedMaterial requests the supervisor to generate PCR-bound sealed material
@@ -433,25 +448,47 @@ func (p *SealerProxy) LoadSealedECIES() ([]byte, error) {
 	return resp.SealedData, nil
 }
 
-// StoreVaultState stores DEK-encrypted vault state to S3 for cold vault recovery
-func (p *SealerProxy) StoreVaultState(encryptedState []byte) error {
+// StoreVaultState stores DEK-encrypted vault state to S3 with D3
+// compare-and-swap semantics. Exactly one of (expectedETag, firstWrite)
+// should be set:
+//
+//   - expectedETag != "" → require the S3 object to still carry that
+//     ETag; used for every store after the first.
+//   - firstWrite == true → require the S3 object to not exist; used on
+//     fresh enrollment.
+//
+// Returns the new ETag on success. ErrVaultStateConflict is returned
+// when S3 reports 412 PreconditionFailed: another writer is racing this
+// object and the caller MUST NOT retry blindly.
+func (p *SealerProxy) StoreVaultState(encryptedState []byte, expectedETag string, firstWrite bool) (string, error) {
 	req := SealerRequest{
-		Operation:  SealerOpStoreVaultState,
-		OwnerSpace: p.ownerSpace,
-		Data:       encryptedState,
+		Operation:      SealerOpStoreVaultState,
+		OwnerSpace:     p.ownerSpace,
+		Data:           encryptedState,
+		ExpectedETag:   expectedETag,
+		IfNoneMatchAny: firstWrite,
 	}
 
 	resp, err := p.sendRequest(req)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	if !resp.Success {
-		return fmt.Errorf("storage error: %s", resp.Error)
+		if resp.ConditionFailed {
+			return "", ErrVaultStateConflict
+		}
+		return "", fmt.Errorf("storage error: %s", resp.Error)
 	}
 
-	return nil
+	return resp.ETag, nil
 }
+
+// ErrVaultStateConflict is returned by StoreVaultState when S3's
+// conditional put fails (D3 split-brain detected). Callers should
+// fence further writes (typically by setting ownershipRevoked) rather
+// than retrying.
+var ErrVaultStateConflict = fmt.Errorf("vault_state.enc conditional store rejected (D3 split-brain guard)")
 
 // LoadAccountSeed fetches the NATS account seed via the parent process.
 // The parent reads the encrypted seed from DynamoDB and decrypts via KMS.
@@ -514,8 +551,11 @@ func (p *SealerProxy) ResolveResponseInvite(connectionID string) ([]byte, error)
 	return p.ResolveInvite("response." + connectionID)
 }
 
-// LoadVaultState loads DEK-encrypted vault state from S3 for cold vault recovery
-func (p *SealerProxy) LoadVaultState() ([]byte, error) {
+// LoadVaultState loads DEK-encrypted vault state from S3 for cold vault
+// recovery. The returned ETag must be carried forward into the next
+// StoreVaultState call so the conditional put can detect a racing
+// writer (D3 split-brain guard).
+func (p *SealerProxy) LoadVaultState() ([]byte, string, error) {
 	req := SealerRequest{
 		Operation:  SealerOpLoadVaultState,
 		OwnerSpace: p.ownerSpace,
@@ -523,14 +563,14 @@ func (p *SealerProxy) LoadVaultState() ([]byte, error) {
 
 	resp, err := p.sendRequest(req)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	if !resp.Success {
-		return nil, fmt.Errorf("storage error: %s", resp.Error)
+		return nil, "", fmt.Errorf("storage error: %s", resp.Error)
 	}
 
-	return resp.UnsealedData, nil
+	return resp.UnsealedData, resp.ETag, nil
 }
 
 // ListProposals fetches active/upcoming/published proposals from DynamoDB via the parent.

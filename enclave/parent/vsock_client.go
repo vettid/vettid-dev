@@ -213,6 +213,18 @@ type EnclaveMessage struct {
 	ReplyTo    string             `json:"reply_to,omitempty"`
 	StorageKey   string             `json:"storage_key,omitempty"`
 	StorageValue []byte             `json:"storage_value,omitempty"` // Binary data for storage operations
+	// Conditional-storage fields (D3 split-brain guard for vault_state.enc).
+	// Set IfMatch (an ETag from a prior GET) to require the object hasn't
+	// changed underneath us, or IfNoneMatch="*" on first-write to require
+	// the object doesn't exist yet. ReturnedETag is set in storage_get and
+	// storage_response messages so the next conditional write knows what to
+	// match. ConditionFailed=true in a storage_response signals that S3
+	// returned 412 PreconditionFailed — the caller must NOT retry blindly;
+	// another writer beat us to the object.
+	IfMatch         string `json:"if_match,omitempty"`
+	IfNoneMatch     string `json:"if_none_match,omitempty"`
+	ReturnedETag    string `json:"returned_etag,omitempty"`
+	ConditionFailed bool   `json:"condition_failed,omitempty"`
 	Payload      json.RawMessage    `json:"payload,omitempty"`
 	Error      string             `json:"error,omitempty"`
 

@@ -168,6 +168,13 @@ type Message struct {
 	// Storage operations
 	StorageKey   string `json:"storage_key,omitempty"`
 	StorageValue []byte `json:"storage_value,omitempty"`
+	// Conditional-storage fields (D3 split-brain guard for vault_state.enc).
+	// Mirror of parent's EnclaveMessage so the JSON wire format round-trips
+	// the ETag and the conditional-put preconditions transparently.
+	IfMatch         string `json:"if_match,omitempty"`
+	IfNoneMatch     string `json:"if_none_match,omitempty"`
+	ReturnedETag    string `json:"returned_etag,omitempty"`
+	ConditionFailed bool   `json:"condition_failed,omitempty"`
 
 	// Generic payload (JSON-encoded data)
 	Payload json.RawMessage `json:"payload,omitempty"`

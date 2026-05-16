@@ -6,10 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	smithyhttp "github.com/aws/smithy-go/transport/http"
 	"github.com/rs/zerolog/log"
 )
 
@@ -81,6 +84,99 @@ func (c *S3Client) Put(ctx context.Context, key string, data []byte) error {
 	}
 
 	return nil
+}
+
+// GetWithETag retrieves an object and its ETag from S3. The ETag is
+// returned with quotes stripped, ready for an IfMatch on the next
+// conditional PutConditional call. Used by the vault_state.enc D3
+// split-brain guard: the loaded ETag flows back to the next store so
+// the supervisor can refuse a write that races a different writer's
+// update.
+func (c *S3Client) GetWithETag(ctx context.Context, key string) ([]byte, string, error) {
+	log.Debug().
+		Str("bucket", c.bucket).
+		Str("key", key).
+		Msg("S3 GET (with ETag)")
+
+	result, err := c.client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: &c.bucket,
+		Key:    &key,
+	})
+	if err != nil {
+		return nil, "", fmt.Errorf("S3 GetObject failed: %w", err)
+	}
+	defer result.Body.Close()
+
+	data, err := io.ReadAll(result.Body)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to read S3 object: %w", err)
+	}
+
+	etag := ""
+	if result.ETag != nil {
+		etag = strings.Trim(*result.ETag, "\"")
+	}
+	return data, etag, nil
+}
+
+// PutConditional stores an object in S3 with optional compare-and-swap
+// preconditions. Exactly one of (ifMatch, ifNoneMatch) should be set;
+// pass nil for both to behave like Put. Returns the new object's ETag
+// (quotes stripped) on success and conflict=true when S3 returns 412
+// PreconditionFailed — the latter means another writer beat us to the
+// object and the caller must NOT retry blindly (D3 split-brain guard
+// on vault_state.enc).
+//
+// ifNoneMatch is intended for first-writes only: pass "*" to require
+// the object not exist. ifMatch should be the ETag from the previous
+// GetWithETag.
+func (c *S3Client) PutConditional(ctx context.Context, key string, data []byte, ifMatch, ifNoneMatch *string) (string, bool, error) {
+	log.Debug().
+		Str("bucket", c.bucket).
+		Str("key", key).
+		Int("size", len(data)).
+		Bool("if_match", ifMatch != nil).
+		Bool("if_none_match", ifNoneMatch != nil).
+		Msg("S3 PUT (conditional)")
+
+	in := &s3.PutObjectInput{
+		Bucket: &c.bucket,
+		Key:    &key,
+		Body:   bytes.NewReader(data),
+	}
+	if ifMatch != nil && *ifMatch != "" {
+		in.IfMatch = aws.String(*ifMatch)
+	}
+	if ifNoneMatch != nil && *ifNoneMatch != "" {
+		in.IfNoneMatch = aws.String(*ifNoneMatch)
+	}
+
+	result, err := c.client.PutObject(ctx, in)
+	if err != nil {
+		if isPreconditionFailed(err) {
+			return "", true, nil
+		}
+		return "", false, fmt.Errorf("S3 PutObject failed: %w", err)
+	}
+
+	etag := ""
+	if result.ETag != nil {
+		etag = strings.Trim(*result.ETag, "\"")
+	}
+	return etag, false, nil
+}
+
+// isPreconditionFailed detects the 412 PreconditionFailed response that
+// S3 returns when IfMatch / IfNoneMatch evaluates false. The aws-sdk-go-v2
+// surface for conditional-put failures is HTTP-only — there's no typed
+// error to errors.As against — so we unwrap to the underlying smithy
+// HTTP response and check the status code.
+func isPreconditionFailed(err error) bool {
+	var resp *smithyhttp.ResponseError
+	if errors.As(err, &resp) {
+		return resp.HTTPStatusCode() == 412
+	}
+	return false
 }
 
 // Delete removes an object from S3

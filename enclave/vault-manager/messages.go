@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -1988,17 +1989,58 @@ func (mh *MessageHandler) flushVaultStateToS3() {
 		return
 	}
 
-	if err := mh.sealerProxy.StoreVaultState(encryptedState); err != nil {
-		log.Error().Err(err).Str("owner_space", mh.ownerSpace).Msg("Failed to persist vault state to S3")
+	// D3: stamp generation+1 and wrap before storing. Conditional put
+	// uses IfMatch=loadedETag on every store after the first, and
+	// IfNoneMatch=* on the very first store of this vault's lifetime
+	// (no ETag and generation still 0). On conflict we fence further
+	// writes via ownershipRevoked — same mechanism D2 uses for the
+	// routing-handoff case — because a 412 here means another writer
+	// touched our object and our in-memory state is no longer the
+	// truth.
+	mh.vaultState.mu.RLock()
+	prevETag := mh.vaultState.loadedVaultStateETag
+	prevGen := mh.vaultState.vaultStateGeneration
+	mh.vaultState.mu.RUnlock()
+
+	nextGen := prevGen + 1
+	wrapped, err := wrapVaultState(encryptedState, nextGen)
+	if err != nil {
+		log.Error().Err(err).Str("owner_space", mh.ownerSpace).Msg("Failed to wrap vault state for persistence")
 		return
 	}
-	log.Info().Str("owner_space", mh.ownerSpace).Int64("size", newSize).Msg("Vault state persisted to S3")
+
+	firstWrite := prevETag == "" && prevGen == 0
+	newETag, storeErr := mh.sealerProxy.StoreVaultState(wrapped, prevETag, firstWrite)
+	if storeErr != nil {
+		if errors.Is(storeErr, ErrVaultStateConflict) {
+			log.Error().
+				Str("owner_space", mh.ownerSpace).
+				Str("expected_etag", prevETag).
+				Int64("prev_gen", prevGen).
+				Msg("SECURITY: D3 split-brain detected — fencing further writes via ownershipRevoked")
+			mh.vaultState.mu.Lock()
+			mh.vaultState.ownershipRevoked = true
+			mh.vaultState.mu.Unlock()
+			return
+		}
+		log.Error().Err(storeErr).Str("owner_space", mh.ownerSpace).Msg("Failed to persist vault state to S3")
+		return
+	}
+	log.Info().
+		Str("owner_space", mh.ownerSpace).
+		Int64("size", newSize).
+		Int64("generation", nextGen).
+		Str("etag", newETag).
+		Msg("Vault state persisted to S3")
 
 	// Track the size we just wrote so subsequent writes have a
 	// reference point. If we never load again before the next write,
-	// the shrink guard still works against this size.
+	// the shrink guard still works against this size. Also stamp the
+	// returned ETag + bumped generation for the next conditional put.
 	mh.vaultState.mu.Lock()
 	mh.vaultState.loadedVaultStateSize = newSize
+	mh.vaultState.loadedVaultStateETag = newETag
+	mh.vaultState.vaultStateGeneration = nextGen
 	mh.vaultState.mu.Unlock()
 }
 
@@ -2036,11 +2078,39 @@ func (mh *MessageHandler) handleCredentialOperation(ctx context.Context, msg *In
 			if err != nil {
 				log.Warn().Err(err).Str("owner_space", mh.ownerSpace).Msg("Failed to create encrypted vault state")
 			} else {
-				// Store to S3
-				if err := mh.sealerProxy.StoreVaultState(encryptedState); err != nil {
-					log.Warn().Err(err).Str("owner_space", mh.ownerSpace).Msg("Failed to store vault state to S3 - cold vault unlock may not work")
+				// D3: enrollment is the canonical first-write. Use
+				// IfNoneMatch:* so that if a vault_state.enc already
+				// exists for this owner_space (a re-enrollment race or
+				// stale S3 object that should have been decommissioned)
+				// we refuse to overwrite. Generation stamped at 1.
+				mh.vaultState.mu.RLock()
+				prevETag := mh.vaultState.loadedVaultStateETag
+				prevGen := mh.vaultState.vaultStateGeneration
+				mh.vaultState.mu.RUnlock()
+				nextGen := prevGen + 1
+				wrapped, werr := wrapVaultState(encryptedState, nextGen)
+				if werr != nil {
+					log.Warn().Err(werr).Str("owner_space", mh.ownerSpace).Msg("Failed to wrap vault state for enrollment persist")
 				} else {
-					log.Info().Str("owner_space", mh.ownerSpace).Msg("Vault state encrypted and stored to S3 for cold vault recovery")
+					firstWrite := prevETag == "" && prevGen == 0
+					newETag, serr := mh.sealerProxy.StoreVaultState(wrapped, prevETag, firstWrite)
+					if serr != nil {
+						if errors.Is(serr, ErrVaultStateConflict) {
+							log.Error().Str("owner_space", mh.ownerSpace).Msg("SECURITY: enrollment-time vault_state.enc conflict — refusing to clobber existing object")
+						} else {
+							log.Warn().Err(serr).Str("owner_space", mh.ownerSpace).Msg("Failed to store vault state to S3 - cold vault unlock may not work")
+						}
+					} else {
+						log.Info().
+							Str("owner_space", mh.ownerSpace).
+							Int64("generation", nextGen).
+							Str("etag", newETag).
+							Msg("Vault state encrypted and stored to S3 for cold vault recovery")
+						mh.vaultState.mu.Lock()
+						mh.vaultState.loadedVaultStateETag = newETag
+						mh.vaultState.vaultStateGeneration = nextGen
+						mh.vaultState.mu.Unlock()
+					}
 				}
 			}
 		}

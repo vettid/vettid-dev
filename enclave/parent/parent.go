@@ -1657,7 +1657,9 @@ func validateStorageKey(key string) error {
 	return nil
 }
 
-// handleStorageGet retrieves data from S3
+// handleStorageGet retrieves data from S3. Always returns the object's
+// ETag in ReturnedETag so callers that intend to do conditional writes
+// (vault_state.enc D3 path) can carry it forward.
 func (p *ParentProcess) handleStorageGet(ctx context.Context, msg *EnclaveMessage) (*EnclaveMessage, error) {
 	// SECURITY: Validate storage key to prevent path traversal
 	if err := validateStorageKey(msg.StorageKey); err != nil {
@@ -1665,18 +1667,23 @@ func (p *ParentProcess) handleStorageGet(ctx context.Context, msg *EnclaveMessag
 	}
 	key := p.config.S3.KeyPrefix + msg.StorageKey
 
-	data, err := p.s3Client.Get(ctx, key)
+	data, etag, err := p.s3Client.GetWithETag(ctx, key)
 	if err != nil {
 		return nil, fmt.Errorf("S3 get failed: %w", err)
 	}
 
 	return &EnclaveMessage{
 		Type:         EnclaveMessageTypeStorageResponse,
-		StorageValue: data, // Use StorageValue for binary data
+		StorageValue: data,
+		ReturnedETag: etag,
 	}, nil
 }
 
-// handleStoragePut writes data to S3
+// handleStoragePut writes data to S3. When the request carries IfMatch
+// or IfNoneMatch, the put is conditional — on a 412 PreconditionFailed
+// the response carries ConditionFailed=true and the caller (vault-manager
+// via SealerProxy) treats it as a fatal split-brain signal rather than
+// retrying.
 func (p *ParentProcess) handleStoragePut(ctx context.Context, msg *EnclaveMessage) (*EnclaveMessage, error) {
 	// SECURITY: Validate storage key to prevent path traversal
 	if err := validateStorageKey(msg.StorageKey); err != nil {
@@ -1690,12 +1697,39 @@ func (p *ParentProcess) handleStoragePut(ctx context.Context, msg *EnclaveMessag
 		data = msg.Payload
 	}
 
-	if err := p.s3Client.Put(ctx, key, data); err != nil {
-		return nil, fmt.Errorf("S3 put failed: %w", err)
+	// Plain (unconditional) put when neither precondition is set —
+	// preserves existing behavior for sealed_material.bin etc.
+	if msg.IfMatch == "" && msg.IfNoneMatch == "" {
+		if err := p.s3Client.Put(ctx, key, data); err != nil {
+			return nil, fmt.Errorf("S3 put failed: %w", err)
+		}
+		return &EnclaveMessage{
+			Type: EnclaveMessageTypeStorageResponse,
+		}, nil
 	}
 
+	var ifMatch, ifNoneMatch *string
+	if msg.IfMatch != "" {
+		ifMatch = &msg.IfMatch
+	}
+	if msg.IfNoneMatch != "" {
+		ifNoneMatch = &msg.IfNoneMatch
+	}
+	etag, conflict, err := p.s3Client.PutConditional(ctx, key, data, ifMatch, ifNoneMatch)
+	if err != nil {
+		return nil, fmt.Errorf("S3 conditional put failed: %w", err)
+	}
+	if conflict {
+		log.Warn().
+			Str("key", key).
+			Str("if_match", msg.IfMatch).
+			Str("if_none_match", msg.IfNoneMatch).
+			Msg("S3 conditional put rejected (412 PreconditionFailed) — D3 split-brain guard tripped")
+	}
 	return &EnclaveMessage{
-		Type: EnclaveMessageTypeStorageResponse,
+		Type:            EnclaveMessageTypeStorageResponse,
+		ReturnedETag:    etag,
+		ConditionFailed: conflict,
 	}, nil
 }
 

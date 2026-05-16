@@ -112,6 +112,13 @@ type SealerRequest struct {
 	// For get_vote_proof
 	ProposalID      string `json:"proposal_id,omitempty"`
 	VotingPublicKey string `json:"voting_public_key,omitempty"`
+
+	// D3 conditional-storage fields (vault_state.enc split-brain guard).
+	// For store_vault_state: ExpectedETag is the ETag from the previous
+	// load_vault_state; IfNoneMatchAny=true requests first-write semantics
+	// (the object must not exist). load_vault_state has no inputs here.
+	ExpectedETag    string `json:"expected_etag,omitempty"`
+	IfNoneMatchAny  bool   `json:"if_none_match_any,omitempty"`
 }
 
 // SealerResponse is sent back to vault-manager
@@ -162,6 +169,15 @@ type SealerResponse struct {
 	// migration-marker writer). Caller embeds the bytes in the
 	// outbound JSON; not surfaced to vault-manager.
 	Signature []byte `json:"-"`
+
+	// D3 conditional-storage fields (vault_state.enc).
+	// For load_vault_state: ETag is the S3 object's ETag, ready to be
+	// echoed back as ExpectedETag on the next store_vault_state.
+	// For store_vault_state: ETag is the new object's ETag; ConditionFailed
+	// is true if S3 rejected the conditional put (412 PreconditionFailed)
+	// — the caller MUST NOT retry; another writer is touching the object.
+	ETag            string `json:"etag,omitempty"`
+	ConditionFailed bool   `json:"condition_failed,omitempty"`
 }
 
 // HandleSealerRequest processes a sealer request from vault-manager
@@ -457,6 +473,53 @@ func (sh *SealerHandler) s3Put(key string, data []byte) error {
 	return nil
 }
 
+// s3PutConditional performs a conditional S3 PUT through the parent.
+// Exactly one of (expectedETag, ifNoneMatchAny) is meaningful: pass
+// expectedETag for an update-in-place that must match the prior load,
+// or ifNoneMatchAny=true for first-write semantics (object must not
+// exist). Returns the new ETag on success. conflict=true means the
+// parent's S3 PUT got 412 PreconditionFailed and the caller MUST NOT
+// retry; another writer is racing this object (D3 split-brain guard).
+func (sh *SealerHandler) s3PutConditional(key string, data []byte, expectedETag string, ifNoneMatchAny bool) (newETag string, conflict bool, err error) {
+	sh.connMu.Lock()
+	defer sh.connMu.Unlock()
+
+	if sh.parentConn == nil {
+		log.Warn().Str("key", key).Msg("No parent connection for S3 PUT - dev mode")
+		return "", false, nil // Dev mode - pretend it worked
+	}
+
+	msg := &Message{
+		Type:         MessageTypeStoragePut,
+		StorageKey:   key,
+		StorageValue: data,
+	}
+	if expectedETag != "" {
+		msg.IfMatch = expectedETag
+	}
+	if ifNoneMatchAny {
+		msg.IfNoneMatch = "*"
+	}
+
+	if err := sh.parentConn.WriteMessage(msg); err != nil {
+		return "", false, fmt.Errorf("failed to send S3 PUT request: %w", err)
+	}
+
+	response, err := sh.parentConn.ReadMessage()
+	if err != nil {
+		return "", false, fmt.Errorf("failed to read S3 PUT response: %w", err)
+	}
+
+	if response.Type == MessageTypeError {
+		return "", false, fmt.Errorf("S3 PUT error: %s", response.Error)
+	}
+	if response.Type != MessageTypeStorageResponse && response.Type != MessageTypeOK {
+		return "", false, fmt.Errorf("unexpected response type for S3 PUT: %s", response.Type)
+	}
+
+	return response.ReturnedETag, response.ConditionFailed, nil
+}
+
 // s3Get retrieves data from S3 via parent connection (synchronous request/response)
 func (sh *SealerHandler) s3Get(key string) ([]byte, error) {
 	sh.connMu.Lock()
@@ -497,6 +560,46 @@ func (sh *SealerHandler) s3Get(key string) ([]byte, error) {
 	return response.StorageValue, nil
 }
 
+// s3GetWithETag is s3Get plus the object's ETag. Callers that intend to
+// follow up with a conditional put on the same key (vault_state.enc D3
+// path) keep the ETag and pass it back as ExpectedETag on the store.
+func (sh *SealerHandler) s3GetWithETag(key string) ([]byte, string, error) {
+	sh.connMu.Lock()
+	defer sh.connMu.Unlock()
+
+	if sh.parentConn == nil {
+		log.Warn().Str("key", key).Msg("No parent connection for S3 GET - dev mode")
+		return nil, "", fmt.Errorf("no S3 connection available")
+	}
+
+	msg := &Message{
+		Type:       MessageTypeStorageGet,
+		StorageKey: key,
+	}
+
+	if err := sh.parentConn.WriteMessage(msg); err != nil {
+		return nil, "", fmt.Errorf("failed to send S3 GET request: %w", err)
+	}
+
+	response, err := sh.parentConn.ReadMessage()
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to read S3 GET response: %w", err)
+	}
+
+	if response.Type == MessageTypeError {
+		return nil, "", fmt.Errorf("S3 GET error: %s", response.Error)
+	}
+	if response.Type != MessageTypeStorageResponse {
+		return nil, "", fmt.Errorf("unexpected response type for S3 GET: %s", response.Type)
+	}
+
+	data := response.StorageValue
+	if len(response.Payload) > 0 {
+		data = response.Payload
+	}
+	return data, response.ReturnedETag, nil
+}
+
 // storeSealedMaterial stores sealed material to S3 via parent
 func (sh *SealerHandler) storeSealedMaterial(req SealerRequest) SealerResponse {
 	key := s3KeySealedMaterial(req.OwnerSpace)
@@ -526,34 +629,63 @@ func (sh *SealerHandler) loadSealedMaterial(req SealerRequest) SealerResponse {
 	return SealerResponse{Success: true, SealedMaterial: data}
 }
 
-// storeVaultState stores encrypted vault state to S3 via parent
+// storeVaultState stores encrypted vault state to S3 via parent using
+// the D3 conditional-put path. The caller (vault-manager SealerProxy)
+// supplies either ExpectedETag (update of an object loaded earlier in
+// this process) or IfNoneMatchAny (first-write at fresh enrollment).
+// Returns the new ETag on success. ConditionFailed=true means S3 got a
+// 412 PreconditionFailed: another writer is racing this object; the
+// caller MUST NOT retry blindly and should treat it as a split-brain
+// signal (the existing ownershipRevoked plumbing fences subsequent writes).
 func (sh *SealerHandler) storeVaultState(req SealerRequest) SealerResponse {
 	key := s3KeyVaultState(req.OwnerSpace)
-	log.Info().Str("owner_space", req.OwnerSpace).Str("key", key).Msg("Storing vault state to S3")
+	log.Info().
+		Str("owner_space", req.OwnerSpace).
+		Str("key", key).
+		Bool("has_expected_etag", req.ExpectedETag != "").
+		Bool("if_none_match_any", req.IfNoneMatchAny).
+		Msg("Storing vault state to S3")
 
-	if err := sh.s3Put(key, req.Data); err != nil {
+	newETag, conflict, err := sh.s3PutConditional(key, req.Data, req.ExpectedETag, req.IfNoneMatchAny)
+	if err != nil {
 		log.Error().Err(err).Msg("Failed to store vault state to S3")
 		return SealerResponse{Success: false, Error: err.Error()}
 	}
+	if conflict {
+		log.Error().
+			Str("owner_space", req.OwnerSpace).
+			Str("expected_etag", req.ExpectedETag).
+			Bool("if_none_match_any", req.IfNoneMatchAny).
+			Msg("SECURITY: S3 conditional store rejected — D3 split-brain guard tripped")
+		return SealerResponse{Success: false, ConditionFailed: true, Error: "s3 precondition failed"}
+	}
 
-	log.Info().Str("owner_space", req.OwnerSpace).Msg("Vault state stored to S3 successfully")
-	return SealerResponse{Success: true}
+	log.Info().
+		Str("owner_space", req.OwnerSpace).
+		Str("new_etag", newETag).
+		Msg("Vault state stored to S3 successfully")
+	return SealerResponse{Success: true, ETag: newETag}
 }
 
-// loadVaultState loads encrypted vault state from S3 via parent
+// loadVaultState loads encrypted vault state from S3 via parent and
+// returns the object's ETag so the next store_vault_state can use it
+// as ExpectedETag (D3 compare-and-swap).
 func (sh *SealerHandler) loadVaultState(req SealerRequest) SealerResponse {
 	key := s3KeyVaultState(req.OwnerSpace)
 	log.Info().Str("owner_space", req.OwnerSpace).Str("key", key).Msg("Loading vault state from S3")
 
-	data, err := sh.s3Get(key)
+	data, etag, err := sh.s3GetWithETag(key)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to load vault state from S3")
 		return SealerResponse{Success: false, Error: err.Error()}
 	}
 
-	log.Info().Str("owner_space", req.OwnerSpace).Int("data_len", len(data)).Msg("Vault state loaded from S3 successfully")
-	// Return in UnsealedData field (reusing existing field)
-	return SealerResponse{Success: true, UnsealedData: data}
+	log.Info().
+		Str("owner_space", req.OwnerSpace).
+		Int("data_len", len(data)).
+		Str("etag", etag).
+		Msg("Vault state loaded from S3 successfully")
+	return SealerResponse{Success: true, UnsealedData: data, ETag: etag}
 }
 
 // storeSealedECIES stores KMS-sealed ECIES keys to S3 via parent

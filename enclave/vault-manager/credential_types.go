@@ -147,6 +147,24 @@ type VaultState struct {
 	// persistVaultStateToS3.
 	loadedVaultStateSize int64
 
+	// loadedVaultStateETag is the S3 ETag of vault_state.enc as this
+	// instance most recently saw it (on cold load or after its own
+	// successful write). It's plumbed back into the next store as the
+	// IfMatch precondition so a racing writer (split-brain) gets a 412
+	// rather than silently clobbering us. Empty means we have no prior
+	// ETag — either fresh enrollment (the first store uses
+	// IfNoneMatch:* instead) or an unconditional write path that
+	// pre-dates D3. See flushVaultStateToS3.
+	loadedVaultStateETag string
+
+	// vaultStateGeneration is the monotonic counter stamped on the
+	// vault_state.enc wrapper. Bumped on every successful store; the
+	// loaded value on cold load becomes our floor. Combined with the
+	// ETag-based S3 CAS it gives us two independent split-brain
+	// detectors — ETag catches the race at write time, generation
+	// catches stale-loaded state on the next cold start.
+	vaultStateGeneration int64
+
 	// ownershipRevoked fences off this subprocess once the parent's
 	// RoutingManager has lost this user's routing claim (handoff /
 	// reclaim / lease loss). Set by MarkOwnershipRevoked when a
