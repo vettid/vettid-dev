@@ -16,6 +16,25 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$HERE"
 
+# Detect available compose tool. Prefer `docker compose` (v2 plugin)
+# when available because its YAML support is the most current; fall
+# back to standalone `docker-compose` (v1.x or v2 standalone) and
+# then `podman-compose` (native podman, common on Fedora). All three
+# accept the same -f / up / down / logs surface this script uses.
+if docker compose version >/dev/null 2>&1; then
+    COMPOSE=(docker compose)
+elif command -v docker-compose >/dev/null 2>&1; then
+    COMPOSE=(docker-compose)
+elif command -v podman-compose >/dev/null 2>&1; then
+    COMPOSE=(podman-compose)
+else
+    echo "no compose tool found; install one of:" >&2
+    echo "  Fedora:  sudo dnf install podman-compose" >&2
+    echo "  Debian:  sudo apt install docker-compose-plugin" >&2
+    exit 1
+fi
+echo "==> using compose tool: ${COMPOSE[*]}"
+
 KEEP=false
 BUILD_FLAG=(--build)
 SCENARIO=""
@@ -34,16 +53,16 @@ done
 
 cleanup() {
     if [ "$KEEP" = true ]; then
-        echo "==> --keep set; leaving stack up. Tear down with: docker compose -f $HERE/docker-compose.yml down -v"
+        echo "==> --keep set; leaving stack up. Tear down with: ${COMPOSE[*]} -f $HERE/docker-compose.yml down -v"
         return
     fi
     echo "==> tearing down compose stack"
-    docker compose -f "$HERE/docker-compose.yml" down -v --remove-orphans >/dev/null 2>&1 || true
+    "${COMPOSE[@]}" -f "$HERE/docker-compose.yml" down -v --remove-orphans >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
-echo "==> docker compose up ${BUILD_FLAG[*]} -d"
-docker compose -f "$HERE/docker-compose.yml" up "${BUILD_FLAG[@]}" -d
+echo "==> ${COMPOSE[*]} up ${BUILD_FLAG[*]} -d"
+"${COMPOSE[@]}" -f "$HERE/docker-compose.yml" up "${BUILD_FLAG[@]}" -d
 
 wait_for_ready() {
     local name="$1" port="$2" deadline=$(( $(date +%s) + 120 ))
@@ -56,7 +75,7 @@ wait_for_ready() {
         sleep 2
     done
     echo "==> $name did not report ready within 120s" >&2
-    docker compose -f "$HERE/docker-compose.yml" logs --tail 80 "$name" >&2 || true
+    "${COMPOSE[@]}" -f "$HERE/docker-compose.yml" logs --tail 80 "$name" >&2 || true
     return 1
 }
 
