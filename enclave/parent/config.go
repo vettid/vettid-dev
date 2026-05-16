@@ -96,8 +96,18 @@ type EnclaveConfig struct {
 	// SECURITY: If set, parent will verify enclave attestation against this value
 	// Can also be loaded from SSM parameter /vettid/enclave/pcr0
 	ExpectedPCR0 string `yaml:"expected_pcr0"`
-	// PCR0SSMParameter is the SSM parameter path for PCR0 (overrides ExpectedPCR0)
+	// PCR0SSMParameter is the SSM parameter path for PCR0. Fleet-shared
+	// and load-bearing for legacy bring-up; superseded by EIFPath for
+	// boot-time PCR loading on Nitro hosts. See loadExpectedPCRs for
+	// the source-resolution order.
 	PCR0SSMParameter string `yaml:"pcr0_ssm_parameter"`
+	// EIFPath is the path to the local enclave image file. When set and
+	// readable, parent extracts PCR0 from it via `nitro-cli describe-eif`
+	// and prefers that value over SSM. The EIF is the immutable identity
+	// of the enclave code that's actually about to run on this instance,
+	// so it can't drift mid-rollout the way a fleet-shared SSM parameter
+	// can (#236, the v6→v7 crash-loop pattern from 2026-05-15).
+	EIFPath string `yaml:"eif_path"`
 }
 
 // HealthConfig holds health check settings
@@ -149,7 +159,8 @@ func DefaultConfig() *Config {
 		Enclave: EnclaveConfig{
 			CID:              16, // Default enclave CID
 			Port:             5000,
-			PCR0SSMParameter: "/vettid/enclave/pcr/pcr0", // Default SSM parameter for PCR0
+			PCR0SSMParameter: "/vettid/enclave/pcr/pcr0",                       // SSM fallback for PCR0
+			EIFPath:          "/opt/vettid/enclave/vettid-vault-enclave.eif",   // Primary PCR0 source on Nitro hosts
 		},
 		Health: HealthConfig{
 			Port:     8080,

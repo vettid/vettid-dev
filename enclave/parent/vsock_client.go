@@ -18,6 +18,7 @@ import (
 	"math/big"
 	"net"
 	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -320,13 +321,72 @@ func NewVsockClient(cfg EnclaveConfig, devMode bool) (*VsockClient, error) {
 	return client, nil
 }
 
-// loadExpectedPCRs loads expected PCR values from SSM parameter or config
-// SECURITY: PCR values are critical for attestation verification
-func (c *VsockClient) loadExpectedPCRs() error {
-	var pcr0Hex string
+// loadPCR0FromEIF returns the hex PCR0 measurement of the local EIF
+// file by shelling out to `nitro-cli describe-eif`. Returns "" (with a
+// warning logged) if the EIF is missing, nitro-cli is unavailable, or
+// the output can't be parsed — callers fall through to the SSM or
+// static-config source in that case.
+//
+// Why this exists: the EIF on disk is the exact code the supervisor is
+// about to launch into the enclave, so its PCR0 is an immutable
+// per-instance fact. A fleet-shared SSM parameter, by contrast, gets
+// promoted to the new PCR0 mid-rollout by deploy.sh and starts handing
+// out values that don't match older parents' local enclaves — that's
+// the v6→v7 crash-loop pattern from 2026-05-15 (#236).
+func loadPCR0FromEIF(eifPath string) string {
+	if eifPath == "" {
+		return ""
+	}
+	if _, err := os.Stat(eifPath); err != nil {
+		log.Warn().Err(err).Str("path", eifPath).Msg("EIF file not present; skipping local PCR0 load")
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "nitro-cli", "describe-eif", "--eif-path", eifPath).Output()
+	if err != nil {
+		log.Warn().Err(err).Str("path", eifPath).Msg("nitro-cli describe-eif failed; skipping local PCR0 load")
+		return ""
+	}
+	// nitro-cli output schema differs across versions. Modern Amazon Linux
+	// images nest measurements under .Measurements; legacy versions emit
+	// PCR fields at the top level. Tolerate both.
+	var doc struct {
+		PCR0         string `json:"PCR0"`
+		Measurements struct {
+			PCR0 string `json:"PCR0"`
+		} `json:"Measurements"`
+	}
+	if err := json.Unmarshal(out, &doc); err != nil {
+		log.Warn().Err(err).Msg("Failed to parse nitro-cli describe-eif output; skipping local PCR0 load")
+		return ""
+	}
+	if doc.Measurements.PCR0 != "" {
+		return doc.Measurements.PCR0
+	}
+	return doc.PCR0
+}
 
-	// Try to load from SSM parameter first
-	if c.config.PCR0SSMParameter != "" {
+// loadExpectedPCRs loads expected PCR values for attestation verification.
+// SECURITY: PCR values are critical for attestation verification.
+//
+// Source resolution order:
+//  1. Local EIF (`nitro-cli describe-eif` on c.config.EIFPath) — primary.
+//     Immutable per-instance; can't drift mid-rollout the way SSM can.
+//  2. SSM parameter (c.config.PCR0SSMParameter) — transitional fallback.
+//     Kept until every host runs a build with EIF loading wired up; will
+//     be deleted in a follow-up so SSM stops being load-bearing for boot.
+//  3. Static config (c.config.ExpectedPCR0) — last resort, used in tests
+//     and one-off bring-up.
+func (c *VsockClient) loadExpectedPCRs() error {
+	var pcr0Hex, source string
+
+	if pcr0 := loadPCR0FromEIF(c.config.EIFPath); pcr0 != "" {
+		pcr0Hex = pcr0
+		source = "local EIF (" + c.config.EIFPath + ")"
+	}
+
+	if pcr0Hex == "" && c.config.PCR0SSMParameter != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
@@ -342,15 +402,14 @@ func (c *VsockClient) loadExpectedPCRs() error {
 				log.Warn().Err(err).Str("param", c.config.PCR0SSMParameter).Msg("Failed to load PCR0 from SSM, falling back to static config")
 			} else if result.Parameter != nil && result.Parameter.Value != nil {
 				pcr0Hex = *result.Parameter.Value
-				log.Info().Str("param", c.config.PCR0SSMParameter).Msg("Loaded PCR0 from SSM parameter")
+				source = "SSM " + c.config.PCR0SSMParameter
 			}
 		}
 	}
 
-	// Fall back to static config
 	if pcr0Hex == "" && c.config.ExpectedPCR0 != "" {
 		pcr0Hex = c.config.ExpectedPCR0
-		log.Info().Msg("Using static PCR0 from config")
+		source = "static config"
 	}
 
 	// If no PCR0 available, production mode should fail
@@ -375,7 +434,7 @@ func (c *VsockClient) loadExpectedPCRs() error {
 	}
 	c.expectedPCR0Hex = pcr0Hex
 
-	log.Info().Str("pcr0", pcr0Hex[:16]+"...").Msg("PCR0 loaded for attestation verification")
+	log.Info().Str("pcr0", pcr0Hex[:16]+"...").Str("source", source).Msg("PCR0 loaded for attestation verification")
 	return nil
 }
 
