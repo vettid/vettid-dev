@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -800,46 +799,31 @@ func (h *CredentialSecretHandler) encryptCredentialBlob(cred *ProteanCredentialV
 // The app sends three separate base64-encoded components: ciphertext, ephemeral public key, and nonce.
 // These must be combined into the format expected by decryptWithUTK: [ephemeralPubKey(32) | nonce(24) | ciphertext]
 func (h *CredentialSecretHandler) verifyPasswordAgainstCredential(encryptedPasswordHash, ephemeralPublicKey, nonce, keyID string, cred *ProteanCredentialV2) error {
-	log.Warn().
-		Str("owner_space", h.ownerSpace).
-		Str("key_id", keyID).
-		Int("eph_pub_len", len(ephemeralPublicKey)).
-		Int("nonce_len", len(nonce)).
-		Int("enc_pw_hash_len", len(encryptedPasswordHash)).
-		Bool("cred_nil", cred == nil).
-		Bool("bootstrap_nil", h.bootstrap == nil).
-		Msg("DIAG: verifyPasswordAgainstCredential entered")
 	if cred == nil {
-		log.Warn().Str("owner_space", h.ownerSpace).Msg("DIAG: verify failed — nil cred")
 		return fmt.Errorf("nil cred")
 	}
 	if h.bootstrap == nil {
-		log.Warn().Str("owner_space", h.ownerSpace).Msg("DIAG: verify failed — nil bootstrap")
 		return fmt.Errorf("nil bootstrap")
 	}
 	// Get the LTK for the provided UTK ID
 	ltk, found := h.bootstrap.GetLTKForUTK(keyID)
 	if !found {
-		log.Warn().Str("owner_space", h.ownerSpace).Str("key_id", keyID).Msg("DIAG: verify failed — UTK not found")
 		return fmt.Errorf("invalid or expired UTK")
 	}
 
 	// Decode the three separate base64-encoded components
 	ciphertext, err := base64.StdEncoding.DecodeString(encryptedPasswordHash)
 	if err != nil {
-		log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("DIAG: verify failed — bad encrypted_password_hash b64")
 		return fmt.Errorf("invalid encrypted_password_hash encoding")
 	}
 
 	ephPubKey, err := base64.StdEncoding.DecodeString(ephemeralPublicKey)
 	if err != nil {
-		log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("DIAG: verify failed — bad ephemeral_public_key b64")
 		return fmt.Errorf("invalid ephemeral_public_key encoding")
 	}
 
 	nonceBytes, err := base64.StdEncoding.DecodeString(nonce)
 	if err != nil {
-		log.Warn().Err(err).Str("owner_space", h.ownerSpace).Msg("DIAG: verify failed — bad nonce b64")
 		return fmt.Errorf("invalid nonce encoding")
 	}
 
@@ -852,7 +836,6 @@ func (h *CredentialSecretHandler) verifyPasswordAgainstCredential(encryptedPassw
 	// Decrypt using the LTK
 	passwordHashBytes, err := decryptWithUTK(ltk, combinedPayload)
 	if err != nil {
-		log.Warn().Err(err).Str("owner_space", h.ownerSpace).Int("eph_pub_bytes", len(ephPubKey)).Int("nonce_bytes", len(nonceBytes)).Int("ciphertext_bytes", len(ciphertext)).Msg("DIAG: verify failed — UTK decrypt failed")
 		return fmt.Errorf("decryption failed: %w", err)
 	}
 	defer zeroBytes(passwordHashBytes)
@@ -875,23 +858,14 @@ func (h *CredentialSecretHandler) verifyPasswordAgainstCredential(encryptedPassw
 	// Verify against the credential's PHC hash
 	storedHash := cred.Auth.Hash
 	if storedHash == "" {
-		log.Warn().Str("owner_space", h.ownerSpace).Msg("DIAG: verify failed — credential has empty Auth.Hash")
 		return fmt.Errorf("credential has no password hash")
 	}
 
 	// Compare PHC strings directly (constant-time comparison)
 	if !timingSafeEqualStrings(passwordHash, storedHash) {
-		log.Warn().
-			Str("owner_space", h.ownerSpace).
-			Int("submitted_len", len(passwordHash)).
-			Int("stored_len", len(storedHash)).
-			Bool("submitted_phc", strings.HasPrefix(passwordHash, "$argon2")).
-			Bool("stored_phc", strings.HasPrefix(storedHash, "$argon2")).
-			Msg("DIAG: verify failed — PHC mismatch")
 		return fmt.Errorf("incorrect password")
 	}
 
-	log.Warn().Str("owner_space", h.ownerSpace).Msg("DIAG: verify OK")
 	return nil
 }
 

@@ -204,31 +204,18 @@ func (mh *MessageHandler) HandleApproveVerify(msg *IncomingMessage) (*OutgoingMe
 		KeyID                 string `json:"key_id"`
 	}
 	if err := unmarshalRequest(msg.Payload, &req, "ApproveVerify"); err != nil {
-		log.Warn().Err(err).Msg("DIAG: ApproveVerify unmarshal failed")
 		return mh.errorResponse(msg.GetID(), "invalid approve payload")
 	}
-	log.Warn().
-		Str("owner_space", mh.ownerSpace).
-		Str("request_id", req.RequestID).
-		Int("enc_cred_len", len(req.EncryptedCredential)).
-		Int("enc_pw_hash_len", len(req.EncryptedPasswordHash)).
-		Int("eph_pub_len", len(req.EphemeralPublicKey)).
-		Int("nonce_len", len(req.Nonce)).
-		Str("key_id", req.KeyID).
-		Msg("DIAG: ApproveVerify entered")
 	if req.RequestID == "" || req.EncryptedCredential == "" || req.EncryptedPasswordHash == "" || req.KeyID == "" {
-		log.Warn().Msg("DIAG: ApproveVerify failed — missing required fields")
 		return mh.errorResponse(msg.GetID(), "password authorization required")
 	}
 
 	pendingData, err := mh.storage.Get("pending_verify_in/" + req.RequestID)
 	if err != nil || len(pendingData) == 0 {
-		log.Warn().Err(err).Str("request_id", req.RequestID).Int("data_len", len(pendingData)).Msg("DIAG: ApproveVerify failed — pending not found")
 		return mh.errorResponse(msg.GetID(), "pending verify request not found")
 	}
 	var pending map[string]string
 	if err := json.Unmarshal(pendingData, &pending); err != nil {
-		log.Warn().Err(err).Msg("DIAG: ApproveVerify failed — pending unmarshal")
 		return mh.errorResponse(msg.GetID(), "corrupt pending verify record")
 	}
 
@@ -238,19 +225,10 @@ func (mh *MessageHandler) HandleApproveVerify(msg *IncomingMessage) (*OutgoingMe
 	// credential blob rather than the in-memory TTL carve-out.
 	cred, err := mh.credentialSecretHandler.decryptCredentialBlob(req.EncryptedCredential)
 	if err != nil {
-		log.Warn().Err(err).Msg("DIAG: ApproveVerify failed — credential decrypt")
 		return mh.errorResponse(msg.GetID(), "credential decrypt failed")
 	}
 	defer cred.SecureErase()
-	log.Warn().
-		Bool("has_auth_hash", cred.Auth.Hash != "").
-		Int("auth_hash_len", len(cred.Auth.Hash)).
-		Int("identity_priv_len", len(cred.Identity.PrivateKey)).
-		Int("identity_pub_len", len(cred.Identity.PublicKey)).
-		Int("format_version", cred.FormatVersion).
-		Msg("DIAG: ApproveVerify cred decoded")
 	if err := mh.credentialSecretHandler.verifyPasswordAgainstCredential(req.EncryptedPasswordHash, req.EphemeralPublicKey, req.Nonce, req.KeyID, cred); err != nil {
-		log.Warn().Err(err).Msg("DIAG: ApproveVerify failed — password verify returned error")
 		return mh.errorResponse(msg.GetID(), "password verification failed")
 	}
 	idKey := append([]byte{}, cred.Identity.PrivateKey...)

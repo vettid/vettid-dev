@@ -545,23 +545,6 @@ func (h *EventHandler) QueryAudit(ctx context.Context, req *AuditQueryRequest) (
 	if h.auditAnchorFn != nil {
 		resp.AuditPub, resp.BindingSig, resp.IdentityPub = h.auditAnchorFn()
 	}
-	// DIAG (2026-05-14): diagnosing the "chain unsigned" / "chain
-	// integrity broken" audit-log pills. Logs whether the anchor is
-	// populated and how many returned rows carry an entry_sig — strip
-	// once the audit chain verifies clean on both test phones.
-	signedRows := 0
-	for i := range events {
-		if events[i].EntrySig != "" {
-			signedRows++
-		}
-	}
-	log.Warn().
-		Int("audit_pub_b64_len", len(resp.AuditPub)).
-		Int("binding_sig_b64_len", len(resp.BindingSig)).
-		Int("identity_pub_b64_len", len(resp.IdentityPub)).
-		Int("rows_returned", len(events)).
-		Int("rows_with_entry_sig", signedRows).
-		Msg("DIAG: audit.query response assembled")
 	return resp, nil
 }
 
