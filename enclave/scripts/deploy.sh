@@ -172,6 +172,44 @@ get_kms_policy() {
         --query Policy --output text --region "$REGION"
 }
 
+# Add PCR0 values to the AllowEnclaveDecrypt condition's AnyOf set,
+# preserving any historical PCR0s already present. Prior versions set
+# `= [old, new]`, which evicted any earlier PCR0 still in the policy —
+# during the v8 deploy that dropped v6 from AnyOf even though some
+# vaults were still sealed against v6 (recovery required re-adding v6
+# by hand). Future-proofing: finalize_migration is the only place that
+# prunes AnyOf back to a single value.
+#
+# Args:
+#   $1: current KMS policy JSON
+#   $@: hex PCR0 values to add (idempotent — duplicates dropped via unique)
+add_pcr0s_to_kms_policy() {
+    local policy="$1"
+    shift
+    local pcrs_json
+    pcrs_json=$(printf '%s\n' "$@" | jq -R . | jq -s .)
+    echo "$policy" | jq --argjson new "$pcrs_json" '
+        .Statement |= map(
+            if .Sid == "AllowEnclaveDecrypt" then
+                .Condition.StringEqualsIgnoreCase."kms:RecipientAttestation:PCR0" |= (
+                    (if type == "array" then . else [.] end) + $new | unique
+                )
+            else . end
+        )
+    '
+}
+
+# Count PCR0 entries in the AllowEnclaveDecrypt AnyOf set. Normalizes
+# the single-string case to length 1.
+count_pcr0s_in_policy() {
+    echo "$1" | jq '
+        [.Statement[] | select(.Sid == "AllowEnclaveDecrypt")
+            | .Condition.StringEqualsIgnoreCase."kms:RecipientAttestation:PCR0"
+            | (if type == "array" then . else [.] end)]
+        | flatten | length
+    '
+}
+
 # Wait for ASG instance refresh to complete
 wait_for_refresh() {
     local asg_name="$1"
@@ -529,15 +567,15 @@ do_deploy() {
     # Phase 3: KMS transition
     # ------------------------------------------------------------------
     PHASE="kms-update"
-    log_step "Phase 3: Updating KMS policy (AnyOf [old, new])"
+    log_step "Phase 3: Adding new PCR0 to KMS AnyOf (preserving history)"
 
-    local new_policy
-    new_policy=$(echo "$ORIGINAL_KMS_POLICY" | jq --arg old "$old_pcr0" --arg new "$new_pcr0" \
-        '(.Statement[] | select(.Sid == "AllowEnclaveDecrypt") | .Condition.StringEqualsIgnoreCase."kms:RecipientAttestation:PCR0") = [$old, $new]')
+    local new_policy pcr_count
+    new_policy=$(add_pcr0s_to_kms_policy "$ORIGINAL_KMS_POLICY" "$old_pcr0" "$new_pcr0")
     aws kms put-key-policy --key-id "$kms_key_id" --policy-name default \
         --policy "$new_policy" --region "$REGION"
     KMS_MODIFIED=true
-    log_info "KMS policy now allows both PCR0 values"
+    pcr_count=$(count_pcr0s_in_policy "$new_policy")
+    log_info "KMS policy now allows $pcr_count PCR0 value(s) (added new build; preserved any historical PCR0s with un-migrated material)"
 
     # ------------------------------------------------------------------
     # Phase 4: Scale to dual-enclave
@@ -683,11 +721,11 @@ do_deploy() {
             aws ssm put-parameter --name "/vettid/enclave/pcr/staged-current" \
                 --value "$updated_json" --type String --overwrite --region "$REGION"
 
-            # Update KMS policy to AnyOf [old, actual]
+            # Rebuild from ORIGINAL (pre-Phase-3) policy + (old, actual)
+            # so the wrong SSM-derived PCR0 from Phase 3 drops out and
+            # historical PCR0s are preserved.
             local corrected_policy
-            corrected_policy=$(echo "$ORIGINAL_KMS_POLICY" | jq \
-                --arg old "$old_pcr0" --arg new "$actual_pcr0" \
-                '(.Statement[] | select(.Sid == "AllowEnclaveDecrypt") | .Condition.StringEqualsIgnoreCase."kms:RecipientAttestation:PCR0") = [$old, $new]')
+            corrected_policy=$(add_pcr0s_to_kms_policy "$ORIGINAL_KMS_POLICY" "$old_pcr0" "$actual_pcr0")
             aws kms put-key-policy --key-id "$kms_key_id" --policy-name default \
                 --policy "$corrected_policy" --region "$REGION"
 
