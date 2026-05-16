@@ -1,20 +1,12 @@
-# Tier-2 migration test harness — STUB
+# Tier-2 migration test harness compose stack.
 #
-# Status: scaffolded but not yet runnable. See README.md for the
-# required production-code dev-mode hooks (supervisor FAKE_PCR0,
-# KMS bypass) that need to land before this compose file actually
-# runs.
+# Stands up LocalStack (S3 + KMS + SSM) + NATS JetStream + two
+# vettid-parent containers attesting to different fake PCR0s. The
+# init container writes the resource ARNs to a shared volume so the
+# parents can pick them up without needing aws-cli baked in.
 #
-# When complete this stands up:
-#   - LocalStack (S3 + KMS + SSM endpoints)
-#   - NATS with JetStream (single-node)
-#   - Two vettid-parent containers, each attesting to a different
-#     fake PCR0, both running the supervisor + vault-manager binaries
-#     against the shared LocalStack + NATS.
-#   - A test driver container that publishes vault RPCs and asserts
-#     the post-conditions.
-
-version: "3.9"
+# Bring-up: ./run.sh (or `docker compose up --build`).
+# Validation: `docker compose config` parses without running anything.
 
 services:
   localstack:
@@ -22,7 +14,7 @@ services:
     container_name: vettid-migration-localstack
     environment:
       - SERVICES=s3,kms,ssm
-      - DEBUG=1
+      - DEBUG=0
       - PERSISTENCE=0
     ports:
       - "4566:4566"
@@ -57,39 +49,59 @@ services:
       - AWS_ENDPOINT_URL=http://localstack:4566
     volumes:
       - ./fixtures/localstack-init.sh:/init.sh:ro
+      - shared-arns:/shared
     entrypoint: ["/bin/bash", "/init.sh"]
 
-  # parent-old and parent-new are placeholder service definitions.
-  # They reference Dockerfile.parent-dev which doesn't exist yet —
-  # building it requires the FAKE_PCR0 + KMS-bypass dev-mode hooks
-  # documented in README.md.
-  #
-  # parent-old:
-  #   build:
-  #     context: ../..
-  #     dockerfile: tests/migration/Dockerfile.parent-dev
-  #   environment:
-  #     - FAKE_PCR0_HEX=aaaaaaaa00000000aaaaaaaa00000000aaaaaaaa00000000aaaaaaaa00000000aaaaaaaa00000000aaaaaaaa00000000
-  #     - AWS_ENDPOINT_URL=http://localstack:4566
-  #     - NATS_URL=nats://nats:4222
-  #     - VETTID_DEV_MODE=true
-  #   depends_on:
-  #     init:
-  #       condition: service_completed_successfully
-  #     nats:
-  #       condition: service_healthy
-  #
-  # parent-new:
-  #   build:
-  #     context: ../..
-  #     dockerfile: tests/migration/Dockerfile.parent-dev
-  #   environment:
-  #     - FAKE_PCR0_HEX=bbbbbbbb00000000bbbbbbbb00000000bbbbbbbb00000000bbbbbbbb00000000bbbbbbbb00000000bbbbbbbb00000000
-  #     - AWS_ENDPOINT_URL=http://localstack:4566
-  #     - NATS_URL=nats://nats:4222
-  #     - VETTID_DEV_MODE=true
-  #   depends_on:
-  #     init:
-  #       condition: service_completed_successfully
-  #     nats:
-  #       condition: service_healthy
+  # OLD enclave — first FAKE_PCR0_HEX. The harness drives a user
+  # enrollment against OLD, then publishes a migration config pointing
+  # at NEW's PCR0 and asserts the handoff lands cleanly.
+  parent-old:
+    build:
+      context: ../..
+      dockerfile: tests/migration/Dockerfile.parent-dev
+    container_name: vettid-migration-parent-old
+    environment:
+      # 48 raw bytes = SHA-384 width = 96 hex chars.
+      - FAKE_PCR0_HEX=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      - AWS_ENDPOINT_URL=http://localstack:4566
+      - AWS_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - NATS_URL=nats://nats:4222
+      - SHARED_ARNS=/shared/arns.env
+    depends_on:
+      init:
+        condition: service_completed_successfully
+      nats:
+        condition: service_healthy
+    volumes:
+      - shared-arns:/shared:ro
+    ports:
+      - "8081:8080"
+
+  # NEW enclave — second FAKE_PCR0_HEX, different from OLD's.
+  parent-new:
+    build:
+      context: ../..
+      dockerfile: tests/migration/Dockerfile.parent-dev
+    container_name: vettid-migration-parent-new
+    environment:
+      - FAKE_PCR0_HEX=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+      - AWS_ENDPOINT_URL=http://localstack:4566
+      - AWS_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - NATS_URL=nats://nats:4222
+      - SHARED_ARNS=/shared/arns.env
+    depends_on:
+      init:
+        condition: service_completed_successfully
+      nats:
+        condition: service_healthy
+    volumes:
+      - shared-arns:/shared:ro
+    ports:
+      - "8082:8080"
+
+volumes:
+  shared-arns:

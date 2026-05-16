@@ -1,34 +1,75 @@
 #!/usr/bin/env bash
-# Tier-2 migration test harness entry point — STUB
+# Tier-2 migration test harness entry point.
 #
-# Status: not yet runnable. Prints the design checkpoint message
-# until the dev-mode hooks documented in README.md are in place.
+# Brings up the LocalStack + NATS + 2-parent compose stack, waits
+# for both parents to report /ready, and (when implemented) runs
+# the test driver. Without --keep, tears the stack down on exit.
 #
-# Once those land, this script will:
-#   1. docker compose up -d (LocalStack + NATS + init)
-#   2. Wait for init to complete
-#   3. docker compose up -d parent-old parent-new
-#   4. Wait for both /ready endpoints
-#   5. Run the test driver against the running stack
-#   6. docker compose down (unless --keep)
+# Usage:
+#   ./run.sh                  # full sweep
+#   ./run.sh happy-path       # single scenario by name
+#   ./run.sh --keep           # leave the stack up after exit
+#   ./run.sh --no-build       # skip image rebuild (faster iteration)
 
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$HERE"
 
-cat <<'EOF' >&2
-Tier-2 migration test harness is scaffolded but not yet runnable.
+KEEP=false
+BUILD_FLAG=(--build)
+SCENARIO=""
 
-Required production-code changes before this will work:
-  - supervisor/config.go: FakePCR0 env var (DevMode-gated)
-  - supervisor/sealer_handler.go: in-process fake-KMS (DevMode-gated)
-  - parent/parent.go: skip vsock attestation in DevMode (extend existing TCP fallback)
-  - tests/migration/Dockerfile.parent-dev: build the parent image with DevMode=true
-  - tests/migration/driver/: Go test driver (publishes NATS RPCs, asserts state)
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --keep)     KEEP=true; shift ;;
+        --no-build) BUILD_FLAG=(); shift ;;
+        --help|-h)
+            sed -n '2,12p' "$0"
+            exit 0 ;;
+        --*)        echo "unknown flag: $1" >&2; exit 2 ;;
+        *)          SCENARIO="$1"; shift ;;
+    esac
+done
 
-See tests/migration/README.md for the full design checkpoint and
-list of test scenarios to implement.
+cleanup() {
+    if [ "$KEEP" = true ]; then
+        echo "==> --keep set; leaving stack up. Tear down with: docker compose -f $HERE/docker-compose.yml down -v"
+        return
+    fi
+    echo "==> tearing down compose stack"
+    docker compose -f "$HERE/docker-compose.yml" down -v --remove-orphans >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
 
-EOF
+echo "==> docker compose up ${BUILD_FLAG[*]} -d"
+docker compose -f "$HERE/docker-compose.yml" up "${BUILD_FLAG[@]}" -d
 
-exit 1
+wait_for_ready() {
+    local name="$1" port="$2" deadline=$(( $(date +%s) + 120 ))
+    echo "==> waiting for $name on :$port"
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        if curl -sf "http://localhost:$port/ready" >/dev/null 2>&1; then
+            echo "==> $name ready"
+            return 0
+        fi
+        sleep 2
+    done
+    echo "==> $name did not report ready within 120s" >&2
+    docker compose -f "$HERE/docker-compose.yml" logs --tail 80 "$name" >&2 || true
+    return 1
+}
+
+wait_for_ready parent-old 8081
+wait_for_ready parent-new 8082
+
+if [ ! -d "$HERE/driver" ]; then
+    echo "==> test driver not implemented yet; compose stack is up for manual inspection."
+    echo "    parent-old: http://localhost:8081/ready"
+    echo "    parent-new: http://localhost:8082/ready"
+    echo "    pass --keep to skip teardown."
+    exit 0
+fi
+
+echo "==> running test driver${SCENARIO:+ (scenario: $SCENARIO)}"
+( cd "$HERE/driver" && go run . ${SCENARIO:+-scenario "$SCENARIO"} )

@@ -1,0 +1,55 @@
+# Dev-mode image for the Tier-2 Docker pair migration harness.
+#
+# Builds vettid-supervisor + vettid-parent + vettid-vault-manager with
+# `-tags testharness` so the supervisor's PCR0 source honors the
+# FAKE_PCR0_HEX env var (see supervisor/pcr_override_testharness.go).
+# The production deploy builds *without* this tag — the env var has
+# zero effect on real binaries.
+#
+# Both processes run inside one container per "enclave":
+#   - supervisor listens on TCP :5000 (devMode replaces vsock).
+#   - parent dials localhost:5000 over TCP.
+# Two such containers come up side-by-side in docker-compose.yml so
+# the harness can simulate OLD vs NEW enclave migrations.
+
+FROM golang:1.23-alpine AS builder
+
+RUN apk add --no-cache git ca-certificates
+
+WORKDIR /build
+
+# Copy source. Same layout as Dockerfile.enclave; we just compile
+# host binaries instead of enclave artifacts.
+COPY go.mod go.sum ./
+COPY vendor/ ./vendor/
+COPY supervisor/ ./supervisor/
+COPY vault-manager/ ./vault-manager/
+COPY parent/ ./parent/
+COPY migration/ ./migration/
+
+ENV CGO_ENABLED=0 GOOS=linux GOARCH=amd64
+
+# `-tags testharness` is the load-bearing flag — it pulls in the
+# supervisor's pcr_override_testharness.go so FAKE_PCR0_HEX is
+# honored. Parent + vault-manager have no testharness-tagged files
+# today; the tag is a no-op for them but harmless.
+RUN go build -tags testharness -ldflags="-s -w" -o /out/vettid-supervisor   ./supervisor && \
+    go build -tags testharness -ldflags="-s -w" -o /out/vettid-vault-manager ./vault-manager && \
+    go build -tags testharness -ldflags="-s -w" -o /out/vettid-parent       ./parent
+
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates curl bash gettext
+
+# vault-manager goes alongside supervisor because supervisor execs it.
+COPY --from=builder /out/vettid-supervisor    /usr/local/bin/
+COPY --from=builder /out/vettid-vault-manager /usr/local/bin/
+COPY --from=builder /out/vettid-parent        /usr/local/bin/
+
+COPY tests/migration/parent-entrypoint.sh    /usr/local/bin/parent-entrypoint.sh
+COPY tests/migration/fixtures/parent.yaml.tmpl /etc/vettid/parent.yaml.tmpl
+RUN chmod +x /usr/local/bin/parent-entrypoint.sh
+
+# Heath endpoint port (parent.HealthConfig.Port).
+EXPOSE 8080
+
+ENTRYPOINT ["/usr/local/bin/parent-entrypoint.sh"]

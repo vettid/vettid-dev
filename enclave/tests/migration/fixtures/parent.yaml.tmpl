@@ -1,0 +1,45 @@
+# Parent config template for the Tier-2 Docker pair migration harness.
+# parent-entrypoint.sh renders this via envsubst before launching
+# vettid-parent. NOT production config — devMode is on (TCP instead
+# of vsock) and AWS_ENDPOINT_URL points at LocalStack.
+
+dev_mode: true
+
+nats:
+  url: "${NATS_URL}"
+  credentials_file: ""
+  reconnect_wait_ms: 2000
+  max_reconnects: -1
+
+s3:
+  bucket: "${S3_BUCKET}"
+  region: "${AWS_REGION}"
+  # Production deploys use vaults/ here; for the harness we leave it
+  # blank so the supervisor's s3KeyVaultState path renders identically
+  # to production (vaults/{owner_space}/vault_state.enc).
+  key_prefix: ""
+
+enclave:
+  cid: 16
+  # parent's vsock_client.go uses this as the TCP port in devMode.
+  # Must match supervisor's --tcp-port.
+  port: 5000
+  # The Tier-2 image doesn't have an EIF on disk; loadExpectedPCRs
+  # falls through SSM (also empty) to static config — which is what
+  # we want, since the supervisor will report FAKE_PCR0_HEX and the
+  # parent has no way to verify against a real EIF in a container.
+  # Leaving expected_pcr0 blank intentionally; harness scenarios
+  # that need strict PCR matching seed it via env-rendered SSM.
+  pcr0_ssm_parameter: ""
+  expected_pcr0: ""
+
+health:
+  port: 8080
+  interval_seconds: 30
+
+kms:
+  sealing_key_arn: "${KMS_SEALING_KEY_ARN}"
+  region: "${AWS_REGION}"
+
+dynamodb:
+  nats_accounts_table: ""

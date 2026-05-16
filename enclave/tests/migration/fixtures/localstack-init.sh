@@ -41,3 +41,15 @@ aws ssm put-parameter --name /vettid/attestation/pcr-signing-key-id --type Strin
 echo "==> LocalStack bootstrap complete"
 echo "    sealing key: $SEALING_ARN"
 echo "    signing key: $SIGNING_ARN"
+
+# Hand ARNs off to the parent containers via the shared volume. The
+# parent-dev image deliberately doesn't bake aws-cli in just so it
+# can read back values we already know here.
+if [ -d /shared ]; then
+    cat > /shared/arns.env <<EOF
+KMS_SEALING_KEY_ARN=$SEALING_ARN
+KMS_PCR_SIGNING_KEY_ARN=$SIGNING_ARN
+S3_BUCKET=vettid-vault-data-test
+EOF
+    echo "==> wrote /shared/arns.env for parent containers"
+fi
