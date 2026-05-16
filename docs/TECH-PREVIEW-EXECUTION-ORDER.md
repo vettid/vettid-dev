@@ -4,10 +4,11 @@
 >
 > **What just landed:** v8 enclave with the unified self-heal fix; both phones on APK `d652bef`; both users decommissioned for a clean re-enrollment test pass. User GUID stripped from four info-level logs (closes M35). Parent now reads PCR0 from `nitro-cli describe-eif` against the local EIF, falling back to the existing SSM parameter — fixes the v6→v7 crash-loop root cause from 2026-05-15.
 >
-> **Where we are in this doc:** Phase 1 in progress. #11 + #12 + #13 + #14 + #17 done. **One Phase 1 item left: #18.** Adjacent finding from #17 verification: parent keeps heartbeating routing claims for decommissioned users — filed as NEXT-PHASE #238.
+> **Where we are in this doc:** **Phase 1 complete.** #11, #12, #13, #14, #17, #18 all closed. The #17-discovered adjacent finding (#238 decommission routing-claim release) was fixed inline by vettid-dev `8ceea70`.
 >
-> **Immediate next steps when resuming:**
-> 1. **#18** — `deploy.sh` Phase 4.6 benign `curl: (7) connection refused` cleanup (either suppress or wait properly). After this, Phase 1 gate is one round-trip migration test (v8 → vN+1 → vN+2) without operator intervention.
+> **Phase 1 gate:** one round-trip migration test (v8 → vN+1 → vN+2) without operator intervention — pending user-driven validation; the code paths it exercises are all in main but haven't been deployed/exercised end-to-end yet.
+>
+> **Immediate next steps when resuming:** start **Phase 2** with **#19** (`#112` Tier-2 Docker pair migration harness — 3 dev-mode hooks + 6 scenarios, ~4–5 days). Companion items #136 (`DisallowUnknownFields` in tests) and #118 (`L54` dependency hygiene sweep) round out the test-harness phase.
 >
 > Companion doc: `TECH-PREVIEW-TRIAGE.md` holds every triage call with rationale on the deferred items.
 
@@ -48,7 +49,7 @@ they land, every other backend change is risky to ship.
 - ~~**#12** — D3 generation-stamp + S3 CAS on `vault_state.enc` ⚡ *closes the sub-ms split-brain race*~~ ✅ vettid-dev `0f783f6` (wrapper {v,g,p} + IfMatch/IfNoneMatch through supervisor→parent→S3; 412 → ownershipRevoked)
 - ~~**#14** — `#234` Android retry PCR manifest fetch on attestation rejection~~ ✅ vettid-android `ea00e46` (extracted AttestationRetryingVerifier; both BootstrapClient + NitroEnrollmentClient use it)
 - ~~**#17** — `#237` verify v7→v8 routing reclaim cleanup (likely just verify + close)~~ ✅ verified 2026-05-16: both live routing entries point at v8 instance + v8 PCR0; no orphan v6/v7 claims (lease expiry did its job). Adjacent finding: parent keeps heartbeating routing claims for decommissioned users — filed as new triage item, see TECH-PREVIEW-TRIAGE.md.
-- **#18** — `deploy.sh` Phase 4.6 benign `curl: (7)` cleanup
+- ~~**#18** — `deploy.sh` Phase 4.6 benign `curl: (7)` cleanup~~ ✅ vettid-dev `b15d955` (10× retry budget; retries only on connection-refused, fails fast on real errors)
 
 **Gate to Phase 2**: one round-trip migration test (v8 → vN+1 → vN+2) succeeds without operator intervention.
 

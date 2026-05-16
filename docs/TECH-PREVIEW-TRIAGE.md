@@ -154,7 +154,7 @@ Four buckets being filled in as we triage:
 - **#140** — public NATS JWT lookup scoping *(duplicate of #76 / L6)*
 
 ### NEXT-PHASE
-- **#238** — **Decommission should release the parent's routing claim.** Discovered while verifying #17 (2026-05-16): both decommissioned users (`eb8472f6…`, `af44310d…`) still had live routing entries in the `vault-routing` KV — `instance_id` and `pcr0` both pointing at the live v8 enclave and `lease_until` still advancing every ~15s. The vault data was wiped (S3 + DynamoDB cleared via decommission Lambda) but the parent's RoutingManager has no signal to release the in-memory claim, so it keeps heartbeating "I own user X" for a user whose vault no longer exists. Self-heals on parent restart (entries expire after 45s without heartbeat) but until then re-enrollment with the same user_guid lands in a fragile state. Fix: wire a release path from the decommission flow back to RoutingManager.Release(userGuid).
+- ~~**#238** — **Decommission should release the parent's routing claim.**~~ ✅ vettid-dev `8ceea70` (RoutingManager.ReleaseUser drops local state + deletes KV entry; both decommission handlers wired).
 - **#15** — `#161` multi-party approval gate for KMS policy changes
 - **#16** — `#178` drop identity-key TTL cache for action invocations + contract signing
 - **#20** — `#113` Tier-1 SealerProxy handler tests
