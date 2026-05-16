@@ -2013,11 +2013,38 @@ func (mh *MessageHandler) flushVaultStateToS3() {
 	newETag, storeErr := mh.sealerProxy.StoreVaultState(wrapped, prevETag, firstWrite)
 	if storeErr != nil {
 		if errors.Is(storeErr, ErrVaultStateConflict) {
+			// Distinguish first-write conflict from update-write conflict:
+			//
+			//   - first-write conflict (IfNoneMatch:* rejected): the S3
+			//     object already exists. Means the prior vault's
+			//     vault_state.enc wasn't cleaned up (likely a stale
+			//     object that survived decommission). NOT a split-brain
+			//     between two live writers — there is no other live
+			//     writer; just leftover state. Refuse the persist, log
+			//     loudly, but do NOT trip ownershipRevoked, since
+			//     fencing the (only) live owner would break enrollment
+			//     and every subsequent op with "vault ownership
+			//     transferred — retry". (Pixel 7 mesmer enrollment
+			//     2026-05-16.)
+			//
+			//   - update-write conflict (IfMatch rejected): the object's
+			//     ETag changed underneath us. Means another writer is
+			//     racing this object — that IS split-brain. Fence
+			//     further writes via ownershipRevoked, the existing D2
+			//     mechanism, so the next handler call returns the
+			//     "ownership transferred" error and the app retries
+			//     against the actual owner.
+			if firstWrite {
+				log.Error().
+					Str("owner_space", mh.ownerSpace).
+					Msg("D3: first-write rejected — vault_state.enc already exists at this key. Likely a stale object from a prior decommission that wasn't cleaned up. Refusing to overwrite; investigate manually.")
+				return
+			}
 			log.Error().
 				Str("owner_space", mh.ownerSpace).
 				Str("expected_etag", prevETag).
 				Int64("prev_gen", prevGen).
-				Msg("SECURITY: D3 split-brain detected — fencing further writes via ownershipRevoked")
+				Msg("SECURITY: D3 split-brain detected on update-write — fencing further writes via ownershipRevoked")
 			mh.vaultState.mu.Lock()
 			mh.vaultState.ownershipRevoked = true
 			mh.vaultState.mu.Unlock()
