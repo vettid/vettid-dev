@@ -452,6 +452,16 @@ var (
 	runningPCR0Err  error
 )
 
+// runningPCR0Reader is the function the cache calls on first read.
+// Production builds always use readRunningPCR0Hex (the real NSM path
+// or the mockPCR fallback when not in a Nitro environment). The
+// testharness build tag (`-tags testharness`) replaces this in an
+// init() so the Tier-2 Docker pair tests can run two containers
+// with different PCR0s. The override file is gated by `//go:build
+// testharness` and does not compile into production binaries — see
+// pcr_override_testharness.go.
+var runningPCR0Reader = readRunningPCR0Hex
+
 // GetRunningPCR0Hex returns the hex-encoded PCR0 of the running enclave.
 //
 // In a real Nitro enclave, this asks NSM for an attestation document and
@@ -467,7 +477,7 @@ var (
 // round-trip.
 func GetRunningPCR0Hex() (string, error) {
 	runningPCR0Once.Do(func() {
-		runningPCR0Hex, runningPCR0Err = readRunningPCR0Hex()
+		runningPCR0Hex, runningPCR0Err = runningPCR0Reader()
 	})
 	return runningPCR0Hex, runningPCR0Err
 }
