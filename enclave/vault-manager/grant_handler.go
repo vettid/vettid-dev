@@ -466,25 +466,68 @@ func (h *GrantHandler) resolveItemValue(kind, ref string) (value string, reason 
 }
 
 func (h *GrantHandler) resolveDataValue(ref string) (string, string, error) {
+	// First try exact key matches under profile/ and personal-data/.
+	// Aliasless fields land here cleanly.
 	candidates := []string{"profile/" + ref, "personal-data/" + ref}
 	for _, key := range candidates {
 		data, err := h.storage.Get(key)
 		if err != nil || len(data) == 0 {
 			continue
 		}
-		var pdf PersonalDataField
-		if json.Unmarshal(data, &pdf) == nil && pdf.Name != "" {
-			if pdf.Discoverability == DiscoverabilityPrivate {
-				return "", "item_marked_private", nil
-			}
-			return pdf.Value, "", nil
-		}
-		var pde PersonalDataEntry
-		if json.Unmarshal(data, &pde) == nil && pde.Value != "" {
-			return pde.Value, "", nil
+		if v, reason, ok := tryDecodeDataValue(data); ok {
+			return v, reason, nil
 		}
 	}
+
+	// Aliased personal-data is stored under "personal-data/<ns>::<alias>"
+	// (see fieldKey in personal_data.go). The grant's item_ref carries
+	// only the namespace — the alias info is in item_label but not the
+	// ref — so an exact lookup misses every aliased field. Mirror the
+	// index-scan resolveSecretValue already does. Surfaced 2026-05-16
+	// when "Relationship — Wife" / "Phone — Wife" grants resolved as
+	// item_not_found, the vault denied the fetch with no use-count
+	// increment, and the receiver's app saw nothing.
+	idxData, err := h.storage.Get("personal-data/_index")
+	if err == nil && len(idxData) > 0 {
+		var keys []string
+		if json.Unmarshal(idxData, &keys) == nil {
+			for _, k := range keys {
+				if k == ref || !strings.HasPrefix(k, ref+FieldKeySeparator) {
+					// Already tried the exact match above; here we
+					// only want composite-key matches.
+					continue
+				}
+				data, err := h.storage.Get("personal-data/" + k)
+				if err != nil || len(data) == 0 {
+					continue
+				}
+				if v, reason, ok := tryDecodeDataValue(data); ok {
+					return v, reason, nil
+				}
+			}
+		}
+	}
+
 	return "", "item_not_found", nil
+}
+
+// tryDecodeDataValue parses either the PersonalDataField or the
+// PersonalDataEntry shape and returns the (value, reason, found)
+// triple resolveDataValue uses. Returns ok=false when the bytes
+// don't look like either shape so the caller keeps searching.
+func tryDecodeDataValue(data []byte) (string, string, bool) {
+	var pdf PersonalDataField
+	if json.Unmarshal(data, &pdf) == nil && pdf.Name != "" {
+		if pdf.Discoverability == DiscoverabilityPrivate {
+			return "", "item_marked_private", true
+		}
+		return pdf.Value, "", true
+	}
+	var pde PersonalDataEntry
+	if json.Unmarshal(data, &pde) == nil && pde.Value != "" {
+		return pde.Value, "", true
+	}
+	return "", "", false
 }
 
 // resolveSecretValue resolves a minor secret by ID. Critical secrets
