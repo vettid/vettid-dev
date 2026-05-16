@@ -820,7 +820,15 @@ do_deploy() {
     # but RoutingManager hasn't finished Start() yet. The deeper race is
     # already closed at the source (#170: SetRouting now runs before
     # updateHealthStatus in parent.go), so a single curl would usually
-    # suffice — the 3× retry is belt-and-suspenders for instance warm-up.
+    # suffice — the retry loop is belt-and-suspenders for instance warm-up.
+    #
+    # Loop budget bumped from 3× → 10× (~30s wall) so a transient curl: (7)
+    # connection-refused during the warm-up window resolves silently
+    # instead of leaking past the budget and producing a benign "Routing
+    # reclaim exhausted retries" warn on every deploy (#18, 2026-05-16).
+    # The loop only retries on connection-refused — any non-refused
+    # response (HTTP error body, non-200, parse error) exits the loop
+    # immediately so real failures still surface fast.
     #
     # IMPORTANT: this SSM script must NOT use $(...) command substitution.
     # The previous form (out=\\\$(curl ...)) collapsed to a literal
@@ -833,7 +841,7 @@ do_deploy() {
     reclaim_cmd=$(aws ssm send-command \
         --instance-ids "$new_instance_id" \
         --document-name "AWS-RunShellScript" \
-        --parameters "commands=[\"for i in 1 2 3; do curl -sS --max-time 10 'http://127.0.0.1:8080/internal/reclaim-from-pcr0?pcr0=$old_pcr0' > /tmp/reclaim_out 2>&1; if grep -q claimed /tmp/reclaim_out; then cat /tmp/reclaim_out; exit 0; fi; sleep 3; done; cat /tmp/reclaim_out; exit 1\"]" \
+        --parameters "commands=[\"for i in 1 2 3 4 5 6 7 8 9 10; do curl -sS --max-time 10 'http://127.0.0.1:8080/internal/reclaim-from-pcr0?pcr0=$old_pcr0' > /tmp/reclaim_out 2>&1; if grep -q claimed /tmp/reclaim_out; then cat /tmp/reclaim_out; exit 0; fi; if ! grep -qE 'Connection refused|Failed to connect|Couldn.t connect' /tmp/reclaim_out; then cat /tmp/reclaim_out; exit 1; fi; sleep 3; done; cat /tmp/reclaim_out; exit 1\"]" \
         --query 'Command.CommandId' --output text --region "$REGION" 2>/dev/null || echo "")
     if [[ -n "$reclaim_cmd" ]]; then
         # Wait for the SSM run to reach a terminal state before reading
