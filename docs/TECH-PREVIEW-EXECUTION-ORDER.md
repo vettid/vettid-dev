@@ -4,11 +4,11 @@
 >
 > **What just landed:** v8 enclave with the unified self-heal fix; both phones on APK `d652bef`; both users decommissioned for a clean re-enrollment test pass. User GUID stripped from four info-level logs (closes M35). Parent now reads PCR0 from `nitro-cli describe-eif` against the local EIF, falling back to the existing SSM parameter — fixes the v6→v7 crash-loop root cause from 2026-05-15.
 >
-> **Where we are in this doc:** Phase 1 in progress. #11 done. Next up in Phase 1: **#13** (`deploy.sh` preserve historical PCR0s in KMS AnyOf — the recovery-day discovery), then **#12** (D3 generation-stamp + S3 CAS on `vault_state.enc`), **#14** (Android retry PCR manifest fetch on attestation rejection), **#17** (verify v7→v8 routing reclaim cleanup), **#18** (deploy.sh Phase 4.6 benign curl cleanup).
+> **Where we are in this doc:** Phase 1 in progress. #11 + #13 done. Next up in Phase 1: **#12** (D3 generation-stamp + S3 CAS on `vault_state.enc`), **#14** (Android retry PCR manifest fetch on attestation rejection), **#17** (verify v7→v8 routing reclaim cleanup), **#18** (deploy.sh Phase 4.6 benign curl cleanup).
 >
 > **Immediate next steps when resuming:**
-> 1. **#13** — `deploy.sh` preserves historical PCR0s in KMS AnyOf so future migrations can decrypt material sealed against any prior enclave that has any un-migrated vault.
-> 2. Then **#12** D3, **#14**, **#17**, **#18** in that order — Phase 1 gate is one round-trip migration test (v8 → vN+1 → vN+2) without operator intervention.
+> 1. **#12** — D3 generation-stamp + S3 CAS on `vault_state.enc` (closes the sub-ms split-brain race after D1+D2).
+> 2. Then **#14**, **#17**, **#18** in that order — Phase 1 gate is one round-trip migration test (v8 → vN+1 → vN+2) without operator intervention.
 >
 > Companion doc: `TECH-PREVIEW-TRIAGE.md` holds every triage call with rationale on the deferred items.
 
@@ -45,7 +45,7 @@ These are the items that make future enclave deploys reliable. Until
 they land, every other backend change is risky to ship.
 
 - ~~**#11** — `#236` parent loads PCR0 from local enclave, not global SSM ⚡ *the v6 crash-loop root cause*~~ ✅ vettid-dev `326acf0` (EIF primary, SSM transitional fallback)
-- **#13** — `deploy.sh` preserve historical PCR0s in KMS AnyOf ⚡ *the recovery-day discovery*
+- ~~**#13** — `deploy.sh` preserve historical PCR0s in KMS AnyOf ⚡ *the recovery-day discovery*~~ ✅ vettid-dev `55becf5` (add_pcr0s_to_kms_policy helper; Phase 3 + Phase 4 corrective path both union now)
 - **#12** — D3 generation-stamp + S3 CAS on `vault_state.enc` ⚡ *closes the sub-ms split-brain race*
 - **#14** — `#234` Android retry PCR manifest fetch on attestation rejection
 - **#17** — `#237` verify v7→v8 routing reclaim cleanup (likely just verify + close)
