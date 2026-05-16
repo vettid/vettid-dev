@@ -49,6 +49,14 @@ type RoutingManager struct {
 	// See the split-brain fix (D1, 2026-05-14).
 	onRelease func(userGuid string)
 
+	// currentPCR0Reader returns the PCR0 that SSM currently advertises
+	// as the live target. ClaimForEnrollment refuses fresh claims when
+	// our local PCR0 doesn't match — preventing an OLD enclave still
+	// running mid-migration from grabbing fresh enrollments and pinning
+	// new users to soon-to-be-decommissioned material. nil disables the
+	// gate (tests, dev mode). See #239.
+	currentPCR0Reader func() string
+
 	stopCh chan struct{}
 	wg     sync.WaitGroup
 }
@@ -99,6 +107,14 @@ func NewRoutingManager(enclaveID, pcr0 string, natsClient *NATSClient, msgChan c
 // goroutine for the vsock write).
 func (r *RoutingManager) SetOnRelease(fn func(userGuid string)) {
 	r.onRelease = fn
+}
+
+// SetCurrentPCR0Reader registers the SSM "current PCR0" getter used by
+// ClaimForEnrollment to refuse fresh claims when this instance is the
+// OLD one in a migration window. Call once, post-construction, before
+// Start. nil leaves the gate disabled.
+func (r *RoutingManager) SetCurrentPCR0Reader(fn func() string) {
+	r.currentPCR0Reader = fn
 }
 
 // Start kicks off the background goroutines: heartbeat loop, KV
@@ -161,8 +177,29 @@ func (r *RoutingManager) IsOwner(userGuid string) bool {
 // ClaimForEnrollment attempts to create a fresh routing row for a
 // brand-new user. Uses CAS with revision=0 (create-only). Returns
 // true if we won the claim; false if another instance got there
-// first (legitimate race during concurrent enrollment).
+// first (legitimate race during concurrent enrollment) OR if this
+// instance is the OLD enclave in an active migration window.
 func (r *RoutingManager) ClaimForEnrollment(userGuid, pcr0 string) (bool, error) {
+	// Migration-window gate (#239): during a migration both OLD and
+	// NEW enclaves are subscribed to the enrollment wildcards and both
+	// race to claim. Pre-2026-05-16 OLD could win and pin the new user
+	// to soon-to-be-decommissioned material — pin.setup encrypted to
+	// NEW's pubkey then arrived at OLD which couldn't decrypt
+	// (ECIES MAC fail, enrollment died at step 3). The fix is silent:
+	// if the SSM "current" PCR0 differs from our local PCR0 we know
+	// we're the OLD enclave and we let NEW take the CAS race
+	// uncontested.
+	if r.currentPCR0Reader != nil && r.pcr0 != "" {
+		if want := r.currentPCR0Reader(); want != "" && want != r.pcr0 {
+			log.Info().
+				Str("user_guid", userGuid).
+				Str("our_pcr0", truncPCR(r.pcr0)).
+				Str("ssm_pcr0", truncPCR(want)).
+				Msg("routing: declining fresh enrollment claim — we are not the current PCR0 (migration window)")
+			return false, nil
+		}
+	}
+
 	kv, err := r.kv()
 	if err != nil {
 		return false, err

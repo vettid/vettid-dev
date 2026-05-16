@@ -158,6 +158,14 @@ func (p *ParentProcess) Run(ctx context.Context) error {
 	// can't keep serving / force-flushing a stale vault_state.enc
 	// (split-brain fix, D1 2026-05-14).
 	p.routing.SetOnRelease(p.evictVaultInEnclave)
+	// Wire the migration-window enrollment gate (#239): the routing
+	// manager refuses fresh ClaimForEnrollment when our local PCR0
+	// doesn't match SSM's advertised "current" PCR0 — i.e. when we
+	// are the OLD enclave during a v9→v10-style window. Reader is
+	// cached for 30s to keep SSM round-trips off the hot path.
+	if p.config.Enclave.PCR0SSMParameter != "" {
+		p.routing.SetCurrentPCR0Reader(p.cachedSSMPCR0Reader(p.config.Enclave.PCR0SSMParameter, 30*time.Second))
+	}
 	if err := p.routing.Start(ctx); err != nil {
 		return fmt.Errorf("failed to start routing manager: %w", err)
 	}
