@@ -155,6 +155,7 @@ Four buckets being filled in as we triage:
 
 ### NEXT-PHASE
 - ~~**#238** — **Decommission should release the parent's routing claim.**~~ ✅ vettid-dev `8ceea70` (RoutingManager.ReleaseUser drops local state + deletes KV entry; both decommission handlers wired).
+- **#239** — **OLD enclave accepts fresh enrollments during migration window.** Surfaced 2026-05-16 during the post-Phase-1 test pass: while both v8 (OLD) and v9 (NEW) enclaves were alive in the migration window, the attestation request landed on v9 (response carried v9's enclave pubkey) but the subsequent `pin.setup` was routed to v8 via a `ClaimForEnrollment` CAS race. v8's vault-manager tried to ECIES-decrypt with v8's private key and failed with `chacha20poly1305: message authentication failed`, breaking enrollment at step 3. Both parents subscribe to enrollment wildcards and both can claim, so a fresh enrollment can split across enclaves and corrupt the cryptographic chain. Mitigation today: finalize the migration before any new enrollment (we did). Real fix: gate `ClaimForEnrollment` on "I am the current PCR0 per SSM `/vettid/enclave/pcr/pcr0`" (or per the published migration config's `new_pcrs.pcr0`), so OLD silently no-ops the claim and NEW wins by default. Architectural; should land before any future migration where new enrollments might be attempted during the window.
 - **#15** — `#161` multi-party approval gate for KMS policy changes
 - **#16** — `#178` drop identity-key TTL cache for action invocations + contract signing
 - **#20** — `#113` Tier-1 SealerProxy handler tests
