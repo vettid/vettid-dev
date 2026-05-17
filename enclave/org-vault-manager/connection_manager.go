@@ -208,7 +208,15 @@ func (cm *ConnectionManager) HandleConnect(msg *IncomingMessage) (*OutgoingMessa
 		return errorResponse(msg.GetID(), "connection is not pending: "+conn.Status)
 	}
 
-	// Perform X25519 ECDH key exchange
+	// Perform X25519 ECDH key exchange.
+	// SECURITY (#83): refuse small-order points before importing the
+	// wire-supplied peer pub key, mirroring the safeX25519 guard in
+	// vault-manager. ecdh.X25519().ECDH already rejects shared==0;
+	// this closes the remaining contributory-behavior gap.
+	if err := rejectSmallOrderPoint(req.PeerPublicKey); err != nil {
+		return errorResponse(msg.GetID(), "invalid peer public key: "+err.Error())
+	}
+
 	privateKey, err := ecdh.X25519().NewPrivateKey(conn.LocalPrivateKey)
 	if err != nil {
 		return errorResponse(msg.GetID(), "failed to load private key: "+err.Error())
