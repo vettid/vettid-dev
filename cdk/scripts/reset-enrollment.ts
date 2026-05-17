@@ -6,7 +6,7 @@
  *
  * Usage:
  *   npx ts-node scripts/reset-enrollment.ts <email>
- *   npx ts-node scripts/reset-enrollment.ts mesmerverse@proton.me
+ *   npx ts-node scripts/reset-enrollment.ts user@example.com
  *
  * What it deletes:
  *   - NATS account (DynamoDB)
@@ -397,7 +397,7 @@ const email = process.argv[2];
 
 if (!email) {
   console.error('Usage: npx ts-node scripts/reset-enrollment.ts <email>');
-  console.error('Example: npx ts-node scripts/reset-enrollment.ts mesmerverse@proton.me');
+  console.error('Example: npx ts-node scripts/reset-enrollment.ts user@example.com');
   process.exit(1);
 }
 

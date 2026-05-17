@@ -1,4 +1,4 @@
-module github.com/mesmerverse/vettid-dev/scripts/handler-deploy
+module github.com/vettid/vettid-dev/scripts/handler-deploy
 
 go 1.23
 

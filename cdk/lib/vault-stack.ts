@@ -1383,15 +1383,30 @@ export class VaultStack extends cdk.Stack {
     grantAuditAppend(tables.audit, this.deleteByovVault);
 
     // ===== TEST AUTOMATION ENDPOINTS =====
-    // These endpoints enable automated E2E testing for Android app
-    // SECURITY: Protected by TEST_API_KEY - endpoints disabled if key not configured
-    // SECURITY: Test endpoints should not be deployed in production
+    // SECURITY (#24): test endpoints are now build-flag gated, not
+    // just runtime-key gated. Before, the Lambda functions deployed
+    // to every environment and relied on an empty TEST_API_KEY to
+    // refuse traffic at runtime — which still left the IAM grants
+    // (write to invites/audit/natsAccounts) attached. Now nothing
+    // ships unless VETTID_DEPLOY_TEST_ENDPOINTS=true is explicitly
+    // set at synth time. Production deploys never set it; CI test
+    // environments opt in.
+    //
+    // Defense in depth: when deployed, the handler still requires
+    // VETTID_TEST_API_KEY (from Secrets Manager) and rejects any
+    // request without the matching x-test-api-key header (#71).
+    const deployTestEndpoints = process.env.VETTID_DEPLOY_TEST_ENDPOINTS === 'true';
+    if (!deployTestEndpoints) {
+      console.log('VETTID_DEPLOY_TEST_ENDPOINTS not set — skipping test endpoints (production-safe default)');
+    }
 
     // SECURITY: Require explicit configuration - no fallback to prevent accidental exposure
     const testApiKey = process.env.VETTID_TEST_API_KEY;
-    if (!testApiKey) {
+    if (deployTestEndpoints && !testApiKey) {
       console.warn('VETTID_TEST_API_KEY not set - test endpoints will be disabled');
     }
+
+   if (deployTestEndpoints) {
 
     // SECURITY: Test endpoints use Secrets Manager for API key, not environment variables
     // This prevents accidental exposure in CloudWatch logs, console, or error messages
@@ -1445,6 +1460,7 @@ export class VaultStack extends cdk.Stack {
     tables.natsAccounts.grantReadWriteData(this.testCleanup);
     tables.actionTokens.grantReadWriteData(this.testCleanup);
     grantAuditAppend(tables.audit, this.testCleanup);
+    } // end deployTestEndpoints block
 
     // Note: Ledger (Protean Credential System) section removed
     // Legacy PostgreSQL ledger replaced by vault-manager JetStream storage
@@ -1700,28 +1716,31 @@ export class VaultStack extends cdk.Stack {
     });
 
     // ===== TEST AUTOMATION ENDPOINTS =====
-    // Public endpoints protected by TEST_API_KEY header (validated in handler)
-    // These enable automated E2E testing for Android app
+    // SECURITY (#24): routes only bind when the Lambdas were
+    // deployed (see the deployTestEndpoints gate up in TEST AUTOMATION
+    // ENDPOINTS above). If the gate is off, `this.testHealth` etc.
+    // are undefined and creating routes would throw — so skip.
+    if (this.testHealth && this.testCreateInvitation && this.testCleanup) {
+      new apigw.HttpRoute(this, 'TestHealth', {
+        httpApi,
+        routeKey: apigw.HttpRouteKey.with('/test/health', apigw.HttpMethod.GET),
+        integration: new integrations.HttpLambdaIntegration('TestHealthInt', this.testHealth),
+        // No authorizer - uses API key in header
+      });
 
-    new apigw.HttpRoute(this, 'TestHealth', {
-      httpApi,
-      routeKey: apigw.HttpRouteKey.with('/test/health', apigw.HttpMethod.GET),
-      integration: new integrations.HttpLambdaIntegration('TestHealthInt', this.testHealth),
-      // No authorizer - uses API key in header
-    });
+      new apigw.HttpRoute(this, 'TestCreateInvitation', {
+        httpApi,
+        routeKey: apigw.HttpRouteKey.with('/test/create-invitation', apigw.HttpMethod.POST),
+        integration: new integrations.HttpLambdaIntegration('TestCreateInvitationInt', this.testCreateInvitation),
+        // No authorizer - uses API key in header
+      });
 
-    new apigw.HttpRoute(this, 'TestCreateInvitation', {
-      httpApi,
-      routeKey: apigw.HttpRouteKey.with('/test/create-invitation', apigw.HttpMethod.POST),
-      integration: new integrations.HttpLambdaIntegration('TestCreateInvitationInt', this.testCreateInvitation),
-      // No authorizer - uses API key in header
-    });
-
-    new apigw.HttpRoute(this, 'TestCleanup', {
-      httpApi,
-      routeKey: apigw.HttpRouteKey.with('/test/cleanup', apigw.HttpMethod.POST),
-      integration: new integrations.HttpLambdaIntegration('TestCleanupInt', this.testCleanup),
-      // No authorizer - uses API key in header
-    });
+      new apigw.HttpRoute(this, 'TestCleanup', {
+        httpApi,
+        routeKey: apigw.HttpRouteKey.with('/test/cleanup', apigw.HttpMethod.POST),
+        integration: new integrations.HttpLambdaIntegration('TestCleanupInt', this.testCleanup),
+        // No authorizer - uses API key in header
+      });
+    }
   }
 }
