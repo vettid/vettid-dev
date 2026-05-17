@@ -1598,18 +1598,29 @@ export class VaultStack extends cdk.Stack {
     this.route('GetVaultHealth', httpApi, '/vault/health', apigw.HttpMethod.GET, this.getVaultHealth, memberAuthorizer);
     this.route('GetVaultStatus', httpApi, '/vault/status', apigw.HttpMethod.GET, this.getVaultStatus, memberAuthorizer);
 
-    // Internal endpoint called by vault-manager when it's ready (no auth - validated by instance ID and EC2 tags)
+    // SECURITY (#23): gate /vault/internal/* with IAM auth at the
+    // route layer. Before this change the endpoints only validated
+    // that the wire-supplied instance_id matched DynamoDB — but
+    // (user_guid, instance_id) both surface in CloudWatch and the AWS
+    // Console, so an attacker who scraped either could poison the
+    // vault health record. The current Nitro multi-tenant architecture
+    // has no live caller (the legacy per-user-EC2 vault model that
+    // these endpoints served has been replaced); shutting the door at
+    // the auth layer is cheap insurance for the dead surface and gives
+    // us a typed extension point if a future use case re-requires it.
+    const internalIamAuth = new authorizers.HttpIamAuthorizer();
     new apigw.HttpRoute(this, 'VaultReady', {
       httpApi,
       routeKey: apigw.HttpRouteKey.with('/vault/internal/ready', apigw.HttpMethod.POST),
       integration: new integrations.HttpLambdaIntegration('VaultReadyIntegration', this.vaultReady),
+      authorizer: internalIamAuth,
     });
 
-    // Internal endpoint called by vault-manager every 30s for health updates (no auth - validated by instance ID)
     new apigw.HttpRoute(this, 'UpdateVaultHealth', {
       httpApi,
       routeKey: apigw.HttpRouteKey.with('/vault/internal/health', apigw.HttpMethod.POST),
       integration: new integrations.HttpLambdaIntegration('UpdateVaultHealthIntegration', this.updateVaultHealth),
+      authorizer: internalIamAuth,
     });
 
     // Legacy ACTION-TOKEN endpoints removed - mobile auth now via NATS to vault-manager
