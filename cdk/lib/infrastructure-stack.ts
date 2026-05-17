@@ -915,11 +915,28 @@ export class InfrastructureStack extends cdk.Stack {
       autoDeleteObjects: true,
     });
 
+    // SECURITY (#36): SSE-KMS for the backup bucket. Backup blobs are
+    // already application-encrypted before upload (the vault seals the
+    // contents under its own keys), so KMS here is defence in depth —
+    // every read/write surfaces under a VettID-owned key in CloudTrail
+    // and the key policy can refuse access from principals outside the
+    // account even if a bucket policy is misconfigured. Existing
+    // objects retain their previous SSE-S3 envelopes until a separate
+    // re-encrypt sweep runs.
+    const backupBucketEncryptionKey = new cdk.aws_kms.Key(this, 'VaultBackupsEncryptionKey', {
+      alias: 'vettid-vault-backups',
+      description: 'SSE-KMS customer-managed key for vettid vault-backups S3 bucket (#36)',
+      enableKeyRotation: true,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
     // S3 bucket for vault and credential backups
     const backupBucket = new s3.Bucket(this, 'VaultBackupsBucket', {
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       versioned: true,
-      encryption: s3.BucketEncryption.S3_MANAGED,
+      encryption: s3.BucketEncryption.KMS,
+      encryptionKey: backupBucketEncryptionKey,
+      bucketKeyEnabled: true,
       enforceSSL: true,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       autoDeleteObjects: true,

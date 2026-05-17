@@ -135,12 +135,36 @@ export class NitroStack extends cdk.Stack {
       description: 'KMS key ARN for enclave sealing (configure in parent.yaml)',
     });
 
+    // ===== KMS CMK FOR VAULT-DATA BUCKET ENCRYPTION =====
+    //
+    // SECURITY (#36): bucket-level SSE-KMS with a customer-managed
+    // key. Separate from the PCR-gated `sealingKey` above — that key
+    // sits inside the enclave envelope and never round-trips through
+    // S3 service principals; an S3-side encrypt/decrypt needs a key
+    // S3 itself can use. Application-layer encryption already covers
+    // the data inside each object, so SSE-KMS is defence in depth:
+    // it surfaces every read/write in CloudTrail under a key VettID
+    // owns, and any future cross-account-S3 access (Athena, Snowball,
+    // a misconfigured bucket policy) gets gated on this key's policy.
+    //
+    // Existing objects retain their previous SSE-S3 envelopes until a
+    // separate re-encrypt sweep runs; readers tolerate either form.
+    const vaultDataEncryptionKey = new cdk.aws_kms.Key(this, 'VaultDataEncryptionKey', {
+      alias: 'vettid-vault-data',
+      description: 'SSE-KMS customer-managed key for vettid-vault-data S3 bucket (#36)',
+      enableKeyRotation: true,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
     // ===== S3 BUCKET FOR VAULT DATA =====
-    // All vault data is encrypted by the enclave before storage
-    // S3 server-side encryption adds additional layer
+    // All vault data is also encrypted by the enclave before storage
+    // (application-layer KMS via the sealingKey). SSE-KMS adds the
+    // S3-service-level layer described in the comment above.
     this.vaultDataBucket = new s3.Bucket(this, 'VaultDataBucket', {
       bucketName: `vettid-vault-data-${this.account}`,
-      encryption: s3.BucketEncryption.S3_MANAGED,
+      encryption: s3.BucketEncryption.KMS,
+      encryptionKey: vaultDataEncryptionKey,
+      bucketKeyEnabled: true, // SSE-KMS bucket key reduces KMS API calls + cost.
       versioned: true,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       enforceSSL: true,
