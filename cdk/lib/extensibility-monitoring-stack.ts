@@ -545,25 +545,34 @@ export class ExtensibilityMonitoringStack extends cdk.Stack {
         `arn:aws:dynamodb:${this.region}:${this.account}:table/VettID-*`,
       ],
     }));
+    // SECURITY (#88): cloudwatch:GetMetricStatistics + autoscaling
+    // Describe* + elasticloadbalancing Describe* must be granted on
+    // `*` — these APIs do not support resource-level permissions in
+    // IAM (autoscaling/elasticloadbalancing list-actions in particular
+    // pre-date IAM's resource model). Documented here so reviews can
+    // distinguish "intentionally accepted AWS API limitation" from a
+    // missed narrowing opportunity. The handler reading these is only
+    // mounted on the /admin/system/health route behind the admin
+    // authorizer, so the blast radius is bounded by route auth.
     getSystemHealth.addToRolePolicy(new iam.PolicyStatement({
       actions: ['cloudwatch:GetMetricStatistics'],
-      resources: ['*'], // CloudWatch metrics don't support resource-level permissions
+      resources: ['*'], // AWS API limitation — see #88 note above.
     }));
-    // NATS cluster health monitoring via NLB target group
+    // NATS cluster health monitoring via NLB target group.
     getSystemHealth.addToRolePolicy(new iam.PolicyStatement({
       actions: [
         'elasticloadbalancing:DescribeTargetGroups',
         'elasticloadbalancing:DescribeTargetHealth',
       ],
-      resources: ['*'], // Target group discovery requires listing all target groups
+      resources: ['*'], // AWS API limitation — see #88 note above.
     }));
-    // Nitro Enclave ASG health monitoring
+    // Nitro Enclave ASG health monitoring.
     getSystemHealth.addToRolePolicy(new iam.PolicyStatement({
       actions: [
         'autoscaling:DescribeAutoScalingGroups',
         'autoscaling:DescribeInstanceRefreshes',
       ],
-      resources: ['*'], // ASG discovery requires listing all groups
+      resources: ['*'], // AWS API limitation — see #88 note above.
     }));
     // SSM parameter access for AMI version tracking
     getSystemHealth.addToRolePolicy(new iam.PolicyStatement({
@@ -573,11 +582,17 @@ export class ExtensibilityMonitoringStack extends cdk.Stack {
       ],
     }));
 
-    // SECURITY: Scope logs access to VettID log groups only
+    // SECURITY (#89): scope logs access to VettID log groups by name
+    // prefix. DescribeLogGroups supports resource-level permissions —
+    // pin to the same prefixes the FilterLogEvents grant below uses so
+    // the system-logs handler can't enumerate non-VettID log groups in
+    // the account.
     getSystemLogs.addToRolePolicy(new iam.PolicyStatement({
       actions: ['logs:DescribeLogGroups'],
       resources: [
-        `arn:aws:logs:${this.region}:${this.account}:log-group:*`,
+        `arn:aws:logs:${this.region}:${this.account}:log-group:/aws/lambda/VettID-*`,
+        `arn:aws:logs:${this.region}:${this.account}:log-group:/aws/lambda/VettIDStack-*`,
+        `arn:aws:logs:${this.region}:${this.account}:log-group:/aws/apigateway/vettid-*`,
       ],
     }));
     getSystemLogs.addToRolePolicy(new iam.PolicyStatement({
