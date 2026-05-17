@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -40,6 +41,7 @@ var AllScenarios = []Scenario{
 	{Name: "attestation", Run: scenarioAttestation},
 	{Name: "pin-setup", Run: scenarioPinSetup},
 	{Name: "enroll-only", Run: scenarioEnrollOnly},
+	{Name: "migration-config-publish", Run: scenarioMigrationConfigPublish},
 	// Roadmap (see ../README.md §"Scenarios to implement"):
 	// {Name: "happy-path",                Run: scenarioHappyPath},
 	// {Name: "concurrent-load",           Run: scenarioConcurrentLoad},
@@ -174,6 +176,30 @@ func scenarioEnrollOnly(ctx context.Context, h *Harness) error {
 	fmt.Printf("    owner_space=%s\n", u.OwnerSpace)
 	fmt.Printf("    UTK pool (post-setup)=%d, refreshed=%d\n", len(u.UTKs), len(u.NewUTKs))
 	fmt.Printf("    encrypted_credential bytes=%d (b64)\n", len(u.EncryptedCredential))
+	return nil
+}
+
+// scenarioMigrationConfigPublish exercises just the publish path:
+// build a SignedPCRConfig pointing OLD→NEW PCR0, KMS-sign it, PUT to
+// _migration/config.json, and self-check by re-parsing + verifying
+// the signature with the KMS public key. Doesn't drive any
+// supervisor-side fetch — that's what the routing-handoff scenario
+// will assert later — but proves the canonical-bytes format matches
+// vault-manager's verifier and the LocalStack KMS key works.
+func scenarioMigrationConfigPublish(ctx context.Context, h *Harness) error {
+	oldPCR0 := os.Getenv("FAKE_PCR0_OLD")
+	newPCR0 := os.Getenv("FAKE_PCR0_NEW")
+	if oldPCR0 == "" || newPCR0 == "" {
+		return fmt.Errorf("FAKE_PCR0_OLD/FAKE_PCR0_NEW unset — run via run.sh")
+	}
+	version := fmt.Sprintf("tier2-%d", time.Now().Unix())
+	canonical, err := h.publishMigrationConfig(ctx, oldPCR0, newPCR0, version)
+	if err != nil {
+		return fmt.Errorf("publish: %w", err)
+	}
+	fmt.Printf("    version=%s\n", version)
+	fmt.Printf("    canonical bytes=%d\n", len(canonical))
+	fmt.Printf("    old_pcr0=%s…  new_pcr0=%s…\n", oldPCR0[:16], newPCR0[:16])
 	return nil
 }
 

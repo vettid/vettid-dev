@@ -49,6 +49,10 @@ health:
 
 kms:
   sealing_key_arn: "${KMS_SEALING_KEY_ARN}"
+  # ECDSA P-256 key the harness's localstack-init.sh provisions;
+  # supervisor calls kms:GetPublicKey at startup and ships the DER
+  # bytes to vault-manager for migration-config signature verification.
+  pcr_signing_key_arn: "${KMS_PCR_SIGNING_KEY_ARN}"
   region: "${AWS_REGION}"
 
 dynamodb:

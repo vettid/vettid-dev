@@ -110,5 +110,18 @@ if [ ! -d "$HERE/driver" ]; then
     exit 0
 fi
 
+# Surface the well-known PCR0s + signing-key ARN to the driver so
+# scenarios can publish migration configs without re-querying KMS/SSM
+# for static values. The PCR0s are pinned in docker-compose.yml; the
+# ARN is created by the init container and persisted to the shared
+# volume, which we read here via a one-shot `docker exec` into the
+# init container's volume mount. Simpler than reaching into compose
+# state: parent-old has /shared mounted read-only.
+FAKE_PCR0_OLD="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+FAKE_PCR0_NEW="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+KMS_PCR_SIGNING_KEY_ARN="$("${COMPOSE[@]}" -f "$HERE/docker-compose.yml" exec -T parent-old \
+    sh -c 'grep ^KMS_PCR_SIGNING_KEY_ARN= /shared/arns.env | cut -d= -f2-' 2>/dev/null || echo "")"
+export FAKE_PCR0_OLD FAKE_PCR0_NEW KMS_PCR_SIGNING_KEY_ARN
+
 echo "==> running test driver${SCENARIO:+ (scenario: $SCENARIO)}"
 ( cd "$HERE/driver" && go run . ${SCENARIO:+-scenario "$SCENARIO"} )
