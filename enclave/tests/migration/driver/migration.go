@@ -35,6 +35,95 @@ import (
 // any change here must match there.
 const migrationConfigKey = "_migration/config.json"
 
+// migrationConfigInput is the minimal field set a Tier-2 scenario
+// needs to publish a config — kept separate from full SignedPCRConfig
+// so the canonical-bytes builder can be unit-tested without a live
+// AWS/KMS round-trip. Supports the harness's two-PCR0 model
+// (PCR1/PCR2 fixed to 96 zeros); production publishers use the full
+// SignedPCRConfig struct in enclave/migration/pcr_config.go.
+type migrationConfigInput struct {
+	OldPCR0     string
+	NewPCR0     string
+	Version     string
+	ValidFrom   time.Time
+	ExpiresAt   time.Time
+	PublishedAt time.Time
+	// Optional PCR1/PCR2 overrides — default to 96 zeros when blank,
+	// matching the harness's two-PCR0-only model. Production callers
+	// (and the canonical-fixture unit test) provide real values.
+	OldPCR1, OldPCR2 string
+	NewPCR1, NewPCR2 string
+	// Optional human-readable fields for parity with production
+	// configs; empty values are omitted from the canonical (matches
+	// vault-manager's signedPayload omit-when-empty semantics).
+	Summary        string
+	DetailsURL     string
+	MandatoryAfter time.Time
+}
+
+// buildMigrationConfigCanonical produces the byte-identical canonical
+// JSON the vault-manager's PCRConfigVerifier expects to recompute
+// from a SignedPCRConfig parsed off S3. MUST mirror
+// enclave/migration/pcr_config.go signedPayload() — recursive
+// alphabetical key sort + omit zero-time / empty-string optionals —
+// so a signature over these bytes verifies cleanly on the vault side.
+//
+// Drift-detection: migration_canonical_test.go pins the output
+// byte-for-byte against vault's testdata/canonical-fixture.canonical.
+// If signedPayload() ever changes shape (new field, time-format
+// tweak, key-sort regression), this builder fails its unit test
+// before any integration scenario can silently treat the migration
+// as not_requested.
+func buildMigrationConfigCanonical(in migrationConfigInput) ([]byte, error) {
+	const zeroPCRHex = "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+	newPCR1 := in.NewPCR1
+	if newPCR1 == "" {
+		newPCR1 = zeroPCRHex
+	}
+	newPCR2 := in.NewPCR2
+	if newPCR2 == "" {
+		newPCR2 = zeroPCRHex
+	}
+	oldPCR1 := in.OldPCR1
+	if oldPCR1 == "" {
+		oldPCR1 = zeroPCRHex
+	}
+	oldPCR2 := in.OldPCR2
+	if oldPCR2 == "" {
+		oldPCR2 = zeroPCRHex
+	}
+	payload := map[string]interface{}{
+		"new_pcrs": map[string]string{
+			"pcr0": in.NewPCR0,
+			"pcr1": newPCR1,
+			"pcr2": newPCR2,
+		},
+		"old_pcrs": map[string]string{
+			"pcr0": in.OldPCR0,
+			"pcr1": oldPCR1,
+			"pcr2": oldPCR2,
+		},
+		"valid_from": in.ValidFrom,
+		"version":    in.Version,
+	}
+	if !in.ExpiresAt.IsZero() {
+		payload["expires_at"] = in.ExpiresAt
+	}
+	if in.Summary != "" {
+		payload["summary"] = in.Summary
+	}
+	if in.DetailsURL != "" {
+		payload["details_url"] = in.DetailsURL
+	}
+	if !in.PublishedAt.IsZero() {
+		payload["published_at"] = in.PublishedAt
+	}
+	if !in.MandatoryAfter.IsZero() {
+		payload["mandatory_after"] = in.MandatoryAfter
+	}
+	return json.Marshal(payload)
+}
+
 // publishMigrationConfig builds a SignedPCRConfig pointing oldPCR0 →
 // newPCR0, signs the canonical bytes with the LocalStack KMS
 // ECDSA-P256 PCR-signing key, then PUTs it to S3 at
@@ -73,31 +162,17 @@ func (h *Harness) publishMigrationConfig(
 		return nil, fmt.Errorf("lookup PCR signing key ARN: %w", err)
 	}
 
-	// Build the same canonical map signedPayload() emits. Time fields
-	// are populated rather than omitted because the harness wants a
-	// definite valid_from/expires_at window; the canonical encoder
-	// includes them when non-zero.
-	zeroPCRHex := "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
 	now := time.Now().UTC()
-	payload := map[string]interface{}{
-		"new_pcrs": map[string]string{
-			"pcr0": newPCR0,
-			"pcr1": zeroPCRHex,
-			"pcr2": zeroPCRHex,
-		},
-		"old_pcrs": map[string]string{
-			"pcr0": oldPCR0,
-			"pcr1": zeroPCRHex,
-			"pcr2": zeroPCRHex,
-		},
-		"valid_from":   now.Add(-time.Minute), // already valid
-		"expires_at":   now.Add(24 * time.Hour),
-		"version":      version,
-		"published_at": now,
-	}
-	canonical, err := json.Marshal(payload)
+	canonical, err := buildMigrationConfigCanonical(migrationConfigInput{
+		OldPCR0:     oldPCR0,
+		NewPCR0:     newPCR0,
+		Version:     version,
+		ValidFrom:   now.Add(-time.Minute), // already valid
+		ExpiresAt:   now.Add(24 * time.Hour),
+		PublishedAt: now,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("marshal canonical: %w", err)
+		return nil, fmt.Errorf("build canonical: %w", err)
 	}
 
 	// LocalStack KMS Sign with ECDSA_SHA_256: digest the canonical
