@@ -292,6 +292,22 @@ func ValidateMessageTimestamp(data []byte) (bool, string) {
 		return true, ""
 	}
 
+	// SECURITY (#75): messages with NO timestamp at all bypass the
+	// freshness gate today — an attacker who strips the timestamp
+	// field from a captured message can replay it indefinitely.
+	// Warn-and-allow surfaces the legacy callers in logs so the
+	// audit can flip this to fail-closed (set
+	// VETTID_REQUIRE_MESSAGE_TIMESTAMP=true) once the inventory is
+	// clean. Enforce mode rejects; non-enforce mode logs + allows.
+	hasTimestamp := payload.Timestamp > 0 || payload.TimestampMs > 0
+	if !hasTimestamp {
+		if requireMessageTimestamp() {
+			log.Warn().Msg("SECURITY: message has no timestamp — rejecting (strict mode)")
+			return false, "message missing required timestamp"
+		}
+		log.Warn().Msg("SECURITY: message has no timestamp — allowing (compat mode; set VETTID_REQUIRE_MESSAGE_TIMESTAMP=true to enforce)")
+	}
+
 	now := time.Now().Unix()
 
 	// Check Unix timestamp (seconds)
@@ -338,6 +354,14 @@ func ValidateMessageTimestamp(data []byte) (bool, string) {
 	}
 
 	return true, ""
+}
+
+// requireMessageTimestamp reports whether ValidateMessageTimestamp
+// should fail-closed when an inbound message has no Timestamp /
+// TimestampMs at all. See #75 — kept opt-in (env-gated) until the
+// audit of legacy callers is complete.
+func requireMessageTimestamp() bool {
+	return os.Getenv("VETTID_REQUIRE_MESSAGE_TIMESTAMP") == "true"
 }
 
 // Global message replay cache

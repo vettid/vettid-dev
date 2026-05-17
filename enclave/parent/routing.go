@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -37,6 +38,14 @@ type RoutingManager struct {
 	pcr0       string
 	natsClient *NATSClient
 	msgChan    chan *NATSMessage
+
+	// droppedMsgs tracks the cumulative count of inbound vault
+	// messages dropped because msgChan was full. SECURITY (#73): a
+	// silent drop with only a per-event Warn used to make this
+	// failure mode invisible in production aggregations. Counter
+	// reads (via DroppedMessageCount) feed monitoring and the
+	// per-drop log line is escalated to Error.
+	droppedMsgs atomic.Uint64
 
 	mu    sync.RWMutex
 	owned map[string]*ownedUser
@@ -85,6 +94,14 @@ const (
 	// logging — the subscribe happens synchronously.
 	subscribeWarmup = 200 * time.Millisecond
 )
+
+// DroppedMessageCount returns the cumulative count of inbound
+// vault messages that were dropped because msgChan was full.
+// Useful for /health-style reporting + alarming on a sustained
+// drop rate. SECURITY (#73).
+func (r *RoutingManager) DroppedMessageCount() uint64 {
+	return r.droppedMsgs.Load()
+}
 
 // NewRoutingManager initializes the manager. It does not start any
 // background work; call Start(ctx) to begin heartbeating, watching,
@@ -827,7 +844,18 @@ func (r *RoutingManager) subscribeUser(userGuid string) error {
 			Data:    msg.Data,
 		}:
 		default:
-			log.Warn().Str("subject", msg.Subject).Msg("routing: msgChan full, dropped inbound message")
+			// SECURITY (#73): msgChan-full is no longer silent.
+			// Track the cumulative drop count + escalate the per-
+			// drop log to Error so CloudWatch alarms can fire on it.
+			// A sustained drop rate means downstream processing
+			// can't keep up; rather than the message just being
+			// silently lost (vault op never lands, the user sees a
+			// hung action), surface it loudly.
+			n := r.droppedMsgs.Add(1)
+			log.Error().
+				Str("subject", msg.Subject).
+				Uint64("total_drops", n).
+				Msg("SECURITY: routing msgChan full — inbound vault message dropped")
 		}
 	})
 	if err != nil {
