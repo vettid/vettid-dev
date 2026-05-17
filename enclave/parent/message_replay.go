@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
@@ -201,13 +202,26 @@ func (rc *MessageReplayCache) CheckAndAdd(subject string, data []byte) (bool, st
 	// Check cache size
 	if len(rc.entries) >= maxReplayCacheSize {
 		rc.cleanupLocked()
-		// If still full after cleanup, log and allow (fail open for availability)
+		// If TTL cleanup didn't free space, drop the oldest 20% so
+		// new traffic can flow. SECURITY (#33/#85): after this we
+		// have to fail-closed if the cache is STILL full — the
+		// previous behaviour was to "log and allow", which under
+		// sustained pressure meant replay protection silently
+		// degraded to zero for the duration of the overflow.
 		if len(rc.entries) >= maxReplayCacheSize {
 			log.Warn().
 				Int("cache_size", len(rc.entries)).
-				Msg("SECURITY: Replay cache full - forcing cleanup")
-			// Force aggressive cleanup - remove oldest 20%
+				Msg("SECURITY: Replay cache full — forcing aggressive cleanup")
 			rc.aggressiveCleanupLocked()
+		}
+		if len(rc.entries) >= maxReplayCacheSize {
+			// Genuinely cannot make room — every entry is fresh.
+			// This indicates a DoS, not normal traffic. Reject
+			// rather than letting a captured replay slip past.
+			log.Error().
+				Int("cache_size", len(rc.entries)).
+				Msg("SECURITY: Replay cache exhausted — failing closed")
+			return false, "replay cache exhausted (server under load)"
 		}
 	}
 
@@ -234,33 +248,38 @@ func (rc *MessageReplayCache) cleanupLocked() {
 	}
 }
 
-// aggressiveCleanupLocked removes the oldest 20% of entries (must be called with lock held)
+// aggressiveCleanupLocked removes the oldest 20% of entries (must be called with lock held).
+//
+// SECURITY (#85): the prior implementation re-scanned the full map
+// to find the single oldest entry, then repeated K=N/5 times. That's
+// O(N²) — with N=50000 (the configured cap) and K=10000 that's
+// 500 million map iterations per cleanup. Under a deliberate flood
+// the cleanup itself becomes the DoS amplifier. Now we collect
+// (hash, ts) pairs once, sort by ts, drop the K oldest in one pass:
+// O(N) collect + O(N log N) sort + O(K) delete. With N=50000 that's
+// ~700K operations instead of 500M.
 func (rc *MessageReplayCache) aggressiveCleanupLocked() {
-	// Find oldest entries and remove 20%
 	targetRemoval := len(rc.entries) / 5
 	if targetRemoval == 0 {
 		return
 	}
 
-	// Simple approach: remove entries older than median
-	var oldest time.Time
-	oldestHash := [32]byte{}
-	removed := 0
+	type entry struct {
+		hash [32]byte
+		ts   time.Time
+	}
+	all := make([]entry, 0, len(rc.entries))
+	for h, ts := range rc.entries {
+		all = append(all, entry{hash: h, ts: ts})
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].ts.Before(all[j].ts) })
 
-	for removed < targetRemoval {
-		oldest = time.Now()
-		for hash, ts := range rc.entries {
-			if ts.Before(oldest) {
-				oldest = ts
-				oldestHash = hash
-			}
-		}
-		delete(rc.entries, oldestHash)
-		removed++
+	for i := 0; i < targetRemoval; i++ {
+		delete(rc.entries, all[i].hash)
 	}
 
 	log.Warn().
-		Int("removed", removed).
+		Int("removed", targetRemoval).
 		Int("remaining", len(rc.entries)).
 		Msg("SECURITY: Aggressive replay cache cleanup completed")
 }
