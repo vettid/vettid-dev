@@ -25,6 +25,12 @@ export interface MonitoringStackProps extends cdk.StackProps {
   alarmEmail?: string;
 
   /**
+   * Email address for security-alert notifications (defaults to alarmEmail).
+   * Security alerts have different semantics than operational alarms — see #40.
+   */
+  securityAlertEmail?: string;
+
+  /**
    * VaultInstances DynamoDB table for vault count metrics.
    * If provided, enables the Active Vault Count widget.
    */
@@ -70,6 +76,12 @@ export interface MonitoringStackProps extends cdk.StackProps {
 export class MonitoringStack extends cdk.Stack {
   public readonly dashboard: cloudwatch.Dashboard;
   public readonly alarmTopic: sns.Topic;
+  // SECURITY (#40): separate topic for security alerts so the auth-
+  // failure / replay-cache / rate-limit signals page a distinct
+  // audience from operational noise. Wire metric filters on Lambda
+  // log groups to this topic — they should always be reviewed even
+  // if no operational alarm fires.
+  public readonly securityAlertsTopic: sns.Topic;
 
   private readonly props: MonitoringStackProps;
 
@@ -110,6 +122,41 @@ export class MonitoringStack extends cdk.Stack {
         new subscriptions.EmailSubscription(props.alarmEmail)
       );
     }
+
+    // SECURITY (#40): dedicated topic for security alerts (auth
+    // failures, replay-cache exhaustion, rate-limit breaches, suspect
+    // attestation events). Defaults to the same email as operational
+    // alarms but can route to a different one via securityAlertEmail.
+    this.securityAlertsTopic = new sns.Topic(this, 'SecurityAlertsTopic', {
+      displayName: 'VettID Security Alerts',
+    });
+    const securityEmail = props.securityAlertEmail || props.alarmEmail;
+    if (securityEmail) {
+      this.securityAlertsTopic.addSubscription(
+        new subscriptions.EmailSubscription(securityEmail)
+      );
+    }
+
+    // Hook an alarm on the existing VettID/Authentication failed-login
+    // metric (published by verifyAuthChallenge — see
+    // infrastructure-stack.ts:#cloudwatch:PutMetricData grant).
+    const authFailuresAlarm = new cloudwatch.Alarm(this, 'AuthFailuresAlarm', {
+      alarmName: 'VettID-Auth-FailedLoginSpike',
+      alarmDescription:
+        'Failed admin/member logins exceeded threshold — investigate for credential stuffing / brute force',
+      metric: new cloudwatch.Metric({
+        namespace: 'VettID/Authentication',
+        metricName: 'FailedLogin',
+        statistic: 'Sum',
+        period: cdk.Duration.minutes(5),
+      }),
+      threshold: 20,         // > 20 failures / 5 min
+      evaluationPeriods: 1,
+      datapointsToAlarm: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    authFailuresAlarm.addAlarmAction(new actions.SnsAction(this.securityAlertsTopic));
 
     // Create the main dashboard
     this.dashboard = new cloudwatch.Dashboard(this, 'OperationalDashboard', {
