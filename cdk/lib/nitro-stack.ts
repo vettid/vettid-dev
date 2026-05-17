@@ -103,6 +103,26 @@ export class NitroStack extends cdk.Stack {
 
     this.privateSubnetIds = this.vpc.privateSubnets.map(s => s.subnetId);
 
+    // SECURITY (#92): VPC Flow Logs feed the egress-destination
+    // inventory required to author tight allowAllOutbound:false rules
+    // on the enclave + lambda SGs below. Capture goes to CloudWatch
+    // with 30-day retention; query via Logs Insights to enumerate
+    // destination ports + IP prefixes the workload actually contacts
+    // (KMS regional CIDR, S3 prefix list, DynamoDB prefix list, NATS
+    // NLB, Cognito, SES). Once the inventory is settled the SG rules
+    // can be tightened in a follow-up commit.
+    new ec2.FlowLog(this, 'NitroVpcFlowLog', {
+      resourceType: ec2.FlowLogResourceType.fromVpc(this.vpc),
+      destination: ec2.FlowLogDestination.toCloudWatchLogs(
+        new cdk.aws_logs.LogGroup(this, 'NitroVpcFlowLogGroup', {
+          logGroupName: '/vettid/vpc/nitro/flow-logs',
+          retention: cdk.aws_logs.RetentionDays.ONE_MONTH,
+          removalPolicy: cdk.RemovalPolicy.DESTROY,
+        }),
+      ),
+      trafficType: ec2.FlowLogTrafficType.ALL,
+    });
+
     // ===== KMS KEY FOR NITRO SEALING =====
     // This key is used for envelope encryption of vault credentials
     // The key policy requires attestation for decryption, binding to PCR values
@@ -217,11 +237,17 @@ export class NitroStack extends cdk.Stack {
     });
 
     // ===== SECURITY GROUP =====
+    // SECURITY (#92): allowAllOutbound:true is the bootstrap state.
+    // Once VPC Flow Logs (above) have settled and we've enumerated the
+    // exact destinations (KMS regional CIDR, S3 prefix list, DDB
+    // prefix list, NATS NLB, Cognito, SES, SSM endpoints), this should
+    // flip to allowAllOutbound:false with explicit egress rules per
+    // destination. Tracked.
     this.enclaveSecurityGroup = new ec2.SecurityGroup(this, 'EnclaveSecurityGroup', {
       vpc: this.vpc,
       securityGroupName: 'vettid-enclave-sg',
       description: 'Security group for VettID Nitro Enclave instances',
-      allowAllOutbound: true, // Enclaves need outbound for NATS, S3
+      allowAllOutbound: true, // Enclaves need outbound for NATS, S3 — see #92
     });
 
     // Allow health check HTTP on port 8080 from ALB/NLB (if needed)
@@ -230,12 +256,14 @@ export class NitroStack extends cdk.Stack {
     cdk.Tags.of(this.enclaveSecurityGroup).add('Name', 'vettid-enclave-sg');
     cdk.Tags.of(this.enclaveSecurityGroup).add('Purpose', 'VettID Nitro Enclave Instances');
 
-    // Lambda security group for functions that need VPC access (NATS, internal services)
+    // Lambda security group for functions that need VPC access (NATS, internal services).
+    // SECURITY (#92): see Flow Logs note above — flips to false once
+    // the destination inventory is settled.
     this.lambdaSecurityGroup = new ec2.SecurityGroup(this, 'LambdaSecurityGroup', {
       vpc: this.vpc,
       securityGroupName: 'vettid-lambda-sg',
       description: 'Security group for VettID Lambda functions requiring VPC access',
-      allowAllOutbound: true, // Lambdas need outbound for NATS, DynamoDB, etc.
+      allowAllOutbound: true, // Lambdas need outbound for NATS, DynamoDB, etc. — see #92
     });
 
     cdk.Tags.of(this.lambdaSecurityGroup).add('Name', 'vettid-lambda-sg');

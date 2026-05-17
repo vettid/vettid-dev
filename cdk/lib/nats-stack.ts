@@ -148,6 +148,21 @@ export class NatsStack extends cdk.Stack {
       enableDnsSupport: true,
     });
 
+    // SECURITY (#92): VPC Flow Logs feed the destination inventory
+    // required to tighten the NATS-side SG egress in a follow-up.
+    // Capture goes to CloudWatch with 30-day retention.
+    new ec2.FlowLog(this, 'NatsVpcFlowLog', {
+      resourceType: ec2.FlowLogResourceType.fromVpc(this.vpc),
+      destination: ec2.FlowLogDestination.toCloudWatchLogs(
+        new cdk.aws_logs.LogGroup(this, 'NatsVpcFlowLogGroup', {
+          logGroupName: '/vettid/vpc/nats/flow-logs',
+          retention: cdk.aws_logs.RetentionDays.ONE_MONTH,
+          removalPolicy: cdk.RemovalPolicy.DESTROY,
+        }),
+      ),
+      trafficType: ec2.FlowLogTrafficType.ALL,
+    });
+
     // ===== PRIVATE HOSTED ZONE FOR CLUSTER DISCOVERY =====
 
     // Create private hosted zone for internal cluster DNS
@@ -199,10 +214,14 @@ export class NatsStack extends cdk.Stack {
 
     // ===== SECURITY GROUPS =====
 
+    // SECURITY (#92): allowAllOutbound:true is the bootstrap state.
+    // Once VPC Flow Logs settle the destination inventory (DDB prefix
+    // list, KMS regional CIDR, Secrets Manager endpoint, etc.) this
+    // flips to false with explicit per-destination egress rules.
     this.natsSecurityGroup = new ec2.SecurityGroup(this, 'NatsSecurityGroup', {
       vpc: this.vpc,
       description: 'Security group for NATS cluster nodes',
-      allowAllOutbound: true,
+      allowAllOutbound: true, // see #92
     });
 
     // NATS client port (from NLB)

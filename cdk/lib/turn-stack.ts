@@ -88,11 +88,16 @@ export class TurnStack extends cdk.Stack {
     // Security group — open the TURN/TURNS ports plus :80 for Lets Encrypt
     // HTTP-01 and :443 for TURNS fallback. Outbound all (needed for cert
     // renewal + reachability checks).
-    // -------------------------------------------------------------------- //
+    // SECURITY (#92): TURN is the load-bearing exception to the egress
+    // tightening plan — by design coturn relays arbitrary peer-to-peer
+    // media traffic, so the outbound destination set is genuinely
+    // unbounded. The internal block rules in turn/bootstrap.sh refuse
+    // relay to private/loopback/link-local CIDRs, which is the real
+    // safety net here. Keep allowAllOutbound:true.
     const sg = new ec2.SecurityGroup(this, 'TurnSg', {
       vpc,
       description: 'VettID TURN relay - STUN/TURN/TURNS',
-      allowAllOutbound: true,
+      allowAllOutbound: true, // see #92 — accepted: TURN relays arbitrary peers
     });
     sg.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.udp(3478), 'TURN/UDP');
     sg.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(3478), 'TURN/TCP');
