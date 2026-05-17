@@ -538,14 +538,95 @@ const webAcl = new wafv2.CfnWebACL(this, 'WebAcl', {
       };
     }
 
-    // NOTE: WAF v2 does NOT support HTTP API (API Gateway V2) directly.
-    // It only supports REST APIs. To protect HTTP APIs with WAF, you would need to:
-    // 1. Route API through CloudFront (which has WAF attached), OR
-    // 2. Use an Application Load Balancer in front of the API
-    // The API currently has protection via:
-    // - API Gateway built-in throttling (configured below)
-    // - Lambda-level rate limiting in handlers
-    // - Input validation in Lambda handlers
+    // SECURITY (#38): WAF for HTTP API v2.
+    //
+    // AWS added direct WAFv2 support for API Gateway HTTP APIs at re:Invent 2024
+    // (the outdated note that lived here previously claimed only REST APIs were
+    // supported — that's no longer true). We attach a REGIONAL WebACL with the
+    // same AWS-managed rule sets as the CLOUDFRONT WebACL above plus a
+    // request-rate limiter, then associate it with the API's default stage.
+    // Clients hitting api.vettid.dev directly (mobile apps, server-to-server)
+    // bypass CloudFront, so this is the WAF that protects those paths.
+    const apiWebAcl = new wafv2.CfnWebACL(this, 'ApiWebAcl', {
+      scope: 'REGIONAL',
+      defaultAction: { allow: {} },
+      visibilityConfig: {
+        cloudWatchMetricsEnabled: true,
+        metricName: 'VettIDApiWebAcl',
+        sampledRequestsEnabled: true,
+      },
+      rules: [
+        // Per-IP rate limit at the API edge — 1000/5min covers a busy
+        // mobile session while still bounding scrapers + naive flood.
+        // Stricter per-route limits remain on the CloudFront WebACL.
+        {
+          name: 'ApiGeneralRateLimit',
+          priority: 1,
+          statement: {
+            rateBasedStatement: { limit: 1000, aggregateKeyType: 'IP' },
+          },
+          action: { block: {} },
+          visibilityConfig: {
+            cloudWatchMetricsEnabled: true,
+            metricName: 'ApiGeneralRateLimit',
+            sampledRequestsEnabled: true,
+          },
+        },
+        // AWS Managed: Core Rule Set (OWASP Top 10 patterns).
+        {
+          name: 'AWSManagedRulesCommonRuleSet',
+          priority: 2,
+          statement: {
+            managedRuleGroupStatement: { vendorName: 'AWS', name: 'AWSManagedRulesCommonRuleSet' },
+          },
+          overrideAction: { none: {} },
+          visibilityConfig: {
+            cloudWatchMetricsEnabled: true,
+            metricName: 'ApiAWSManagedRulesCommonRuleSet',
+            sampledRequestsEnabled: true,
+          },
+        },
+        // AWS Managed: Known Bad Inputs (web shells, CVEs, etc.).
+        {
+          name: 'AWSManagedRulesKnownBadInputsRuleSet',
+          priority: 3,
+          statement: {
+            managedRuleGroupStatement: { vendorName: 'AWS', name: 'AWSManagedRulesKnownBadInputsRuleSet' },
+          },
+          overrideAction: { none: {} },
+          visibilityConfig: {
+            cloudWatchMetricsEnabled: true,
+            metricName: 'ApiAWSManagedRulesKnownBadInputsRuleSet',
+            sampledRequestsEnabled: true,
+          },
+        },
+        // AWS Managed: IP Reputation List (known malicious IPs).
+        {
+          name: 'AWSManagedRulesAmazonIpReputationList',
+          priority: 4,
+          statement: {
+            managedRuleGroupStatement: { vendorName: 'AWS', name: 'AWSManagedRulesAmazonIpReputationList' },
+          },
+          overrideAction: { none: {} },
+          visibilityConfig: {
+            cloudWatchMetricsEnabled: true,
+            metricName: 'ApiAWSManagedRulesAmazonIpReputationList',
+            sampledRequestsEnabled: true,
+          },
+        },
+      ],
+    });
+
+    new wafv2.CfnWebACLAssociation(this, 'ApiWebAclAssociation', {
+      webAclArn: apiWebAcl.attrArn,
+      // HTTP API stage ARNs follow: arn:aws:apigateway:<region>::/apis/<api-id>/stages/<stage-name>
+      resourceArn: cdk.Stack.of(this).formatArn({
+        service: 'apigateway',
+        account: '',
+        resource: 'apis',
+        resourceName: `${this.httpApi.apiId}/stages/$default`,
+      }),
+    });
 
 // CloudFront Function: Add security headers to all responses with specific API URL
 const securityHeadersFn = new cloudfront.Function(this, 'SecurityHeadersFn', {
