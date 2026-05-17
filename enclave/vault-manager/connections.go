@@ -108,10 +108,32 @@ func (h *ConnectionsHandler) withConnectionRecord(connectionID string, mutate fu
 	if err != nil {
 		return &record, fmt.Errorf("encode connection record: %w", err)
 	}
+	// SECURITY (#35): the marshalled buffer holds LocalPrivateKey /
+	// SharedSecret in plaintext until storage.Put returns. Zero it
+	// before the slice escapes to GC, shrinking the in-memory window
+	// an attacker with heap-snapshot access could read from.
+	defer zeroBytes(newData)
 	if err := h.storage.Put(storageKey, newData); err != nil {
 		return &record, fmt.Errorf("persist connection record: %w", err)
 	}
 	return &record, nil
+}
+
+// putConnectionRecord marshals a ConnectionRecord, writes it under
+// `connections/{id}`, and zeros the marshalled byte slice on return.
+// Centralizes the SECURITY (#35) GC-window mitigation so new write
+// sites don't have to remember the defer-zero pattern. Existing
+// inline marshal+Put pairs migrate to this incrementally.
+//
+// `storageKey` is the on-disk key — usually `connections/{id}` but
+// some flows use parent-keyed variants (e.g. peer profile subkeys).
+func (h *ConnectionsHandler) putConnectionRecord(storageKey string, record *ConnectionRecord) error {
+	data, err := json.Marshal(record)
+	if err != nil {
+		return fmt.Errorf("marshal connection record: %w", err)
+	}
+	defer zeroBytes(data)
+	return h.storage.Put(storageKey, data)
 }
 
 // recordTerminal returns true when the record is in a final state and
@@ -1033,13 +1055,11 @@ func (h *ConnectionsHandler) HandleCreateInvite(msg *IncomingMessage) (*Outgoing
 		LocalPrivateKey:   localPrivate,
 	}
 
-	data, err := json.Marshal(record)
-	if err != nil {
-		return h.errorResponse(msg.GetID(), "Failed to marshal connection")
-	}
-
+	// SECURITY (#35): record contains LocalPrivateKey at create time.
+	// Route through the helper so the marshalled buffer gets zeroed
+	// rather than handed straight to GC.
 	storageKey := "connections/" + connectionID
-	if err := h.storage.Put(storageKey, data); err != nil {
+	if err := h.putConnectionRecord(storageKey, &record); err != nil {
 		return h.errorResponse(msg.GetID(), "Failed to store connection")
 	}
 
@@ -1295,11 +1315,9 @@ func (h *ConnectionsHandler) HandleResolveInvite(msg *IncomingMessage) (*Outgoin
 	}
 	record.ReviewNonce = generateReviewNonce()
 
-	newData, err := json.Marshal(record)
-	if err != nil {
-		return h.errorResponse(msg.GetID(), "Failed to marshal connection record")
-	}
-	if err := h.storage.Put(storageKey, newData); err != nil {
+	// SECURITY (#35): record now carries SharedSecret (line above).
+	// Helper handles the defer-zero pattern.
+	if err := h.putConnectionRecord(storageKey, &record); err != nil {
 		return h.errorResponse(msg.GetID(), "Failed to store connection record")
 	}
 	h.addToConnectionIndex(brokerPayload.ConnectionID)
@@ -1820,9 +1838,10 @@ func (h *ConnectionsHandler) HandlePeerKeyExchange(ctx context.Context, msg *Inc
 		log.Info().Str("connection_id", keyExchange.ConnectionID).Msg("Computed shared secret (B side)")
 	}
 
-	// Save updated record
-	newData, _ := json.Marshal(record)
-	if err := h.storage.Put(storageKey, newData); err != nil {
+	// Save updated record. SECURITY (#35): post-ECDH record has both
+	// SharedSecret and LocalPrivateKey — route through the helper so
+	// the marshalled buffer is zeroed before the GC sees it.
+	if err := h.putConnectionRecord(storageKey, &record); err != nil {
 		log.Error().Err(err).Msg("Failed to store connection after key exchange")
 	}
 
@@ -1989,13 +2008,10 @@ func (h *ConnectionsHandler) HandleCreateAgentInvite(msg *IncomingMessage) (*Out
 		LocalPrivateKey:   localPrivate,
 	}
 
-	data, err := json.Marshal(record)
-	if err != nil {
-		return h.errorResponse(msg.GetID(), "Failed to marshal connection")
-	}
-
+	// SECURITY (#35): record holds LocalPrivateKey — route through
+	// helper so the marshalled buffer is zeroed before GC sees it.
 	storageKey := "connections/" + connectionID
-	if err := h.storage.Put(storageKey, data); err != nil {
+	if err := h.putConnectionRecord(storageKey, &record); err != nil {
 		return h.errorResponse(msg.GetID(), "Failed to store connection")
 	}
 
@@ -3869,6 +3885,23 @@ func (h *ConnectionsHandler) HandleAcceptAgentConnection(ctx context.Context, ms
 	}, nil
 }
 
+// maxPendingAgentInvitesForECIESLookup caps how many ECIES decrypts
+// we'll attempt per ConnectionRequest. Without this, an attacker who
+// can spawn many pending invitations forces the vault into O(N)
+// X25519+AEAD per probe — both a DoS amplifier and a timing oracle
+// (the position of the matching invite is observable in response
+// latency). SECURITY (#34).
+//
+// The cap is generous enough that legitimate ops (a couple of
+// concurrent pairings per user, max) always succeed; an attacker who
+// stuffs the pool past this gets cheap rejection.
+//
+// Long-term fix is a protocol change: have the agent include
+// invitation_id as plaintext metadata in the envelope so this
+// function becomes an O(1) lookup. Tracked separately — coordinating
+// the wire change with vettid-agent is bigger than this LOW.
+const maxPendingAgentInvitesForECIESLookup = 16
+
 // findPendingAgentInvitationForECIES finds the pending agent invitation
 // that can successfully decrypt the ECIES payload.
 // This is needed because the agent doesn't know the connection ID before registration.
@@ -3881,6 +3914,7 @@ func (h *ConnectionsHandler) findPendingAgentInvitationForECIES(encryptedPayload
 	}
 	json.Unmarshal(indexData, &invIndex)
 
+	attempts := 0
 	for _, invID := range invIndex {
 		invData, err := h.storage.Get("invitations/" + invID)
 		if err != nil {
@@ -3911,6 +3945,20 @@ func (h *ConnectionsHandler) findPendingAgentInvitationForECIES(encryptedPayload
 		// Must be an agent connection with a private key
 		if !conn.IsAgent() || len(conn.LocalPrivateKey) == 0 {
 			continue
+		}
+
+		// SECURITY (#34): cap ECIES attempts so a flood of pending
+		// invitations can't drive per-request work past a known bound.
+		// The check runs after the cheap status/expiry filters so we
+		// only count actual decrypt attempts.
+		attempts++
+		if attempts > maxPendingAgentInvitesForECIESLookup {
+			log.Warn().
+				Str("owner_space", h.ownerSpace).
+				Int("attempts", attempts).
+				Int("cap", maxPendingAgentInvitesForECIESLookup).
+				Msg("SECURITY: ECIES invitation lookup cap exceeded — refusing further attempts")
+			return nil, nil, fmt.Errorf("too many pending invitations to match (cap=%d)", maxPendingAgentInvitesForECIESLookup)
 		}
 
 		// Try to decrypt — if it works, this is the right invitation
