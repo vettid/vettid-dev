@@ -1150,32 +1150,45 @@ func (s *SQLiteStorage) exportData() ([]byte, error) {
 		"service_auth_requests",
 	}
 	for _, table := range tables {
-		rows, err := s.db.Query(fmt.Sprintf("SELECT * FROM %s", table))
-		if err != nil {
-			return nil, fmt.Errorf("failed to query table %s: %w", table, err)
-		}
-		defer rows.Close()
+		// SECURITY/CORRECTNESS (#84): wrap per-table query in a
+		// closure so `defer rows.Close()` scopes to ONE iteration.
+		// Previously every iteration leaked its rows handle until
+		// function return — with 10 tables that's 10 open
+		// result-sets piling up, holding SQLite read locks past the
+		// loop. The closure-and-return pattern is the standard Go
+		// fix for defer-in-loop.
+		tableData, err := func() ([]map[string]interface{}, error) {
+			rows, err := s.db.Query(fmt.Sprintf("SELECT * FROM %s", table))
+			if err != nil {
+				return nil, fmt.Errorf("failed to query table %s: %w", table, err)
+			}
+			defer rows.Close()
 
-		cols, err := rows.Columns()
-		if err != nil {
-			return nil, fmt.Errorf("failed to get columns for %s: %w", table, err)
-		}
+			cols, err := rows.Columns()
+			if err != nil {
+				return nil, fmt.Errorf("failed to get columns for %s: %w", table, err)
+			}
 
-		var tableData []map[string]interface{}
-		for rows.Next() {
-			values := make([]interface{}, len(cols))
-			valuePtrs := make([]interface{}, len(cols))
-			for i := range values {
-				valuePtrs[i] = &values[i]
+			var out []map[string]interface{}
+			for rows.Next() {
+				values := make([]interface{}, len(cols))
+				valuePtrs := make([]interface{}, len(cols))
+				for i := range values {
+					valuePtrs[i] = &values[i]
+				}
+				if err := rows.Scan(valuePtrs...); err != nil {
+					return nil, fmt.Errorf("failed to scan row in %s: %w", table, err)
+				}
+				row := make(map[string]interface{})
+				for i, col := range cols {
+					row[col] = values[i]
+				}
+				out = append(out, row)
 			}
-			if err := rows.Scan(valuePtrs...); err != nil {
-				return nil, fmt.Errorf("failed to scan row in %s: %w", table, err)
-			}
-			row := make(map[string]interface{})
-			for i, col := range cols {
-				row[col] = values[i]
-			}
-			tableData = append(tableData, row)
+			return out, rows.Err()
+		}()
+		if err != nil {
+			return nil, err
 		}
 		export[table] = tableData
 	}
