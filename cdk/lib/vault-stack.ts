@@ -15,6 +15,7 @@ import {
 import { InfrastructureStack } from './infrastructure-stack';
 // LedgerStack removed - legacy Protean Credential System replaced by vault-manager JetStream
 import { NitroStack } from './nitro-stack';
+import { NATS_INTERNAL_URL, NATS_INTERNAL_ENDPOINT } from './shared/nats-endpoints';
 
 export interface VaultStackProps extends cdk.StackProps {
   infrastructure: InfrastructureStack;
@@ -186,7 +187,7 @@ export class VaultStack extends cdk.Stack {
 
     // Environment variables for Nitro Enclave integration
     const enclaveEnv = {
-      NATS_URL: 'nats://nats.internal.vettid.dev:4222',
+      NATS_URL: NATS_INTERNAL_URL,
       BACKEND_CREDS_PARAM: '/vettid/nitro/parent-nats-creds',
     };
 
@@ -211,7 +212,7 @@ export class VaultStack extends cdk.Stack {
     // Enclave configuration (Nitro-based architecture)
     const enclaveConfigEnv = {
       // Internal NATS endpoint for vault-to-NATS communication via VPC peering (plain TCP)
-      NATS_INTERNAL_ENDPOINT: 'nats.internal.vettid.dev:4222',
+      NATS_INTERNAL_ENDPOINT: NATS_INTERNAL_ENDPOINT,
       BACKEND_API_URL: 'https://api.vettid.dev',
     };
 

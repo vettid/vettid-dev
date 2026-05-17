@@ -21,7 +21,18 @@ const ssmClient = new SSMClient({});
 let natsConnection: NatsConnection | null = null;
 let natsCredentials: string | null = null;
 
-const NATS_URL = process.env.NATS_URL || 'nats://nats.internal.vettid.dev:4222';
+// SECURITY (#117): NATS endpoint is owned by CDK (vault-stack
+// enclaveEnv); refuse to fall back to a hardcoded literal so a missing
+// env var fails loudly at cold-start instead of silently dialing the
+// stale default.
+function requireEnv(name: string): string {
+  const v = process.env[name];
+  if (!v) {
+    throw new Error(`${name} env var is required (set by CDK)`);
+  }
+  return v;
+}
+const NATS_URL = requireEnv('NATS_URL');
 const BACKEND_CREDS_PARAM = '/vettid/nitro/parent-nats-creds';
 
 // Request timeout (10 seconds for enclave operations)

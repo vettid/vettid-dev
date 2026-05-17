@@ -27,6 +27,8 @@ type CallEvent struct {
 }
 
 func main() {
+	// SECURITY (#117): test harness default; production parents render
+	// this URL from cdk/lib/shared/nats-endpoints.ts via parent.yaml.
 	natsURL := os.Getenv("NATS_URL")
 	if natsURL == "" {
 		natsURL = "nats://nats.internal.vettid.dev:4222"

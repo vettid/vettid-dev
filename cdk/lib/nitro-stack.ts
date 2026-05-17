@@ -17,6 +17,7 @@ import {
 } from 'aws-cdk-lib';
 
 import { InfrastructureStack } from './infrastructure-stack';
+import { NATS_INTERNAL_URL } from './shared/nats-endpoints';
 
 export interface NitroStackProps extends cdk.StackProps {
   /**
@@ -1301,7 +1302,7 @@ export class NitroStack extends cdk.Stack {
       '  port: 5000',
       '',
       'nats:',
-      '  url: nats://nats.internal.vettid.dev:4222',
+      `  url: ${NATS_INTERNAL_URL}`,
       '  credentials_file: /etc/vettid/nats.creds',
       '  reconnect_wait: 2000',
       '  max_reconnects: -1',

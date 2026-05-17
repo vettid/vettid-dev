@@ -155,7 +155,13 @@ func LoadConfig(path string) (*Config, error) {
 	return cfg, nil
 }
 
-// DefaultConfig returns the default configuration
+// DefaultConfig returns the default configuration.
+//
+// SECURITY (#117): the NATS URL here is a fallback; in production the
+// CDK NitroStack renders parent.yaml with the canonical value (see
+// cdk/lib/shared/nats-endpoints.ts) and the YAML overrides this
+// default. Update both this literal and the CDK constant together when
+// the internal zone moves.
 func DefaultConfig() *Config {
 	return &Config{
 		DevMode: false,

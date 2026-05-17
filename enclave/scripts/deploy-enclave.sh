@@ -444,7 +444,10 @@ cat > /etc/vettid/parent.yaml << 'CONFIGEOF'
 # Development mode (use TCP instead of vsock)
 dev_mode: false
 
-# NATS connection settings
+# NATS connection settings.
+# Canonical value lives in cdk/lib/shared/nats-endpoints.ts. The CDK
+# NitroStack renders this exact block via UserData on each instance —
+# this fallback is only used by manual deploys that skip CDK.
 nats:
   url: "nats://nats.internal.vettid.dev:4222"
   credentials_file: "/etc/vettid/nats.creds"
