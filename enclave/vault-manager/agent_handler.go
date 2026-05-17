@@ -55,6 +55,7 @@ type AgentHandler struct {
 	connHandler      *ConnectionsHandler
 	secretsHandler   *AgentSecretsHandler
 	pendingApprovals map[string]*PendingApproval // keyed by request_id
+	rateLimiter      *agentRateLimiter           // per-connection DoS guard (#32)
 }
 
 // NewAgentHandler creates a new agent handler.
@@ -74,6 +75,7 @@ func NewAgentHandler(
 		connHandler:      connHandler,
 		secretsHandler:   secretsHandler,
 		pendingApprovals: make(map[string]*PendingApproval),
+		rateLimiter:      newAgentRateLimiter(),
 	}
 }
 
@@ -200,6 +202,20 @@ func (h *AgentHandler) HandleAgentMessage(ctx context.Context, msg *IncomingMess
 		Str("key_id", envelope.KeyID).
 		Uint64("seq", envelope.Sequence).
 		Msg("Processing agent message")
+
+	// SECURITY (#32): rate-limit by connection_id (== envelope.KeyID).
+	// Applied here, before the storage lookup and AEAD decrypt, so a
+	// hostile peer holding valid creds can't burn CPU + the inbound
+	// channel by spinning. Bucket: 60-message burst, 1 msg/sec refill,
+	// 512 active connections. Connection requests share the same bucket
+	// scheme keyed by the proposed connection_id.
+	if h.rateLimiter != nil && !h.rateLimiter.Allow(envelope.KeyID) {
+		log.Warn().
+			Str("type", envelope.Type).
+			Str("key_id", envelope.KeyID).
+			Msg("Agent message rate-limited — dropping")
+		return nil, nil
+	}
 
 	// Handle connection request separately — it's ECIES-encrypted, not connection-key encrypted
 	if envelope.Type == AgentMsgConnectionRequest {
