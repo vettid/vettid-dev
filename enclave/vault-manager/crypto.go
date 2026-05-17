@@ -50,6 +50,43 @@ const (
 	ECIESHKDFInfo = "enclave-encryption-v1"
 )
 
+// SECURITY (#72): explicit AEAD additional-authenticated-data (AAD).
+//
+// Pre-existing ciphertexts were sealed with `nil` AAD — adding a
+// required AAD on decrypt would brick every vault sealed before this
+// change. Instead, encrypt now always binds the chosen AAD into the
+// ciphertext tag, and decrypt tries v1 first then falls back to nil
+// for legacy blobs. New ciphertexts can never be re-interpreted under
+// a different domain, and old ciphertexts continue to decrypt without
+// migration ceremony.
+//
+// The fallback path can be removed once every persisted ciphertext
+// has been re-sealed (enclave migrations re-seal automatically).
+var (
+	eciesAADv1       = []byte("vettid-ecies-aad-v1")
+	domainCryptoAADv1 = []byte("vettid-domain-crypto-aad-v1")
+)
+
+// aeadOpenWithLegacyFallback runs aead.Open under primaryAAD first
+// and falls back to nil AAD if the AEAD tag doesn't validate. Use
+// from decrypt paths during the AAD-binding migration window.
+func aeadOpenWithLegacyFallback(aead interface {
+	Open(dst, nonce, ciphertext, additionalData []byte) ([]byte, error)
+}, nonce, ciphertext, primaryAAD []byte) ([]byte, error) {
+	plaintext, err := aead.Open(nil, nonce, ciphertext, primaryAAD)
+	if err == nil {
+		return plaintext, nil
+	}
+	// Legacy fallback: blob sealed before #72 used nil AAD.
+	plaintext, fbErr := aead.Open(nil, nonce, ciphertext, nil)
+	if fbErr == nil {
+		return plaintext, nil
+	}
+	// Surface the primary failure — likelier to be the real cause for
+	// new-format callers; legacy fallback failure is just confirmation.
+	return nil, err
+}
+
 // XChaCha20-Poly1305 nonce size (24 bytes vs 12 for standard ChaCha20)
 const XChaCha20NonceSize = 24
 
@@ -166,7 +203,11 @@ func decryptWithECIES(privateKey []byte, ciphertext []byte) ([]byte, error) {
 		return nil, fmt.Errorf("cipher creation failed: %w", err)
 	}
 
-	plaintext, err := aead.Open(nil, nonce, encrypted, nil)
+	// SECURITY (#72): try eciesAADv1 first, fall back to nil AAD for
+	// pre-#72 ciphertexts. The Android client side will adopt
+	// eciesAADv1 in a paired update; until then the legacy path
+	// keeps inbound app-to-vault traffic working.
+	plaintext, err := aeadOpenWithLegacyFallback(aead, nonce, encrypted, eciesAADv1)
 	if err != nil {
 		return nil, fmt.Errorf("decryption failed: %w", err)
 	}
@@ -222,7 +263,10 @@ func encryptWithECIES(recipientPubKey []byte, plaintext []byte) ([]byte, error) 
 		return nil, fmt.Errorf("failed to generate nonce: %w", err)
 	}
 
-	ciphertext := aead.Seal(nil, nonce, plaintext, nil)
+	// SECURITY (#72): bind ciphertext to the eciesAADv1 domain — a
+	// blob produced here cannot be replayed against a decrypt path
+	// that uses a different AAD even if the AEAD key happens to match.
+	ciphertext := aead.Seal(nil, nonce, plaintext, eciesAADv1)
 
 	// Format: ephemeral_pubkey || nonce || ciphertext
 	result := make([]byte, 0, 32+len(nonce)+len(ciphertext))
@@ -341,7 +385,12 @@ func encryptWithDomain(recipientPubKey []byte, plaintext []byte, domain string) 
 		return nil, fmt.Errorf("failed to generate nonce: %w", err)
 	}
 
-	ciphertext := aead.Seal(nil, nonce, plaintext, nil)
+	// SECURITY (#72): bind ciphertext to domainCryptoAADv1. The HKDF
+	// salt already includes `domain` so per-domain keys differ, but
+	// AAD-binding adds an explicit tag check that defends against
+	// future code paths that might reuse the same key with different
+	// intent.
+	ciphertext := aead.Seal(nil, nonce, plaintext, domainCryptoAADv1)
 
 	// Format: ephemeral_pubkey (32) || nonce (24) || ciphertext
 	result := make([]byte, 0, 32+chacha20poly1305.NonceSizeX+len(ciphertext))
@@ -411,7 +460,11 @@ func decryptWithDomain(privateKey []byte, ciphertext []byte, domain string) ([]b
 		return nil, fmt.Errorf("cipher creation failed: %w", err)
 	}
 
-	plaintext, err := aead.Open(nil, nonce, encrypted, nil)
+	// SECURITY (#72): try domainCryptoAADv1, fall back to nil for
+	// pre-#72 ciphertexts. Domain separation already kicks in at the
+	// HKDF level (different keys per domain); this adds an explicit
+	// AAD tag-check on top.
+	plaintext, err := aeadOpenWithLegacyFallback(aead, nonce, encrypted, domainCryptoAADv1)
 	if err != nil {
 		log.Warn().Err(err).Str("domain", domain).Msg("DEBUG: AEAD decryption failed")
 		return nil, fmt.Errorf("decryption failed: %w", err)

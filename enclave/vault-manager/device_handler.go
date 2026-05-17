@@ -604,7 +604,9 @@ func decryptECIESDeviceDomain(privateKey []byte, data []byte) ([]byte, error) {
 		return nil, fmt.Errorf("create cipher: %w", err)
 	}
 
-	plaintext, err := aead.Open(nil, nonce, ciphertext, nil)
+	// SECURITY (#72): try domainCryptoAADv1 first, fall back to nil
+	// AAD for pre-#72 ciphertexts.
+	plaintext, err := aeadOpenWithLegacyFallback(aead, nonce, ciphertext, domainCryptoAADv1)
 	if err != nil {
 		return nil, fmt.Errorf("ECIES decrypt: %w", err)
 	}
