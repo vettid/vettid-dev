@@ -7,6 +7,7 @@ module github.com/vettid/vettid-dev/enclave/tests/migration/driver
 go 1.25
 
 require (
+	github.com/google/uuid v1.6.0
 	github.com/nats-io/nats.go v1.39.1
 	golang.org/x/crypto v0.33.0
 )
