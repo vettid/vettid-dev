@@ -2,6 +2,8 @@ package storage
 
 import (
 	"crypto/rand"
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -986,4 +988,55 @@ func TestEventCleanup(t *testing.T) {
 // currentTimeUnix returns the current Unix timestamp
 func currentTimeUnix() int64 {
 	return time.Now().Unix()
+}
+
+// TestImportData_RejectsUnknownTable pins the SQL-identifier
+// allow-list put in place for #21/#80. Without it, the JSON's outer
+// key landed in raw SQL via fmt.Sprintf and a malicious export could
+// execute arbitrary statements.
+func TestImportData_RejectsUnknownTable(t *testing.T) {
+	dek := make([]byte, 32)
+	rand.Read(dek)
+	storage, err := NewSQLiteStorage("test-owner", dek)
+	if err != nil {
+		t.Fatalf("NewSQLiteStorage: %v", err)
+	}
+	defer storage.Close()
+
+	payload := map[string][]map[string]interface{}{
+		// Real-looking table with a SQL-injection suffix.
+		"events; DROP TABLE events--": {{"id": 1, "payload": ""}},
+	}
+	data, _ := json.Marshal(payload)
+	if err := storage.importData(data); err == nil {
+		t.Fatal("expected importData to reject unknown table, got nil error")
+	} else if !strings.Contains(err.Error(), "unknown table") {
+		t.Fatalf("expected 'unknown table' error, got: %v", err)
+	}
+}
+
+// TestImportData_RejectsUnknownColumn ensures column names from JSON
+// are validated against the live schema before they reach SQL.
+func TestImportData_RejectsUnknownColumn(t *testing.T) {
+	dek := make([]byte, 32)
+	rand.Read(dek)
+	storage, err := NewSQLiteStorage("test-owner", dek)
+	if err != nil {
+		t.Fatalf("NewSQLiteStorage: %v", err)
+	}
+	defer storage.Close()
+
+	payload := map[string][]map[string]interface{}{
+		// Real table, bogus column name (would inject if unguarded).
+		"events": {{
+			"id":                          1,
+			"col_that_does_not_exist; --": "value",
+		}},
+	}
+	data, _ := json.Marshal(payload)
+	if err := storage.importData(data); err == nil {
+		t.Fatal("expected importData to reject unknown column, got nil error")
+	} else if !strings.Contains(err.Error(), "unknown column") {
+		t.Fatalf("expected 'unknown column' error, got: %v", err)
+	}
 }

@@ -1183,14 +1183,59 @@ func (s *SQLiteStorage) exportData() ([]byte, error) {
 	return json.Marshal(export)
 }
 
-// importData imports data from JSON export
+// tableColumns returns the set of column names declared on `table`.
+// Used by importData to validate JSON-supplied column identifiers
+// against the actual schema before they reach a fmt.Sprintf'd SQL
+// INSERT. PRAGMA table_info() is the standard SQLite way to enumerate
+// columns; it's a parameterized query against the schema, not the
+// user-controlled input, so it's safe.
+//
+// The `table` argument MUST itself be allow-listed before this call —
+// PRAGMA table_info doesn't accept ? placeholders for identifiers, so
+// the caller's allow-list is what keeps this query injection-safe.
+func (s *SQLiteStorage) tableColumns(table string) (map[string]bool, error) {
+	rows, err := s.db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string]bool)
+	for rows.Next() {
+		var cid int
+		var name string
+		var dtype string
+		var notnull int
+		var dfltValue interface{}
+		var pk int
+		if err := rows.Scan(&cid, &name, &dtype, &notnull, &dfltValue, &pk); err != nil {
+			return nil, err
+		}
+		out[name] = true
+	}
+	return out, rows.Err()
+}
+
+// importData imports data from JSON export.
+//
+// SECURITY (#21/#80): the JSON payload is attacker-controlled —
+// table names AND column names come from `export[table][col]` map
+// keys. Prior to the validateImportTable / validateImportColumn
+// allow-lists below, those names landed in raw SQL via fmt.Sprintf
+// and a malicious payload could execute arbitrary SQL (DROP TABLE,
+// data exfil via UNION SELECT, etc.). Now any unknown table or
+// column fails the import; only the schema's exact identifiers
+// reach the SQL string.
 func (s *SQLiteStorage) importData(data []byte) error {
 	var export map[string][]map[string]interface{}
 	if err := json.Unmarshal(data, &export); err != nil {
 		return fmt.Errorf("failed to unmarshal export: %w", err)
 	}
 
-	// BLOB columns per table - these are base64-encoded in JSON and need decoding
+	// BLOB columns per table - these are base64-encoded in JSON and need decoding.
+	// Doubles as the SQL-identifier allow-list: only tables present as
+	// map keys can be imported; only columns present in the inner map
+	// (plus the non-BLOB columns the schema-aware allow-list adds in
+	// validateImportColumn) can be inserted.
 	blobColumns := map[string]map[string]bool{
 		"handler_state":           {"state": true},
 		"cek_keypairs":            {"private_key": true, "public_key": true},
@@ -1219,17 +1264,37 @@ func (s *SQLiteStorage) importData(data []byte) error {
 		"service_connection_keys",
 		"service_auth_requests",
 	}
+	// `tables` is hardcoded above — safe to interpolate.
 	for _, table := range tables {
 		if _, err := s.db.Exec(fmt.Sprintf("DELETE FROM %s", table)); err != nil {
 			return fmt.Errorf("failed to clear table %s: %w", table, err)
 		}
 	}
 
+	// allowedTables is the import allow-list — derived from the
+	// hardcoded `tables` slice. Any JSON key NOT in this set fails
+	// the import. Defense against a payload like
+	// `{"events; DROP TABLE foo--": [...]}` reaching SQL.
+	allowedTables := make(map[string]bool, len(tables))
+	for _, t := range tables {
+		allowedTables[t] = true
+	}
+
 	// Import rows for each table
 	for table, rows := range export {
+		if !allowedTables[table] {
+			return fmt.Errorf("import refused: unknown table %q (not in schema allow-list)", table)
+		}
 		tableBlobs := blobColumns[table]
 		if tableBlobs == nil {
 			tableBlobs = map[string]bool{}
+		}
+		// Fetch the actual column set from the table once per import
+		// pass — cheaper than per-row reflection and gives us the
+		// authoritative allow-list for column identifiers.
+		colsAllowed, err := s.tableColumns(table)
+		if err != nil {
+			return fmt.Errorf("import refused: cannot enumerate columns of %s: %w", table, err)
 		}
 
 		for _, row := range rows {
@@ -1242,6 +1307,9 @@ func (s *SQLiteStorage) importData(data []byte) error {
 			placeholders := make([]string, 0, len(row))
 
 			for col, val := range row {
+				if !colsAllowed[col] {
+					return fmt.Errorf("import refused: unknown column %q on table %s", col, table)
+				}
 				cols = append(cols, col)
 				placeholders = append(placeholders, "?")
 
