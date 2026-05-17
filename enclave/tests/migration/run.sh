@@ -6,10 +6,11 @@
 # the test driver. Without --keep, tears the stack down on exit.
 #
 # Usage:
-#   ./run.sh                  # full sweep
+#   ./run.sh                  # full sweep (parent-old only)
 #   ./run.sh happy-path       # single scenario by name
 #   ./run.sh --keep           # leave the stack up after exit
 #   ./run.sh --no-build       # skip image rebuild (faster iteration)
+#   ./run.sh --with-new       # also bring up parent-new (migration scenarios)
 
 set -euo pipefail
 
@@ -38,18 +39,28 @@ echo "==> using compose tool: ${COMPOSE[*]}"
 KEEP=false
 BUILD_FLAG=(--build)
 SCENARIO=""
+WITH_NEW=false
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --keep)     KEEP=true; shift ;;
         --no-build) BUILD_FLAG=(); shift ;;
+        --with-new) WITH_NEW=true; shift ;;
         --help|-h)
-            sed -n '2,12p' "$0"
+            sed -n '2,13p' "$0"
             exit 0 ;;
         --*)        echo "unknown flag: $1" >&2; exit 2 ;;
         *)          SCENARIO="$1"; shift ;;
     esac
 done
+
+# Default profile set is empty (basic enrollment scenarios run against
+# one parent, removing the routing-claim race). --with-new opts in to
+# parent-new for migration scenarios.
+PROFILE_FLAGS=()
+if [ "$WITH_NEW" = true ]; then
+    PROFILE_FLAGS=(--profile migration)
+fi
 
 cleanup() {
     if [ "$KEEP" = true ]; then
@@ -61,8 +72,15 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "==> ${COMPOSE[*]} up ${BUILD_FLAG[*]} -d"
-"${COMPOSE[@]}" -f "$HERE/docker-compose.yml" up "${BUILD_FLAG[@]}" -d
+echo "==> ${COMPOSE[*]} ${PROFILE_FLAGS[*]:-} up ${BUILD_FLAG[*]} -d"
+# Splat PROFILE_FLAGS only when non-empty — podman-compose rejects an
+# empty positional even with `${arr[@]:-}` because the placeholder
+# expands to a single empty token rather than nothing.
+if [ "${#PROFILE_FLAGS[@]}" -gt 0 ]; then
+    "${COMPOSE[@]}" -f "$HERE/docker-compose.yml" "${PROFILE_FLAGS[@]}" up "${BUILD_FLAG[@]}" -d
+else
+    "${COMPOSE[@]}" -f "$HERE/docker-compose.yml" up "${BUILD_FLAG[@]}" -d
+fi
 
 wait_for_ready() {
     local name="$1" port="$2" deadline=$(( $(date +%s) + 120 ))
@@ -80,7 +98,9 @@ wait_for_ready() {
 }
 
 wait_for_ready parent-old 8081
-wait_for_ready parent-new 8082
+if [ "$WITH_NEW" = true ]; then
+    wait_for_ready parent-new 8082
+fi
 
 if [ ! -d "$HERE/driver" ]; then
     echo "==> test driver not implemented yet; compose stack is up for manual inspection."

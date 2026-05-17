@@ -39,8 +39,8 @@ var AllScenarios = []Scenario{
 	{Name: "smoke", Run: scenarioSmoke},
 	{Name: "attestation", Run: scenarioAttestation},
 	{Name: "pin-setup", Run: scenarioPinSetup},
+	{Name: "enroll-only", Run: scenarioEnrollOnly},
 	// Roadmap (see ../README.md §"Scenarios to implement"):
-	// {Name: "enroll-only",               Run: scenarioEnrollOnly},
 	// {Name: "happy-path",                Run: scenarioHappyPath},
 	// {Name: "concurrent-load",           Run: scenarioConcurrentLoad},
 	// {Name: "kill-during-reseal",        Run: scenarioKillDuringReseal},
@@ -69,12 +69,23 @@ func scenarioSmoke(ctx context.Context, h *Harness) error {
 	//    chain already gated these before run.sh exited, but a scenario
 	//    invocation may happen after the stack has drifted (a container
 	//    restart, a kill scenario's tail effect), so we re-check.
-	for _, url := range []string{h.ParentOldURL + "/ready", h.ParentNewURL + "/ready"} {
-		if err := waitForReady(ctx, url, 30*time.Second); err != nil {
-			return fmt.Errorf("ready check %s: %w", url, err)
-		}
+	//    parent-new is gated by the `migration` profile so it may be
+	//    absent in basic enrollment runs — probe it best-effort.
+	if err := waitForReady(ctx, h.ParentOldURL+"/ready", 30*time.Second); err != nil {
+		return fmt.Errorf("ready check parent-old: %w", err)
 	}
-	fmt.Println("    parent-old + parent-new /ready 200")
+	// Probe parent-new with a tight deadline (it may not be in the
+	// stack — `--with-new` opts in). Use a *derived* context with a
+	// short timeout, not just perCallTimeout, because waitForReady
+	// loops until the context expires.
+	probeCtx, probeCancel := context.WithTimeout(ctx, 3*time.Second)
+	parentNewProbe := waitForReady(probeCtx, h.ParentNewURL+"/ready", 1*time.Second)
+	probeCancel()
+	if parentNewProbe == nil {
+		fmt.Println("    parent-old + parent-new /ready 200")
+	} else {
+		fmt.Println("    parent-old /ready 200 (parent-new absent — run with --with-new for migration scenarios)")
+	}
 
 	// 2. Core NATS publish/subscribe — proves the driver's NATS client
 	//    is connected and the broker is routing.
@@ -142,6 +153,27 @@ func scenarioPinSetup(ctx context.Context, h *Harness) error {
 		fmt.Printf("    UTK[0] id=%s pub_b64_prefix=%s…\n",
 			u.UTKs[0].ID, u.UTKs[0].PublicKey[:12])
 	}
+	return nil
+}
+
+// scenarioEnrollOnly is the full three-stage enrollment chain with
+// no migration assertions. Useful as a leaf-level happy-path
+// regression: if this passes the stack is wired correctly for the
+// migration scenarios to layer on top.
+func scenarioEnrollOnly(ctx context.Context, h *Harness) error {
+	u := newEnrolledUser()
+	if err := u.requestAttestation(ctx, h); err != nil {
+		return fmt.Errorf("stage 1 (attestation): %w", err)
+	}
+	if err := u.setupPIN(ctx, h); err != nil {
+		return fmt.Errorf("stage 2 (pin.setup): %w", err)
+	}
+	if err := u.createCredential(ctx, h); err != nil {
+		return fmt.Errorf("stage 3 (credential.create): %w", err)
+	}
+	fmt.Printf("    owner_space=%s\n", u.OwnerSpace)
+	fmt.Printf("    UTK pool (post-setup)=%d, refreshed=%d\n", len(u.UTKs), len(u.NewUTKs))
+	fmt.Printf("    encrypted_credential bytes=%d (b64)\n", len(u.EncryptedCredential))
 	return nil
 }
 

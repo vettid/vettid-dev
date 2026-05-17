@@ -120,17 +120,27 @@ func eciesEncrypt(recipientPub, plaintext []byte, domain string) ([]byte, error)
 }
 
 // utkEncrypt produces a payload compatible with the vault's
-// decryptWithUTK: an ECIES-style envelope keyed by HMAC-SHA256 of the
-// recipient's UTK (X25519 pub). The vault's UTK encryption path does
-// NOT use the HKDF/domain dance — it does a raw ECDH and uses the
-// shared secret directly as the ChaCha20 key.
+// decryptWithUTK / encryptWithDomain(DomainUTK):
 //
-// Layout: ephemeral_pubkey (32) || nonce (24) || ciphertext+tag —
-// same shape as eciesEncrypt but no HKDF wrapping. Matches
-// vault-manager/credential_secret_handler.go's decryptWithUTK.
+//   - X25519 ECDH(ephemeral_priv, utk_pub)
+//   - HKDF-SHA256(shared, salt="vettid-utk-v1", info=nil) → 32-byte key
+//   - XChaCha20-Poly1305 with 24-byte nonce
+//   - Layout: ephemeral_pubkey (32) || nonce (24) || ciphertext+tag
+//
+// MUST stay in lock-step with vault-manager/crypto.go's DomainUTK
+// constant. Used for credential.create (single base64 field) and
+// pin.unlock (driver split form below).
 func utkEncrypt(utkPublicKey, plaintext []byte) ([]byte, error) {
-	if len(utkPublicKey) != keySize {
-		return nil, fmt.Errorf("UTK pub must be %d bytes, got %d", keySize, len(utkPublicKey))
+	return encryptWithUTKDomain(utkPublicKey, plaintext)
+}
+
+// encryptWithUTKDomain is the shared implementation. Kept separate
+// from utkEncrypt so the named entry-point is self-documenting and
+// future domain variants (PIN, CEK) can copy this and just swap the
+// salt string.
+func encryptWithUTKDomain(recipientPub, plaintext []byte) ([]byte, error) {
+	if len(recipientPub) != keySize {
+		return nil, fmt.Errorf("UTK pub must be %d bytes, got %d", keySize, len(recipientPub))
 	}
 
 	ephPriv, err := generateRandomBytes(keySize)
@@ -141,17 +151,24 @@ func utkEncrypt(utkPublicKey, plaintext []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("derive ephemeral pub: %w", err)
 	}
-
-	shared, err := curve25519.X25519(ephPriv, utkPublicKey)
+	shared, err := curve25519.X25519(ephPriv, recipientPub)
 	if err != nil {
 		return nil, fmt.Errorf("ECDH: %w", err)
 	}
 
-	aead, err := chacha20poly1305.NewX(shared)
+	// Vault's encryptWithDomain passes domain as the HKDF *salt* and
+	// nil info. Drift on either parameter breaks decryption with an
+	// opaque AEAD failure.
+	r := hkdf.New(sha256.New, shared, []byte("vettid-utk-v1"), nil)
+	encKey := make([]byte, keySize)
+	if _, err := io.ReadFull(r, encKey); err != nil {
+		return nil, fmt.Errorf("hkdf: %w", err)
+	}
+
+	aead, err := chacha20poly1305.NewX(encKey)
 	if err != nil {
 		return nil, fmt.Errorf("XChaCha20Poly1305: %w", err)
 	}
-
 	nonce, err := generateRandomBytes(aead.NonceSize())
 	if err != nil {
 		return nil, err

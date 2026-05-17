@@ -41,6 +41,12 @@ type EnrolledUser struct {
 
 	// Populated by stage 2 (pin.setup):
 	UTKs []UTKInfo // user transaction keys the vault returns for stage 3
+
+	// Populated by stage 3 (credential.create):
+	EncryptedCredential string     // CEK-encrypted Protean Credential blob (base64)
+	NewUTKs             []UTKInfo  // refreshed UTK pool the app would persist
+	PasswordHashPHC     string     // PHC string the vault now stores (debug/migration assertions)
+	PasswordSalt        []byte     // salt used in the PHC (kept so happy-path can re-hash on unlock)
 }
 
 // UTKInfo is one entry in the UTK pool returned by pin.setup. The
@@ -202,5 +208,83 @@ func (u *EnrolledUser) setupPIN(ctx context.Context, h *Harness) error {
 	}
 
 	u.UTKs = resp.UTKs
+	return nil
+}
+
+// createCredential drives stage 3. Picks the first UTK from the pool,
+// argon2id-hashes the password into a PHC string, UTK-encrypts that
+// PHC, and sends `credential.create`. The vault returns the
+// CEK-encrypted Protean Credential blob (the same opaque blob the app
+// re-presents on every subsequent unlock) plus a fresh UTK pool.
+func (u *EnrolledUser) createCredential(ctx context.Context, h *Harness) error {
+	if len(u.UTKs) == 0 {
+		return fmt.Errorf("createCredential: no UTKs (run setupPIN first)")
+	}
+	utk := u.UTKs[0]
+	utkPub, err := base64.StdEncoding.DecodeString(utk.PublicKey)
+	if err != nil {
+		return fmt.Errorf("decode UTK pub: %w", err)
+	}
+
+	// PHC string with a fresh 16-byte salt. Stash both so a later
+	// pin.unlock scenario can rebuild the same hash deterministically.
+	salt, err := generateRandomBytes(16)
+	if err != nil {
+		return fmt.Errorf("password salt: %w", err)
+	}
+	phc := argon2idPHC([]byte(u.Password), salt)
+	u.PasswordHashPHC = phc
+	u.PasswordSalt = salt
+
+	innerJSON, err := json.Marshal(map[string]any{
+		"password_hash": phc,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal credential payload: %w", err)
+	}
+
+	ct, err := utkEncrypt(utkPub, innerJSON)
+	if err != nil {
+		return fmt.Errorf("UTK encrypt: %w", err)
+	}
+
+	reqPayload := map[string]any{
+		"utk_id":            utk.ID,
+		"encrypted_payload": base64.StdEncoding.EncodeToString(ct),
+	}
+
+	// Subject suffix and envelope `type` both match
+	// "credential.create" — the dispatcher routes on the subject path
+	// (parts after .forVault.), not on payload type. Keep publishCore
+	// happy by setting envType identically.
+	respBytes, err := h.publishWithType(
+		ctx, u.OwnerSpace,
+		"credential.create",
+		"credential.create",
+		"credential.create",
+		reqPayload,
+	)
+	if err != nil {
+		return fmt.Errorf("publish credential.create: %w", err)
+	}
+
+	var resp struct {
+		Status              string    `json:"status"`
+		EncryptedCredential string    `json:"encrypted_credential"`
+		NewUTKs             []UTKInfo `json:"new_utks"`
+		Error               string    `json:"error"`
+	}
+	if err := json.Unmarshal(respBytes, &resp); err != nil {
+		return fmt.Errorf("unmarshal credential.create response: %w\n  raw=%s", err, string(respBytes))
+	}
+	if resp.Error != "" {
+		return fmt.Errorf("vault returned error: %s", resp.Error)
+	}
+	if resp.EncryptedCredential == "" {
+		return fmt.Errorf("credential.create response has no encrypted_credential — raw=%s", string(respBytes))
+	}
+
+	u.EncryptedCredential = resp.EncryptedCredential
+	u.NewUTKs = resp.NewUTKs
 	return nil
 }

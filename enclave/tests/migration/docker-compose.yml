@@ -91,8 +91,17 @@ services:
     ports:
       - "8081:8080"
 
-  # NEW enclave — second FAKE_PCR0_HEX, different from OLD's.
+  # NEW enclave — second FAKE_PCR0_HEX, different from OLD's. Gated
+  # behind the `migration` profile so basic enrollment scenarios run
+  # against a single parent, which removes a non-deterministic routing
+  # race: attestation is stateless (both parents reply, driver picks
+  # the first response), but pin.setup/credential.create are
+  # enrollment-entry subjects subject to ClaimForEnrollment — if the
+  # claim winner is the *other* parent than the one whose attestation
+  # pubkey the driver got, ECIES decryption MAC-fails. Migration
+  # scenarios explicitly opt in to two parents (`run.sh --with-new`).
   parent-new:
+    profiles: ["migration"]
     build:
       context: ../..
       dockerfile: tests/migration/Dockerfile.parent-dev
