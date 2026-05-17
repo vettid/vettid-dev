@@ -521,9 +521,12 @@ export async function checkRateLimit(
       console.log(`Rate limit exceeded for ${action}:${identifier.substring(0, 8)}... - ${maxRequests}/${maxRequests} in ${windowMinutes} minutes`);
       return false;
     }
-    // On other errors, allow the request (fail open for availability)
-    console.warn('Rate limit check failed, allowing request:', error);
-    return true;
+    // SECURITY (#29): used to fail-open here. That let attackers
+    // bypass per-action rate limits by inducing DDB throttling.
+    // Now fails-closed — legitimate clients see a 429 and retry; the
+    // abuse-amplification path is shut.
+    console.error("SECURITY: Rate limit check errored — failing closed:", error);
+    return false;
   }
 }
 

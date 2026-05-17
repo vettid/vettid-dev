@@ -29,6 +29,9 @@ type OrgVaultManager struct {
 // NewOrgVaultManager creates a new org vault manager.
 func NewOrgVaultManager(cfg *Config, memMgr *MemoryManager, parentSender ParentSender, sealer *NitroSealer, logForwarder LogForwarder) *OrgVaultManager {
 	sealerHandler := NewSealerHandler(sealer)
+	// SECURITY (#74): inherit devMode so production fails-closed on
+	// missing parent connection — same rationale as vault_lifecycle.go.
+	sealerHandler.SetDevMode(cfg.DevMode)
 	procMgr := NewProcessManager(cfg.OrgVaultManagerPath, cfg.DevMode, sealerHandler, logForwarder)
 
 	return &OrgVaultManager{

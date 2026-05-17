@@ -467,10 +467,23 @@ export class VaultStack extends cdk.Stack {
         TABLE_AUDIT: tables.audit.tableName,
         // Required for enrollment JWT verification
         ENROLLMENT_JWT_SECRET_ARN: props.infrastructure.enrollmentJwtSecretArn,
-        // SECURITY: Secret for HMAC-based attestation binding tokens
-        // Must be explicitly set - no default value for security
+        // SECURITY (#26): HMAC secret for attestation binding tokens.
+        // Must be set at deploy time. Used to fall back to '' which
+        // pushed the failure to runtime (handler throws on empty,
+        // but only the first request that hits the handler discovers
+        // the misconfig). Now fails the CDK synth so the deploy
+        // operator sees the error before any Lambda update lands.
         // Set via: export DEVICE_ATTESTATION_SECRET=$(openssl rand -hex 32)
-        DEVICE_ATTESTATION_SECRET: process.env.DEVICE_ATTESTATION_SECRET || '',
+        DEVICE_ATTESTATION_SECRET: (() => {
+          const v = process.env.DEVICE_ATTESTATION_SECRET;
+          if (!v) {
+            throw new Error(
+              'DEVICE_ATTESTATION_SECRET is required at deploy time. ' +
+              'Generate with: export DEVICE_ATTESTATION_SECRET=$(openssl rand -hex 32)',
+            );
+          }
+          return v;
+        })(),
       },
       timeout: cdk.Duration.seconds(30),
     });

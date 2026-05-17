@@ -173,7 +173,39 @@ var (
 	controlSigningPublicKey ed25519.PublicKey
 	controlSigningKeyLoaded bool
 	controlSigningKeyMu     sync.RWMutex
+
+	// devModeAllowUnsigned, when true, lets control-command
+	// verification accept commands with no signing key configured.
+	// SECURITY (#25 / #81): this is set ONLY by SetDevMode() invoked
+	// from main() with the parent's parsed yaml/CLI config — never
+	// from an env var. The previous PARENT_DEV_MODE=true env-var
+	// path meant anyone who could set Lambda/host env vars could
+	// downgrade control-signing in production. Now the signal flows
+	// from the same dev_mode flag that disables vsock, so a single
+	// "production config" check guards both.
+	devModeAllowUnsigned   bool
+	devModeAllowUnsignedMu sync.RWMutex
 )
+
+// SetDevMode wires the parent's dev-mode flag into the control-command
+// verifier. Production callers must invoke SetDevMode(false) (or simply
+// never call SetDevMode, which leaves the default false in place).
+// SECURITY: this is the only legitimate way to enable unsigned-command
+// acceptance.
+func SetDevMode(devMode bool) {
+	devModeAllowUnsignedMu.Lock()
+	defer devModeAllowUnsignedMu.Unlock()
+	devModeAllowUnsigned = devMode
+	if devMode {
+		log.Warn().Msg("SECURITY: control-command verifier accepts unsigned commands (dev mode)")
+	}
+}
+
+func isDevModeAllowUnsigned() bool {
+	devModeAllowUnsignedMu.RLock()
+	defer devModeAllowUnsignedMu.RUnlock()
+	return devModeAllowUnsigned
+}
 
 // getControlSigningPublicKey returns the Ed25519 public key for verifying control commands
 // SECURITY: Public key is loaded from environment or Secrets Manager
@@ -196,8 +228,9 @@ func getControlSigningPublicKey() (ed25519.PublicKey, error) {
 	// Try environment variable first
 	publicKeyB64 := os.Getenv("CONTROL_SIGNING_PUBLIC_KEY")
 	if publicKeyB64 == "" {
-		// In development mode, allow unsigned commands
-		if os.Getenv("PARENT_DEV_MODE") == "true" {
+		// In development mode (set explicitly by main() via SetDevMode,
+		// NOT by an env var), allow unsigned commands. See #25/#81.
+		if isDevModeAllowUnsigned() {
 			log.Warn().Msg("SECURITY: Control signing public key not configured (dev mode)")
 			return nil, nil
 		}

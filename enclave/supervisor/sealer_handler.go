@@ -20,6 +20,14 @@ type SealerHandler struct {
 	sealer     *NitroSealer
 	parentConn Connection // Direct connection to parent for S3 operations
 	connMu     sync.Mutex // Mutex for connection access
+	// devMode, when true, allows S3/HTTP/SSM operations to no-op
+	// successfully when parentConn is nil. SECURITY (#74): in
+	// production devMode is false, so a missing parent connection
+	// fails-closed instead of silently pretending the write
+	// succeeded — which used to leave callers thinking durable
+	// state was persisted when it wasn't, opening a "ghost write"
+	// data-loss window during a restart or split-brain.
+	devMode bool
 }
 
 // NewSealerHandler creates a new sealer handler
@@ -27,6 +35,29 @@ func NewSealerHandler(sealer *NitroSealer) *SealerHandler {
 	return &SealerHandler{
 		sealer: sealer,
 	}
+}
+
+// SetDevMode wires the supervisor's parsed dev-mode flag into the
+// sealer handler. Production callers should never invoke this (default
+// false). When true, parent-not-connected paths log warnings and
+// return synthetic success; when false they return errors.
+func (sh *SealerHandler) SetDevMode(devMode bool) {
+	sh.devMode = devMode
+}
+
+// requireParentConn returns nil if parentConn is set OR if dev mode is
+// on (in which case caller's silent-pass is acceptable). Returns a
+// descriptive error if production code finds no parent connection.
+func (sh *SealerHandler) requireParentConn(op string) error {
+	if sh.parentConn != nil {
+		return nil
+	}
+	if sh.devMode {
+		log.Warn().Str("op", op).Msg("No parent connection - dev mode (silent pass)")
+		return nil
+	}
+	log.Error().Str("op", op).Msg("SECURITY: parent connection missing in production — failing closed")
+	return fmt.Errorf("supervisor not connected to parent (op=%s)", op)
 }
 
 // SetParentConnection sets the connection for S3 storage operations
@@ -441,9 +472,11 @@ func (sh *SealerHandler) s3Put(key string, data []byte) error {
 	sh.connMu.Lock()
 	defer sh.connMu.Unlock()
 
+	if err := sh.requireParentConn("s3Put:" + key); err != nil {
+		return err
+	}
 	if sh.parentConn == nil {
-		log.Warn().Str("key", key).Msg("No parent connection for S3 PUT - dev mode")
-		return nil // Dev mode - pretend it worked
+		return nil // dev mode silent pass (devMode true, requireParentConn returned nil)
 	}
 
 	msg := &Message{
@@ -484,9 +517,11 @@ func (sh *SealerHandler) s3PutConditional(key string, data []byte, expectedETag 
 	sh.connMu.Lock()
 	defer sh.connMu.Unlock()
 
+	if err := sh.requireParentConn("s3PutConditional:" + key); err != nil {
+		return "", false, err
+	}
 	if sh.parentConn == nil {
-		log.Warn().Str("key", key).Msg("No parent connection for S3 PUT - dev mode")
-		return "", false, nil // Dev mode - pretend it worked
+		return "", false, nil // dev mode silent pass
 	}
 
 	msg := &Message{

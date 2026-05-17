@@ -316,8 +316,29 @@ export const ALLOWED_FILE_TYPES = {
 };
 
 /**
- * Feature flags for security features
+ * Feature flags for security features.
+ *
+ * SECURITY (#30): the `DISABLE_*` env-var family used to be honored
+ * in every environment. That meant an attacker with the ability to
+ * set Lambda env vars (compromised admin IAM, leaked deploy token,
+ * etc.) could silently turn off rate-limiting / CORS / logging
+ * without code review. Now those overrides only take effect on
+ * non-production builds (NODE_ENV !== "production"). In production
+ * the features are unconditionally enabled — the env var is read but
+ * ignored.
  */
+const isProduction = process.env.NODE_ENV === "production";
+const disableInProductionIgnored = (envVar: string): boolean => {
+  if (process.env[envVar] === "true" && isProduction) {
+    console.error(
+      `SECURITY: ${envVar}=true is ignored in production (#30). ` +
+        `Setting this in a non-prod environment is fine; in prod, ` +
+        `change the feature in code instead.`,
+    );
+  }
+  return !isProduction && process.env[envVar] === "true";
+};
+
 export const SECURITY_FEATURES = {
   // Request signing validation
   requestSigning: {
@@ -326,20 +347,20 @@ export const SECURITY_FEATURES = {
   },
   // Rate limiting
   rateLimiting: {
-    enabled: process.env.DISABLE_RATE_LIMITING !== "true",
+    enabled: !disableInProductionIgnored("DISABLE_RATE_LIMITING"),
   },
   // Brute force protection
   bruteForceProtection: {
-    enabled: process.env.DISABLE_BRUTE_FORCE_PROTECTION !== "true",
+    enabled: !disableInProductionIgnored("DISABLE_BRUTE_FORCE_PROTECTION"),
   },
   // CORS validation
   corsValidation: {
-    enabled: process.env.DISABLE_CORS_VALIDATION !== "true",
-    allowDevelopmentOrigins: process.env.NODE_ENV !== "production",
+    enabled: !disableInProductionIgnored("DISABLE_CORS_VALIDATION"),
+    allowDevelopmentOrigins: !isProduction,
   },
   // Security event logging
   securityEventLogging: {
-    enabled: process.env.DISABLE_SECURITY_LOGGING !== "true",
+    enabled: !disableInProductionIgnored("DISABLE_SECURITY_LOGGING"),
   },
 };
 

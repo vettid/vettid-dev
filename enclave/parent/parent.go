@@ -39,6 +39,12 @@ func NewParentProcess(cfg *Config) (*ParentProcess, error) {
 func (p *ParentProcess) Run(ctx context.Context) error {
 	log.Info().Msg("Parent process starting")
 
+	// SECURITY (#25 / #81): wire the parsed dev-mode flag into the
+	// control-command verifier. This is the only legitimate path
+	// that enables unsigned-command acceptance — env-var-driven
+	// PARENT_DEV_MODE was removed.
+	SetDevMode(p.config.DevMode)
+
 	// Generate or use configured enclave ID
 	// This unique identifier is used for Control.enclave.{id}.* topic subscriptions
 	if p.config.EnclaveID != "" {

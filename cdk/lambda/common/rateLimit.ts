@@ -314,9 +314,18 @@ async function atomicRateLimitCheck(
       }
     }
 
-    // On other errors, allow the request (fail open for availability)
-    console.warn("Rate limit check failed:", error);
-    return { allowed: true, remaining: config.maxRequests, resetAt: 0 };
+    // SECURITY (#29): on DDB outage / throttle we used to fail-open
+    // — which let attackers bypass rate limits by inducing DDB load.
+    // Now fails-closed: reject the request with a short retryAfter so
+    // legitimate clients backoff and try again. Availability cost is
+    // bounded; the abuse cost of fail-open was unbounded.
+    console.error("SECURITY: Rate limit check errored — failing closed:", error);
+    return {
+      allowed: false,
+      remaining: 0,
+      resetAt: Math.floor(now / 1000) + 60,
+      retryAfter: 60,
+    };
   }
 }
 

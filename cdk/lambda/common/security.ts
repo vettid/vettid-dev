@@ -207,8 +207,25 @@ export interface SignatureValidationResult {
 export async function validateRequestSignature(
   event: APIGatewayProxyEventV2
 ): Promise<SignatureValidationResult> {
-  // Skip validation if signing is not configured
+  // SECURITY (#27): when signing is required (REQUIRE_REQUEST_SIGNING=
+  // true, set in production env), an empty REQUEST_SIGNING_SECRET is
+  // a misconfiguration — fail-closed so we don't silently let every
+  // request through with no signature. The previous behaviour
+  // (return valid:true) meant prod could lose request-signing
+  // protection from a single missing-env-var deploy bug with zero
+  // signal in logs.
+  const required = process.env.REQUIRE_REQUEST_SIGNING === "true";
   if (!REQUEST_SIGNING_SECRET) {
+    if (required) {
+      console.error(
+        "SECURITY: REQUIRE_REQUEST_SIGNING=true but REQUEST_SIGNING_SECRET is empty — failing closed",
+      );
+      return {
+        valid: false,
+        error: "request signing required but not configured",
+        eventType: SecurityEventType.SIGNATURE_MISSING,
+      };
+    }
     return { valid: true };
   }
 
@@ -297,9 +314,12 @@ export async function validateRequestSignature(
  */
 async function checkAndStoreNonce(nonce: string, timestamp: number): Promise<boolean> {
   if (!TABLE_NONCES) {
-    // If table not configured, skip nonce checking (less secure)
-    console.warn("TABLE_NONCES not configured, skipping nonce validation");
-    return false;
+    // SECURITY (#28): missing table config is a deploy bug, not a
+    // legitimate dev-mode signal. Fail-closed so the request gets
+    // rejected with a clear "Invalid request" rather than silently
+    // sailing past replay protection.
+    console.error("SECURITY: TABLE_NONCES not configured — failing nonce check closed");
+    return true;
   }
 
   const nonceKey = `NONCE#${nonce}`;
@@ -323,9 +343,18 @@ async function checkAndStoreNonce(nonce: string, timestamp: number): Promise<boo
     if (error.name === "ConditionalCheckFailedException") {
       return true; // Nonce was already used
     }
-    // On other errors, log and allow (fail open for availability)
-    console.warn("Nonce check failed:", error);
-    return false;
+    // SECURITY (#28): DDB unavailable / network blip etc. used to
+    // fail-open here, which let replay attacks succeed any time the
+    // nonce table was throttled. Now treats unknown errors as
+    // replayed-nonce — the request gets rejected and the client can
+    // retry. Availability cost is bounded (clients backoff); the
+    // confidentiality cost of fail-open was unbounded.
+    //
+    // If an ops escape hatch is ever needed, gate this on an env var
+    // like `NONCE_FAIL_OPEN=true` and require explicit per-env opt-in
+    // — don't make it the default.
+    console.error("SECURITY: Nonce check errored — failing closed:", error);
+    return true;
   }
 }
 

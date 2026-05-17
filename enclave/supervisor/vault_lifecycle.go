@@ -65,6 +65,10 @@ type VaultStats struct {
 func NewVaultManager(cfg *Config, memMgr *MemoryManager, parentSender ParentSender, sealer *NitroSealer, logForwarder LogForwarder) *VaultManager {
 	// Create sealer handler for proxying KMS operations to vault-manager processes
 	sealerHandler := NewSealerHandler(sealer)
+	// SECURITY (#74): wire devMode so production (cfg.DevMode=false)
+	// fails-closed on missing parent connection instead of silently
+	// pretending S3 PUTs succeeded.
+	sealerHandler.SetDevMode(cfg.DevMode)
 
 	// Create process manager for spawning vault-manager subprocesses
 	// Per Architecture v3.1: Each vault runs in its own isolated process
