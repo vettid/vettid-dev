@@ -9,7 +9,7 @@
  */
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { DynamoDBClient, DescribeTableCommand } from '@aws-sdk/client-dynamodb';
-import { ok, forbidden, internalError } from '../../common/util';
+import { ok, forbidden, internalError, secureCompare } from '../../common/util';
 
 const ddb = new DynamoDBClient({});
 
@@ -29,7 +29,10 @@ function validateTestApiKey(event: APIGatewayProxyEventV2): boolean {
   }
 
   const apiKey = event.headers['x-test-api-key'] || event.headers['X-Test-Api-Key'];
-  return apiKey === TEST_API_KEY;
+  if (!apiKey) return false;
+  // SECURITY: constant-time compare prevents an attacker from
+  // inferring the test API key one byte at a time via timing.
+  return secureCompare(apiKey, TEST_API_KEY);
 }
 
 export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {

@@ -42,6 +42,7 @@ import {
   getRequestId,
   putAudit,
   generateSecureId,
+  secureCompare,
 } from '../../common/util';
 
 const ddb = new DynamoDBClient({});
@@ -73,7 +74,10 @@ function validateTestApiKey(event: APIGatewayProxyEventV2): boolean {
   }
 
   const apiKey = event.headers['x-test-api-key'] || event.headers['X-Test-Api-Key'];
-  return apiKey === TEST_API_KEY;
+  if (!apiKey) return false;
+  // SECURITY: constant-time compare prevents byte-by-byte key
+  // discovery via response-time analysis.
+  return secureCompare(apiKey, TEST_API_KEY);
 }
 
 /**

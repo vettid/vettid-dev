@@ -17,6 +17,14 @@ const (
 	// Maximum age of messages (reject messages older than this)
 	maxMessageAgeSeconds = 300 // 5 minutes
 
+	// Maximum future-clock-skew tolerance for inbound messages.
+	// Higher than the backend-to-enclave control-command skew
+	// (10s — see control_verification.go) because messages here
+	// can originate from mobile clients whose NTP discipline is
+	// less reliable than EC2's. Tighten further if mobile-side
+	// clock drift turns out to be a non-issue in production.
+	maxMessageFutureSkewSeconds = 30
+
 	// Time window for duplicate detection
 	replayCacheRetentionSeconds = 600 // 10 minutes (2x message age for safety)
 
@@ -290,8 +298,8 @@ func ValidateMessageTimestamp(data []byte) (bool, string) {
 	if payload.Timestamp > 0 {
 		age := now - payload.Timestamp
 		if age < 0 {
-			// Message from the future - allow small clock skew (30 seconds)
-			if age < -30 {
+			// Message from the future - allow small mobile-tolerant skew
+			if age < -maxMessageFutureSkewSeconds {
 				log.Warn().
 					Int64("timestamp", payload.Timestamp).
 					Int64("age_seconds", age).
@@ -312,8 +320,8 @@ func ValidateMessageTimestamp(data []byte) (bool, string) {
 		ageMs := (now * 1000) - payload.TimestampMs
 		ageSec := ageMs / 1000
 		if ageSec < 0 {
-			// Message from the future - allow small clock skew (30 seconds)
-			if ageSec < -30 {
+			// Message from the future - allow small mobile-tolerant skew
+			if ageSec < -maxMessageFutureSkewSeconds {
 				log.Warn().
 					Int64("timestamp_ms", payload.TimestampMs).
 					Int64("age_seconds", ageSec).

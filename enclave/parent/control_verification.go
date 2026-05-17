@@ -20,8 +20,18 @@ const (
 	// Maximum age of control commands (must match TypeScript COMMAND_TTL_MS)
 	maxControlCommandAge = 5 * time.Minute
 
-	// Clock skew allowance (1 minute into the future)
-	maxClockSkew = 1 * time.Minute
+	// Clock skew allowance (10 seconds into the future).
+	//
+	// Both sides (issuer Lambda + enclave host) run with NTP-disciplined
+	// clocks (chrony on EC2, AWS-managed time on Lambda). Real drift is
+	// sub-second in practice; 10s absorbs network jitter and chronic NTP
+	// nudges without false-rejecting legitimate commands.
+	//
+	// Previously 60s — generous, but also a much larger replay/forgery
+	// window. Tightening to 10s closes that window without sacrificing
+	// legitimate-command acceptance. If a real deployment ever needs
+	// the slack back, raise this rather than disabling the check.
+	maxClockSkew = 10 * time.Second
 
 	// Idempotency cache retention (2x command age for safety)
 	commandIdCacheRetention = 10 * time.Minute
