@@ -336,13 +336,19 @@ export class NatsStack extends cdk.Stack {
       );
     }
 
-    // Grant permissions to discover cluster peers
+    // SECURITY (#86): ec2:DescribeInstances and
+    // autoscaling:DescribeAutoScalingInstances must be granted on `*`
+    // — both list-actions accept no resource ARN in IAM. The cluster-
+    // peer discovery script (nats-init.sh) filters client-side to
+    // members of this ASG by tag, so the IAM blast radius — read-only
+    // EC2/ASG metadata enumeration in the account — is bounded by
+    // what the instance code actually consumes.
     natsRole.addToPolicy(new iam.PolicyStatement({
       actions: [
         'ec2:DescribeInstances',
         'autoscaling:DescribeAutoScalingInstances',
       ],
-      resources: ['*'],
+      resources: ['*'], // AWS API limitation — see #86 note above.
     }));
 
     // Determine machine image based on whether pre-built AMI is specified
@@ -665,13 +671,19 @@ export class NatsStack extends cdk.Stack {
       resources: [this.privateHostedZone.hostedZoneArn],
     }));
 
-    // Grant Lambda permissions to describe ASG and EC2 instances
+    // SECURITY (#86): autoscaling:DescribeAutoScalingGroups and
+    // ec2:DescribeInstances must be granted on `*` — both list-actions
+    // pre-date IAM's resource model and accept no resource ARN. The
+    // dnsUpdateLambda already filters client-side to the NATS ASG (by
+    // name) and to running NATS instances (by ASG-membership tag), so
+    // the IAM blast radius — read-only enumeration of EC2/ASG metadata
+    // in the account — is bounded by the lambda's narrow code path.
     dnsUpdateLambda.addToRolePolicy(new iam.PolicyStatement({
       actions: [
         'autoscaling:DescribeAutoScalingGroups',
         'ec2:DescribeInstances',
       ],
-      resources: ['*'],
+      resources: ['*'], // AWS API limitation — see #86 note above.
     }));
 
     // EventBridge rule to trigger on ASG lifecycle events
