@@ -26,6 +26,17 @@ import (
 const (
 	pendingApprovalsKey = "actions/_pending"
 	pendingApprovalsTTL = 7 * 24 * time.Hour
+
+	// SECURITY (#31): hard caps so a hostile invoker can't fill RAM /
+	// storage with InvocationIDs. The pending queue is encrypted
+	// blob storage (one Put per enqueue), so unbounded growth burns
+	// both memory and per-Put bandwidth. The dedupe on InvocationID
+	// in EnqueuePending stops a single re-sent invocation from
+	// inflating the queue, but a peer that rolls a fresh ID per
+	// request could still flood. Caps + per-invoker quota bound
+	// that.
+	pendingApprovalsMaxTotal       = 512
+	pendingApprovalsMaxPerInvoker  = 16
 )
 
 type ActionPendingApprovalStatus string
@@ -118,6 +129,35 @@ func (mh *MessageHandler) EnqueuePending(p *ActionPendingApproval) error {
 			Msg("pending approval already enqueued — ignoring duplicate")
 		return nil
 	}
+
+	// SECURITY (#31): cap total queue size + per-invoker share.
+	// Without this a hostile peer could roll a fresh InvocationID
+	// per request and flood the encrypted-storage blob (each Put
+	// re-serializes the whole map). Reject with a clear error so the
+	// invoker sees an explicit "queue full" rather than silent loss.
+	if len(mh.pendingApprovals.Items) >= pendingApprovalsMaxTotal {
+		log.Warn().
+			Int("queue_size", len(mh.pendingApprovals.Items)).
+			Int("cap", pendingApprovalsMaxTotal).
+			Str("invocation_id", p.InvocationID).
+			Msg("SECURITY: pending-approval queue at cap — refusing enqueue")
+		return fmt.Errorf("pending-approval queue full (cap=%d); try again after owner clears entries", pendingApprovalsMaxTotal)
+	}
+	perInvoker := 0
+	for _, q := range mh.pendingApprovals.Items {
+		if q.InvokerGUID == p.InvokerGUID {
+			perInvoker++
+		}
+	}
+	if perInvoker >= pendingApprovalsMaxPerInvoker {
+		log.Warn().
+			Str("invoker_guid", p.InvokerGUID).
+			Int("per_invoker", perInvoker).
+			Int("cap", pendingApprovalsMaxPerInvoker).
+			Msg("SECURITY: per-invoker pending-approval quota exhausted")
+		return fmt.Errorf("per-invoker pending-approval quota exhausted (cap=%d)", pendingApprovalsMaxPerInvoker)
+	}
+
 	if p.Status == "" {
 		p.Status = PendingStatusWaiting
 	}
