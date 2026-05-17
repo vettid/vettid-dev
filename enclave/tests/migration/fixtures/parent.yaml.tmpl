@@ -36,6 +36,11 @@ enclave:
 health:
   port: 8080
   interval_seconds: 30
+  # Container-only override so the driver running on the compose host
+  # can reach /ready through the published port mapping. Production
+  # parent leaves bind_addr at its 127.0.0.1 default (unauthenticated
+  # endpoints, SSM RunShellScript is the auth boundary).
+  bind_addr: "0.0.0.0"
 
 kms:
   sealing_key_arn: "${KMS_SEALING_KEY_ARN}"

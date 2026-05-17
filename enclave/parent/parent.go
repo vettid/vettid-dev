@@ -53,7 +53,7 @@ func (p *ParentProcess) Run(ctx context.Context) error {
 	log.Info().Str("enclave_id", p.enclaveID).Msg("Enclave identity established")
 
 	// Start health server first so we can track connection states
-	p.healthSrv = NewHealthServer(p.config.Health.Port)
+	p.healthSrv = NewHealthServer(p.config.Health.Port, p.config.Health.BindAddr)
 	go p.healthSrv.Start()
 	defer p.healthSrv.Stop()
 

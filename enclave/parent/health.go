@@ -18,11 +18,12 @@ import (
 // manager has a verification bug). The endpoint binds to localhost
 // only — SSM RunShellScript is the auth boundary.
 type HealthServer struct {
-	port    int
-	server  *http.Server
-	status  *HealthStatus
-	mu      sync.RWMutex
-	routing *RoutingManager // wired post-construction via SetRouting
+	port     int
+	bindAddr string
+	server   *http.Server
+	status   *HealthStatus
+	mu       sync.RWMutex
+	routing  *RoutingManager // wired post-construction via SetRouting
 }
 
 // SetRouting wires the routing manager so the /internal/reclaim-from-pcr0
@@ -63,10 +64,17 @@ type HealthStatus struct {
 
 var startTime = time.Now()
 
-// NewHealthServer creates a new health server
-func NewHealthServer(port int) *HealthServer {
+// NewHealthServer creates a new health server. bindAddr blank
+// preserves the prior production default of 127.0.0.1; the Tier-2
+// harness passes 0.0.0.0 so its container's port mapping can reach
+// the endpoint.
+func NewHealthServer(port int, bindAddr string) *HealthServer {
+	if bindAddr == "" {
+		bindAddr = "127.0.0.1"
+	}
 	return &HealthServer{
-		port: port,
+		port:     port,
+		bindAddr: bindAddr,
 		status: &HealthStatus{
 			Healthy: true, // liveness — true from start
 			Ready:   false, // readiness — flips true once both connections land
@@ -84,14 +92,17 @@ func (h *HealthServer) Start() {
 	mux.HandleFunc("/internal/reclaim-from-pcr0", h.handleReclaimFromPCR0)
 
 	h.server = &http.Server{
-		// Localhost-only — the reclaim endpoint is unauthenticated and
-		// must not be reachable from outside this host. SSM
-		// RunShellScript bridges deploy.sh through to here.
-		Addr:    fmt.Sprintf("127.0.0.1:%d", h.port),
+		// Localhost-only by default — the reclaim endpoint is
+		// unauthenticated and must not be reachable from outside this
+		// host. SSM RunShellScript bridges deploy.sh through to here.
+		// The Tier-2 harness overrides to 0.0.0.0 so its driver
+		// running on the compose host can reach /ready via the
+		// container's port mapping.
+		Addr:    fmt.Sprintf("%s:%d", h.bindAddr, h.port),
 		Handler: mux,
 	}
 
-	log.Info().Int("port", h.port).Msg("Starting health server")
+	log.Info().Str("addr", h.server.Addr).Msg("Starting health server")
 
 	if err := h.server.ListenAndServe(); err != http.ErrServerClosed {
 		log.Error().Err(err).Msg("Health server error")

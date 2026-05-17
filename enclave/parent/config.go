@@ -114,6 +114,15 @@ type EnclaveConfig struct {
 type HealthConfig struct {
 	Port     int `yaml:"port"`
 	Interval int `yaml:"interval_seconds"`
+	// BindAddr controls which interface the health server listens on.
+	// Defaults to 127.0.0.1 — the /internal/reclaim-from-pcr0 endpoint
+	// is unauthenticated and SSM RunShellScript is the only intended
+	// auth boundary, so the server must not be reachable off-host in
+	// production. The Tier-2 Docker harness overrides this to 0.0.0.0
+	// in parent.yaml.tmpl so the test driver can reach /ready through
+	// the container's port mapping; the harness binary is built with
+	// `-tags testharness` and never deployed.
+	BindAddr string `yaml:"bind_addr"`
 }
 
 // LoadConfig loads configuration from a YAML file
@@ -165,6 +174,7 @@ func DefaultConfig() *Config {
 		Health: HealthConfig{
 			Port:     8080,
 			Interval: 30,
+			BindAddr: "127.0.0.1", // localhost only by default — see HealthConfig docs
 		},
 		KMS: KMSConfig{
 			SealingKeyARN: "", // Must be configured in production

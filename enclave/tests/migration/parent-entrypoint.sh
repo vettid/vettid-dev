@@ -28,11 +28,17 @@ set -euo pipefail
 : "${AWS_SECRET_ACCESS_KEY:=test}"
 
 # Source the ARN handoff written by the init container into the
-# shared volume. Lets the parent-dev image stay aws-cli-free.
+# shared volume. Lets the parent-dev image stay aws-cli-free. `set -a`
+# auto-exports every var defined by the sourced file so envsubst (a
+# subprocess) actually sees them — without it, `${S3_BUCKET}` in the
+# yaml template renders empty and parent's S3 client comes up with an
+# empty bucket name.
 if [ -n "${SHARED_ARNS:-}" ] && [ -f "$SHARED_ARNS" ]; then
     echo "==> sourcing ARNs from $SHARED_ARNS"
+    set -a
     # shellcheck disable=SC1090
     . "$SHARED_ARNS"
+    set +a
 fi
 : "${S3_BUCKET:?S3_BUCKET must be set (from /shared/arns.env or env)}"
 : "${KMS_SEALING_KEY_ARN:?KMS_SEALING_KEY_ARN must be set (from /shared/arns.env or env)}"
@@ -65,7 +71,12 @@ SUPERVISOR_PID=$!
 sleep 1
 
 echo "==> Starting parent (dials TCP localhost:5000)"
-/usr/local/bin/vettid-parent --config /etc/vettid/parent.yaml &
+# `--dev-mode` is required: parent's CLI default is false and
+# unconditionally overrides cfg.DevMode read from the yaml. Without
+# this the parent tries vsock dial and crashes ("socket: operation
+# not permitted") since this is a regular Linux container, not a
+# Nitro host.
+/usr/local/bin/vettid-parent --config /etc/vettid/parent.yaml --dev-mode &
 PARENT_PID=$!
 
 # Forward SIGTERM/SIGINT to both children so docker compose down is

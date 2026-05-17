@@ -10,7 +10,10 @@
 
 services:
   localstack:
-    image: localstack/localstack:3.7
+    # Fully qualified registry path — podman in non-interactive mode
+    # refuses to resolve short names ("localstack/localstack:3.7"
+    # alone) and the compose-up hangs waiting for a TTY prompt.
+    image: docker.io/localstack/localstack:3.7
     container_name: vettid-migration-localstack
     environment:
       - SERVICES=s3,kms,ssm
@@ -25,9 +28,13 @@ services:
       retries: 20
 
   nats:
-    image: nats:2.10-alpine
+    image: docker.io/library/nats:2.10-alpine
     container_name: vettid-migration-nats
-    command: ["-js", "-sd", "/data"]
+    # `-m 8222` enables the HTTP monitoring endpoint the healthcheck
+    # probes. Without it the healthcheck `wget …/healthz` gets
+    # connection-refused on :8222 forever, NATS stays in "starting",
+    # and parent-old/parent-new never start (depends_on: nats: service_healthy).
+    command: ["-js", "-sd", "/data", "-m", "8222"]
     ports:
       - "4222:4222"
     healthcheck:
@@ -37,7 +44,7 @@ services:
       retries: 20
 
   init:
-    image: amazon/aws-cli:2.15.0
+    image: docker.io/amazon/aws-cli:2.15.0
     container_name: vettid-migration-init
     depends_on:
       localstack:
@@ -48,7 +55,12 @@ services:
       - AWS_DEFAULT_REGION=us-east-1
       - AWS_ENDPOINT_URL=http://localstack:4566
     volumes:
-      - ./fixtures/localstack-init.sh:/init.sh:ro
+      # `:Z` relabels the bind mount for SELinux so podman on Fedora
+      # can read+exec it inside the container. Without it the script
+      # bind-mount fails with "Permission denied" even though host
+      # perms are 0755 — SELinux denies access from the container's
+      # MCS label. Harmless on Docker (which ignores the suffix).
+      - ./fixtures/localstack-init.sh:/init.sh:ro,Z
       - shared-arns:/shared
     entrypoint: ["/bin/bash", "/init.sh"]
 
