@@ -37,7 +37,9 @@ type Scenario struct {
 // noisier failures).
 var AllScenarios = []Scenario{
 	{Name: "smoke", Run: scenarioSmoke},
+	{Name: "attestation", Run: scenarioAttestation},
 	// Roadmap (see ../README.md §"Scenarios to implement"):
+	// {Name: "enroll-only",               Run: scenarioEnrollOnly},
 	// {Name: "happy-path",                Run: scenarioHappyPath},
 	// {Name: "concurrent-load",           Run: scenarioConcurrentLoad},
 	// {Name: "kill-during-reseal",        Run: scenarioKillDuringReseal},
@@ -101,6 +103,24 @@ func scenarioSmoke(ctx context.Context, h *Harness) error {
 	}
 	fmt.Printf("    JetStream OK (streams=%d, consumers=%d)\n", info.Streams, info.Consumers)
 
+	return nil
+}
+
+// scenarioAttestation drives stage 1 of enrollment in isolation: send
+// a fresh-user attestation request to OLD, parse the response, assert
+// we got back a non-empty document and a 32-byte X25519 enclave
+// pubkey. Doesn't touch storage or routing — just validates the
+// driver's wire-format helpers + the vault's response shape.
+func scenarioAttestation(ctx context.Context, h *Harness) error {
+	u := newEnrolledUser()
+	if err := u.requestAttestation(ctx, h); err != nil {
+		return fmt.Errorf("attestation request: %w", err)
+	}
+	fmt.Printf("    owner_space=%s\n", u.OwnerSpace)
+	fmt.Printf("    attestation doc bytes=%d\n", len(u.AttestationDocument))
+	fmt.Printf("    enclave pubkey bytes=%d (hex prefix=%x…)\n",
+		len(u.EnclavePublicKey),
+		u.EnclavePublicKey[:8])
 	return nil
 }
 
