@@ -448,6 +448,27 @@ export class NitroStack extends cdk.Stack {
     });
 
     // ===== IAM ROLE FOR ENCLAVE INSTANCES =====
+    //
+    // SECURITY (#41): scoping audit. Each grant below this role is
+    // already narrow:
+    //   • KMS Encrypt/Decrypt: gated by encryption context
+    //     `purpose=vault-sealing-v1` (+ PCR0 attestation on Decrypt).
+    //   • S3 reads/writes: scoped to vaultDataBucket / handlersBucket /
+    //     publishedVotesBucket — no other buckets in the account.
+    //   • DynamoDB: scoped via grant{Read,Write}Data on specific tables
+    //     (handlerManifest, natsAccounts, proposals, votes).
+    //   • Secrets Manager: scoped to specific secret ARNs (vsock,
+    //     handler-signing key, TURN HMAC).
+    //   • SSM GetParameter: scoped to /vettid/nitro/* hierarchy.
+    //   • EC2 describes: scoped by tag Application=vettid-enclave.
+    //
+    // The remaining `*` resource scopes (ec2:Terminate deny, KMS
+    // resource policy) are either deny-statements or KMS-key-attached
+    // policies where resources:["*"] correctly refers to the attached
+    // key only. The two AWS-managed policies attached here grant
+    // broader actions (CloudWatch metrics, SSM Session Manager) that
+    // AWS APIs don't support resource-level scoping for; tracked
+    // separately in #70.
     this.enclaveInstanceRole = new iam.Role(this, 'EnclaveInstanceRole', {
       roleName: 'vettid-enclave-instance-role',
       assumedBy: new iam.ServicePrincipal('ec2.amazonaws.com'),
