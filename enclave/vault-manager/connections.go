@@ -427,11 +427,7 @@ func (h *ConnectionsHandler) EnsureSystemConnection(ctx context.Context) error {
 		CreatedAt:      time.Now(),
 		Capabilities:   &caps,
 	}
-	data, err := json.Marshal(&record)
-	if err != nil {
-		return fmt.Errorf("marshal system connection: %w", err)
-	}
-	if err := h.storage.Put(key, data); err != nil {
+	if err := h.putConnectionRecord(key, &record); err != nil {
 		return fmt.Errorf("store system connection: %w", err)
 	}
 	h.addToConnectionIndex(SystemConnectionID)
@@ -1143,9 +1139,10 @@ func (h *ConnectionsHandler) HandleCreateInvite(msg *IncomingMessage) (*Outgoing
 			// payload after later metadata mutations. Best-effort.
 			record.Credentials = invitationCreds
 			record.InviteCode = inviteCode
-			if updated, err := json.Marshal(record); err == nil {
-				_ = h.storage.Put(storageKey, updated)
-			}
+			// SECURITY (#35): record carries LocalPrivateKey + the
+			// freshly-issued NATS .creds. Route through the helper so
+			// the marshalled bytes are zeroed after the put returns.
+			_ = h.putConnectionRecord(storageKey, &record)
 		}
 	}
 
@@ -1896,8 +1893,10 @@ func (h *ConnectionsHandler) HandlePeerConnectionActivated(ctx context.Context, 
 		record.ActivatedAt = time.Now().UTC()
 	}
 	record.ExpiresAt = time.Time{}
-	newData, _ := json.Marshal(record)
-	h.storage.Put(storageKey, newData)
+	// SECURITY (#35): record still carries LocalPrivateKey + SharedSecret
+	// loaded from storage. Route through the helper so the marshalled
+	// bytes are zeroed after the put.
+	_ = h.putConnectionRecord(storageKey, &record)
 
 	if h.publisher != nil {
 		notif := map[string]interface{}{
@@ -1942,8 +1941,10 @@ func (h *ConnectionsHandler) HandlePeerConnectionRejected(ctx context.Context, m
 	record.SharedSecret = nil
 	zeroBytes(record.LocalPrivateKey)
 	record.LocalPrivateKey = nil
-	newData, _ := json.Marshal(record)
-	h.storage.Put(storageKey, newData)
+	// SECURITY (#35): keys zeroed above so marshalled bytes carry no
+	// secret material, but route through the helper to keep the
+	// invariant that every ConnectionRecord write does.
+	_ = h.putConnectionRecord(storageKey, &record)
 
 	if h.publisher != nil {
 		notif := map[string]interface{}{
@@ -2266,12 +2267,10 @@ func (h *ConnectionsHandler) HandleStoreCredentials(msg *IncomingMessage) (*Outg
 		record.KeyExchangeAt = time.Now()
 	}
 
-	data, err := json.Marshal(record)
-	if err != nil {
-		return h.errorResponse(msg.GetID(), "Failed to marshal connection")
-	}
-
-	if err := h.storage.Put(storageKey, data); err != nil {
+	// SECURITY (#35): record holds LocalPrivateKey, the freshly-derived
+	// SharedSecret, and the inbound NATS .creds. Route through the
+	// helper so the marshalled bytes are zeroed after the put.
+	if err := h.putConnectionRecord(storageKey, &record); err != nil {
 		return h.errorResponse(msg.GetID(), "Failed to store connection")
 	}
 
@@ -2410,12 +2409,10 @@ func (h *ConnectionsHandler) HandleInitiate(msg *IncomingMessage) (*OutgoingMess
 	}
 	record.Status = "pending_our_review" // Inviter (A) needs to review invitee (B)
 
-	// Save updated connection record
-	newData, err := json.Marshal(record)
-	if err != nil {
-		return h.errorResponse(msg.GetID(), "Failed to update connection")
-	}
-	if err := h.storage.Put(storageKey, newData); err != nil {
+	// SECURITY (#35): record holds LocalPrivateKey + the freshly-derived
+	// SharedSecret. Route through the helper so the marshalled bytes
+	// are zeroed after the put.
+	if err := h.putConnectionRecord(storageKey, &record); err != nil {
 		return h.errorResponse(msg.GetID(), "Failed to store connection update")
 	}
 
@@ -2740,16 +2737,10 @@ func (h *ConnectionsHandler) HandlePeerConnectionNotification(ctx context.Contex
 	// Set status to pending — inviter needs to review peer's profile
 	record.Status = "pending"
 
-	// Save updated connection record
-	newData, err := json.Marshal(record)
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to marshal updated connection")
-		return &OutgoingMessage{
-			Type:    MessageTypeResponse,
-			Payload: json.RawMessage(`{"ack":true}`),
-		}, nil
-	}
-	if err := h.storage.Put(storageKey, newData); err != nil {
+	// SECURITY (#35): record holds LocalPrivateKey + the freshly-derived
+	// SharedSecret. Route through the helper so the marshalled bytes
+	// are zeroed after the put.
+	if err := h.putConnectionRecord(storageKey, &record); err != nil {
 		log.Error().Err(err).Msg("Failed to store updated connection")
 		return &OutgoingMessage{
 			Type:    MessageTypeResponse,
@@ -2840,8 +2831,10 @@ func (h *ConnectionsHandler) HandleRevoke(msg *IncomingMessage) (*OutgoingMessag
 	record.LocalPrivateKey = nil
 	record.Status = "revoked"
 
-	newData, _ := json.Marshal(record)
-	if err := h.storage.Put(storageKey, newData); err != nil {
+	// SECURITY (#35): keys zeroed above so marshalled bytes carry no
+	// secret material, but route through the helper to keep the
+	// invariant that every ConnectionRecord write does.
+	if err := h.putConnectionRecord(storageKey, &record); err != nil {
 		return h.errorResponse(msg.GetID(), "Failed to revoke connection")
 	}
 
@@ -2927,8 +2920,10 @@ func (h *ConnectionsHandler) HandleList(msg *IncomingMessage) (*OutgoingMessage,
 			if record.ActivatedAt.IsZero() {
 				record.ActivatedAt = time.Now().UTC()
 			}
-			if updated, mErr := json.Marshal(&record); mErr == nil {
-				_ = h.storage.Put("connections/"+record.ConnectionID, updated)
+			// SECURITY (#35): record still carries LocalPrivateKey +
+			// SharedSecret from the original storage read. Route
+			// through the helper so the marshalled bytes are zeroed.
+			if pErr := h.putConnectionRecord("connections/"+record.ConnectionID, &record); pErr == nil {
 				log.Info().
 					Str("connection_id", record.ConnectionID).
 					Msg("connection.list: self-healed mistakenly-expired record back to active")
@@ -2959,12 +2954,13 @@ func (h *ConnectionsHandler) HandleList(msg *IncomingMessage) (*OutgoingMessage,
 		unaccepted := len(record.PeerPublicKey) == 0
 		if expired && unaccepted && record.Status == "pending" {
 			record.Status = "expired"
-			if updated, mErr := json.Marshal(&record); mErr == nil {
-				if pErr := h.storage.Put("connections/"+record.ConnectionID, updated); pErr != nil {
-					log.Warn().Err(pErr).
-						Str("connection_id", record.ConnectionID).
-						Msg("connection.list: failed to persist → expired transition")
-				}
+			// SECURITY (#35): record still carries LocalPrivateKey +
+			// SharedSecret from the storage read. Route through the
+			// helper so the marshalled bytes are zeroed.
+			if pErr := h.putConnectionRecord("connections/"+record.ConnectionID, &record); pErr != nil {
+				log.Warn().Err(pErr).
+					Str("connection_id", record.ConnectionID).
+					Msg("connection.list: failed to persist → expired transition")
 			}
 		}
 
@@ -3306,13 +3302,10 @@ func (h *ConnectionsHandler) HandleUpdate(msg *IncomingMessage) (*OutgoingMessag
 		record.PeerAlias = req.PeerAlias
 	}
 
-	// Save updated record
-	newData, err := json.Marshal(record)
-	if err != nil {
-		return h.errorResponse(msg.GetID(), "Failed to marshal connection")
-	}
-
-	if err := h.storage.Put(storageKey, newData); err != nil {
+	// SECURITY (#35): record was loaded from storage and still carries
+	// LocalPrivateKey + SharedSecret. Route through the helper so the
+	// marshalled bytes are zeroed after the put.
+	if err := h.putConnectionRecord(storageKey, &record); err != nil {
 		return h.errorResponse(msg.GetID(), "Failed to update connection")
 	}
 
@@ -3376,12 +3369,10 @@ func (h *ConnectionsHandler) HandleRotate(msg *IncomingMessage) (*OutgoingMessag
 	record.LastRotatedAt = time.Now()
 	record.KeyRotationCount++
 
-	newData, err := json.Marshal(record)
-	if err != nil {
-		return h.errorResponse(msg.GetID(), "Failed to marshal connection")
-	}
-
-	if err := h.storage.Put(storageKey, newData); err != nil {
+	// SECURITY (#35): record now carries a freshly-generated
+	// LocalPrivateKey. Route through the helper so the marshalled bytes
+	// are zeroed after the put.
+	if err := h.putConnectionRecord(storageKey, &record); err != nil {
 		return h.errorResponse(msg.GetID(), "Failed to update connection")
 	}
 
@@ -3558,13 +3549,10 @@ func (h *ConnectionsHandler) UpdateConnectionActivity(connectionID string, activ
 	record.LastActiveAt = &now
 	record.ActivityCount++
 
-	// Save updated record
-	newData, err := json.Marshal(record)
-	if err != nil {
-		return fmt.Errorf("failed to marshal connection: %w", err)
-	}
-
-	if err := h.storage.Put(storageKey, newData); err != nil {
+	// SECURITY (#35): record was loaded from storage and still carries
+	// LocalPrivateKey + SharedSecret. Route through the helper so the
+	// marshalled bytes are zeroed after the put.
+	if err := h.putConnectionRecord(storageKey, &record); err != nil {
 		return fmt.Errorf("failed to update connection: %w", err)
 	}
 
@@ -4045,11 +4033,7 @@ func (h *ConnectionsHandler) HandleCreateDeviceInvite(msg *IncomingMessage) (*Ou
 		CreatedAt:         time.Now(),
 		ExpiresAt:         expiresAt,
 	}
-	data, err := json.Marshal(record)
-	if err != nil {
-		return h.errorResponse(msg.GetID(), "Failed to marshal connection")
-	}
-	if err := h.storage.Put("connections/"+connectionID, data); err != nil {
+	if err := h.putConnectionRecord("connections/"+connectionID, &record); err != nil {
 		return h.errorResponse(msg.GetID(), "Failed to store connection")
 	}
 	h.addToConnectionIndex(connectionID)
@@ -4229,6 +4213,13 @@ func (h *ConnectionsHandler) HandleRevokeDevice(ctx context.Context, msg *Incomi
 		}
 	}
 
+	// SECURITY (#35): mirror HandleRevoke — zero any session key
+	// material on the device record before writing the revoked state.
+	zeroBytes(record.SharedSecret)
+	record.SharedSecret = nil
+	zeroBytes(record.LocalPrivateKey)
+	record.LocalPrivateKey = nil
+
 	// Mark revoked
 	record.Status = "revoked"
 	if record.DeviceSession != nil {
@@ -4236,8 +4227,7 @@ func (h *ConnectionsHandler) HandleRevokeDevice(ctx context.Context, msg *Incomi
 	}
 	record.DevicePendingAuth = nil
 
-	connData, _ := json.Marshal(record)
-	h.storage.Put("connections/"+record.ConnectionID, connData)
+	_ = h.putConnectionRecord("connections/"+record.ConnectionID, &record)
 
 	// Notify the desktop so it can clear local state
 	if h.publisher != nil {
@@ -4387,13 +4377,16 @@ func (h *ConnectionsHandler) HandleRevokeAgent(ctx context.Context, msg *Incomin
 		return h.errorResponse(msg.GetID(), "Not an agent connection")
 	}
 
-	// SECURITY: Zero shared secret before saving
+	// SECURITY: Zero shared secret + private key before saving.
+	// LocalPrivateKey was omitted in the original revoke; agents do an
+	// X25519 handshake at activation, so the record carries it too.
 	zeroBytes(record.SharedSecret)
 	record.SharedSecret = nil
+	zeroBytes(record.LocalPrivateKey)
+	record.LocalPrivateKey = nil
 	record.Status = "revoked"
 
-	newData, _ := json.Marshal(record)
-	if err := h.storage.Put(storageKey, newData); err != nil {
+	if err := h.putConnectionRecord(storageKey, &record); err != nil {
 		return h.errorResponse(msg.GetID(), "Failed to revoke agent")
 	}
 
@@ -4473,8 +4466,10 @@ func (h *ConnectionsHandler) HandleUpdateAgentContract(ctx context.Context, msg 
 		record.Contract.RateLimit = *req.RateLimit
 	}
 
-	newData, _ := json.Marshal(record)
-	if err := h.storage.Put(storageKey, newData); err != nil {
+	// SECURITY (#35): record was loaded from storage and may carry
+	// LocalPrivateKey + SharedSecret. Route through the helper so the
+	// marshalled bytes are zeroed after the put.
+	if err := h.putConnectionRecord(storageKey, &record); err != nil {
 		return h.errorResponse(msg.GetID(), "Failed to update contract")
 	}
 
