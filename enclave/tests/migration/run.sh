@@ -120,7 +120,8 @@ fi
 FAKE_PCR0_OLD="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 FAKE_PCR0_NEW="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 KMS_PCR_SIGNING_KEY_ARN="$("${COMPOSE[@]}" -f "$HERE/docker-compose.yml" exec -T parent-old \
-    sh -c 'grep ^KMS_PCR_SIGNING_KEY_ARN= /shared/arns.env | cut -d= -f2-' 2>/dev/null || echo "")"
+    sh -c 'awk -F\" "/pcr_signing_key_arn:/{print \$2}" /etc/vettid/parent.yaml' \
+    2>/dev/null || echo "")"
 export FAKE_PCR0_OLD FAKE_PCR0_NEW KMS_PCR_SIGNING_KEY_ARN
 
 echo "==> running test driver${SCENARIO:+ (scenario: $SCENARIO)}"

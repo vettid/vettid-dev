@@ -42,6 +42,8 @@ var AllScenarios = []Scenario{
 	{Name: "pin-setup", Run: scenarioPinSetup},
 	{Name: "enroll-only", Run: scenarioEnrollOnly},
 	{Name: "migration-config-publish", Run: scenarioMigrationConfigPublish},
+	{Name: "unlock-only", Run: scenarioUnlockOnly},
+	{Name: "migration-handoff", Run: scenarioMigrationHandoff},
 	// Roadmap (see ../README.md §"Scenarios to implement"):
 	// {Name: "happy-path",                Run: scenarioHappyPath},
 	// {Name: "concurrent-load",           Run: scenarioConcurrentLoad},
@@ -200,6 +202,133 @@ func scenarioMigrationConfigPublish(ctx context.Context, h *Harness) error {
 	fmt.Printf("    version=%s\n", version)
 	fmt.Printf("    canonical bytes=%d\n", len(canonical))
 	fmt.Printf("    old_pcr0=%s…  new_pcr0=%s…\n", oldPCR0[:16], newPCR0[:16])
+	return nil
+}
+
+// scenarioUnlockOnly enrolls a fresh user, then immediately unlocks
+// them without migrate_consent. Validates the warm-vault unlock path
+// + the driver's ECIES wrapping (split fields → combined wire blob).
+// Foundation for the migration scenario, which adds consent=true and
+// a published config.
+func scenarioUnlockOnly(ctx context.Context, h *Harness) error {
+	u := newEnrolledUser()
+	if err := u.requestAttestation(ctx, h); err != nil {
+		return fmt.Errorf("attestation: %w", err)
+	}
+	if err := u.setupPIN(ctx, h); err != nil {
+		return fmt.Errorf("pin.setup: %w", err)
+	}
+	if err := u.createCredential(ctx, h); err != nil {
+		return fmt.Errorf("credential.create: %w", err)
+	}
+	if err := u.unlockPIN(ctx, h, false); err != nil {
+		return fmt.Errorf("pin.unlock: %w", err)
+	}
+	fmt.Printf("    owner_space=%s — enrolled + unlocked cleanly\n", u.OwnerSpace)
+	return nil
+}
+
+// scenarioMigrationHandoff drives the full happy-path migration:
+//  1. Enroll a fresh user (must land on parent-old — see retry note).
+//  2. Publish a signed migration config pointing OLD→NEW PCR0.
+//  3. Send pin.unlock with migrate_consent=true.
+//  4. Vault on the owner-parent sees consent + a valid config and
+//     either reseals carve-outs against the NEW PCR0 (if running on
+//     the target) or emits a routing handoff to the new enclave (if
+//     running on the old one). Either way the unlock itself
+//     succeeds.
+//
+// Requires `--with-new` so parent-new is up to receive the handoff
+// or self-finalize when it processes the unlock.
+//
+// Known limitation: with two parents running, attestation is
+// stateless (both reply, driver picks first response) but pin.setup
+// is an enrollment-entry subject (one parent wins ClaimForEnrollment).
+// When the claim winner ≠ the parent whose attestation pubkey we
+// captured, ECIES decryption MAC-fails. This scenario retries
+// enrollment until both stages land on the same parent — the
+// production fix would be either (a) attestation also subject to
+// claim, or (b) a deterministic per-owner attestation key derived
+// from a shared seed so any enclave can decrypt. Track separately.
+func scenarioMigrationHandoff(ctx context.Context, h *Harness) error {
+	// Confirm parent-new is reachable — without it this scenario is
+	// a no-op.
+	probeCtx, probeCancel := context.WithTimeout(ctx, 3*time.Second)
+	parentNewProbe := waitForReady(probeCtx, h.ParentNewURL+"/ready", 1*time.Second)
+	probeCancel()
+	if parentNewProbe != nil {
+		return fmt.Errorf("parent-new not reachable — run with --with-new")
+	}
+
+	oldPCR0 := os.Getenv("FAKE_PCR0_OLD")
+	newPCR0 := os.Getenv("FAKE_PCR0_NEW")
+	if oldPCR0 == "" || newPCR0 == "" {
+		return fmt.Errorf("FAKE_PCR0_OLD/FAKE_PCR0_NEW unset — run via run.sh")
+	}
+
+	version := fmt.Sprintf("tier2-handoff-%d", time.Now().Unix())
+	if _, err := h.publishMigrationConfig(ctx, oldPCR0, newPCR0, version); err != nil {
+		return fmt.Errorf("publish migration config: %w", err)
+	}
+	fmt.Printf("    published config: %s → %s (version=%s)\n", oldPCR0[:16]+"…", newPCR0[:16]+"…", version)
+
+	// Enrollment retry loop — see note above. Each retry uses a fresh
+	// owner_space so claims don't interfere with each other.
+	const maxAttempts = 8
+	var u *EnrolledUser
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		u = newEnrolledUser()
+		if err := u.requestAttestation(ctx, h); err != nil {
+			lastErr = fmt.Errorf("attestation: %w", err)
+			continue
+		}
+		if err := u.setupPIN(ctx, h); err != nil {
+			lastErr = fmt.Errorf("pin.setup attempt %d: %w", attempt, err)
+			continue
+		}
+		if err := u.createCredential(ctx, h); err != nil {
+			lastErr = fmt.Errorf("credential.create attempt %d: %w", attempt, err)
+			continue
+		}
+		lastErr = nil
+		fmt.Printf("    enrolled owner_space=%s (attempt %d)\n", u.OwnerSpace, attempt)
+		break
+	}
+	if lastErr != nil {
+		return fmt.Errorf("enrollment failed after %d attempts (last: %w)", maxAttempts, lastErr)
+	}
+
+	if err := u.unlockPIN(ctx, h, true); err != nil {
+		return fmt.Errorf("pin.unlock (migrate_consent): %w", err)
+	}
+	fmt.Printf("    pin.unlock w/ migrate_consent — status=%q migration_status=%q version=%q\n",
+		u.LastUnlockStatus, u.LastMigrationStatus, u.LastMigrationVersion)
+
+	// The primary assertion of this scenario is that migrate_consent
+	// produced one of the two terminal migration statuses ("completed"
+	// = resealed in place on the NEW parent, or "pending_new_enclave"
+	// = handoff emitted from the OLD parent). Anything else means
+	// migration didn't actually engage and the test should fail.
+	switch u.LastMigrationStatus {
+	case "completed", "pending_new_enclave":
+		// expected
+	default:
+		return fmt.Errorf("expected migration_status in {completed, pending_new_enclave}, got %q (version=%q)",
+			u.LastMigrationStatus, u.LastMigrationVersion)
+	}
+
+	// Best-effort post-handoff probe: the second unlock should land
+	// on the NEW parent (which won the handoff). Failure here is
+	// commonly a Tier-2 surface gap — e.g. NATS-account-seed lookups
+	// that need DynamoDB wiring the harness doesn't ship — rather
+	// than a real migration bug. Log and continue so the primary
+	// migration assertion stays the gating signal.
+	if err := u.unlockPIN(ctx, h, false); err != nil {
+		fmt.Printf("    post-handoff pin.unlock soft-failed (likely Tier-2 surface gap): %v\n", err)
+	} else {
+		fmt.Printf("    post-handoff pin.unlock succeeded\n")
+	}
 	return nil
 }
 

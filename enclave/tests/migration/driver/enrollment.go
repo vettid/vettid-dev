@@ -40,13 +40,21 @@ type EnrolledUser struct {
 	EnclavePCR0         string // hex PCR0 the vault attested to
 
 	// Populated by stage 2 (pin.setup):
-	UTKs []UTKInfo // user transaction keys the vault returns for stage 3
+	UTKs        []UTKInfo // user transaction keys the vault returns for stage 3
+	ECIESPubKey []byte    // PIN-unlock ECIES recipient pubkey (decoded from b64)
 
 	// Populated by stage 3 (credential.create):
-	EncryptedCredential string     // CEK-encrypted Protean Credential blob (base64)
-	NewUTKs             []UTKInfo  // refreshed UTK pool the app would persist
-	PasswordHashPHC     string     // PHC string the vault now stores (debug/migration assertions)
-	PasswordSalt        []byte     // salt used in the PHC (kept so happy-path can re-hash on unlock)
+	EncryptedCredential string    // CEK-encrypted Protean Credential blob (base64)
+	NewUTKs             []UTKInfo // refreshed UTK pool the app would persist
+	PasswordHashPHC     string    // PHC string the vault now stores (debug/migration assertions)
+	PasswordSalt        []byte    // salt used in the PHC (kept so happy-path can re-hash on unlock)
+
+	// Populated after pin.unlock — handy for assertions in the
+	// migration scenario. MigrationStatus values are documented on
+	// PINUnlockResponse in vault-manager/credential_types.go.
+	LastUnlockStatus     string // "unlocked" on success
+	LastMigrationStatus  string // "" / "completed" / "pending_new_enclave" / "not_requested" / "failed"
+	LastMigrationVersion string // version field from the matched migration config
 }
 
 // UTKInfo is one entry in the UTK pool returned by pin.setup. The
@@ -192,10 +200,11 @@ func (u *EnrolledUser) setupPIN(ctx context.Context, h *Harness) error {
 	}
 
 	var resp struct {
-		Type    string    `json:"type"`
-		EventID string    `json:"event_id"`
-		UTKs    []UTKInfo `json:"utks"`
-		Error   string    `json:"error"`
+		Type           string    `json:"type"`
+		EventID        string    `json:"event_id"`
+		UTKs           []UTKInfo `json:"utks"`
+		ECIESPublicKey string    `json:"ecies_public_key"`
+		Error          string    `json:"error"`
 	}
 	if err := json.Unmarshal(respBytes, &resp); err != nil {
 		return fmt.Errorf("unmarshal pin.setup response: %w\n  raw=%s", err, string(respBytes))
@@ -208,6 +217,121 @@ func (u *EnrolledUser) setupPIN(ctx context.Context, h *Harness) error {
 	}
 
 	u.UTKs = resp.UTKs
+	if resp.ECIESPublicKey != "" {
+		pub, err := base64.StdEncoding.DecodeString(resp.ECIESPublicKey)
+		if err != nil {
+			return fmt.Errorf("decode ECIES pub: %w", err)
+		}
+		if len(pub) != keySize {
+			return fmt.Errorf("ECIES pub wrong length: got %d, want %d", len(pub), keySize)
+		}
+		u.ECIESPubKey = pub
+	}
+	return nil
+}
+
+// unlockPIN drives the PIN-unlock path that fires migrate_consent
+// handling when the vault sees a published migration config. The
+// payload format matches pin.setup (ECIES-encrypted PIN), but
+// crucially uses the *ECIESPublicKey* the vault returned from
+// pin.setup — NOT the attestation pubkey. That key is what vault-side
+// state.eciesPrivateKey corresponds to; using the attestation key
+// here MAC-fails at decryptWithECIES.
+//
+// If consent=true, vault sees migrate_consent on the request and (if
+// a migration config is published + applicable) reseals carve-outs or
+// emits a routing handoff to the new enclave.
+func (u *EnrolledUser) unlockPIN(ctx context.Context, h *Harness, consent bool) error {
+	if u.ECIESPubKey == nil {
+		return fmt.Errorf("unlockPIN: no ECIES pub captured (run setupPIN first)")
+	}
+	if len(u.UTKs) == 0 {
+		return fmt.Errorf("unlockPIN: no UTKs (run setupPIN first)")
+	}
+
+	innerJSON, err := json.Marshal(map[string]any{"pin": u.PIN})
+	if err != nil {
+		return fmt.Errorf("marshal pin payload: %w", err)
+	}
+	encB64, ephPubB64, nonceB64, err := pinECIESEncrypt(u.ECIESPubKey, innerJSON)
+	if err != nil {
+		return fmt.Errorf("encrypt pin: %w", err)
+	}
+
+	// pin.unlock payload mirrors PINUnlockRequest in
+	// vault-manager/credential_types.go: utk_id + encrypted_payload
+	// (single combined b64 = ephemeral_pub || nonce || ciphertext) +
+	// optional migrate_consent + optional encrypted_credential.
+	combined := make([]byte, 0, 32+12+len(encB64))
+	rawCT, err := base64.StdEncoding.DecodeString(encB64)
+	if err != nil {
+		return fmt.Errorf("decode encB64: %w", err)
+	}
+	rawEphPub, err := base64.StdEncoding.DecodeString(ephPubB64)
+	if err != nil {
+		return fmt.Errorf("decode ephPubB64: %w", err)
+	}
+	rawNonce, err := base64.StdEncoding.DecodeString(nonceB64)
+	if err != nil {
+		return fmt.Errorf("decode nonceB64: %w", err)
+	}
+	combined = append(combined, rawEphPub...)
+	combined = append(combined, rawNonce...)
+	combined = append(combined, rawCT...)
+	encryptedPayloadB64 := base64.StdEncoding.EncodeToString(combined)
+
+	reqPayload := map[string]any{
+		"utk_id":            u.UTKs[0].ID,
+		"encrypted_payload": encryptedPayloadB64,
+	}
+	if consent {
+		reqPayload["migrate_consent"] = true
+	}
+	if u.EncryptedCredential != "" {
+		// Optional self-heal aid — vault uses this to restore
+		// credential carve-outs on warm unlock when storage doesn't
+		// have the sealed blob (Tier-2 supervisors don't share state).
+		reqPayload["encrypted_credential"] = u.EncryptedCredential
+	}
+
+	respBytes, err := h.publishWithType(
+		ctx, u.OwnerSpace,
+		"pin",        // subject suffix (same as setup)
+		"pin",        // response suffix
+		"pin.unlock", // envelope type — distinguishes from setup/change
+		reqPayload,
+	)
+	if err != nil {
+		return fmt.Errorf("publish pin.unlock: %w", err)
+	}
+	// new_utks comes back as the legacy EncodeUTKs format
+	// ("utk-id:base64pub") — vault-manager's PIN unlock path uses the
+	// older wire encoding here, distinct from PINSetupResponse's
+	// structured UTKPublic. The driver doesn't *use* these for
+	// anything yet, so the slice-of-strings shape is enough.
+	//
+	// migration_status values (see PINUnlockResponse docs):
+	//   "completed"            - re-seal landed on this enclave.
+	//   "pending_new_enclave"  - landed on OLD; handoff emitted.
+	//   "failed"               - re-seal errored (unlock still ok).
+	//   "not_requested"        - consent=false or no config published.
+	//   "" (omitted)           - no migration in flight at all.
+	var resp struct {
+		Status           string   `json:"status"`
+		MigrationStatus  string   `json:"migration_status"`
+		MigrationVersion string   `json:"migration_version"`
+		NewUTKs          []string `json:"new_utks"`
+		Error            string   `json:"error"`
+	}
+	if err := json.Unmarshal(respBytes, &resp); err != nil {
+		return fmt.Errorf("unmarshal pin.unlock response: %w\n  raw=%s", err, string(respBytes))
+	}
+	if resp.Error != "" {
+		return fmt.Errorf("vault returned error: %s", resp.Error)
+	}
+	u.LastUnlockStatus = resp.Status
+	u.LastMigrationStatus = resp.MigrationStatus
+	u.LastMigrationVersion = resp.MigrationVersion
 	return nil
 }
 
