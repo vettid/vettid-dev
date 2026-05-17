@@ -170,7 +170,11 @@ export class InfrastructureStack extends cdk.Stack {
     const invites = new dynamodb.Table(this, 'Invites', {
       partitionKey: { name: 'code', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      // SECURITY (#37): RETAIN holds live enrollment state — a stack
+      // delete would otherwise leave mid-flight users unable to
+      // resume. Combine with pointInTimeRecovery for protection
+      // against accidental table-level wipes.
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
       pointInTimeRecovery: true,
       encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
       encryptionKey: dynamoDbEncryptionKey,
@@ -187,7 +191,9 @@ export class InfrastructureStack extends cdk.Stack {
     const registrations = new dynamodb.Table(this, 'Registrations', {
       partitionKey: { name: 'registration_id', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      // SECURITY (#37): user-account state — losing this nukes every
+      // user's vault binding. RETAIN.
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
       pointInTimeRecovery: true,
       stream: dynamodb.StreamViewType.NEW_AND_OLD_IMAGES,
       encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
@@ -219,7 +225,9 @@ export class InfrastructureStack extends cdk.Stack {
     const audit = new dynamodb.Table(this, 'Audit', {
       partitionKey: { name: 'id', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      // SECURITY (#37): audit logs are compliance + incident-response
+      // bedrock. Must survive stack delete.
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
       pointInTimeRecovery: true, // SECURITY: Enable PITR for critical audit logs
       encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
       encryptionKey: dynamoDbEncryptionKey,
@@ -295,7 +303,9 @@ export class InfrastructureStack extends cdk.Stack {
     const subscriptions = new dynamodb.Table(this, 'Subscriptions', {
       partitionKey: { name: 'user_guid', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      // SECURITY (#37): billing state — losing this strands users in
+      // ambiguous-subscription state and risks revenue impact.
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
       pointInTimeRecovery: true,
       encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
       encryptionKey: dynamoDbEncryptionKey,
@@ -305,7 +315,10 @@ export class InfrastructureStack extends cdk.Stack {
     const proposals = new dynamodb.Table(this, 'Proposals', {
       partitionKey: { name: 'proposal_id', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      // SECURITY (#37): governance history must be preserved — votes
+      // reference proposal IDs, so losing the proposals table breaks
+      // every recorded vote's audit trail.
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
       pointInTimeRecovery: true,
       stream: dynamodb.StreamViewType.NEW_AND_OLD_IMAGES,
       encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
@@ -324,7 +337,9 @@ export class InfrastructureStack extends cdk.Stack {
       partitionKey: { name: 'proposal_id', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'user_guid', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      // SECURITY (#37): governance vote records — irreversible loss
+      // of democratic decisions. RETAIN.
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
       pointInTimeRecovery: true,
       encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
       encryptionKey: dynamoDbEncryptionKey,
@@ -496,7 +511,9 @@ export class InfrastructureStack extends cdk.Stack {
     const vaultInstances = new dynamodb.Table(this, 'VaultInstances', {
       partitionKey: { name: 'user_guid', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      // SECURITY (#37): maps users to their live vault instance — a
+      // wipe would orphan every user from their vault routing.
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
       pointInTimeRecovery: true,
       encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
       encryptionKey: dynamoDbEncryptionKey,
@@ -595,7 +612,9 @@ export class InfrastructureStack extends cdk.Stack {
     const credentialBackups = new dynamodb.Table(this, 'CredentialBackups', {
       partitionKey: { name: 'member_guid', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      // SECURITY (#37): credential backups are the recovery rail for
+      // every member. Losing this orphans users from their own vaults.
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
       pointInTimeRecovery: true,
       encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
       encryptionKey: dynamoDbEncryptionKey,
@@ -1255,7 +1274,13 @@ export class InfrastructureStack extends cdk.Stack {
       generateSecret: false,
       preventUserExistenceErrors: true,
       enableTokenRevocation: true,
-      refreshTokenValidity: cdk.Duration.days(30),
+      // SECURITY (#90): admin sessions get the tightest reasonable
+      // refresh window. 7d means a stolen admin refresh token expires
+      // within a week even if rotation/revocation lag. Member
+      // sessions stay at 30d below — magic-link friction at the
+      // member tier matters more than at the admin tier where ops
+      // already accept stricter posture.
+      refreshTokenValidity: cdk.Duration.days(7),
       readAttributes: new cognito.ClientAttributes()
         .withStandardAttributes({ email: true, emailVerified: true, givenName: true, familyName: true })
         .withCustomAttributes('admin_type'),
