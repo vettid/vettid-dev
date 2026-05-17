@@ -1273,7 +1273,9 @@ func (h *ConnectionsHandler) HandleResolveInvite(msg *IncomingMessage) (*Outgoin
 	}
 
 	// Derive shared secret. Idempotent — same inputs → same output.
-	sharedSecret, err := curve25519.X25519(record.LocalPrivateKey, peerPubKey)
+	// SECURITY (#83): peerPubKey is from the inviter's broker payload;
+	// reject small-order points before the ECDH.
+	sharedSecret, err := safeX25519(record.LocalPrivateKey, peerPubKey)
 	if err != nil {
 		return h.errorResponse(msg.GetID(), "Failed to derive shared secret")
 	}
@@ -1602,7 +1604,9 @@ func (h *ConnectionsHandler) handleResponseReady(ctx context.Context, msg *Incom
 		// peer_reviewing → active misleads the UI into thinking
 		// messaging works when it can't.
 		if len(r.LocalPrivateKey) > 0 {
-			ss, err := curve25519.X25519(r.LocalPrivateKey, peerPubKey)
+			// SECURITY (#83): peerPubKey arrived in the response-ready
+			// payload; reject small-order points before the ECDH.
+			ss, err := safeX25519(r.LocalPrivateKey, peerPubKey)
 			if err != nil {
 				log.Error().Err(err).Str("connection_id", connectionID).Msg("ECDH derive failed for response-ready")
 				return false, fmt.Errorf("derive shared secret: %w", err)
@@ -1825,7 +1829,9 @@ func (h *ConnectionsHandler) HandlePeerKeyExchange(ctx context.Context, msg *Inc
 	// can't carry messages. Refuse to persist the half-state — the peer
 	// will retry the key-exchange and we'll reconverge on the next ping.
 	if len(record.LocalPrivateKey) > 0 {
-		sharedSecret, err := curve25519.X25519(record.LocalPrivateKey, peerPublicKey)
+		// SECURITY (#83): peerPublicKey arrived in the key-exchange
+		// payload; reject small-order points before the ECDH.
+		sharedSecret, err := safeX25519(record.LocalPrivateKey, peerPublicKey)
 		if err != nil {
 			log.Error().Err(err).Str("connection_id", keyExchange.ConnectionID).Msg("ECDH derive failed (B side)")
 			return &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":false,"error":"derive_shared_secret"}`)}, nil
@@ -2258,7 +2264,9 @@ func (h *ConnectionsHandler) HandleStoreCredentials(msg *IncomingMessage) (*Outg
 			return h.errorResponse(msg.GetID(), "Invalid peer e2e public key")
 		}
 		record.PeerPublicKey = peerPubBytes
-		sharedSecret, sharedErr := curve25519.X25519(localPrivate, peerPubBytes)
+		// SECURITY (#83): peerPubBytes is the wire-supplied peer e2e
+		// public key; reject small-order points before the ECDH.
+		sharedSecret, sharedErr := safeX25519(localPrivate, peerPubBytes)
 		if sharedErr != nil {
 			log.Error().Err(sharedErr).Str("connection_id", record.ConnectionID).Msg("ECDH derive failed (store-credentials)")
 			return h.errorResponse(msg.GetID(), "Failed to derive shared secret")
@@ -2399,7 +2407,9 @@ func (h *ConnectionsHandler) HandleInitiate(msg *IncomingMessage) (*OutgoingMess
 	// status to "pending_our_review". Otherwise we ack a request that
 	// the peer can never message us back on.
 	if len(record.LocalPrivateKey) > 0 && len(peerPublicKey) > 0 {
-		sharedSecret, sharedErr := curve25519.X25519(record.LocalPrivateKey, peerPublicKey)
+		// SECURITY (#83): peerPublicKey arrived in the initiate
+		// payload; reject small-order points before the ECDH.
+		sharedSecret, sharedErr := safeX25519(record.LocalPrivateKey, peerPublicKey)
 		if sharedErr != nil {
 			log.Error().Err(sharedErr).Str("connection_id", record.ConnectionID).Msg("ECDH derive failed (peer-key-exchange)")
 			return h.errorResponse(msg.GetID(), "Failed to derive shared secret")
@@ -2723,7 +2733,9 @@ func (h *ConnectionsHandler) HandlePeerConnectionNotification(ctx context.Contex
 		}
 		record.PeerPublicKey = peerPublicKey
 		if len(record.LocalPrivateKey) > 0 {
-			sharedSecret, sharedErr := curve25519.X25519(record.LocalPrivateKey, peerPublicKey)
+			// SECURITY (#83): peerPublicKey arrived in the accept
+			// notification; reject small-order points before the ECDH.
+			sharedSecret, sharedErr := safeX25519(record.LocalPrivateKey, peerPublicKey)
 			if sharedErr != nil {
 				log.Error().Err(sharedErr).Str("connection_id", notification.ConnectionID).Msg("ECDH derive failed (A side)")
 				return &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":false,"error":"derive_shared_secret"}`)}, nil
@@ -3759,8 +3771,10 @@ func (h *ConnectionsHandler) HandleAcceptAgentConnection(ctx context.Context, ms
 		return nil, nil
 	}
 
-	// Compute X25519 shared secret
-	sharedSecret, err := curve25519.X25519(connRecord.LocalPrivateKey, connReq.AgentPublicKey)
+	// Compute X25519 shared secret.
+	// SECURITY (#83): AgentPublicKey is wire-supplied by the agent;
+	// reject small-order points before the ECDH.
+	sharedSecret, err := safeX25519(connRecord.LocalPrivateKey, connReq.AgentPublicKey)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to compute shared secret")
 		return nil, nil

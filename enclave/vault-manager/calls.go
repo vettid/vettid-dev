@@ -1001,8 +1001,9 @@ func generateX25519KeyPair() (privateKey, publicKey []byte, err error) {
 
 // deriveSharedSecret performs X25519 key exchange and HKDF to derive a shared secret
 func deriveSharedSecret(localPrivKey, peerPubKey []byte, callID string) ([]byte, error) {
-	// Perform X25519 key exchange
-	sharedPoint, err := curve25519.X25519(localPrivKey, peerPubKey)
+	// SECURITY (#83): peerPubKey is wire-supplied from the call peer;
+	// reject small-order points before the ECDH.
+	sharedPoint, err := safeX25519(localPrivKey, peerPubKey)
 	if err != nil {
 		return nil, fmt.Errorf("X25519 key exchange failed: %w", err)
 	}

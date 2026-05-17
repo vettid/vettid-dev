@@ -139,8 +139,10 @@ func decryptWithECIES(privateKey []byte, ciphertext []byte) ([]byte, error) {
 	nonce := ciphertext[32:44]
 	encrypted := ciphertext[44:]
 
-	// X25519 key exchange
-	sharedSecret, err := curve25519.X25519(privateKey, ephemeralPubKey)
+	// SECURITY (#83): wire-side ephemeral pub key — refuse small-order
+	// points before the ECDH so a malicious sender can't probe the
+	// vault's long-lived key via contributory behavior.
+	sharedSecret, err := safeX25519(privateKey, ephemeralPubKey)
 	if err != nil {
 		return nil, fmt.Errorf("key exchange failed: %w", err)
 	}
@@ -379,8 +381,10 @@ func decryptWithDomain(privateKey []byte, ciphertext []byte, domain string) ([]b
 		Int("encrypted_len", len(encrypted)).
 		Msg("DEBUG: Parsed ciphertext components")
 
-	// X25519 key exchange
-	sharedSecret, err := curve25519.X25519(privateKey, ephemeralPubKey)
+	// SECURITY (#83): wire-side ephemeral pub key — refuse small-order
+	// points before the ECDH so a malicious sender can't probe the
+	// vault's long-lived key via contributory behavior.
+	sharedSecret, err := safeX25519(privateKey, ephemeralPubKey)
 	if err != nil {
 		log.Warn().Err(err).Msg("DEBUG: X25519 key exchange failed")
 		return nil, fmt.Errorf("key exchange failed: %w", err)

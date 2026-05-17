@@ -418,7 +418,9 @@ func (h *ServiceConnectionHandler) HandleInitiate(msg *IncomingMessage) (*Outgoi
 	if len(peerPublicKey) != 32 {
 		return h.errorResponse(msg.GetID(), "Service public key must be 32 bytes")
 	}
-	sharedSecret, err := curve25519.X25519(privateKey[:], peerPublicKey)
+	// SECURITY (#83): peerPublicKey is wire-supplied by the service;
+	// reject small-order points before the ECDH.
+	sharedSecret, err := safeX25519(privateKey[:], peerPublicKey)
 	if err != nil {
 		log.Error().Err(err).Str("service_guid", req.ServiceGUID).Msg("ECDH derive failed")
 		return h.errorResponse(msg.GetID(), "Failed to derive shared secret")

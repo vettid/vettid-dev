@@ -238,7 +238,9 @@ func (h *ConnectionsHandler) HandleDeviceAuthorizeSession(ctx context.Context, m
 	if err != nil {
 		return h.errorResponse(msg.GetID(), "Failed to derive vault public key")
 	}
-	sharedSecret, err := curve25519.X25519(vaultPriv, record.DevicePendingAuth.DevicePubKey)
+	// SECURITY (#83): DevicePubKey is wire-supplied by the pairing
+	// device; reject small-order points before the ECDH.
+	sharedSecret, err := safeX25519(vaultPriv, record.DevicePendingAuth.DevicePubKey)
 	if err != nil {
 		return h.errorResponse(msg.GetID(), "Failed to compute shared secret")
 	}
@@ -386,7 +388,9 @@ func (h *ConnectionsHandler) HandleDeviceExtendSession(ctx context.Context, msg 
 	if err != nil {
 		return h.errorResponse(msg.GetID(), "Failed to derive vault public key")
 	}
-	sharedSecret, err := curve25519.X25519(vaultPriv, record.DevicePendingAuth.DevicePubKey)
+	// SECURITY (#83): DevicePubKey is wire-supplied by the pairing
+	// device; reject small-order points before the ECDH.
+	sharedSecret, err := safeX25519(vaultPriv, record.DevicePendingAuth.DevicePubKey)
 	if err != nil {
 		return h.errorResponse(msg.GetID(), "Failed to compute shared secret")
 	}

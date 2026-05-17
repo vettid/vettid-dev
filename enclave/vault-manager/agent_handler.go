@@ -12,7 +12,6 @@ import (
 
 	"github.com/rs/zerolog/log"
 	"golang.org/x/crypto/chacha20poly1305"
-	"golang.org/x/crypto/curve25519"
 	"golang.org/x/crypto/hkdf"
 )
 
@@ -1308,8 +1307,10 @@ func decryptECIESAgentDomain(privateKey []byte, data []byte) ([]byte, error) {
 	nonce := data[32 : 32+chacha20poly1305.NonceSizeX]
 	ciphertext := data[32+chacha20poly1305.NonceSizeX:]
 
-	// X25519 key exchange
-	sharedSecret, err := curve25519.X25519(privateKey, ephPub)
+	// SECURITY (#83): wire-side ephemeral pub key — refuse small-order
+	// points before the ECDH so a malicious agent can't probe the
+	// vault's long-lived agent key via contributory behavior.
+	sharedSecret, err := safeX25519(privateKey, ephPub)
 	if err != nil {
 		return nil, fmt.Errorf("ECDH key exchange: %w", err)
 	}
