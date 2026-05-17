@@ -717,7 +717,14 @@ export class NitroStack extends cdk.Stack {
       }),
       updatePolicy: autoscaling.UpdatePolicy.rollingUpdate({
         maxBatchSize: 1,
-        minInstancesInService: 0, // Allow full replacement for dev
+        // SECURITY (#42): keep one enclave in service during rolling
+        // launchTemplate updates. With maxCapacity:3 headroom CFN
+        // spins up the replacement, waits for the EC2 health check,
+        // then terminates the old — eliminating the unplanned outage
+        // window on CFN-driven enclave swaps. (Migration-finalize is a
+        // separate path that intentionally cycles via custom events;
+        // this only affects the standard rolling-update path.)
+        minInstancesInService: 1,
         pauseTime: cdk.Duration.minutes(5),
       }),
       // SECURITY: Prevent instances from being terminated without explicit permission
