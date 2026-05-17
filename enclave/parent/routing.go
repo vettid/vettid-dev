@@ -180,6 +180,14 @@ func (r *RoutingManager) IsOwner(userGuid string) bool {
 // first (legitimate race during concurrent enrollment) OR if this
 // instance is the OLD enclave in an active migration window.
 func (r *RoutingManager) ClaimForEnrollment(userGuid, pcr0 string) (bool, error) {
+	// SECURITY (#22): the userGuid becomes both a JetStream KV key
+	// suffix AND a NATS subject segment (via subscribeUser below).
+	// Either path with `.` / `>` / `*` in it is unsafe. Validate
+	// before we touch any external store.
+	if err := validateUserGuid(userGuid); err != nil {
+		return false, fmt.Errorf("ClaimForEnrollment refused: %w", err)
+	}
+
 	// Migration-window gate (#239): during a migration both OLD and
 	// NEW enclaves are subscribed to the enrollment wildcards and both
 	// race to claim. Pre-2026-05-16 OLD could win and pin the new user
@@ -795,6 +803,14 @@ func (r *RoutingManager) kv() (nats.KeyValue, error) {
 }
 
 func (r *RoutingManager) subscribeUser(userGuid string) error {
+	// SECURITY (#22): subject is built by string concat; an
+	// unvalidated guid with NATS wildcards (`>` / `*` / `.`) would
+	// silently broaden the subscription across other users'
+	// OwnerSpaces. validateUserGuid pins the input to the strict
+	// RFC4122 grammar before any conn.Subscribe runs.
+	if err := validateUserGuid(userGuid); err != nil {
+		return fmt.Errorf("subscribeUser refused: %w", err)
+	}
 	r.mu.RLock()
 	entry, ok := r.owned[userGuid]
 	alreadySubscribed := ok && entry.subscription != nil

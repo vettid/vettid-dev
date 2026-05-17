@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -1488,6 +1489,28 @@ func hasSubjectSuffix(subject, suffix string) bool {
 	return subject[len(subject)-len(suffix):] == suffix
 }
 
+// userGuidPattern is the strict allow-list for any GUID we plan to
+// interpolate into a NATS subject. RFC4122 shape: 8-4-4-4-12
+// lowercase-hex digits joined by '-'. SECURITY (#22): anything else
+// — uppercase, NATS wildcards `*` / `>`, dots, surprise unicode —
+// must be rejected before it reaches a Subscribe/Publish call. A
+// crafted control-cmd userGuid like `"abc.foo>"` could otherwise
+// subscribe to every user's vault traffic, or publish to an
+// unintended OwnerSpace.
+var userGuidPattern = regexp.MustCompile(
+	`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`,
+)
+
+// validateUserGuid returns nil if guid matches the RFC4122 lowercase-
+// hex grammar; otherwise an error. Call this BEFORE interpolating
+// the guid into any NATS subject string.
+func validateUserGuid(guid string) error {
+	if !userGuidPattern.MatchString(guid) {
+		return fmt.Errorf("invalid user_guid (must be lowercase RFC4122 UUID): %q", guid)
+	}
+	return nil
+}
+
 // sanitizeDurableID strips characters NATS JetStream rejects in
 // durable-consumer names (anything other than a-z, A-Z, 0-9, -, _).
 // Produces a stable identifier from an enclave id that may contain
@@ -2178,6 +2201,15 @@ func (p *ParentProcess) handleCredentialDeleteCommand(ctx context.Context, msg *
 	}
 
 	userGuid := parts[2]
+	// SECURITY (#22): reject any user_guid that isn't a well-formed
+	// lowercase RFC4122 UUID before we use it to build a NATS
+	// subject. Without this guard, a control message with a crafted
+	// guid (containing `.`, `>`, `*`, etc.) could be coerced into
+	// publishing to or subscribing across other users' OwnerSpaces.
+	if err := validateUserGuid(userGuid); err != nil {
+		log.Error().Str("subject", msg.Subject).Err(err).Msg("SECURITY: refused credential.delete with malformed user_guid")
+		return err
+	}
 
 	log.Info().
 		Str("command_id", cmd.CommandID).
@@ -2249,6 +2281,23 @@ func (p *ParentProcess) handleVaultReset(ctx context.Context, msg *NATSMessage) 
 			}
 		}
 		return fmt.Errorf("invalid vault reset request: %w", err)
+	}
+
+	// SECURITY (#22): same guard as Control.user.*.credential.delete —
+	// reject anything that isn't a strict RFC4122 lowercase UUID
+	// before the value becomes part of a NATS subject.
+	if err := validateUserGuid(req.UserGuid); err != nil {
+		log.Error().Err(err).Msg("SECURITY: refused vault reset with malformed user_guid")
+		if msg.Reply != "" {
+			errorResponse := map[string]interface{}{
+				"success": false,
+				"error":   err.Error(),
+			}
+			if responseData, mErr := json.Marshal(errorResponse); mErr == nil {
+				p.natsClient.Publish(msg.Reply, responseData)
+			}
+		}
+		return err
 	}
 
 	if req.UserGuid == "" {
