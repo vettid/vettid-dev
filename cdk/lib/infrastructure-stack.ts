@@ -1063,19 +1063,16 @@ export class InfrastructureStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(10),
     });
 
-    // PostAuthentication trigger - updates last_login_at on each login
+    // PostAuthentication trigger - updates last_login_at on each login.
+    // SECURITY (#87): the grant is added *after* adminUserPool is
+    // constructed (below) so we can scope to the specific userpool ARN
+    // instead of `userpool/*`. The Lambda is defined here only so it
+    // can be wired into adminUserPool's lambdaTriggers; the IAM
+    // permission attaches once the pool exists.
     const postAuthentication = new lambdaNode.NodejsFunction(this, 'PostAuthenticationFn', {
       entry: 'lambda/triggers/postAuthentication.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
       timeout: cdk.Duration.seconds(10),
-      initialPolicy: [
-        // Permission to update user attributes (for last_login_at tracking)
-        // Uses ARN pattern to avoid circular dependency with the user pool
-        new iam.PolicyStatement({
-          actions: ['cognito-idp:AdminUpdateUserAttributes'],
-          resources: [`arn:aws:cognito-idp:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:userpool/*`],
-        }),
-      ],
     });
 
     // Grant permissions to auth Lambda functions
@@ -1187,6 +1184,14 @@ export class InfrastructureStack extends cdk.Stack {
     const adminDomainPrefix = `vettid-admin-${cdk.Names.uniqueId(this).toLowerCase().slice(0, 10)}`.replace(/[^a-z0-9-]/g, '');
     const adminPoolDomain = adminUserPool.addDomain('AdminCognitoDomain', { cognitoDomain: { domainPrefix: adminDomainPrefix } });
     new cognito.CfnUserPoolGroup(this, 'AdminGroup', { userPoolId: adminUserPool.userPoolId, groupName: 'admin' });
+
+    // SECURITY (#87): scope PostAuthentication's AdminUpdateUserAttributes
+    // grant to the admin user pool only — was previously `userpool/*`
+    // because the Lambda was constructed before the pool ARN was known.
+    postAuthentication.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['cognito-idp:AdminUpdateUserAttributes'],
+      resources: [adminUserPool.userPoolArn],
+    }));
 
     // Custom UI for admin Cognito hosted UI - matches VettID branding
     // Note: Cognito only allows specific CSS classes without pseudo-selectors
