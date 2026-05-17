@@ -784,10 +784,21 @@ export class VaultStack extends cdk.Stack {
       },
     }));
 
-    // Grant IAM pass role permission for instance profile
+    // SECURITY (#78): scope PassRole tightly. The wildcard name
+    // pattern stays (we don't construct the vault-instance role in
+    // this stack — it lives in the per-vault provisioning path) but
+    // the iam:PassedToService condition prevents an attacker who
+    // pivots into this Lambda from passing the role to anything other
+    // than an EC2 RunInstances call (e.g. they couldn't hand it to
+    // Lambda, ECS, Glue, etc. for further pivoting).
     this.enrollFinalize.addToRolePolicy(new iam.PolicyStatement({
       actions: ['iam:PassRole'],
       resources: [`arn:aws:iam::${this.account}:role/vettid-vault-*`],
+      conditions: {
+        StringEquals: {
+          'iam:PassedToService': 'ec2.amazonaws.com',
+        },
+      },
     }));
 
     // Legacy SES permissions for enrollStart/actionRequest removed
