@@ -165,6 +165,64 @@ func utkEncrypt(utkPublicKey, plaintext []byte) ([]byte, error) {
 	return out, nil
 }
 
+// pinECIESEncrypt encrypts plaintext for the vault's mobile PIN
+// decryption path. Matches the vault's decryptWithECIES exactly:
+//
+//   - standard ChaCha20-Poly1305 (12-byte nonce, NOT XChaCha20)
+//   - HKDF-SHA256 with salt "VettID-HKDF-Salt-v1" and info
+//     "enclave-encryption-v1"
+//
+// Returns the three components as separate base64 strings, matching
+// the wire field split (encrypted_pin, ephemeral_public_key, nonce)
+// the vault's HandlePINSetup expects.
+func pinECIESEncrypt(recipientPub, plaintext []byte) (encB64, ephPubB64, nonceB64 string, err error) {
+	if len(recipientPub) != keySize {
+		return "", "", "", fmt.Errorf("recipient pub must be %d bytes, got %d", keySize, len(recipientPub))
+	}
+
+	ephPriv, err := generateRandomBytes(keySize)
+	if err != nil {
+		return "", "", "", err
+	}
+	ephPub, err := curve25519.X25519(ephPriv, curve25519.Basepoint)
+	if err != nil {
+		return "", "", "", fmt.Errorf("derive ephemeral pub: %w", err)
+	}
+
+	shared, err := curve25519.X25519(ephPriv, recipientPub)
+	if err != nil {
+		return "", "", "", fmt.Errorf("ECDH: %w", err)
+	}
+
+	// HKDF-SHA256 with the vault-specific salt+info pair. These must
+	// stay in lock-step with vault-manager/crypto.go's constants
+	// (ECIESHKDFSalt + ECIESHKDFInfo) — drift on either side breaks
+	// PIN decryption with an opaque "decryption failed" error.
+	r := hkdf.New(sha256.New, shared,
+		[]byte("VettID-HKDF-Salt-v1"),
+		[]byte("enclave-encryption-v1"))
+	encKey := make([]byte, keySize)
+	if _, err := io.ReadFull(r, encKey); err != nil {
+		return "", "", "", fmt.Errorf("hkdf read: %w", err)
+	}
+
+	// Standard ChaCha20-Poly1305 has a 12-byte nonce.
+	aead, err := chacha20poly1305.New(encKey)
+	if err != nil {
+		return "", "", "", fmt.Errorf("ChaCha20Poly1305: %w", err)
+	}
+	nonce, err := generateRandomBytes(aead.NonceSize())
+	if err != nil {
+		return "", "", "", err
+	}
+	ct := aead.Seal(nil, nonce, plaintext, nil)
+
+	return base64.StdEncoding.EncodeToString(ct),
+		base64.StdEncoding.EncodeToString(ephPub),
+		base64.StdEncoding.EncodeToString(nonce),
+		nil
+}
+
 // utkEncryptSplit returns the three components the Android app sends
 // as separate base64 fields: encryptedPasswordHash (the ciphertext+tag
 // alone), ephemeralPublicKey, nonce. This matches the wire format

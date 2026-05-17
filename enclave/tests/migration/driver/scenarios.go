@@ -38,6 +38,7 @@ type Scenario struct {
 var AllScenarios = []Scenario{
 	{Name: "smoke", Run: scenarioSmoke},
 	{Name: "attestation", Run: scenarioAttestation},
+	{Name: "pin-setup", Run: scenarioPinSetup},
 	// Roadmap (see ../README.md §"Scenarios to implement"):
 	// {Name: "enroll-only",               Run: scenarioEnrollOnly},
 	// {Name: "happy-path",                Run: scenarioHappyPath},
@@ -121,6 +122,26 @@ func scenarioAttestation(ctx context.Context, h *Harness) error {
 	fmt.Printf("    enclave pubkey bytes=%d (hex prefix=%x…)\n",
 		len(u.EnclavePublicKey),
 		u.EnclavePublicKey[:8])
+	return nil
+}
+
+// scenarioPinSetup chains stage 1 → stage 2: attestation request,
+// then ECIES-encrypt the PIN to the attested enclave pubkey, send
+// pin.setup, parse the UTK pool out of the response.
+func scenarioPinSetup(ctx context.Context, h *Harness) error {
+	u := newEnrolledUser()
+	if err := u.requestAttestation(ctx, h); err != nil {
+		return fmt.Errorf("stage 1 (attestation): %w", err)
+	}
+	if err := u.setupPIN(ctx, h); err != nil {
+		return fmt.Errorf("stage 2 (pin.setup): %w", err)
+	}
+	fmt.Printf("    owner_space=%s\n", u.OwnerSpace)
+	fmt.Printf("    UTK pool size=%d\n", len(u.UTKs))
+	if len(u.UTKs) > 0 {
+		fmt.Printf("    UTK[0] id=%s pub_b64_prefix=%s…\n",
+			u.UTKs[0].ID, u.UTKs[0].PublicKey[:12])
+	}
 	return nil
 }
 

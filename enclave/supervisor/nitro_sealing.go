@@ -48,8 +48,11 @@ func NewNitroSealer(conn Connection) *NitroSealer {
 	sealer := &NitroSealer{
 		conn:    conn,
 		isNitro: isNitro,
-		// Development mode key - NOT SECURE, only for testing
-		devModeKey: []byte("vettid-dev-mode-key-32-bytes!!!"),
+		// Development mode key — NOT SECURE, only for testing. The
+		// label is exactly 32 bytes (AES-256 requirement); the earlier
+		// 31-byte literal silently failed at first seal because
+		// `crypto/aes` rejects 31-byte keys. Tier-2 harness exposed this.
+		devModeKey: []byte("vettid-dev-mode-key-32-bytes!!!!"),
 	}
 
 	if isNitro {

@@ -41,9 +41,12 @@ FROM alpine:3.20
 RUN apk add --no-cache ca-certificates curl bash gettext
 
 # vault-manager goes alongside supervisor because supervisor execs it.
-COPY --from=builder /out/vettid-supervisor    /usr/local/bin/
-COPY --from=builder /out/vettid-vault-manager /usr/local/bin/
-COPY --from=builder /out/vettid-parent        /usr/local/bin/
+# Supervisor execs `/usr/local/bin/vault-manager` by name (config.go
+# default), so rename the binary on copy — the production deploy does
+# the same dance via its install script.
+COPY --from=builder /out/vettid-supervisor     /usr/local/bin/
+COPY --from=builder /out/vettid-vault-manager  /usr/local/bin/vault-manager
+COPY --from=builder /out/vettid-parent         /usr/local/bin/
 
 COPY tests/migration/parent-entrypoint.sh    /usr/local/bin/parent-entrypoint.sh
 COPY tests/migration/fixtures/parent.yaml.tmpl /etc/vettid/parent.yaml.tmpl

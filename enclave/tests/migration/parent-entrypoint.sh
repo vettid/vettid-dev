@@ -24,6 +24,11 @@ set -euo pipefail
 : "${NATS_URL:?NATS_URL must be set}"
 : "${AWS_ENDPOINT_URL:=http://localstack:4566}"
 : "${AWS_REGION:=us-east-1}"
+# S3-specific endpoint used by parent's S3Client. Same host as
+# AWS_ENDPOINT_URL by default — kept as a separate var so the
+# yaml template can be opinionated about the S3 path-style flip
+# without entangling KMS/SSM endpoint choice.
+: "${S3_ENDPOINT:=$AWS_ENDPOINT_URL}"
 : "${AWS_ACCESS_KEY_ID:=test}"
 : "${AWS_SECRET_ACCESS_KEY:=test}"
 
@@ -43,7 +48,7 @@ fi
 : "${S3_BUCKET:?S3_BUCKET must be set (from /shared/arns.env or env)}"
 : "${KMS_SEALING_KEY_ARN:?KMS_SEALING_KEY_ARN must be set (from /shared/arns.env or env)}"
 
-export AWS_ENDPOINT_URL AWS_REGION AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
+export AWS_ENDPOINT_URL S3_ENDPOINT AWS_REGION AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
 
 mkdir -p /etc/vettid
 envsubst < /etc/vettid/parent.yaml.tmpl > /etc/vettid/parent.yaml

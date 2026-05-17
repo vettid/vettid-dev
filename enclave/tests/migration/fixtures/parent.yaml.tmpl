@@ -18,6 +18,11 @@ s3:
   # blank so the supervisor's s3KeyVaultState path renders identically
   # to production (vaults/{owner_space}/vault_state.enc).
   key_prefix: ""
+  # Endpoint override (Tier-2 only). LocalStack listens on :4566 inside
+  # the compose network. Setting this also flips the SDK to path-style
+  # addressing — virtual-host style would dial
+  # `<bucket>.localstack:4566`, which the compose DNS doesn't resolve.
+  endpoint: "${S3_ENDPOINT}"
 
 enclave:
   cid: 16

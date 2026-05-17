@@ -57,6 +57,25 @@ func (h *Harness) publishAndAwait(
 	return h.publishAndAwaitOn(ctx, ownerSpace, op, op, payload)
 }
 
+// publishWithType is the explicit-envelope-type form of publishAndAwait.
+// Some ops (pin.setup / pin.unlock / pin.change) use a *single* subject
+// suffix (`.forVault.pin`) and disambiguate via the envelope's outer
+// `type` field — the vault's central unwrapPayload promotes that type
+// to msg.PayloadType, which the dispatcher reads. envType is the
+// envelope `type` (e.g. "pin.setup"); subjectOp is the topic suffix
+// (e.g. "pin"); responseOp is the forApp suffix (same as subjectOp
+// for the parent's pub/sub default).
+func (h *Harness) publishWithType(
+	ctx context.Context,
+	ownerSpace string,
+	subjectOp string,
+	responseOp string,
+	envType string,
+	payload any,
+) ([]byte, error) {
+	return h.publishCore(ctx, ownerSpace, subjectOp, responseOp, envType, payload)
+}
+
 // publishAndAwaitOn lets the caller specify a different forApp suffix
 // than the forVault one. Necessary for ops like "pin" where the
 // forVault subject is `.forVault.pin` but the response lands on
@@ -70,6 +89,20 @@ func (h *Harness) publishAndAwaitOn(
 	forAppOp string,
 	payload any,
 ) ([]byte, error) {
+	return h.publishCore(ctx, ownerSpace, forVaultOp, forAppOp, forVaultOp, payload)
+}
+
+// publishCore is the shared implementation: subscribes to the
+// correlated response subject, publishes via JetStream, returns the
+// first matching response body or the context error.
+func (h *Harness) publishCore(
+	ctx context.Context,
+	ownerSpace string,
+	subjectOp string,
+	responseOp string,
+	envType string,
+	payload any,
+) ([]byte, error) {
 	eventID := uuid.NewString()
 
 	payloadBytes, err := json.Marshal(payload)
@@ -78,7 +111,7 @@ func (h *Harness) publishAndAwaitOn(
 	}
 	envelope := Envelope{
 		ID:        eventID,
-		Type:      forVaultOp,
+		Type:      envType,
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 		Payload:   payloadBytes,
 	}
@@ -88,8 +121,8 @@ func (h *Harness) publishAndAwaitOn(
 	}
 
 	respSubject := fmt.Sprintf("OwnerSpace.%s.forApp.%s.%s.response",
-		ownerSpace, forAppOp, eventID)
-	reqSubject := fmt.Sprintf("OwnerSpace.%s.forVault.%s", ownerSpace, forVaultOp)
+		ownerSpace, responseOp, eventID)
+	reqSubject := fmt.Sprintf("OwnerSpace.%s.forVault.%s", ownerSpace, subjectOp)
 
 	// Subscribe BEFORE publishing so the correlated response can't be
 	// missed by a sub set up after the parent already replied.

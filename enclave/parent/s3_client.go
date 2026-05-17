@@ -33,7 +33,17 @@ func NewS3Client(cfg S3Config) (*S3Client, error) {
 		return nil, fmt.Errorf("failed to load AWS config: %w", err)
 	}
 
-	client := s3.NewFromConfig(awsCfg)
+	// In production, Endpoint is empty and the SDK picks the standard
+	// regional endpoint with virtual-host addressing. The Tier-2 harness
+	// sets Endpoint to LocalStack and we flip on path-style addressing
+	// so bucket goes in the path, not as a subdomain of the host that
+	// LocalStack's DNS doesn't expose.
+	client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
+		if cfg.Endpoint != "" {
+			o.BaseEndpoint = aws.String(cfg.Endpoint)
+			o.UsePathStyle = true
+		}
+	})
 
 	return &S3Client{
 		client: client,

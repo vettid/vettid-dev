@@ -83,6 +83,11 @@ type S3Config struct {
 	Bucket    string `yaml:"bucket"`
 	Region    string `yaml:"region"`
 	KeyPrefix string `yaml:"key_prefix"`
+	// Endpoint, when non-empty, overrides the default AWS S3 endpoint
+	// and forces path-style addressing. Used by Tier-2 Docker harness
+	// to point at LocalStack (e.g. "http://localstack:4566"); empty in
+	// production so the AWS SDK picks the standard regional endpoint.
+	Endpoint string `yaml:"endpoint"`
 }
 
 // EnclaveConfig holds enclave connection settings
