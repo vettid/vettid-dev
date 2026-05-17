@@ -94,6 +94,23 @@ test:
 	cd vault-manager && go test -v ./...
 	cd org-vault-manager && go test -v ./...
 
+# Scan dependencies for known CVEs. Fails the make invocation if
+# `govulncheck` reports any vulnerable code path your call graph
+# actually reaches (Symbol-level findings). Module-level findings
+# (vulnerable version in go.sum but unused) are reported with -show
+# verbose but don't fail; bump the offending module preemptively.
+#
+# Install once: `go install golang.org/x/vuln/cmd/govulncheck@latest`
+# (binary lands in $$(go env GOPATH)/bin).
+vuln:
+	@command -v govulncheck >/dev/null 2>&1 || { \
+		echo "govulncheck not on PATH — install with:" >&2; \
+		echo "  go install golang.org/x/vuln/cmd/govulncheck@latest" >&2; \
+		echo "and add $$(go env GOPATH)/bin to PATH." >&2; \
+		exit 2; \
+	}
+	govulncheck ./...
+
 # Clean build artifacts
 clean:
 	rm -f $(EIF_FILE)
@@ -116,5 +133,6 @@ help:
 	@echo "  validate-pcrs    - Validate PCR values"
 	@echo "  build-local      - Build Go binaries locally"
 	@echo "  test             - Run tests"
+	@echo "  vuln             - Scan deps for CVEs via govulncheck"
 	@echo "  clean            - Remove build artifacts"
 	@echo "  help             - Show this help"
