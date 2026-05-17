@@ -310,6 +310,12 @@ export class NatsStack extends cdk.Stack {
     const natsRole = new iam.Role(this, 'NatsInstanceRole', {
       assumedBy: new iam.ServicePrincipal('ec2.amazonaws.com'),
       managedPolicies: [
+        // SECURITY (#70): AmazonSSMManagedInstanceCore needed for SSM
+        // Session Manager into NATS instances (no public SSH). Every
+        // action it grants (ssm:UpdateInstanceInformation,
+        // ssmmessages:*, ec2messages:*) is on resources:["*"] at the
+        // AWS API level — no narrowing opportunity. Equivalent inline
+        // policy would be longer with no scope improvement.
         iam.ManagedPolicy.fromAwsManagedPolicyName('AmazonSSMManagedInstanceCore'),
       ],
     });

@@ -109,6 +109,12 @@ export class TurnStack extends cdk.Stack {
       assumedBy: new iam.ServicePrincipal('ec2.amazonaws.com'),
       description: 'VettID TURN instance - Secrets Manager read + CloudWatch',
       managedPolicies: [
+        // SECURITY (#70): SSMManagedInstanceCore + CloudWatchAgent
+        // ServerPolicy attached intentionally. Their actions are on
+        // resources:["*"] at the AWS API level (no narrowing
+        // available); equivalent inline policies would be longer with
+        // identical scope. Effective blast radius is bounded by the
+        // role's only other grant — read on the TURN HMAC secret.
         iam.ManagedPolicy.fromAwsManagedPolicyName('AmazonSSMManagedInstanceCore'),
         iam.ManagedPolicy.fromAwsManagedPolicyName('CloudWatchAgentServerPolicy'),
       ],

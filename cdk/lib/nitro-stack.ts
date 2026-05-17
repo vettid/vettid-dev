@@ -474,9 +474,18 @@ export class NitroStack extends cdk.Stack {
       assumedBy: new iam.ServicePrincipal('ec2.amazonaws.com'),
       description: 'IAM role for VettID Nitro Enclave EC2 instances',
       managedPolicies: [
-        // SSM for debugging and management
+        // SECURITY (#70): AmazonSSMManagedInstanceCore + CloudWatch
+        // AgentServerPolicy are attached intentionally. Every action
+        // in these managed policies (ssm:UpdateInstanceInformation,
+        // ssmmessages:*, ec2messages:*, cloudwatch:PutMetricData,
+        // logs:*, ec2:DescribeTags) is one that AWS APIs themselves
+        // grant on resources:["*"] — they don't support resource-
+        // level scoping. Replacing with a custom inline policy would
+        // expand line-count without narrowing scope, so the AWS-
+        // managed forms stay. The instance's effective blast radius
+        // is bounded by the rest of this role's scoped grants and by
+        // the Nitro Enclave attestation gate on KMS Decrypt.
         iam.ManagedPolicy.fromAwsManagedPolicyName('AmazonSSMManagedInstanceCore'),
-        // CloudWatch for logs and metrics
         iam.ManagedPolicy.fromAwsManagedPolicyName('CloudWatchAgentServerPolicy'),
       ],
     });
