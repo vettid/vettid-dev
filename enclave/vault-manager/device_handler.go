@@ -66,6 +66,9 @@ func DeviceIndependentCapabilities() []string {
 		// added latency without a protection benefit.
 		"personal-data.get",
 		"personal-data.get-sort-order",
+		// Screen-load bundle (profile + photo + personal-data in one
+		// round-trip). Saves 3+ per-op overheads on desktop home.
+		"vault.snapshot",
 		// Wallet reads — balance + addresses + history are public
 		// info; the signing op (wallet.sign / send.btc) is gated.
 		"wallet.list",

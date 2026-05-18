@@ -222,10 +222,22 @@ func (vm *VaultManager) Run(ctx context.Context) error {
 			}
 
 			// Auto-persist vault state after each successful request.
-			// Runs inline during request processing so the supervisor is actively
-			// reading the subprocess pipe and will handle the sealer request.
+			// Use the THROTTLED variant — without this the main loop
+			// force-flushed ~500-700KB of SSE-KMS-encrypted state to
+			// S3 on every op, even reads. With the desktop's Vault
+			// view firing 5 read ops on screen-load that was 5
+			// sequential ~500ms-2s writes serialized through the
+			// vsock queue — the dominant cause of the user-reported
+			// 20-30s screen load. Mutating handlers still call
+			// persistVaultStateToS3() explicitly (also throttled),
+			// so durability semantics are unchanged: at most one
+			// persistDebounceInterval window of edits can be lost
+			// on crash (same as before, since the throttle already
+			// gated handler-direct calls). PersistVaultStateToS3
+			// (force-flush) is still available for shutdown +
+			// decommission paths that need a guaranteed flush.
 			if err == nil && response != nil && response.Type != MessageTypeError {
-				vm.messageHandler.PersistVaultStateToS3()
+				vm.messageHandler.persistVaultStateToS3()
 			}
 		}
 	}

@@ -1424,6 +1424,13 @@ func (mh *MessageHandler) handleVaultLifecycleOperation(ctx context.Context, msg
 	opType := opParts[1]
 
 	switch opType {
+	case "snapshot":
+		// One-round-trip screen-load bundle: profile + photo +
+		// personal-data. See handleVaultSnapshot for the rationale —
+		// dominant cost on read ops is per-op overhead (vsock queue,
+		// ChaCha20, JSON encode/decode), so bundling 3-5 reads cuts
+		// the wall-clock to a fraction.
+		return mh.handleVaultSnapshot(ctx, msg)
 	case "save":
 		// Persist vault state (SQLite + vault state) to S3
 		mh.persistVaultStateToS3()
@@ -1733,6 +1740,77 @@ func (mh *MessageHandler) handleGetIdentityPublicKey(msg *IncomingMessage) (*Out
 		RequestID: msg.GetID(),
 		Type:      MessageTypeResponse,
 		Payload:   responseBytes,
+	}, nil
+}
+
+// handleVaultSnapshot returns profile + profile photo + personal-data
+// in a single response so the desktop Vault home screen renders from
+// one round-trip. Per-component fields are optional — a partial
+// response (e.g. photo missing) still flips success=true.
+func (mh *MessageHandler) handleVaultSnapshot(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	// Build sub-messages so each underlying handler sees the input
+	// shape it normally would when called directly from forVault.<op>.
+	emptyPayload := json.RawMessage("{}")
+	profileMsg := &IncomingMessage{
+		Type:       MessageTypeVaultOp,
+		OwnerSpace: mh.ownerSpace,
+		RequestID:  msg.GetID(),
+		Subject:    fmt.Sprintf("OwnerSpace.%s.forVault.profile.get", mh.ownerSpace),
+		Payload:    emptyPayload,
+	}
+	photoMsg := &IncomingMessage{
+		Type:       MessageTypeVaultOp,
+		OwnerSpace: mh.ownerSpace,
+		RequestID:  msg.GetID(),
+		Subject:    fmt.Sprintf("OwnerSpace.%s.forVault.profile.photo.get", mh.ownerSpace),
+		Payload:    emptyPayload,
+	}
+	pdMsg := &IncomingMessage{
+		Type:       MessageTypeVaultOp,
+		OwnerSpace: mh.ownerSpace,
+		RequestID:  msg.GetID(),
+		Subject:    fmt.Sprintf("OwnerSpace.%s.forVault.personal-data.get", mh.ownerSpace),
+		Payload:    emptyPayload,
+	}
+
+	// Inline rather than goroutines: each constituent handler may
+	// poke at the same vault state (data_catalog, profile/_index)
+	// and racing them under the throttle gets thorny. Sequential is
+	// fine — the cost we're saving is round-trip + persist, not
+	// in-handler CPU.
+	profileResp, profileErr := mh.handleProfileOperation(ctx, profileMsg, []string{"profile", "get"})
+	photoResp, photoErr := mh.handleProfileOperation(ctx, photoMsg, []string{"profile", "photo", "get"})
+	pdResp, pdErr := mh.handlePersonalDataOperation(ctx, pdMsg, []string{"personal-data", "get"})
+
+	bundle := map[string]interface{}{
+		"success": true,
+	}
+	// Each component lands as a JSON-decoded object so the desktop
+	// can pull fields without a second parse step.
+	if profileErr == nil && profileResp != nil && profileResp.Type != MessageTypeError && len(profileResp.Payload) > 0 {
+		var v interface{}
+		if json.Unmarshal(profileResp.Payload, &v) == nil {
+			bundle["profile"] = v
+		}
+	}
+	if photoErr == nil && photoResp != nil && photoResp.Type != MessageTypeError && len(photoResp.Payload) > 0 {
+		var v interface{}
+		if json.Unmarshal(photoResp.Payload, &v) == nil {
+			bundle["photo"] = v
+		}
+	}
+	if pdErr == nil && pdResp != nil && pdResp.Type != MessageTypeError && len(pdResp.Payload) > 0 {
+		var v interface{}
+		if json.Unmarshal(pdResp.Payload, &v) == nil {
+			bundle["personal_data"] = v
+		}
+	}
+
+	respBytes, _ := json.Marshal(bundle)
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
 	}, nil
 }
 
