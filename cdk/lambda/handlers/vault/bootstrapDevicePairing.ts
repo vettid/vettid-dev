@@ -6,7 +6,7 @@
  * vettid-dev/docs/DESKTOP-CONNECTION-FLOW.md §Stage 1 for the full flow.
  *
  * POST /pair/device/bootstrap
- *   Request:  { "code": "ABCDEFGH" }         (8-char ambiguity-safe alphabet)
+ *   Request:  { "code": "ABCDEFGHJKLM" }     (12-char ambiguity-safe alphabet)
  *   Response: { "nats_endpoint": "...",
  *               "jwt": "...",
  *               "seed": "...",
@@ -19,7 +19,7 @@
  *  - JWT is scoped to the INVITATIONS JetStream (consumer create + MSG.NEXT).
  *    After 60s it stops working; a leaked response is useless for any other
  *    invite code or any other subject.
- *  - The caller must provide a syntactically-valid 8-char invite code, but we
+ *  - The caller must provide a syntactically-valid 12-char invite code, but we
  *    deliberately do NOT verify the code exists in JetStream — that would make
  *    this endpoint an oracle for "is X a live invite". Rate limits + the short
  *    TTL handle abuse.
@@ -41,8 +41,10 @@ import { ok, badRequest, internalError, getRequestId } from '../../common/util';
 const NATS_OPERATOR_SECRET_ID = process.env.NATS_OPERATOR_SECRET_ARN || 'vettid/nats/operator-key';
 const NATS_ENDPOINT = process.env.NATS_ENDPOINT || 'nats.vettid.dev:443';
 
-// Matches vault-manager/nats_credentials.go `deviceCodeAlphabet`.
-const INVITE_CODE_ALPHABET = /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$/;
+// Matches vault-manager/nats_credentials.go `deviceCodeAlphabet` +
+// `generateShortCode()` length (12 chars, rendered to the user as
+// three 4-char groups: ABCD-EFGH-JKLM).
+const INVITE_CODE_ALPHABET = /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{12}$/;
 
 const BOOTSTRAP_JWT_TTL_MS = 60 * 1000;
 
@@ -88,7 +90,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
 
   if (!INVITE_CODE_ALPHABET.test(code)) {
     return badRequest(
-      'invalid invite code (must be 8 characters, ambiguity-safe alphabet)',
+      'invalid invite code (must be 12 characters, ambiguity-safe alphabet)',
       origin,
     );
   }
@@ -114,6 +116,20 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     // the desktop create an ephemeral pull consumer filtered to invite.<code>
     // and fetch the one message. No publish access to user spaces or any
     // other subject. TTL is 60s.
+    //
+    // Subject roles (NATS request-reply primer):
+    //   - `$JS.API.STREAM.INFO.INVITATIONS` and `$JS.API.CONSUMER.CREATE.*`
+    //     are JS RPC endpoints — the client PUBLISHES a request with an
+    //     `_INBOX.<id>` reply-to. The server PUBLISHES the reply onto that
+    //     inbox subject, which the client SUBSCRIBES to.
+    //   - So those JS endpoints go in `pub.allow`; never in `sub.allow`.
+    //   - `_INBOX.>` has to be in BOTH (pub so the client can publish a
+    //     request that carries an `_INBOX.<id>` reply-to header which the
+    //     server will publish back onto; sub so the client can receive
+    //     those replies). Without it, every JS RPC hangs forever.
+    //   - `CONSUMER.CREATE.INVITATIONS.>` covers the newer ephemeral-with-
+    //     filter form (`...CREATE.<stream>.<name>.<filter>`) alongside the
+    //     bare durable form.
     const expiresAt = new Date(Date.now() + BOOTSTRAP_JWT_TTL_MS);
     const jwt = await createUserJwt(
       `desk-bootstrap-${code.substring(0, 4).toLowerCase()}-${randomUUID().substring(0, 8)}`,
@@ -122,15 +138,18 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       {
         pub: {
           allow: [
+            '$JS.API.STREAM.INFO.INVITATIONS',
             '$JS.API.CONSUMER.CREATE.INVITATIONS',
+            '$JS.API.CONSUMER.CREATE.INVITATIONS.>',
+            '$JS.API.CONSUMER.DURABLE.CREATE.INVITATIONS.>',
             '$JS.API.CONSUMER.MSG.NEXT.INVITATIONS.>',
+            '$JS.API.CONSUMER.DELETE.INVITATIONS.>',
+            '_INBOX.>',
           ],
         },
         sub: {
           allow: [
-            '$JS.API.CONSUMER.CREATE.INVITATIONS',
-            '$JS.API.CONSUMER.MSG.NEXT.INVITATIONS.>',
-            '$JS.API.STREAM.INFO.INVITATIONS',
+            '_INBOX.>',
           ],
         },
       },

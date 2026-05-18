@@ -261,6 +261,16 @@ func (s *EncryptedStorage) UpdateEventStatus(eventID string, newStatus string, t
 	return s.sqlite.UpdateEventStatus(eventID, newStatus, timestamp)
 }
 
+// ArchiveEventsByConnectionAndType bulk-archives every event matching
+// source_id=connectionID + event_type=eventType. See
+// SQLiteStorage.ArchiveEventsByConnectionAndType for semantics.
+func (s *EncryptedStorage) ArchiveEventsByConnectionAndType(connectionID, eventType, newStatus string, timestamp int64) (int64, error) {
+	if s.sqlite == nil {
+		return 0, ErrStorageNotInitialized
+	}
+	return s.sqlite.ArchiveEventsByConnectionAndType(connectionID, eventType, newStatus, timestamp)
+}
+
 // UpdateEventActioned marks an event as actioned
 func (s *EncryptedStorage) UpdateEventActioned(eventID string, timestamp int64) error {
 	if s.sqlite == nil {

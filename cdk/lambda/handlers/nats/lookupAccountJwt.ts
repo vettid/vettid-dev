@@ -113,10 +113,16 @@ interface SpecialAccount {
 interface SpecialAccountsCache {
   system: SpecialAccount | null;
   backend: SpecialAccount | null;
+  // GUEST account: signs the short-lived JWTs the desktop and other
+  // unauthenticated clients use to read invite payloads from the
+  // INVITATIONS JetStream during pairing. NATS needs to fetch this
+  // account JWT before it can validate the user JWT on connect — without
+  // it the connect hangs waiting on account resolution.
+  guest: SpecialAccount | null;
   timestamp: number;
 }
 
-let accountsCache: SpecialAccountsCache = { system: null, backend: null, timestamp: 0 };
+let accountsCache: SpecialAccountsCache = { system: null, backend: null, guest: null, timestamp: 0 };
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 async function getSpecialAccounts(): Promise<SpecialAccountsCache> {
@@ -149,6 +155,14 @@ async function getSpecialAccounts(): Promise<SpecialAccountsCache> {
       accountsCache.backend = {
         publicKey: secret.backend_account_public_key,
         jwt: secret.backend_account_jwt,
+      };
+    }
+
+    // Cache guest account (for desktop/agent pairing-time invite reads)
+    if (secret.guest_account_public_key && secret.guest_account_jwt) {
+      accountsCache.guest = {
+        publicKey: secret.guest_account_public_key,
+        jwt: secret.guest_account_jwt,
       };
     }
 
@@ -242,6 +256,23 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
           'Cache-Control': 'public, max-age=3600', // Cache for 1 hour
         },
         body: specialAccounts.backend.jwt,
+      };
+    }
+
+    // Check guest account (for desktop/agent pairing-time invite reads)
+    if (specialAccounts.guest && accountPublicKey === specialAccounts.guest.publicKey) {
+      console.log('Returning guest account JWT');
+      return {
+        statusCode: 200,
+        headers: {
+          'Content-Type': 'text/plain',
+          // Short cache so an account-permission update propagates within
+          // a minute or two rather than waiting an hour for the long TTL.
+          // Pairing flows are low-volume so the extra resolver calls are
+          // immaterial.
+          'Cache-Control': 'public, max-age=60',
+        },
+        body: specialAccounts.guest.jwt,
       };
     }
 

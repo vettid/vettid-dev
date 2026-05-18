@@ -350,6 +350,31 @@ func (h *EventHandler) MarkRead(ctx context.Context, eventID string) error {
 	return nil
 }
 
+// archiveConnectionRequestEvents archives any outstanding
+// device.connection.request feed cards for the given connection_id. Called
+// when the user cancels an in-flight pairing invite so the card stops
+// dominating the feed; the cancelled marker logged alongside is FeedStatus
+// Hidden, so the row only appears in the system-card audit/history view.
+func (h *EventHandler) archiveConnectionRequestEvents(connectionID string) {
+	if !h.storageReady() {
+		return
+	}
+	now := time.Now().Unix()
+	n, err := h.storage.SQLite().ArchiveEventsByConnectionAndType(
+		connectionID,
+		string(EventTypeDeviceConnectionRequest),
+		string(FeedStatusArchived),
+		now,
+	)
+	if err != nil {
+		log.Warn().Err(err).Str("connection_id", connectionID).Msg("archive of device.connection.request failed")
+		return
+	}
+	if n > 0 {
+		log.Info().Str("connection_id", connectionID).Int64("archived", n).Msg("archived device.connection.request events for cancelled invite")
+	}
+}
+
 // Archive archives an event
 func (h *EventHandler) Archive(ctx context.Context, eventID string) error {
 	if !h.storageReady() {

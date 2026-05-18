@@ -780,8 +780,44 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 			var err error
 
 			if i+1 < len(parts) && parts[i+1] == "device" {
-				// Device messages: routed to deviceHandler
-				resp, err = mh.deviceHandler.HandleDeviceMessage(ctx, msg)
+				// Device messages on the forOwner channel split into two
+				// flavors:
+				//
+				//   - PAIRING (Stage 2): the desktop publishes
+				//     `forOwner.device.{conn}.request-session` while still
+				//     pre-activation. The payload is a plain JSON envelope
+				//     (no per-connection encryption — the key exchange
+				//     hasn't happened yet), so it has to bypass
+				//     HandleDeviceMessage (which decrypts) and go straight
+				//     to the pairing handler. Same applies to
+				//     `revoke` published by a desktop logging itself out.
+				//
+				//   - OPERATIONS: once the device session is active,
+				//     `forOwner.device.{conn}.op-request` carries an
+				//     encrypted AgentEnvelope that HandleDeviceMessage
+				//     decrypts and dispatches per the device-op routing.
+				//
+				// Detect the pairing flavor by looking at the trailing
+				// path segment (parts[i+3] when the conn-id is at i+2).
+				// Unknown tails fall through to HandleDeviceMessage to
+				// keep the existing op routing intact.
+				pairingOp := ""
+				if i+3 < len(parts) {
+					pairingOp = parts[i+3]
+				}
+				switch pairingOp {
+				case "request-session":
+					// Pairing payloads on the forOwner channel ship with the
+					// parent's envelope wrapper still attached (the forVault
+					// path normally calls unwrapPayload further down, but
+					// forOwner messages skipped that step before this fix).
+					// Strip it now so HandleDeviceRequestSession sees the
+					// inner request fields directly.
+					msg.PayloadType, msg.Payload = unwrapPayload(msg.Payload)
+					resp, err = mh.connectionsHandler.HandleDeviceRequestSession(ctx, msg)
+				default:
+					resp, err = mh.deviceHandler.HandleDeviceMessage(ctx, msg)
+				}
 			} else if i+1 < len(parts) && parts[i+1] == "presence" {
 				// Cross-vault presence heartbeat from a peer published
 				// via MessageSpace.{us}.forOwner.presence.heartbeat
@@ -1279,6 +1315,12 @@ func (mh *MessageHandler) handleDeviceOperation(ctx context.Context, msg *Incomi
 	case "create-invite":
 		// Stage 1: app creates a pairing invite for a new desktop
 		return mh.connectionsHandler.HandleCreateDeviceInvite(msg)
+	case "cancel-invite":
+		// User cancelled the pairing invite from the phone before it
+		// was claimed by a desktop. Tears down the pending connection
+		// record + supersedes the feed event so the in-flight invite
+		// stops appearing as its own card.
+		return mh.connectionsHandler.HandleCancelDeviceInvite(msg)
 	case "request-session":
 		// Stage 2 (desktop → vault): request session authorization
 		return mh.connectionsHandler.HandleDeviceRequestSession(ctx, msg)

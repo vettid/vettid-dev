@@ -119,10 +119,11 @@ const (
 	EventTypeAgentApprovalResponded EventType = "agent.approval.responded"
 
 	// Device connection events
-	EventTypeDeviceConnectionRequest  EventType = "device.connection.request"
-	EventTypeDeviceConnectionApproved EventType = "device.connection.approved"
-	EventTypeDeviceConnectionDenied   EventType = "device.connection.denied"
-	EventTypeDeviceConnectionRevoked  EventType = "device.connection.revoked"
+	EventTypeDeviceConnectionRequest   EventType = "device.connection.request"
+	EventTypeDeviceConnectionApproved  EventType = "device.connection.approved"
+	EventTypeDeviceConnectionDenied    EventType = "device.connection.denied"
+	EventTypeDeviceConnectionRevoked   EventType = "device.connection.revoked"
+	EventTypeDeviceConnectionCancelled EventType = "device.connection.cancelled"
 
 	// Device session events
 	EventTypeDeviceSessionCreated  EventType = "device.session.created"
@@ -389,10 +390,11 @@ var eventClassifications = map[EventType]EventClassification{
 	EventTypeAgentApprovalResponded: {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
 
 	// Device connection events
-	EventTypeDeviceConnectionRequest:  {FeedStatusActive, ActionTypeAcceptDecline, PriorityHigh, RetentionStandard},
-	EventTypeDeviceConnectionApproved: {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
-	EventTypeDeviceConnectionDenied:   {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
-	EventTypeDeviceConnectionRevoked:  {FeedStatusActive, ActionTypeAcknowledge, PriorityNormal, RetentionStandard},
+	EventTypeDeviceConnectionRequest:   {FeedStatusActive, ActionTypeAcceptDecline, PriorityHigh, RetentionStandard},
+	EventTypeDeviceConnectionApproved:  {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
+	EventTypeDeviceConnectionDenied:    {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
+	EventTypeDeviceConnectionRevoked:   {FeedStatusActive, ActionTypeAcknowledge, PriorityNormal, RetentionStandard},
+	EventTypeDeviceConnectionCancelled: {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
 
 	// Device session events
 	EventTypeDeviceSessionCreated:   {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},

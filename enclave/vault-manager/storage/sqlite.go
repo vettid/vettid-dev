@@ -1850,6 +1850,39 @@ func (s *SQLiteStorage) GetEventsSince(lastSeq int64, limit int, includeHidden b
 	return s.scanEventRows(rows)
 }
 
+// ArchiveEventsByConnectionAndType moves every event whose source_id +
+// event_type both match into the given feed_status. Used to retire a feed
+// card after the underlying action lands (e.g. archive an outstanding
+// `device.connection.request` once the user cancels the invite, so it
+// stops rendering as a high-priority card).
+//
+// Returns the number of rows updated. The chain hash isn't recomputed
+// here — status mutations are tracked separately via the status-change
+// audit events emitted by the caller.
+func (s *SQLiteStorage) ArchiveEventsByConnectionAndType(connectionID, eventType, newStatus string, timestamp int64) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if connectionID == "" || eventType == "" {
+		return 0, fmt.Errorf("connection_id and event_type are required")
+	}
+
+	result, err := s.db.Exec(`
+		UPDATE events
+		   SET feed_status = ?, archived_at = ?
+		 WHERE source_id = ? AND event_type = ?
+		   AND feed_status NOT IN ('archived', 'deleted')
+	`, newStatus, timestamp, connectionID, eventType)
+	if err != nil {
+		return 0, fmt.Errorf("failed to archive events by connection: %w", err)
+	}
+	rows, _ := result.RowsAffected()
+	if rows > 0 {
+		s.incrementRollbackCounter()
+	}
+	return rows, nil
+}
+
 // UpdateEventStatus updates the feed_status and related timestamps
 func (s *SQLiteStorage) UpdateEventStatus(eventID string, newStatus string, timestamp int64) error {
 	s.mu.Lock()

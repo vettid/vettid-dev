@@ -227,7 +227,13 @@ function createGuestAccountJwt(
         payload: 65536,        // 64 KB max message
         imports: 0,
         exports: 0,
-        wildcards: false,      // No wildcard subscriptions
+        // Wildcards must be allowed so NATS request-reply works at all —
+        // the client subscribes to `_INBOX.<id>.>` and the server delivers
+        // RPC replies onto that subject. With wildcards disabled the
+        // JetStream RPCs (STREAM.INFO, CONSUMER.CREATE, MSG.NEXT) hang
+        // forever waiting on replies that the server refuses to publish
+        // into the client's inbox.
+        wildcards: true,
         conn: 100,             // Allow many concurrent scanners
         leaf: 0,
         mem_storage: -1,
@@ -236,19 +242,27 @@ function createGuestAccountJwt(
         consumer: 10,          // Can create ephemeral consumers to read invitations
       },
       default_permissions: {
+        // Account-level pub/sub allow-list. The bootstrap Lambda mints
+        // short-lived user JWTs whose pub/sub list intersects with these
+        // — so anything not listed here is forbidden no matter what the
+        // user JWT claims. Keep the wildcards on the JS API form so
+        // ephemeral-with-filter consumer creates land on the right
+        // subjects, and include `_INBOX.>` (load-bearing for request-
+        // reply, see `limits.wildcards`).
         pub: {
           allow: [
-            // JetStream consumer API for INVITATIONS stream only
+            '$JS.API.STREAM.INFO.INVITATIONS',
             '$JS.API.CONSUMER.CREATE.INVITATIONS',
+            '$JS.API.CONSUMER.CREATE.INVITATIONS.>',
+            '$JS.API.CONSUMER.DURABLE.CREATE.INVITATIONS.>',
             '$JS.API.CONSUMER.MSG.NEXT.INVITATIONS.>',
+            '$JS.API.CONSUMER.DELETE.INVITATIONS.>',
+            '_INBOX.>',
           ],
         },
         sub: {
           allow: [
-            // JetStream consumer API for INVITATIONS stream only
-            '$JS.API.CONSUMER.CREATE.INVITATIONS',
-            '$JS.API.CONSUMER.MSG.NEXT.INVITATIONS.>',
-            '$JS.API.STREAM.INFO.INVITATIONS',
+            '_INBOX.>',
           ],
         },
       },

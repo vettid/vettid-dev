@@ -894,6 +894,12 @@ type ConnectionInfo struct {
 	AgentMetadata *AgentMetadata      `json:"agent_metadata,omitempty"`
 	Contract      *ConnectionContract `json:"contract,omitempty"`
 
+	// Device-specific fields (only present for device connections).
+	// Lets connection.list drive the desktop card render — hostname/
+	// platform/session-status — without a second device.list round-trip.
+	DeviceMetadata *DeviceMetadata `json:"device_metadata,omitempty"`
+	DeviceSession  *DeviceSession  `json:"device_session,omitempty"`
+
 	// Per-connection presence override. nil = follow user-wide
 	// default; true/false = explicit override. Surfaced on the
 	// connection-detail screen so the user can override their global
@@ -978,9 +984,17 @@ type CreateDeviceInviteRequest struct {
 // desktop client. See vettid-dev/docs/DESKTOP-CONNECTION-FLOW.md §Stage 1.
 type CreateDeviceInviteResponse struct {
 	ConnectionID string `json:"connection_id"`
-	InviteCode   string `json:"invite_code"`   // 8-char ambiguity-safe code
+	InviteCode   string `json:"invite_code"`   // 12-char ambiguity-safe code, displayed as ABCD-EFGH-JKLM
 	NATSEndpoint string `json:"nats_endpoint"` // so the app can show it to the user if needed
 	ExpiresAt    string `json:"expires_at"`    // ISO 8601 — 2 min from now
+}
+
+// CancelDeviceInviteRequest is the payload for device.cancel-invite. The phone
+// calls this when the user dismisses the pairing screen before a desktop has
+// claimed the invite, so the in-flight connection record + feed event don't
+// linger as their own card.
+type CancelDeviceInviteRequest struct {
+	ConnectionID string `json:"connection_id"`
 }
 
 // --- Handler methods ---
@@ -3047,6 +3061,8 @@ func (h *ConnectionsHandler) HandleList(msg *IncomingMessage) (*OutgoingMessage,
 			PeerVerifications:     record.PeerVerifications,
 			AgentMetadata:         record.AgentMetadata,
 			Contract:              record.Contract,
+			DeviceMetadata:        record.DeviceMetadata,
+			DeviceSession:         record.DeviceSession,
 			PresenceShareOverride: record.PresenceShareOverride,
 		}
 
@@ -4072,6 +4088,81 @@ func (h *ConnectionsHandler) HandleCreateDeviceInvite(msg *IncomingMessage) (*Ou
 		NATSEndpoint: natsEndpoint,
 		ExpiresAt:    expiresAt.Format(time.RFC3339),
 	}
+	respBytes, _ := json.Marshal(resp)
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// HandleCancelDeviceInvite tears down an in-flight device pairing invite
+// before any desktop has claimed it.
+//
+// Triggered from the phone's DevicePairingViewModel when the user dismisses
+// the pairing screen, hits Back, or lets the on-screen code time out. Without
+// this, the ConnectionRecord (status="pending_pairing") + the high-priority
+// `device.connection.request` feed event would linger as their own card on
+// the feed even though the invite is no longer live.
+//
+// Symmetric to HandleRevokeDevice (which handles the "device already
+// activated" case) — this is the "device never activated, give up cleanly"
+// case. We mark the record cancelled rather than deleting it so the system
+// card history still shows that the user generated + cancelled an invite.
+func (h *ConnectionsHandler) HandleCancelDeviceInvite(msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req CancelDeviceInviteRequest
+	if err := unmarshalRequest(msg.Payload, &req, "HandleCancelDeviceInvite"); err != nil {
+		return h.errorResponse(msg.GetID(), "Invalid request format")
+	}
+	if req.ConnectionID == "" {
+		return h.errorResponse(msg.GetID(), "connection_id is required")
+	}
+
+	data, err := h.storage.Get("connections/" + req.ConnectionID)
+	if err != nil {
+		return h.errorResponse(msg.GetID(), "Connection not found")
+	}
+	var record ConnectionRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to read connection")
+	}
+	if !record.IsDevice() {
+		return h.errorResponse(msg.GetID(), "Connection is not a device")
+	}
+	// Only cancel records that haven't yet completed pairing. An activated
+	// device should be torn down through device.revoke, which also wipes
+	// session keys + notifies the desktop.
+	if record.Status != "pending_pairing" {
+		return h.errorResponse(msg.GetID(), "Invite is no longer pending — cannot cancel")
+	}
+
+	// SECURITY (#35): zero any ephemeral key material before persisting
+	// the cancelled state. At pending_pairing this is typically empty
+	// (key exchange happens at stage 2), but defend regardless.
+	zeroBytes(record.SharedSecret)
+	record.SharedSecret = nil
+	zeroBytes(record.LocalPrivateKey)
+	record.LocalPrivateKey = nil
+
+	record.Status = "cancelled"
+	record.DevicePendingAuth = nil
+	_ = h.putConnectionRecord("connections/"+req.ConnectionID, &record)
+
+	// Archive the original request event so it stops rendering as a
+	// PriorityHigh feed card. The cancelled marker logged below carries
+	// FeedStatusHidden and lands in the system card's history view.
+	if h.eventHandler != nil {
+		h.eventHandler.archiveConnectionRequestEvents(req.ConnectionID)
+		h.eventHandler.LogConnectionEvent(context.Background(), EventTypeDeviceConnectionCancelled, req.ConnectionID, "",
+			"Device pairing invite cancelled")
+	}
+
+	log.Info().Str("connection_id", req.ConnectionID).Msg("Device pairing invite cancelled")
+
+	resp := struct {
+		Success      bool   `json:"success"`
+		ConnectionID string `json:"connection_id"`
+	}{Success: true, ConnectionID: req.ConnectionID}
 	respBytes, _ := json.Marshal(resp)
 	return &OutgoingMessage{
 		RequestID: msg.GetID(),
