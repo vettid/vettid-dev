@@ -330,8 +330,19 @@ func (dh *DeviceHandler) handleDeviceOpRequest(ctx context.Context, conn *Connec
 	connData, _ := json.Marshal(conn)
 	dh.storage.Put("connections/"+conn.ConnectionID, connData)
 
-	// Check capability tier
-	if isIndependentCapability(req.Operation) {
+	// Check capability tier. Secret value reads (secret.get / secrets.get)
+	// are phone-required by default, but once this session has been
+	// unlocked for secret access (via the phone-approved
+	// secret.unlock-session op), they become independent until the
+	// grant expires. The grant is capped at the session expiry so it
+	// can't outlive the session it came from.
+	independent := isIndependentCapability(req.Operation)
+	if !independent && (req.Operation == "secret.get" || req.Operation == "secrets.get") {
+		if conn.DeviceSession != nil && conn.DeviceSession.SecretsUnlockedUntil > now {
+			independent = true
+		}
+	}
+	if independent {
 		// Re-enter the main vault-op router with a synthetic
 		// forVault subject so the device op goes through the same
 		// handler the Android client uses. This is what makes the
@@ -526,12 +537,97 @@ func (dh *DeviceHandler) HandlePhoneApprovalResponse(ctx context.Context, msg *I
 				fmt.Sprintf("Phone approved device operation: %s", pending.Operation))
 		}
 
-		dh.publishDeviceResponse(&conn, connKey, DeviceMsgOpResponse, map[string]interface{}{
-			"request_id": pending.RequestID,
-			"success":    true,
-			"status":     "approved",
-			"operation":  pending.Operation,
-		})
+		// Two paths for executing the approved op:
+		//
+		//   1. secret.unlock-session: the op IS setting the session
+		//      grant — no underlying handler exists. Set
+		//      SecretsUnlockedUntil inline, persist, respond.
+		//
+		//   2. Anything else: re-enter the vault router via
+		//      internalDispatch so the actual op runs (mutation,
+		//      response payload, etc). Without this, approved ops
+		//      came back with status:"approved" but never produced
+		//      a result — the desktop saw success but no data and
+		//      no state change.
+		if pending.Operation == "secret.unlock-session" {
+			until := time.Now().Add(time.Duration(conn.DeviceSession.DurationSeconds) * time.Second).Unix()
+			// Cap at session expiry so the grant can't outlive
+			// the session it came from.
+			if until > conn.DeviceSession.ExpiresAt {
+				until = conn.DeviceSession.ExpiresAt
+			}
+			conn.DeviceSession.SecretsUnlockedUntil = until
+			updated, _ := json.Marshal(&conn)
+			if err := dh.storage.Put("connections/"+conn.ConnectionID, updated); err != nil {
+				log.Warn().Err(err).Msg("Failed to persist secret-unlock grant (non-fatal)")
+			}
+			dh.publishDeviceResponse(&conn, connKey, DeviceMsgOpResponse, map[string]interface{}{
+				"request_id": pending.RequestID,
+				"operation":  pending.Operation,
+				"success":    true,
+				"status":     "executed",
+				"unlocked_until": until,
+			})
+		} else if dh.internalDispatch != nil {
+			innerPayload := pending.Payload
+			if len(innerPayload) == 0 {
+				innerPayload = json.RawMessage("{}")
+			}
+			synthMsg := &IncomingMessage{
+				Type:       MessageTypeVaultOp,
+				OwnerSpace: dh.ownerSpace,
+				RequestID:  pending.RequestID,
+				Subject:    fmt.Sprintf("OwnerSpace.%s.forVault.%s", dh.ownerSpace, pending.Operation),
+				Payload:    innerPayload,
+			}
+			execResp, execErr := dh.internalDispatch(ctx, synthMsg)
+			respPayload := map[string]interface{}{
+				"request_id": pending.RequestID,
+				"operation":  pending.Operation,
+			}
+			switch {
+			case execErr != nil:
+				respPayload["success"] = false
+				respPayload["error"] = execErr.Error()
+			case execResp == nil:
+				respPayload["success"] = false
+				respPayload["error"] = "no response from handler"
+			case execResp.Type == MessageTypeError:
+				respPayload["success"] = false
+				if execResp.Error != "" {
+					respPayload["error"] = execResp.Error
+				} else if len(execResp.Payload) > 0 {
+					var inner struct {
+						Error string `json:"error"`
+					}
+					if json.Unmarshal(execResp.Payload, &inner) == nil && inner.Error != "" {
+						respPayload["error"] = inner.Error
+					} else {
+						respPayload["error"] = "handler returned error"
+					}
+				} else {
+					respPayload["error"] = "handler returned error"
+				}
+			default:
+				respPayload["success"] = true
+				if len(execResp.Payload) > 0 {
+					respPayload["data"] = execResp.Payload
+				}
+			}
+			dh.publishDeviceResponse(&conn, connKey, DeviceMsgOpResponse, respPayload)
+		} else {
+			// Should be unreachable — internalDispatch is wired at
+			// MessageHandler init. Fall through to the legacy ack so
+			// the desktop at least sees the approval status if this
+			// somehow fires.
+			log.Error().Msg("Phone approval: internalDispatch not wired — falling back to legacy ack")
+			dh.publishDeviceResponse(&conn, connKey, DeviceMsgOpResponse, map[string]interface{}{
+				"request_id": pending.RequestID,
+				"success":    true,
+				"status":     "approved",
+				"operation":  pending.Operation,
+			})
+		}
 	} else {
 		// Log denial
 		if dh.eventHandler != nil {
