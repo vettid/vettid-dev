@@ -815,6 +815,19 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 					// inner request fields directly.
 					msg.PayloadType, msg.Payload = unwrapPayload(msg.Payload)
 					resp, err = mh.connectionsHandler.HandleDeviceRequestSession(ctx, msg)
+				case "revoke":
+					// Desktop-initiated logout. Same envelope shape as
+					// request-session — JSON wrapper, no encryption (the
+					// connection's session key gets wiped as part of the
+					// revoke so encrypting against it would be circular).
+					msg.PayloadType, msg.Payload = unwrapPayload(msg.Payload)
+					resp, err = mh.connectionsHandler.HandleRevokeDevice(ctx, msg)
+				case "end-session":
+					// Desktop-initiated soft end. Wipes the active session
+					// key vault-side and flips DeviceSession to expired so
+					// the user can start a new session without re-pairing.
+					msg.PayloadType, msg.Payload = unwrapPayload(msg.Payload)
+					resp, err = mh.connectionsHandler.HandleDeviceEndSession(ctx, msg)
 				default:
 					resp, err = mh.deviceHandler.HandleDeviceMessage(ctx, msg)
 				}
@@ -1336,6 +1349,11 @@ func (mh *MessageHandler) handleDeviceOperation(ctx context.Context, msg *Incomi
 	case "revoke":
 		// Revoke a device connection (from app admin or device logout)
 		return mh.connectionsHandler.HandleRevokeDevice(ctx, msg)
+	case "end-session":
+		// Soft end-session: wipe session key + flip DeviceSession to
+		// expired, but keep the connection so the desktop can restart
+		// a session without re-pairing.
+		return mh.connectionsHandler.HandleDeviceEndSession(ctx, msg)
 	case "approval":
 		// Phone responds to a pending per-operation approval request (not stage-2 auth)
 		return mh.deviceHandler.HandlePhoneApprovalResponse(ctx, msg)

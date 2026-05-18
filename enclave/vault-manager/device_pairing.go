@@ -78,6 +78,18 @@ type DeviceRevokeRequest struct {
 	Reason       string `json:"reason,omitempty"` // "logout" when device-initiated
 }
 
+// DeviceEndSessionRequest ends just the current session — wipes the
+// session_key + flips DeviceSession.Status to "expired" — without
+// revoking the connection. Lets the user manually lock their desktop
+// without re-pairing on the next use; the desktop can immediately
+// publish device.request-session to start a fresh session under the
+// same connection_id. Use device.revoke when the goal is to retire
+// the desktop entirely.
+type DeviceEndSessionRequest struct {
+	ConnectionID string `json:"connection_id"`
+	Reason       string `json:"reason,omitempty"` // "user_locked" when desktop-initiated
+}
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
@@ -496,6 +508,99 @@ func deriveDeviceSessionKey(sharedSecret []byte, connectionID, sessionID string)
 		return nil, fmt.Errorf("HKDF expand: %w", err)
 	}
 	return key, nil
+}
+
+// HandleDeviceEndSession is the soft counterpart to HandleRevokeDevice:
+// it wipes the active session key and marks DeviceSession.Status as
+// "expired" without revoking the connection record. Lets the user
+// immediately end a session from the desktop's UI and start a new one
+// (via the standard request-session → authorize-session re-flow)
+// without re-pairing.
+//
+// Called either from the desktop (user clicked "End Session") or from
+// the phone (user tapped "Lock now" on the connection detail screen).
+func (h *ConnectionsHandler) HandleDeviceEndSession(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req DeviceEndSessionRequest
+	if err := unmarshalRequest(msg.Payload, &req, "HandleDeviceEndSession"); err != nil {
+		return h.errorResponse(msg.GetID(), "Invalid request format")
+	}
+	if req.ConnectionID == "" {
+		return h.errorResponse(msg.GetID(), "connection_id is required")
+	}
+
+	data, err := h.storage.Get("connections/" + req.ConnectionID)
+	if err != nil {
+		return h.errorResponse(msg.GetID(), "Connection not found")
+	}
+	var record ConnectionRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to read connection")
+	}
+	if !record.IsDevice() {
+		return h.errorResponse(msg.GetID(), "Connection is not a device")
+	}
+	if record.Status == "revoked" {
+		return h.errorResponse(msg.GetID(), "Connection revoked")
+	}
+	if record.DeviceSession == nil || record.DeviceSession.Status != "active" {
+		return h.errorResponse(msg.GetID(), "No active session to end")
+	}
+
+	// Wipe the session_key blob — same primitive HandleRevokeDevice
+	// uses. After this the desktop's cached session key is useless
+	// against the vault, even if the desktop hasn't yet noticed the
+	// session ended.
+	keyPath := fmt.Sprintf("device_session_keys/%s/%s", record.ConnectionID, record.DeviceSession.SessionKeyID)
+	if err := h.storage.Delete(keyPath); err != nil {
+		log.Warn().Err(err).Str("path", keyPath).Msg("Failed to delete session key during end-session (non-fatal)")
+	}
+
+	now := time.Now().Unix()
+	record.DeviceSession.Status = "expired"
+	record.DeviceSession.LastActiveAt = now
+	// Clear DevicePendingAuth: any in-flight request-session token is
+	// stale once the active session is ended. The desktop must re-
+	// initiate request-session to get a fresh approval_token.
+	record.DevicePendingAuth = nil
+
+	connBytes, _ := json.Marshal(&record)
+	if err := h.storage.Put("connections/"+record.ConnectionID, connBytes); err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to persist session end")
+	}
+
+	// Notify the desktop so it can transition straight to its
+	// SessionExpired view (instead of waiting for the next get_session_
+	// info poll to discover the change). Same subject HandleRevoke
+	// uses but with a different `type` so the desktop's listener can
+	// distinguish "ended, can restart" from "revoked, must re-pair".
+	if h.publisher != nil {
+		endNotif := map[string]interface{}{
+			"type":          "device.session.ended",
+			"connection_id": record.ConnectionID,
+			"reason":        req.Reason,
+		}
+		notifBytes, _ := json.Marshal(endNotif)
+		subject := fmt.Sprintf("MessageSpace.%s.forApp.device.%s.ended", h.ownerSpace, record.ConnectionID)
+		if err := h.publisher.PublishRaw(subject, notifBytes); err != nil {
+			log.Warn().Err(err).Str("subject", subject).Msg("Failed to publish device.session.ended (non-fatal)")
+		}
+	}
+
+	log.Info().
+		Str("connection_id", record.ConnectionID).
+		Str("reason", req.Reason).
+		Msg("Device session ended (connection kept)")
+
+	resp := struct {
+		Success      bool   `json:"success"`
+		ConnectionID string `json:"connection_id"`
+	}{Success: true, ConnectionID: record.ConnectionID}
+	respBytes, _ := json.Marshal(resp)
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
 }
 
 // constantTimeEqualString compares two hex strings in constant time.
