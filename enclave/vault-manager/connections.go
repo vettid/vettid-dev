@@ -679,6 +679,15 @@ type DeviceSession struct {
 	DurationSeconds  int64  `json:"duration_seconds"`    // user-approved duration (≤ 24h)
 	KeyRotationCount int    `json:"key_rotation_count"`  // incremented on each extend
 	SessionKeyID     string `json:"session_key_id"`      // opaque handle so the vault can match the device's current key
+	// SecretsUnlockedUntil is a unix-seconds expiry on this session's
+	// permission to read secret VALUES (catalog metadata is always
+	// readable). Set by HandlePhoneApprovalResponse approving a
+	// secret.unlock-session request; until this expires, the device
+	// can call secret.get without re-prompting the phone. Capped at
+	// ExpiresAt so the grant can never outlive the session it came
+	// from. Zero = no grant; reveal each value requires a fresh
+	// phone approval round-trip.
+	SecretsUnlockedUntil int64 `json:"secrets_unlocked_until,omitempty"`
 }
 
 // AgentMetadata holds registration details for an AI agent connection.

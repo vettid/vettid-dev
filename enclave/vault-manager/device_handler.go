@@ -60,6 +60,15 @@ func DeviceIndependentCapabilities() []string {
 		// Agent + secret-catalog reads (catalog is metadata only).
 		"agent.list",
 		"secrets.catalog",
+		// secret.list returns the user's secrets index (id, name,
+		// alias, category, type, discoverability, timestamps) but no
+		// values. The values stay phone-required until the session-
+		// unlock grant (DeviceSession.SecretsUnlockedUntil) is wired
+		// end-to-end. List/catalog read is safe because the user can
+		// already see this in the published profile catalog peers
+		// browse — no new disclosure.
+		"secret.list",
+		"secrets.list",
 		"credential.secret.list",
 		// Personal data reads — values are non-secret (the secret
 		// material is under credential.* + secrets.*). Phone approval
