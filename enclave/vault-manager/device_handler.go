@@ -683,7 +683,18 @@ func (dh *DeviceHandler) publishDeviceResponse(conn *ConnectionRecord, connKey [
 		Timestamp: time.Now().UTC(),
 	})
 
-	topic := fmt.Sprintf("MessageSpace.%s.forOwner.device.%s", dh.ownerSpace, conn.ConnectionID)
+	// Publish on the forApp side (mirrors the activated/ended/revoked
+	// pattern from device_pairing.go) so the parent's broad
+	// `MessageSpace.*.forOwner.>` subscription doesn't re-ingest the
+	// vault's own response and trip replay-detection. The NATS
+	// credentials issued in nats_credentials.go already grant the
+	// device account subscribe access to forApp.device.{conn}.> with
+	// the matching comment ("operation responses for this
+	// connection"), so this is the subject the architecture intended
+	// — the prior `forOwner.device.{conn}` was a wire-contract bug
+	// that produced steady replay-detected noise (which then tripped
+	// deploy.sh's Phase 4.5 journal scan).
+	topic := fmt.Sprintf("MessageSpace.%s.forApp.device.%s.response", dh.ownerSpace, conn.ConnectionID)
 	dh.publisher.PublishRaw(topic, envBytes)
 }
 

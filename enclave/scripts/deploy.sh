@@ -759,34 +759,63 @@ do_deploy() {
     # the new instance's boot to now is fair game.
     PHASE="post-launch-journal-scan"
     log_step "Phase 4.5: Scanning new instance journal for handler errors"
-    local scan_cmd scan_out scan_err_count
-    scan_cmd=$(aws ssm send-command \
+    # Split the scan into two passes:
+    #   1. Hard errors (Sanitized error / cannot unmarshal): threshold 0.
+    #      These mean a handler is rejecting valid traffic — the
+    #      2026-05-10 failure mode.
+    #   2. Replay-detected: threshold REPLAY_TOLERATE. Small counts are
+    #      expected during ASG churn (duplicate JetStream redeliveries,
+    #      brief overlapping subscriptions across the old/new instance).
+    #      Earlier the scan lumped all three patterns together at
+    #      threshold 0, so a few duplicate JetStream redeliveries on the
+    #      new instance aborted otherwise-healthy deploys.
+    local hard_cmd hard_out hard_count replay_cmd replay_out replay_count
+    local REPLAY_TOLERATE=50
+    hard_cmd=$(aws ssm send-command \
         --instance-ids "$new_instance_id" \
         --document-name "AWS-RunShellScript" \
-        --parameters 'commands=["journalctl -u vettid-parent --no-pager --since \"15 minutes ago\" | grep -cE \"Sanitized error returned to client|cannot unmarshal|message replay detected\" || true"]' \
+        --parameters 'commands=["journalctl -u vettid-parent --no-pager --since \"15 minutes ago\" | grep -cE \"Sanitized error returned to client|cannot unmarshal\" || true"]' \
         --query 'Command.CommandId' --output text --region "$REGION" 2>/dev/null || echo "")
-    if [[ -n "$scan_cmd" ]]; then
+    replay_cmd=$(aws ssm send-command \
+        --instance-ids "$new_instance_id" \
+        --document-name "AWS-RunShellScript" \
+        --parameters 'commands=["journalctl -u vettid-parent --no-pager --since \"15 minutes ago\" | grep -cE \"message replay detected\" || true"]' \
+        --query 'Command.CommandId' --output text --region "$REGION" 2>/dev/null || echo "")
+    if [[ -n "$hard_cmd" && -n "$replay_cmd" ]]; then
         sleep 5
-        scan_out=$(aws ssm get-command-invocation --command-id "$scan_cmd" \
+        hard_out=$(aws ssm get-command-invocation --command-id "$hard_cmd" \
             --instance-id "$new_instance_id" --query 'StandardOutputContent' \
             --output text --region "$REGION" 2>/dev/null | tr -d '[:space:]')
-        scan_err_count="${scan_out:-0}"
-        # Replay-detected lines are tolerable in small numbers during ASG
-        # churn (duplicate JetStream redeliveries). Sanitized-error lines
-        # are not — they indicate a handler is rejecting valid traffic.
-        # Threshold of 0 is intentionally strict.
-        if [[ "$scan_err_count" =~ ^[0-9]+$ ]] && [[ "$scan_err_count" -gt 0 ]]; then
-            log_error "New instance journal shows $scan_err_count handler-error / replay-rejection line(s)."
+        replay_out=$(aws ssm get-command-invocation --command-id "$replay_cmd" \
+            --instance-id "$new_instance_id" --query 'StandardOutputContent' \
+            --output text --region "$REGION" 2>/dev/null | tr -d '[:space:]')
+        hard_count="${hard_out:-0}"
+        replay_count="${replay_out:-0}"
+        if [[ "$hard_count" =~ ^[0-9]+$ ]] && [[ "$hard_count" -gt 0 ]]; then
+            log_error "New instance journal shows $hard_count handler-error line(s) (Sanitized error / cannot unmarshal)."
             log_error "This is the failure mode that dropped every peer profile-update broadcast on 2026-05-10."
             log_error "Fetch the journal and investigate before promoting:"
             log_error "  aws ssm send-command --instance-ids $new_instance_id --document-name AWS-RunShellScript \\"
-            log_error "    --parameters 'commands=[\"journalctl -u vettid-parent --since 15min --no-pager | grep -E \\\"Sanitized error|cannot unmarshal|replay detected\\\" | tail -40\"]' --region $REGION"
+            log_error "    --parameters 'commands=[\"journalctl -u vettid-parent --since 15min --no-pager | grep -E \\\"Sanitized error|cannot unmarshal\\\" | tail -40\"]' --region $REGION"
             log_error "Aborting; old PCR0 is still live, KMS allows both — no user-visible damage."
             exit 1
         fi
-        log_info "New instance journal is clean (no handler errors or replay rejections)"
+        if [[ "$replay_count" =~ ^[0-9]+$ ]] && [[ "$replay_count" -gt "$REPLAY_TOLERATE" ]]; then
+            log_error "New instance journal shows $replay_count replay-detected line(s) (> tolerance of $REPLAY_TOLERATE)."
+            log_error "Sustained replay-detection points at a wire-contract drift on the response path."
+            log_error "Fetch the journal and investigate before promoting:"
+            log_error "  aws ssm send-command --instance-ids $new_instance_id --document-name AWS-RunShellScript \\"
+            log_error "    --parameters 'commands=[\"journalctl -u vettid-parent --since 15min --no-pager | grep -E \\\"replay detected\\\" | tail -40\"]' --region $REGION"
+            log_error "Aborting; old PCR0 is still live, KMS allows both — no user-visible damage."
+            exit 1
+        fi
+        if [[ "$replay_count" -gt 0 ]]; then
+            log_info "New instance journal: 0 hard errors, $replay_count replay-detection line(s) (within tolerance $REPLAY_TOLERATE)"
+        else
+            log_info "New instance journal is clean (no handler errors or replay rejections)"
+        fi
     else
-        log_warn "Could not send SSM command for journal scan — verify manually"
+        log_warn "Could not send SSM commands for journal scan — verify manually"
     fi
 
     # ------------------------------------------------------------------
