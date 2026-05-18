@@ -32,18 +32,49 @@ const (
 
 // DeviceIndependentCapabilities returns operations the desktop can execute
 // directly (still requires phone heartbeat to be fresh).
+//
+// Read-only ops live here. Anything that would mutate persistent vault
+// state, expose a secret value, or sign on behalf of the user belongs
+// in DevicePhoneRequiredCapabilities.
 func DeviceIndependentCapabilities() []string {
 	return []string{
+		// Profile reads — own profile.get returns the user's name +
+		// email + custom fields the user has set themselves; nothing
+		// secret here. `profile.view` was the legacy op name; the
+		// vault routes only `profile.get` now.
+		"profile.get",
 		"profile.view",
+		"profile.photo.get",
+		// Connection list + detail — same as Android: device can
+		// browse peer connections without a phone round-trip.
 		"connection.list",
 		"connection.get",
+		// Feed + audit + messages — read-only timelines.
 		"feed.list",
 		"feed.sync",
 		"audit.query",
+		"connection.audit.list",
+		"connection.audit.search",
 		"message.list",
 		"message.read",
+		// Agent + secret-catalog reads (catalog is metadata only).
 		"agent.list",
 		"secrets.catalog",
+		"credential.secret.list",
+		// Personal data reads — values are non-secret (the secret
+		// material is under credential.* + secrets.*). Phone approval
+		// added latency without a protection benefit.
+		"personal-data.get",
+		"personal-data.get-sort-order",
+		// Wallet reads — balance + addresses + history are public
+		// info; the signing op (wallet.sign / send.btc) is gated.
+		"wallet.list",
+		"wallet.get-balance",
+		"wallet.get-address",
+		"wallet.get-transaction-history",
+		// Device list — desktop can see "what desktops are paired to
+		// my vault" without a phone round-trip.
+		"device.list",
 	}
 }
 
@@ -57,8 +88,8 @@ func DevicePhoneRequiredCapabilities() []string {
 		"connection.create",
 		"connection.revoke",
 		"profile.update",
-		"personal-data.get",
 		"personal-data.update",
+		"personal-data.delete",
 		"credential.get",
 		"credential.update",
 		"pin.setup",
@@ -66,6 +97,8 @@ func DevicePhoneRequiredCapabilities() []string {
 		"pin.change",
 		"service.auth.request",
 		"agent.approve",
+		"wallet.sign",
+		"wallet.send",
 	}
 }
 
@@ -179,15 +212,25 @@ func (dh *DeviceHandler) HandleDeviceMessage(ctx context.Context, msg *IncomingM
 		log.Warn().Str("status", conn.Status).Msg("Device connection not active")
 		return nil, nil
 	}
-	if len(conn.SharedSecret) == 0 {
-		log.Warn().Msg("Device connection has no shared secret")
+	if conn.DeviceSession == nil || conn.DeviceSession.Status != "active" || conn.DeviceSession.SessionKeyID == "" {
+		log.Warn().Msg("Device connection has no active session")
 		return nil, nil
 	}
 
-	// Derive connection key
-	connKey, err := deriveConnectionKey(conn.SharedSecret)
+	// Load the per-session key persisted at HandleDeviceAuthorizeSession
+	// time. Device ops encrypt with the session key (rotated on extend),
+	// not the long-lived connection-from-shared-secret key the agent
+	// flow uses — those are different HKDF derivations and never
+	// matched up, which is why every device op was timing out before
+	// this fix. Key material stays in enclave memory + encrypted storage.
+	keyPath := fmt.Sprintf("device_session_keys/%s/%s", conn.ConnectionID, conn.DeviceSession.SessionKeyID)
+	connKey, err := dh.storage.Get(keyPath)
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to derive device connection key")
+		log.Warn().Err(err).Str("path", keyPath).Msg("Failed to load device session key")
+		return nil, nil
+	}
+	if len(connKey) != 32 {
+		log.Warn().Int("len", len(connKey)).Msg("Loaded device session key has wrong length")
 		return nil, nil
 	}
 	defer zeroBytes(connKey)
@@ -375,9 +418,14 @@ func (dh *DeviceHandler) HandlePhoneApprovalResponse(ctx context.Context, msg *I
 		}, nil
 	}
 
-	connKey, err := deriveConnectionKey(conn.SharedSecret)
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to derive connection key for approval response")
+	if conn.DeviceSession == nil || conn.DeviceSession.SessionKeyID == "" {
+		log.Warn().Msg("Phone approval response — connection has no active session")
+		return nil, nil
+	}
+	keyPath := fmt.Sprintf("device_session_keys/%s/%s", conn.ConnectionID, conn.DeviceSession.SessionKeyID)
+	connKey, err := dh.storage.Get(keyPath)
+	if err != nil || len(connKey) != 32 {
+		log.Warn().Err(err).Str("path", keyPath).Msg("Failed to load device session key for approval response")
 		return nil, nil
 	}
 	defer zeroBytes(connKey)
