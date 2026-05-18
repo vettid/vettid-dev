@@ -65,6 +65,23 @@ type DeviceAuthorizeSessionRequest struct {
 	ApprovalToken   string `json:"approval_token"`   // must match DevicePendingAuth.ApprovalToken
 	DeviceName      string `json:"device_name"`      // user-assigned
 	DurationSeconds int64  `json:"duration_seconds"` // capped server-side at 24h
+	// ForceReplace, when true, lets this authorization end any other
+	// active device session for the same owner before activating.
+	// Default false — the first attempt returns
+	// {error_code:"existing_session_active", existing_devices:[...]} so
+	// the phone can prompt the user before clobbering an active
+	// desktop. Phone retries with ForceReplace=true on confirm.
+	ForceReplace bool `json:"force_replace,omitempty"`
+}
+
+// ActiveDeviceSummary is the lightweight per-device info returned
+// alongside an `existing_session_active` error so the phone UI can
+// render a meaningful prompt without a second round-trip.
+type ActiveDeviceSummary struct {
+	ConnectionID string `json:"connection_id"`
+	DeviceName   string `json:"device_name"`
+	LastActiveAt int64  `json:"last_active_at"`
+	ExpiresAt    int64  `json:"expires_at"`
 }
 
 type DeviceExtendSessionRequest struct {
@@ -239,6 +256,43 @@ func (h *ConnectionsHandler) HandleDeviceAuthorizeSession(ctx context.Context, m
 	}
 	if !constantTimeEqualString(record.DevicePendingAuth.ApprovalToken, req.ApprovalToken) {
 		return h.errorResponse(msg.GetID(), "approval_token mismatch — scan the QR shown on the desktop")
+	}
+
+	// One-active-session-per-vault gate. Scan for any OTHER device
+	// connection that's currently active; if found, refuse unless
+	// the phone re-submits with force_replace=true. Without this,
+	// pairing a second desktop silently created two parallel
+	// sessions that raced on the same NATS subscriptions and made
+	// debugging interleaved op responses essentially impossible.
+	existingSessions := h.findOtherActiveDeviceSessions(record.ConnectionID)
+	if len(existingSessions) > 0 {
+		if !req.ForceReplace {
+			payload, _ := json.Marshal(struct {
+				Success          bool                  `json:"success"`
+				ErrorCode        string                `json:"error_code"`
+				Error            string                `json:"error"`
+				ExistingDevices  []ActiveDeviceSummary `json:"existing_devices"`
+			}{
+				Success:         false,
+				ErrorCode:       "existing_session_active",
+				Error:           "Another device session is already active",
+				ExistingDevices: existingSessions,
+			})
+			return &OutgoingMessage{
+				RequestID: msg.GetID(),
+				Type:      MessageTypeResponse,
+				Payload:   payload,
+			}, nil
+		}
+		// Force-replace path: end every other active session before
+		// activating the new one. End-not-revoke so the user can
+		// re-authorize the old desktop later from its lock screen
+		// without re-pairing the QR.
+		for _, summary := range existingSessions {
+			if err := h.endDeviceSessionInline(ctx, summary.ConnectionID); err != nil {
+				log.Warn().Err(err).Str("conn", summary.ConnectionID).Msg("Failed to end existing session during force-replace")
+			}
+		}
 	}
 
 	// X25519 key exchange (vault ephemeral × device ephemeral)
@@ -613,6 +667,98 @@ func constantTimeEqualString(a, b string) bool {
 		diff |= a[i] ^ b[i]
 	}
 	return diff == 0
+}
+
+// findOtherActiveDeviceSessions walks the connections/_index and returns
+// a summary for every device connection (other than excludeConnID) whose
+// DeviceSession.Status == "active". Used by the one-active-session
+// gate in HandleDeviceAuthorizeSession to decide whether to refuse the
+// new pairing (asking the phone to prompt the user first) or to
+// force-replace.
+func (h *ConnectionsHandler) findOtherActiveDeviceSessions(excludeConnID string) []ActiveDeviceSummary {
+	indexData, err := h.storage.Get("connections/_index")
+	if err != nil || len(indexData) == 0 {
+		return nil
+	}
+	var ids []string
+	if err := json.Unmarshal(indexData, &ids); err != nil {
+		return nil
+	}
+	var out []ActiveDeviceSummary
+	for _, id := range ids {
+		if id == excludeConnID {
+			continue
+		}
+		data, err := h.storage.Get("connections/" + id)
+		if err != nil {
+			continue
+		}
+		var rec ConnectionRecord
+		if json.Unmarshal(data, &rec) != nil {
+			continue
+		}
+		if !rec.IsDevice() {
+			continue
+		}
+		if rec.DeviceSession == nil || rec.DeviceSession.Status != "active" {
+			continue
+		}
+		out = append(out, ActiveDeviceSummary{
+			ConnectionID: rec.ConnectionID,
+			DeviceName:   rec.PeerAlias,
+			LastActiveAt: rec.DeviceSession.LastActiveAt,
+			ExpiresAt:    rec.DeviceSession.ExpiresAt,
+		})
+	}
+	return out
+}
+
+// endDeviceSessionInline replicates HandleDeviceEndSession's effect
+// (wipe session key, mark Status=expired, publish .ended notification)
+// without going through the message handler. Used by the force-replace
+// path of HandleDeviceAuthorizeSession so a phone confirming "end the
+// old session and start the new one" can clear the old in the same
+// request cycle.
+func (h *ConnectionsHandler) endDeviceSessionInline(ctx context.Context, connectionID string) error {
+	data, err := h.storage.Get("connections/" + connectionID)
+	if err != nil {
+		return fmt.Errorf("connection not found: %w", err)
+	}
+	var record ConnectionRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		return fmt.Errorf("read connection: %w", err)
+	}
+	if !record.IsDevice() {
+		return fmt.Errorf("not a device connection")
+	}
+	if record.DeviceSession == nil || record.DeviceSession.Status != "active" {
+		return nil // already ended
+	}
+	keyPath := fmt.Sprintf("device_session_keys/%s/%s", record.ConnectionID, record.DeviceSession.SessionKeyID)
+	if err := h.storage.Delete(keyPath); err != nil {
+		log.Warn().Err(err).Str("path", keyPath).Msg("inline end-session: failed to delete session key (non-fatal)")
+	}
+	record.DeviceSession.Status = "expired"
+	record.DeviceSession.LastActiveAt = time.Now().Unix()
+	record.DevicePendingAuth = nil
+	connBytes, _ := json.Marshal(&record)
+	if err := h.storage.Put("connections/"+record.ConnectionID, connBytes); err != nil {
+		return fmt.Errorf("persist: %w", err)
+	}
+	if h.publisher != nil {
+		endNotif := map[string]interface{}{
+			"type":          "device.session.ended",
+			"connection_id": record.ConnectionID,
+			"reason":        "replaced-by-new-session",
+		}
+		notifBytes, _ := json.Marshal(endNotif)
+		subject := fmt.Sprintf("MessageSpace.%s.forApp.device.%s.ended", h.ownerSpace, record.ConnectionID)
+		if err := h.publisher.PublishRaw(subject, notifBytes); err != nil {
+			log.Warn().Err(err).Str("subject", subject).Msg("inline end-session: notification publish failed (non-fatal)")
+		}
+	}
+	log.Info().Str("connection_id", connectionID).Msg("Device session ended inline (force-replace path)")
+	return nil
 }
 
 // newUUID returns a random UUID v4 string.
