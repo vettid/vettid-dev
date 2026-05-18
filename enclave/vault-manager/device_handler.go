@@ -151,6 +151,19 @@ type DeviceHandler struct {
 	pendingApprovals map[string]*PendingDeviceApproval
 	mu               sync.Mutex
 	stopCleanup      chan struct{}
+
+	// internalDispatch runs an independent-cap device op through the
+	// same path the Android client uses (forVault.<op> → handleVaultOp).
+	// Wired by MessageHandler init to mh.HandleMessage so device-routed
+	// reads return real data instead of the placeholder ack the
+	// independent branch used to send.
+	internalDispatch func(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error)
+}
+
+// SetInternalDispatch wires the callback used by handleDeviceOpRequest
+// to execute independent capabilities. Idempotent — last write wins.
+func (dh *DeviceHandler) SetInternalDispatch(fn func(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error)) {
+	dh.internalDispatch = fn
 }
 
 // NewDeviceHandler creates a new device handler.
@@ -307,13 +320,77 @@ func (dh *DeviceHandler) handleDeviceOpRequest(ctx context.Context, conn *Connec
 
 	// Check capability tier
 	if isIndependentCapability(req.Operation) {
-		// Independent operation — execute directly
-		dh.publishDeviceResponse(conn, connKey, DeviceMsgOpResponse, map[string]interface{}{
+		// Re-enter the main vault-op router with a synthetic
+		// forVault subject so the device op goes through the same
+		// handler the Android client uses. This is what makes the
+		// independent-cap tier actually return data — without it the
+		// branch shipped a placeholder ack and the desktop saw
+		// success=true / data=nil and surfaced "failed to load".
+		if dh.internalDispatch == nil {
+			log.Error().Str("op", req.Operation).Msg("internalDispatch not wired — independent device op cannot execute")
+			dh.publishDeviceResponse(conn, connKey, DeviceMsgOpResponse, map[string]interface{}{
+				"request_id": req.RequestID,
+				"operation":  req.Operation,
+				"success":    false,
+				"error":      "internal dispatch not configured",
+			})
+			return nil, nil
+		}
+
+		innerPayload := req.Payload
+		if len(innerPayload) == 0 {
+			innerPayload = json.RawMessage("{}")
+		}
+		syntheticMsg := &IncomingMessage{
+			Type:       MessageTypeVaultOp,
+			OwnerSpace: dh.ownerSpace,
+			RequestID:  req.RequestID,
+			Subject:    fmt.Sprintf("OwnerSpace.%s.forVault.%s", dh.ownerSpace, req.Operation),
+			Payload:    innerPayload,
+		}
+
+		resp, err := dh.internalDispatch(ctx, syntheticMsg)
+		respPayload := map[string]interface{}{
 			"request_id": req.RequestID,
-			"success":    true,
-			"status":     "executed",
 			"operation":  req.Operation,
-		})
+		}
+		switch {
+		case err != nil:
+			respPayload["success"] = false
+			respPayload["error"] = err.Error()
+		case resp == nil:
+			respPayload["success"] = false
+			respPayload["error"] = "no response from handler"
+		case resp.Type == MessageTypeError:
+			respPayload["success"] = false
+			if resp.Error != "" {
+				respPayload["error"] = resp.Error
+			} else if len(resp.Payload) > 0 {
+				// Some handlers stuff the error into Payload as
+				// {"error":"..."}. Surface that string when present
+				// so the desktop can show it without parsing.
+				var inner struct {
+					Error string `json:"error"`
+				}
+				if json.Unmarshal(resp.Payload, &inner) == nil && inner.Error != "" {
+					respPayload["error"] = inner.Error
+				} else {
+					respPayload["error"] = "handler returned error"
+				}
+			} else {
+				respPayload["error"] = "handler returned error"
+			}
+		default:
+			respPayload["success"] = true
+			if len(resp.Payload) > 0 {
+				// Pass the handler's JSON payload through as `data`.
+				// json.RawMessage marshals back to its original
+				// bytes, so the desktop sees the same shape Android
+				// does.
+				respPayload["data"] = resp.Payload
+			}
+		}
+		dh.publishDeviceResponse(conn, connKey, DeviceMsgOpResponse, respPayload)
 		return nil, nil
 	}
 

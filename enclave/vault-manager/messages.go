@@ -475,6 +475,17 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 	// vault_state.enc. See SECURITY comment in HandleStart.
 	migrationHandler.SetSendToParent(sendFn)
 
+	// Wire device-handler's independent-cap dispatch to re-enter
+	// HandleMessage. Closing over mh so the device path picks up any
+	// fields populated later (presenceHandler, auditHandler) without
+	// needing to be re-wired. Without this, device ops in the
+	// independent tier publish a placeholder ack instead of the
+	// real op result — desktop sees success=true/data=nil and the
+	// frontend surfaces "failed to load".
+	deviceHandler.SetInternalDispatch(func(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+		return mh.HandleMessage(ctx, msg)
+	})
+
 	// Audit read-path wiring: handler reads, log writes. No backfill —
 	// connections created before this feature shipped will have empty
 	// history by design.
