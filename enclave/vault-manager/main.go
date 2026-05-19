@@ -135,6 +135,14 @@ func NewVaultManager(cfg *VaultConfig) (*VaultManager, error) {
 	// Pass sendFn so the sealer proxy can request KMS operations from supervisor
 	vm.messageHandler = NewMessageHandler(cfg.OwnerSpace, storage, vm.publisher, vm.sendToParent)
 
+	// Wire the device-connection lister so PublishToApp fans every
+	// forApp event out to each paired desktop's MessageSpace channel.
+	// Done here (after both publisher and messageHandler exist) so
+	// the closure can reach the live connection storage.
+	vm.publisher.SetDeviceLister(func() []string {
+		return listActiveDeviceConnectionIDs(storage)
+	})
+
 	return vm, nil
 }
 

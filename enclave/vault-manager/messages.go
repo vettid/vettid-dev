@@ -229,6 +229,14 @@ const persistDebounceInterval = 15 * time.Second
 type VsockPublisher struct {
 	ownerSpace string
 	sendFn     func(msg *OutgoingMessage) error
+
+	// listDeviceConnections returns the connection IDs of every
+	// currently-active device-type connection (paired desktops, agents).
+	// Set after construction via SetDeviceLister — keeps the publisher's
+	// constructor signature free of storage coupling so tests can mock
+	// publishing without a real connection store. nil means no fan-out
+	// (early boot or unit-test path).
+	listDeviceConnections func() []string
 }
 
 // NewVsockPublisher creates a new publisher that sends via vsock
@@ -239,22 +247,61 @@ func NewVsockPublisher(ownerSpace string, sendFn func(msg *OutgoingMessage) erro
 	}
 }
 
-// PublishToApp sends event to owner's app via forApp channel
-func (p *VsockPublisher) PublishToApp(ctx context.Context, eventType string, payload []byte) error {
-	subject := fmt.Sprintf("OwnerSpace.%s.forApp.%s", p.ownerSpace, eventType)
+// SetDeviceLister wires the active-device-connection enumerator.
+// Called once during MessageHandler init after storage is ready.
+// Without this, PublishToApp behaves as before (OwnerSpace only).
+func (p *VsockPublisher) SetDeviceLister(fn func() []string) {
+	p.listDeviceConnections = fn
+}
 
-	msg := &OutgoingMessage{
-		ID:      generateMessageID(),
-		Type:    MessageTypeNATSPublish,
-		Subject: subject,
-		Payload: payload,
-	}
+// PublishToApp sends an event to the owner's app via the forApp channel.
+//
+// Fan-out model (Phase 2 separation):
+//   - Phones subscribe to OwnerSpace.{owner}.forApp.> — that's still
+//     the single source of truth for the phone side.
+//   - Desktops subscribe ONLY to MessageSpace.{owner}.forApp.device.
+//     {conn}.> — they no longer share the OwnerSpace bus with phones.
+//
+// To keep both clients informed, every forApp event is now mirrored
+// onto each active device connection's MessageSpace channel. This
+// keeps the desktop event stream narrow (only what targets it) and
+// removes the phone↔desktop subject overlap that caused duplicate
+// dispatch and per-device noise.
+func (p *VsockPublisher) PublishToApp(ctx context.Context, eventType string, payload []byte) error {
+	primary := fmt.Sprintf("OwnerSpace.%s.forApp.%s", p.ownerSpace, eventType)
 
 	log.Debug().
-		Str("subject", subject).
+		Str("subject", primary).
 		Msg("Publishing to app")
 
-	return p.sendFn(msg)
+	if err := p.sendFn(&OutgoingMessage{
+		ID:      generateMessageID(),
+		Type:    MessageTypeNATSPublish,
+		Subject: primary,
+		Payload: payload,
+	}); err != nil {
+		return err
+	}
+
+	// Fan out to each active device connection. Failures here are
+	// non-fatal — the phone publish above already succeeded, and a
+	// device with a transient publish error will catch up on its
+	// next subscription event (most events have a follow-up trigger).
+	if p.listDeviceConnections != nil {
+		for _, connID := range p.listDeviceConnections() {
+			deviceSubject := fmt.Sprintf("MessageSpace.%s.forApp.device.%s.%s", p.ownerSpace, connID, eventType)
+			if err := p.sendFn(&OutgoingMessage{
+				ID:      generateMessageID(),
+				Type:    MessageTypeNATSPublish,
+				Subject: deviceSubject,
+				Payload: payload,
+			}); err != nil {
+				log.Warn().Err(err).Str("subject", deviceSubject).Msg("Device fan-out publish failed (non-fatal)")
+			}
+		}
+	}
+
+	return nil
 }
 
 // PublishToVault sends event to another vault via forVault channel
@@ -274,6 +321,44 @@ func (p *VsockPublisher) PublishToVault(ctx context.Context, targetOwnerSpace st
 		Msg("Publishing to vault")
 
 	return p.sendFn(msg)
+}
+
+// listActiveDeviceConnectionIDs returns the IDs of every device-type
+// connection that has an active session — what PublishToApp uses to
+// pick fan-out targets for the device MessageSpace mirror. Storage
+// is hit on every PublishToApp call; the connection list is small
+// (paired desktops + agents, typically 0–3 entries) so we just read
+// it fresh each time rather than caching with invalidation.
+func listActiveDeviceConnectionIDs(storage *EncryptedStorage) []string {
+	indexData, err := storage.Get("connections/_index")
+	if err != nil {
+		return nil
+	}
+	var ids []string
+	if err := json.Unmarshal(indexData, &ids); err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		data, err := storage.Get("connections/" + id)
+		if err != nil {
+			continue
+		}
+		var rec ConnectionRecord
+		if err := json.Unmarshal(data, &rec); err != nil {
+			continue
+		}
+		if !rec.IsDevice() {
+			continue
+		}
+		// Active session only — no point shouting at a paired-but-
+		// disconnected device that won't have a subscriber listening.
+		if rec.DeviceSession == nil || rec.DeviceSession.Status != "active" {
+			continue
+		}
+		out = append(out, rec.ConnectionID)
+	}
+	return out
 }
 
 // PublishRaw sends a raw message to an arbitrary subject
