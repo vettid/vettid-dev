@@ -370,6 +370,10 @@ func (h *ConnectionsHandler) HandleDeviceAuthorizeSession(ctx context.Context, m
 			log.Error().Err(err).Str("subject", subject).Msg("Failed to publish device activation")
 			return h.errorResponse(msg.GetID(), "Failed to notify desktop")
 		}
+		// Active device set just changed — drop the publisher's
+		// cached snapshot so the next forApp event fans out to the
+		// newly-paired desktop without waiting out the TTL.
+		h.publisher.InvalidateDeviceCache()
 	}
 
 	if h.eventHandler != nil {
@@ -638,6 +642,10 @@ func (h *ConnectionsHandler) HandleDeviceEndSession(ctx context.Context, msg *In
 		if err := h.publisher.PublishRaw(subject, notifBytes); err != nil {
 			log.Warn().Err(err).Str("subject", subject).Msg("Failed to publish device.session.ended (non-fatal)")
 		}
+		// Active device set just shrank — drop the publisher's
+		// cache so subsequent forApp events stop fanning out to a
+		// session that no longer has a subscriber.
+		h.publisher.InvalidateDeviceCache()
 	}
 
 	log.Info().
@@ -756,6 +764,7 @@ func (h *ConnectionsHandler) endDeviceSessionInline(ctx context.Context, connect
 		if err := h.publisher.PublishRaw(subject, notifBytes); err != nil {
 			log.Warn().Err(err).Str("subject", subject).Msg("inline end-session: notification publish failed (non-fatal)")
 		}
+		h.publisher.InvalidateDeviceCache()
 	}
 	log.Info().Str("connection_id", connectionID).Msg("Device session ended inline (force-replace path)")
 	return nil

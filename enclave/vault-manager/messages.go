@@ -237,7 +237,23 @@ type VsockPublisher struct {
 	// publishing without a real connection store. nil means no fan-out
 	// (early boot or unit-test path).
 	listDeviceConnections func() []string
+
+	// Short-TTL cache so PublishToApp's hot path doesn't hit storage
+	// on every call. Without this, high-frequency forApp events
+	// (presence heartbeats, feed updates, profile broadcasts) would
+	// re-scan `connections/_index` plus each `connections/{id}` per
+	// publish — under load this serialized through the storage
+	// mutex and pushed phone-side request/reply round-trips past
+	// their 15 s timeout. A 5 s TTL means a newly-paired desktop
+	// gets events ≤ 5 s late on first event, which is invisible to
+	// the user, while taking the per-publish cost from O(N reads)
+	// down to a single cached slice read.
+	deviceCacheMu    sync.RWMutex
+	deviceCacheList  []string
+	deviceCacheUntil time.Time
 }
+
+const deviceListCacheTTL = 5 * time.Second
 
 // NewVsockPublisher creates a new publisher that sends via vsock
 func NewVsockPublisher(ownerSpace string, sendFn func(msg *OutgoingMessage) error) *VsockPublisher {
@@ -287,21 +303,61 @@ func (p *VsockPublisher) PublishToApp(ctx context.Context, eventType string, pay
 	// non-fatal — the phone publish above already succeeded, and a
 	// device with a transient publish error will catch up on its
 	// next subscription event (most events have a follow-up trigger).
-	if p.listDeviceConnections != nil {
-		for _, connID := range p.listDeviceConnections() {
-			deviceSubject := fmt.Sprintf("MessageSpace.%s.forApp.device.%s.%s", p.ownerSpace, connID, eventType)
-			if err := p.sendFn(&OutgoingMessage{
-				ID:      generateMessageID(),
-				Type:    MessageTypeNATSPublish,
-				Subject: deviceSubject,
-				Payload: payload,
-			}); err != nil {
-				log.Warn().Err(err).Str("subject", deviceSubject).Msg("Device fan-out publish failed (non-fatal)")
-			}
+	for _, connID := range p.cachedDeviceConnections() {
+		deviceSubject := fmt.Sprintf("MessageSpace.%s.forApp.device.%s.%s", p.ownerSpace, connID, eventType)
+		if err := p.sendFn(&OutgoingMessage{
+			ID:      generateMessageID(),
+			Type:    MessageTypeNATSPublish,
+			Subject: deviceSubject,
+			Payload: payload,
+		}); err != nil {
+			log.Warn().Err(err).Str("subject", deviceSubject).Msg("Device fan-out publish failed (non-fatal)")
 		}
 	}
 
 	return nil
+}
+
+// cachedDeviceConnections returns the active device-connection list,
+// refreshing from the underlying lister only if the cached snapshot
+// is past its TTL. Read-locked fast path; only takes the write lock
+// when the cache actually needs to be refilled. Returns an empty
+// slice if no lister has been wired (early-boot / unit-test path).
+func (p *VsockPublisher) cachedDeviceConnections() []string {
+	p.deviceCacheMu.RLock()
+	if p.listDeviceConnections == nil {
+		p.deviceCacheMu.RUnlock()
+		return nil
+	}
+	if time.Now().Before(p.deviceCacheUntil) {
+		out := p.deviceCacheList
+		p.deviceCacheMu.RUnlock()
+		return out
+	}
+	p.deviceCacheMu.RUnlock()
+
+	p.deviceCacheMu.Lock()
+	defer p.deviceCacheMu.Unlock()
+	// Re-check under the write lock in case another goroutine
+	// already refreshed while we were upgrading.
+	if time.Now().Before(p.deviceCacheUntil) {
+		return p.deviceCacheList
+	}
+	fresh := p.listDeviceConnections()
+	p.deviceCacheList = fresh
+	p.deviceCacheUntil = time.Now().Add(deviceListCacheTTL)
+	return fresh
+}
+
+// InvalidateDeviceCache forces the next PublishToApp to re-read the
+// active-connection list rather than waiting out the TTL. Call when
+// the active set is known to have changed (a device just authorized,
+// revoked, or ended a session) so the event reaches/skips it
+// immediately. Cheap when uncontested.
+func (p *VsockPublisher) InvalidateDeviceCache() {
+	p.deviceCacheMu.Lock()
+	p.deviceCacheUntil = time.Time{}
+	p.deviceCacheMu.Unlock()
 }
 
 // PublishToVault sends event to another vault via forVault channel
