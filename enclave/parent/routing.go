@@ -58,6 +58,25 @@ type RoutingManager struct {
 	// See the split-brain fix (D1, 2026-05-14).
 	onRelease func(userGuid string)
 
+	// onReclaim is invoked exactly once per genuine ownership-GAIN
+	// transition where this instance takes over a user it didn't
+	// previously own — migration reclaim (ReclaimUsersFromPCR0),
+	// dead/vacant takeover (ReclaimIfExpiredOrVacant), or a
+	// handoff-to-us observed by the watcher. The parent wires this to
+	// evict any stale local vault-manager subprocess for that user so
+	// the next op spawns FRESH and cold-loads the current S3 state.
+	//
+	// Why this matters: during a migration window both enclaves run.
+	// If this instance served the user mid-window — long enough to
+	// spawn a subprocess and trip the D3 split-brain guard on a
+	// conditional-PUT race — that subprocess is left wedged. Evicting
+	// on the reclaim transition guarantees the reclaiming instance
+	// never serves with a stale ETag / generation / fenced flag.
+	// Pairs with the D3 self-eviction change in vault-manager.
+	// nil = no-op. NOT fired on fresh-enrollment claims or
+	// reconnect-reconcile (no cross-enclave handoff there).
+	onReclaim func(userGuid string)
+
 	// currentPCR0Reader returns the PCR0 that SSM currently advertises
 	// as the live target. ClaimForEnrollment refuses fresh claims when
 	// our local PCR0 doesn't match — preventing an OLD enclave still
@@ -124,6 +143,24 @@ func NewRoutingManager(enclaveID, pcr0 string, natsClient *NATSClient, msgChan c
 // goroutine for the vsock write).
 func (r *RoutingManager) SetOnRelease(fn func(userGuid string)) {
 	r.onRelease = fn
+}
+
+// SetOnReclaim registers the ownership-GAIN callback. Call once,
+// post-construction, before Start — same wiring style as
+// SetOnRelease. The callback fires on the heartbeat/watcher
+// goroutines, so the parent's implementation must not block (it
+// launches its own goroutine for the vsock write).
+func (r *RoutingManager) SetOnReclaim(fn func(userGuid string)) {
+	r.onReclaim = fn
+}
+
+// fireReclaim invokes the ownership-gain callback if one is wired.
+// Centralized so every genuine NOT-owned→owned transition routes
+// through one place.
+func (r *RoutingManager) fireReclaim(userGuid string) {
+	if r.onReclaim != nil {
+		r.onReclaim(userGuid)
+	}
 }
 
 // SetCurrentPCR0Reader registers the SSM "current PCR0" getter used by
@@ -419,6 +456,12 @@ func (r *RoutingManager) ReclaimUsersFromPCR0(oldPCR0 string) (int, error) {
 			leaseUntil: time.Unix(entry.LeaseUntil, 0),
 		}
 		r.mu.Unlock()
+		// Evict any stale local subprocess BEFORE we subscribe — so the
+		// first op that flows in after the subscription spawns a FRESH
+		// subprocess that cold-loads current S3 state, rather than
+		// reusing a subprocess that may have D3-fenced itself during
+		// the migration window.
+		r.fireReclaim(guid)
 		if err := r.subscribeUser(guid); err != nil {
 			log.Warn().Err(err).Str("user_guid", guid).Msg("routing: subscribe failed after force-reclaim")
 		}
@@ -493,6 +536,8 @@ func (r *RoutingManager) ReclaimIfExpiredOrVacant(userGuid string) (bool, error)
 		leaseUntil: time.Unix(entry.LeaseUntil, 0),
 	}
 	r.mu.Unlock()
+	// Fresh subprocess on first op — see ReclaimUsersFromPCR0.
+	r.fireReclaim(userGuid)
 	if err := r.subscribeUser(userGuid); err != nil {
 		log.Warn().Err(err).Str("user_guid", userGuid).Msg("routing: subscribe failed after reclaim")
 	}
@@ -700,6 +745,11 @@ func (r *RoutingManager) handleWatchEvent(e nats.KeyValueEntry) {
 				leaseUntil: time.Unix(remote.LeaseUntil, 0),
 			}
 			r.mu.Unlock()
+			// Handoff-to-us observed via the watcher (e.g. a peer's
+			// HandoffToPeer targeted this instance). Evict any stale
+			// local subprocess so the first op spawns fresh — see
+			// ReclaimUsersFromPCR0.
+			r.fireReclaim(guid)
 			if err := r.subscribeUser(guid); err != nil {
 				log.Warn().Err(err).Str("user_guid", guid).Msg("routing: subscribe failed on watch event")
 			}

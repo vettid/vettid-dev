@@ -185,6 +185,22 @@ type VaultState struct {
 	// a FRESH subprocess is spawned with this flag false by default —
 	// so there is intentionally no un-revoke path.
 	ownershipRevoked bool
+
+	// selfEvictRequested is set when THIS subprocess detects a D3
+	// split-brain conflict on a conditional-PUT of vault_state.enc —
+	// i.e. our IfMatch ETag was stale because another writer got
+	// there first. Unlike ownershipRevoked (set by an external
+	// revoke_ownership message, after which the supervisor kills us),
+	// nothing external knows to kill us here. So instead of latching
+	// a permanent fence, we ask to exit: the main loop sees this
+	// flag, refuses any further op with the standard "ownership
+	// transferred — retry" error, and exits cleanly. The supervisor's
+	// waitForExit reaps us; the next op for this user spawns a FRESH
+	// subprocess that cold-loads whichever vault_state.enc won the
+	// race. The conflicting write is still refused (no corruption) —
+	// this just turns a permanent wedge into a self-heal. Pairs with
+	// the parent's evict-on-reclaim (D1 mirror).
+	selfEvictRequested bool
 }
 
 // CEKPair holds the Credential Encryption Key pair (X25519)

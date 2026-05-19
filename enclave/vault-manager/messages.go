@@ -836,6 +836,20 @@ func (mh *MessageHandler) isOwnershipRevoked() bool {
 	return mh.vaultState.ownershipRevoked
 }
 
+// IsSelfEvictRequested reports whether this subprocess tripped the D3
+// split-brain guard and has asked to exit. The main loop polls this
+// after every message: once set, it refuses further ops and exits so
+// the supervisor can spawn a fresh subprocess. Exported because
+// main.go's loop is in the same package but a different file.
+func (mh *MessageHandler) IsSelfEvictRequested() bool {
+	if mh.vaultState == nil {
+		return false
+	}
+	mh.vaultState.mu.RLock()
+	defer mh.vaultState.mu.RUnlock()
+	return mh.vaultState.selfEvictRequested
+}
+
 // HandleMessage processes an incoming message
 func (mh *MessageHandler) HandleMessage(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	log.Debug().
@@ -852,6 +866,18 @@ func (mh *MessageHandler) HandleMessage(ctx context.Context, msg *IncomingMessag
 	if mh.isOwnershipRevoked() {
 		log.Warn().Str("owner_space", mh.ownerSpace).Str("id", msg.GetID()).
 			Msg("refusing vault op — routing ownership revoked; app should retry on the new owner")
+		return mh.errorResponse(msg.GetID(), "vault ownership transferred — retry")
+	}
+
+	// D3 self-eviction: a prior persist hit a conditional-PUT
+	// conflict. Refuse this op too — the main loop will exit the
+	// subprocess right after, and the next op spawns a fresh one
+	// that cold-loads the winning vault_state.enc. Same retry error
+	// as the revoke path so the app's existing retry handling kicks
+	// in transparently.
+	if mh.IsSelfEvictRequested() {
+		log.Warn().Str("owner_space", mh.ownerSpace).Str("id", msg.GetID()).
+			Msg("refusing vault op — D3 self-eviction pending; subprocess exiting, app should retry")
 		return mh.errorResponse(msg.GetID(), "vault ownership transferred — retry")
 	}
 
@@ -2218,7 +2244,18 @@ func (mh *MessageHandler) flushVaultStateToS3() {
 	dataLoaded := mh.vaultState.vaultDataLoaded
 	prevSize := mh.vaultState.loadedVaultStateSize
 	revoked := mh.vaultState.ownershipRevoked
+	selfEvict := mh.vaultState.selfEvictRequested
 	mh.vaultState.mu.RUnlock()
+
+	// D3: once a split-brain conflict has been detected and
+	// self-eviction is pending, don't even attempt another write —
+	// our ETag is known-stale, so it would just conflict again.
+	// The subprocess is exiting; the fresh one will cold-reload.
+	if selfEvict {
+		log.Warn().Str("owner_space", mh.ownerSpace).
+			Msg("skipping vault state persist — D3 self-eviction pending")
+		return
+	}
 
 	// SECURITY: refuse to persist once routing ownership is revoked.
 	// This is the in-window half of the split-brain fix (D2): when
@@ -2319,11 +2356,20 @@ func (mh *MessageHandler) flushVaultStateToS3() {
 			//
 			//   - update-write conflict (IfMatch rejected): the object's
 			//     ETag changed underneath us. Means another writer is
-			//     racing this object — that IS split-brain. Fence
-			//     further writes via ownershipRevoked, the existing D2
-			//     mechanism, so the next handler call returns the
-			//     "ownership transferred" error and the app retries
-			//     against the actual owner.
+			//     racing this object — that IS split-brain. We refuse
+			//     this write (no corruption) and request self-eviction:
+			//     the main loop exits the subprocess and the next op
+			//     spawns a fresh one that cold-loads whichever
+			//     vault_state.enc won the race.
+			//
+			//     This used to latch ownershipRevoked permanently —
+			//     but that flag assumes the supervisor kills us right
+			//     after (true for an external revoke_ownership, false
+			//     here: a self-detected D3 conflict has nothing
+			//     external to kill us). The result was a subprocess
+			//     wedged forever, refusing every op, until the whole
+			//     EC2 instance was terminated. Self-eviction turns
+			//     that permanent wedge into a one-op self-heal.
 			if firstWrite {
 				log.Error().
 					Str("owner_space", mh.ownerSpace).
@@ -2334,9 +2380,9 @@ func (mh *MessageHandler) flushVaultStateToS3() {
 				Str("owner_space", mh.ownerSpace).
 				Str("expected_etag", prevETag).
 				Int64("prev_gen", prevGen).
-				Msg("SECURITY: D3 split-brain detected on update-write — fencing further writes via ownershipRevoked")
+				Msg("SECURITY: D3 split-brain detected on update-write — refusing write, requesting self-eviction to cold-reload")
 			mh.vaultState.mu.Lock()
-			mh.vaultState.ownershipRevoked = true
+			mh.vaultState.selfEvictRequested = true
 			mh.vaultState.mu.Unlock()
 			return
 		}

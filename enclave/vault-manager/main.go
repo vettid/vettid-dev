@@ -247,6 +247,22 @@ func (vm *VaultManager) Run(ctx context.Context) error {
 			if err == nil && response != nil && response.Type != MessageTypeError {
 				vm.messageHandler.persistVaultStateToS3()
 			}
+
+			// D3 self-eviction: a persist this iteration (or a prior
+			// one) tripped the split-brain conditional-PUT guard. The
+			// response above has already been flushed to the parent,
+			// so exit now — cleanly, exit code 0. The supervisor's
+			// waitForExit reaps the subprocess and removes it from
+			// its map; the next op for this user spawns a FRESH
+			// subprocess that cold-loads whichever vault_state.enc
+			// won the race. Turns what used to be a permanent wedge
+			// (ownershipRevoked, never cleared) into a self-heal.
+			if vm.messageHandler.IsSelfEvictRequested() {
+				log.Warn().
+					Str("owner_space", vm.config.OwnerSpace).
+					Msg("D3 self-eviction: exiting subprocess so the next op cold-reloads vault_state.enc")
+				os.Exit(0)
+			}
 		}
 	}
 }

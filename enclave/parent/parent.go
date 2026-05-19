@@ -198,6 +198,13 @@ func (p *ParentProcess) Run(ctx context.Context) error {
 	// can't keep serving / force-flushing a stale vault_state.enc
 	// (split-brain fix, D1 2026-05-14).
 	p.routing.SetOnRelease(p.evictVaultInEnclave)
+	// Mirror of SetOnRelease for the ownership-GAIN side: when this
+	// instance reclaims a user (migration reclaim, dead-owner
+	// takeover, handoff-to-us), evict any stale local vault-manager
+	// subprocess so the first op spawns fresh and cold-loads current
+	// S3 state. Closes the migration-window hole where a subprocess
+	// that D3-fenced itself mid-window stayed wedged after reclaim.
+	p.routing.SetOnReclaim(p.evictVaultInEnclave)
 	// Wire the migration-window enrollment gate (#239): the routing
 	// manager refuses fresh ClaimForEnrollment when our local PCR0
 	// doesn't match SSM's advertised "current" PCR0 — i.e. when we
