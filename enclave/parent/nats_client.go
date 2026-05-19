@@ -406,6 +406,18 @@ func (c *NATSClient) Publish(subject string, data []byte) error {
 		return c.conn.Publish(subject, data)
 	}
 
+	// MessageSpace.* subjects (device pairing, device responses, peer
+	// presence, etc) are NOT in any stream filter — the ENROLLMENT
+	// stream covers OwnerSpace.*.forApp.> and OwnerSpace.*.forVault.>
+	// only. Trying JetStream on these subjects blocked for ~5s waiting
+	// for an ack that never came, then fell back to core NATS — every
+	// device-op response carried that artificial 5s latency. Skip
+	// JetStream entirely for MessageSpace and go straight to core
+	// NATS (which is what we'd end up doing anyway after the timeout).
+	if strings.HasPrefix(subject, "MessageSpace.") {
+		return c.conn.Publish(subject, data)
+	}
+
 	// Use JetStream for guaranteed delivery if available
 	if c.js != nil {
 		// Use UUID for message ID to prevent collisions from concurrent publishes
