@@ -58,10 +58,24 @@ func (pm *ProcessManager) Spawn(ownerSpace string) (*ManagedProcess, error) {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
-	// Check if process already exists
+	// Check if process already exists AND is still alive. A
+	// subprocess that self-evicted (D3 split-brain self-heal) or
+	// crashed may still be in the map for the brief window before
+	// waitForExit's cmd.Wait() returns. ProcessState is non-nil once
+	// the process has exited — treat such a stale entry as absent and
+	// fall through to spawn a genuinely fresh one. (The race window
+	// where the process has exited but ProcessState isn't set yet is
+	// covered by Send's retry-once-on-write-failure.)
 	if proc, exists := pm.processes[ownerSpace]; exists {
-		proc.LastAccess = time.Now()
-		return proc, nil
+		if proc.Cmd.ProcessState == nil {
+			proc.LastAccess = time.Now()
+			return proc, nil
+		}
+		log.Info().
+			Str("owner_space", ownerSpace).
+			Msg("Spawn: existing subprocess has exited — replacing with a fresh one")
+		proc.Conn.Close()
+		delete(pm.processes, ownerSpace)
 	}
 
 	// Create the command
@@ -152,14 +166,23 @@ func (pm *ProcessManager) logStderr(ownerSpace string, stderr interface{ Read([]
 	}
 }
 
-// waitForExit waits for a process to exit and cleans up
+// waitForExit waits for a process to exit and cleans up.
+//
+// Ownership check: only reap the map entry if it still points at OUR
+// cmd. A subprocess can self-evict (D3 split-brain self-heal) and be
+// immediately replaced by a fresh Spawn before this goroutine's
+// cmd.Wait() returns. Without the `proc.Cmd == cmd` guard, the OLD
+// process's waitForExit would close + delete the brand-new
+// REPLACEMENT, leaving the map empty and the live subprocess
+// orphaned (pipe closed under it). Common now that D3 self-eviction
+// makes deliberate subprocess exit a routine event.
 func (pm *ProcessManager) waitForExit(ownerSpace string, cmd *exec.Cmd) {
 	err := cmd.Wait()
 
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
-	if proc, exists := pm.processes[ownerSpace]; exists {
+	if proc, exists := pm.processes[ownerSpace]; exists && proc.Cmd == cmd {
 		proc.Conn.Close()
 		delete(pm.processes, ownerSpace)
 	}
@@ -228,10 +251,29 @@ func (pm *ProcessManager) Send(ctx context.Context, ownerSpace string, msg *Mess
 		return nil, fmt.Errorf("failed to get/spawn process: %w", err)
 	}
 
-	// Send the initial message
+	// Send the initial message. If the write fails, the subprocess is
+	// gone — it self-evicted (D3 split-brain self-heal), crashed, or
+	// was reaped in the race window between Spawn returning a cached
+	// handle and this write. The subprocess never received the
+	// message, so retrying is clean: kill the stale entry, spawn a
+	// genuinely fresh subprocess (which cold-loads current S3 state),
+	// and write once more. Without this retry, every op that raced a
+	// self-eviction surfaced to the user as
+	// "failed to write length prefix: file already closed".
 	if err := proc.Conn.WriteMessage(msg); err != nil {
+		log.Warn().
+			Str("owner_space", ownerSpace).
+			Err(err).
+			Msg("vault-manager send: initial write failed (subprocess gone) — respawning and retrying once")
 		pm.Kill(ownerSpace)
-		return nil, fmt.Errorf("failed to send message: %w", err)
+		proc, err = pm.Spawn(ownerSpace)
+		if err != nil {
+			return nil, fmt.Errorf("failed to respawn process after write failure: %w", err)
+		}
+		if err := proc.Conn.WriteMessage(msg); err != nil {
+			pm.Kill(ownerSpace)
+			return nil, fmt.Errorf("failed to send message after respawn: %w", err)
+		}
 	}
 
 	// Read messages in a loop, handling sealer requests until we get the final response
