@@ -92,11 +92,25 @@ func (vm *VaultManager) GetOrCreate(ctx context.Context, ownerSpace string) (*Va
 	vm.mu.Lock()
 	defer vm.mu.Unlock()
 
-	// Check if vault already exists
+	// Check if vault already exists AND its subprocess is still alive.
+	// A vault-manager subprocess that self-evicted (D3 split-brain
+	// self-heal) or crashed leaves a stale VaultProcess cached here
+	// with a dead pipe. ProcessState is non-nil once the subprocess
+	// has exited — evict the stale wrapper and fall through to spawn
+	// a genuinely fresh one. Without this, GetOrCreate hands back the
+	// dead wrapper and ProcessMessage's write fails with
+	// "file already closed".
 	if vault, exists := vm.vaults[ownerSpace]; exists {
-		vault.touch()
-		vm.updateLRU(ownerSpace)
-		return vault, nil
+		if vault.process == nil || vault.process.Cmd == nil ||
+			vault.process.Cmd.ProcessState == nil {
+			vault.touch()
+			vm.updateLRU(ownerSpace)
+			return vault, nil
+		}
+		log.Info().
+			Str("owner_space", ownerSpace).
+			Msg("GetOrCreate: cached vault subprocess has exited — replacing with a fresh one")
+		vm.evictVault(ownerSpace) // holds vm.mu — caller already locked
 	}
 
 	// Check if we need to evict to make room

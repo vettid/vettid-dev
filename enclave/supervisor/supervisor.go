@@ -362,14 +362,53 @@ func (s *Supervisor) handleVaultOp(ctx context.Context, msg *Message) (*Message,
 		return vault.ProcessMessage(ctx, msg)
 	}
 
-	// Get or create vault for this owner (user vaults)
+	// Get or create vault for this owner (user vaults), then forward
+	// the message — with one retry if the subprocess turns out to be
+	// gone. A vault-manager subprocess that self-evicted (D3
+	// split-brain self-heal) or was evicted on a routing reclaim can
+	// leave a stale pipe; the first send then fails with
+	// "file already closed" / "pipe closed: EOF". Evicting and
+	// respawning gives a fresh subprocess that cold-loads current S3
+	// state, and the op runs cleanly. The initial write is the safe
+	// retry point — if it failed the subprocess never saw the
+	// message, so the op hasn't half-executed.
 	vault, err := s.vaults.GetOrCreate(ctx, ownerSpace)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get vault: %w", err)
 	}
+	resp, err := vault.ProcessMessage(ctx, msg)
+	if err != nil && isSubprocessGone(err) {
+		log.Warn().
+			Err(err).
+			Str("owner_space", ownerSpace).
+			Msg("vault subprocess gone — evicting and retrying op once on a fresh subprocess")
+		s.vaults.Evict(ownerSpace)
+		vault, err = s.vaults.GetOrCreate(ctx, ownerSpace)
+		if err != nil {
+			return nil, fmt.Errorf("failed to respawn vault after subprocess loss: %w", err)
+		}
+		resp, err = vault.ProcessMessage(ctx, msg)
+	}
+	return resp, err
+}
 
-	// Forward message to vault
-	return vault.ProcessMessage(ctx, msg)
+// isSubprocessGone reports whether err indicates the vault-manager
+// subprocess pipe is dead — the subprocess exited (D3 self-eviction,
+// reclaim eviction, or a crash). Matches the concrete dead-pipe
+// signatures only, NOT the broad "vault-manager read error" wrapper
+// (which can also wrap a benign read timeout — retrying that could
+// double-run an op). The observed migration-window errors —
+// "failed to write length prefix: ... file already closed" and
+// "vault-manager read error: pipe closed: EOF" — are both caught by
+// the substring set below.
+func isSubprocessGone(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "file already closed") ||
+		strings.Contains(s, "pipe closed") ||
+		strings.Contains(s, "broken pipe")
 }
 
 // isPinOperation checks if a NATS subject is a PIN operation
