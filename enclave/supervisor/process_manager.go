@@ -1,21 +1,12 @@
 package main
 
 import (
-	"context"
-	"crypto/rand"
 	"fmt"
-	"math/big"
 	"os/exec"
 	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
-)
-
-// SECURITY: Constants for timing side-channel mitigation
-const (
-	// Random jitter range for process eviction (0-100ms)
-	processEvictionJitterMaxMs = 100
 )
 
 // LogForwarder is a function that forwards logs to the parent
@@ -65,7 +56,8 @@ func (pm *ProcessManager) Spawn(ownerSpace string) (*ManagedProcess, error) {
 	// the process has exited — treat such a stale entry as absent and
 	// fall through to spawn a genuinely fresh one. (The race window
 	// where the process has exited but ProcessState isn't set yet is
-	// covered by Send's retry-once-on-write-failure.)
+	// covered by handleVaultOp's retry-once on a subprocess-gone
+	// write error.)
 	if proc, exists := pm.processes[ownerSpace]; exists {
 		if proc.Cmd.ProcessState == nil {
 			proc.LastAccess = time.Now()
@@ -199,18 +191,6 @@ func (pm *ProcessManager) waitForExit(ownerSpace string, cmd *exec.Cmd) {
 	}
 }
 
-// Get returns an existing process or nil if not found
-func (pm *ProcessManager) Get(ownerSpace string) *ManagedProcess {
-	pm.mu.RLock()
-	defer pm.mu.RUnlock()
-
-	if proc, exists := pm.processes[ownerSpace]; exists {
-		proc.LastAccess = time.Now()
-		return proc
-	}
-	return nil
-}
-
 // Kill terminates a vault-manager process
 func (pm *ProcessManager) Kill(ownerSpace string) error {
 	pm.mu.Lock()
@@ -241,147 +221,6 @@ func (pm *ProcessManager) Kill(ownerSpace string) error {
 	return nil
 }
 
-// Send sends a message to a vault-manager process and waits for response.
-// Spawns the process if it doesn't exist.
-// Handles sealer requests from the vault-manager during the response wait.
-func (pm *ProcessManager) Send(ctx context.Context, ownerSpace string, msg *Message, timeout time.Duration) (*Message, error) {
-	// Get or spawn process
-	proc, err := pm.Spawn(ownerSpace)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get/spawn process: %w", err)
-	}
-
-	// Send the initial message. If the write fails, the subprocess is
-	// gone — it self-evicted (D3 split-brain self-heal), crashed, or
-	// was reaped in the race window between Spawn returning a cached
-	// handle and this write. The subprocess never received the
-	// message, so retrying is clean: kill the stale entry, spawn a
-	// genuinely fresh subprocess (which cold-loads current S3 state),
-	// and write once more. Without this retry, every op that raced a
-	// self-eviction surfaced to the user as
-	// "failed to write length prefix: file already closed".
-	if err := proc.Conn.WriteMessage(msg); err != nil {
-		log.Warn().
-			Str("owner_space", ownerSpace).
-			Err(err).
-			Msg("vault-manager send: initial write failed (subprocess gone) — respawning and retrying once")
-		pm.Kill(ownerSpace)
-		proc, err = pm.Spawn(ownerSpace)
-		if err != nil {
-			return nil, fmt.Errorf("failed to respawn process after write failure: %w", err)
-		}
-		if err := proc.Conn.WriteMessage(msg); err != nil {
-			pm.Kill(ownerSpace)
-			return nil, fmt.Errorf("failed to send message after respawn: %w", err)
-		}
-	}
-
-	// Read messages in a loop, handling sealer requests until we get the final response
-	deadline := time.Now().Add(timeout)
-	for {
-		// Check deadline
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			pm.Kill(ownerSpace)
-			return nil, fmt.Errorf("timeout waiting for response")
-		}
-
-		// Read next message with timeout
-		response, err := proc.Conn.ReadMessageWithTimeout(remaining)
-		if err != nil {
-			pm.Kill(ownerSpace)
-			return nil, fmt.Errorf("failed to read response: %w", err)
-		}
-
-		// Handle different message types from vault-manager
-		switch response.Type {
-		case MessageTypeSealerRequest:
-			// Handle sealer request and send response back
-			sealerResp := pm.handleSealerRequest(response)
-			if err := proc.Conn.WriteMessage(sealerResp); err != nil {
-				pm.Kill(ownerSpace)
-				return nil, fmt.Errorf("failed to send sealer response: %w", err)
-			}
-			// Continue waiting for the final response
-			continue
-
-		case MessageTypeHTTPRequest:
-			// Handle HTTP proxy request: forward to parent and send response back
-			httpResp := pm.handleHTTPRequest(response)
-			if err := proc.Conn.WriteMessage(httpResp); err != nil {
-				pm.Kill(ownerSpace)
-				return nil, fmt.Errorf("failed to send HTTP response: %w", err)
-			}
-			// Continue waiting for the final response
-			continue
-
-		case MessageTypeNATSPublish, MessageTypeLog, MessageTypeRoutingHandoff:
-			// These messages should be forwarded to parent, not returned as the response.
-			// In the process_manager context, we don't have direct access to forward them,
-			// so we log a warning and continue waiting for the actual response.
-			log.Warn().
-				Str("owner_space", ownerSpace).
-				Str("message_type", string(response.Type)).
-				Msg("Received intermediate message from vault-manager, waiting for actual response")
-			continue
-
-		default:
-			// Got the final response (response, error, etc.)
-			return response, nil
-		}
-	}
-}
-
-// handleHTTPRequest forwards an HTTP proxy request from vault-manager to the parent
-func (pm *ProcessManager) handleHTTPRequest(msg *Message) *Message {
-	if pm.sealerHandler == nil {
-		log.Warn().Msg("Sealer handler not configured for HTTP proxy, returning error")
-		return &Message{
-			RequestID: msg.RequestID,
-			Type:      MessageTypeHTTPResponse,
-			Payload:   []byte(`{"error":"HTTP proxy not available"}`),
-		}
-	}
-	return pm.sealerHandler.ForwardHTTPRequest(msg)
-}
-
-// handleSealerRequest processes a sealer request from vault-manager
-func (pm *ProcessManager) handleSealerRequest(msg *Message) *Message {
-	if pm.sealerHandler == nil {
-		log.Warn().Msg("Sealer handler not configured, returning mock response")
-		return &Message{
-			RequestID: msg.RequestID,
-			Type:      MessageTypeSealerResponse,
-			Payload:   []byte(`{"success":false,"error":"sealer not available"}`),
-		}
-	}
-	return pm.sealerHandler.HandleSealerRequest(msg)
-}
-
-// GetOrSpawn gets an existing process or spawns a new one
-func (pm *ProcessManager) GetOrSpawn(ownerSpace string) (*ManagedProcess, error) {
-	return pm.Spawn(ownerSpace)
-}
-
-// Count returns the number of active processes
-func (pm *ProcessManager) Count() int {
-	pm.mu.RLock()
-	defer pm.mu.RUnlock()
-	return len(pm.processes)
-}
-
-// List returns a list of active owner spaces
-func (pm *ProcessManager) List() []string {
-	pm.mu.RLock()
-	defer pm.mu.RUnlock()
-
-	result := make([]string, 0, len(pm.processes))
-	for ownerSpace := range pm.processes {
-		result = append(result, ownerSpace)
-	}
-	return result
-}
-
 // KillAll terminates all vault-manager processes
 func (pm *ProcessManager) KillAll() {
 	pm.mu.Lock()
@@ -394,47 +233,4 @@ func (pm *ProcessManager) KillAll() {
 	}
 
 	pm.processes = make(map[string]*ManagedProcess)
-}
-
-// GetLRU returns the least recently used process
-func (pm *ProcessManager) GetLRU() *ManagedProcess {
-	pm.mu.RLock()
-	defer pm.mu.RUnlock()
-
-	var oldest *ManagedProcess
-	for _, proc := range pm.processes {
-		if oldest == nil || proc.LastAccess.Before(oldest.LastAccess) {
-			oldest = proc
-		}
-	}
-	return oldest
-}
-
-// EvictLRU kills the least recently used process
-// SECURITY: Uses random jitter to prevent timing side-channel attacks
-func (pm *ProcessManager) EvictLRU() error {
-	oldest := pm.GetLRU()
-	if oldest == nil {
-		return nil
-	}
-
-	// SECURITY: Add random jitter to prevent timing inference
-	addProcessEvictionJitter()
-
-	return pm.Kill(oldest.OwnerSpace)
-}
-
-// addProcessEvictionJitter adds a random delay to process eviction
-// SECURITY: This prevents timing attacks that could infer which vaults are active
-func addProcessEvictionJitter() {
-	jitterMs, err := rand.Int(rand.Reader, big.NewInt(processEvictionJitterMaxMs))
-	if err != nil {
-		log.Warn().Err(err).Msg("Failed to generate process eviction jitter")
-		return
-	}
-
-	jitter := time.Duration(jitterMs.Int64()) * time.Millisecond
-	if jitter > 0 {
-		time.Sleep(jitter)
-	}
 }
