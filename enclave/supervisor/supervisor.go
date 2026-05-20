@@ -317,6 +317,11 @@ func (s *Supervisor) handleVaultOp(ctx context.Context, msg *Message) (*Message,
 		return nil, fmt.Errorf("owner_space required for vault operation")
 	}
 
+	// Harness-only: simulate real S3/KMS round-trip latency so the
+	// Tier-2 concurrent-load scenario can measure serial vs concurrent
+	// throughput. No-op in production builds.
+	harnessOpLatency()
+
 	// For PIN operations, include the attestation private key
 	// The mobile app encrypts PIN with the attestation public key
 	if isPinOperation(msg.Subject) {

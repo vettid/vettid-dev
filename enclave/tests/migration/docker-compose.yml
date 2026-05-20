@@ -81,6 +81,11 @@ services:
       - AWS_SECRET_ACCESS_KEY=test
       - NATS_URL=nats://nats:4222
       - SHARED_ARNS=/shared/arns.env
+      # Harness-only per-vault-op latency injection (ms). Flows from
+      # the host env at compose-up: `HARNESS_OP_LATENCY_MS=50 ./run.sh`.
+      # The supervisor's testharness build reads it; production
+      # binaries ignore it. Default 0 = no injection.
+      - HARNESS_OP_LATENCY_MS=${HARNESS_OP_LATENCY_MS:-0}
     depends_on:
       init:
         condition: service_completed_successfully
@@ -114,6 +119,7 @@ services:
       - AWS_SECRET_ACCESS_KEY=test
       - NATS_URL=nats://nats:4222
       - SHARED_ARNS=/shared/arns.env
+      - HARNESS_OP_LATENCY_MS=${HARNESS_OP_LATENCY_MS:-0}
     depends_on:
       init:
         condition: service_completed_successfully

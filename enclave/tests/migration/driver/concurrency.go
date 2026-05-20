@@ -143,6 +143,102 @@ func scenarioConcurrentLoad(ctx context.Context, h *Harness) error {
 	return nil
 }
 
+// concurrentUsers is how many distinct users the multi-user
+// scenario enrolls. The supervisor-concurrency win only appears
+// ACROSS users — each user has one single-threaded vault-manager
+// subprocess, so one user's ops serialize no matter what. With K
+// users and a serial supervisor, total ≈ K × opsPerUser × latency;
+// with a concurrent supervisor it drops toward opsPerUser × latency.
+const concurrentUsers = 4
+
+// scenarioConcurrentMultiUser is the throughput oracle for the
+// vsock-multiplex work. It enrolls concurrentUsers users, then fires
+// the read-op set for every user simultaneously and reports
+// wall-clock. Run it with HARNESS_OP_LATENCY_MS set (e.g. 50) so the
+// serial-vs-concurrent gap is measurable:
+//
+//	serial supervisor:     ≈ users × ops × latency
+//	concurrent supervisor: ≈ ops × latency   (users run in parallel)
+//
+// Correctness criteria are identical to concurrent-load: every op
+// must return, and request_type must match. The wall-clock line is
+// the perf signal — a green run with no speedup means the multiplex
+// didn't actually parallelize across users.
+func scenarioConcurrentMultiUser(ctx context.Context, h *Harness) error {
+	users := make([]*EnrolledUser, 0, concurrentUsers)
+	for i := 0; i < concurrentUsers; i++ {
+		u := newEnrolledUser()
+		if err := u.requestAttestation(ctx, h); err != nil {
+			return fmt.Errorf("user %d attestation: %w", i, err)
+		}
+		if err := u.setupPIN(ctx, h); err != nil {
+			return fmt.Errorf("user %d pin.setup: %w", i, err)
+		}
+		if err := u.createCredential(ctx, h); err != nil {
+			return fmt.Errorf("user %d credential.create: %w", i, err)
+		}
+		if err := u.unlockPIN(ctx, h, false); err != nil {
+			return fmt.Errorf("user %d pin.unlock: %w", i, err)
+		}
+		users = append(users, u)
+	}
+	total := len(users) * len(concurrentReadOps)
+	fmt.Printf("    enrolled %d users — firing %d concurrent ops (%d ops × %d users)\n",
+		len(users), total, len(concurrentReadOps), len(users))
+
+	results := make([]opResult, 0, total)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+
+	start := time.Now()
+	for _, u := range users {
+		for _, op := range concurrentReadOps {
+			wg.Add(1)
+			go func(ownerSpace, op string) {
+				defer wg.Done()
+				opStart := time.Now()
+				respBytes, err := h.publishAndAwait(ctx, ownerSpace, op, map[string]any{})
+				res := opResult{op: op, latency: time.Since(opStart)}
+				if err != nil {
+					res.err = err
+				} else {
+					res.gotType, res.err = checkResponse(op, respBytes)
+				}
+				mu.Lock()
+				results = append(results, res)
+				mu.Unlock()
+			}(u.OwnerSpace, op)
+		}
+	}
+	wg.Wait()
+	elapsed := time.Since(start)
+
+	var failures []string
+	var slowest time.Duration
+	for _, r := range results {
+		if r.latency > slowest {
+			slowest = r.latency
+		}
+		if r.err != nil {
+			failures = append(failures, fmt.Sprintf("%s: %v", r.op, r.err))
+		}
+	}
+	fmt.Printf("    %d ops, wall-clock=%s, slowest single op=%s\n",
+		len(results), elapsed.Round(time.Millisecond), slowest.Round(time.Millisecond))
+
+	if len(failures) > 0 {
+		shown := failures
+		if len(shown) > 6 {
+			shown = shown[:6]
+		}
+		for _, f := range shown {
+			fmt.Printf("    FAIL %s\n", f)
+		}
+		return fmt.Errorf("%d/%d concurrent ops failed", len(failures), len(results))
+	}
+	return nil
+}
+
 // checkResponse validates one op's response: it must not carry an
 // error field, and its request_type must match the op that was sent.
 // A mismatch means the transport delivered the wrong vault response

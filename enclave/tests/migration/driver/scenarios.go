@@ -44,6 +44,7 @@ var AllScenarios = []Scenario{
 	{Name: "migration-config-publish", Run: scenarioMigrationConfigPublish},
 	{Name: "unlock-only", Run: scenarioUnlockOnly},
 	{Name: "concurrent-load", Run: scenarioConcurrentLoad},
+	{Name: "concurrent-multiuser", Run: scenarioConcurrentMultiUser},
 	{Name: "migration-handoff", Run: scenarioMigrationHandoff},
 	// Roadmap (see ../README.md §"Scenarios to implement"):
 	// {Name: "happy-path",                Run: scenarioHappyPath},
