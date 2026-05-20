@@ -157,6 +157,17 @@ type VaultState struct {
 	// pre-dates D3. See flushVaultStateToS3.
 	loadedVaultStateETag string
 
+	// lastFlushedStateHash is the WS3 content digest of the vault state
+	// as of our most recent SUCCESSFUL S3 store (see
+	// createEncryptedVaultState). flushVaultStateToS3 skips the S3 PUT
+	// when a freshly-computed hash equals this — the main loop persists
+	// after every op (reads included) and would otherwise re-upload an
+	// unchanged DB every debounce window. Zero value (fresh struct /
+	// cold load) never matches a real hash, so the first flush always
+	// proceeds; set only on a successful store, so a failed store
+	// leaves it stale and the next call retries.
+	lastFlushedStateHash [32]byte
+
 	// vaultStateGeneration is the monotonic counter stamped on the
 	// vault_state.enc wrapper. Bumped on every successful store; the
 	// loaded value on cold load becomes our floor. Combined with the

@@ -680,10 +680,16 @@ func (p *ParentProcess) sendWithHandlerSupport(ctx context.Context, msg *Enclave
 	if p.enclaveMux == nil {
 		return nil, fmt.Errorf("enclave transport not initialized")
 	}
-	// 60s bounds one vault op end-to-end. The supervisor's own per-op
-	// deadline is 30s; this covers a cold vault load plus its nested
-	// S3/KMS round-trips with margin.
-	reqCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	// 120s bounds one vault op end-to-end. The supervisor's own per-op
+	// deadline is 30s, but same-user ops serialize on a per-VaultProcess
+	// lock — under load an op can wait behind a couple of others before
+	// its own 30s starts. 60s was too tight: on 2026-05-20 a loaded
+	// enclave pushed a phone-approval op past it, the forward failed,
+	// and the approval result was lost (the desktop saw "request timed
+	// out" even though the grant landed later via JetStream redelivery).
+	// 120s leaves margin; a genuinely hung enclave still fails, just
+	// not a merely-slow one.
+	reqCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 	resp, err := p.enclaveMux.SendRequest(reqCtx, msg)
 	if err != nil {

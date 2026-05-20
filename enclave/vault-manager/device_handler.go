@@ -657,6 +657,60 @@ func (dh *DeviceHandler) HandlePhoneApprovalResponse(ctx context.Context, msg *I
 	}, nil
 }
 
+// HandleListPendingApprovals returns the device-operation approvals
+// currently awaiting this owner's decision.
+//
+// The approval REQUEST is delivered to the phone over a core-NATS
+// forApp.* subject — no replay. A phone that was killed (or merely
+// offline) when the desktop made the request never sees it. This op
+// lets the phone pull the authoritative pending set from the vault on
+// every NATS (re)connect and rebuild its approval UI, so a request is
+// never silently lost. Subject: OwnerSpace.{guid}.forVault.device.approval-pending.
+//
+// Stale entries (older than 5 min — well past the desktop's ~60s wait)
+// are filtered out so the phone isn't shown approvals no desktop is
+// still waiting on. The 10-minute sweep in doCleanExpiredSessions is
+// the hard bound; this is just presentation hygiene.
+func (dh *DeviceHandler) HandleListPendingApprovals(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	const freshWindow = 5 * time.Minute
+	now := time.Now()
+
+	dh.mu.Lock()
+	pending := make([]map[string]interface{}, 0, len(dh.pendingApprovals))
+	for _, p := range dh.pendingApprovals {
+		if now.Sub(p.CreatedAt) > freshWindow {
+			continue
+		}
+		pending = append(pending, map[string]interface{}{
+			"request_id":    p.RequestID,
+			"connection_id": p.ConnectionID,
+			"operation":     p.Operation,
+			"payload":       p.Payload,
+			"timestamp":     p.CreatedAt.UTC(),
+		})
+	}
+	dh.mu.Unlock()
+
+	respPayload, err := json.Marshal(map[string]interface{}{
+		"success": true,
+		"pending": pending,
+	})
+	if err != nil {
+		return &OutgoingMessage{
+			RequestID: msg.GetID(),
+			Type:      MessageTypeError,
+			Payload:   json.RawMessage(`{"error":"failed to marshal pending approvals"}`),
+		}, nil
+	}
+	log.Debug().Str("owner_space", dh.ownerSpace).Int("pending", len(pending)).
+		Msg("device: served pending-approvals list to phone")
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respPayload,
+	}, nil
+}
+
 // checkSession validates that the device session is active and not expired.
 // Wall-clock expiry is the only bound — there's no heartbeat requirement
 // under the new design (see DESKTOP-CONNECTION-FLOW.md).

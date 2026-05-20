@@ -1036,6 +1036,11 @@ type BackupData struct {
 	Data            []byte `json:"data"`             // Encrypted SQLite dump
 	HMAC            []byte `json:"hmac"`             // HMAC-SHA256 of Data
 	CreatedAt       int64  `json:"created_at"`       // Unix timestamp
+	// PlaintextHash is SHA-256 of the PLAINTEXT export (before encrypt).
+	// Data carries a random nonce so it differs on every backup even
+	// for an unchanged DB; PlaintextHash is the stable change-detection
+	// digest the vault-manager uses to skip redundant S3 writes (WS3).
+	PlaintextHash []byte `json:"plaintext_hash,omitempty"`
 }
 
 // CreateBackup creates an encrypted backup of the database
@@ -1048,6 +1053,11 @@ func (s *SQLiteStorage) CreateBackup() (*BackupData, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to export data: %w", err)
 	}
+
+	// Stable digest of the plaintext export — deterministic for an
+	// unchanged DB (unlike the encrypted Data field below, which gets a
+	// fresh nonce each call). Lets the caller detect "nothing changed".
+	plaintextHash := sha256.Sum256(backup)
 
 	// Encrypt the backup
 	encryptedBackup, err := s.encrypt(backup)
@@ -1067,6 +1077,7 @@ func (s *SQLiteStorage) CreateBackup() (*BackupData, error) {
 		Data:            encryptedBackup,
 		HMAC:            backupHMAC,
 		CreatedAt:       time.Now().Unix(),
+		PlaintextHash:   plaintextHash[:],
 	}, nil
 }
 

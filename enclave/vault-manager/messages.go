@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -1535,6 +1536,11 @@ func (mh *MessageHandler) handleDeviceOperation(ctx context.Context, msg *Incomi
 	case "approval":
 		// Phone responds to a pending per-operation approval request (not stage-2 auth)
 		return mh.deviceHandler.HandlePhoneApprovalResponse(ctx, msg)
+	case "approval-pending":
+		// Phone pulls the set of approvals still awaiting its decision —
+		// recovers requests missed while the app was killed/offline
+		// (forApp.* delivery is core NATS, no replay).
+		return mh.deviceHandler.HandleListPendingApprovals(ctx, msg)
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown device operation: %s", opType))
 	}
@@ -2292,9 +2298,27 @@ func (mh *MessageHandler) flushVaultStateToS3() {
 		return
 	}
 
-	encryptedState, err := mh.createEncryptedVaultState(dek)
+	encryptedState, contentHash, err := mh.createEncryptedVaultState(dek)
 	if err != nil {
 		log.Error().Err(err).Str("owner_space", mh.ownerSpace).Msg("Failed to create encrypted vault state for persistence")
+		return
+	}
+
+	// WS3: skip the S3 PUT when the vault state is byte-identical to
+	// what we last successfully flushed. The main loop calls persist
+	// after every successful op (reads included) and a periodic timer
+	// flushes on top — without this guard a polling-only vault
+	// re-uploads the full multi-hundred-KB DB every debounce window
+	// forever. Skipping an identical write is a guaranteed no-op: the
+	// S3 object already holds exactly this content. lastFlushedStateHash
+	// is set only after a *successful* store, so a failed store leaves
+	// it stale and the next call retries.
+	mh.vaultState.mu.RLock()
+	unchanged := contentHash == mh.vaultState.lastFlushedStateHash
+	mh.vaultState.mu.RUnlock()
+	if unchanged {
+		log.Debug().Str("owner_space", mh.ownerSpace).
+			Msg("vault state unchanged since last flush — skipping S3 PUT")
 		return
 	}
 
@@ -2404,6 +2428,7 @@ func (mh *MessageHandler) flushVaultStateToS3() {
 	mh.vaultState.loadedVaultStateSize = newSize
 	mh.vaultState.loadedVaultStateETag = newETag
 	mh.vaultState.vaultStateGeneration = nextGen
+	mh.vaultState.lastFlushedStateHash = contentHash
 	mh.vaultState.mu.Unlock()
 }
 
@@ -2436,8 +2461,10 @@ func (mh *MessageHandler) handleCredentialOperation(ctx context.Context, msg *In
 			log.Error().Str("owner_space", mh.ownerSpace).
 				Msg("SECURITY: REFUSING to persist vault state after credential.create — routing ownership revoked (split-brain guard)")
 		} else if dek != nil && mh.sealerProxy != nil {
-			// Create encrypted vault state for S3 storage
-			encryptedState, err := mh.createEncryptedVaultState(dek)
+			// Create encrypted vault state for S3 storage. The content
+			// hash is unused here — enrollment's first write always
+			// stores unconditionally.
+			encryptedState, _, err := mh.createEncryptedVaultState(dek)
 			if err != nil {
 				log.Warn().Err(err).Str("owner_space", mh.ownerSpace).Msg("Failed to create encrypted vault state")
 			} else {
@@ -3684,10 +3711,12 @@ func generateMessageID() string {
 }
 
 // createEncryptedVaultState creates DEK-encrypted vault state for S3 storage.
-// Returns the encrypted bytes ready for S3 storage.
+// Returns the encrypted bytes ready for S3 storage AND a deterministic
+// content hash of the (plaintext) state — flushVaultStateToS3 uses the
+// hash to skip an S3 PUT when nothing actually changed.
 // Includes both cryptographic state AND the SQLite database backup so that
 // all vault data (profile, secrets, personal data, etc.) survives cold restarts.
-func (mh *MessageHandler) createEncryptedVaultState(dek []byte) ([]byte, error) {
+func (mh *MessageHandler) createEncryptedVaultState(dek []byte) ([]byte, [32]byte, error) {
 	// Create DEK-encrypted vault state
 	mh.vaultState.mu.RLock()
 	persistedState := struct {
@@ -3740,12 +3769,17 @@ func (mh *MessageHandler) createEncryptedVaultState(dek []byte) ([]byte, error) 
 	// reads it back from there to repopulate the carve-outs.
 	mh.vaultState.mu.RUnlock()
 
-	// Include SQLite database backup if storage is initialized
+	// Include SQLite database backup if storage is initialized.
+	// dbContentHash is the SQLite layer's hash of the PLAINTEXT export —
+	// CreateBackup's encrypted Data field carries a random nonce, so the
+	// encrypted blob itself can't be used to detect "did the DB change".
+	var dbContentHash []byte
 	if mh.storage != nil {
 		backup, err := mh.storage.CreateBackup()
 		if err != nil {
 			log.Warn().Err(err).Str("owner_space", mh.ownerSpace).Msg("Failed to create database backup for vault state persistence")
 		} else {
+			dbContentHash = backup.PlaintextHash
 			backupBytes, err := json.Marshal(backup)
 			if err != nil {
 				log.Warn().Err(err).Str("owner_space", mh.ownerSpace).Msg("Failed to marshal database backup")
@@ -3756,19 +3790,37 @@ func (mh *MessageHandler) createEncryptedVaultState(dek []byte) ([]byte, error) 
 		}
 	}
 
+	// WS3 content hash — a deterministic digest of the vault state used
+	// by flushVaultStateToS3 to skip an S3 PUT when nothing changed. The
+	// encrypted DatabaseBackup blob has a random nonce and can't be
+	// hashed directly, so substitute the plaintext-export hash; every
+	// other field of persistedState (CEK keys, UTK pairs, sealed
+	// material) marshals deterministically.
+	var contentHash [32]byte
+	{
+		dbBlob := persistedState.DatabaseBackup
+		persistedState.DatabaseBackup = nil
+		metaBytes, _ := json.Marshal(persistedState)
+		persistedState.DatabaseBackup = dbBlob
+		h := sha256.New()
+		h.Write(metaBytes)
+		h.Write(dbContentHash)
+		copy(contentHash[:], h.Sum(nil))
+	}
+
 	// Marshal and encrypt with DEK
 	stateData, err := json.Marshal(persistedState)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal vault state: %w", err)
+		return nil, [32]byte{}, fmt.Errorf("failed to marshal vault state: %w", err)
 	}
 	defer zeroBytes(stateData)
 
 	encryptedState, err := encryptWithDEK(dek, stateData)
 	if err != nil {
-		return nil, fmt.Errorf("failed to encrypt vault state: %w", err)
+		return nil, [32]byte{}, fmt.Errorf("failed to encrypt vault state: %w", err)
 	}
 
-	return encryptedState, nil
+	return encryptedState, contentHash, nil
 }
 
 // SecureErase zeros all sensitive data in the message handler and its components
