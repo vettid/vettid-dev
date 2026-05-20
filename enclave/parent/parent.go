@@ -27,33 +27,6 @@ type ParentProcess struct {
 	routing        *RoutingManager // Per-user ownership + routing (see routing.go)
 	pcr0           string          // Attested PCR0 of this enclave, populated once known
 	mu             sync.RWMutex
-
-	// Vsock multiplex state.
-	//
-	// Replaces the previous "one request at a time" model that held
-	// requestMu for the whole round-trip (write, wait for enclave,
-	// process any nested KMS/storage callbacks, return). Under burst
-	// load (desktop screen-load = 5+ ops + phone background polling)
-	// that serialization piled requests into the parent's msgChan;
-	// JetStream's AckWait expired waiting; redeliveries amplified
-	// the queue; and individual round-trips drifted into the tens of
-	// seconds. The device-approval round-trip routinely timed out at
-	// 60s even though vault CPU stayed under 1%.
-	//
-	// New model:
-	//   - One reader goroutine pulls every message from vsock and
-	//     demuxes by Type. Final-response types match against
-	//     pendingRequests[RequestID]; intermediate types (KMS,
-	//     storage, NATS publish, etc.) are dispatched to background
-	//     handlers that write their response back via writeMu only.
-	//   - Multiple goroutines may call requestEnclave concurrently;
-	//     they serialize only on the per-write writeMu, never on
-	//     full round-trips.
-	//   - The msgChan consumer is now a worker pool, so JetStream
-	//     deliveries don't queue behind one slow op.
-	pendingMu       sync.Mutex
-	pendingRequests map[string]chan *EnclaveMessage
-	demuxStarted    bool
 }
 
 // NewParentProcess creates a new parent process
@@ -152,12 +125,6 @@ func (p *ParentProcess) Run(ctx context.Context) error {
 	}
 	p.vsockClient = vsockClient
 	defer vsockClient.Close()
-
-	// Start the vsock response demultiplexer NOW that the handshake
-	// is complete and the connection is in normal-message mode. From
-	// here on, anyone who needs to talk to the enclave should call
-	// requestEnclave; sendWithHandlerSupport is gone.
-	p.startVsockDemux(ctx)
 
 	// Stamp our PCR0 onto the parent. The vsock handshake binds this
 	// instance to the PCR0 it just loaded from SSM (or static config in
@@ -403,38 +370,18 @@ func (p *ParentProcess) routeNATSToEnclave(ctx context.Context, msgChan chan *NA
 		Str("enclave_id", p.enclaveID).
 		Msg("Subscribed to OwnerSpace, MessageSpace, Control, and enclave topics")
 
-	// Parallel msgChan consumer pool. With the vsock multiplexer in
-	// place, multiple in-flight requests no longer serialize on a
-	// requestMu — they're bounded only by the vault-manager's
-	// per-op processing speed inside the enclave. The legacy
-	// single-goroutine consumer left every JetStream burst piling
-	// into the 1000-deep msgChan; one slow round-trip (the human
-	// taking 30 s to approve an unlock) blocked everything behind
-	// it. Worker count picked to be larger than typical concurrent
-	// op fan-in (5 phone-side polls + 5 desktop screen-load ops +
-	// approval traffic) without flooding the enclave's input queue.
-	const consumerWorkers = 8
-	for i := 0; i < consumerWorkers; i++ {
-		go func(workerID int) {
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case msg := <-msgChan:
-					if err := p.forwardToEnclave(ctx, msg); err != nil {
-						log.Error().Err(err).
-							Int("worker", workerID).
-							Str("subject", msg.Subject).
-							Msg("Failed to forward message to enclave")
-					}
-				}
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case msg := <-msgChan:
+			if err := p.forwardToEnclave(ctx, msg); err != nil {
+				log.Error().Err(err).
+					Str("subject", msg.Subject).
+					Msg("Failed to forward message to enclave")
 			}
-		}(i)
+		}
 	}
-
-	// Block on context until shutdown — workers exit via ctx.Done.
-	<-ctx.Done()
-	return nil
 }
 
 // forwardToEnclave forwards a NATS message to the enclave
@@ -615,11 +562,8 @@ func (p *ParentProcess) forwardToEnclave(ctx context.Context, msg *NATSMessage) 
 		}
 	}
 
-	// Send to enclave. Nested handler requests (KMS, storage, NATS
-	// publish, etc.) are now demuxed and handled out-of-band by the
-	// reader goroutine — this call just waits for the final
-	// response.
-	response, err := p.requestEnclave(ctx, enclaveMsg)
+	// Send to enclave and handle nested handler requests
+	response, err := p.sendWithHandlerSupport(ctx, enclaveMsg)
 	if err != nil {
 		return err
 	}
@@ -717,6 +661,369 @@ func (p *ParentProcess) evictVaultInEnclave(userGuid string) {
 		Msg("routing: sent evict_vault to supervisor (ownership released)")
 }
 
+// sendWithHandlerSupport sends a message to the enclave and handles any nested
+// handler_get requests that may come back before the final response.
+// This allows the enclave to dynamically request handlers during vault operations.
+//
+// CRITICAL: Uses requestMu to serialize the entire request-response cycle.
+// This prevents race conditions where multiple concurrent NATS messages could
+// interleave their vsock writes and reads, causing responses to be delivered
+// to the wrong goroutine. The pattern is:
+//   Goroutine A: write(pin-unlock) -> read() expects pin-unlock response
+//   Goroutine B: write(profile.get) -> read() expects profile.get response
+// Without requestMu, A could read B's response and vice versa.
+func (p *ParentProcess) sendWithHandlerSupport(ctx context.Context, msg *EnclaveMessage) (*EnclaveMessage, error) {
+	// CRITICAL: Lock requestMu for the entire request-response cycle
+	// This ensures only one NATS message is processed through vsock at a time,
+	// preventing response interleaving between concurrent requests
+	p.vsockClient.requestMu.Lock()
+	defer p.vsockClient.requestMu.Unlock()
+
+	// Write the initial message
+	p.vsockClient.writeMu.Lock()
+	if err := p.vsockClient.writeMessage(msg); err != nil {
+		p.vsockClient.writeMu.Unlock()
+		return nil, fmt.Errorf("failed to send message: %w", err)
+	}
+	p.vsockClient.writeMu.Unlock()
+
+	// Read responses until we get the final one
+	p.vsockClient.readMu.Lock()
+	defer p.vsockClient.readMu.Unlock()
+
+	for {
+		response, err := p.vsockClient.readMessage()
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to read vsock response")
+			return nil, fmt.Errorf("failed to read response: %w", err)
+		}
+
+		log.Debug().
+			Str("type", string(response.Type)).
+			Bool("has_error", response.Error != "").
+			Str("error", response.Error).
+			Int("credential_len", len(response.Credential)).
+			Int("payload_len", len(response.Payload)).
+			Msg("Received vsock response")
+
+		// Handle log messages from enclave (fire-and-forget, continue waiting for actual response)
+		if response.Type == EnclaveMessageTypeLog {
+			// Process the log message (outputs to stdout/journald for CloudWatch)
+			switch response.LogLevel {
+			case "debug":
+				log.Debug().Str("source", response.LogSource).Msg(response.LogMessage)
+			case "info":
+				log.Info().Str("source", response.LogSource).Msg(response.LogMessage)
+			case "warn":
+				log.Warn().Str("source", response.LogSource).Msg(response.LogMessage)
+			case "error":
+				log.Error().Str("source", response.LogSource).Msg(response.LogMessage)
+			default:
+				log.Info().Str("source", response.LogSource).Str("level", response.LogLevel).Msg(response.LogMessage)
+			}
+			continue // Keep waiting for the actual response
+		}
+
+		// Check if this is a KMS encrypt request (enclave needs to seal data)
+		if response.Type == EnclaveMessageTypeKMSEncrypt {
+			log.Debug().
+				Int("plaintext_len", len(response.Plaintext)).
+				Msg("Enclave requested KMS encrypt during operation")
+
+			kmsResp, err := p.handleKMSEncrypt(ctx, response)
+			if err != nil {
+				log.Error().Err(err).Msg("Failed to handle KMS encrypt request")
+				errMsg := &EnclaveMessage{
+					Type:  EnclaveMessageTypeError,
+					Error: err.Error(),
+				}
+				p.vsockClient.writeMu.Lock()
+				p.vsockClient.writeMessage(errMsg)
+				p.vsockClient.writeMu.Unlock()
+			} else {
+				p.vsockClient.writeMu.Lock()
+				if err := p.vsockClient.writeMessage(kmsResp); err != nil {
+					log.Error().Err(err).Msg("Failed to send KMS encrypt response")
+				}
+				p.vsockClient.writeMu.Unlock()
+			}
+			continue // Wait for next response
+		}
+
+		// Check if this is a KMS decrypt request (enclave needs to unseal data)
+		if response.Type == EnclaveMessageTypeKMSDecrypt {
+			log.Debug().
+				Int("ciphertext_len", len(response.CiphertextDEK)).
+				Msg("Enclave requested KMS decrypt during operation")
+
+			kmsResp, err := p.handleKMSDecrypt(ctx, response)
+			if err != nil {
+				log.Error().Err(err).Msg("Failed to handle KMS decrypt request")
+				errMsg := &EnclaveMessage{
+					Type:  EnclaveMessageTypeError,
+					Error: err.Error(),
+				}
+				p.vsockClient.writeMu.Lock()
+				p.vsockClient.writeMessage(errMsg)
+				p.vsockClient.writeMu.Unlock()
+			} else {
+				p.vsockClient.writeMu.Lock()
+				if err := p.vsockClient.writeMessage(kmsResp); err != nil {
+					log.Error().Err(err).Msg("Failed to send KMS decrypt response")
+				}
+				p.vsockClient.writeMu.Unlock()
+			}
+			continue // Wait for next response
+		}
+
+		// Check if this is a storage GET request (enclave needs to read from S3)
+		if response.Type == EnclaveMessageTypeStorageGet {
+			log.Debug().
+				Str("key", response.StorageKey).
+				Msg("Enclave requested storage GET during operation")
+
+			storageResp, err := p.handleStorageGet(ctx, response)
+			if err != nil {
+				log.Error().Err(err).Msg("Failed to handle storage GET request")
+				errMsg := &EnclaveMessage{
+					Type:  EnclaveMessageTypeError,
+					Error: err.Error(),
+				}
+				p.vsockClient.writeMu.Lock()
+				p.vsockClient.writeMessage(errMsg)
+				p.vsockClient.writeMu.Unlock()
+			} else {
+				p.vsockClient.writeMu.Lock()
+				if err := p.vsockClient.writeMessage(storageResp); err != nil {
+					log.Error().Err(err).Msg("Failed to send storage GET response")
+				}
+				p.vsockClient.writeMu.Unlock()
+			}
+			continue // Wait for next response
+		}
+
+		// Check if this is a storage PUT request (enclave needs to write to S3)
+		if response.Type == EnclaveMessageTypeStoragePut {
+			log.Debug().
+				Str("key", response.StorageKey).
+				Int("data_len", len(response.Payload)).
+				Msg("Enclave requested storage PUT during operation")
+
+			storageResp, err := p.handleStoragePut(ctx, response)
+			if err != nil {
+				log.Error().Err(err).Msg("Failed to handle storage PUT request")
+				errMsg := &EnclaveMessage{
+					Type:  EnclaveMessageTypeError,
+					Error: err.Error(),
+				}
+				p.vsockClient.writeMu.Lock()
+				p.vsockClient.writeMessage(errMsg)
+				p.vsockClient.writeMu.Unlock()
+			} else {
+				p.vsockClient.writeMu.Lock()
+				if err := p.vsockClient.writeMessage(storageResp); err != nil {
+					log.Error().Err(err).Msg("Failed to send storage PUT response")
+				}
+				p.vsockClient.writeMu.Unlock()
+			}
+			continue // Wait for next response
+		}
+
+		// Check if this is a NATS publish request from vault-manager
+		// (e.g., feed event notifications, profile updates)
+		// The supervisor forwards these fire-and-forget; no response is expected.
+		if response.Type == EnclaveMessageTypeNATSPublish {
+			log.Debug().
+				Str("subject", response.Subject).
+				Int("payload_len", len(response.Payload)).
+				Msg("Vault-manager requested NATS publish during operation")
+
+			if err := p.natsClient.Publish(response.Subject, response.Payload); err != nil {
+				log.Error().Err(err).Str("subject", response.Subject).Msg("Failed to publish NATS message from enclave")
+			}
+			continue // Wait for next response
+		}
+
+		// Check if this is a NATS account seed request from the enclave
+		if response.Type == EnclaveMessageTypeNATSAccountSeedGet {
+			log.Debug().
+				Str("owner_space", response.OwnerSpace).
+				Msg("Enclave requested NATS account seed during operation")
+
+			seedResp := p.handleAccountSeedGet(ctx, response)
+			p.vsockClient.writeMu.Lock()
+			if err := p.vsockClient.writeMessage(seedResp); err != nil {
+				log.Error().Err(err).Msg("Failed to send account seed response")
+			}
+			p.vsockClient.writeMu.Unlock()
+			continue // Wait for next response
+		}
+
+		// Check if this is a TURN credentials request from the enclave
+		if response.Type == EnclaveMessageTypeTurnCredentialsGet {
+			log.Debug().
+				Str("owner_space", response.OwnerSpace).
+				Msg("Enclave requested TURN credentials")
+
+			turnResp := p.handleTurnCredentialsGet(ctx, response)
+			p.vsockClient.writeMu.Lock()
+			if err := p.vsockClient.writeMessage(turnResp); err != nil {
+				log.Error().Err(err).Msg("Failed to send TURN credentials response")
+			}
+			p.vsockClient.writeMu.Unlock()
+			continue // Wait for next response
+		}
+
+		// PCR-signing public-key fetch — enclave needs the DER bytes
+		// to verify migration-config signatures.
+		if response.Type == EnclaveMessageTypePCRSigningKeyGet {
+			log.Debug().Msg("Enclave requested PCR signing public key")
+			keyResp := p.handlePCRSigningKeyGet(ctx, response)
+			p.vsockClient.writeMu.Lock()
+			if err := p.vsockClient.writeMessage(keyResp); err != nil {
+				log.Error().Err(err).Msg("Failed to send PCR signing key response")
+			}
+			p.vsockClient.writeMu.Unlock()
+			continue
+		}
+
+		// PCR-signing key Sign — supervisor calls this to stamp the
+		// migration-completion marker so Lambda can verify enclave origin.
+		if response.Type == EnclaveMessageTypePCRSigningKeySign {
+			log.Debug().Msg("Enclave requested PCR signing-key sign op")
+			signResp := p.handlePCRSigningKeySign(ctx, response)
+			p.vsockClient.writeMu.Lock()
+			if err := p.vsockClient.writeMessage(signResp); err != nil {
+				log.Error().Err(err).Msg("Failed to send PCR signing-key sign response")
+			}
+			p.vsockClient.writeMu.Unlock()
+			continue
+		}
+
+		// Check if this is a proposals list request from the enclave
+		if response.Type == EnclaveMessageTypeProposalsList {
+			log.Debug().Msg("Enclave requested proposals list")
+			proposalsResp := p.handleProposalsList(response)
+			p.vsockClient.writeMu.Lock()
+			if err := p.vsockClient.writeMessage(proposalsResp); err != nil {
+				log.Error().Err(err).Msg("Failed to send proposals list response")
+			}
+			p.vsockClient.writeMu.Unlock()
+			continue // Wait for next response
+		}
+
+		// Vault-mediated vote submission from the enclave (vault-manager).
+		if response.Type == EnclaveMessageTypeVoteSubmit {
+			log.Debug().Int("payload_len", len(response.Payload)).Msg("Enclave requested vote submission")
+			voteResp := p.handleVoteSubmit(response)
+			p.vsockClient.writeMu.Lock()
+			if err := p.vsockClient.writeMessage(voteResp); err != nil {
+				log.Error().Err(err).Msg("Failed to send vote submit response")
+			}
+			p.vsockClient.writeMu.Unlock()
+			continue
+		}
+
+		// Vault-requested Merkle inclusion proof for verifying a cast vote.
+		if response.Type == EnclaveMessageTypeVoteProofRequest {
+			log.Debug().Int("payload_len", len(response.Payload)).Msg("Enclave requested vote proof")
+			proofResp := p.handleVoteProof(response)
+			p.vsockClient.writeMu.Lock()
+			if err := p.vsockClient.writeMessage(proofResp); err != nil {
+				log.Error().Err(err).Msg("Failed to send vote proof response")
+			}
+			p.vsockClient.writeMu.Unlock()
+			continue
+		}
+
+		// Check if this is an invitation resolve request from the enclave
+		if response.Type == EnclaveMessageTypeInviteResolve {
+			log.Debug().
+				Str("subject", response.Subject).
+				Msg("Enclave requested invitation resolve")
+
+			inviteResp := p.handleInviteResolve(response)
+			p.vsockClient.writeMu.Lock()
+			if err := p.vsockClient.writeMessage(inviteResp); err != nil {
+				log.Error().Err(err).Msg("Failed to send invite resolve response")
+			}
+			p.vsockClient.writeMu.Unlock()
+			continue // Wait for next response
+		}
+
+		// Check if this is an audit event from the enclave (org-vault-manager)
+		if response.Type == EnclaveMessageTypeAuditEvent {
+			log.Debug().
+				Int("payload_len", len(response.Payload)).
+				Msg("Enclave emitted audit event during operation")
+
+			go p.persistAuditEvent(ctx, response)
+			continue // Wait for next response
+		}
+
+		// Check for routing handoff request from vault-manager after a
+		// successful migration re-seal. Parent executes the CAS-update
+		// on the routing KV bucket — the target instance's watcher
+		// picks up the change and takes over subscription ownership.
+		//
+		// Empty TargetInstanceID is the release-for-reclaim path: the
+		// vault-manager doesn't know which peer will take over, so it
+		// asks the parent to clear the InstanceID field while leaving
+		// the new PCR0 in place. Any instance whose attested PCR0
+		// matches can then claim via the watcher.
+		if response.Type == EnclaveMessageTypeRoutingHandoff {
+			if p.routing != nil && response.OwnerSpace != "" {
+				if err := p.routing.HandoffToPeer(response.OwnerSpace, response.TargetInstanceID, response.NewPCR0); err != nil {
+					log.Error().
+						Err(err).
+						Str("owner_space", response.OwnerSpace).
+						Str("target", response.TargetInstanceID).
+						Msg("routing: handoff failed")
+				}
+			} else {
+				log.Warn().
+					Str("owner_space", response.OwnerSpace).
+					Str("target", response.TargetInstanceID).
+					Msg("routing: ignoring malformed handoff request from enclave")
+			}
+			continue
+		}
+
+		// Check if this is an HTTP proxy request from the enclave
+		if response.Type == EnclaveMessageTypeHTTPRequest {
+			log.Debug().
+				Int("payload_len", len(response.Payload)).
+				Msg("Enclave requested HTTP proxy during operation")
+
+			httpResp := p.handleHTTPProxy(ctx, response)
+			p.vsockClient.writeMu.Lock()
+			if err := p.vsockClient.writeMessage(httpResp); err != nil {
+				log.Error().Err(err).Msg("Failed to send HTTP proxy response")
+			}
+			p.vsockClient.writeMu.Unlock()
+			continue // Wait for next response
+		}
+
+		// Verify this is a known final response type before returning
+		knownFinalTypes := map[EnclaveMessageType]bool{
+			EnclaveMessageTypeVaultResponse:       true,
+			EnclaveMessageTypeHandlerResponse:     true,
+			EnclaveMessageTypeAttestationResponse: true,
+			EnclaveMessageTypeCredentialResponse:  true,
+			EnclaveMessageTypeHealthResponse:      true,
+			EnclaveMessageTypeError:               true,
+			EnclaveMessageTypeOK:                  true,
+			"response":                            true, // vault-manager generic response type
+		}
+		if !knownFinalTypes[response.Type] {
+			log.Error().Str("type", string(response.Type)).
+				Msg("CRITICAL: Unrecognized message type - possible misrouted intermediate message")
+			return nil, fmt.Errorf("unrecognized vsock message type: %s", response.Type)
+		}
+
+		return response, nil
+	}
+}
 
 // parseAttestationRequest parses the JSON attestation request to extract the nonce and request ID
 // Handles both flat format {"nonce": "..."} and nested format {"payload": {"nonce": "..."}}
@@ -1931,7 +2238,7 @@ func (p *ParentProcess) handleCredentialDeleteCommand(ctx context.Context, msg *
 	}
 
 	// Send to enclave
-	response, err := p.requestEnclave(ctx, enclaveMsg)
+	response, err := p.sendWithHandlerSupport(ctx, enclaveMsg)
 	if err != nil {
 		log.Error().Err(err).Str("user_guid", userGuid).Msg("Failed to delete credential in enclave")
 		return err
@@ -2031,7 +2338,7 @@ func (p *ParentProcess) handleVaultReset(ctx context.Context, msg *NATSMessage) 
 	}
 
 	// Send to enclave
-	response, err := p.requestEnclave(ctx, enclaveMsg)
+	response, err := p.sendWithHandlerSupport(ctx, enclaveMsg)
 	if err != nil {
 		log.Error().Err(err).Str("user_guid", req.UserGuid).Msg("Failed to reset vault")
 		if msg.Reply != "" {
@@ -2082,7 +2389,7 @@ func (p *ParentProcess) forwardControlToEnclave(ctx context.Context, msg *NATSMe
 	}
 
 	// Send to enclave
-	response, err := p.requestEnclave(ctx, enclaveMsg)
+	response, err := p.sendWithHandlerSupport(ctx, enclaveMsg)
 	if err != nil {
 		return err
 	}
