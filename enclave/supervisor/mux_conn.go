@@ -6,13 +6,10 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net"
-	"os"
 	"sync"
-	"time"
 
 	"github.com/rs/zerolog/log"
 )
@@ -21,74 +18,53 @@ import (
 // supervisor can process many vault ops concurrently instead of one
 // at a time.
 //
-// Before this, the supervisor's read loop was strictly serial — read
-// one message, fully process it (including every nested S3/KMS
-// round-trip to the parent), write the response, read the next. Every
-// vault op for every user funnelled through that loop; under load it
-// was the throughput ceiling (Tier-2 concurrent-multiuser: 24 ops
-// across 4 users took 24×latency because they could not overlap).
-//
 // CORRELATION. The protocol is symmetric. Whoever INITIATES a request
 // stamps a fresh unique MuxID; the responder echoes it verbatim. A
-// message whose MuxID matches a live local pending entry is a response
+// frame whose MuxID matches a live local pending entry is a response
 // to one of our own SendRequest calls — route it to the waiting
-// channel. Anything else (including any message with no MuxID) is a
-// peer-initiated request — hand it to onRequest. 16 random bytes makes
-// a MuxID collision a 2^-128 event, so the in-pending-map test is a
-// sound discriminator.
+// channel. Anything else (including any frame with no MuxID) is a
+// peer-initiated request — hand it to onRequest. 16 random bytes
+// makes a MuxID collision a 2^-128 event.
 //
-// CONCURRENCY / NITRO SAFETY. The Nitro hypervisor's vsock corrupts
-// data when read() and write() syscalls run concurrently on the same
-// fd (see vsockConnection in vsock.go). A naive "perpetually-blocked
-// reader + concurrent writers" multiplex would do exactly that. So
-// MuxConn uses a SINGLE I/O goroutine — Run — that owns the fd. It
-// reads and writes; no other goroutine ever touches the fd for I/O.
-// Reads and writes are therefore never concurrent at the syscall
-// level. Senders (Send / SendRequest) only enqueue frames to an
-// outbound channel; the I/O goroutine drains it between reads.
+// I/O MODEL. One reader goroutine and one writer goroutine, each
+// owning a single direction of the fd. The reader only ever reads;
+// the writer only ever writes. This is ordinary full-duplex socket
+// I/O — a slow or large write blocks ONLY the writer goroutine, never
+// the reader, so responses keep flowing while a big frame goes out.
 //
-// The reader blocks for a new message with a short idle deadline; on
-// expiry it loops back to flush queued writes. A kick (SetReadDeadline
-// to now) lets a sender wake the reader immediately for low latency,
-// but correctness never depends on it — the idle deadline is the
-// backstop. A kick can only interrupt the wait for the FIRST byte of a
-// message; once a frame has started, ioMu fences the rest of the read
-// against kicks so the stream can never desync mid-message.
+// An earlier single-goroutine design alternated reading and writing
+// on one goroutine; a large (>1MB) vault-state frame in flight then
+// stalled the read path, and under bidirectional large-payload load
+// throughput collapsed — the 2026-05-20 enclave slowdown. Two
+// goroutines remove that failure mode entirely. Concurrent read() and
+// write() on the same socket fd is safe (the pre-multiplex parent
+// VsockClient ran that way in production for months); the 16KB write
+// chunking in writeMessage remains the real fix for the Nitro vsock
+// large-write bug and is unaffected.
+//
+// Senders (Send / SendRequest) only enqueue onto the outbound channel;
+// the writer drains it in FIFO order, so a whole frame is written
+// before the next starts and frames never interleave on the wire.
 type MuxConn struct {
 	conn net.Conn
 
-	// outbound carries frames the I/O goroutine still has to write.
+	// outbound carries frames the writer goroutine still has to write.
 	outbound chan *Message
 
-	// ioMu fences a committed (started) frame read against kicks: the
-	// reader holds it from the first byte of a frame through the end
-	// of that frame's body, and a kick takes it before touching the
-	// read deadline. Without this a kick could interrupt io.ReadFull
-	// mid-body and desync the stream.
-	ioMu sync.Mutex
+	// done is closed exactly once when the connection is dead; it
+	// unblocks any goroutine parked on Send / SendRequest / the writer.
+	done      chan struct{}
+	closeOnce sync.Once
 
 	pendingMu sync.Mutex
 	pending   map[string]chan *Message
 	closed    bool
 }
 
-// errMuxIdle is the internal sentinel readFrame returns when the idle
-// read deadline expired before any byte of a new frame arrived — i.e.
-// "nothing to read right now". The I/O loop treats it as a cue to go
-// flush queued writes; the stream is still aligned.
-var errMuxIdle = errors.New("mux: idle")
-
-const (
-	// muxWriteQueueSize bounds frames queued for the I/O goroutine. A
-	// vault op produces a handful of frames; the parent fans in at
-	// most MaxVaults ops. 1024 is far above any real burst.
-	muxWriteQueueSize = 1024
-
-	// muxIdlePoll is how long the reader blocks for a new frame before
-	// surfacing queued writes. It is the latency backstop if a kick is
-	// ever missed; kicks normally flush a response far sooner.
-	muxIdlePoll = 25 * time.Millisecond
-)
+// muxWriteQueueSize bounds frames queued for the writer goroutine. A
+// vault op produces a handful of frames; the parent fans in at most
+// MaxVaults ops. 1024 is far above any real burst.
+const muxWriteQueueSize = 1024
 
 // newMuxID returns a fresh 16-byte hex transport correlation token.
 func newMuxID() string {
@@ -107,35 +83,21 @@ func NewMuxConn(conn net.Conn) *MuxConn {
 	return &MuxConn{
 		conn:     conn,
 		outbound: make(chan *Message, muxWriteQueueSize),
+		done:     make(chan struct{}),
 		pending:  make(map[string]chan *Message),
 	}
 }
 
-// Send enqueues msg for the I/O goroutine to write. Used for vault-op
+// Send enqueues msg for the writer goroutine. Used for vault-op
 // responses (the caller MUST echo the request's MuxID) and for
 // fire-and-forget notifications (no MuxID). Returns an error only if
-// the connection is closed or the outbound queue is wedged.
+// the connection is closed.
 func (m *MuxConn) Send(msg *Message) error {
-	m.pendingMu.Lock()
-	closed := m.closed
-	m.pendingMu.Unlock()
-	if closed {
-		return fmt.Errorf("mux connection closed")
-	}
 	select {
 	case m.outbound <- msg:
-		m.kick()
 		return nil
-	default:
-		// Queue full — abnormal. Block briefly rather than drop a
-		// frame: a dropped response would wedge a peer waiter.
-		select {
-		case m.outbound <- msg:
-			m.kick()
-			return nil
-		case <-time.After(5 * time.Second):
-			return fmt.Errorf("mux outbound queue full")
-		}
+	case <-m.done:
+		return fmt.Errorf("mux connection closed")
 	}
 }
 
@@ -143,10 +105,6 @@ func (m *MuxConn) Send(msg *Message) error {
 // etc.) and blocks until the matching response arrives or ctx is done.
 // A fresh MuxID is assigned if the caller didn't set one. Safe for
 // concurrent callers — each gets its own pending channel.
-//
-// A MessageTypeError response is returned as (resp, nil); the caller
-// inspects resp.Type. Transport failures (closed conn, ctx) return a
-// non-nil error.
 func (m *MuxConn) SendRequest(ctx context.Context, req *Message) (*Message, error) {
 	if req.MuxID == "" {
 		req.MuxID = newMuxID()
@@ -162,7 +120,7 @@ func (m *MuxConn) SendRequest(ctx context.Context, req *Message) (*Message, erro
 	m.pendingMu.Unlock()
 
 	// Always clear the pending entry — on response, ctx cancel, or
-	// enqueue failure — so a slow/cancelled request can't leak the map.
+	// connection loss — so a slow/cancelled request can't leak the map.
 	defer func() {
 		m.pendingMu.Lock()
 		delete(m.pending, req.MuxID)
@@ -171,16 +129,10 @@ func (m *MuxConn) SendRequest(ctx context.Context, req *Message) (*Message, erro
 
 	select {
 	case m.outbound <- req:
-		m.kick()
-	default:
-		select {
-		case m.outbound <- req:
-			m.kick()
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(5 * time.Second):
-			return nil, fmt.Errorf("mux outbound queue full")
-		}
+	case <-m.done:
+		return nil, fmt.Errorf("mux connection closed")
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 
 	select {
@@ -191,44 +143,20 @@ func (m *MuxConn) SendRequest(ctx context.Context, req *Message) (*Message, erro
 	}
 }
 
-// kick wakes the I/O goroutine so a just-enqueued frame is written
-// without waiting out the idle poll. ioMu ensures the deadline is not
-// moved while the reader is mid-frame (which would desync the stream).
-func (m *MuxConn) kick() {
-	m.ioMu.Lock()
-	m.conn.SetReadDeadline(time.Now())
-	m.ioMu.Unlock()
-}
-
-// Run is the single I/O goroutine. It owns the fd: it drains queued
-// outbound frames, then reads one inbound frame (with the idle
-// deadline), then dispatches it — a frame whose MuxID is in our
-// pending map goes to the waiting SendRequest; everything else goes to
-// onRequest.
+// Run starts the writer goroutine and then runs the reader loop on the
+// calling goroutine until the connection fails. It demuxes: a frame
+// whose MuxID is in our pending map goes to the waiting SendRequest;
+// everything else goes to onRequest.
 //
-// onRequest MUST NOT block — it runs on this goroutine. Callers hand
-// the request to a worker goroutine and return immediately.
-//
-// Run returns when the connection read fails (peer closed / error);
-// all outstanding SendRequest waiters are then woken with an error.
+// onRequest MUST NOT block — it runs on the reader goroutine, so a
+// blocking handler stalls demuxing. Callers dispatch to a worker.
 func (m *MuxConn) Run(onRequest func(*Message)) {
+	go m.writeLoop()
+
 	for {
-		m.flushOutbound()
-
-		m.conn.SetReadDeadline(time.Now().Add(muxIdlePoll))
-		// Re-check after arming the deadline: a frame enqueued (and
-		// kicked) between flushOutbound and here would otherwise wait
-		// out the full idle poll. This closes the kick race.
-		if len(m.outbound) > 0 {
-			continue
-		}
-
-		msg, err := m.readFrame()
-		if errors.Is(err, errMuxIdle) {
-			continue
-		}
+		msg, err := readFrame(m.conn)
 		if err != nil {
-			m.failAll(err)
+			m.shutdown(err)
 			return
 		}
 
@@ -240,7 +168,7 @@ func (m *MuxConn) Run(onRequest func(*Message)) {
 			}
 			m.pendingMu.Unlock()
 			if isResponse {
-				ch <- msg // buffered cap-1: never blocks the reader
+				ch <- msg // buffered cap-1 — never blocks the reader
 				continue
 			}
 		}
@@ -248,56 +176,56 @@ func (m *MuxConn) Run(onRequest func(*Message)) {
 	}
 }
 
-// flushOutbound writes every currently-queued frame. Only the Run
-// goroutine calls this, so conn.Write is never concurrent with the
-// conn.Read in readFrame.
-func (m *MuxConn) flushOutbound() {
+// writeLoop drains the outbound queue and writes each frame. A
+// blocking write stalls only this goroutine — the reader keeps going.
+func (m *MuxConn) writeLoop() {
 	for {
 		select {
 		case msg := <-m.outbound:
 			if err := writeMessage(m.conn, msg); err != nil {
-				// Connection is dead. Stop draining; the next readFrame
-				// will see the failure and failAll the waiters.
-				log.Error().Err(err).Str("type", string(msg.Type)).
-					Msg("mux: outbound write failed")
+				m.shutdown(fmt.Errorf("mux write %s: %w", msg.Type, err))
 				return
 			}
-		default:
+		case <-m.done:
 			return
 		}
 	}
 }
 
-// readFrame reads one length-prefixed message. The read deadline
-// armed by Run bounds ONLY the wait for the first byte: if it fires
-// first, readFrame returns errMuxIdle and the stream stays aligned.
-// Once any byte has arrived, ioMu is taken and the deadline cleared so
-// no kick can interrupt the rest of the frame — a frame is never
-// abandoned half-read.
-func (m *MuxConn) readFrame() (*Message, error) {
-	// Phase 1: wait for the first byte. A kick (SetReadDeadline now)
-	// interrupts this cleanly because no frame has started yet.
-	var first [1]byte
-	n0, err := m.conn.Read(first[:])
-	if n0 == 0 {
-		if err != nil && isTimeoutErr(err) {
-			return nil, errMuxIdle
-		}
-		if err != nil {
-			return nil, err
-		}
-		return nil, errMuxIdle // 0 bytes, no error — treat as idle
-	}
+// shutdown marks the mux closed exactly once: it closes done (waking
+// blocked senders and the writer), closes the connection (unblocking
+// the peer goroutine's in-flight Read/Write), and fails every pending
+// SendRequest so callers return promptly rather than hanging on ctx.
+func (m *MuxConn) shutdown(cause error) {
+	m.closeOnce.Do(func() {
+		m.pendingMu.Lock()
+		m.closed = true
+		pending := m.pending
+		m.pending = make(map[string]chan *Message)
+		m.pendingMu.Unlock()
 
-	// Phase 2: a frame has started. Fence the rest against kicks and
-	// read to completion with no deadline.
-	m.ioMu.Lock()
-	defer m.ioMu.Unlock()
-	m.conn.SetReadDeadline(time.Time{})
+		close(m.done)
+		_ = m.conn.Close()
 
-	lenBuf := [4]byte{first[0]}
-	if _, err := io.ReadFull(m.conn, lenBuf[1:]); err != nil {
-		return nil, fmt.Errorf("mux: read length prefix: %w", err)
+		for muxID, ch := range pending {
+			select {
+			case ch <- &Message{Type: MessageTypeError, MuxID: muxID,
+				Error: fmt.Sprintf("mux connection lost: %v", cause)}:
+			default:
+			}
+		}
+		log.Debug().Err(cause).Int("woken", len(pending)).
+			Msg("mux: connection closed, drained pending requests")
+	})
+}
+
+// readFrame reads one length-prefixed JSON message. A plain blocking
+// read — the reader goroutine has nothing else to do, so there is no
+// deadline or partial-read handling to get wrong.
+func readFrame(conn net.Conn) (*Message, error) {
+	var lenBuf [4]byte
+	if _, err := io.ReadFull(conn, lenBuf[:]); err != nil {
+		return nil, err
 	}
 	length := binary.BigEndian.Uint32(lenBuf[:])
 	if length < minMessageSize {
@@ -306,49 +234,13 @@ func (m *MuxConn) readFrame() (*Message, error) {
 	if length > maxMessageSize {
 		return nil, fmt.Errorf("mux: frame too large: %d bytes", length)
 	}
-
 	body := make([]byte, length)
-	if _, err := io.ReadFull(m.conn, body); err != nil {
+	if _, err := io.ReadFull(conn, body); err != nil {
 		return nil, fmt.Errorf("mux: read body: %w", err)
 	}
-
 	var msg Message
 	if err := json.Unmarshal(body, &msg); err != nil {
 		return nil, fmt.Errorf("mux: unmarshal frame: %w", err)
 	}
 	return &msg, nil
-}
-
-// failAll wakes every blocked SendRequest with a synthetic error so
-// callers return promptly when the connection drops rather than
-// hanging on their context deadline. After failAll the mux is closed:
-// new Send / SendRequest calls fail fast.
-func (m *MuxConn) failAll(cause error) {
-	m.pendingMu.Lock()
-	pending := m.pending
-	m.pending = make(map[string]chan *Message)
-	m.closed = true
-	m.pendingMu.Unlock()
-
-	for muxID, ch := range pending {
-		select {
-		case ch <- &Message{Type: MessageTypeError, MuxID: muxID,
-			Error: fmt.Sprintf("mux connection lost: %v", cause)}:
-		default:
-		}
-	}
-	log.Debug().Err(cause).Int("woken", len(pending)).
-		Msg("mux: connection reader exited, drained pending requests")
-}
-
-// isTimeoutErr reports whether err is a read-deadline expiry.
-func isTimeoutErr(err error) bool {
-	if errors.Is(err, os.ErrDeadlineExceeded) {
-		return true
-	}
-	var ne net.Error
-	if errors.As(err, &ne) {
-		return ne.Timeout()
-	}
-	return false
 }

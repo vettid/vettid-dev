@@ -6,49 +6,41 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net"
-	"os"
 	"sync"
-	"time"
 
 	"github.com/rs/zerolog/log"
 )
 
 // EnclaveMux is the parent's half of the multiplexed parent↔supervisor
-// transport. It is the mirror of the supervisor's MuxConn: a single
-// I/O goroutine owns the fd (so read() and write() syscalls are never
-// concurrent — the Nitro vsock corruption hazard), senders only
-// enqueue frames, and responses are correlated to waiters by MuxID.
+// transport — the mirror of the supervisor's MuxConn.
 //
-// The parent INITIATES vault ops (forwardToEnclave → SendRequest) and
-// RESPONDS to enclave-initiated requests (storage/KMS/etc. → Send,
-// echoing the request's MuxID). See MuxConn in the supervisor package
-// for the full protocol rationale; this type carries *EnclaveMessage
-// instead of *Message but is otherwise identical.
+// One reader goroutine and one writer goroutine each own a single
+// direction of the fd: the reader only reads, the writer only writes.
+// A slow or large write blocks only the writer goroutine, never the
+// reader. (An earlier single-goroutine design alternated read and
+// write; a large >1MB vault-state frame in flight then stalled the
+// read path — the 2026-05-20 enclave slowdown.) Concurrent read() and
+// write() on one socket fd is safe; the 16KB write chunking in
+// writeEnclaveFrame remains the real fix for the Nitro vsock
+// large-write bug. See MuxConn in the supervisor package for the full
+// protocol rationale; this type carries *EnclaveMessage.
 type EnclaveMux struct {
 	conn net.Conn
 
 	outbound chan *EnclaveMessage
 
-	// ioMu fences a started frame read against kicks (see readFrame).
-	ioMu sync.Mutex
+	done      chan struct{}
+	closeOnce sync.Once
 
 	pendingMu sync.Mutex
 	pending   map[string]chan *EnclaveMessage
 	closed    bool
 }
 
-// errMuxIdle is the sentinel readFrame returns when the idle read
-// deadline expired before any byte of a new frame arrived.
-var errMuxIdle = errors.New("mux: idle")
-
-const (
-	muxWriteQueueSize = 1024
-	muxIdlePoll       = 25 * time.Millisecond
-)
+const muxWriteQueueSize = 1024
 
 // newMuxID returns a fresh 16-byte hex transport correlation token.
 func newMuxID() string {
@@ -65,32 +57,20 @@ func NewEnclaveMux(conn net.Conn) *EnclaveMux {
 	return &EnclaveMux{
 		conn:     conn,
 		outbound: make(chan *EnclaveMessage, muxWriteQueueSize),
+		done:     make(chan struct{}),
 		pending:  make(map[string]chan *EnclaveMessage),
 	}
 }
 
-// Send enqueues msg for the I/O goroutine to write. Used for responses
-// to enclave-initiated requests (the caller MUST echo the request's
+// Send enqueues msg for the writer goroutine. Used for responses to
+// enclave-initiated requests (the caller MUST echo the request's
 // MuxID) and for fire-and-forget downward messages (evict_vault).
 func (m *EnclaveMux) Send(msg *EnclaveMessage) error {
-	m.pendingMu.Lock()
-	closed := m.closed
-	m.pendingMu.Unlock()
-	if closed {
-		return fmt.Errorf("enclave mux closed")
-	}
 	select {
 	case m.outbound <- msg:
-		m.kick()
 		return nil
-	default:
-		select {
-		case m.outbound <- msg:
-			m.kick()
-			return nil
-		case <-time.After(5 * time.Second):
-			return fmt.Errorf("enclave mux outbound queue full")
-		}
+	case <-m.done:
+		return fmt.Errorf("enclave mux closed")
 	}
 }
 
@@ -119,16 +99,10 @@ func (m *EnclaveMux) SendRequest(ctx context.Context, req *EnclaveMessage) (*Enc
 
 	select {
 	case m.outbound <- req:
-		m.kick()
-	default:
-		select {
-		case m.outbound <- req:
-			m.kick()
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(5 * time.Second):
-			return nil, fmt.Errorf("enclave mux outbound queue full")
-		}
+	case <-m.done:
+		return nil, fmt.Errorf("enclave mux closed")
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 
 	select {
@@ -139,35 +113,19 @@ func (m *EnclaveMux) SendRequest(ctx context.Context, req *EnclaveMessage) (*Enc
 	}
 }
 
-// kick wakes the I/O goroutine so a just-enqueued frame is written
-// without waiting out the idle poll.
-func (m *EnclaveMux) kick() {
-	m.ioMu.Lock()
-	m.conn.SetReadDeadline(time.Now())
-	m.ioMu.Unlock()
-}
-
-// Run is the single I/O goroutine. It drains queued outbound frames,
-// reads one inbound frame, and dispatches: a frame whose MuxID is in
-// our pending map goes to the waiting SendRequest; everything else
-// (including any frame with no MuxID) goes to onRequest.
+// Run starts the writer goroutine and runs the reader loop on the
+// calling goroutine until the connection fails. A frame whose MuxID is
+// in our pending map goes to the waiting SendRequest; everything else
+// (incl. any frame with no MuxID) goes to onRequest.
 //
-// onRequest MUST NOT block — it runs on this goroutine.
+// onRequest MUST NOT block — it runs on the reader goroutine.
 func (m *EnclaveMux) Run(onRequest func(*EnclaveMessage)) {
+	go m.writeLoop()
+
 	for {
-		m.flushOutbound()
-
-		m.conn.SetReadDeadline(time.Now().Add(muxIdlePoll))
-		if len(m.outbound) > 0 {
-			continue
-		}
-
-		msg, err := m.readFrame()
-		if errors.Is(err, errMuxIdle) {
-			continue
-		}
+		msg, err := readEnclaveFrame(m.conn)
 		if err != nil {
-			m.failAll(err)
+			m.shutdown(err)
 			return
 		}
 
@@ -187,45 +145,53 @@ func (m *EnclaveMux) Run(onRequest func(*EnclaveMessage)) {
 	}
 }
 
-func (m *EnclaveMux) flushOutbound() {
+func (m *EnclaveMux) writeLoop() {
 	for {
 		select {
 		case msg := <-m.outbound:
 			if err := writeEnclaveFrame(m.conn, msg); err != nil {
-				log.Error().Err(err).Str("type", string(msg.Type)).
-					Msg("enclave mux: outbound write failed")
+				m.shutdown(fmt.Errorf("enclave mux write %s: %w", msg.Type, err))
 				return
 			}
-		default:
+		case <-m.done:
 			return
 		}
 	}
 }
 
-// readFrame reads one length-prefixed message. The read deadline
-// armed by Run bounds ONLY the wait for the first byte; once a frame
-// has started, ioMu fences the rest of the read against kicks so the
-// stream can never desync mid-message.
-func (m *EnclaveMux) readFrame() (*EnclaveMessage, error) {
-	var first [1]byte
-	n0, err := m.conn.Read(first[:])
-	if n0 == 0 {
-		if err != nil && isTimeoutErr(err) {
-			return nil, errMuxIdle
-		}
-		if err != nil {
-			return nil, err
-		}
-		return nil, errMuxIdle
-	}
+// shutdown marks the mux closed exactly once: closes done (waking
+// blocked senders and the writer), closes the connection (unblocking
+// the peer goroutine's in-flight Read/Write), and fails every pending
+// SendRequest.
+func (m *EnclaveMux) shutdown(cause error) {
+	m.closeOnce.Do(func() {
+		m.pendingMu.Lock()
+		m.closed = true
+		pending := m.pending
+		m.pending = make(map[string]chan *EnclaveMessage)
+		m.pendingMu.Unlock()
 
-	m.ioMu.Lock()
-	defer m.ioMu.Unlock()
-	m.conn.SetReadDeadline(time.Time{})
+		close(m.done)
+		_ = m.conn.Close()
 
-	lenBuf := [4]byte{first[0]}
-	if _, err := io.ReadFull(m.conn, lenBuf[1:]); err != nil {
-		return nil, fmt.Errorf("enclave mux: read length prefix: %w", err)
+		for muxID, ch := range pending {
+			select {
+			case ch <- &EnclaveMessage{Type: EnclaveMessageTypeError, MuxID: muxID,
+				Error: fmt.Sprintf("enclave mux connection lost: %v", cause)}:
+			default:
+			}
+		}
+		log.Debug().Err(cause).Int("woken", len(pending)).
+			Msg("enclave mux: connection closed, drained pending requests")
+	})
+}
+
+// readEnclaveFrame reads one length-prefixed JSON message. A plain
+// blocking read — the reader goroutine does nothing else.
+func readEnclaveFrame(conn net.Conn) (*EnclaveMessage, error) {
+	var lenBuf [4]byte
+	if _, err := io.ReadFull(conn, lenBuf[:]); err != nil {
+		return nil, err
 	}
 	length := binary.BigEndian.Uint32(lenBuf[:])
 	if length < minMessageSize {
@@ -234,12 +200,10 @@ func (m *EnclaveMux) readFrame() (*EnclaveMessage, error) {
 	if length > maxMessageSize {
 		return nil, fmt.Errorf("enclave mux: frame too large: %d bytes", length)
 	}
-
 	body := make([]byte, length)
-	if _, err := io.ReadFull(m.conn, body); err != nil {
+	if _, err := io.ReadFull(conn, body); err != nil {
 		return nil, fmt.Errorf("enclave mux: read body: %w", err)
 	}
-
 	var msg EnclaveMessage
 	if err := json.Unmarshal(body, &msg); err != nil {
 		return nil, fmt.Errorf("enclave mux: unmarshal frame: %w", err)
@@ -247,28 +211,8 @@ func (m *EnclaveMux) readFrame() (*EnclaveMessage, error) {
 	return &msg, nil
 }
 
-// failAll wakes every blocked SendRequest with a synthetic error when
-// the connection drops, and marks the mux closed.
-func (m *EnclaveMux) failAll(cause error) {
-	m.pendingMu.Lock()
-	pending := m.pending
-	m.pending = make(map[string]chan *EnclaveMessage)
-	m.closed = true
-	m.pendingMu.Unlock()
-
-	for muxID, ch := range pending {
-		select {
-		case ch <- &EnclaveMessage{Type: EnclaveMessageTypeError, MuxID: muxID,
-			Error: fmt.Sprintf("enclave mux connection lost: %v", cause)}:
-		default:
-		}
-	}
-	log.Debug().Err(cause).Int("woken", len(pending)).
-		Msg("enclave mux: connection reader exited, drained pending requests")
-}
-
 // writeEnclaveFrame writes a length-prefixed JSON message, chunking
-// the body at 16KB to dodge the Nitro vsock 32KB write-zeroing bug.
+// the body at 16KB to dodge the Nitro vsock 32KB large-write bug.
 func writeEnclaveFrame(w io.Writer, msg *EnclaveMessage) error {
 	data, err := json.Marshal(msg)
 	if err != nil {
@@ -288,16 +232,4 @@ func writeEnclaveFrame(w io.Writer, msg *EnclaveMessage) error {
 		}
 	}
 	return nil
-}
-
-// isTimeoutErr reports whether err is a read-deadline expiry.
-func isTimeoutErr(err error) bool {
-	if errors.Is(err, os.ErrDeadlineExceeded) {
-		return true
-	}
-	var ne net.Error
-	if errors.As(err, &ne) {
-		return ne.Timeout()
-	}
-	return false
 }

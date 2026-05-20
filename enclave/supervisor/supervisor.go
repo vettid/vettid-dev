@@ -480,6 +480,15 @@ func (s *Supervisor) handleEvictVault(ctx context.Context, msg *Message) (*Messa
 					Msg("evict_vault: forwarded revoke_ownership to subprocess")
 			}
 		}
+		// Wait for any in-flight op to finish before the kill below.
+		// Killing mid-op closes the subprocess pipe under
+		// ProcessMessage; during a migration handoff the in-flight op
+		// is the migration that triggered this eviction and must be
+		// allowed to send its response. The revoke_ownership above has
+		// already fenced its tail-end flush. (Before this, the faster
+		// multiplexed transport delivered evict_vault mid-op and broke
+		// migration-handoff — 2026-05-20.)
+		vp.WaitIdle()
 	}
 
 	// D1: kill the subprocess. Idempotent — Evict/evictVault no-ops if

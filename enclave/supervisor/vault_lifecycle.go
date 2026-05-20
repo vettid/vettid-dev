@@ -332,6 +332,23 @@ func (vp *VaultProcess) PipeConn() *PipeConnection {
 	return vp.process.Conn
 }
 
+// WaitIdle blocks until any in-flight ProcessMessage on this
+// subprocess has returned, then returns immediately. Eviction calls
+// this before killing the subprocess: killing it mid-op closes the
+// pipe under ProcessMessage and fails the op. During a migration
+// handoff the in-flight op IS the migration that emitted the
+// routing_handoff which triggered the eviction — it must be allowed
+// to finish and send its response. (The subprocess's tail-end
+// vault_state flush is already fenced by the revoke_ownership message
+// the evictor sends first, so letting the op complete is safe.)
+func (vp *VaultProcess) WaitIdle() {
+	// Acquiring then immediately releasing procMu waits out whatever
+	// op currently holds it; ProcessMessage holds procMu for its whole
+	// duration.
+	vp.procMu.Lock()
+	vp.procMu.Unlock() //nolint:staticcheck // intentional: barrier wait, not a guarded section
+}
+
 // ProcessMessage sends a message to the vault process and waits for response.
 // Handles sealer requests from the vault-manager during the response wait.
 //
