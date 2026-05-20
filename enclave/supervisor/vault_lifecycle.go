@@ -51,7 +51,15 @@ type VaultProcess struct {
 	process       *ManagedProcess // Reference to spawned vault-manager process
 	sealerHandler *SealerHandler  // For handling sealer requests from vault-manager
 
-	mu sync.RWMutex
+	mu sync.RWMutex // Guards struct fields (LastAccess etc.)
+
+	// procMu serializes ProcessMessage for this user. The mux runs
+	// vault ops for different users concurrently, but ops for the
+	// SAME user share one subprocess pipe — a single request/response
+	// stream with interleaved nested sealer round-trips — so they
+	// must not overlap. Different users hold different procMu, so
+	// cross-user concurrency is unaffected.
+	procMu sync.Mutex
 }
 
 // VaultStats holds vault manager statistics
@@ -291,11 +299,11 @@ func (vm *VaultManager) GetStats() VaultStats {
 	}
 }
 
-// SetParentConnection sets the parent connection for S3 storage operations
-// This connection is used by the SealerHandler to proxy S3 requests to the parent
-func (vm *VaultManager) SetParentConnection(conn Connection) {
+// SetMux wires the multiplexed parent transport into the SealerHandler
+// so vault-manager S3/KMS proxy requests reach the parent.
+func (vm *VaultManager) SetMux(mux *MuxConn) {
 	if vm.sealerHandler != nil {
-		vm.sealerHandler.SetParentConnection(conn)
+		vm.sealerHandler.SetMux(mux)
 	}
 }
 
@@ -326,7 +334,15 @@ func (vp *VaultProcess) PipeConn() *PipeConnection {
 
 // ProcessMessage sends a message to the vault process and waits for response.
 // Handles sealer requests from the vault-manager during the response wait.
+//
+// procMu is held for the whole call: the subprocess pipe is a single
+// request/response stream, so two ops for this user must not interleave
+// their writes/reads on it. Ops for other users use other VaultProcess
+// instances and run fully in parallel.
 func (vp *VaultProcess) ProcessMessage(ctx context.Context, msg *Message) (*Message, error) {
+	vp.procMu.Lock()
+	defer vp.procMu.Unlock()
+
 	vp.touch()
 
 	// Process-based architecture: route through subprocess pipe

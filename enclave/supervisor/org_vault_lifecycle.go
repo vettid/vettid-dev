@@ -88,10 +88,11 @@ func (om *OrgVaultManager) GetOrCreate(ctx context.Context, ownerSpace string) (
 	return vault, nil
 }
 
-// SetParentConnection updates the parent connection for sealer operations.
-func (om *OrgVaultManager) SetParentConnection(conn Connection) {
+// SetMux wires the multiplexed parent transport into the org-vault
+// SealerHandler so org-vault-manager S3/KMS proxy requests reach the parent.
+func (om *OrgVaultManager) SetMux(mux *MuxConn) {
 	if om.sealerHandler != nil {
-		om.sealerHandler.SetParentConnection(conn)
+		om.sealerHandler.SetMux(mux)
 	}
 }
 

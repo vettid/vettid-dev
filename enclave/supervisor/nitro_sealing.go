@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/ecdsa"
@@ -24,10 +25,10 @@ import (
 
 // NitroSealer handles sealing/unsealing data using Nitro KMS attestation
 type NitroSealer struct {
-	conn         Connection // vsock connection to parent
-	connMu       sync.Mutex // mutex for connection access
-	isNitro      bool       // true if running in actual Nitro enclave
-	devModeKey   []byte     // fixed key for development mode
+	mux        *MuxConn     // Multiplexed transport to parent for KMS ops
+	muxMu      sync.RWMutex // Guards the mux pointer (swapped on connect/drop)
+	isNitro    bool         // true if running in actual Nitro enclave
+	devModeKey []byte       // fixed key for development mode
 }
 
 // SealedData is the structure stored when sealing data
@@ -40,13 +41,12 @@ type SealedData struct {
 	PCRBound      bool   `json:"pcr_bound"`     // true if sealed with attestation
 }
 
-// NewNitroSealer creates a new Nitro sealer
-// Connection can be nil initially and set later via SetConnection
-func NewNitroSealer(conn Connection) *NitroSealer {
+// NewNitroSealer creates a new Nitro sealer. The parent transport is
+// nil until handleConnection wires it via SetMux.
+func NewNitroSealer() *NitroSealer {
 	isNitro := isNitroEnclaveEnv()
 
 	sealer := &NitroSealer{
-		conn:    conn,
 		isNitro: isNitro,
 		// Development mode key — NOT SECURE, only for testing. The
 		// label is exactly 32 bytes (AES-256 requirement); the earlier
@@ -64,13 +64,20 @@ func NewNitroSealer(conn Connection) *NitroSealer {
 	return sealer
 }
 
-// SetConnection updates the connection used for KMS operations
-// This is called when the parent process connects
-func (s *NitroSealer) SetConnection(conn Connection) {
-	s.connMu.Lock()
-	defer s.connMu.Unlock()
-	s.conn = conn
-	log.Debug().Bool("connected", conn != nil).Msg("Sealer connection updated")
+// SetMux wires (or clears, on nil) the multiplexed parent transport
+// used for KMS operations. handleConnection calls this on connect/drop.
+func (s *NitroSealer) SetMux(mux *MuxConn) {
+	s.muxMu.Lock()
+	s.mux = mux
+	s.muxMu.Unlock()
+	log.Debug().Bool("connected", mux != nil).Msg("Sealer mux updated")
+}
+
+// getMux returns the current parent transport, or nil if not connected.
+func (s *NitroSealer) getMux() *MuxConn {
+	s.muxMu.RLock()
+	defer s.muxMu.RUnlock()
+	return s.mux
 }
 
 // isNitroEnclaveEnv checks if we're running in a Nitro enclave
@@ -345,21 +352,19 @@ func publicKeyToBytes(pub *rsa.PublicKey) []byte {
 
 // kmsEncrypt sends plaintext to parent for KMS encryption
 func (s *NitroSealer) kmsEncrypt(plaintext []byte) ([]byte, error) {
-	s.connMu.Lock()
-	defer s.connMu.Unlock()
+	mux := s.getMux()
+	if mux == nil {
+		return nil, fmt.Errorf("kmsEncrypt: supervisor not connected to parent")
+	}
 
-	msg := &Message{
+	ctx, cancel := context.WithTimeout(context.Background(), s3OperationTimeout)
+	defer cancel()
+	response, err := mux.SendRequest(ctx, &Message{
 		Type:      MessageTypeKMSEncrypt,
 		Plaintext: plaintext,
-	}
-
-	if err := s.conn.WriteMessage(msg); err != nil {
-		return nil, fmt.Errorf("failed to send KMS encrypt request: %w", err)
-	}
-
-	response, err := s.conn.ReadMessage()
+	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to read KMS encrypt response: %w", err)
+		return nil, fmt.Errorf("KMS encrypt request failed: %w", err)
 	}
 
 	if response.Type == MessageTypeError {
@@ -375,24 +380,22 @@ func (s *NitroSealer) kmsEncrypt(plaintext []byte) ([]byte, error) {
 
 // kmsDecrypt sends ciphertext to parent for KMS decryption with attestation
 func (s *NitroSealer) kmsDecrypt(ciphertext []byte, attestation []byte) ([]byte, error) {
-	s.connMu.Lock()
-	defer s.connMu.Unlock()
+	mux := s.getMux()
+	if mux == nil {
+		return nil, fmt.Errorf("kmsDecrypt: supervisor not connected to parent")
+	}
 
-	msg := &Message{
+	ctx, cancel := context.WithTimeout(context.Background(), s3OperationTimeout)
+	defer cancel()
+	response, err := mux.SendRequest(ctx, &Message{
 		Type:          MessageTypeKMSDecrypt,
 		CiphertextDEK: ciphertext,
 		Attestation: &Attestation{
 			Document: attestation,
 		},
-	}
-
-	if err := s.conn.WriteMessage(msg); err != nil {
-		return nil, fmt.Errorf("failed to send KMS decrypt request: %w", err)
-	}
-
-	response, err := s.conn.ReadMessage()
+	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to read KMS decrypt response: %w", err)
+		return nil, fmt.Errorf("KMS decrypt request failed: %w", err)
 	}
 
 	if response.Type == MessageTypeError {

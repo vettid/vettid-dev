@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -17,12 +18,12 @@ const s3OperationTimeout = 30 * time.Second
 // SealerHandler handles sealer requests from vault-manager processes.
 // The vault-manager cannot directly access KMS or S3 - it must proxy through the supervisor.
 type SealerHandler struct {
-	sealer     *NitroSealer
-	parentConn Connection // Direct connection to parent for S3 operations
-	connMu     sync.Mutex // Mutex for connection access
+	sealer *NitroSealer
+	mux    *MuxConn     // Multiplexed transport to parent for S3/KMS/etc.
+	muxMu  sync.RWMutex // Guards the mux pointer (swapped on connect/drop)
 	// devMode, when true, allows S3/HTTP/SSM operations to no-op
-	// successfully when parentConn is nil. SECURITY (#74): in
-	// production devMode is false, so a missing parent connection
+	// successfully when the parent transport is nil. SECURITY (#74):
+	// in production devMode is false, so a missing parent connection
 	// fails-closed instead of silently pretending the write
 	// succeeded — which used to leave callers thinking durable
 	// state was persisted when it wasn't, opening a "ghost write"
@@ -45,26 +46,46 @@ func (sh *SealerHandler) SetDevMode(devMode bool) {
 	sh.devMode = devMode
 }
 
-// requireParentConn returns nil if parentConn is set OR if dev mode is
-// on (in which case caller's silent-pass is acceptable). Returns a
-// descriptive error if production code finds no parent connection.
-func (sh *SealerHandler) requireParentConn(op string) error {
-	if sh.parentConn != nil {
-		return nil
-	}
-	if sh.devMode {
-		log.Warn().Str("op", op).Msg("No parent connection - dev mode (silent pass)")
-		return nil
-	}
-	log.Error().Str("op", op).Msg("SECURITY: parent connection missing in production — failing closed")
-	return fmt.Errorf("supervisor not connected to parent (op=%s)", op)
+// SetMux wires (or clears, on nil) the multiplexed parent transport.
+// handleConnection calls this each time the parent connects or drops.
+func (sh *SealerHandler) SetMux(mux *MuxConn) {
+	sh.muxMu.Lock()
+	sh.mux = mux
+	sh.muxMu.Unlock()
 }
 
-// SetParentConnection sets the connection for S3 storage operations
-func (sh *SealerHandler) SetParentConnection(conn Connection) {
-	sh.connMu.Lock()
-	defer sh.connMu.Unlock()
-	sh.parentConn = conn
+// getMux returns the current parent transport, or nil if not connected.
+func (sh *SealerHandler) getMux() *MuxConn {
+	sh.muxMu.RLock()
+	defer sh.muxMu.RUnlock()
+	return sh.mux
+}
+
+// muxRoundTrip issues a supervisor→parent request through the mux and
+// returns the response, rejecting a transport failure, a
+// MessageTypeError response, or (when want != "") an unexpected
+// response type. op labels error strings; the timeout matches
+// s3OperationTimeout. SECURITY (#74): a nil mux in production is a
+// fail-closed error, never a silent pass.
+func (sh *SealerHandler) muxRoundTrip(op string, req *Message, want MessageType) (*Message, error) {
+	mux := sh.getMux()
+	if mux == nil {
+		log.Error().Str("op", op).Msg("SECURITY: parent connection missing — failing closed")
+		return nil, fmt.Errorf("%s: supervisor not connected to parent", op)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), s3OperationTimeout)
+	defer cancel()
+	resp, err := mux.SendRequest(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+	if resp.Type == MessageTypeError {
+		return nil, fmt.Errorf("%s: parent error: %s", op, resp.Error)
+	}
+	if want != "" && resp.Type != want {
+		return nil, fmt.Errorf("%s: unexpected response type %s", op, resp.Type)
+	}
+	return resp, nil
 }
 
 // --- Message types for sealer proxy operations ---
@@ -467,42 +488,34 @@ func s3KeySealedECIES(ownerSpace string) string {
 	return fmt.Sprintf("vaults/%s/sealed_ecies.bin", ownerSpace)
 }
 
-// s3Put stores data to S3 via parent connection (synchronous request/response)
+// s3Put stores data to S3 via the parent (multiplexed request/response)
 func (sh *SealerHandler) s3Put(key string, data []byte) error {
-	sh.connMu.Lock()
-	defer sh.connMu.Unlock()
-
-	if err := sh.requireParentConn("s3Put:" + key); err != nil {
-		return err
+	mux := sh.getMux()
+	if mux == nil {
+		if sh.devMode {
+			log.Warn().Str("key", key).Msg("No parent connection for S3 PUT - dev mode (silent pass)")
+			return nil
+		}
+		log.Error().Str("key", key).Msg("SECURITY: parent connection missing for S3 PUT — failing closed")
+		return fmt.Errorf("s3Put: supervisor not connected to parent (key=%s)", key)
 	}
-	if sh.parentConn == nil {
-		return nil // dev mode silent pass (devMode true, requireParentConn returned nil)
-	}
 
-	msg := &Message{
+	ctx, cancel := context.WithTimeout(context.Background(), s3OperationTimeout)
+	defer cancel()
+	resp, err := mux.SendRequest(ctx, &Message{
 		Type:         MessageTypeStoragePut,
 		StorageKey:   key,
-		StorageValue: data, // Use StorageValue ([]byte) instead of Payload (json.RawMessage) for binary data
-	}
-
-	if err := sh.parentConn.WriteMessage(msg); err != nil {
-		return fmt.Errorf("failed to send S3 PUT request: %w", err)
-	}
-
-	// Wait for response
-	response, err := sh.parentConn.ReadMessage()
+		StorageValue: data, // []byte for binary data, not Payload (json.RawMessage)
+	})
 	if err != nil {
-		return fmt.Errorf("failed to read S3 PUT response: %w", err)
+		return fmt.Errorf("S3 PUT request failed: %w", err)
 	}
-
-	if response.Type == MessageTypeError {
-		return fmt.Errorf("S3 PUT error: %s", response.Error)
+	if resp.Type == MessageTypeError {
+		return fmt.Errorf("S3 PUT error: %s", resp.Error)
 	}
-
-	if response.Type != MessageTypeStorageResponse && response.Type != MessageTypeOK {
-		return fmt.Errorf("unexpected response type for S3 PUT: %s", response.Type)
+	if resp.Type != MessageTypeStorageResponse && resp.Type != MessageTypeOK {
+		return fmt.Errorf("unexpected response type for S3 PUT: %s", resp.Type)
 	}
-
 	return nil
 }
 
@@ -514,125 +527,76 @@ func (sh *SealerHandler) s3Put(key string, data []byte) error {
 // parent's S3 PUT got 412 PreconditionFailed and the caller MUST NOT
 // retry; another writer is racing this object (D3 split-brain guard).
 func (sh *SealerHandler) s3PutConditional(key string, data []byte, expectedETag string, ifNoneMatchAny bool) (newETag string, conflict bool, err error) {
-	sh.connMu.Lock()
-	defer sh.connMu.Unlock()
-
-	if err := sh.requireParentConn("s3PutConditional:" + key); err != nil {
-		return "", false, err
+	mux := sh.getMux()
+	if mux == nil {
+		if sh.devMode {
+			log.Warn().Str("key", key).Msg("No parent connection for conditional S3 PUT - dev mode (silent pass)")
+			return "", false, nil
+		}
+		log.Error().Str("key", key).Msg("SECURITY: parent connection missing for conditional S3 PUT — failing closed")
+		return "", false, fmt.Errorf("s3PutConditional: supervisor not connected to parent (key=%s)", key)
 	}
-	if sh.parentConn == nil {
-		return "", false, nil // dev mode silent pass
-	}
 
-	msg := &Message{
+	req := &Message{
 		Type:         MessageTypeStoragePut,
 		StorageKey:   key,
 		StorageValue: data,
 	}
 	if expectedETag != "" {
-		msg.IfMatch = expectedETag
+		req.IfMatch = expectedETag
 	}
 	if ifNoneMatchAny {
-		msg.IfNoneMatch = "*"
+		req.IfNoneMatch = "*"
 	}
 
-	if err := sh.parentConn.WriteMessage(msg); err != nil {
-		return "", false, fmt.Errorf("failed to send S3 PUT request: %w", err)
-	}
-
-	response, err := sh.parentConn.ReadMessage()
+	ctx, cancel := context.WithTimeout(context.Background(), s3OperationTimeout)
+	defer cancel()
+	resp, err := mux.SendRequest(ctx, req)
 	if err != nil {
-		return "", false, fmt.Errorf("failed to read S3 PUT response: %w", err)
+		return "", false, fmt.Errorf("S3 PUT request failed: %w", err)
+	}
+	if resp.Type == MessageTypeError {
+		return "", false, fmt.Errorf("S3 PUT error: %s", resp.Error)
+	}
+	if resp.Type != MessageTypeStorageResponse && resp.Type != MessageTypeOK {
+		return "", false, fmt.Errorf("unexpected response type for S3 PUT: %s", resp.Type)
 	}
 
-	if response.Type == MessageTypeError {
-		return "", false, fmt.Errorf("S3 PUT error: %s", response.Error)
-	}
-	if response.Type != MessageTypeStorageResponse && response.Type != MessageTypeOK {
-		return "", false, fmt.Errorf("unexpected response type for S3 PUT: %s", response.Type)
-	}
-
-	return response.ReturnedETag, response.ConditionFailed, nil
+	return resp.ReturnedETag, resp.ConditionFailed, nil
 }
 
-// s3Get retrieves data from S3 via parent connection (synchronous request/response)
+// s3Get retrieves data from S3 via the parent (multiplexed request/response)
 func (sh *SealerHandler) s3Get(key string) ([]byte, error) {
-	sh.connMu.Lock()
-	defer sh.connMu.Unlock()
-
-	if sh.parentConn == nil {
-		log.Warn().Str("key", key).Msg("No parent connection for S3 GET - dev mode")
-		return nil, fmt.Errorf("no S3 connection available")
-	}
-
-	msg := &Message{
+	resp, err := sh.muxRoundTrip("s3Get:"+key, &Message{
 		Type:       MessageTypeStorageGet,
 		StorageKey: key,
-	}
-
-	if err := sh.parentConn.WriteMessage(msg); err != nil {
-		return nil, fmt.Errorf("failed to send S3 GET request: %w", err)
-	}
-
-	// Wait for response
-	response, err := sh.parentConn.ReadMessage()
+	}, MessageTypeStorageResponse)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read S3 GET response: %w", err)
+		return nil, err
 	}
-
-	if response.Type == MessageTypeError {
-		return nil, fmt.Errorf("S3 GET error: %s", response.Error)
-	}
-
-	if response.Type != MessageTypeStorageResponse {
-		return nil, fmt.Errorf("unexpected response type for S3 GET: %s", response.Type)
-	}
-
 	// Data is in Payload or StorageValue
-	if len(response.Payload) > 0 {
-		return response.Payload, nil
+	if len(resp.Payload) > 0 {
+		return resp.Payload, nil
 	}
-	return response.StorageValue, nil
+	return resp.StorageValue, nil
 }
 
 // s3GetWithETag is s3Get plus the object's ETag. Callers that intend to
 // follow up with a conditional put on the same key (vault_state.enc D3
 // path) keep the ETag and pass it back as ExpectedETag on the store.
 func (sh *SealerHandler) s3GetWithETag(key string) ([]byte, string, error) {
-	sh.connMu.Lock()
-	defer sh.connMu.Unlock()
-
-	if sh.parentConn == nil {
-		log.Warn().Str("key", key).Msg("No parent connection for S3 GET - dev mode")
-		return nil, "", fmt.Errorf("no S3 connection available")
-	}
-
-	msg := &Message{
+	resp, err := sh.muxRoundTrip("s3GetWithETag:"+key, &Message{
 		Type:       MessageTypeStorageGet,
 		StorageKey: key,
-	}
-
-	if err := sh.parentConn.WriteMessage(msg); err != nil {
-		return nil, "", fmt.Errorf("failed to send S3 GET request: %w", err)
-	}
-
-	response, err := sh.parentConn.ReadMessage()
+	}, MessageTypeStorageResponse)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to read S3 GET response: %w", err)
+		return nil, "", err
 	}
-
-	if response.Type == MessageTypeError {
-		return nil, "", fmt.Errorf("S3 GET error: %s", response.Error)
+	data := resp.StorageValue
+	if len(resp.Payload) > 0 {
+		data = resp.Payload
 	}
-	if response.Type != MessageTypeStorageResponse {
-		return nil, "", fmt.Errorf("unexpected response type for S3 GET: %s", response.Type)
-	}
-
-	data := response.StorageValue
-	if len(response.Payload) > 0 {
-		data = response.Payload
-	}
-	return data, response.ReturnedETag, nil
+	return data, resp.ReturnedETag, nil
 }
 
 // storeSealedMaterial stores sealed material to S3 via parent
@@ -756,37 +720,14 @@ func (sh *SealerHandler) loadSealedECIES(req SealerRequest) SealerResponse {
 // loadAccountSeed fetches the NATS account seed from the parent process.
 // The parent reads it from DynamoDB and decrypts via KMS.
 func (sh *SealerHandler) loadAccountSeed(req SealerRequest) SealerResponse {
-	sh.connMu.Lock()
-	defer sh.connMu.Unlock()
-
-	if sh.parentConn == nil {
-		log.Warn().Str("owner_space", req.OwnerSpace).Msg("No parent connection for account seed - dev mode")
-		return SealerResponse{Success: false, Error: "no parent connection available"}
-	}
-
 	log.Info().Str("owner_space", req.OwnerSpace).Msg("Requesting NATS account seed from parent")
 
-	msg := &Message{
+	response, err := sh.muxRoundTrip("loadAccountSeed", &Message{
 		Type:       MessageTypeNATSAccountSeedGet,
 		OwnerSpace: req.OwnerSpace,
-	}
-
-	if err := sh.parentConn.WriteMessage(msg); err != nil {
-		return SealerResponse{Success: false, Error: fmt.Sprintf("failed to send account seed request: %v", err)}
-	}
-
-	// Wait for response from parent
-	response, err := sh.parentConn.ReadMessage()
+	}, MessageTypeNATSAccountSeedResponse)
 	if err != nil {
-		return SealerResponse{Success: false, Error: fmt.Sprintf("failed to read account seed response: %v", err)}
-	}
-
-	if response.Type == MessageTypeError {
-		return SealerResponse{Success: false, Error: fmt.Sprintf("parent error: %s", response.Error)}
-	}
-
-	if response.Type != MessageTypeNATSAccountSeedResponse {
-		return SealerResponse{Success: false, Error: fmt.Sprintf("unexpected response type: %s", response.Type)}
+		return SealerResponse{Success: false, Error: err.Error()}
 	}
 
 	// Parse the account seed from the response payload
@@ -812,35 +753,14 @@ func (sh *SealerHandler) loadAccountSeed(req SealerRequest) SealerResponse {
 
 // resolveInvite fetches invitation data from the parent's NATS JetStream INVITATIONS stream.
 func (sh *SealerHandler) resolveInvite(req SealerRequest) SealerResponse {
-	sh.connMu.Lock()
-	defer sh.connMu.Unlock()
-
-	if sh.parentConn == nil {
-		return SealerResponse{Success: false, Error: "no parent connection available"}
-	}
-
 	log.Info().Str("invite_code", req.InviteCode).Msg("Resolving invitation via parent")
 
-	msg := &Message{
+	response, err := sh.muxRoundTrip("resolveInvite", &Message{
 		Type:    MessageTypeInviteResolve,
 		Subject: req.InviteCode,
-	}
-
-	if err := sh.parentConn.WriteMessage(msg); err != nil {
-		return SealerResponse{Success: false, Error: fmt.Sprintf("failed to send invite resolve request: %v", err)}
-	}
-
-	response, err := sh.parentConn.ReadMessage()
+	}, MessageTypeInviteResponse)
 	if err != nil {
-		return SealerResponse{Success: false, Error: fmt.Sprintf("failed to read invite resolve response: %v", err)}
-	}
-
-	if response.Type == MessageTypeError {
-		return SealerResponse{Success: false, Error: fmt.Sprintf("parent error: %s", response.Error)}
-	}
-
-	if response.Type != MessageTypeInviteResponse {
-		return SealerResponse{Success: false, Error: fmt.Sprintf("unexpected response type: %s", response.Type)}
+		return SealerResponse{Success: false, Error: err.Error()}
 	}
 
 	// Check for error in payload
@@ -860,29 +780,15 @@ func (sh *SealerHandler) resolveInvite(req SealerRequest) SealerResponse {
 // duplicate (proposal_id, voting_public_key) returns success with
 // already_voted=true so the vault can drop a queued retry.
 func (sh *SealerHandler) submitSignedVote(req SealerRequest) SealerResponse {
-	sh.connMu.Lock()
-	defer sh.connMu.Unlock()
-
-	if sh.parentConn == nil {
-		return SealerResponse{Success: false, Error: "no parent connection available"}
-	}
 	if len(req.VoteSubmitPayload) == 0 {
 		return SealerResponse{Success: false, Error: "empty vote submit payload"}
 	}
-
-	msg := &Message{
+	resp, err := sh.muxRoundTrip("submitSignedVote", &Message{
 		Type:    MessageTypeVoteSubmit,
 		Payload: req.VoteSubmitPayload,
-	}
-	if err := sh.parentConn.WriteMessage(msg); err != nil {
-		return SealerResponse{Success: false, Error: fmt.Sprintf("failed to send vote submit: %v", err)}
-	}
-	resp, err := sh.parentConn.ReadMessage()
+	}, MessageTypeVoteSubmitResponse)
 	if err != nil {
-		return SealerResponse{Success: false, Error: fmt.Sprintf("failed to read vote submit response: %v", err)}
-	}
-	if resp.Type != MessageTypeVoteSubmitResponse {
-		return SealerResponse{Success: false, Error: fmt.Sprintf("unexpected response type: %s", resp.Type)}
+		return SealerResponse{Success: false, Error: err.Error()}
 	}
 	return SealerResponse{Success: true, VoteSubmitResult: resp.Payload}
 }
@@ -890,12 +796,6 @@ func (sh *SealerHandler) submitSignedVote(req SealerRequest) SealerResponse {
 // getVoteProof fetches a Merkle inclusion proof from the parent (which reads
 // from the published-votes S3 bucket). The vault verifies the proof locally.
 func (sh *SealerHandler) getVoteProof(req SealerRequest) SealerResponse {
-	sh.connMu.Lock()
-	defer sh.connMu.Unlock()
-
-	if sh.parentConn == nil {
-		return SealerResponse{Success: false, Error: "no parent connection available"}
-	}
 	if req.ProposalID == "" || req.VotingPublicKey == "" {
 		return SealerResponse{Success: false, Error: "proposal_id and voting_public_key required"}
 	}
@@ -907,19 +807,12 @@ func (sh *SealerHandler) getVoteProof(req SealerRequest) SealerResponse {
 	if err != nil {
 		return SealerResponse{Success: false, Error: err.Error()}
 	}
-	msg := &Message{
+	resp, err := sh.muxRoundTrip("getVoteProof", &Message{
 		Type:    MessageTypeVoteProofRequest,
 		Payload: body,
-	}
-	if err := sh.parentConn.WriteMessage(msg); err != nil {
-		return SealerResponse{Success: false, Error: fmt.Sprintf("failed to send vote proof request: %v", err)}
-	}
-	resp, err := sh.parentConn.ReadMessage()
+	}, MessageTypeVoteProofResponse)
 	if err != nil {
-		return SealerResponse{Success: false, Error: fmt.Sprintf("failed to read vote proof response: %v", err)}
-	}
-	if resp.Type != MessageTypeVoteProofResponse {
-		return SealerResponse{Success: false, Error: fmt.Sprintf("unexpected response type: %s", resp.Type)}
+		return SealerResponse{Success: false, Error: err.Error()}
 	}
 	// Parent encodes errors inside the JSON body (no MessageTypeError here).
 	var errCheck struct {
@@ -933,32 +826,12 @@ func (sh *SealerHandler) getVoteProof(req SealerRequest) SealerResponse {
 
 // listProposals fetches proposals from DynamoDB via the parent process.
 func (sh *SealerHandler) listProposals(req SealerRequest) SealerResponse {
-	sh.connMu.Lock()
-	defer sh.connMu.Unlock()
-
-	if sh.parentConn == nil {
-		return SealerResponse{Success: false, Error: "no parent connection available"}
-	}
-
 	log.Info().Msg("Listing proposals via parent")
 
-	msg := &Message{Type: MessageTypeProposalsList}
-
-	if err := sh.parentConn.WriteMessage(msg); err != nil {
-		return SealerResponse{Success: false, Error: fmt.Sprintf("failed to send proposals list request: %v", err)}
-	}
-
-	response, err := sh.parentConn.ReadMessage()
+	response, err := sh.muxRoundTrip("listProposals",
+		&Message{Type: MessageTypeProposalsList}, MessageTypeProposalsResponse)
 	if err != nil {
-		return SealerResponse{Success: false, Error: fmt.Sprintf("failed to read proposals list response: %v", err)}
-	}
-
-	if response.Type == MessageTypeError {
-		return SealerResponse{Success: false, Error: fmt.Sprintf("parent error: %s", response.Error)}
-	}
-
-	if response.Type != MessageTypeProposalsResponse {
-		return SealerResponse{Success: false, Error: fmt.Sprintf("unexpected response type: %s", response.Type)}
+		return SealerResponse{Success: false, Error: err.Error()}
 	}
 
 	return SealerResponse{Success: true, ProposalsData: response.Payload}
@@ -968,16 +841,18 @@ func (sh *SealerHandler) listProposals(req SealerRequest) SealerResponse {
 // The parent makes the actual HTTP call and returns the response.
 // This uses the same parentConn as other parent-proxied operations (account seed, invite resolve, etc).
 func (sh *SealerHandler) ForwardHTTPRequest(msg *Message) *Message {
-	sh.connMu.Lock()
-	defer sh.connMu.Unlock()
-
-	if sh.parentConn == nil {
-		log.Warn().Msg("No parent connection for HTTP proxy - dev mode")
+	httpErr := func(format string, a ...interface{}) *Message {
 		return &Message{
 			RequestID: msg.RequestID,
 			Type:      MessageTypeHTTPResponse,
-			Payload:   []byte(`{"error":"no parent connection available"}`),
+			Payload:   []byte(fmt.Sprintf(format, a...)),
 		}
+	}
+
+	mux := sh.getMux()
+	if mux == nil {
+		log.Warn().Msg("No parent connection for HTTP proxy")
+		return httpErr(`{"error":"no parent connection available"}`)
 	}
 
 	log.Debug().
@@ -985,55 +860,33 @@ func (sh *SealerHandler) ForwardHTTPRequest(msg *Message) *Message {
 		Int("payload_len", len(msg.Payload)).
 		Msg("Forwarding HTTP request to parent")
 
-	// Forward the request to parent as-is (parent will parse the HTTP request payload)
-	fwdMsg := &Message{
+	ctx, cancel := context.WithTimeout(context.Background(), s3OperationTimeout)
+	defer cancel()
+	response, err := mux.SendRequest(ctx, &Message{
 		Type:      MessageTypeHTTPRequest,
 		RequestID: msg.RequestID,
 		Payload:   msg.Payload,
-	}
-
-	if err := sh.parentConn.WriteMessage(fwdMsg); err != nil {
-		log.Error().Err(err).Msg("Failed to forward HTTP request to parent")
-		return &Message{
-			RequestID: msg.RequestID,
-			Type:      MessageTypeHTTPResponse,
-			Payload:   []byte(`{"error":"failed to send HTTP request to parent"}`),
-		}
-	}
-
-	// Wait for response from parent
-	response, err := sh.parentConn.ReadMessage()
+	})
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to read HTTP response from parent")
-		return &Message{
-			RequestID: msg.RequestID,
-			Type:      MessageTypeHTTPResponse,
-			Payload:   []byte(`{"error":"failed to read HTTP response from parent"}`),
-		}
+		log.Error().Err(err).Msg("Failed HTTP request round-trip to parent")
+		return httpErr(`{"error":"failed to forward HTTP request to parent"}`)
 	}
 
 	if response.Type == MessageTypeError {
-		return &Message{
-			RequestID: msg.RequestID,
-			Type:      MessageTypeHTTPResponse,
-			Payload:   []byte(fmt.Sprintf(`{"error":"parent error: %s"}`, response.Error)),
-		}
+		return httpErr(`{"error":"parent error: %s"}`, response.Error)
 	}
-
 	if response.Type != MessageTypeHTTPResponse {
 		log.Warn().
 			Str("expected", string(MessageTypeHTTPResponse)).
 			Str("got", string(response.Type)).
 			Msg("Unexpected response type for HTTP proxy")
-		return &Message{
-			RequestID: msg.RequestID,
-			Type:      MessageTypeHTTPResponse,
-			Payload:   []byte(fmt.Sprintf(`{"error":"unexpected response type: %s"}`, response.Type)),
-		}
+		return httpErr(`{"error":"unexpected response type: %s"}`, response.Type)
 	}
 
-	// Relay response back to vault-manager with correct request ID
+	// Relay response back to vault-manager with the request ID it
+	// expects; the transport MuxID is meaningless on the subprocess pipe.
 	response.RequestID = msg.RequestID
+	response.MuxID = ""
 	return response
 }
 
@@ -1059,30 +912,12 @@ func (sh *SealerHandler) fetchMigrationConfig(req SealerRequest) SealerResponse 
 // HMAC-signed REST API credentials scoped to the requesting vault's user_guid.
 // Returns the response body as opaque JSON in TurnCredentials.
 func (sh *SealerHandler) getTurnCredentials(req SealerRequest) SealerResponse {
-	sh.connMu.Lock()
-	defer sh.connMu.Unlock()
-
-	if sh.parentConn == nil {
-		return SealerResponse{Success: false, Error: "no parent connection available"}
-	}
-
-	msg := &Message{
+	response, err := sh.muxRoundTrip("getTurnCredentials", &Message{
 		Type:       MessageTypeTurnCredentialsGet,
 		OwnerSpace: req.OwnerSpace,
-	}
-	if err := sh.parentConn.WriteMessage(msg); err != nil {
-		return SealerResponse{Success: false, Error: fmt.Sprintf("failed to send turn request: %v", err)}
-	}
-
-	response, err := sh.parentConn.ReadMessage()
+	}, MessageTypeTurnCredentialsResponse)
 	if err != nil {
-		return SealerResponse{Success: false, Error: fmt.Sprintf("failed to read turn response: %v", err)}
-	}
-	if response.Type == MessageTypeError {
-		return SealerResponse{Success: false, Error: fmt.Sprintf("parent error: %s", response.Error)}
-	}
-	if response.Type != MessageTypeTurnCredentialsResponse {
-		return SealerResponse{Success: false, Error: fmt.Sprintf("unexpected response type: %s", response.Type)}
+		return SealerResponse{Success: false, Error: err.Error()}
 	}
 
 	// Surface inline {"error": "..."} payloads as failure rather than success.
@@ -1099,30 +934,12 @@ func (sh *SealerHandler) getTurnCredentials(req SealerRequest) SealerResponse {
 // fetchPCRSigningPublicKey forwards the request to the parent which
 // returns the DER-encoded SPKI bytes of the PCR signing key.
 func (sh *SealerHandler) fetchPCRSigningPublicKey(req SealerRequest) SealerResponse {
-	sh.connMu.Lock()
-	defer sh.connMu.Unlock()
-
-	if sh.parentConn == nil {
-		return SealerResponse{Success: false, Error: "no parent connection available"}
-	}
-
-	msg := &Message{
+	response, err := sh.muxRoundTrip("fetchPCRSigningPublicKey", &Message{
 		Type:       MessageTypePCRSigningKeyGet,
 		OwnerSpace: req.OwnerSpace,
-	}
-	if err := sh.parentConn.WriteMessage(msg); err != nil {
-		return SealerResponse{Success: false, Error: fmt.Sprintf("failed to send pcr signing key request: %v", err)}
-	}
-
-	response, err := sh.parentConn.ReadMessage()
+	}, MessageTypePCRSigningKeyResponse)
 	if err != nil {
-		return SealerResponse{Success: false, Error: fmt.Sprintf("failed to read pcr signing key response: %v", err)}
-	}
-	if response.Type == MessageTypeError {
-		return SealerResponse{Success: false, Error: fmt.Sprintf("parent error: %s", response.Error)}
-	}
-	if response.Type != MessageTypePCRSigningKeyResponse {
-		return SealerResponse{Success: false, Error: fmt.Sprintf("unexpected response type: %s", response.Type)}
+		return SealerResponse{Success: false, Error: err.Error()}
 	}
 
 	// Inline error payload?
@@ -1206,34 +1023,17 @@ func (sh *SealerHandler) writeMigrationMarker(req SealerRequest) SealerResponse 
 // using the PCR signing key. Caller is expected to have hashed the
 // payload with SHA-256.
 func (sh *SealerHandler) signWithPCRSigningKey(ownerSpace string, digest []byte) SealerResponse {
-	sh.connMu.Lock()
-	defer sh.connMu.Unlock()
-
-	if sh.parentConn == nil {
-		return SealerResponse{Success: false, Error: "no parent connection available"}
-	}
-
 	payload, err := json.Marshal(map[string][]byte{"digest": digest})
 	if err != nil {
 		return SealerResponse{Success: false, Error: fmt.Sprintf("marshal digest: %v", err)}
 	}
-	msg := &Message{
+	response, err := sh.muxRoundTrip("signWithPCRSigningKey", &Message{
 		Type:       MessageTypePCRSigningKeySign,
 		OwnerSpace: ownerSpace,
 		Payload:    payload,
-	}
-	if err := sh.parentConn.WriteMessage(msg); err != nil {
-		return SealerResponse{Success: false, Error: fmt.Sprintf("send sign request: %v", err)}
-	}
-	response, err := sh.parentConn.ReadMessage()
+	}, MessageTypePCRSigningKeySignResponse)
 	if err != nil {
-		return SealerResponse{Success: false, Error: fmt.Sprintf("read sign response: %v", err)}
-	}
-	if response.Type == MessageTypeError {
-		return SealerResponse{Success: false, Error: response.Error}
-	}
-	if response.Type != MessageTypePCRSigningKeySignResponse {
-		return SealerResponse{Success: false, Error: fmt.Sprintf("unexpected response type: %s", response.Type)}
+		return SealerResponse{Success: false, Error: err.Error()}
 	}
 	var errPeek struct {
 		Error string `json:"error"`

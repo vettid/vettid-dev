@@ -761,6 +761,12 @@ func (ac *AuthenticatedConnection) Close() error {
 	return ac.conn.Close()
 }
 
+// RawConn exposes the underlying socket. Used after the handshake to
+// hand the fd to MuxConn for multiplexed framing.
+func (ac *AuthenticatedConnection) RawConn() net.Conn {
+	return ac.conn.RawConn()
+}
+
 // IsAuthenticated returns whether the connection is authenticated
 func (ac *AuthenticatedConnection) IsAuthenticated() bool {
 	return ac.authenticated
@@ -785,6 +791,10 @@ type Connection interface {
 	ReadMessage() (*Message, error)
 	WriteMessage(msg *Message) error
 	Close() error
+	// RawConn exposes the underlying socket so the post-handshake
+	// transport (MuxConn) can take exclusive ownership of the fd for
+	// length-prefixed framing + read-deadline multiplexing.
+	RawConn() net.Conn
 }
 
 // vsockListener implements Listener for vsock connections
@@ -843,6 +853,10 @@ func (c *vsockConnection) Close() error {
 	return c.conn.Close()
 }
 
+func (c *vsockConnection) RawConn() net.Conn {
+	return c.conn
+}
+
 // tcpListener implements Listener for TCP (dev mode)
 type tcpListener struct {
 	listener net.Listener
@@ -891,6 +905,10 @@ func (c *tcpConnection) WriteMessage(msg *Message) error {
 
 func (c *tcpConnection) Close() error {
 	return c.conn.Close()
+}
+
+func (c *tcpConnection) RawConn() net.Conn {
+	return c.conn
 }
 
 // SECURITY: Message size limits to prevent resource exhaustion

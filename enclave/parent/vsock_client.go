@@ -852,6 +852,13 @@ func (c *VsockClient) IsConnected() bool {
 	return c.conn != nil
 }
 
+// RawConn exposes the underlying socket so the post-handshake
+// EnclaveMux can take exclusive ownership of the fd for multiplexed
+// framing. The mutual-auth handshake must already have completed.
+func (c *VsockClient) RawConn() net.Conn {
+	return c.conn
+}
+
 // --- Attestation Verification ---
 
 // COSESign1 represents a COSE_Sign1 structure (RFC 8152)

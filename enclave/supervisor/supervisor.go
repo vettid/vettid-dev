@@ -29,8 +29,12 @@ type Supervisor struct {
 	sealer        *NitroSealer
 	vsock         Listener
 
-	// Active connection to parent (for sending vault-initiated messages)
-	parentConn   Connection
+	// Multiplexed transport to the parent. The single I/O goroutine
+	// inside MuxConn owns the fd; vault ops for different users overlap
+	// instead of serializing through one read loop. Used for both the
+	// inbound request path and vault-initiated sends (nats_publish,
+	// audit_event, log forwarding).
+	parentMux    *MuxConn
 	parentConnMu sync.RWMutex
 
 	// Attestation private keys for PIN decryption
@@ -51,8 +55,8 @@ func NewSupervisor(cfg *Config) (*Supervisor, error) {
 	// Create memory manager
 	memMgr := NewMemoryManager(cfg.MaxMemoryMB, cfg.MaxVaults)
 
-	// Create sealer (connection will be set when parent connects)
-	sealer := NewNitroSealer(nil)
+	// Create sealer (parent transport is wired when the parent connects)
+	sealer := NewNitroSealer()
 
 	s := &Supervisor{
 		config:          cfg,
@@ -119,17 +123,7 @@ func (s *Supervisor) handleConnection(ctx context.Context, rawConn Connection) {
 
 	// SECURITY: Wrap connection with authentication
 	authConn := NewAuthenticatedConnection(rawConn, connID)
-
-	defer func() {
-		authConn.Close()
-		s.parentConnMu.Lock()
-		s.parentConn = nil
-		s.parentConnMu.Unlock()
-		// Clear sealer connection
-		s.sealer.SetConnection(nil)
-		// Clear sealer handler connection (for S3 operations)
-		s.vaults.SetParentConnection(nil)
-	}()
+	defer authConn.Close()
 
 	// SECURITY: Perform mutual authentication handshake before accepting any messages
 	// The server side (enclave) doesn't verify PCRs (it IS the enclave)
@@ -141,72 +135,95 @@ func (s *Supervisor) handleConnection(ctx context.Context, rawConn Connection) {
 	}
 	log.Info().Str("conn_id", connID).Msg("Mutual authentication successful")
 
-	// Store authenticated connection for outbound messages from vaults
+	// Post-handshake the multiplexed transport takes exclusive
+	// ownership of the fd. MuxConn's single I/O goroutine does every
+	// read and write, so concurrent vault ops never trigger the Nitro
+	// vsock concurrent-read/write corruption — and they overlap
+	// instead of funnelling through one serial loop.
+	mux := NewMuxConn(authConn.RawConn())
+
 	s.parentConnMu.Lock()
-	s.parentConn = authConn
+	s.parentMux = mux
 	s.parentConnMu.Unlock()
-
-	// Set connection for sealer (for KMS operations)
-	s.sealer.SetConnection(authConn)
-
-	// Set connection for sealer handler (for S3 storage operations)
-	// This allows vault-manager processes to store/load data via the parent
-	s.vaults.SetParentConnection(authConn)
-
-	// Set parent connection for org vault manager
+	s.sealer.SetMux(mux)
+	s.vaults.SetMux(mux)
 	if s.orgVaults != nil {
-		s.orgVaults.SetParentConnection(authConn)
+		s.orgVaults.SetMux(mux)
 	}
+
+	defer func() {
+		s.parentConnMu.Lock()
+		s.parentMux = nil
+		s.parentConnMu.Unlock()
+		s.sealer.SetMux(nil)
+		s.vaults.SetMux(nil)
+		if s.orgVaults != nil {
+			s.orgVaults.SetMux(nil)
+		}
+	}()
+
+	// Closing the connection on ctx cancel unblocks the mux reader so
+	// a supervisor shutdown is graceful instead of hanging on a read.
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		select {
+		case <-ctx.Done():
+			authConn.Close()
+		case <-stop:
+		}
+	}()
 
 	log.Debug().Msg("New authenticated connection from parent process")
 
-	// Read messages in a loop
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
+	// Run the single reader. Each peer-initiated request is handed to
+	// its own goroutine so the reader never blocks on op processing
+	// (including nested S3/KMS round-trips) — that is the whole point
+	// of the multiplex.
+	mux.Run(func(msg *Message) {
+		go s.handleMuxRequest(ctx, mux, msg)
+	})
+	log.Debug().Str("conn_id", connID).Msg("Parent connection closed")
+}
 
-		// Read message from authenticated connection
-		msg, err := authConn.ReadMessage()
-		if err != nil {
-			log.Debug().Err(err).Msg("Connection closed")
-			return
+// handleMuxRequest processes one parent-initiated request on its own
+// goroutine and writes the response back through the mux, echoing the
+// transport MuxID so the parent's demux routes it to the right waiter.
+func (s *Supervisor) handleMuxRequest(ctx context.Context, mux *MuxConn, msg *Message) {
+	response, err := s.processMessage(ctx, msg)
+	if err != nil {
+		log.Error().Err(err).Str("type", string(msg.Type)).Msg("Error processing message")
+		response = &Message{
+			Type:      MessageTypeError,
+			RequestID: msg.RequestID,
+			Error:     err.Error(),
 		}
-
-		// Process message
-		response, err := s.processMessage(ctx, msg)
-		if err != nil {
-			log.Error().Err(err).Msg("Error processing message")
-			response = &Message{
-				Type:      MessageTypeError,
-				RequestID: msg.RequestID,
-				Error:     err.Error(),
-			}
-		}
-
-		// Send response
-		if response != nil {
-			if err := authConn.WriteMessage(response); err != nil {
-				log.Error().Err(err).Msg("Error writing response")
-				return
-			}
-		}
+	}
+	if response == nil {
+		// Fire-and-forget request (evict_vault) or a stray storage/KMS
+		// response with no matching pending entry — nothing to send.
+		return
+	}
+	response.MuxID = msg.MuxID
+	if response.RequestID == "" {
+		response.RequestID = msg.RequestID
+	}
+	if err := mux.Send(response); err != nil {
+		log.Error().Err(err).Str("type", string(response.Type)).Msg("mux: failed to send response")
 	}
 }
 
 // SendToParent sends a message to the parent process (for vault-initiated messages)
 func (s *Supervisor) SendToParent(msg *Message) error {
 	s.parentConnMu.RLock()
-	conn := s.parentConn
+	mux := s.parentMux
 	s.parentConnMu.RUnlock()
 
-	if conn == nil {
+	if mux == nil {
 		return fmt.Errorf("no parent connection available")
 	}
 
-	return conn.WriteMessage(msg)
+	return mux.Send(msg)
 }
 
 // processMessage routes a message to the appropriate handler
@@ -607,29 +624,25 @@ func (s *Supervisor) shutdown() {
 }
 
 // SendLog sends a log message to the parent for CloudWatch forwarding.
-// This is fire-and-forget - we don't wait for a response.
+// This is fire-and-forget - we don't wait for a response. mux.Send only
+// enqueues the frame for the I/O goroutine, so it does not block on a
+// socket write.
 func (s *Supervisor) SendLog(level, source, message string) {
 	s.parentConnMu.RLock()
-	conn := s.parentConn
+	mux := s.parentMux
 	s.parentConnMu.RUnlock()
 
-	if conn == nil {
+	if mux == nil {
 		// No parent connection, can't forward logs
 		return
 	}
 
-	msg := &Message{
+	// Best-effort: a send error here can't itself be logged (infinite
+	// loop), so it is intentionally dropped.
+	_ = mux.Send(&Message{
 		Type:       MessageTypeLog,
 		LogLevel:   level,
 		LogSource:  source,
 		LogMessage: message,
-	}
-
-	// Fire and forget - don't block on log sending
-	go func() {
-		if err := conn.WriteMessage(msg); err != nil {
-			// Can't log this error (would cause infinite loop), just ignore
-			return
-		}
-	}()
+	})
 }
