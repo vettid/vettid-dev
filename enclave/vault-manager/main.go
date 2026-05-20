@@ -235,29 +235,38 @@ func (vm *VaultManager) Run(ctx context.Context) error {
 					Error:     err.Error(),
 				}
 			}
+			// Auto-persist vault state BEFORE sending the response.
+			//
+			// persistVaultStateToS3 is throttled (debounced), so most
+			// ops are a no-op here; but when it does fire it emits a
+			// store_vault_state sealer request of ~500KB-1.3MB on the
+			// stdout pipe. The supervisor only drains that pipe while
+			// ProcessMessage for THIS op is active — and ProcessMessage
+			// returns the instant it reads the op response. Persisting
+			// AFTER the response therefore sent a >1MB write into a
+			// pipe nobody was draining: it blocked on the full 64KB
+			// pipe buffer until the next op arrived to drain it — a
+			// 30s-to-2min subprocess wedge, the root cause of the
+			// 2026-05-20 stalls (the stall watchdog's goroutine dump
+			// caught goroutine 1 blocked in this exact write syscall).
+			// Persisting first keeps the supervisor reading the pipe,
+			// so the large write drains as it is written. Cost: an op
+			// that actually persists waits ~0.5-2s longer for its
+			// response — and debouncing means that is roughly once per
+			// persistDebounceInterval window, not every op.
+			//
+			// Mutating handlers still call persistVaultStateToS3()
+			// explicitly inside HandleMessage (also throttled); those
+			// run mid-op while the pipe is being drained, so they were
+			// never affected. Durability semantics are unchanged.
+			if err == nil && response != nil && response.Type != MessageTypeError {
+				vm.messageHandler.persistVaultStateToS3()
+			}
+
 			if response != nil {
 				if err := vm.sendToParent(response); err != nil {
 					log.Error().Err(err).Msg("Failed to send response")
 				}
-			}
-
-			// Auto-persist vault state after each successful request.
-			// Use the THROTTLED variant — without this the main loop
-			// force-flushed ~500-700KB of SSE-KMS-encrypted state to
-			// S3 on every op, even reads. With the desktop's Vault
-			// view firing 5 read ops on screen-load that was 5
-			// sequential ~500ms-2s writes serialized through the
-			// vsock queue — the dominant cause of the user-reported
-			// 20-30s screen load. Mutating handlers still call
-			// persistVaultStateToS3() explicitly (also throttled),
-			// so durability semantics are unchanged: at most one
-			// persistDebounceInterval window of edits can be lost
-			// on crash (same as before, since the throttle already
-			// gated handler-direct calls). PersistVaultStateToS3
-			// (force-flush) is still available for shutdown +
-			// decommission paths that need a guaranteed flush.
-			if err == nil && response != nil && response.Type != MessageTypeError {
-				vm.messageHandler.persistVaultStateToS3()
 			}
 
 			// D3 self-eviction: a persist this iteration (or a prior
