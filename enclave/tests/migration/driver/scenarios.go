@@ -43,10 +43,10 @@ var AllScenarios = []Scenario{
 	{Name: "enroll-only", Run: scenarioEnrollOnly},
 	{Name: "migration-config-publish", Run: scenarioMigrationConfigPublish},
 	{Name: "unlock-only", Run: scenarioUnlockOnly},
+	{Name: "concurrent-load", Run: scenarioConcurrentLoad},
 	{Name: "migration-handoff", Run: scenarioMigrationHandoff},
 	// Roadmap (see ../README.md §"Scenarios to implement"):
 	// {Name: "happy-path",                Run: scenarioHappyPath},
-	// {Name: "concurrent-load",           Run: scenarioConcurrentLoad},
 	// {Name: "kill-during-reseal",        Run: scenarioKillDuringReseal},
 	// {Name: "kill-after-reseal-before-marker", Run: scenarioKillAfterReseal},
 	// {Name: "routing-lease-expiry",      Run: scenarioLeaseExpiry},
