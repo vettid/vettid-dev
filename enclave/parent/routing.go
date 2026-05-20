@@ -451,10 +451,7 @@ func (r *RoutingManager) ReclaimUsersFromPCR0(oldPCR0 string) (int, error) {
 			continue
 		}
 		r.mu.Lock()
-		r.owned[guid] = &ownedUser{
-			revision:   rev,
-			leaseUntil: time.Unix(entry.LeaseUntil, 0),
-		}
+		r.recordOwnershipLocked(guid, rev, time.Unix(entry.LeaseUntil, 0))
 		r.mu.Unlock()
 		// Evict any stale local subprocess BEFORE we subscribe — so the
 		// first op that flows in after the subscription spawns a FRESH
@@ -531,10 +528,7 @@ func (r *RoutingManager) ReclaimIfExpiredOrVacant(userGuid string) (bool, error)
 		return false, nil
 	}
 	r.mu.Lock()
-	r.owned[userGuid] = &ownedUser{
-		revision:   rev,
-		leaseUntil: time.Unix(entry.LeaseUntil, 0),
-	}
+	r.recordOwnershipLocked(userGuid, rev, time.Unix(entry.LeaseUntil, 0))
 	r.mu.Unlock()
 	// Fresh subprocess on first op — see ReclaimUsersFromPCR0.
 	r.fireReclaim(userGuid)
@@ -736,15 +730,14 @@ func (r *RoutingManager) handleWatchEvent(e nats.KeyValueEntry) {
 	r.mu.RUnlock()
 
 	if remote.InstanceID == r.enclaveID {
-		// Someone (us or our future self) says we own. Subscribe if
-		// not already. Happens on reclaim + handoff-to-us paths.
+		// Someone (us or our future self) says we own. Record the claim
+		// — recordOwnershipLocked refreshes in place if we already held
+		// it, so a live subscription is never orphaned. On a genuine
+		// ownership GAIN, evict any stale subprocess and subscribe.
+		r.mu.Lock()
+		r.recordOwnershipLocked(guid, e.Revision(), time.Unix(remote.LeaseUntil, 0))
+		r.mu.Unlock()
 		if !owned {
-			r.mu.Lock()
-			r.owned[guid] = &ownedUser{
-				revision:   e.Revision(),
-				leaseUntil: time.Unix(remote.LeaseUntil, 0),
-			}
-			r.mu.Unlock()
 			// Handoff-to-us observed via the watcher (e.g. a peer's
 			// HandoffToPeer targeted this instance). Evict any stale
 			// local subprocess so the first op spawns fresh — see
@@ -757,13 +750,6 @@ func (r *RoutingManager) handleWatchEvent(e nats.KeyValueEntry) {
 				Str("user_guid", guid).
 				Str("enclave_id", r.enclaveID).
 				Msg("routing: took ownership via watcher")
-		} else {
-			r.mu.Lock()
-			if e2, ok := r.owned[guid]; ok {
-				e2.revision = e.Revision()
-				e2.leaseUntil = time.Unix(remote.LeaseUntil, 0)
-			}
-			r.mu.Unlock()
 		}
 		return
 	}
@@ -824,13 +810,7 @@ func (r *RoutingManager) reconcileAll() error {
 		}
 		if entry.InstanceID == r.enclaveID {
 			r.mu.Lock()
-			_, already := r.owned[guid]
-			if !already {
-				r.owned[guid] = &ownedUser{
-					revision:   kvEntry.Revision(),
-					leaseUntil: time.Unix(entry.LeaseUntil, 0),
-				}
-			}
+			r.recordOwnershipLocked(guid, kvEntry.Revision(), time.Unix(entry.LeaseUntil, 0))
 			r.mu.Unlock()
 			if err := r.subscribeUser(guid); err != nil {
 				log.Warn().Err(err).Str("user_guid", guid).Msg("routing: subscribe failed during reconcile")
@@ -867,6 +847,30 @@ func (r *RoutingManager) OnReconnect() {
 
 func (r *RoutingManager) kv() (nats.KeyValue, error) {
 	return r.natsClient.RoutingKV()
+}
+
+// recordOwnershipLocked records that this instance owns userGuid at the
+// given KV revision / lease. If the user is ALREADY owned it refreshes
+// the existing entry in place — it never replaces the entry.
+//
+// Replacing the entry would drop the pointer to its live NATS
+// subscription without unsubscribing it; subscribeUser would then see a
+// fresh (subscription==nil) entry and add a SECOND subscription,
+// leaving the first orphaned but still delivering — every vault op
+// would then arrive twice. That is exactly what the deploy.sh Phase 4.6
+// reclaim retry triggered (2026-05-20): the migration shipped a
+// double-subscribed enclave, the parent's replay detector rejected
+// every duplicate, and the wasted load pushed op latency past the 60s
+// device-approval timeout.
+//
+// Caller must hold r.mu.
+func (r *RoutingManager) recordOwnershipLocked(userGuid string, revision uint64, leaseUntil time.Time) {
+	if existing, ok := r.owned[userGuid]; ok {
+		existing.revision = revision
+		existing.leaseUntil = leaseUntil
+		return
+	}
+	r.owned[userGuid] = &ownedUser{revision: revision, leaseUntil: leaseUntil}
 }
 
 func (r *RoutingManager) subscribeUser(userGuid string) error {
