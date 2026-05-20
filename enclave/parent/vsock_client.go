@@ -233,6 +233,14 @@ type EnclaveMessage struct {
 	Attestation *Attestation `json:"attestation,omitempty"`
 	RequestID   string       `json:"request_id,omitempty"` // Echo back to mobile for correlation
 
+	// MuxID — transport-level correlation token for the multiplexed
+	// vsock protocol. Whoever initiates a request stamps a fresh one;
+	// the responder echoes it. The single-reader demux on each side
+	// routes responses by MuxID. Kept separate from RequestID (the
+	// app-facing id, set inconsistently across enclave handlers and
+	// unreliable for transport correlation — the 2026-05-19 wedge).
+	MuxID string `json:"mux_id,omitempty"`
+
 	// Handler loading fields
 	HandlerID      string `json:"handler_id,omitempty"`
 	HandlerVersion string `json:"handler_version,omitempty"`

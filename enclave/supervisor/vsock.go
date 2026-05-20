@@ -150,6 +150,17 @@ type Message struct {
 	OwnerSpace string      `json:"owner_space,omitempty"`
 	RequestID  string      `json:"request_id,omitempty"`
 
+	// MuxID is the transport-level correlation token for the
+	// multiplexed parent↔supervisor protocol. Whoever INITIATES a
+	// request stamps a fresh unique MuxID; the responder echoes it
+	// verbatim. The demux on each side routes a response back to the
+	// goroutine waiting on that MuxID. Distinct from RequestID, which
+	// is the app-facing request id echoed to the mobile client — that
+	// one is set inconsistently across handlers and cannot be relied
+	// on for transport correlation (the 2026-05-19 wedge). MuxID is
+	// owned entirely by the transport layer.
+	MuxID string `json:"mux_id,omitempty"`
+
 	// NATS routing (for vault_op and nats_publish)
 	Subject string `json:"subject,omitempty"` // NATS subject (e.g., "OwnerSpace.user-123.forVault.call.initiate")
 	ReplyTo string `json:"reply_to,omitempty"` // NATS reply subject
