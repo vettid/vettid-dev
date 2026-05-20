@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"runtime"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -175,6 +177,15 @@ func (vm *VaultManager) Run(ctx context.Context) error {
 	// Pass response channels so proxy responses can be routed directly, bypassing the main loop
 	go vm.receiveMessages(ctx, msgChan, sealerResponseCh, httpResponseCh)
 
+	// Stall watchdog: a vault op is reads plus small writes, so any op
+	// that runs past opStallThreshold means the subprocess is wedged
+	// (the 2026-05-20 ~2-minute stall behind the device-approval
+	// timeouts). The watchdog dumps every goroutine's stack so the
+	// cause is captured in the journal; the supervisor's read-timeout
+	// eviction is what tears the wedged subprocess down.
+	opStartedAt := new(atomic.Int64)
+	go runStallWatchdog(ctx, opStartedAt)
+
 	// SECURITY: Periodic cleanup of expired replay prevention events (every hour)
 	cleanupTicker := time.NewTicker(1 * time.Hour)
 	defer cleanupTicker.Stop()
@@ -210,6 +221,7 @@ func (vm *VaultManager) Run(ctx context.Context) error {
 				}
 			}
 		case msg := <-msgChan:
+			opStartedAt.Store(time.Now().UnixNano()) // arm the stall watchdog
 			// Note: Sealer responses are now routed directly in receiveMessages()
 			// to avoid a deadlock when HandleMessage blocks waiting for sealer responses.
 
@@ -263,6 +275,48 @@ func (vm *VaultManager) Run(ctx context.Context) error {
 					Msg("D3 self-eviction: exiting subprocess so the next op cold-reloads vault_state.enc")
 				os.Exit(0)
 			}
+			opStartedAt.Store(0) // op complete — disarm the stall watchdog
+		}
+	}
+}
+
+// opStallThreshold is how long a single vault op may run before the
+// stall watchdog treats the subprocess as wedged. Vault ops are reads
+// and small writes — well under a second normally — so 25s is far past
+// any legitimate op, and still inside the supervisor's 30s op deadline
+// so the dump lands before the wedged subprocess is torn down.
+const opStallThreshold = 25 * time.Second
+
+// runStallWatchdog dumps every goroutine's stack to stderr (forwarded
+// to the journal) when the main loop has been inside a single op
+// longer than opStallThreshold. It fires at most once per wedge:
+// opStartedAt carries a fresh timestamp per op, so a new op re-arms
+// it, and an idle subprocess (opStartedAt == 0) re-arms it too.
+func runStallWatchdog(ctx context.Context, opStartedAt *atomic.Int64) {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	var dumpedFor int64
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			started := opStartedAt.Load()
+			if started == 0 {
+				dumpedFor = 0 // idle — re-arm for the next op
+				continue
+			}
+			elapsed := time.Since(time.Unix(0, started))
+			if elapsed < opStallThreshold || started == dumpedFor {
+				continue
+			}
+			buf := make([]byte, 1<<20)
+			n := runtime.Stack(buf, true)
+			log.Error().
+				Dur("op_elapsed", elapsed).
+				Msg("WATCHDOG: vault op exceeded stall threshold — subprocess wedged; full goroutine dump follows")
+			_, _ = os.Stderr.Write(buf[:n])
+			dumpedFor = started
 		}
 	}
 }
