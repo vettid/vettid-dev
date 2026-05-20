@@ -410,36 +410,23 @@ func (s *Supervisor) handleVaultOp(ctx context.Context, msg *Message) (*Message,
 			return nil, fmt.Errorf("failed to respawn vault after subprocess loss: %w", err)
 		}
 		resp, err = vault.ProcessMessage(ctx, msg)
-	} else if err != nil && isVaultProcessWedged(err) {
-		// Read timeout: the subprocess accepted the op but produced
-		// nothing within its 30s deadline — it is wedged on something
-		// internal, not merely slow (a vault op is reads plus small
-		// writes; >30s is never legitimate). Evict it so the NEXT op
-		// for this user spawns a fresh subprocess that cold-loads
-		// current S3 state, instead of every subsequent op piling onto
-		// the same wedged subprocess and timing out in turn — the
-		// 2026-05-20 ~2-minute cascade behind the device-approval
-		// timeouts. The op is NOT retried here: a read timeout cannot
-		// prove the subprocess didn't already half-apply a mutating
-		// op, so an auto-retry could double-run it. The client
-		// re-issues against the fresh subprocess.
-		log.Warn().
-			Err(err).
-			Str("owner_space", ownerSpace).
-			Msg("vault subprocess wedged (op read timeout) — evicting so the next op gets a fresh subprocess")
-		s.vaults.Evict(ownerSpace)
 	}
+	// NOTE: a bare ProcessMessage read timeout is deliberately NOT
+	// treated as cause to evict. An earlier change here evicted the
+	// subprocess on any 30s read timeout — but eviction throws away
+	// the in-memory DEK, so the cold-respawned subprocess is LOCKED.
+	// In practice a read timeout is usually just a request-burst
+	// backlog on a perfectly healthy, unlocked subprocess; evicting it
+	// locked the user's vault out from under them mid-session
+	// (2026-05-20: a personal-data burst timed out one queued op, the
+	// evict killed the unlocked subprocess, and every following op —
+	// including the user's device.approval — failed "vault_locked").
+	// A timed-out op now just returns its error; the client retries
+	// against the still-unlocked subprocess. A genuine wedge is
+	// surfaced by the in-subprocess stall watchdog's goroutine dump
+	// (runStallWatchdog) and fixed at the source, not papered over by
+	// an evict that locks the vault.
 	return resp, err
-}
-
-// isVaultProcessWedged reports whether err is a ProcessMessage read
-// timeout — the subprocess accepted an op but produced nothing within
-// the deadline. Unlike isSubprocessGone (a dead pipe), the subprocess
-// is alive but stuck, so it must be evicted; the op must NOT be
-// auto-retried, since a read timeout cannot prove a mutating op did
-// not half-apply.
-func isVaultProcessWedged(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "read timeout")
 }
 
 // isSubprocessGone reports whether err indicates the vault-manager
