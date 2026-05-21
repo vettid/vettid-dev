@@ -33,9 +33,11 @@ func main() {
 
 	fmt.Printf("Args parsed: dev_mode=%v, vsock_port=%d\n", *devMode, *vsockPort)
 
-	// Configure logging - always use console writer for visibility
+	// Configure logging — tee to the enclave console AND the parent
+	// journal. The journal half is dormant until startJournalForwarding
+	// is called once the supervisor is up. See journal_log.go.
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
-	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr, NoColor: true})
+	log.Logger = log.Output(newSupervisorLogger())
 
 	log.Info().
 		Str("version", Version).

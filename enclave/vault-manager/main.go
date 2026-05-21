@@ -298,10 +298,15 @@ func (vm *VaultManager) Run(ctx context.Context) error {
 
 // opStallThreshold is how long a single vault op may run before the
 // stall watchdog treats the subprocess as wedged. Vault ops are reads
-// and small writes — well under a second normally — so 25s is far past
-// any legitimate op, and still inside the supervisor's 30s op deadline
-// so the dump lands before the wedged subprocess is torn down.
-const opStallThreshold = 25 * time.Second
+// and small writes — well under a second normally.
+//
+// DIAG: lowered 25s -> 12s for the 2026-05-21 device-approval stall
+// investigation. At 25s with a 10s tick the watchdog stepped over a
+// ~27-30s stall most of the time (a tick rarely lands in the 25-30s
+// window), so "watchdog silent" wrongly looked like "no in-op stall".
+// 12s with a fast tick reliably catches it. Restore to 25s before
+// tech-preview if the fast cadence proves too noisy.
+const opStallThreshold = 12 * time.Second
 
 // runStallWatchdog dumps every goroutine's stack to stderr (forwarded
 // to the journal) when the main loop has been inside a single op
@@ -309,7 +314,10 @@ const opStallThreshold = 25 * time.Second
 // opStartedAt carries a fresh timestamp per op, so a new op re-arms
 // it, and an idle subprocess (opStartedAt == 0) re-arms it too.
 func runStallWatchdog(ctx context.Context, opStartedAt *atomic.Int64) {
-	ticker := time.NewTicker(10 * time.Second)
+	// DIAG: 10s -> 2s tick for the 2026-05-21 stall investigation so the
+	// dump reliably lands while an op is still wedged. Restore to 10s
+	// alongside opStallThreshold before tech-preview.
+	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 	var dumpedFor int64
 	for {

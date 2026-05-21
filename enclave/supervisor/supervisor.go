@@ -94,6 +94,17 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		Uint32("port", s.config.VsockPort).
 		Msg("Supervisor listening")
 
+	// Forward the supervisor's own zerolog output to the parent journal
+	// (see journal_log.go) so supervisor logs are visible in production,
+	// not just on the enclave console.
+	startJournalForwarding(s.SendLog)
+
+	// Stall watchdog: dumps every supervisor goroutine stack to the
+	// parent journal if a vault op runs past supervisorOpStallThreshold.
+	// See stall_watchdog.go — closes the supervisor-side blind spot for
+	// ops that wedge before reaching the vault-manager subprocess.
+	go runSupervisorStallWatchdog(ctx, s.SendLog)
+
 	// Accept connections in a loop
 	for {
 		select {
@@ -334,6 +345,12 @@ func (s *Supervisor) handleVaultOp(ctx context.Context, msg *Message) (*Message,
 		return nil, fmt.Errorf("owner_space required for vault operation")
 	}
 
+	// Register this op with the stall watchdog. The deferred finish()
+	// unregisters it on return; setStage() markers below let a goroutine
+	// dump be read against where the op was parked. See stall_watchdog.go.
+	tr := startOpTrace(ownerSpace, msg.Subject)
+	defer tr.finish()
+
 	// Harness-only: simulate real S3/KMS round-trip latency so the
 	// Tier-2 concurrent-load scenario can measure serial vs concurrent
 	// throughput. No-op in production builds.
@@ -377,10 +394,12 @@ func (s *Supervisor) handleVaultOp(ctx context.Context, msg *Message) (*Message,
 		if s.orgVaults == nil {
 			return nil, fmt.Errorf("org vault manager not available")
 		}
+		tr.setStage("org-get-or-create")
 		vault, err := s.orgVaults.GetOrCreate(ctx, ownerSpace)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get org vault: %w", err)
 		}
+		tr.setStage("org-process-message")
 		return vault.ProcessMessage(ctx, msg)
 	}
 
@@ -394,21 +413,25 @@ func (s *Supervisor) handleVaultOp(ctx context.Context, msg *Message) (*Message,
 	// state, and the op runs cleanly. The initial write is the safe
 	// retry point — if it failed the subprocess never saw the
 	// message, so the op hasn't half-executed.
+	tr.setStage("get-or-create")
 	vault, err := s.vaults.GetOrCreate(ctx, ownerSpace)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get vault: %w", err)
 	}
+	tr.setStage("process-message")
 	resp, err := vault.ProcessMessage(ctx, msg)
 	if err != nil && isSubprocessGone(err) {
 		log.Warn().
 			Err(err).
 			Str("owner_space", ownerSpace).
 			Msg("vault subprocess gone — evicting and retrying op once on a fresh subprocess")
+		tr.setStage("evict-and-respawn")
 		s.vaults.Evict(ownerSpace)
 		vault, err = s.vaults.GetOrCreate(ctx, ownerSpace)
 		if err != nil {
 			return nil, fmt.Errorf("failed to respawn vault after subprocess loss: %w", err)
 		}
+		tr.setStage("retry-process-message")
 		resp, err = vault.ProcessMessage(ctx, msg)
 	}
 	// NOTE: a bare ProcessMessage read timeout is deliberately NOT
