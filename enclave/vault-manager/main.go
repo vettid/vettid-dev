@@ -186,6 +186,27 @@ func (vm *VaultManager) Run(ctx context.Context) error {
 	opStartedAt := new(atomic.Int64)
 	go runStallWatchdog(ctx, opStartedAt)
 
+	// DIAG: SIGUSR1 dumps every goroutine stack to stderr (captured by
+	// the supervisor's logStderr → parent journal). The supervisor's
+	// stall watchdog sends SIGUSR1 to a subprocess whose op has stalled,
+	// so a wedge OUTSIDE op execution — in the pipe-receive / routing
+	// layer, which the opStartedAt watchdog above cannot observe — still
+	// yields a goroutine dump. Strip with the other // DIAG items before
+	// tech-preview.
+	go func() {
+		sigusr := make(chan os.Signal, 1)
+		signal.Notify(sigusr, syscall.SIGUSR1)
+		for range sigusr {
+			buf := make([]byte, 4<<20)
+			n := runtime.Stack(buf, true)
+			// Write straight to stderr, never via log: if the wedge is
+			// in the logging / pipe path, log.* would hang the handler.
+			_, _ = os.Stderr.WriteString("\n=== SIGUSR1 GOROUTINE DUMP (supervisor stall-watchdog requested) ===\n")
+			_, _ = os.Stderr.Write(buf[:n])
+			_, _ = os.Stderr.WriteString("\n=== END SIGUSR1 GOROUTINE DUMP ===\n")
+		}
+	}()
+
 	// SECURITY: Periodic cleanup of expired replay prevention events (every hour)
 	cleanupTicker := time.NewTicker(1 * time.Hour)
 	defer cleanupTicker.Stop()

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"sync"
 	"time"
@@ -189,6 +190,23 @@ func (pm *ProcessManager) waitForExit(ownerSpace string, cmd *exec.Cmd) {
 			Str("owner_space", ownerSpace).
 			Msg("vault-manager process exited normally")
 	}
+}
+
+// Signal sends an OS signal to a managed subprocess by owner space.
+// DIAG: used by the stall watchdog to request a SIGUSR1 goroutine dump
+// from a subprocess whose op has stalled. Non-fatal: a missing entry
+// just means the subprocess isn't tracked here (e.g. an org vault).
+func (pm *ProcessManager) Signal(ownerSpace string, sig os.Signal) error {
+	pm.mu.RLock()
+	proc, exists := pm.processes[ownerSpace]
+	pm.mu.RUnlock()
+	if !exists {
+		return fmt.Errorf("no managed subprocess for owner %s", ownerSpace)
+	}
+	if proc.Cmd == nil || proc.Cmd.Process == nil {
+		return fmt.Errorf("subprocess for owner %s has no process handle", ownerSpace)
+	}
+	return proc.Cmd.Process.Signal(sig)
 }
 
 // Kill terminates a vault-manager process

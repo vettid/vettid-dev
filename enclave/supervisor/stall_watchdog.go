@@ -93,9 +93,12 @@ func (t *opTrace) finish() {
 
 // runSupervisorStallWatchdog scans in-flight ops every supervisorWatchdogTick
 // and, when one has been running longer than supervisorOpStallThreshold,
-// dumps every supervisor goroutine stack via sendLog. Each stalled op is
-// dumped at most once (the dumped flag). Blocks until ctx is cancelled.
-func runSupervisorStallWatchdog(ctx context.Context, sendLog func(level, source, message string)) {
+// dumps every supervisor goroutine stack via sendLog AND asks requestDump
+// to SIGUSR1 each stalled owner's subprocess (so the subprocess produces
+// its own goroutine dump — the supervisor dump alone cannot see a wedge
+// inside the vault-manager). Each stalled op is dumped at most once (the
+// dumped flag). Blocks until ctx is cancelled.
+func runSupervisorStallWatchdog(ctx context.Context, sendLog func(level, source, message string), requestDump func(ownerSpace string)) {
 	ticker := time.NewTicker(supervisorWatchdogTick)
 	defer ticker.Stop()
 	for {
@@ -103,12 +106,12 @@ func runSupervisorStallWatchdog(ctx context.Context, sendLog func(level, source,
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			scanForStalledOps(sendLog)
+			scanForStalledOps(sendLog, requestDump)
 		}
 	}
 }
 
-func scanForStalledOps(sendLog func(level, source, message string)) {
+func scanForStalledOps(sendLog func(level, source, message string), requestDump func(ownerSpace string)) {
 	now := time.Now().UnixNano()
 	var firstStall *opTrace
 	opTraces.Range(func(_, v any) bool {
@@ -125,10 +128,13 @@ func scanForStalledOps(sendLog func(level, source, message string)) {
 	}
 	// Mark every currently-stalled op as dumped so a single goroutine
 	// dump covers them all and a long wedge does not dump every tick.
+	// Collect the distinct stalled owners to SIGUSR1 afterwards.
+	stalledOwners := make(map[string]bool)
 	opTraces.Range(func(_, v any) bool {
 		t := v.(*opTrace)
 		if time.Duration(now-t.startedAt) >= supervisorOpStallThreshold {
 			t.dumped.Store(true)
+			stalledOwners[t.ownerSpace] = true
 		}
 		return true
 	})
@@ -159,5 +165,12 @@ func scanForStalledOps(sendLog func(level, source, message string)) {
 		sendLog("error", "supervisor-watchdog",
 			fmt.Sprintf("WATCHDOG(supervisor) goroutines [%d-%d/%d]\n%s",
 				off, end, total, dump[off:end]))
+	}
+
+	// Ask each stalled owner's subprocess to dump its own goroutines
+	// (SIGUSR1). The supervisor dump above only covers supervisor
+	// goroutines; a wedge inside the vault-manager is invisible to it.
+	for owner := range stalledOwners {
+		requestDump(owner)
 	}
 }
