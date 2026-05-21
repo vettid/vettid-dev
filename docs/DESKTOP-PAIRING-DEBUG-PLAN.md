@@ -96,3 +96,60 @@ Symptom → suspect hop:
   mandatory.
 - #2 and #3 may share one root cause (wrong owner-space / no pending
   record). Confirm or split them early in the trace.
+
+---
+
+## FINDINGS — 2026-05-21 trace (enclave 2026-05-21-v2)
+
+Traced a failed pairing of the desktop to al (eb8472f6). Enclave log:
+
+    09:41:52  device.connection.request          conn-c31b4e8f… (code generated)
+    09:42:15  Device pairing invite cancelled     conn-c31b4e8f…  ← phone cancelled
+    09:42:17  request-session                     conn-c31b4e8f…  (desktop — 2s too late)
+    09:42:21  device.authorize-session → "no pending authorization"
+
+Root cause of "no pending authorization": the **phone cancelled its own
+invite mid-pairing**. `HandleCancelDeviceInvite` (connections.go:4121)
+is triggered by the phone's `DevicePairingViewModel.cancel()`, and
+`cancel()` is wired to the pairing screen's **Back button**
+(DevicePairingScreen.kt:41-43: `viewModel.cancel(); onNavigateBack()`).
+The cancel fired at 23s — NOT the 120s `inviteTtlSeconds` countdown —
+so it was a Back press, not a code timeout.
+
+Why the user pressed Back: device pairing has **no phone-side QR scan**
+— the phone shows a code, the user types it on the desktop, and the
+phone screen auto-advances (`DevicePairingState.DevicePending` →
+`onNavigateToAuthorize`, DevicePairingScreen.kt:29-34) when the
+desktop's request-session arrives. The desktop's Stage-1 is slow
+(~6s: NATS connect + INVITATIONS-consumer fetch — desktop log
+09:42:11→09:42:17), so the auto-advance hadn't happened yet; the user,
+not seeing it, backed out to find a (nonexistent) scanner and the Back
+press cancelled the invite. The later request-session/authorize then
+found nothing.
+
+### Fixes (in priority order)
+
+1. **Back must not silently kill the invite.** DevicePairingScreen Back
+   while in `ShowingCode` should confirm ("Cancel pairing?") or just
+   navigate without `cancel()` — a mid-pairing Back press should not
+   destroy a live invite. (Android.)
+2. **The code screen must read as "waiting".** While `ShowingCode`,
+   say plainly "Enter this code on your desktop, then keep this screen
+   open — it advances automatically." Removes the impulse to go look
+   for a scanner. (Android.)
+3. **Desktop Stage-1 latency** (~6s to show the QR/code-accepted
+   state): reuse the live NATS connection instead of a fresh
+   connect + consumer fetch. (Desktop — overlaps the session-start
+   latency item.)
+4. **Device metadata** (#1 original symptom) — re-evaluate on a
+   correct-path attempt: does the DeviceAuthorize screen render
+   hostname/OS once pairing actually reaches it? Trace
+   collect_device_fingerprint → request-session payload → vault
+   DeviceMetadata → authorize screen only if it's still blank.
+
+### Immediate workaround (no code change)
+
+Generate the code, type it on the desktop, then **stay on the phone's
+pairing-code screen and wait** — it auto-advances to the approve
+screen. Do not press Back; there is no QR scanner step. The code is
+valid 120s, ample for the round-trip.
