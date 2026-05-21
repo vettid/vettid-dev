@@ -45,6 +45,7 @@ var AllScenarios = []Scenario{
 	{Name: "unlock-only", Run: scenarioUnlockOnly},
 	{Name: "concurrent-load", Run: scenarioConcurrentLoad},
 	{Name: "concurrent-multiuser", Run: scenarioConcurrentMultiUser},
+	{Name: "persist-idle-no-stall", Run: scenarioPersistIdleNoStall},
 	{Name: "migration-handoff", Run: scenarioMigrationHandoff},
 	// Roadmap (see ../README.md §"Scenarios to implement"):
 	// {Name: "happy-path",                Run: scenarioHappyPath},
