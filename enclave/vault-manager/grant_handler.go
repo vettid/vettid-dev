@@ -133,22 +133,46 @@ type ReceivedGrantRecord struct {
 	LastFetched int64  `json:"last_fetched,omitempty"`
 }
 
+// RequestItem is one field of a data-access request. A request for an
+// alias group carries one RequestItem per member; a plain single-item
+// request carries exactly one. The enclosing structs keep singular
+// ItemKind/ItemRef/ItemLabel fields mirroring Items[0] so older vault
+// builds (which don't know Items) still see a usable single item.
+type RequestItem struct {
+	ItemKind  string `json:"item_kind"`
+	ItemRef   string `json:"item_ref"`
+	ItemLabel string `json:"item_label"`
+}
+
 // PendingRequest mirrors an incoming DataAccessRequest awaiting the
 // owner's decision. ApprovedGrantID is empty until owner approves; on
 // approval the record moves out of pending_requests/ into grants/.
+// A request covering an alias group carries every field in Items;
+// ItemKind/ItemRef/ItemLabel mirror Items[0].
 type PendingRequest struct {
-	RequestID          string `json:"request_id"`
-	RequesterGUID      string `json:"requester_guid"`
-	ConnectionID       string `json:"connection_id"`
-	ItemKind           string `json:"item_kind"`
-	ItemRef            string `json:"item_ref"`
-	ItemLabel          string `json:"item_label"`
-	RequestedMode      string `json:"requested_mode"`
-	RequestedExpiresAt int64  `json:"requested_expires_at"`
-	RequestedMaxUses   int    `json:"requested_max_uses"`
-	DeliverTo          string `json:"deliver_to"`
-	Reason             string `json:"reason,omitempty"`
-	ReceivedAt         int64  `json:"received_at"`
+	RequestID          string        `json:"request_id"`
+	RequesterGUID      string        `json:"requester_guid"`
+	ConnectionID       string        `json:"connection_id"`
+	ItemKind           string        `json:"item_kind"`
+	ItemRef            string        `json:"item_ref"`
+	ItemLabel          string        `json:"item_label"`
+	Items              []RequestItem `json:"items,omitempty"`
+	RequestedMode      string        `json:"requested_mode"`
+	RequestedExpiresAt int64         `json:"requested_expires_at"`
+	RequestedMaxUses   int           `json:"requested_max_uses"`
+	DeliverTo          string        `json:"deliver_to"`
+	Reason             string        `json:"reason,omitempty"`
+	ReceivedAt         int64         `json:"received_at"`
+}
+
+// requestItems returns the fields the request covers — Items when set,
+// otherwise a single item synthesised from the singular fields (so an
+// old-format request still works).
+func (p *PendingRequest) requestItems() []RequestItem {
+	if len(p.Items) > 0 {
+		return p.Items
+	}
+	return []RequestItem{{ItemKind: p.ItemKind, ItemRef: p.ItemRef, ItemLabel: p.ItemLabel}}
 }
 
 // OutgoingRequestRecord is the requester-side local record of a
@@ -158,38 +182,51 @@ type PendingRequest struct {
 // badge — surfaces that are otherwise blind because the request only
 // lives in the peer's vault until they answer.
 type OutgoingRequestRecord struct {
-	RequestID    string `json:"request_id"`
-	ConnectionID string `json:"connection_id"`
-	ItemKind     string `json:"item_kind"`
-	ItemRef      string `json:"item_ref"`
-	ItemLabel    string `json:"item_label"`
-	Mode         string `json:"mode"`
-	Reason       string `json:"reason,omitempty"`
-	Status       string `json:"status"` // pending | approved | denied
-	GrantID      string `json:"grant_id,omitempty"`      // set on approval
-	DenialReason string `json:"denial_reason,omitempty"` // set on denial
-	CreatedAt    int64  `json:"created_at"`
-	RespondedAt  int64  `json:"responded_at,omitempty"`
+	RequestID    string        `json:"request_id"`
+	ConnectionID string        `json:"connection_id"`
+	ItemKind     string        `json:"item_kind"`
+	ItemRef      string        `json:"item_ref"`
+	ItemLabel    string        `json:"item_label"`
+	Items        []RequestItem `json:"items,omitempty"`
+	Mode         string        `json:"mode"`
+	Reason       string        `json:"reason,omitempty"`
+	Status       string        `json:"status"` // pending | approved | denied
+	GrantID      string        `json:"grant_id,omitempty"`      // set on approval
+	DenialReason string        `json:"denial_reason,omitempty"` // set on denial
+	CreatedAt    int64         `json:"created_at"`
+	RespondedAt  int64         `json:"responded_at,omitempty"`
 }
 
 // DataAccessRequest is the wire payload the requester ships to the
-// owner. The owner stores it as PendingRequest after gating.
+// owner. The owner stores it as PendingRequest after gating. A request
+// for an alias group carries every field in Items; the singular
+// ItemKind/ItemRef/ItemLabel mirror Items[0] for older owner builds.
 type DataAccessRequest struct {
-	RequestID          string `json:"request_id"`
-	ItemKind           string `json:"item_kind"`
-	ItemRef            string `json:"item_ref"`
-	ItemLabel          string `json:"item_label"`
-	Mode               string `json:"mode"`
-	DeliverTo          string `json:"deliver_to"`
-	RequestedExpiresAt int64  `json:"requested_expires_at"`
-	RequestedMaxUses   int    `json:"requested_max_uses"`
-	Reason             string `json:"reason,omitempty"`
+	RequestID          string        `json:"request_id"`
+	ItemKind           string        `json:"item_kind"`
+	ItemRef            string        `json:"item_ref"`
+	ItemLabel          string        `json:"item_label"`
+	Items              []RequestItem `json:"items,omitempty"`
+	Mode               string        `json:"mode"`
+	DeliverTo          string        `json:"deliver_to"`
+	RequestedExpiresAt int64         `json:"requested_expires_at"`
+	RequestedMaxUses   int           `json:"requested_max_uses"`
+	Reason             string        `json:"reason,omitempty"`
 }
 
-// GrantCreated is the wire payload the owner ships back when a request
-// is approved. The receiver builds a ReceivedGrantRecord from it.
-type GrantCreated struct {
-	RequestID string `json:"request_id"`
+// items returns the request's fields — Items when set, else a single
+// item from the singular fields.
+func (r *DataAccessRequest) items() []RequestItem {
+	if len(r.Items) > 0 {
+		return r.Items
+	}
+	return []RequestItem{{ItemKind: r.ItemKind, ItemRef: r.ItemRef, ItemLabel: r.ItemLabel}}
+}
+
+// GrantCreatedItem is one grant within an approved (possibly
+// multi-field) request. Approving an alias-group request creates one
+// grant per field; each lands here.
+type GrantCreatedItem struct {
 	GrantID   string `json:"grant_id"`
 	ItemKind  string `json:"item_kind"`
 	ItemRef   string `json:"item_ref"`
@@ -198,6 +235,35 @@ type GrantCreated struct {
 	ExpiresAt int64  `json:"expires_at"`
 	MaxUses   int    `json:"max_uses"`
 	GrantedAt int64  `json:"granted_at"`
+}
+
+// GrantCreated is the wire payload the owner ships back when a request
+// is approved. The receiver builds a ReceivedGrantRecord per grant.
+// Grants carries every grant created for the request; the singular
+// GrantID/ItemKind/... mirror Grants[0] for older receiver builds.
+type GrantCreated struct {
+	RequestID string             `json:"request_id"`
+	GrantID   string             `json:"grant_id"`
+	ItemKind  string             `json:"item_kind"`
+	ItemRef   string             `json:"item_ref"`
+	ItemLabel string             `json:"item_label"`
+	Mode      string             `json:"mode"`
+	ExpiresAt int64              `json:"expires_at"`
+	MaxUses   int                `json:"max_uses"`
+	GrantedAt int64              `json:"granted_at"`
+	Grants    []GrantCreatedItem `json:"grants,omitempty"`
+}
+
+// grantItems returns the grants the echo covers — Grants when set, else
+// a single item from the singular fields.
+func (g *GrantCreated) grantItems() []GrantCreatedItem {
+	if len(g.Grants) > 0 {
+		return g.Grants
+	}
+	return []GrantCreatedItem{{
+		GrantID: g.GrantID, ItemKind: g.ItemKind, ItemRef: g.ItemRef, ItemLabel: g.ItemLabel,
+		Mode: g.Mode, ExpiresAt: g.ExpiresAt, MaxUses: g.MaxUses, GrantedAt: g.GrantedAt,
+	}}
 }
 
 // GrantDenied is emitted when the owner rejects a pending request.
@@ -621,6 +687,8 @@ func (h *GrantHandler) HandleIncomingRequest(ctx context.Context, dec *decrypted
 	if req.RequestID == "" || req.ItemKind == "" || req.ItemRef == "" {
 		return fmt.Errorf("data-access request missing required fields")
 	}
+	// One pending request covers every field of an alias group.
+	items := req.items()
 
 	h.indexMu.Lock()
 	defer h.indexMu.Unlock()
@@ -639,6 +707,7 @@ func (h *GrantHandler) HandleIncomingRequest(ctx context.Context, dec *decrypted
 		ItemKind:           req.ItemKind,
 		ItemRef:            req.ItemRef,
 		ItemLabel:          req.ItemLabel,
+		Items:              items,
 		RequestedMode:      req.Mode,
 		RequestedExpiresAt: req.RequestedExpiresAt,
 		RequestedMaxUses:   req.RequestedMaxUses,
@@ -659,7 +728,7 @@ func (h *GrantHandler) HandleIncomingRequest(ctx context.Context, dec *decrypted
 			PeerGUID:     dec.FromOwnerSpace,
 			EventType:    AuditTypeDataRequestReceived,
 			Direction:    AuditDirectionInbound,
-			Title:        "Requested access to " + safeLabel(req.ItemLabel, req.ItemRef),
+			Title:        "Requested access to " + groupLabel(req.ItemLabel, req.ItemRef, len(items)),
 			Refs: map[string]string{
 				"request_id": req.RequestID,
 				"item_kind":  req.ItemKind,
@@ -676,6 +745,7 @@ func (h *GrantHandler) HandleIncomingRequest(ctx context.Context, dec *decrypted
 			"item_kind":             req.ItemKind,
 			"item_ref":              req.ItemRef,
 			"item_label":            req.ItemLabel,
+			"items":                 items,
 			"requested_mode":        req.Mode,
 			"requested_expires_at":  req.RequestedExpiresAt,
 			"requested_max_uses":    req.RequestedMaxUses,
@@ -735,94 +805,116 @@ func (h *GrantHandler) HandleApprove(msg *IncomingMessage) (*OutgoingMessage, er
 		maxUses = 1
 	}
 
-	// Same (item, peer) → update existing grant rather than parallel.
-	// Plan decision: one canonical grant per pairing; multiple requests
-	// adjust expiry / max_uses on the live record.
-	existing := h.findActiveGrant(pending.ConnectionID, pending.ItemKind, pending.ItemRef)
-	var grant *GrantRecord
+	// Approving covers every field of the request (an alias group is
+	// one request). Each field find-or-creates its own grant — for the
+	// same (item, peer) an existing active grant is refreshed rather
+	// than duplicated.
 	now := time.Now().Unix()
-	if existing != nil {
-		existing.Mode = mode
-		existing.ExpiresAt = expires
-		existing.MaxUses = maxUses
-		// Reset uses-so-far on re-approval so the receiver gets fresh budget.
-		existing.UsesSoFar = 0
-		grant = existing
-	} else {
-		grant = &GrantRecord{
-			GrantID:       newID("grant-"),
-			OwnerGUID:     h.ownerSpace,
-			RequesterGUID: pending.RequesterGUID,
-			ConnectionID:  pending.ConnectionID,
-			ItemKind:      pending.ItemKind,
-			ItemRef:       pending.ItemRef,
-			ItemLabel:     pending.ItemLabel,
-			Mode:          mode,
-			DeliverTo:     pending.DeliverTo,
-			ExpiresAt:     expires,
-			MaxUses:       maxUses,
-			Status:        GrantStatusActive,
-			CreatedAt:     now,
+	items := pending.requestItems()
+	grantItems := make([]GrantCreatedItem, 0, len(items))
+	for _, it := range items {
+		existing := h.findActiveGrant(pending.ConnectionID, it.ItemKind, it.ItemRef)
+		var grant *GrantRecord
+		if existing != nil {
+			existing.Mode = mode
+			existing.ExpiresAt = expires
+			existing.MaxUses = maxUses
+			// Reset uses-so-far on re-approval so the receiver gets fresh budget.
+			existing.UsesSoFar = 0
+			existing.ItemLabel = it.ItemLabel
+			grant = existing
+		} else {
+			grant = &GrantRecord{
+				GrantID:       newID("grant-"),
+				OwnerGUID:     h.ownerSpace,
+				RequesterGUID: pending.RequesterGUID,
+				ConnectionID:  pending.ConnectionID,
+				ItemKind:      it.ItemKind,
+				ItemRef:       it.ItemRef,
+				ItemLabel:     it.ItemLabel,
+				Mode:          mode,
+				DeliverTo:     pending.DeliverTo,
+				ExpiresAt:     expires,
+				MaxUses:       maxUses,
+				Status:        GrantStatusActive,
+				CreatedAt:     now,
+			}
 		}
-	}
-	if err := h.saveGrant(grant); err != nil {
-		return errorMsg(msg.GetID(), "failed to persist grant"), nil
-	}
-	if err := h.appendToIndex(grantsIndexKey, grant.GrantID); err != nil {
-		return errorMsg(msg.GetID(), "failed to update grants index"), nil
-	}
-	if err := h.appendToIndex("connections/"+grant.ConnectionID+outboundGrantsIndexSuffix, grant.GrantID); err != nil {
-		log.Warn().Err(err).Msg("failed to update outbound grants index")
+		if err := h.saveGrant(grant); err != nil {
+			return errorMsg(msg.GetID(), "failed to persist grant"), nil
+		}
+		if err := h.appendToIndex(grantsIndexKey, grant.GrantID); err != nil {
+			return errorMsg(msg.GetID(), "failed to update grants index"), nil
+		}
+		if err := h.appendToIndex("connections/"+grant.ConnectionID+outboundGrantsIndexSuffix, grant.GrantID); err != nil {
+			log.Warn().Err(err).Msg("failed to update outbound grants index")
+		}
+		grantItems = append(grantItems, GrantCreatedItem{
+			GrantID:   grant.GrantID,
+			ItemKind:  grant.ItemKind,
+			ItemRef:   grant.ItemRef,
+			ItemLabel: grant.ItemLabel,
+			Mode:      grant.Mode,
+			ExpiresAt: grant.ExpiresAt,
+			MaxUses:   grant.MaxUses,
+			GrantedAt: grant.CreatedAt,
+		})
+		if h.auditLog != nil {
+			h.auditLog.Append(AuditEntry{
+				ConnectionID: grant.ConnectionID,
+				PeerGUID:     grant.RequesterGUID,
+				EventType:    AuditTypeDataGranted,
+				Direction:    AuditDirectionOutbound,
+				Title:        "Granted access to " + safeLabel(grant.ItemLabel, grant.ItemRef),
+				Refs: map[string]string{
+					"grant_id":   grant.GrantID,
+					"request_id": pending.RequestID,
+					"item_kind":  grant.ItemKind,
+					"item_ref":   grant.ItemRef,
+				},
+				Metadata: map[string]string{
+					"mode":       grant.Mode,
+					"expires_at": fmt.Sprintf("%d", grant.ExpiresAt),
+					"max_uses":   fmt.Sprintf("%d", grant.MaxUses),
+				},
+			})
+		}
 	}
 
 	// Drop the pending request now that it's resolved.
 	_ = h.removeFromIndex(pendingRequestsIndexKey, pending.RequestID)
 	_ = h.storage.Delete(pendingRequestsKeyPrefix + pending.RequestID)
 
-	// Notify the requester.
+	// Notify the requester — one echo carrying every grant created.
+	primary := grantItems[0]
 	created := GrantCreated{
 		RequestID: pending.RequestID,
-		GrantID:   grant.GrantID,
-		ItemKind:  grant.ItemKind,
-		ItemRef:   grant.ItemRef,
-		ItemLabel: grant.ItemLabel,
-		Mode:      grant.Mode,
-		ExpiresAt: grant.ExpiresAt,
-		MaxUses:   grant.MaxUses,
-		GrantedAt: grant.CreatedAt,
+		GrantID:   primary.GrantID,
+		ItemKind:  primary.ItemKind,
+		ItemRef:   primary.ItemRef,
+		ItemLabel: primary.ItemLabel,
+		Mode:      primary.Mode,
+		ExpiresAt: primary.ExpiresAt,
+		MaxUses:   primary.MaxUses,
+		GrantedAt: primary.GrantedAt,
+		Grants:    grantItems,
 	}
 	payload, _ := json.Marshal(&created)
 	if err := encryptAndPublishToPeer(
 		context.Background(), h.storage, h.publisher, h.ownerSpace,
-		grant.ConnectionID, "data.grant.created", "grant-created:"+grant.GrantID, payload, now,
+		pending.ConnectionID, "data.grant.created", "grant-created:"+pending.RequestID, payload, now,
 	); err != nil {
-		log.Warn().Err(err).Str("grant_id", grant.GrantID).Msg("grant.created publish failed")
+		log.Warn().Err(err).Str("request_id", pending.RequestID).Msg("grant.created publish failed")
 	}
 
-	if h.auditLog != nil {
-		h.auditLog.Append(AuditEntry{
-			ConnectionID: grant.ConnectionID,
-			PeerGUID:     grant.RequesterGUID,
-			EventType:    AuditTypeDataGranted,
-			Direction:    AuditDirectionOutbound,
-			Title:        "Granted access to " + safeLabel(grant.ItemLabel, grant.ItemRef),
-			Refs: map[string]string{
-				"grant_id":   grant.GrantID,
-				"request_id": pending.RequestID,
-				"item_kind":  grant.ItemKind,
-				"item_ref":   grant.ItemRef,
-			},
-			Metadata: map[string]string{
-				"mode":       grant.Mode,
-				"expires_at": fmt.Sprintf("%d", grant.ExpiresAt),
-				"max_uses":   fmt.Sprintf("%d", grant.MaxUses),
-			},
-		})
+	grantIDs := make([]string, len(grantItems))
+	for i, gi := range grantItems {
+		grantIDs[i] = gi.GrantID
 	}
-
 	respBytes, _ := json.Marshal(map[string]interface{}{
-		"success":  true,
-		"grant_id": grant.GrantID,
+		"success":   true,
+		"grant_ids": grantIDs,
+		"grant_id":  primary.GrantID,
 	})
 	return successMsg(msg.GetID(), respBytes), nil
 }
@@ -1082,21 +1174,34 @@ func (h *GrantHandler) findActiveGrant(connID, kind, ref string) *GrantRecord {
 // to a connection. Payload mirrors DataAccessRequest plus connection_id.
 func (h *GrantHandler) HandleRequest(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req struct {
-		ConnectionID       string `json:"connection_id"`
-		ItemKind           string `json:"item_kind"`
-		ItemRef            string `json:"item_ref"`
-		ItemLabel          string `json:"item_label"`
-		Mode               string `json:"mode"`
-		DeliverTo          string `json:"deliver_to"`
-		RequestedExpiresAt int64  `json:"requested_expires_at"`
-		RequestedMaxUses   int    `json:"requested_max_uses"`
-		Reason             string `json:"reason,omitempty"`
+		ConnectionID       string        `json:"connection_id"`
+		ItemKind           string        `json:"item_kind"`
+		ItemRef            string        `json:"item_ref"`
+		ItemLabel          string        `json:"item_label"`
+		Items              []RequestItem `json:"items,omitempty"`
+		Mode               string        `json:"mode"`
+		DeliverTo          string        `json:"deliver_to"`
+		RequestedExpiresAt int64         `json:"requested_expires_at"`
+		RequestedMaxUses   int           `json:"requested_max_uses"`
+		Reason             string        `json:"reason,omitempty"`
 	}
 	if err := unmarshalRequest(msg.Payload, &req, "GrantRequest"); err != nil {
 		return errorMsg(msg.GetID(), "invalid request payload"), nil
 	}
-	if req.ConnectionID == "" || req.ItemKind == "" || req.ItemRef == "" {
-		return errorMsg(msg.GetID(), "connection_id, item_kind, item_ref required"), nil
+	if req.ConnectionID == "" {
+		return errorMsg(msg.GetID(), "connection_id required"), nil
+	}
+	// A request covers one or more fields (an alias group). Use the
+	// items array when present, else fold the singular fields into a
+	// one-item request.
+	items := req.Items
+	if len(items) == 0 {
+		items = []RequestItem{{ItemKind: req.ItemKind, ItemRef: req.ItemRef, ItemLabel: req.ItemLabel}}
+	}
+	for _, it := range items {
+		if it.ItemKind == "" || it.ItemRef == "" {
+			return errorMsg(msg.GetID(), "each item needs item_kind and item_ref"), nil
+		}
 	}
 	if req.Mode == "" {
 		req.Mode = GrantModeOneShot
@@ -1104,12 +1209,22 @@ func (h *GrantHandler) HandleRequest(msg *IncomingMessage) (*OutgoingMessage, er
 	if req.DeliverTo == "" {
 		req.DeliverTo = GrantDeliverSelf
 	}
+	// Singular fields mirror items[0] so an older owner build still
+	// processes the request as a single-field request. The singular
+	// ItemLabel carries the group label (alias) when supplied, so the
+	// owner's feed / prompt name the alias rather than one field.
+	primary := items[0]
+	groupName := req.ItemLabel
+	if groupName == "" {
+		groupName = primary.ItemLabel
+	}
 
 	wire := DataAccessRequest{
 		RequestID:          newID("req-"),
-		ItemKind:           req.ItemKind,
-		ItemRef:            req.ItemRef,
-		ItemLabel:          req.ItemLabel,
+		ItemKind:           primary.ItemKind,
+		ItemRef:            primary.ItemRef,
+		ItemLabel:          groupName,
+		Items:              items,
 		Mode:               req.Mode,
 		DeliverTo:          req.DeliverTo,
 		RequestedExpiresAt: req.RequestedExpiresAt,
@@ -1129,11 +1244,11 @@ func (h *GrantHandler) HandleRequest(msg *IncomingMessage) (*OutgoingMessage, er
 			ConnectionID: req.ConnectionID,
 			EventType:    AuditTypeDataRequestSent,
 			Direction:    AuditDirectionOutbound,
-			Title:        "Requested " + safeLabel(req.ItemLabel, req.ItemRef),
+			Title:        "Requested " + groupLabel(groupName, primary.ItemRef, len(items)),
 			Refs: map[string]string{
 				"request_id": wire.RequestID,
-				"item_kind":  req.ItemKind,
-				"item_ref":   req.ItemRef,
+				"item_kind":  primary.ItemKind,
+				"item_ref":   primary.ItemRef,
 			},
 		})
 	}
@@ -1147,9 +1262,10 @@ func (h *GrantHandler) HandleRequest(msg *IncomingMessage) (*OutgoingMessage, er
 	outRec := &OutgoingRequestRecord{
 		RequestID:    wire.RequestID,
 		ConnectionID: req.ConnectionID,
-		ItemKind:     req.ItemKind,
-		ItemRef:      req.ItemRef,
-		ItemLabel:    req.ItemLabel,
+		ItemKind:     primary.ItemKind,
+		ItemRef:      primary.ItemRef,
+		ItemLabel:    groupName,
+		Items:        items,
 		Mode:         req.Mode,
 		Reason:       req.Reason,
 		Status:       OutgoingRequestStatusPending,
@@ -1180,36 +1296,58 @@ func (h *GrantHandler) HandleIncomingGrantCreated(ctx context.Context, dec *decr
 	if err := json.Unmarshal(dec.InnerPayload, &created); err != nil {
 		return fmt.Errorf("invalid grant-created: %w", err)
 	}
-	if created.GrantID == "" {
+	grants := created.grantItems()
+	if len(grants) == 0 || grants[0].GrantID == "" {
 		return fmt.Errorf("grant-created missing grant_id")
 	}
 
 	h.indexMu.Lock()
 	defer h.indexMu.Unlock()
 
-	// Update or insert — re-approval on the same (item, peer) replaces
+	// One grant per field of the approved request. Mirror each into
+	// received_grants/ — re-approval on the same (item, peer) replaces
 	// the existing mirror row.
-	r := &ReceivedGrantRecord{
-		GrantID:      created.GrantID,
-		GranterGUID:  dec.FromOwnerSpace,
-		ConnectionID: dec.LocalConnID,
-		ItemKind:     created.ItemKind,
-		ItemRef:      created.ItemRef,
-		ItemLabel:    created.ItemLabel,
-		Mode:         created.Mode,
-		ExpiresAt:    created.ExpiresAt,
-		MaxUses:      created.MaxUses,
-		Status:       GrantStatusActive,
-		GrantedAt:    created.GrantedAt,
-	}
-	if err := h.saveReceivedGrant(r); err != nil {
-		return err
-	}
-	if err := h.appendToIndex(receivedGrantsIndexKey, r.GrantID); err != nil {
-		return err
-	}
-	if err := h.appendToIndex("connections/"+r.ConnectionID+inboundGrantsIndexSuffix, r.GrantID); err != nil {
-		log.Warn().Err(err).Msg("failed to update inbound grants index")
+	for _, g := range grants {
+		if g.GrantID == "" {
+			continue
+		}
+		r := &ReceivedGrantRecord{
+			GrantID:      g.GrantID,
+			GranterGUID:  dec.FromOwnerSpace,
+			ConnectionID: dec.LocalConnID,
+			ItemKind:     g.ItemKind,
+			ItemRef:      g.ItemRef,
+			ItemLabel:    g.ItemLabel,
+			Mode:         g.Mode,
+			ExpiresAt:    g.ExpiresAt,
+			MaxUses:      g.MaxUses,
+			Status:       GrantStatusActive,
+			GrantedAt:    g.GrantedAt,
+		}
+		if err := h.saveReceivedGrant(r); err != nil {
+			return err
+		}
+		if err := h.appendToIndex(receivedGrantsIndexKey, r.GrantID); err != nil {
+			return err
+		}
+		if err := h.appendToIndex("connections/"+r.ConnectionID+inboundGrantsIndexSuffix, r.GrantID); err != nil {
+			log.Warn().Err(err).Msg("failed to update inbound grants index")
+		}
+		if h.auditLog != nil {
+			h.auditLog.Append(AuditEntry{
+				ConnectionID: r.ConnectionID,
+				PeerGUID:     r.GranterGUID,
+				EventType:    AuditTypeDataGranted,
+				Direction:    AuditDirectionInbound,
+				Title:        "Granted access to " + safeLabel(r.ItemLabel, r.ItemRef),
+				Refs: map[string]string{
+					"grant_id":   r.GrantID,
+					"request_id": created.RequestID,
+					"item_kind":  r.ItemKind,
+					"item_ref":   r.ItemRef,
+				},
+			})
+		}
 	}
 
 	// Mark our local outgoing-request record as approved. Best effort —
@@ -1218,39 +1356,25 @@ func (h *GrantHandler) HandleIncomingGrantCreated(ctx context.Context, dec *decr
 	if created.RequestID != "" {
 		if outRec, err := h.loadOutgoingRequest(created.RequestID); err == nil && outRec != nil {
 			outRec.Status = OutgoingRequestStatusApproved
-			outRec.GrantID = created.GrantID
+			outRec.GrantID = grants[0].GrantID
 			outRec.RespondedAt = time.Now().Unix()
 			_ = h.saveOutgoingRequest(outRec)
 		}
 	}
 
-	if h.auditLog != nil {
-		h.auditLog.Append(AuditEntry{
-			ConnectionID: r.ConnectionID,
-			PeerGUID:     r.GranterGUID,
-			EventType:    AuditTypeDataGranted,
-			Direction:    AuditDirectionInbound,
-			Title:        "Granted access to " + safeLabel(r.ItemLabel, r.ItemRef),
-			Refs: map[string]string{
-				"grant_id":   r.GrantID,
-				"request_id": created.RequestID,
-				"item_kind":  r.ItemKind,
-				"item_ref":   r.ItemRef,
-			},
-		})
-	}
-
 	if h.publisher != nil {
+		// One app event for the request — the app refreshes its grant
+		// lists and clears the matching pending row by request_id.
 		appPayload, _ := json.Marshal(map[string]interface{}{
-			"connection_id": r.ConnectionID,
-			"granter_guid":  r.GranterGUID,
-			"grant_id":      r.GrantID,
+			"connection_id": dec.LocalConnID,
+			"granter_guid":  dec.FromOwnerSpace,
+			"grant_id":      grants[0].GrantID,
 			"request_id":    created.RequestID,
-			"item_kind":     r.ItemKind,
-			"item_label":    r.ItemLabel,
-			"mode":          r.Mode,
-			"expires_at":    r.ExpiresAt,
-			"max_uses":      r.MaxUses,
+			"item_kind":     grants[0].ItemKind,
+			"item_label":    created.ItemLabel,
+			"mode":          grants[0].Mode,
+			"expires_at":    grants[0].ExpiresAt,
+			"max_uses":      grants[0].MaxUses,
 		})
 		if err := h.publisher.PublishToApp(ctx, "connection.data-grant-created", appPayload); err != nil {
 			log.Warn().Err(err).Msg("failed to notify app of grant-created")
@@ -1614,6 +1738,17 @@ func safeLabel(label, ref string) string {
 		return label
 	}
 	return ref
+}
+
+// groupLabel renders a request's label for audit / UI strings. For a
+// multi-field request (an alias group) it appends the field count so
+// the entry reads e.g. "Visa (3 items)".
+func groupLabel(label, ref string, n int) string {
+	base := safeLabel(label, ref)
+	if n > 1 {
+		return fmt.Sprintf("%s (%d items)", base, n)
+	}
+	return base
 }
 
 func successMsg(id string, payload []byte) *OutgoingMessage {

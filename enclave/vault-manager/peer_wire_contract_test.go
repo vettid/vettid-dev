@@ -29,6 +29,7 @@ package main
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -358,7 +359,11 @@ func TestDataAccessRequestWire(t *testing.T) {
 		RequestID:          "req-abc123",
 		ItemKind:           GrantItemKindData,
 		ItemRef:            "contact.phone.mobile",
-		ItemLabel:          "Mobile Phone",
+		ItemLabel:          "Visa",
+		Items: []RequestItem{
+			{ItemKind: GrantItemKindData, ItemRef: "contact.phone.mobile", ItemLabel: "Mobile Phone"},
+			{ItemKind: GrantItemKindData, ItemRef: "contact.phone.home", ItemLabel: "Home Phone"},
+		},
 		Mode:               GrantModeOneShot,
 		DeliverTo:          GrantDeliverSelf,
 		RequestedExpiresAt: 1715369336,
@@ -367,7 +372,7 @@ func TestDataAccessRequestWire(t *testing.T) {
 	}
 	var receiver DataAccessRequest
 	roundTrip(t, "data.request", sender, &receiver)
-	if receiver != sender {
+	if !reflect.DeepEqual(receiver, sender) {
 		t.Errorf("data.request round-trip mismatch\n got: %+v\nwant: %+v", receiver, sender)
 	}
 }
@@ -383,10 +388,14 @@ func TestGrantCreatedWire(t *testing.T) {
 		ExpiresAt: 1715369336,
 		MaxUses:   0,
 		GrantedAt: 1715365000,
+		Grants: []GrantCreatedItem{
+			{GrantID: "grant-xyz", ItemKind: GrantItemKindData, ItemRef: "contact.email", ItemLabel: "Email", Mode: GrantModeRenewable, ExpiresAt: 1715369336, GrantedAt: 1715365000},
+			{GrantID: "grant-abc", ItemKind: GrantItemKindData, ItemRef: "contact.phone", ItemLabel: "Phone", Mode: GrantModeRenewable, ExpiresAt: 1715369336, GrantedAt: 1715365000},
+		},
 	}
 	var receiver GrantCreated
 	roundTrip(t, "data.grant.created", sender, &receiver)
-	if receiver != sender {
+	if !reflect.DeepEqual(receiver, sender) {
 		t.Errorf("data.grant.created round-trip mismatch\n got: %+v\nwant: %+v", receiver, sender)
 	}
 }
