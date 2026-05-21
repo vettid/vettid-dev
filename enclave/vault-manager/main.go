@@ -264,6 +264,13 @@ func (vm *VaultManager) Run(ctx context.Context) error {
 			}
 
 			if response != nil {
+				// Echo the supervisor's pipe-transport correlation
+				// token onto the response. Done here, in one place, so
+				// it is consistent across every handler regardless of
+				// whether the handler set RequestID — the supervisor's
+				// per-VaultProcess pipe reader routes the response to
+				// the waiting op by this token.
+				response.PipeID = msg.PipeID
 				if err := vm.sendToParent(response); err != nil {
 					log.Error().Err(err).Msg("Failed to send response")
 				}

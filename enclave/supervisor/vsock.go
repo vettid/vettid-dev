@@ -161,6 +161,16 @@ type Message struct {
 	// owned entirely by the transport layer.
 	MuxID string `json:"mux_id,omitempty"`
 
+	// PipeID is the supervisor↔vault-manager-subprocess correlation
+	// token — the pipe-layer analog of MuxID. ProcessMessage stamps a
+	// fresh PipeID on each op written to the subprocess; the subprocess
+	// echoes it verbatim on the response; the per-VaultProcess pipe
+	// reader routes that response back to the waiting ProcessMessage by
+	// it. Required because RequestID is unreliable for correlation (see
+	// above) and the always-draining reader cannot assume a response
+	// belongs to whichever op is currently in flight.
+	PipeID string `json:"pipe_id,omitempty"`
+
 	// NATS routing (for vault_op and nats_publish)
 	Subject string `json:"subject,omitempty"` // NATS subject (e.g., "OwnerSpace.user-123.forVault.call.initiate")
 	ReplyTo string `json:"reply_to,omitempty"` // NATS reply subject

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"math/big"
 	"sync"
@@ -53,13 +54,26 @@ type VaultProcess struct {
 
 	mu sync.RWMutex // Guards struct fields (LastAccess etc.)
 
-	// procMu serializes ProcessMessage for this user. The mux runs
-	// vault ops for different users concurrently, but ops for the
-	// SAME user share one subprocess pipe — a single request/response
-	// stream with interleaved nested sealer round-trips — so they
-	// must not overlap. Different users hold different procMu, so
-	// cross-user concurrency is unaffected.
+	// procMu serializes ProcessMessage for this user. Ops for one user
+	// share a single subprocess that processes them serially, so the
+	// supervisor writes them one at a time. Different users hold
+	// different procMu, so cross-user concurrency is unaffected. The
+	// pipe READER (below) is independent of procMu — it always runs.
 	procMu sync.Mutex
+
+	// Pipe reader correlation. A single persistent goroutine
+	// (startPipeReader) drains the subprocess stdout pipe for the life
+	// of the subprocess and demuxes every frame: an op response goes to
+	// the ProcessMessage waiting on its PipeID via `pending`; a sealer
+	// or http request is serviced on a worker; nats / log / audit /
+	// routing messages are forwarded to the parent. Always draining the
+	// pipe is the point of this design — a subprocess-initiated message
+	// (notably the ~1MB store_vault_state persist) is serviced the
+	// instant it lands, instead of stalling up to 30s until the next
+	// op's read window. See docs/SUPERVISOR-ALWAYS-DRAIN-PLAN.md.
+	pendingMu    sync.Mutex
+	pending      map[string]chan *Message
+	readerClosed bool // set once the reader goroutine has exited
 }
 
 // VaultStats holds vault manager statistics
@@ -156,10 +170,16 @@ func (vm *VaultManager) GetOrCreate(ctx context.Context, ownerSpace string) (*Va
 		parentSender:  vm.parentSender,
 		process:       proc,
 		sealerHandler: vm.sealerHandler,
+		pending:       make(map[string]chan *Message),
 	}
 
 	vm.vaults[ownerSpace] = vault
 	vm.lruOrder = append(vm.lruOrder, ownerSpace)
+
+	// Start the persistent pipe reader for this subprocess. It runs
+	// until the subprocess dies (eviction kills it → pipe EOF → reader
+	// exits), so it needs no explicit stop.
+	vault.startPipeReader()
 
 	log.Info().
 		Str("owner_space", ownerSpace).
@@ -319,10 +339,9 @@ func (vp *VaultProcess) touch() {
 // PipeConn returns the subprocess pipe connection, or nil if the
 // process isn't running. Used by handleEvictVault to forward a
 // revoke_ownership message into the subprocess before killing it.
-// PipeConnection.WriteMessage has a dedicated writeMu (separate from
-// readMu), so a write here is framing-safe even if the supervisor's
-// request loop is concurrently blocked in a ReadMessageWithTimeout
-// for the same subprocess.
+// PipeConnection.WriteMessage has a dedicated writeMu, so a write here
+// is framing-safe even with concurrent writers (ProcessMessage, the
+// pipe reader's sealer/http workers).
 func (vp *VaultProcess) PipeConn() *PipeConnection {
 	vp.mu.RLock()
 	defer vp.mu.RUnlock()
@@ -349,217 +368,241 @@ func (vp *VaultProcess) WaitIdle() {
 	vp.procMu.Unlock() //nolint:staticcheck // intentional: barrier wait, not a guarded section
 }
 
-// ProcessMessage sends a message to the vault process and waits for response.
-// Handles sealer requests from the vault-manager during the response wait.
+// newPipeID returns a fresh supervisor↔subprocess pipe-correlation
+// token — the pipe-layer analog of newMuxID. 16 random bytes make a
+// collision a 2^-128 event.
+func newPipeID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// crypto/rand failure means the host RNG is gone — the process
+		// is doomed anyway; a zero token avoids a panic in a hot path.
+		return "00000000000000000000000000000000"
+	}
+	return hex.EncodeToString(b[:])
+}
+
+// ProcessMessage writes an op to the vault-manager subprocess and
+// blocks until the subprocess's response — correlated by a fresh
+// PipeID and routed back by the persistent pipe reader — arrives, or
+// the deadline / ctx fires.
 //
-// procMu is held for the whole call: the subprocess pipe is a single
-// request/response stream, so two ops for this user must not interleave
-// their writes/reads on it. Ops for other users use other VaultProcess
-// instances and run fully in parallel.
+// procMu is held for the whole call: ops for one user share a single
+// subprocess that processes them serially, so the supervisor sends
+// them one at a time. The pipe READER runs independently and always —
+// that is what lets a between-ops sealer request (the persist) be
+// serviced without stalling. Ops for other users use other
+// VaultProcess instances and run fully in parallel.
 func (vp *VaultProcess) ProcessMessage(ctx context.Context, msg *Message) (*Message, error) {
 	vp.procMu.Lock()
 	defer vp.procMu.Unlock()
 
 	vp.touch()
 
-	// Process-based architecture: route through subprocess pipe
-	if vp.process != nil && vp.process.Conn != nil {
-		timeout := 30 * time.Second
-		deadline := time.Now().Add(timeout)
-
-		// Send the initial message
-		if err := vp.process.Conn.WriteMessage(msg); err != nil {
-			log.Error().
-				Err(err).
-				Str("owner_space", vp.OwnerSpace).
-				Msg("Failed to send message to vault-manager subprocess")
-			return nil, fmt.Errorf("vault-manager send error: %w", err)
-		}
-
-		// Read messages in a loop, handling sealer requests until we get the final response
-		for {
-			// Check deadline
-			remaining := time.Until(deadline)
-			if remaining <= 0 {
-				log.Error().
-					Str("owner_space", vp.OwnerSpace).
-					Msg("Timeout waiting for vault-manager response")
-				return nil, fmt.Errorf("timeout waiting for vault-manager response")
-			}
-
-			// Read next message with timeout
-			response, err := vp.process.Conn.ReadMessageWithTimeout(remaining)
-			if err != nil {
-				log.Error().
-					Err(err).
-					Str("owner_space", vp.OwnerSpace).
-					Msg("Failed to read from vault-manager subprocess")
-				return nil, fmt.Errorf("vault-manager read error: %w", err)
-			}
-
-			// Debug: Log the actual message type received
-			log.Info().
-				Str("owner_space", vp.OwnerSpace).
-				Str("message_type", string(response.Type)).
-				Str("expected_sealer", string(MessageTypeSealerRequest)).
-				Int("payload_len", len(response.Payload)).
-				Msg("Received message from vault-manager")
-
-			// Handle different message types from vault-manager
-			switch response.Type {
-			case MessageTypeSealerRequest:
-				// Vault-manager needs KMS operation
-				log.Debug().
-					Str("owner_space", vp.OwnerSpace).
-					Msg("Handling sealer request from vault-manager")
-
-				// Handle the sealer request and send response back
-				var sealerResp *Message
-				if vp.sealerHandler != nil {
-					sealerResp = vp.sealerHandler.HandleSealerRequest(response)
-				} else {
-					log.Warn().Msg("Sealer handler not configured, returning error")
-					sealerResp = &Message{
-						RequestID: response.RequestID,
-						Type:      MessageTypeSealerResponse,
-						Payload:   []byte(`{"success":false,"error":"sealer not available"}`),
-					}
-				}
-
-				// Send sealer response back to vault-manager
-				if err := vp.process.Conn.WriteMessage(sealerResp); err != nil {
-					log.Error().
-						Err(err).
-						Str("owner_space", vp.OwnerSpace).
-						Msg("Failed to send sealer response to vault-manager")
-					return nil, fmt.Errorf("failed to send sealer response: %w", err)
-				}
-
-				// Continue waiting for the final response
-				continue
-
-			case MessageTypeNATSPublish:
-				// Vault-manager wants to publish to NATS (e.g., profile updates)
-				// Forward to parent and continue waiting for the actual response
-				log.Debug().
-					Str("owner_space", vp.OwnerSpace).
-					Str("subject", response.Subject).
-					Msg("Forwarding NATS publish from vault-manager")
-
-				if vp.parentSender != nil {
-					if err := vp.parentSender.SendToParent(response); err != nil {
-						log.Warn().
-							Err(err).
-							Str("owner_space", vp.OwnerSpace).
-							Msg("Failed to forward NATS publish (non-fatal)")
-					}
-				}
-				// Continue waiting for the final response
-				continue
-
-			case MessageTypeRoutingHandoff:
-				// Vault-manager finished migration re-seal and is
-				// asking parent to transfer ownership in the
-				// routing KV. Forward and keep waiting for the
-				// actual response to the migration operation.
-				log.Info().
-					Str("owner_space", vp.OwnerSpace).
-					Str("target_instance", response.TargetInstanceID).
-					Str("new_pcr0", response.NewPCR0).
-					Msg("Forwarding routing handoff from vault-manager")
-
-				if vp.parentSender != nil {
-					if err := vp.parentSender.SendToParent(response); err != nil {
-						log.Warn().
-							Err(err).
-							Str("owner_space", vp.OwnerSpace).
-							Msg("Failed to forward routing handoff (non-fatal)")
-					}
-				}
-				continue
-
-			case MessageTypeLog:
-				// Vault-manager log message - forward and continue
-				log.Debug().
-					Str("owner_space", vp.OwnerSpace).
-					Str("log_level", response.LogLevel).
-					Msg("Forwarding log from vault-manager")
-
-				if vp.parentSender != nil {
-					// Send synchronously to prevent concurrent writes to parentConn
-					// that race with sealer handler's S3 write/read pairs
-					if err := vp.parentSender.SendToParent(response); err != nil {
-						log.Warn().
-							Err(err).
-							Str("owner_space", vp.OwnerSpace).
-							Msg("Failed to forward log (non-fatal)")
-					}
-				}
-				// Continue waiting for the final response
-				continue
-
-			case MessageTypeAuditEvent:
-				// Vault-manager emitting an audit event — forward to parent for DynamoDB persistence
-				log.Debug().
-					Str("owner_space", vp.OwnerSpace).
-					Str("request_id", response.RequestID).
-					Msg("Forwarding audit event from vault-manager to parent")
-
-				if vp.parentSender != nil {
-					if err := vp.parentSender.SendToParent(response); err != nil {
-						log.Warn().
-							Err(err).
-							Str("owner_space", vp.OwnerSpace).
-							Msg("Failed to forward audit event (non-fatal)")
-					}
-				}
-				// Continue waiting for the final response
-				continue
-
-			case MessageTypeHTTPRequest:
-				// Vault-manager needs to make an HTTP request through the parent
-				log.Debug().
-					Str("owner_space", vp.OwnerSpace).
-					Str("request_id", response.RequestID).
-					Msg("Forwarding HTTP request from vault-manager to parent")
-
-				var httpResp *Message
-				if vp.sealerHandler != nil {
-					httpResp = vp.sealerHandler.ForwardHTTPRequest(response)
-				} else {
-					log.Warn().Msg("Sealer handler not configured for HTTP proxy, returning error")
-					httpResp = &Message{
-						RequestID: response.RequestID,
-						Type:      MessageTypeHTTPResponse,
-						Payload:   []byte(`{"error":"HTTP proxy not available"}`),
-					}
-				}
-
-				// Send HTTP response back to vault-manager
-				if err := vp.process.Conn.WriteMessage(httpResp); err != nil {
-					log.Error().
-						Err(err).
-						Str("owner_space", vp.OwnerSpace).
-						Msg("Failed to send HTTP response to vault-manager")
-					return nil, fmt.Errorf("failed to send HTTP response: %w", err)
-				}
-
-				// Continue waiting for the final response
-				continue
-
-			default:
-				// Got the final response (response, error, etc.)
-				return response, nil
-			}
-		}
+	conn := vp.PipeConn()
+	if conn == nil {
+		log.Error().
+			Str("owner_space", vp.OwnerSpace).
+			Msg("FATAL: No subprocess connection available")
+		return nil, fmt.Errorf("process-based routing not available for owner %s", vp.OwnerSpace)
 	}
 
-	// Process-based architecture is the only path.
-	// If we reach here, something is wrong with process spawning.
-	log.Error().
+	// Stamp a fresh pipe-correlation token. The subprocess echoes it on
+	// the response; the persistent reader routes the response here by
+	// it. RequestID is NOT usable for this — it is set inconsistently
+	// across handlers (see Message.PipeID).
+	pipeID := newPipeID()
+	msg.PipeID = pipeID
+	respCh := make(chan *Message, 1)
+
+	vp.pendingMu.Lock()
+	if vp.readerClosed {
+		vp.pendingMu.Unlock()
+		return nil, fmt.Errorf("vault-manager read error: subprocess pipe closed")
+	}
+	vp.pending[pipeID] = respCh
+	vp.pendingMu.Unlock()
+
+	// Always clear the pending entry — on response, timeout, ctx
+	// cancel, or pipe loss — so a slow/abandoned op can't leak the map.
+	defer func() {
+		vp.pendingMu.Lock()
+		delete(vp.pending, pipeID)
+		vp.pendingMu.Unlock()
+	}()
+
+	if err := conn.WriteMessage(msg); err != nil {
+		log.Error().
+			Err(err).
+			Str("owner_space", vp.OwnerSpace).
+			Msg("Failed to send message to vault-manager subprocess")
+		return nil, fmt.Errorf("vault-manager send error: %w", err)
+	}
+
+	const opTimeout = 30 * time.Second
+	select {
+	case resp, ok := <-respCh:
+		if !ok {
+			// failAllPending closed the channel — the subprocess pipe
+			// died while this op was in flight. "pipe closed" makes
+			// handleVaultOp's isSubprocessGone retry on a fresh one.
+			return nil, fmt.Errorf("vault-manager read error: subprocess pipe closed")
+		}
+		return resp, nil
+	case <-time.After(opTimeout):
+		log.Error().
+			Str("owner_space", vp.OwnerSpace).
+			Msg("Timeout waiting for vault-manager response")
+		return nil, fmt.Errorf("vault-manager read error: timeout waiting for response")
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// startPipeReader launches the persistent goroutine that drains this
+// subprocess's stdout pipe for the life of the subprocess. It is the
+// single reader of the pipe; ProcessMessage no longer reads.
+func (vp *VaultProcess) startPipeReader() {
+	conn := vp.PipeConn()
+	if conn == nil {
+		log.Error().Str("owner_space", vp.OwnerSpace).
+			Msg("startPipeReader: no subprocess connection")
+		return
+	}
+	go func() {
+		for {
+			msg, err := conn.ReadMessage()
+			if err != nil {
+				vp.failAllPending(err)
+				return
+			}
+			switch msg.Type {
+			case MessageTypeSealerRequest:
+				// Service off the reader goroutine so a slow S3/KMS
+				// round-trip never blocks draining the pipe.
+				go vp.handlePipeSealer(msg)
+			case MessageTypeHTTPRequest:
+				go vp.handlePipeHTTP(msg)
+			case MessageTypeNATSPublish, MessageTypeRoutingHandoff,
+				MessageTypeLog, MessageTypeAuditEvent:
+				vp.forwardToParent(msg)
+			default:
+				// Op response/error — route to the waiting ProcessMessage.
+				vp.deliverResponse(msg)
+			}
+		}
+	}()
+}
+
+// deliverResponse routes an op response to the ProcessMessage waiting
+// on its PipeID. A response with no waiter (the op already timed out
+// or was cancelled, or a stale PipeID) is dropped — the old design's
+// silent desync after a timeout is impossible here.
+func (vp *VaultProcess) deliverResponse(msg *Message) {
+	vp.pendingMu.Lock()
+	ch, ok := vp.pending[msg.PipeID]
+	if ok {
+		delete(vp.pending, msg.PipeID)
+	}
+	vp.pendingMu.Unlock()
+
+	if !ok {
+		log.Warn().
+			Str("owner_space", vp.OwnerSpace).
+			Str("type", string(msg.Type)).
+			Str("pipe_id", msg.PipeID).
+			Msg("Pipe response with no pending op — dropping (timed-out / stale)")
+		return
+	}
+	ch <- msg // respCh is buffered cap-1 — never blocks the reader
+}
+
+// failAllPending is called when the reader goroutine exits (the
+// subprocess pipe is dead). It marks the VaultProcess closed and wakes
+// every in-flight ProcessMessage by closing its response channel.
+func (vp *VaultProcess) failAllPending(cause error) {
+	vp.pendingMu.Lock()
+	vp.readerClosed = true
+	pending := vp.pending
+	vp.pending = make(map[string]chan *Message)
+	vp.pendingMu.Unlock()
+
+	for _, ch := range pending {
+		close(ch) // wakes ProcessMessage's select with ok=false
+	}
+	log.Info().
+		Err(cause).
 		Str("owner_space", vp.OwnerSpace).
-		Msg("FATAL: No subprocess connection available")
-	return nil, fmt.Errorf("process-based routing not available for owner %s", vp.OwnerSpace)
+		Int("failed_ops", len(pending)).
+		Msg("Vault-manager pipe reader exited — failed in-flight ops")
+}
+
+// handlePipeSealer services a sealer (S3/KMS) request emitted by the
+// subprocess and writes the response back down the pipe.
+func (vp *VaultProcess) handlePipeSealer(msg *Message) {
+	var resp *Message
+	if vp.sealerHandler != nil {
+		resp = vp.sealerHandler.HandleSealerRequest(msg)
+	} else {
+		log.Warn().Str("owner_space", vp.OwnerSpace).
+			Msg("Sealer handler not configured, returning error")
+		resp = &Message{
+			RequestID: msg.RequestID,
+			Type:      MessageTypeSealerResponse,
+			Payload:   []byte(`{"success":false,"error":"sealer not available"}`),
+		}
+	}
+	conn := vp.PipeConn()
+	if conn == nil {
+		return
+	}
+	if err := conn.WriteMessage(resp); err != nil {
+		log.Error().
+			Err(err).
+			Str("owner_space", vp.OwnerSpace).
+			Msg("Failed to send sealer response to vault-manager")
+	}
+}
+
+// handlePipeHTTP services an HTTP-proxy request emitted by the
+// subprocess and writes the response back down the pipe.
+func (vp *VaultProcess) handlePipeHTTP(msg *Message) {
+	var resp *Message
+	if vp.sealerHandler != nil {
+		resp = vp.sealerHandler.ForwardHTTPRequest(msg)
+	} else {
+		log.Warn().Str("owner_space", vp.OwnerSpace).
+			Msg("Sealer handler not configured for HTTP proxy, returning error")
+		resp = &Message{
+			RequestID: msg.RequestID,
+			Type:      MessageTypeHTTPResponse,
+			Payload:   []byte(`{"error":"HTTP proxy not available"}`),
+		}
+	}
+	conn := vp.PipeConn()
+	if conn == nil {
+		return
+	}
+	if err := conn.WriteMessage(resp); err != nil {
+		log.Error().
+			Err(err).
+			Str("owner_space", vp.OwnerSpace).
+			Msg("Failed to send HTTP response to vault-manager")
+	}
+}
+
+// forwardToParent relays a subprocess-emitted nats_publish /
+// routing_handoff / log / audit_event up to the parent.
+func (vp *VaultProcess) forwardToParent(msg *Message) {
+	if vp.parentSender == nil {
+		return
+	}
+	if err := vp.parentSender.SendToParent(msg); err != nil {
+		log.Warn().
+			Err(err).
+			Str("owner_space", vp.OwnerSpace).
+			Str("type", string(msg.Type)).
+			Msg("Failed to forward subprocess message to parent (non-fatal)")
+	}
 }
 
 // Error represents an error with a code

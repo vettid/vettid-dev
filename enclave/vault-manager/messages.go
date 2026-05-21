@@ -58,7 +58,12 @@ type IncomingMessage struct {
 	Type       MessageType     `json:"type"`
 	OwnerSpace string          `json:"owner_space,omitempty"`
 	RequestID  string          `json:"request_id,omitempty"` // Matches supervisor's RequestID
-	Subject    string          `json:"subject,omitempty"`    // NATS subject
+	// PipeID is the supervisor's pipe-transport correlation token. The
+	// main loop echoes it verbatim onto the op's response so the
+	// supervisor's per-VaultProcess pipe reader can route that response
+	// to the right waiting op. Opaque to handlers — do not interpret.
+	PipeID     string          `json:"pipe_id,omitempty"`
+	Subject    string          `json:"subject,omitempty"` // NATS subject
 	ReplyTo    string          `json:"reply_to,omitempty"`
 	Payload    json.RawMessage `json:"payload,omitempty"`
 
@@ -90,6 +95,9 @@ type OutgoingMessage struct {
 	Type       MessageType     `json:"type"`
 	OwnerSpace string          `json:"owner_space,omitempty"`
 	RequestID  string          `json:"request_id,omitempty"` // Matches supervisor's RequestID
+	// PipeID echoes the incoming op's supervisor pipe-transport token
+	// (set by the main loop on op responses; see IncomingMessage.PipeID).
+	PipeID     string          `json:"pipe_id,omitempty"`
 	Subject    string          `json:"subject,omitempty"`
 	ReplyTo    string          `json:"reply_to,omitempty"`
 	Payload    json.RawMessage `json:"payload,omitempty"`
