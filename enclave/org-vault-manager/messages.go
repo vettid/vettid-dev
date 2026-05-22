@@ -38,6 +38,12 @@ type IncomingMessage struct {
 	Type       MessageType     `json:"type"`
 	OwnerSpace string          `json:"owner_space,omitempty"`
 	RequestID  string          `json:"request_id,omitempty"`
+	// PipeID is the supervisor's pipe-transport correlation token. The
+	// main loop must echo it onto the op's response (see OutgoingMessage)
+	// so the supervisor's per-VaultProcess pipe reader can route the
+	// response back to the waiting ProcessMessage. Without it the
+	// supervisor drops the response and ProcessMessage stalls 30s.
+	PipeID     string          `json:"pipe_id,omitempty"`
 	Subject    string          `json:"subject,omitempty"`
 	ReplyTo    string          `json:"reply_to,omitempty"`
 	Payload    json.RawMessage `json:"payload,omitempty"`
@@ -57,6 +63,9 @@ type OutgoingMessage struct {
 	Type       MessageType     `json:"type"`
 	OwnerSpace string          `json:"owner_space,omitempty"`
 	RequestID  string          `json:"request_id,omitempty"`
+	// PipeID echoes the incoming op's supervisor pipe-transport token
+	// (set by the main loop on op responses; see IncomingMessage.PipeID).
+	PipeID     string          `json:"pipe_id,omitempty"`
 	Subject    string          `json:"subject,omitempty"`
 	ReplyTo    string          `json:"reply_to,omitempty"`
 	Payload    json.RawMessage `json:"payload,omitempty"`

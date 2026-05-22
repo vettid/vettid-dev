@@ -10,6 +10,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -148,10 +149,25 @@ func (ovm *OrgVaultManager) Run(ctx context.Context) error {
 					Error:     err.Error(),
 				}
 			}
-			if response != nil {
-				if err := ovm.sendToParent(response); err != nil {
-					log.Error().Err(err).Msg("Failed to send response")
+			// Every op the supervisor writes is awaited by a
+			// ProcessMessage call that holds the per-vault procMu until
+			// a response carrying the op's PipeID comes back. Always
+			// send one: synthesize a minimal ack when a handler returns
+			// (nil, nil), and echo msg.PipeID so the supervisor's pipe
+			// reader routes it to the waiting op. Without this an
+			// org-vault op stalls ProcessMessage for its full 30s
+			// opTimeout, holding procMu (same class as the 2026-05-22
+			// user-vault device-approval stall).
+			if response == nil {
+				response = &OutgoingMessage{
+					RequestID: msg.GetID(),
+					Type:      MessageTypeResponse,
+					Payload:   json.RawMessage(`{"success":true}`),
 				}
+			}
+			response.PipeID = msg.PipeID
+			if err := ovm.sendToParent(response); err != nil {
+				log.Error().Err(err).Msg("Failed to send response")
 			}
 		}
 	}
