@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math/big"
+	"os"
 	"sync"
 	"time"
 
@@ -117,14 +118,18 @@ func (vm *VaultManager) GetOrCreate(ctx context.Context, ownerSpace string) (*Va
 	// Check if vault already exists AND its subprocess is still alive.
 	// A vault-manager subprocess that self-evicted (D3 split-brain
 	// self-heal) or crashed leaves a stale VaultProcess cached here
-	// with a dead pipe. ProcessState is non-nil once the subprocess
-	// has exited — evict the stale wrapper and fall through to spawn
-	// a genuinely fresh one. Without this, GetOrCreate hands back the
-	// dead wrapper and ProcessMessage's write fails with
-	// "file already closed".
+	// with a dead pipe. Liveness is read from isAlive() — the pipe
+	// reader sets readerClosed (under pendingMu) the instant the pipe
+	// dies, so it is a properly synchronized signal. (The old check
+	// read vault.process.Cmd.ProcessState, which is written by the
+	// reaper goroutine with no happens-before to this read — a data
+	// race that could also report "alive" during the post-exit window
+	// before cmd.Wait() returned.) A dead wrapper is evicted here and
+	// replaced with a genuinely fresh subprocess; without this,
+	// GetOrCreate would hand back the dead wrapper and ProcessMessage's
+	// write would fail with "file already closed".
 	if vault, exists := vm.vaults[ownerSpace]; exists {
-		if vault.process == nil || vault.process.Cmd == nil ||
-			vault.process.Cmd.ProcessState == nil {
+		if vault.isAlive() {
 			vault.touch()
 			vm.updateLRU(ownerSpace)
 			return vault, nil
@@ -159,27 +164,13 @@ func (vm *VaultManager) GetOrCreate(ctx context.Context, ownerSpace string) (*Va
 		return nil, fmt.Errorf("failed to spawn vault-manager: %w", err)
 	}
 
-	// Create vault wrapper around the subprocess
-	// Note: All credential state (ECIES keys, CEK, UTK, PIN, blocklist, etc.)
-	// is held by the subprocess, not the supervisor.
-	vault := &VaultProcess{
-		OwnerSpace:    ownerSpace,
-		StartedAt:     time.Now(),
-		LastAccess:    time.Now(),
-		MemoryMB:      memoryMB,
-		parentSender:  vm.parentSender,
-		process:       proc,
-		sealerHandler: vm.sealerHandler,
-		pending:       make(map[string]chan *Message),
-	}
+	// Wrap the subprocess. newVaultProcess inits the pending map and
+	// starts the single persistent pipe reader — the VaultProcess is
+	// now the sole owner of this subprocess handle.
+	vault := newVaultProcess(ownerSpace, proc, vm.parentSender, vm.sealerHandler, memoryMB)
 
 	vm.vaults[ownerSpace] = vault
 	vm.lruOrder = append(vm.lruOrder, ownerSpace)
-
-	// Start the persistent pipe reader for this subprocess. It runs
-	// until the subprocess dies (eviction kills it → pipe EOF → reader
-	// exits), so it needs no explicit stop.
-	vault.startPipeReader()
 
 	log.Info().
 		Str("owner_space", ownerSpace).
@@ -202,6 +193,20 @@ func (vm *VaultManager) Get(ownerSpace string) *VaultProcess {
 	return nil
 }
 
+// SignalSubprocess sends an OS signal to a user's vault-manager
+// subprocess, resolved through the one authoritative VaultProcess
+// handle. Used by the stall watchdog to request a SIGUSR1 goroutine
+// dump. A missing entry just means no resident vault for that owner.
+func (vm *VaultManager) SignalSubprocess(ownerSpace string, sig os.Signal) error {
+	vm.mu.RLock()
+	vault, exists := vm.vaults[ownerSpace]
+	vm.mu.RUnlock()
+	if !exists || vault.process == nil {
+		return fmt.Errorf("no resident vault subprocess for owner %s", ownerSpace)
+	}
+	return vault.process.signal(sig)
+}
+
 // Evict removes a vault from memory
 func (vm *VaultManager) Evict(ownerSpace string) {
 	vm.mu.Lock()
@@ -217,16 +222,12 @@ func (vm *VaultManager) evictVault(ownerSpace string) {
 		return
 	}
 
-	// Kill the vault-manager subprocess
-	// Note: Process-based architecture is now the only mode.
-	// Subprocess handles its own memory zeroing on exit.
+	// Kill the vault-manager subprocess by its exact handle. This is
+	// the one process the evicted VaultProcess wrapped — never a
+	// re-resolved owner-keyed lookup that could land on a different
+	// subprocess and leave this one orphaned-but-alive.
 	if vault.process != nil {
-		if err := vm.processManager.Kill(ownerSpace); err != nil {
-			log.Warn().
-				Err(err).
-				Str("owner_space", ownerSpace).
-				Msg("Error killing vault-manager subprocess")
-		}
+		vault.process.kill()
 	}
 
 	// Release memory
@@ -296,14 +297,10 @@ func (vm *VaultManager) ShutdownAll() {
 	vm.mu.Lock()
 	defer vm.mu.Unlock()
 
-	// Evict all vaults
+	// Evict every vault — evictVault kills each subprocess by its own
+	// handle, so no separate process sweep is needed.
 	for ownerSpace := range vm.vaults {
 		vm.evictVault(ownerSpace)
-	}
-
-	// Ensure all subprocesses are killed
-	if vm.processManager != nil {
-		vm.processManager.KillAll()
 	}
 }
 
@@ -329,11 +326,49 @@ func (vm *VaultManager) SetMux(mux *MuxConn) {
 
 // VaultProcess methods
 
+// newVaultProcess wraps a freshly spawned subprocess. It initialises
+// the pending-op map and starts the single persistent pipe reader, so
+// every VaultProcess — whether for a user vault or an org vault — is
+// fully wired before it is handed out. (The org path previously built
+// the struct inline and skipped both, which left pending nil and
+// ProcessMessage panicking on the first op.)
+func newVaultProcess(ownerSpace string, proc *ManagedProcess, parentSender ParentSender, sealerHandler *SealerHandler, memoryMB int) *VaultProcess {
+	vp := &VaultProcess{
+		OwnerSpace:    ownerSpace,
+		StartedAt:     time.Now(),
+		LastAccess:    time.Now(),
+		MemoryMB:      memoryMB,
+		parentSender:  parentSender,
+		process:       proc,
+		sealerHandler: sealerHandler,
+		pending:       make(map[string]chan *Message),
+	}
+	// Start the persistent pipe reader. It runs until the subprocess
+	// dies (eviction kills it → pipe EOF → reader exits → readerClosed),
+	// so it needs no explicit stop. Exactly one reader per subprocess:
+	// startPipeReader is called only here, only once per VaultProcess.
+	vp.startPipeReader()
+	return vp
+}
+
 // touch updates the last access time
 func (vp *VaultProcess) touch() {
 	vp.mu.Lock()
 	vp.LastAccess = time.Now()
 	vp.mu.Unlock()
+}
+
+// isAlive reports whether the subprocess pipe is still open. It reads
+// readerClosed under pendingMu — the same lock the pipe reader takes in
+// failAllPending when the pipe dies — so it is a properly synchronized
+// liveness signal (unlike a racy read of Cmd.ProcessState).
+func (vp *VaultProcess) isAlive() bool {
+	if vp.process == nil {
+		return false
+	}
+	vp.pendingMu.Lock()
+	defer vp.pendingMu.Unlock()
+	return !vp.readerClosed
 }
 
 // PipeConn returns the subprocess pipe connection, or nil if the

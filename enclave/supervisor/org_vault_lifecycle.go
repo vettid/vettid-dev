@@ -53,9 +53,15 @@ func (om *OrgVaultManager) GetOrCreate(ctx context.Context, ownerSpace string) (
 	defer om.mu.Unlock()
 
 	if vault, exists := om.vaults[ownerSpace]; exists {
-		vault.touch()
-		om.updateLRU(ownerSpace)
-		return vault, nil
+		if vault.isAlive() {
+			vault.touch()
+			om.updateLRU(ownerSpace)
+			return vault, nil
+		}
+		log.Info().
+			Str("owner_space", ownerSpace).
+			Msg("GetOrCreate: cached org vault subprocess has exited — replacing with a fresh one")
+		om.removeVault(ownerSpace)
 	}
 
 	// Check if we need to evict
@@ -72,20 +78,34 @@ func (om *OrgVaultManager) GetOrCreate(ctx context.Context, ownerSpace string) (
 		return nil, err
 	}
 
-	vault := &VaultProcess{
-		OwnerSpace:    ownerSpace,
-		StartedAt:     time.Now(),
-		LastAccess:    time.Now(),
-		MemoryMB:      40,
-		parentSender:  om.parentSender,
-		process:       process,
-		sealerHandler: om.sealerHandler,
-	}
+	// newVaultProcess inits the pending map and starts the pipe reader
+	// — both required for ProcessMessage. The old inline struct skipped
+	// them, so an org-vault op nil-map-panicked the supervisor.
+	vault := newVaultProcess(ownerSpace, process, om.parentSender, om.sealerHandler, 40)
 
 	om.vaults[ownerSpace] = vault
 	om.lruOrder = append(om.lruOrder, ownerSpace)
 
 	return vault, nil
+}
+
+// removeVault kills an org vault's subprocess by its exact handle and
+// drops it from the resident set and the LRU list. Must hold om.mu.
+func (om *OrgVaultManager) removeVault(ownerSpace string) {
+	vault, exists := om.vaults[ownerSpace]
+	if !exists {
+		return
+	}
+	if vault.process != nil {
+		vault.process.kill()
+	}
+	delete(om.vaults, ownerSpace)
+	for i, os := range om.lruOrder {
+		if os == ownerSpace {
+			om.lruOrder = append(om.lruOrder[:i], om.lruOrder[i+1:]...)
+			break
+		}
+	}
 }
 
 // SetMux wires the multiplexed parent transport into the org-vault
@@ -114,15 +134,10 @@ func (om *OrgVaultManager) evictLRU() {
 	}
 
 	evictSpace := om.lruOrder[0]
-	om.lruOrder = om.lruOrder[1:]
-
-	if vault, exists := om.vaults[evictSpace]; exists {
-		log.Info().
-			Str("owner_space", evictSpace).
-			Msg("Evicting org vault (LRU)")
-		if vault.process != nil && vault.process.Cmd != nil && vault.process.Cmd.Process != nil {
-			vault.process.Cmd.Process.Kill()
-		}
-		delete(om.vaults, evictSpace)
-	}
+	log.Info().
+		Str("owner_space", evictSpace).
+		Msg("Evicting org vault (LRU)")
+	// removeVault kills by handle (closing the pipe so the reader
+	// exits) and drops the LRU entry.
+	om.removeVault(evictSpace)
 }

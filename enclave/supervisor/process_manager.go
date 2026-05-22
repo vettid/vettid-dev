@@ -13,24 +13,42 @@ import (
 // LogForwarder is a function that forwards logs to the parent
 type LogForwarder func(level, source, message string)
 
-// ProcessManager handles spawning and managing vault-manager processes.
-// Each user vault runs in its own isolated process for security.
+// ProcessManager spawns vault-manager subprocesses. It is a stateless
+// factory: it holds NO per-owner state and keeps NO reference to the
+// processes it spawns. Each Spawn hands a fresh, independent
+// ManagedProcess to its caller, and that caller — the VaultProcess — is
+// the single owner of the subprocess for its whole life.
+//
+// This one-owner rule is load-bearing. The earlier design kept a second
+// owner-keyed map here; an op write, a kill, and a signal each
+// re-resolved "the subprocess for this owner" by key, independently of
+// the VaultProcess. The two views could drift, and a vault op would be
+// written into an orphaned subprocess's stdin pipe — the write
+// succeeded into a kernel buffer nobody drained — while a fresh
+// subprocess sat idle. That was the 2026-05-22 ~30s device-approval
+// stall (docs/DEVICE-APPROVAL-27S-STALL.md). With no second map there is
+// nothing to drift against.
 type ProcessManager struct {
 	binaryPath    string
 	devMode       bool
-	processes     map[string]*ManagedProcess
-	mu            sync.RWMutex
 	sealerHandler *SealerHandler
 	logForwarder  LogForwarder // Optional callback to forward logs to parent
 }
 
-// ManagedProcess represents a spawned vault-manager process
+// ManagedProcess is a single spawned vault-manager subprocess. It is
+// owned solely by the VaultProcess that Spawn handed it to; every
+// lifecycle operation (op write, signal, kill) acts on THIS handle —
+// never on a re-resolved owner-keyed lookup.
 type ManagedProcess struct {
 	OwnerSpace string
 	Cmd        *exec.Cmd
 	Conn       *PipeConnection
 	StartedAt  time.Time
-	LastAccess time.Time
+
+	// killOnce makes kill() idempotent: a double evict (e.g. a
+	// heartbeat CAS-fail followed by a watcher event for the same user)
+	// is harmless.
+	killOnce sync.Once
 }
 
 // NewProcessManager creates a new process manager
@@ -38,39 +56,18 @@ func NewProcessManager(binaryPath string, devMode bool, sealerHandler *SealerHan
 	return &ProcessManager{
 		binaryPath:    binaryPath,
 		devMode:       devMode,
-		processes:     make(map[string]*ManagedProcess),
 		sealerHandler: sealerHandler,
 		logForwarder:  logForwarder,
 	}
 }
 
-// Spawn creates a new vault-manager process for the given owner space.
-// Returns an existing process if one is already running.
+// Spawn starts a fresh vault-manager subprocess for the given owner
+// space and returns its handle. It is a pure factory — it stores no
+// reference to the returned process. Every call produces a brand-new
+// subprocess; there is deliberately no reuse-by-key path (that path was
+// the divergence engine behind the device-approval stall). The caller
+// owns the returned ManagedProcess and is responsible for kill()ing it.
 func (pm *ProcessManager) Spawn(ownerSpace string) (*ManagedProcess, error) {
-	pm.mu.Lock()
-	defer pm.mu.Unlock()
-
-	// Check if process already exists AND is still alive. A
-	// subprocess that self-evicted (D3 split-brain self-heal) or
-	// crashed may still be in the map for the brief window before
-	// waitForExit's cmd.Wait() returns. ProcessState is non-nil once
-	// the process has exited — treat such a stale entry as absent and
-	// fall through to spawn a genuinely fresh one. (The race window
-	// where the process has exited but ProcessState isn't set yet is
-	// covered by handleVaultOp's retry-once on a subprocess-gone
-	// write error.)
-	if proc, exists := pm.processes[ownerSpace]; exists {
-		if proc.Cmd.ProcessState == nil {
-			proc.LastAccess = time.Now()
-			return proc, nil
-		}
-		log.Info().
-			Str("owner_space", ownerSpace).
-			Msg("Spawn: existing subprocess has exited — replacing with a fresh one")
-		proc.Conn.Close()
-		delete(pm.processes, ownerSpace)
-	}
-
 	// Create the command
 	cmd := exec.Command(
 		pm.binaryPath,
@@ -111,25 +108,35 @@ func (pm *ProcessManager) Spawn(ownerSpace string) (*ManagedProcess, error) {
 	// Log stderr from the child process
 	go pm.logStderr(ownerSpace, stderr)
 
-	// Create managed process
 	proc := &ManagedProcess{
 		OwnerSpace: ownerSpace,
 		Cmd:        cmd,
 		Conn:       NewPipeConnection(stdin, stdout),
 		StartedAt:  time.Now(),
-		LastAccess: time.Now(),
 	}
 
-	pm.processes[ownerSpace] = proc
+	// Reap the OS process when it exits so a self-evicted / crashed
+	// subprocess does not linger as a zombie. There is no map to clean
+	// up: the VaultProcess that owns this handle detects the death
+	// independently, the instant its pipe reader sees EOF (failAllPending).
+	go func() {
+		if waitErr := cmd.Wait(); waitErr != nil {
+			log.Warn().
+				Str("owner_space", ownerSpace).
+				Err(waitErr).
+				Msg("vault-manager process exited with error")
+		} else {
+			log.Info().
+				Str("owner_space", ownerSpace).
+				Msg("vault-manager process exited normally")
+		}
+	}()
 
 	log.Info().
 		Str("owner_space", ownerSpace).
 		Int("pid", cmd.Process.Pid).
 		Str("binary", pm.binaryPath).
 		Msg("Spawned vault-manager process")
-
-	// Start goroutine to handle process exit
-	go pm.waitForExit(ownerSpace, cmd)
 
 	return proc, nil
 }
@@ -159,96 +166,39 @@ func (pm *ProcessManager) logStderr(ownerSpace string, stderr interface{ Read([]
 	}
 }
 
-// waitForExit waits for a process to exit and cleans up.
+// kill closes the subprocess pipes and terminates the process. It acts
+// on THIS exact handle — there is no owner-keyed lookup that could
+// resolve to a different subprocess. Idempotent via killOnce.
 //
-// Ownership check: only reap the map entry if it still points at OUR
-// cmd. A subprocess can self-evict (D3 split-brain self-heal) and be
-// immediately replaced by a fresh Spawn before this goroutine's
-// cmd.Wait() returns. Without the `proc.Cmd == cmd` guard, the OLD
-// process's waitForExit would close + delete the brand-new
-// REPLACEMENT, leaving the map empty and the live subprocess
-// orphaned (pipe closed under it). Common now that D3 self-eviction
-// makes deliberate subprocess exit a routine event.
-func (pm *ProcessManager) waitForExit(ownerSpace string, cmd *exec.Cmd) {
-	err := cmd.Wait()
-
-	pm.mu.Lock()
-	defer pm.mu.Unlock()
-
-	if proc, exists := pm.processes[ownerSpace]; exists && proc.Cmd == cmd {
-		proc.Conn.Close()
-		delete(pm.processes, ownerSpace)
-	}
-
-	if err != nil {
-		log.Warn().
-			Str("owner_space", ownerSpace).
-			Err(err).
-			Msg("vault-manager process exited with error")
-	} else {
+// Closing Conn first makes the owning VaultProcess's pipe reader see
+// EOF and exit (which fails any in-flight op via failAllPending); the
+// SIGKILL then drops the subprocess and its in-memory credential state.
+func (mp *ManagedProcess) kill() {
+	mp.killOnce.Do(func() {
+		if mp.Conn != nil {
+			mp.Conn.Close()
+		}
+		if mp.Cmd != nil && mp.Cmd.Process != nil {
+			if err := mp.Cmd.Process.Kill(); err != nil {
+				// Already gone (self-evicted / crashed) — expected, not fatal.
+				log.Debug().
+					Str("owner_space", mp.OwnerSpace).
+					Err(err).
+					Msg("kill: vault-manager process already gone")
+			}
+		}
 		log.Info().
-			Str("owner_space", ownerSpace).
-			Msg("vault-manager process exited normally")
-	}
+			Str("owner_space", mp.OwnerSpace).
+			Msg("Killed vault-manager process")
+	})
 }
 
-// Signal sends an OS signal to a managed subprocess by owner space.
-// DIAG: used by the stall watchdog to request a SIGUSR1 goroutine dump
-// from a subprocess whose op has stalled. Non-fatal: a missing entry
-// just means the subprocess isn't tracked here (e.g. an org vault).
-func (pm *ProcessManager) Signal(ownerSpace string, sig os.Signal) error {
-	pm.mu.RLock()
-	proc, exists := pm.processes[ownerSpace]
-	pm.mu.RUnlock()
-	if !exists {
-		return fmt.Errorf("no managed subprocess for owner %s", ownerSpace)
+// signal sends an OS signal to this subprocess. Used by the stall
+// watchdog to request a SIGUSR1 goroutine dump from a subprocess whose
+// op has stalled.
+func (mp *ManagedProcess) signal(sig os.Signal) error {
+	if mp.Cmd == nil || mp.Cmd.Process == nil {
+		return fmt.Errorf("subprocess for owner %s has no process handle", mp.OwnerSpace)
 	}
-	if proc.Cmd == nil || proc.Cmd.Process == nil {
-		return fmt.Errorf("subprocess for owner %s has no process handle", ownerSpace)
-	}
-	return proc.Cmd.Process.Signal(sig)
-}
-
-// Kill terminates a vault-manager process
-func (pm *ProcessManager) Kill(ownerSpace string) error {
-	pm.mu.Lock()
-	defer pm.mu.Unlock()
-
-	proc, exists := pm.processes[ownerSpace]
-	if !exists {
-		return nil // Already gone
-	}
-
-	// Close pipes first to signal shutdown
-	proc.Conn.Close()
-
-	// Send SIGTERM
-	if err := proc.Cmd.Process.Kill(); err != nil {
-		log.Warn().
-			Str("owner_space", ownerSpace).
-			Err(err).
-			Msg("Failed to kill vault-manager process")
-	}
-
-	delete(pm.processes, ownerSpace)
-
-	log.Info().
-		Str("owner_space", ownerSpace).
-		Msg("Killed vault-manager process")
-
-	return nil
-}
-
-// KillAll terminates all vault-manager processes
-func (pm *ProcessManager) KillAll() {
-	pm.mu.Lock()
-	defer pm.mu.Unlock()
-
-	for ownerSpace, proc := range pm.processes {
-		proc.Conn.Close()
-		proc.Cmd.Process.Kill()
-		log.Info().Str("owner_space", ownerSpace).Msg("Killed vault-manager process")
-	}
-
-	pm.processes = make(map[string]*ManagedProcess)
+	return mp.Cmd.Process.Signal(sig)
 }

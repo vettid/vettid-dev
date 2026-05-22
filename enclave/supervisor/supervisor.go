@@ -106,7 +106,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	// goroutines too (the supervisor dump cannot see inside the
 	// vault-manager). See stall_watchdog.go.
 	go runSupervisorStallWatchdog(ctx, s.SendLog, func(ownerSpace string) {
-		if err := s.vaults.processManager.Signal(ownerSpace, syscall.SIGUSR1); err != nil {
+		if err := s.vaults.SignalSubprocess(ownerSpace, syscall.SIGUSR1); err != nil {
 			log.Debug().Err(err).Str("owner_space", ownerSpace).
 				Msg("stall watchdog: could not SIGUSR1 subprocess")
 		} else {

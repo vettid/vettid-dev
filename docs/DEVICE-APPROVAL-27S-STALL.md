@@ -1,7 +1,7 @@
 # Device-approval ~30s stall — diagnosis + debug plan
 
 _Started 2026-05-21. Updated 2026-05-21 (later): live-journal re-trace +
-diagnostic build._
+diagnostic build. **Updated 2026-05-22: FIX SHIPPED — see last section.**_
 
 ## Symptom
 
@@ -157,3 +157,87 @@ watchdog thresholds when fixing.
 - Same family as `device-approval-reliability` memory /
   `SUPERVISOR-ALWAYS-DRAIN-PLAN.md` — the always-drain refactor fixed
   the persist *pipe-write* wedge; this is a distinct stall.
+
+## FIX SHIPPED — 2026-05-22
+
+### Root cause, restated precisely
+
+The supervisor tracked each vault subprocess in **two** places:
+`ProcessManager.processes` (a map keyed by owner space) and
+`VaultManager.vaults[owner].process` (the handle cached on the
+`VaultProcess`). The op-write, the kill, and the SIGUSR1 each
+re-resolved "the subprocess for this owner" *by key* instead of
+acting on the handle the supervisor actually spawned —
+`evictVault` called `ProcessManager.Kill(ownerSpace)`, which killed
+whatever sat in `pm.processes[ownerSpace]`, not necessarily the
+`*exec.Cmd` the evicted `VaultProcess` wrapped.
+
+Once those two views drifted, an op could be written into an
+**orphaned** subprocess's stdin pipe. The write *succeeds* — the
+orphan's pipe still has an open read end, so the bytes land in the
+64 KB kernel buffer — but nothing drains them, while a freshly
+spawned subprocess sits idle (exactly what the SIGUSR1 dump showed).
+The holder `ProcessMessage` then parks its full 30 s `opTimeout`;
+every queued op for that user serializes behind it. That is the
+~30 s stall, and the duplicate `startPipeReader` goroutines were one
+reader per orphaned (but still-alive) `VaultProcess`.
+
+### The fix — one source of truth, by construction
+
+Rather than patch one interleaving, the bug class is removed: there
+is now a single owner of each subprocess.
+
+- **`ProcessManager` is a stateless factory.** No `processes` map,
+  no mutex. `Spawn` builds + starts a subprocess, kicks off stderr
+  logging and an OS-reaper goroutine, and returns the handle —
+  storing nothing. There is no reuse-by-key path (it was unreachable
+  from `GetOrCreate` anyway, and was the only thing that could hand
+  back a process the caller didn't already own).
+- **`ManagedProcess` owns `kill()` / `signal()` methods** that act on
+  *that exact handle*. `kill()` is idempotent (`sync.Once`): closing
+  the pipe first makes the owning `VaultProcess`'s reader see EOF and
+  exit, then SIGKILL drops the subprocess.
+- **The `VaultProcess` is the sole owner of its `*ManagedProcess`**
+  for the subprocess's whole life. `evictVault` kills
+  `vault.process` directly; the stall watchdog signals through the
+  one `VaultProcess` (`VaultManager.SignalSubprocess`). Nothing
+  re-resolves by owner key, so the two views can no longer drift.
+- **Liveness is read from `readerClosed`** — set by the pipe reader
+  under `pendingMu` when the pipe dies — via `isAlive()`. The old
+  check read `Cmd.ProcessState`, written by the reaper goroutine with
+  no happens-before to the reader: a data race that could also report
+  "alive" during the post-exit-before-`Wait()` window.
+- **Bonus fix:** `OrgVaultManager.GetOrCreate` built its
+  `VaultProcess` inline and skipped both the `pending`-map init and
+  `startPipeReader`. The first org-vault op would therefore
+  nil-map-panic the supervisor (assignment to a nil map in
+  `ProcessMessage`), and with no reader no response would ever be
+  delivered. Both managers now construct via the shared
+  `newVaultProcess`, which wires both. Org `GetOrCreate` also gained
+  the `isAlive()` liveness check + by-handle eviction.
+
+Files: `enclave/supervisor/process_manager.go` (rewritten),
+`vault_lifecycle.go`, `org_vault_lifecycle.go`, `supervisor.go`.
+
+### Verification
+
+`go build` + `go vet` clean for supervisor / vault-manager /
+org-vault-manager. `go test -race ./supervisor/...` and the
+vault-manager + storage suites pass. Tier-2 Docker harness: every
+scenario passes in the run where it applies — single-parent sweep
+green (incl. `concurrent-load`, `concurrent-multiuser`,
+`persist-idle-no-stall`); two-parent (`--with-new`) sweep green incl.
+`migration-handoff`. (`concurrent-multiuser` fails only under
+`--with-new` — the pre-existing two-parent `ClaimForEnrollment`
+attestation-key race, unrelated to this fix.)
+
+### Still TODO — after a verification deploy
+
+The `// DIAG` instrumentation is deliberately left in so a deploy
+that verifies this fix keeps its diagnostics. Once a live deploy
+confirms the stall is gone, strip: the `// DIAG` breadcrumbs in
+`ProcessMessage` + `vault-manager/main.go`, the supervisor journal
+tee (`journal_log.go` — or gate to WARN+), the SIGUSR1 dump handler,
+and restore the watchdog thresholds (vault-manager 25 s / 10 s tick;
+the supervisor watchdog at 12 s is keepable hygiene — retune if
+noisy). The watchdogs themselves stay.
