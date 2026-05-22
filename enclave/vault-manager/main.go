@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -284,17 +285,37 @@ func (vm *VaultManager) Run(ctx context.Context) error {
 				vm.messageHandler.persistVaultStateToS3()
 			}
 
-			if response != nil {
-				// Echo the supervisor's pipe-transport correlation
-				// token onto the response. Done here, in one place, so
-				// it is consistent across every handler regardless of
-				// whether the handler set RequestID — the supervisor's
-				// per-VaultProcess pipe reader routes the response to
-				// the waiting op by this token.
-				response.PipeID = msg.PipeID
-				if err := vm.sendToParent(response); err != nil {
-					log.Error().Err(err).Msg("Failed to send response")
+			// Every op the supervisor writes is awaited by a
+			// ProcessMessage call that holds the per-user procMu until a
+			// response carrying the op's PipeID comes back. A handler
+			// that returns (nil, nil) — notably forOwner.device ops,
+			// which deliver their real result straight to the paired
+			// device via PublishRaw and produce no vault-op response —
+			// would otherwise leave ProcessMessage to wait out its full
+			// 30s opTimeout, holding procMu and stalling every queued op
+			// for that user. (That is the 2026-05-22 device-approval
+			// ~30s stall: the always-drain refactor made ProcessMessage
+			// wait for a PipeID-correlated response, so a no-response op
+			// went from a silent miscorrelation to a hard 30s hang.)
+			// Synthesize a minimal ack so EVERY op gets a prompt,
+			// PipeID-correlated response.
+			if response == nil {
+				response = &OutgoingMessage{
+					RequestID: msg.GetID(),
+					Type:      MessageTypeResponse,
+					Payload:   json.RawMessage(`{"success":true}`),
 				}
+			}
+
+			// Echo the supervisor's pipe-transport correlation token
+			// onto the response. Done here, in one place, so it is
+			// consistent across every handler regardless of whether the
+			// handler set RequestID — the supervisor's per-VaultProcess
+			// pipe reader routes the response to the waiting op by this
+			// token.
+			response.PipeID = msg.PipeID
+			if err := vm.sendToParent(response); err != nil {
+				log.Error().Err(err).Msg("Failed to send response")
 			}
 
 			// D3 self-eviction: a persist this iteration (or a prior
