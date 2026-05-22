@@ -241,3 +241,135 @@ tee (`journal_log.go` — or gate to WARN+), the SIGUSR1 dump handler,
 and restore the watchdog thresholds (vault-manager 25 s / 10 s tick;
 the supervisor watchdog at 12 s is keepable hygiene — retune if
 noisy). The watchdogs themselves stay.
+
+## ⚠️ STILL NOT FIXED — live test 2026-05-22, v2 + v3 (CHECKPOINT HANDOFF)
+
+The "FIX SHIPPED" section above (v2 / `4aea334`) and the v3 fixes below
+were both **deployed and live-tested with the user. The stall still
+reproduces.** This section is the authoritative current state — read it
+first.
+
+### Two real bugs were found and fixed (neither eliminated the symptom)
+
+1. **`4aea334` (enclave `2026-05-22-v2`)** — supervisor process-handle
+   refactor (the section above). Real cleanup, correct, KEEP — but it
+   was **not** the stall cause. Live test on v2 reproduced the ~30 s
+   stall unchanged.
+
+2. **`0aa49e9` (enclave `2026-05-22-v3`)** — *the* fix for the v2-shape
+   stall. Root cause of THAT shape: a `forOwner.device` op (desktop
+   device-op request) is handled by `DeviceHandler.handleDeviceOpRequest`,
+   which delivers its real result straight to the desktop via
+   `publishDeviceResponse` (raw NATS publish) and returns `(nil, nil)`.
+   The vault-manager main loop's `if response != nil` guard then sent
+   **nothing** back to the supervisor, so the always-drain
+   `ProcessMessage` waited out its full 30 s `opTimeout` holding
+   `procMu`. Fix: the main loop now sends a response for **every** op —
+   synthesizes a minimal `PipeID`-stamped ack when `HandleMessage`
+   returns nil. **Confirmed live on v3:** the synthesized acks
+   (`length=87 type=response`) are visible in the v3 journal; the 30 s
+   *timeout* path is gone.
+
+3. **`462a95f`** — org-vault-manager had the same class, worse (its main
+   loop never stamped `PipeID` and the message structs lacked the
+   field). Fixed for parity. Org vaults are pre-launch so this was
+   latent.
+
+### The v3 stall is a DIFFERENT shape — burst backlog, not a wedge
+
+Live test on v3 (instance `i-090355f5f1a8c2d4c`, owner `eb8472f6` =
+Pixel 9 / al): desktop sensitive-data request still "stalls" ~25-30 s.
+But the journal signature changed:
+
+- **No watchdog fired. No op timed out.** On v2 the holder op got no
+  response and timed out at exactly 30 s. On v3 every op *completes* —
+  they are just **queued**.
+- The v3 journal shows a **burst of 30+ ops** for `eb8472f6` per
+  request — `profile.broadcast`, `pin-unlock`, `profile.get-published`,
+  `personal-data.get`, `connection.list`, `feed.sync` ×6,
+  `location.peer.get` ×10, `wallet.list` ×several, `profile.photo.get`,
+  `guide.sync`, `vote.list`, `device.approval-pending`,
+  `device.request-session`, `device.authorize-session`,
+  `forOwner.device` ×8 — all serialized one-at-a-time through the
+  single per-user `procMu`.
+- The op that logged `procmu_wait=25561` (ms) waited ~25 s because
+  ~25 s of *other ops* were ahead of it in the `procMu` queue. The
+  desktop's sensitive-data result is one of the queued ops → ~25 s
+  spinner.
+- A desktop device **session re-pair** runs mid-burst:
+  `Device stage-2 request stored; awaiting app authorization`,
+  `forVault.device.request-session` / `device.authorize-session`.
+
+**Leading hypothesis: op-burst backlog through the serial per-user
+`procMu`.** Not a wedged op — a throughput collapse under a ~30-op
+burst that the desktop+phone fire per sensitive-data request.
+
+**Alternative not yet ruled out:** one device/pairing op
+(`handleDeviceOpRequest` for a phone-required `secret.get`, or
+`HandleDeviceRequestSession` "awaiting app authorization") genuinely
+blocks the single main loop ~25 s waiting on the phone. The two have
+completely different fixes — must be distinguished before fixing.
+
+### Why it could not be settled live
+
+The vault-manager + supervisor run **inside the Nitro enclave** — no
+shell, no on-demand `pprof`/signal. Goroutine dumps come *only* from
+the supervisor stall-watchdog's SIGUSR1, and on v3 the watchdog is
+**not firing** (consistent with "no single op > 12 s" — i.e. backlog,
+not a wedge — but also unverified: confirm the watchdog still works).
+
+### NEXT SESSION — do this, deliberately, not as a hot-patch
+
+1. **Instrument to distinguish the two hypotheses.** Add per-`HandleMessage`
+   duration logging in `vault-manager/main.go` AND a per-op `procMu`
+   queue-depth counter in `supervisor/vault_lifecycle.go`
+   `ProcessMessage` (how many ops are waiting on `procMu` when this one
+   arrives). One diagnostic build settles it: a single op at ~25 s ⇒
+   blocking handler; 30 ops at <1 s each ⇒ burst backlog.
+2. **If burst backlog (likely):**
+   - Reduce op volume — desktop fires ~30 ops per sensitive-data
+     request; the Android in-flight dedup work
+     (`device-approval-reliability` memory) has prior art. Find why the
+     desktop re-syncs everything + re-pairs the device session on every
+     request.
+   - Consider relaxing the strict one-op-at-a-time per-user `procMu`.
+     The always-drain `PipeID` correlation already supports
+     out-of-order responses, so `procMu` could allow N in-flight ops
+     pipelined to one subprocess (the subprocess main loop is still
+     serial, but the supervisor would stop blocking op N+1's *write*
+     on op N's *response*). Design carefully — the subprocess main
+     loop, persist, and self-evict assume serial ops.
+3. **If a blocking handler:** make the device-op / request-session
+   path not block the main loop — return immediately, deliver the
+   result asynchronously (the desktop already gets its real answer via
+   `publishDeviceResponse`).
+4. **Verify the supervisor watchdog actually fires** (it didn't on v3).
+5. Then strip the `// DIAG` instrumentation (see section above).
+
+### Current deployed state (as of checkpoint)
+
+- Enclave **`2026-05-22-v3`** live — PCR0 `7bab66cacdab47b4f7bc0043…`,
+  AMI `ami-0d8b032cb4271cff8`, instance `i-090355f5f1a8c2d4c`. Migration
+  v2→v3 active (KMS AnyOf[v2,v3], ASG=2, deadline `2026-05-25T14:35:47Z`)
+  — auto-finalizes when both users migrate.
+- vettid-dev `main` HEAD **`462a95f`**. All three fixes committed +
+  pushed. Working tree clean.
+- `// DIAG` instrumentation is LIVE in v3 — **keep it** until this is
+  fixed.
+- Enclave journal: SSM `aws ssm send-command` to `i-090355f5f1a8c2d4c`,
+  unit `vettid-parent`. Pixel 9 = `4B081FDAP004V0` (al / `eb8472f6`),
+  Pixel 7 = `28121FDH2009C5` (mesmer / `af44310d`). `af44310d` never
+  stalls (no desktop → no `forOwner.device` burst).
+- Code map: `supervisor/vault_lifecycle.go` `ProcessMessage` (procMu
+  ~432, select ~493); `vault-manager/main.go` main loop (the `0aa49e9`
+  fix); `vault-manager/device_handler.go` `handleDeviceOpRequest`
+  (~289); `vault-manager/messages.go` `HandleMessage` dispatch (~863),
+  forOwner routing (~961-1058).
+
+### Separate open bug (do not conflate)
+
+Desktop credit-card minor-secret reveal shows "managed on your phone" /
+"no value to reveal" for alias-grouped fields (e.g. Expiration). It is
+a `secret.get` path issue, not the stall — though `secret.get` queued
+behind the 25 s backlog could also make it *look* failed. See
+`secrets-data-ui-followups.md` memory.
