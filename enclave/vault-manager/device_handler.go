@@ -451,14 +451,8 @@ func (dh *DeviceHandler) handleDeviceOpRequest(ctx context.Context, conn *Connec
 	approvalBytes, _ := json.Marshal(approvalReq)
 
 	approvalTopic := fmt.Sprintf("OwnerSpace.%s.forApp.device.approval.request.%s", dh.ownerSpace, req.RequestID)
-	pubMsg := &OutgoingMessage{
-		ID:      generateMessageID(),
-		Type:    MessageTypeNATSPublish,
-		Subject: approvalTopic,
-		Payload: approvalBytes,
-	}
 
-	// Also notify desktop that approval is pending
+	// Also notify desktop that approval is pending.
 	dh.publishDeviceResponse(conn, connKey, DeviceMsgOpResponse, map[string]interface{}{
 		"request_id": req.RequestID,
 		"success":    true,
@@ -466,7 +460,23 @@ func (dh *DeviceHandler) handleDeviceOpRequest(ctx context.Context, conn *Connec
 		"operation":  req.Operation,
 	})
 
-	return pubMsg, nil
+	// Publish the approval request to the phone as a standalone
+	// vault-initiated NATS publish — NOT as this op's HandleMessage
+	// return value. A nats_publish-typed message returned as the op
+	// response is demuxed by the supervisor's pipe reader on Type
+	// (startPipeReader) and routed to forwardToParent, so it never
+	// reaches the ProcessMessage waiting on this op's PipeID — that
+	// call then sits out its full 30s opTimeout holding the per-user
+	// procMu and stalls every queued op for the user. (That was the
+	// ~30s device-approval stall: a phone-required device op did
+	// `return pubMsg, nil` here.) Returning nil lets the forOwner
+	// router synthesize a proper PipeID-correlated ack.
+	if err := dh.publisher.PublishRaw(approvalTopic, approvalBytes); err != nil {
+		log.Warn().Err(err).Str("subject", approvalTopic).
+			Msg("Failed to publish device approval request to phone")
+	}
+
+	return nil, nil
 }
 
 // HandlePhoneApprovalResponse processes the phone's approve/deny for delegated operations.

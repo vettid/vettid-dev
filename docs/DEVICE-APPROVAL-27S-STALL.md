@@ -1,7 +1,10 @@
 # Device-approval ~30s stall — diagnosis + debug plan
 
 _Started 2026-05-21. Updated 2026-05-21 (later): live-journal re-trace +
-diagnostic build. **Updated 2026-05-22: FIX SHIPPED — see last section.**_
+diagnostic build. Updated 2026-05-22: earlier "FIX SHIPPED" attempts.
+**Updated 2026-05-22 (later): TRUE ROOT CAUSE FOUND + FIXED — read the
+final section "✅ ROOT CAUSE — DEFINITIVE" FIRST; everything between
+"⚠️ STILL NOT FIXED" and that section is superseded.**_
 
 ## Symptom
 
@@ -373,3 +376,74 @@ Desktop credit-card minor-secret reveal shows "managed on your phone" /
 a `secret.get` path issue, not the stall — though `secret.get` queued
 behind the 25 s backlog could also make it *look* failed. See
 `secrets-data-ui-followups.md` memory.
+
+## ✅ ROOT CAUSE — DEFINITIVE (2026-05-22, later)
+
+Everything above this section is superseded. The "burst backlog" and
+"pipe-delivery failure" diagnoses were both wrong. The live v3 journal
+(enclave `2026-05-22-v3`, instance `i-090355f5f1a8c2d4c`) settled it.
+
+### Evidence
+
+The stalling op was `op#171` — a `forOwner.device` op, pipe_id
+`661960e626511ce7ab265c612e178534`, the desktop's phone-required
+"request sensitive data" device op. The journal proves:
+
+- It **was delivered** to the subprocess and **was handled**:
+  `Received message from supervisor length=1284` → `Handling message
+  forOwner.device` → `Received device message … device_op_request` →
+  `Event logged device.approval.requested` → publishes. (So neither a
+  pipe-delivery failure nor a wedged handler.)
+- The supervisor's `ProcessMessage` for it then sat in its `respCh`
+  select for **exactly 30 s** (`48.079` → `14:43:18.079`), hit
+  `opTimeout`, and released `procMu` — draining ~11 queued ops.
+- **No `"Pipe response with no pending op"` warning** ever fired — so
+  the op's response was not *dropped* by `deliverResponse`; it never
+  reached `deliverResponse` at all.
+
+### The bug
+
+`vault-manager/device_handler.go` `handleDeviceOpRequest`, the
+**phone-required** branch, did:
+
+```go
+pubMsg := &OutgoingMessage{Type: MessageTypeNATSPublish, Subject: approvalTopic, …}
+…
+return pubMsg, nil          // ← returns a nats_publish AS the op response
+```
+
+The vault-manager main loop stamps `pubMsg.PipeID = msg.PipeID` and
+sends it down the pipe. The supervisor's pipe reader
+(`supervisor/vault_lifecycle.go` `startPipeReader`) demuxes **by
+`Type`**: `MessageTypeNATSPublish` → `forwardToParent`, **not**
+`deliverResponse`. So op#171's "response" was forwarded to the parent
+as a vault-initiated publish (which is *why device approval still
+works* — the phone does receive the approval request), and the
+`ProcessMessage` waiting on pipe_id `661960…` **never got a
+PipeID-correlated response**. It waited out the full 30 s `opTimeout`
+holding the single per-user `procMu`; every queued op for that user
+serialized behind it. That is the ~30 s stall.
+
+`0aa49e9` fixed the sibling `return nil, nil` path (synthesize an ack
+when a handler returns nil) but missed this `return pubMsg, nil` path —
+a non-nil, wrong-Type return value.
+
+### The fix (vettid-dev, this session)
+
+1. **`handleDeviceOpRequest`** — publish the approval request via
+   `dh.publisher.PublishRaw(approvalTopic, approvalBytes)` (the exact
+   primitive `publishDeviceResponse` already uses in the same function)
+   and `return nil, nil`, so the forOwner router synthesizes a proper
+   PipeID-correlated `MessageTypeResponse` ack.
+2. **`vault-manager/main.go` main loop — defensive backstop.** If
+   `HandleMessage` ever returns a `MessageTypeNATSPublish`-typed
+   message, forward it as the standalone publish it was meant to be
+   (PipeID cleared), log a `Warn`, and synthesize a real ack. This
+   makes the bug class structurally dead — a future handler that makes
+   the same mistake degrades to a logged warning, not a 30 s stall.
+
+Verified: `go build` / `go vet` / `go test` (vault-manager,
+supervisor, storage) clean; Tier-2 harness single-parent sweep green
+(`concurrent-load`, `concurrent-multiuser`, `persist-idle-no-stall`).
+Pending: live deploy + reproduce, then strip the `// DIAG`
+instrumentation per the section above.

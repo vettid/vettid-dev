@@ -257,6 +257,31 @@ func (vm *VaultManager) Run(ctx context.Context) error {
 					Error:     err.Error(),
 				}
 			}
+
+			// Defensive: HandleMessage must return an op response
+			// (MessageTypeResponse / MessageTypeError) or nil. A handler
+			// that instead returns a nats_publish-typed message — as the
+			// phone-required device-approval path once did — produces an
+			// "op response" the supervisor's pipe reader (startPipeReader)
+			// demuxes by Type and routes to forwardToParent, so it never
+			// reaches the ProcessMessage waiting on this op's PipeID. That
+			// call then waits out its full 30s opTimeout holding the
+			// per-user procMu and stalls every queued op for the user
+			// (the ~30s device-approval stall). Forward such a message as
+			// the standalone publish it was meant to be, then fall through
+			// to synthesize a proper PipeID-correlated ack.
+			if err == nil && response != nil && response.Type == MessageTypeNATSPublish {
+				log.Warn().
+					Str("subject", response.Subject).
+					Str("msg_id", msg.GetID()).
+					Msg("handler returned a nats_publish as the op response — forwarding it and synthesizing an ack")
+				response.PipeID = "" // standalone publish: not an op response
+				if sendErr := vm.sendToParent(response); sendErr != nil {
+					log.Error().Err(sendErr).Msg("Failed to forward handler-returned publish")
+				}
+				response = nil
+			}
+
 			// Auto-persist vault state BEFORE sending the response.
 			//
 			// persistVaultStateToS3 is throttled (debounced), so most
