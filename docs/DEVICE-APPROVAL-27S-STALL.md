@@ -445,5 +445,19 @@ a non-nil, wrong-Type return value.
 Verified: `go build` / `go vet` / `go test` (vault-manager,
 supervisor, storage) clean; Tier-2 harness single-parent sweep green
 (`concurrent-load`, `concurrent-multiuser`, `persist-idle-no-stall`).
-Pending: live deploy + reproduce, then strip the `// DIAG`
-instrumentation per the section above.
+
+### ✅ VERIFIED LIVE — 2026-05-22, enclave v4
+
+Deployed as enclave `2026-05-22-v4` (PCR0 `53b4ba1e301f41c71a405f98…`,
+AMI `ami-0385fd53dc61c3d05`, instance `i-07a3bd93759f0c92f`); both
+users migrated. Live test by the user: desktop "request sensitive
+data" now completes in **milliseconds**. v4 journal over the test
+window: worst `procmu_wait` **296 ms** (was 29 748 ms), **zero**
+`WATCHDOG(supervisor)`, **zero** `Timeout waiting for vault-manager`,
+**zero** `nats_publish as the op response` Warn (the backstop was
+never needed — the handler now returns cleanly). The ~30 s
+device-approval stall is fixed.
+
+**Remaining follow-up:** strip the `// DIAG` instrumentation (still
+live in v4) and restore the watchdog thresholds — see the
+"Diagnostic build" section above. Needs one more enclave deploy.
