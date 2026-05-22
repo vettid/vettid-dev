@@ -93,27 +93,67 @@ Strip/tune before tech-preview: the watchdog thresholds (restore 25s /
 WARN+ — DEBUG-level forwarding is high mux volume). The watchdogs
 themselves are keepable hygiene.
 
-## Next session — reproduce + read the dump
+## ROOT CAUSE FOUND — 2026-05-22 (hypothesis B, refined)
 
-1. Deploy the diagnostic build (`enclave/scripts/deploy.sh` — an enclave
-   migration).
-2. Reproduce: desktop "request sensitive data access", let it stall
-   ~30s.
-3. Pull the journal and read the dump:
-   - `WATCHDOG(supervisor)` present → hypothesis B. Read which
-     `ProcessMessage` goroutine holds `procMu` and what it is blocked
-     on; everything else is piled on `procMu.Lock`.
-   - `WATCHDOG: vault op exceeded stall threshold` (vault-manager)
-     present → hypothesis A. Read the wedged `HandleMessage` stack.
-   - The `DIAG:` `procMu_wait` / `write_dur` lines give the per-segment
-     timeline either way.
-4. Root-cause fix once the dump pins the stuck stack.
+Two diagnostic builds were deployed and reproduced:
+
+- Build 1 (`eda50bc`, enclave `2026-05-21-v4`): supervisor stall
+  watchdog + tightened vault-manager watchdog + journal tee.
+- Build 2 (`5f9660e`, enclave `2026-05-22-v1`): adds a SIGUSR1
+  goroutine-dump handler in the vault-manager; the supervisor stall
+  watchdog SIGUSR1s the stalled owner's subprocess so the subprocess
+  dumps its OWN goroutines (the supervisor dump cannot see inside it).
+
+Both reproductions caught the stall cleanly. Findings:
+
+1. **Confirmed hypothesis B — a per-user `procMu` pile-up.** The
+   supervisor watchdog showed ~10 ops for owner `eb8472f6` all parked
+   at `stage=process-message`. One "holder" `ProcessMessage` parked in
+   the `respCh` select; the rest blocked on `procMu.Lock`. The holder
+   waits its full 30s `opTimeout` and then the queue drains in a burst
+   — that 30s is the stall.
+
+2. **The persist is NOT the cause.** The `store_vault_state` sealer
+   round-trip (1.7 MB) completes in <1s; ruled out.
+
+3. **ROOT CAUSE: the op never reaches the subprocess.** The SIGUSR1
+   subprocess goroutine dump shows the vault-manager subprocess
+   **completely idle** — main loop parked in `select` (`main.go:222`),
+   `receiveMessages` blocked in `syscall.read` on an **empty stdin
+   pipe**. The supervisor's `ProcessMessage` reports it wrote the op,
+   but the bytes never arrive at the subprocess's stdin. The holder
+   `ProcessMessage` then waits out the 30s `opTimeout` holding `procMu`.
+
+   So it is a **supervisor↔subprocess pipe-delivery failure** — the op
+   write and the subprocess's stdin read are not connected to the same
+   pipe (or the write silently does not land).
+
+4. **Secondary anomaly:** the supervisor goroutine dump shows ~2
+   `startPipeReader` goroutines per subprocess (should be 1) —
+   duplicate pipe readers. Points at a `VaultProcess` / `ManagedProcess`
+   **lifecycle bug**: the two-layer process tracking
+   (`ProcessManager.processes` vs `VaultManager.vaults[].process`) can
+   drift; `VaultManager.evictVault` calls `processManager.Kill(ownerSpace)`
+   which kills whatever is in `pm.processes[ownerSpace]`, not the
+   specific `*exec.Cmd` the evicted `VaultProcess` wrapped.
+
+Target for the fix: `enclave/supervisor` — `pipe_ipc.go`,
+`vault_lifecycle.go`, `process_manager.go`. The op-write must reach the
+*same* subprocess the supervisor believes it spawned; the
+`ProcessManager` / `VaultManager` process handles must not diverge;
+duplicate `startPipeReader`s must not happen. Race-prone area — design
+deliberately. Strip the `// DIAG` instrumentation and restore the
+watchdog thresholds when fixing.
 
 ## Evidence pointers
 
-- Enclave instance `i-0c104dd5c24398b4e`, journal unit `vettid-parent`.
-- Request id `2b687986ba08d87f46448ed680ca54c8`; the journal's
-  `device.approval` op `request_id 9653a706-2dca-476a-af37-3bafc0d81270`.
+- Build-2 reproduction: enclave `2026-05-22-v1`, instance
+  `i-073a13807706d4c7f`, journal unit `vettid-parent`, stall at
+  `01:03:47`–`01:04:17 UTC`. Supervisor watchdog fired ×4; SIGUSR1
+  sent ×4; subprocess `SIGUSR1 GOROUTINE DUMP` in `vault-manager
+  stderr` lines.
+- Build-1 reproduction: enclave `2026-05-21-v4`, instance
+  `i-07f7a5d0e52a18a33`, stall at `22:30:17`–`22:30:47 UTC`.
 - Same family as `device-approval-reliability` memory /
   `SUPERVISOR-ALWAYS-DRAIN-PLAN.md` — the always-drain refactor fixed
   the persist *pipe-write* wedge; this is a distinct stall.
