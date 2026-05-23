@@ -3,137 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>LEASH Verifier — VettID</title>
-<meta name="description" content="Verify a LEASH token (scoped, time-bound, version-bound delegation JWT) end-to-end against published attestation keys.">
+<title>LEASH — VettID's verifiable agent delegation</title>
+<meta name="description" content="Try to break a scoped, time-bound, version-bound delegation token. The validator rejects every attack — see exactly why.">
 <link rel="icon" type="image/x-icon" href="/assets/favicon.ico">
 <link rel="stylesheet" href="/assets/fonts.css">
 <link rel="stylesheet" href="/shared/nav.css">
-<style>
-  :root {
-    --accent: #ffc125;
-    --accent-hover: #ffd940;
-    --bg-dark: #0a0908;
-    --bg-card: #12110f;
-    --bg-elevated: #1a1816;
-    --text: #f5f5f4;
-    --text-muted: #a8a29e;
-    --text-subtle: #78716c;
-    --border: #2a2826;
-    --pass: #58c272;
-    --fail: #e5604a;
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0;
-    font-family: 'Inter', system-ui, sans-serif;
-    background: var(--bg-dark);
-    color: var(--text);
-    line-height: 1.5;
-  }
-  main.container {
-    max-width: 1100px;
-    margin: 80px auto 40px;
-    padding: 0 24px;
-  }
-  h1 { font-family: 'Plus Jakarta Sans', sans-serif; font-size: 2rem; margin: 0 0 6px; }
-  .subtitle { color: var(--text-muted); margin: 0 0 28px; font-size: 1rem; }
-  .panel {
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 20px;
-    margin-bottom: 16px;
-  }
-  .panel h2 {
-    margin: 0 0 12px;
-    font-size: 1.05rem;
-    font-weight: 600;
-    color: var(--accent);
-    letter-spacing: 0.02em;
-  }
-  label { display: block; font-size: 0.85rem; color: var(--text-muted); margin: 12px 0 4px; }
-  textarea, input[type="text"] {
-    width: 100%;
-    background: var(--bg-elevated);
-    color: var(--text);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 10px;
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.85rem;
-    resize: vertical;
-  }
-  textarea { min-height: 80px; }
-  textarea.jwt { min-height: 110px; font-size: 0.78rem; line-height: 1.4; word-break: break-all; }
-  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-  button.verify {
-    margin-top: 16px;
-    background: var(--accent);
-    color: #000;
-    border: 0;
-    padding: 12px 22px;
-    font-weight: 600;
-    border-radius: 6px;
-    cursor: pointer;
-    font-size: 0.95rem;
-  }
-  button.verify:hover { background: var(--accent-hover); }
-  button.verify:disabled { background: var(--text-subtle); cursor: wait; }
-
-  .result-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 12px;
-  }
-  .verdict {
-    font-family: 'Plus Jakarta Sans', sans-serif;
-    font-weight: 700;
-    font-size: 1.15rem;
-    padding: 6px 14px;
-    border-radius: 999px;
-  }
-  .verdict.pass { background: rgba(88,194,114,0.15); color: var(--pass); }
-  .verdict.fail { background: rgba(229,96,74,0.15); color: var(--fail); }
-
-  ol.checks { padding-left: 0; list-style: none; }
-  ol.checks li {
-    display: grid;
-    grid-template-columns: auto 1fr;
-    align-items: start;
-    gap: 12px;
-    padding: 8px 0;
-    border-bottom: 1px dashed var(--border);
-  }
-  ol.checks li:last-child { border-bottom: 0; }
-  .marker { width: 22px; height: 22px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; }
-  .marker.pass { background: rgba(88,194,114,0.18); color: var(--pass); }
-  .marker.fail { background: rgba(229,96,74,0.18); color: var(--fail); }
-  .check-name { font-weight: 600; }
-  .check-detail { font-size: 0.85rem; color: var(--text-muted); margin-top: 2px; }
-
-  dl.kv {
-    display: grid;
-    grid-template-columns: max-content 1fr;
-    gap: 4px 16px;
-    margin: 0;
-    font-size: 0.85rem;
-  }
-  dl.kv dt { color: var(--text-muted); }
-  dl.kv dd { margin: 0; font-family: 'JetBrains Mono', monospace; word-break: break-all; }
-
-  .hint { color: var(--text-subtle); font-size: 0.8rem; margin-top: 4px; }
-  .error-banner {
-    background: rgba(229,96,74,0.1);
-    border: 1px solid var(--fail);
-    color: var(--fail);
-    padding: 10px 14px;
-    border-radius: 6px;
-    margin-top: 12px;
-    font-size: 0.9rem;
-  }
-  #resultPanel { display: none; }
-</style>
+<link rel="stylesheet" href="/leash/leash.css">
 </head>
 <body>
 
@@ -145,153 +20,140 @@
 </header>
 
 <main class="container">
-  <h1>LEASH Verifier</h1>
-  <p class="subtitle">Paste a LEASH token + envelope and the validator returns the full verification chain. No login. No data stored.</p>
+  <div class="page-header">
+    <h1>LEASH — try to break it</h1>
+    <p class="lede">
+      A LEASH is a signed, scoped, time-bound delegation. The AI agent gets only what
+      you grant — never the underlying secret. Mint one for Demo Alice's agent,
+      then throw the worst you've got at it. The validator rejects every attack
+      and tells you why.
+    </p>
+  </div>
 
-  <div class="panel">
-    <h2>Envelope</h2>
-    <label for="leash">LEASH (compact JWT, 3 segments separated by <code>.</code>)</label>
-    <textarea id="leash" class="jwt" placeholder="eyJhbGciOiJFZERTQSI…"></textarea>
+  <!-- ============================================================== -->
+  <!-- Mode tabs                                                       -->
+  <!-- ============================================================== -->
+  <div class="tab-row">
+    <button class="tab active" data-mode="sandbox">Sandbox (Demo Alice)</button>
+    <button class="tab" data-mode="live">Test your agent →</button>
+  </div>
 
-    <div class="row">
-      <div>
-        <label for="action">Request scope token (e.g. <code>profile.email:read</code>)</label>
-        <input type="text" id="action" placeholder="profile.email:read">
+  <!-- ============================================================== -->
+  <!-- Sandbox mode                                                    -->
+  <!-- ============================================================== -->
+  <section id="sandboxMode" class="mode-panel">
+
+    <!-- Step 1: choose scope + duration, mint -->
+    <div class="panel">
+      <h2>1. Issue a LEASH</h2>
+      <p class="muted">Pick the capabilities Alice grants her agent, then mint.</p>
+
+      <div class="scope-grid" id="scopeGrid"></div>
+
+      <label class="duration-row">
+        Expires in
+        <select id="durationSel">
+          <option value="60">60 seconds</option>
+          <option value="120" selected>2 minutes</option>
+          <option value="300">5 minutes</option>
+          <option value="600">10 minutes</option>
+        </select>
+      </label>
+
+      <button id="mintBtn" class="primary">Mint LEASH for Demo Alice's agent</button>
+      <p id="mintErr" class="error-banner" style="display:none;"></p>
+    </div>
+
+    <!-- Step 2: the live LEASH + countdown -->
+    <div id="leashPanel" class="panel" style="display:none;">
+      <div class="panel-head">
+        <h2>2. Live LEASH</h2>
+        <span class="countdown-pill" id="countdown">⏱ —</span>
       </div>
-      <div>
-        <label for="nonce">Nonce (16+ bytes, base64url)</label>
-        <input type="text" id="nonce" value="dGVzdC1ub25jZS0xMjM0NTY3OA">
+      <details class="jwt-detail">
+        <summary>Show JWT</summary>
+        <pre class="jwt-block" id="jwtBlock"></pre>
+      </details>
+      <dl class="claims-kv" id="claimsKv"></dl>
+    </div>
+
+    <!-- Step 3: red-team attacks -->
+    <div id="attackPanel" class="panel" style="display:none;">
+      <h2>3. Try to break it</h2>
+      <p class="muted">Each button runs the attack against the validator. Watch every one fail.</p>
+      <div class="attack-grid">
+        <button class="attack" data-attack="goodVerify">
+          <span class="ax-label">✓ Verify honestly</span>
+          <span class="ax-desc">Baseline: same agent, same scope, real signature → should PASS.</span>
+        </button>
+        <button class="attack" data-attack="widenScope">
+          <span class="ax-label">Widen scope</span>
+          <span class="ax-desc">Verify against an action you weren't granted.</span>
+        </button>
+        <button class="attack" data-attack="forgeSig">
+          <span class="ax-label">Forge the signature</span>
+          <span class="ax-desc">Re-sign claims with an attacker key.</span>
+        </button>
+        <button class="attack" data-attack="replayBearer">
+          <span class="ax-label">Replay without PoP</span>
+          <span class="ax-desc">Use the stolen JWT but skip the agent's per-call signature.</span>
+        </button>
+        <button class="attack" data-attack="staleEnvelope">
+          <span class="ax-label">Replay an old envelope</span>
+          <span class="ax-desc">Send a verify with a 5-minute-old timestamp.</span>
+        </button>
+        <button class="attack" data-attack="revokeAndReplay">
+          <span class="ax-label">Revoke, then replay</span>
+          <span class="ax-desc">Owner revokes the LEASH; the agent tries to use it again.</span>
+        </button>
       </div>
     </div>
 
-    <label for="agent_sig">Agent signature (base64url EdDSA over the canonical envelope)</label>
-    <textarea id="agent_sig" placeholder="EdDSA signature over canonical_json({leash, request, nonce, timestamp})"></textarea>
-    <p class="hint">In production this is produced by the agent's private key. For manual testing the easiest path is the <code>vettid-agent demo validate</code> CLI (Sprint 4) — it builds the envelope, signs it, and posts here.</p>
+    <!-- Step 4: verification chain results -->
+    <div id="resultsPanel" class="panel" style="display:none;">
+      <h2>4. Verification chain</h2>
+      <div id="resultsList"></div>
+    </div>
+  </section>
 
-    <button id="verifyBtn" class="verify">Verify</button>
-    <div id="errorBanner" class="error-banner" style="display:none;"></div>
-  </div>
-
-  <div id="resultPanel" class="panel">
-    <div class="result-header">
-      <h2 style="margin:0;">Result</h2>
-      <span id="verdict" class="verdict"></span>
+  <!-- ============================================================== -->
+  <!-- Live mode                                                       -->
+  <!-- ============================================================== -->
+  <section id="liveMode" class="mode-panel" style="display:none;">
+    <div class="panel">
+      <h2>Test your own agent against the live validator</h2>
+      <p class="muted">
+        Click below to spawn a 30-minute session. Then run the printed command
+        in your terminal — your agent will sign a verification envelope with its
+        Ed25519 key and post it to the validator. The result appears here.
+      </p>
+      <p class="muted">
+        You'll need a real LEASH JWT from your VettID vault (mint one via the
+        desktop or mobile app — Sprint 5 in the LEASH demo workstream).
+      </p>
+      <button id="liveSpawnBtn" class="primary">Spawn live session</button>
     </div>
 
-    <ol id="checks" class="checks"></ol>
+    <div id="liveSessionPanel" class="panel" style="display:none;">
+      <h2>Session active</h2>
+      <dl class="claims-kv">
+        <dt>Session token</dt>
+        <dd><code id="liveToken"></code></dd>
+        <dt>Expires</dt>
+        <dd><span id="liveExpiry"></span></dd>
+      </dl>
+      <h3 style="margin-top:18px;">Run in your terminal</h3>
+      <pre class="jwt-block" id="liveCliHint"></pre>
+      <p class="muted">Waiting for your agent's verification request… (auto-polls every 2s)</p>
+    </div>
 
-    <h3 style="margin: 20px 0 8px; font-size: 0.95rem;">Detail</h3>
-    <dl id="detail" class="kv"></dl>
-  </div>
+    <div id="liveResultsPanel" class="panel" style="display:none;">
+      <h2>Verification results</h2>
+      <div id="liveResultsList"></div>
+    </div>
+  </section>
 </main>
 
-<script>
-const API = window.location.hostname === 'localhost'
-  ? 'http://localhost:3000'  // for local dev — overridden by hardcoded prod below
-  : 'https://api.vettid.dev';
-
-async function verify() {
-  const leash = document.getElementById('leash').value.trim();
-  const action = document.getElementById('action').value.trim();
-  const nonce = document.getElementById('nonce').value.trim();
-  const agentSig = document.getElementById('agent_sig').value.trim();
-  const errBanner = document.getElementById('errorBanner');
-  const resultPanel = document.getElementById('resultPanel');
-  const btn = document.getElementById('verifyBtn');
-
-  errBanner.style.display = 'none';
-  resultPanel.style.display = 'none';
-
-  if (!leash || !action || !nonce || !agentSig) {
-    errBanner.textContent = 'All four fields are required.';
-    errBanner.style.display = 'block';
-    return;
-  }
-
-  btn.disabled = true;
-  btn.textContent = 'Verifying…';
-
-  try {
-    const resp = await fetch(`${API}/v1/public/leash/verify`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        leash,
-        request: { action },
-        nonce,
-        timestamp: Math.floor(Date.now() / 1000),
-        agent_sig: agentSig,
-      }),
-    });
-    const body = await resp.json();
-    if (resp.status >= 400 && !body.checks) {
-      errBanner.textContent = body.error || `HTTP ${resp.status}`;
-      errBanner.style.display = 'block';
-      return;
-    }
-    renderResult(body);
-  } catch (e) {
-    errBanner.textContent = `Network error: ${e.message}`;
-    errBanner.style.display = 'block';
-  } finally {
-    btn.disabled = false;
-    btn.textContent = 'Verify';
-  }
-}
-
-function renderResult(body) {
-  const verdict = document.getElementById('verdict');
-  const checks = document.getElementById('checks');
-  const detail = document.getElementById('detail');
-
-  verdict.textContent = body.verified ? '✓ VERIFIED' : '✗ REJECTED';
-  verdict.className = `verdict ${body.verified ? 'pass' : 'fail'}`;
-
-  checks.innerHTML = '';
-  for (const c of body.checks || []) {
-    const li = document.createElement('li');
-    const m = c.status === 'pass' ? '✓' : '✗';
-    li.innerHTML = `
-      <span class="marker ${c.status}">${m}</span>
-      <div>
-        <div class="check-name">${esc(c.name)}</div>
-        <div class="check-detail">${esc(c.detail)}</div>
-      </div>`;
-    checks.appendChild(li);
-  }
-
-  const pairs = [
-    ['Issuer', body.issuer],
-    ['Subject', body.subject],
-    ['Scope used', body.scope_matched],
-    ['Scopes granted', (body.scopes_granted || []).join(', ')],
-    ['Time remaining', body.time_remaining_secs != null ? `${body.time_remaining_secs}s` : null],
-    ['Grant version', body.grant_version],
-    ['Profile version at grant', body.profile_version_at_grant],
-    ['Signing key id', body.evidence?.jwt_pubkey_kid],
-    ['Agent pubkey', body.evidence?.agent_pubkey_used],
-    ['Rejection reason', body.rejection_reason],
-    ['Checked at', body.checked_at ? new Date(body.checked_at * 1000).toISOString() : null],
-  ];
-  detail.innerHTML = '';
-  for (const [k, v] of pairs) {
-    if (v == null || v === '') continue;
-    const dt = document.createElement('dt'); dt.textContent = k;
-    const dd = document.createElement('dd'); dd.textContent = String(v);
-    detail.appendChild(dt); detail.appendChild(dd);
-  }
-
-  document.getElementById('resultPanel').style.display = 'block';
-}
-
-function esc(s) {
-  return String(s ?? '').replace(/[&<>"']/g, (c) => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-  })[c]);
-}
-
-document.getElementById('verifyBtn').addEventListener('click', verify);
-</script>
-
+<script src="/leash/leash.js"></script>
 </body>
 </html>

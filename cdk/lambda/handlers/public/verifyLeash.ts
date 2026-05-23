@@ -1,11 +1,15 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
-import { DynamoDBClient, QueryCommand, GetItemCommand } from '@aws-sdk/client-dynamodb';
-import { unmarshall } from '@aws-sdk/util-dynamodb';
+import { DynamoDBClient, QueryCommand, GetItemCommand, UpdateItemCommand } from '@aws-sdk/client-dynamodb';
+import { unmarshall, marshall } from '@aws-sdk/util-dynamodb';
 import { verify, createPublicKey } from 'crypto';
 
 const ddb = new DynamoDBClient({});
 const TABLE_LEASH_ATTEST_KEYS = process.env.TABLE_LEASH_ATTEST_KEYS!;
 const TABLE_LEASH_ISSUED = process.env.TABLE_LEASH_ISSUED!;
+// Optional — when set, the verifier appends each result to the named
+// demo session if the request carries X-Demo-Session. Omitted in
+// environments without the gamified demo wired in.
+const TABLE_LEASH_DEMO_SESSIONS = process.env.TABLE_LEASH_DEMO_SESSIONS;
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -291,8 +295,64 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
   result.profile_version_at_grant = typeof claims['vettid:profile_version'] === 'number'
     ? claims['vettid:profile_version'] : null;
 
+  // If the request opted into a demo session (X-Demo-Session header
+  // OR `session_token` field in the body), append the result so the
+  // demo page can poll for it. Best-effort: a failed append doesn't
+  // change the verification verdict.
+  await appendToDemoSessionIfAny(event, body, result);
+
   return ok(result);
 };
+
+// ---------------------------------------------------------------------------
+// Live-tester demo session emit
+// ---------------------------------------------------------------------------
+
+async function appendToDemoSessionIfAny(
+  event: APIGatewayProxyEventV2,
+  reqBody: VerifyRequest,
+  result: VerifyResponse,
+): Promise<void> {
+  if (!TABLE_LEASH_DEMO_SESSIONS) return;
+
+  // Headers in API Gateway v2 are lowercase-normalized.
+  const token = (event.headers?.['x-demo-session'] as string | undefined) ||
+                (event.headers?.['X-Demo-Session'] as string | undefined) ||
+                (typeof (reqBody as unknown as { session_token?: unknown }).session_token === 'string'
+                  ? (reqBody as unknown as { session_token: string }).session_token
+                  : undefined);
+  if (!token || !token.startsWith('ses_')) return;
+
+  const entry = {
+    at: Math.floor(Date.now() / 1000),
+    verified: result.verified,
+    rejection_reason: result.rejection_reason,
+    issuer: result.issuer,
+    scope_matched: result.scope_matched,
+    checks: result.checks,
+  };
+
+  try {
+    await ddb.send(new UpdateItemCommand({
+      TableName: TABLE_LEASH_DEMO_SESSIONS,
+      Key: { session_token: { S: token } },
+      // Append to the existing results list; fall back to fresh list
+      // if the row was created without one (older session shape).
+      UpdateExpression: 'SET results = list_append(if_not_exists(results, :empty), :entry)',
+      ExpressionAttributeValues: marshall({
+        ':entry': [entry],
+        ':empty': [],
+      }),
+      // Only write if the session exists — silent skip if expired.
+      ConditionExpression: 'attribute_exists(session_token)',
+    }));
+  } catch (e: unknown) {
+    // Don't fail the verify on session-append errors — the verdict
+    // is already correct from the caller's point of view.
+    const m = e instanceof Error ? e.message : 'unknown';
+    console.log('demo session append skipped', { token, error: m });
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Helpers

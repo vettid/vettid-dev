@@ -34,6 +34,7 @@ export class InfrastructureStack extends cdk.Stack {
     magicLinkTokens: dynamodb.Table;
     leashAttestKeys: dynamodb.Table;
     leashIssued: dynamodb.Table;
+    leashDemoSessions: dynamodb.Table;
     membershipTerms: dynamodb.Table;
     subscriptions: dynamodb.Table;
     proposals: dynamodb.Table;
@@ -289,6 +290,23 @@ export class InfrastructureStack extends cdk.Stack {
       // Demo-tier ephemerality — losing this table forces re-publish
       // on next leash mint per user, no user data lost.
       removalPolicy: cdk.RemovalPolicy.DESTROY,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: dynamoDbEncryptionKey,
+    });
+
+    // LEASH demo sessions — backs the "Test your agent" live mode on
+    // vettid.dev/demo/leash. Each session is a 30-minute window in
+    // which a tester's agent can post verify requests carrying a
+    // session token; the verifier appends each result to the
+    // session's `results` list so the demo page can poll for them.
+    // No PII: sessions hold opaque tokens + verifier output only.
+    const leashDemoSessions = new dynamodb.Table(this, 'LeashDemoSessions', {
+      partitionKey: { name: 'session_token', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      // Auto-prune sessions ~30 min after creation. Demo page asks
+      // testers to re-spawn if they hit the wall.
+      timeToLiveAttribute: 'expires_at_ttl',
       encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
       encryptionKey: dynamoDbEncryptionKey,
     });
@@ -1034,6 +1052,7 @@ export class InfrastructureStack extends cdk.Stack {
       magicLinkTokens,
       leashAttestKeys,
       leashIssued,
+      leashDemoSessions,
       membershipTerms,
       subscriptions,
       proposals,

@@ -1159,12 +1159,80 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       environment: {
         TABLE_LEASH_ATTEST_KEYS: tables.leashAttestKeys.tableName,
         TABLE_LEASH_ISSUED: tables.leashIssued.tableName,
+        TABLE_LEASH_DEMO_SESSIONS: tables.leashDemoSessions.tableName,
       },
       timeout: cdk.Duration.seconds(10),
       description: 'Public endpoint — verify a LEASH JWT envelope end-to-end',
     });
     tables.leashAttestKeys.grantReadData(verifyLeashFn);
     tables.leashIssued.grantReadData(verifyLeashFn);
+    // Verifier appends results to the demo-session row when callers
+    // pass an X-Demo-Session header — needs write on that table.
+    tables.leashDemoSessions.grantReadWriteData(verifyLeashFn);
+
+    // Demo mint: backs the static-mode gamified page on vettid.dev.
+    // Lazy-bootstraps Demo Alice's Ed25519 attest key in Secrets
+    // Manager and publishes her pubkey to the LeashAttestKeys table.
+    const demoMintLeashFn = new lambdaNode.NodejsFunction(this, 'DemoMintLeashFn', {
+      entry: 'lambda/handlers/public/demoMintLeash.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        TABLE_LEASH_ATTEST_KEYS: tables.leashAttestKeys.tableName,
+        TABLE_LEASH_ISSUED: tables.leashIssued.tableName,
+      },
+      timeout: cdk.Duration.seconds(10),
+      description: 'Public endpoint — mint a fresh demo LEASH for the vettid.dev page',
+    });
+    tables.leashAttestKeys.grantReadWriteData(demoMintLeashFn);
+    tables.leashIssued.grantReadWriteData(demoMintLeashFn);
+    // Permission to create + read the fixture attestation key secret.
+    demoMintLeashFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: [
+        'secretsmanager:GetSecretValue',
+        'secretsmanager:CreateSecret',
+      ],
+      resources: [
+        `arn:aws:secretsmanager:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:secret:vettid/leash-demo-alice-attest*`,
+      ],
+    }));
+
+    // Demo revoke: flips revoked=true on a Demo-Alice-issued LEASH so
+    // the page can show "replay after revocation" rejecting. Refuses
+    // to touch any LEASH whose iss isn't Demo Alice.
+    const demoRevokeLeashFn = new lambdaNode.NodejsFunction(this, 'DemoRevokeLeashFn', {
+      entry: 'lambda/handlers/public/demoRevokeLeash.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        TABLE_LEASH_ISSUED: tables.leashIssued.tableName,
+      },
+      timeout: cdk.Duration.seconds(10),
+      description: 'Public endpoint — revoke a Demo Alice LEASH (for the demo page)',
+    });
+    tables.leashIssued.grantReadWriteData(demoRevokeLeashFn);
+
+    // Demo session create + poll: backs the "Test your agent" live
+    // mode. The verifier above writes verification results into the
+    // session row when callers send X-Demo-Session; the page polls
+    // /demo/session/{token} to display them.
+    const demoSessionCreateFn = new lambdaNode.NodejsFunction(this, 'DemoSessionCreateFn', {
+      entry: 'lambda/handlers/public/demoSession.ts',
+      handler: 'createHandler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: { TABLE_LEASH_DEMO_SESSIONS: tables.leashDemoSessions.tableName },
+      timeout: cdk.Duration.seconds(10),
+      description: 'Public endpoint — spawn a LEASH demo session for live-tester mode',
+    });
+    tables.leashDemoSessions.grantReadWriteData(demoSessionCreateFn);
+
+    const demoSessionPollFn = new lambdaNode.NodejsFunction(this, 'DemoSessionPollFn', {
+      entry: 'lambda/handlers/public/demoSession.ts',
+      handler: 'getHandler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: { TABLE_LEASH_DEMO_SESSIONS: tables.leashDemoSessions.tableName },
+      timeout: cdk.Duration.seconds(10),
+      description: 'Public endpoint — poll a LEASH demo session for posted verify results',
+    });
+    tables.leashDemoSessions.grantReadData(demoSessionPollFn);
 
     const closeExpiredProposals = new lambdaNode.NodejsFunction(this, 'CloseExpiredProposalsFn', {
       entry: 'lambda/handlers/scheduled/closeExpiredProposals.ts',
@@ -1700,6 +1768,28 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       path: '/v1/public/leash/verify',
       methods: [apigw.HttpMethod.POST, apigw.HttpMethod.OPTIONS],
       integration: new integrations.HttpLambdaIntegration('VerifyLeashInt', verifyLeashFn),
+    });
+    // Gamified-demo routes — public, no auth. Throttling at API GW
+    // stage level keeps abuse bounded.
+    this.httpApi.addRoutes({
+      path: '/v1/public/leash/demo/mint',
+      methods: [apigw.HttpMethod.POST, apigw.HttpMethod.OPTIONS],
+      integration: new integrations.HttpLambdaIntegration('DemoMintLeashInt', demoMintLeashFn),
+    });
+    this.httpApi.addRoutes({
+      path: '/v1/public/leash/demo/revoke',
+      methods: [apigw.HttpMethod.POST, apigw.HttpMethod.OPTIONS],
+      integration: new integrations.HttpLambdaIntegration('DemoRevokeLeashInt', demoRevokeLeashFn),
+    });
+    this.httpApi.addRoutes({
+      path: '/v1/public/leash/demo/session',
+      methods: [apigw.HttpMethod.POST, apigw.HttpMethod.OPTIONS],
+      integration: new integrations.HttpLambdaIntegration('DemoSessionCreateInt', demoSessionCreateFn),
+    });
+    this.httpApi.addRoutes({
+      path: '/v1/public/leash/demo/session/{token}',
+      methods: [apigw.HttpMethod.GET, apigw.HttpMethod.OPTIONS],
+      integration: new integrations.HttpLambdaIntegration('DemoSessionPollInt', demoSessionPollFn),
     });
 
     // NOTE: Profile handlers moved to VaultStack. Connection/messaging are vault-to-vault via NATS.
