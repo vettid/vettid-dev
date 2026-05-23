@@ -1018,6 +1018,46 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 				default:
 					resp, err = mh.deviceHandler.HandleDeviceMessage(ctx, msg)
 				}
+			} else if i+1 < len(parts) && parts[i+1] == "agent" {
+				// Agent messages on the forOwner channel split into two
+				// flavors, mirroring the device path above:
+				//
+				//   - PAIRING (Stage 2): the agent publishes
+				//     `forOwner.agent.{conn}.request-session` while still
+				//     pre-activation. The payload is a plain JSON envelope
+				//     (no per-connection encryption — the key exchange
+				//     hasn't happened yet), so it bypasses HandleAgentMessage
+				//     (which decrypts AgentEnvelope) and routes to the
+				//     pairing handler directly. Same applies to
+				//     `revoke` and `end-session` published by an agent
+				//     logging itself out.
+				//
+				//   - OPERATIONS: once the agent session is active, the
+				//     agent publishes an encrypted AgentEnvelope (subject
+				//     suffixes documented in agent_handler.go) which
+				//     HandleAgentMessage decrypts and dispatches.
+				//
+				// Detect the pairing flavor by looking at the trailing
+				// path segment (parts[i+3] when the conn-id is at i+2).
+				// Unknown tails fall through to HandleAgentMessage to keep
+				// existing agent op routing intact.
+				pairingOp := ""
+				if i+3 < len(parts) {
+					pairingOp = parts[i+3]
+				}
+				switch pairingOp {
+				case "request-session":
+					msg.PayloadType, msg.Payload = unwrapPayload(msg.Payload)
+					resp, err = mh.connectionsHandler.HandleAgentRequestSession(ctx, msg)
+				case "end-session":
+					msg.PayloadType, msg.Payload = unwrapPayload(msg.Payload)
+					resp, err = mh.connectionsHandler.HandleAgentEndSession(ctx, msg)
+				case "revoke":
+					msg.PayloadType, msg.Payload = unwrapPayload(msg.Payload)
+					resp, err = mh.connectionsHandler.HandleRevokeAgent(ctx, msg)
+				default:
+					resp, err = mh.agentHandler.HandleAgentMessage(ctx, msg)
+				}
 			} else if i+1 < len(parts) && parts[i+1] == "presence" {
 				// Cross-vault presence heartbeat from a peer published
 				// via MessageSpace.{us}.forOwner.presence.heartbeat
@@ -1053,7 +1093,11 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 					resp = &OutgoingMessage{RequestID: msg.GetID(), Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}
 				}
 			} else {
-				// Agent messages (default forOwner routing)
+				// Anything else on forOwner falls back to HandleAgentMessage
+				// — historical behavior from before the explicit `agent`
+				// branch above. Live agent op envelopes are caught by that
+				// branch's default arm; this is for unknown owner-side
+				// subjects we haven't classified yet.
 				resp, err = mh.agentHandler.HandleAgentMessage(ctx, msg)
 			}
 
