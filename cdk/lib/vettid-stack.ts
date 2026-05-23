@@ -1188,6 +1188,31 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       description: 'Public endpoint for listing published proposals',
     });
 
+    // LEASH public verifier endpoints (no auth required — these are
+    // the trust anchor for external verifiers, see
+    // docs/LEASH-TOKEN-FORMAT.md).
+    const getLeashKeysFn = new lambdaNode.NodejsFunction(this, 'GetLeashKeysFn', {
+      entry: 'lambda/handlers/public/getLeashKeys.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        TABLE_LEASH_ATTEST_KEYS: tables.leashAttestKeys.tableName,
+      },
+      timeout: cdk.Duration.seconds(10),
+      description: 'Public endpoint — fetch user attestation pubkey(s) for LEASH verification',
+    });
+    tables.leashAttestKeys.grantReadData(getLeashKeysFn);
+
+    const getLeashStatusFn = new lambdaNode.NodejsFunction(this, 'GetLeashStatusFn', {
+      entry: 'lambda/handlers/public/getLeashStatus.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        TABLE_LEASH_ISSUED: tables.leashIssued.tableName,
+      },
+      timeout: cdk.Duration.seconds(10),
+      description: 'Public endpoint — fetch LEASH revocation status by jti',
+    });
+    tables.leashIssued.grantReadData(getLeashStatusFn);
+
     const closeExpiredProposals = new lambdaNode.NodejsFunction(this, 'CloseExpiredProposalsFn', {
       entry: 'lambda/handlers/scheduled/closeExpiredProposals.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
@@ -1703,6 +1728,20 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       path: '/votes/{proposal_id}/published',
       methods: [apigw.HttpMethod.GET],
       integration: new integrations.HttpLambdaIntegration('GetPublishedVotesInt', getPublishedVotes),
+    });
+
+    // LEASH public verifier endpoints (no authorizer — see
+    // docs/LEASH-TOKEN-FORMAT.md). Verifiers fetch attestation
+    // pubkeys + revocation status without touching the enclave.
+    this.httpApi.addRoutes({
+      path: '/v1/public/leash/keys/{user_guid}',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('GetLeashKeysInt', getLeashKeysFn),
+    });
+    this.httpApi.addRoutes({
+      path: '/v1/public/leash/status/{jti}',
+      methods: [apigw.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration('GetLeashStatusInt', getLeashStatusFn),
     });
 
     // NOTE: Profile handlers moved to VaultStack. Connection/messaging are vault-to-vault via NATS.

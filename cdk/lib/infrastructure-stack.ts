@@ -32,6 +32,8 @@ export class InfrastructureStack extends cdk.Stack {
     audit: dynamodb.Table;
     waitlist: dynamodb.Table;
     magicLinkTokens: dynamodb.Table;
+    leashAttestKeys: dynamodb.Table;
+    leashIssued: dynamodb.Table;
     membershipTerms: dynamodb.Table;
     subscriptions: dynamodb.Table;
     proposals: dynamodb.Table;
@@ -271,6 +273,40 @@ export class InfrastructureStack extends cdk.Stack {
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       timeToLiveAttribute: 'ttl',
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: dynamoDbEncryptionKey,
+    });
+
+    // LEASH attestation pubkeys — public verifiers fetch these to
+    // verify LEASH JWTs (see docs/LEASH-TOKEN-FORMAT.md). One row per
+    // (user_guid, kid). Public-readable (no PII — just an Ed25519
+    // pubkey and metadata). Written by the parent process when the
+    // user's vault generates the key on first leash issuance.
+    const leashAttestKeys = new dynamodb.Table(this, 'LeashAttestKeys', {
+      partitionKey: { name: 'user_guid', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'kid', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      // Demo-tier ephemerality — losing this table forces re-publish
+      // on next leash mint per user, no user data lost.
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: dynamoDbEncryptionKey,
+    });
+
+    // LEASH issuance log — public revocation endpoint reads this to
+    // answer "is leash {jti} still active?" One row per issued leash.
+    // Mirrors the in-vault `leash/issued/{jti}` record so the public
+    // status endpoint can answer without round-tripping to the
+    // enclave. Public-readable (jti is opaque, scope is well-known,
+    // timestamps are not secret).
+    const leashIssued = new dynamodb.Table(this, 'LeashIssued', {
+      partitionKey: { name: 'jti', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      // Auto-prune expired leashes by setting `expires_at` as TTL.
+      // Verifiers should reject by `exp` anyway; DynamoDB cleanup is
+      // a backstop so the table doesn't grow unbounded.
+      timeToLiveAttribute: 'expires_at_ttl',
       encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
       encryptionKey: dynamoDbEncryptionKey,
     });
@@ -996,6 +1032,8 @@ export class InfrastructureStack extends cdk.Stack {
       audit,
       waitlist,
       magicLinkTokens,
+      leashAttestKeys,
+      leashIssued,
       membershipTerms,
       subscriptions,
       proposals,
