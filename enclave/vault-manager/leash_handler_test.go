@@ -28,7 +28,7 @@ func setupLeashHandler(t *testing.T) (*LeashHandler, *EncryptedStorage, func()) 
 		sqlite:     store,
 		ownerSpace: "test-owner",
 	}
-	handler := NewLeashHandler("test-owner", encStorage, nil)
+	handler := NewLeashHandler("test-owner", encStorage, nil, nil)
 	cleanup := func() { store.Close() }
 	return handler, encStorage, cleanup
 }

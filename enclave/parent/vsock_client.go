@@ -183,6 +183,21 @@ const (
 	// Audit event (org-vault-manager -> parent -> DynamoDB + NATS)
 	EnclaveMessageTypeAuditEvent EnclaveMessageType = "audit_event"
 
+	// LEASH attestation pubkey publish (vault -> parent -> DynamoDB).
+	// Vault generates an Ed25519 attestation key per user on first
+	// leash issuance and pushes the public half here so the public
+	// verifier Lambda can resolve it. Idempotent — re-publishing the
+	// same (user_guid, kid) is a no-op.
+	EnclaveMessageTypeLeashAttestKeyPublish         EnclaveMessageType = "leash_attest_key_publish"
+	EnclaveMessageTypeLeashAttestKeyPublishResponse EnclaveMessageType = "leash_attest_key_publish_response"
+
+	// LEASH issuance log publish (vault -> parent -> DynamoDB).
+	// Mirror of the in-vault `leash/issued/{jti}` record so the
+	// public revocation Lambda can answer status queries without
+	// round-tripping to the enclave.
+	EnclaveMessageTypeLeashIssuedPublish         EnclaveMessageType = "leash_issued_publish"
+	EnclaveMessageTypeLeashIssuedPublishResponse EnclaveMessageType = "leash_issued_publish_response"
+
 	// Ownership handoff (vault-manager -> parent): after a successful
 	// credential.migration.start re-seal, the vault-manager asks the
 	// parent to transfer this user's routing ownership to the target

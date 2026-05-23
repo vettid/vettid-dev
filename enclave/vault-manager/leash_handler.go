@@ -111,9 +111,10 @@ type GrantAttestResponse struct {
 
 // LeashHandler owns the user's attestation key + issued-leash records.
 type LeashHandler struct {
-	ownerSpace string
-	storage    *EncryptedStorage
-	vaultState *VaultState
+	ownerSpace  string
+	storage     *EncryptedStorage
+	vaultState  *VaultState
+	sealerProxy *SealerProxy // bridge to parent for DDB publishes (nil in unit tests)
 
 	// keyMu protects ensureAttestationKey's read/generate/write race.
 	// Multiple concurrent grant.attest calls on a cold cache would
@@ -122,11 +123,15 @@ type LeashHandler struct {
 }
 
 // NewLeashHandler constructs a handler bound to one user's vault.
-func NewLeashHandler(ownerSpace string, storage *EncryptedStorage, vaultState *VaultState) *LeashHandler {
+// sealerProxy is the bridge to the parent process for publishing the
+// attest pubkey + issuance records to DynamoDB; pass nil in unit tests
+// (publishes are skipped silently, all crypto + local storage still work).
+func NewLeashHandler(ownerSpace string, storage *EncryptedStorage, vaultState *VaultState, sealerProxy *SealerProxy) *LeashHandler {
 	return &LeashHandler{
-		ownerSpace: ownerSpace,
-		storage:    storage,
-		vaultState: vaultState,
+		ownerSpace:  ownerSpace,
+		storage:     storage,
+		vaultState:  vaultState,
+		sealerProxy: sealerProxy,
 	}
 }
 
@@ -237,8 +242,8 @@ func (h *LeashHandler) HandleGrantAttest(ctx context.Context, msg *IncomingMessa
 		return h.errorResponse(msg.GetID(), "leash signing failed")
 	}
 
-	// Persist the issuance record so Sprint 2's revocation lookup can
-	// answer "is this jti still active?" without re-deriving anything.
+	// Persist the issuance record locally so revocation lookups via
+	// the vault have something to read.
 	issued := &LeashIssuedRecord{
 		JTI:          jti,
 		Subject:      "agent:" + req.ConnectionID,
@@ -251,6 +256,35 @@ func (h *LeashHandler) HandleGrantAttest(ctx context.Context, msg *IncomingMessa
 	issuedBytes, err := json.Marshal(issued)
 	if err == nil {
 		_ = h.storage.Put(leashIssuedRecordStorageKeyPrefix+jti, issuedBytes)
+	}
+
+	// Also mirror to the public LeashIssued DynamoDB table so the
+	// revocation-status Lambda can answer. Failure to publish here
+	// would leave a leash that verifiers will treat as 404 (i.e.
+	// revoked) — fail the mint rather than ship a leash that won't
+	// verify. Skip when sealerProxy is nil (unit-test path).
+	if h.sealerProxy != nil {
+		publicRow := map[string]interface{}{
+			"jti":             jti,
+			"subject":         "agent:" + req.ConnectionID,
+			"scope":           req.Scope,
+			"issued_at":       issuedAt,
+			"expires_at":      expiresAt,
+			"expires_at_ttl":  expiresAt,
+			"revoked":         false,
+			"iss":             "did:vettid:" + h.ownerSpace,
+			"grant_version":   grantVersion,
+			"profile_version": profileVersion,
+		}
+		pubBytes, perr := json.Marshal(publicRow)
+		if perr != nil {
+			log.Error().Err(perr).Str("jti", jti).Msg("marshal public leash issued row")
+			return h.errorResponse(msg.GetID(), "leash publish encoding failed")
+		}
+		if perr := h.sealerProxy.PublishLeashIssued(pubBytes); perr != nil {
+			log.Error().Err(perr).Str("jti", jti).Msg("publish leash issued to DDB")
+			return h.errorResponse(msg.GetID(), "leash publish failed")
+		}
 	}
 
 	log.Info().
@@ -347,6 +381,29 @@ func (h *LeashHandler) ensureAttestationKey() (*LeashAttestKey, error) {
 	if err := h.storage.Put(leashAttestKeyStorageKey, out); err != nil {
 		return nil, fmt.Errorf("persist leash attest key: %w", err)
 	}
+
+	// Publish the public half to DynamoDB so external verifiers can
+	// fetch it. Failure here means the vault has a usable key but the
+	// public verifier can't resolve it — surface as a hard error so
+	// the caller can retry or fall back. (Without this, leashes would
+	// be unverifiable until next mint attempt — confusing for testers.)
+	if h.sealerProxy != nil {
+		pubPayload := map[string]interface{}{
+			"user_guid":  h.ownerSpace,
+			"kid":        key.Kid,
+			"alg":        key.Algorithm,
+			"pubkey":     base64.RawURLEncoding.EncodeToString(key.Public),
+			"created_at": key.CreatedAt,
+		}
+		pubBytes, err := json.Marshal(pubPayload)
+		if err != nil {
+			return nil, fmt.Errorf("marshal leash attest key publish payload: %w", err)
+		}
+		if err := h.sealerProxy.PublishLeashAttestKey(pubBytes); err != nil {
+			return nil, fmt.Errorf("publish leash attest key: %w", err)
+		}
+	}
+
 	log.Info().
 		Str("owner_space", h.ownerSpace).
 		Str("kid", key.Kid).

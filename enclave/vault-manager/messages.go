@@ -535,7 +535,7 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 	deviceHandler := NewDeviceHandler(ownerSpace, storage, publisher, eventHandler, connectionsHandler)
 
 	// Create LEASH handler (agent delegation JWT issuer)
-	leashHandler := NewLeashHandler(ownerSpace, storage, vaultState)
+	leashHandler := NewLeashHandler(ownerSpace, storage, vaultState, sealerProxy)
 
 	mh := &MessageHandler{
 		ownerSpace:           ownerSpace,

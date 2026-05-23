@@ -138,6 +138,11 @@ const (
 	// re-seal so future readers can identify the bound PCR0
 	// without a KMS round-trip.
 	SealerOpGetRunningPCR0 SealerOperation = "get_running_pcr0"
+	// LEASH publish ops — vault pushes the public attestation pubkey
+	// and per-jti issuance log to DynamoDB so the public verifier
+	// Lambda can answer without touching the enclave.
+	SealerOpPublishLeashAttestKey SealerOperation = "publish_leash_attest_key"
+	SealerOpPublishLeashIssued    SealerOperation = "publish_leash_issued"
 )
 
 // SealerRequest is received from vault-manager
@@ -276,6 +281,10 @@ func (sh *SealerHandler) HandleSealerRequest(msg *Message) *Message {
 		resp = sh.listProposals(req)
 	case SealerOpSubmitSignedVote:
 		resp = sh.submitSignedVote(req)
+	case SealerOpPublishLeashAttestKey:
+		resp = sh.publishLeashAttestKey(req)
+	case SealerOpPublishLeashIssued:
+		resp = sh.publishLeashIssued(req)
 	case SealerOpGetVoteProof:
 		resp = sh.getVoteProof(req)
 	case SealerOpFetchMigrationConfig:
@@ -791,6 +800,62 @@ func (sh *SealerHandler) submitSignedVote(req SealerRequest) SealerResponse {
 		return SealerResponse{Success: false, Error: err.Error()}
 	}
 	return SealerResponse{Success: true, VoteSubmitResult: resp.Payload}
+}
+
+// publishLeashAttestKey forwards the vault's published Ed25519
+// attestation pubkey to the parent for DynamoDB write. Pure pass-
+// through: payload is the marshalled key row, parent does the put.
+func (sh *SealerHandler) publishLeashAttestKey(req SealerRequest) SealerResponse {
+	if len(req.Data) == 0 {
+		return SealerResponse{Success: false, Error: "empty leash attest key payload"}
+	}
+	resp, err := sh.muxRoundTrip("publishLeashAttestKey", &Message{
+		Type:       MessageTypeLeashAttestKeyPublish,
+		OwnerSpace: req.OwnerSpace,
+		Payload:    req.Data,
+	}, MessageTypeLeashAttestKeyPublishResponse)
+	if err != nil {
+		return SealerResponse{Success: false, Error: err.Error()}
+	}
+	// Parent embeds {success, error?} in the response payload.
+	var inner struct {
+		Success bool   `json:"success"`
+		Error   string `json:"error"`
+	}
+	if err := json.Unmarshal(resp.Payload, &inner); err != nil {
+		return SealerResponse{Success: false, Error: "decode publish response: " + err.Error()}
+	}
+	if !inner.Success {
+		return SealerResponse{Success: false, Error: inner.Error}
+	}
+	return SealerResponse{Success: true}
+}
+
+// publishLeashIssued forwards a leash issuance record to the parent
+// for DynamoDB write. Same pass-through shape as the attest-key publish.
+func (sh *SealerHandler) publishLeashIssued(req SealerRequest) SealerResponse {
+	if len(req.Data) == 0 {
+		return SealerResponse{Success: false, Error: "empty leash issued payload"}
+	}
+	resp, err := sh.muxRoundTrip("publishLeashIssued", &Message{
+		Type:       MessageTypeLeashIssuedPublish,
+		OwnerSpace: req.OwnerSpace,
+		Payload:    req.Data,
+	}, MessageTypeLeashIssuedPublishResponse)
+	if err != nil {
+		return SealerResponse{Success: false, Error: err.Error()}
+	}
+	var inner struct {
+		Success bool   `json:"success"`
+		Error   string `json:"error"`
+	}
+	if err := json.Unmarshal(resp.Payload, &inner); err != nil {
+		return SealerResponse{Success: false, Error: "decode publish response: " + err.Error()}
+	}
+	if !inner.Success {
+		return SealerResponse{Success: false, Error: inner.Error}
+	}
+	return SealerResponse{Success: true}
 }
 
 // getVoteProof fetches a Merkle inclusion proof from the parent (which reads

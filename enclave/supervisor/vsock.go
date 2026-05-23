@@ -108,6 +108,14 @@ const (
 	// Audit event (org-vault-manager -> supervisor -> parent -> DynamoDB + NATS)
 	MessageTypeAuditEvent MessageType = "audit_event"
 
+	// LEASH publish ops (vault-manager -> supervisor -> parent -> DynamoDB).
+	// Attest key: published lazily on first leash issuance per user.
+	// Issued: published on every mint (and later on every revoke).
+	MessageTypeLeashAttestKeyPublish         MessageType = "leash_attest_key_publish"
+	MessageTypeLeashAttestKeyPublishResponse MessageType = "leash_attest_key_publish_response"
+	MessageTypeLeashIssuedPublish            MessageType = "leash_issued_publish"
+	MessageTypeLeashIssuedPublishResponse    MessageType = "leash_issued_publish_response"
+
 	// Routing handoff (vault-manager -> supervisor -> parent): after
 	// a successful migration re-seal, vault-manager asks parent to
 	// transfer ownership via the `vault-routing` JetStream KV.

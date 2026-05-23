@@ -63,6 +63,15 @@ type DynamoDBConfig struct {
 	VotesTable string `yaml:"votes_table"`
 	// Table name for org vault audit events
 	OrgAuditTable string `yaml:"org_audit_table"`
+	// LEASH attestation keys table (see docs/LEASH-TOKEN-FORMAT.md).
+	// Vault writes the user's published Ed25519 attestation pubkey
+	// here on first leash issuance; the public verifier Lambda reads
+	// from it.
+	LeashAttestKeysTable string `yaml:"leash_attest_keys_table"`
+	// LEASH issuance log — one row per issued leash, used by the
+	// public revocation status endpoint. TTL on `expires_at_ttl`
+	// prunes expired leashes automatically.
+	LeashIssuedTable string `yaml:"leash_issued_table"`
 	// S3 bucket holding published Merkle trees + anonymized vote lists
 	// (written by closeExpiredProposals, read by GetVoteProof)
 	PublishedVotesBucket string `yaml:"published_votes_bucket"`

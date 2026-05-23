@@ -75,6 +75,13 @@ const (
 	SealerOpFetchPCRSigningPublicKey SealerOperation = "fetch_pcr_signing_public_key"
 	// Running PCR0 hex of the executing enclave (M3 wrapper stamping).
 	SealerOpGetRunningPCR0 SealerOperation = "get_running_pcr0"
+
+	// LEASH publish ops — vault pushes the attestation pubkey and
+	// per-jti issuance log to DynamoDB so the public verifier Lambda
+	// can answer without touching the enclave (see
+	// docs/LEASH-TOKEN-FORMAT.md). Sprint 2.
+	SealerOpPublishLeashAttestKey SealerOperation = "publish_leash_attest_key"
+	SealerOpPublishLeashIssued    SealerOperation = "publish_leash_issued"
 )
 
 // SealerRequest is sent from vault-manager to supervisor
@@ -663,6 +670,47 @@ func (p *SealerProxy) GetVoteProof(proposalID, votingPublicKey string) ([]byte, 
 		return nil, fmt.Errorf("empty vote proof response")
 	}
 	return resp.VoteProofData, nil
+}
+
+// PublishLeashAttestKey pushes the user's published Ed25519
+// attestation pubkey to the LeashAttestKeys DynamoDB table via the
+// parent. Payload is pre-marshalled JSON: {user_guid, kid, alg,
+// pubkey, created_at}. Idempotent on (user_guid, kid).
+func (p *SealerProxy) PublishLeashAttestKey(payload []byte) error {
+	req := SealerRequest{
+		Operation:  SealerOpPublishLeashAttestKey,
+		OwnerSpace: p.ownerSpace,
+		Data:       payload,
+	}
+	resp, err := p.sendRequest(req)
+	if err != nil {
+		return err
+	}
+	if !resp.Success {
+		return fmt.Errorf("publish leash attest key: %s", resp.Error)
+	}
+	return nil
+}
+
+// PublishLeashIssued pushes (or updates) one leash issuance record
+// to the LeashIssued DynamoDB table via the parent. Payload is
+// pre-marshalled JSON: {jti, subject, scope, issued_at, expires_at,
+// revoked, revoked_at?, reason?}. Idempotent on jti — re-publishing
+// updates the row (used by Sprint 3's revocation path).
+func (p *SealerProxy) PublishLeashIssued(payload []byte) error {
+	req := SealerRequest{
+		Operation:  SealerOpPublishLeashIssued,
+		OwnerSpace: p.ownerSpace,
+		Data:       payload,
+	}
+	resp, err := p.sendRequest(req)
+	if err != nil {
+		return err
+	}
+	if !resp.Success {
+		return fmt.Errorf("publish leash issued: %s", resp.Error)
+	}
+	return nil
 }
 
 // FetchPCRSigningPublicKey returns the DER-encoded SPKI bytes for

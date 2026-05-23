@@ -731,6 +731,10 @@ func (p *ParentProcess) handleEnclaveMuxRequest(ctx context.Context, msg *Enclav
 		resp = p.handleProposalsList(msg)
 	case EnclaveMessageTypeVoteSubmit:
 		resp = p.handleVoteSubmit(msg)
+	case EnclaveMessageTypeLeashAttestKeyPublish:
+		resp = p.handleLeashAttestKeyPublish(ctx, msg)
+	case EnclaveMessageTypeLeashIssuedPublish:
+		resp = p.handleLeashIssuedPublish(ctx, msg)
 	case EnclaveMessageTypeVoteProofRequest:
 		resp = p.handleVoteProof(msg)
 	case EnclaveMessageTypeInviteResolve:
@@ -1750,6 +1754,42 @@ func (p *ParentProcess) handleVoteSubmit(msg *EnclaveMessage) *EnclaveMessage {
 	}
 	resp, _ := json.Marshal(map[string]interface{}{"success": true})
 	return &EnclaveMessage{Type: EnclaveMessageTypeVoteSubmitResponse, Payload: resp}
+}
+
+// handleLeashAttestKeyPublish writes the vault's published Ed25519
+// attestation pubkey to the LeashAttestKeys DynamoDB table. Idempotent
+// on (user_guid, kid) — re-publishing the same key is a no-op write.
+func (p *ParentProcess) handleLeashAttestKeyPublish(ctx context.Context, msg *EnclaveMessage) *EnclaveMessage {
+	if p.dynamoDBClient == nil {
+		resp, _ := json.Marshal(map[string]interface{}{"success": false, "error": "DynamoDB not available"})
+		return &EnclaveMessage{Type: EnclaveMessageTypeLeashAttestKeyPublishResponse, Payload: resp}
+	}
+	if err := p.dynamoDBClient.PutLeashAttestKey(ctx, msg.Payload); err != nil {
+		log.Error().Err(err).Str("owner_space", msg.OwnerSpace).Msg("Leash attest key publish failed")
+		resp, _ := json.Marshal(map[string]interface{}{"success": false, "error": err.Error()})
+		return &EnclaveMessage{Type: EnclaveMessageTypeLeashAttestKeyPublishResponse, Payload: resp}
+	}
+	log.Info().Str("owner_space", msg.OwnerSpace).Msg("Leash attest key published to DynamoDB")
+	resp, _ := json.Marshal(map[string]interface{}{"success": true})
+	return &EnclaveMessage{Type: EnclaveMessageTypeLeashAttestKeyPublishResponse, Payload: resp}
+}
+
+// handleLeashIssuedPublish writes (or updates) one leash issuance
+// record to the LeashIssued DynamoDB table. Used by both initial mint
+// (Sprint 2) and later revocation (Sprint 3, with `revoked=true`).
+func (p *ParentProcess) handleLeashIssuedPublish(ctx context.Context, msg *EnclaveMessage) *EnclaveMessage {
+	if p.dynamoDBClient == nil {
+		resp, _ := json.Marshal(map[string]interface{}{"success": false, "error": "DynamoDB not available"})
+		return &EnclaveMessage{Type: EnclaveMessageTypeLeashIssuedPublishResponse, Payload: resp}
+	}
+	if err := p.dynamoDBClient.PutLeashIssued(ctx, msg.Payload); err != nil {
+		log.Error().Err(err).Str("owner_space", msg.OwnerSpace).Msg("Leash issued publish failed")
+		resp, _ := json.Marshal(map[string]interface{}{"success": false, "error": err.Error()})
+		return &EnclaveMessage{Type: EnclaveMessageTypeLeashIssuedPublishResponse, Payload: resp}
+	}
+	log.Debug().Str("owner_space", msg.OwnerSpace).Msg("Leash issuance published to DynamoDB")
+	resp, _ := json.Marshal(map[string]interface{}{"success": true})
+	return &EnclaveMessage{Type: EnclaveMessageTypeLeashIssuedPublishResponse, Payload: resp}
 }
 
 // handleVoteProof loads the published Merkle artifacts for a closed proposal

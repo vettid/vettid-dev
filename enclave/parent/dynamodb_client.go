@@ -222,6 +222,85 @@ func (d *DynamoDBClient) PutOrgAuditEvent(ctx context.Context, event map[string]
 	return nil
 }
 
+// PutLeashAttestKey writes the user's published Ed25519 attestation
+// pubkey to the LeashAttestKeys table. The payload arrives as
+// pre-marshalled JSON from the vault — we don't sign/seal it (it's a
+// public key); the vault is the trust anchor.
+//
+// Schema: pk=user_guid, sk=kid. Idempotent — re-publishing the same
+// (user_guid, kid) overwrites the row, which is fine since the row
+// content is fully determined by those keys.
+func (d *DynamoDBClient) PutLeashAttestKey(ctx context.Context, payload []byte) error {
+	if d.config.LeashAttestKeysTable == "" {
+		return fmt.Errorf("leash_attest_keys_table not configured")
+	}
+
+	var row map[string]interface{}
+	if err := json.Unmarshal(payload, &row); err != nil {
+		return fmt.Errorf("decode leash attest key payload: %w", err)
+	}
+	if _, ok := row["user_guid"].(string); !ok {
+		return fmt.Errorf("user_guid missing from leash attest key payload")
+	}
+	if _, ok := row["kid"].(string); !ok {
+		return fmt.Errorf("kid missing from leash attest key payload")
+	}
+
+	item, err := marshalDynamoDBItem(row)
+	if err != nil {
+		return fmt.Errorf("marshal leash attest key: %w", err)
+	}
+	if _, err := d.client.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: aws.String(d.config.LeashAttestKeysTable),
+		Item:      item,
+	}); err != nil {
+		return fmt.Errorf("put leash attest key: %w", err)
+	}
+	return nil
+}
+
+// PutLeashIssued writes a leash issuance record to the LeashIssued
+// table. Used by the public revocation status endpoint.
+//
+// Schema: pk=jti. Idempotent — re-publishing the same jti updates
+// the row (used by revocation to flip `revoked` from false to true).
+// `expires_at_ttl` is set to expires_at so DynamoDB TTL auto-prunes
+// expired rows.
+func (d *DynamoDBClient) PutLeashIssued(ctx context.Context, payload []byte) error {
+	if d.config.LeashIssuedTable == "" {
+		return fmt.Errorf("leash_issued_table not configured")
+	}
+
+	var row map[string]interface{}
+	if err := json.Unmarshal(payload, &row); err != nil {
+		return fmt.Errorf("decode leash issued payload: %w", err)
+	}
+	if _, ok := row["jti"].(string); !ok {
+		return fmt.Errorf("jti missing from leash issued payload")
+	}
+
+	// Mirror `expires_at` into the TTL attribute. Vault sends both for
+	// clarity but if it omitted the TTL field, derive it here so
+	// DynamoDB can auto-prune.
+	if _, ok := row["expires_at_ttl"]; !ok {
+		if exp, ok := row["expires_at"].(float64); ok {
+			row["expires_at_ttl"] = exp
+		}
+	}
+
+	item, err := marshalDynamoDBItem(row)
+	if err != nil {
+		return fmt.Errorf("marshal leash issued: %w", err)
+	}
+	if _, err := d.client.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: aws.String(d.config.LeashIssuedTable),
+		Item:      item,
+	}); err != nil {
+		return fmt.Errorf("put leash issued: %w", err)
+	}
+	return nil
+}
+
 // marshalDynamoDBItem converts a generic map[string]interface{} to a DynamoDB
 // AttributeValue map. Supports the field types used in OrgAuditEvent:
 // strings, numbers (float64 from json decoding), and ints.
