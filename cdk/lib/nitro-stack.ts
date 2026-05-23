@@ -482,6 +482,16 @@ export class NitroStack extends cdk.Stack {
     // This is needed during AMI build to include the secret in the enclave image
     vsockSecret.grantRead(packerBuildRole);
 
+    // SECURITY: Packer build instances pull the build script from the
+    // SSE-KMS encrypted vault-data S3 bucket (enclave/scripts/deploy.sh
+    // uploads it there before invoking SSM). Without kms:Decrypt the
+    // build instance gets "AccessDenied calling kms:Decrypt on key
+    // vettid-vault-data" and the build fails before it can start.
+    // (Discovered 2026-05-23 when the LEASH Sprint 1 enclave deploy
+    // hit this on first attempt — the #36 CMK rollout never updated
+    // the build role.)
+    vaultDataEncryptionKey.grantDecrypt(packerBuildRole);
+
     // Create instance profile for packer
     const packerInstanceProfile = new iam.InstanceProfile(this, 'PackerInstanceProfile', {
       instanceProfileName: 'vettid-packer-build-profile',
