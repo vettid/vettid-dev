@@ -81,9 +81,21 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
   const origin = event.headers?.origin;
 
   let code: string;
+  let kind: 'device' | 'agent';
   try {
     const body = JSON.parse(event.body || '{}');
     code = String(body.code || '').toUpperCase().trim();
+    // `kind` lets the agent connector share this endpoint with the desktop.
+    // Defaults to "device" for backwards compatibility with shipped clients.
+    // Same NATS scope is minted either way — `type` is a payload field on
+    // the invite, not a JetStream subject, so per-kind scope isolation
+    // isn't achievable here (see AGENT-PAIRING-FLOW.md Phase 0 audit). The
+    // value is used only for logging + JWT-name traceability.
+    const rawKind = String(body.kind || 'device').toLowerCase().trim();
+    if (rawKind !== 'device' && rawKind !== 'agent') {
+      return badRequest("invalid kind (must be 'device' or 'agent')", origin);
+    }
+    kind = rawKind;
   } catch {
     return badRequest('invalid JSON body', origin);
   }
@@ -98,10 +110,11 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
   // Log source IP + code prefix only. Full code is treated as a secret — if
   // CloudWatch gets leaked, the prefix is not enough to pair.
   const sourceIp = event.requestContext?.http?.sourceIp || 'unknown';
-  console.info('[device-bootstrap]', {
+  console.info('[pair-bootstrap]', {
     requestId,
     ip: sourceIp,
     codePrefix: code.substring(0, 4),
+    kind,
   });
 
   try {
@@ -131,8 +144,9 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
     //     filter form (`...CREATE.<stream>.<name>.<filter>`) alongside the
     //     bare durable form.
     const expiresAt = new Date(Date.now() + BOOTSTRAP_JWT_TTL_MS);
+    const jwtNamePrefix = kind === 'agent' ? 'agent-bootstrap' : 'desk-bootstrap';
     const jwt = await createUserJwt(
-      `desk-bootstrap-${code.substring(0, 4).toLowerCase()}-${randomUUID().substring(0, 8)}`,
+      `${jwtNamePrefix}-${code.substring(0, 4).toLowerCase()}-${randomUUID().substring(0, 8)}`,
       publicKey,
       guestAccountSeed,
       {
@@ -170,7 +184,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       origin,
     );
   } catch (err: unknown) {
-    console.error('[device-bootstrap] failed', err);
+    console.error('[pair-bootstrap] failed', err);
     const msg = err instanceof Error ? err.message : String(err);
     return internalError(`failed to mint credentials: ${msg}`, origin);
   }
