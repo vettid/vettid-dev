@@ -294,6 +294,90 @@ func GenerateDeviceCredentials(accountSeed, ownerSpace, connectionID string, exp
 	return creds, nil
 }
 
+// GenerateAgentCredentials creates scoped NATS credentials for a paired
+// AI agent connector. Permissions are narrow enough that a compromised JWT
+// cannot read any other user's data or impersonate the user's app, while
+// still allowing the agent to exchange pairing messages, session payloads,
+// and op requests within this specific connection.
+//
+// Permissions granted:
+//   - Publish to MessageSpace.<owner>.forOwner.agent.<conn-id>.> — all outbound
+//     agent messages for this one connection (request-session, extend, end-session,
+//     revoke, op requests)
+//   - Subscribe to MessageSpace.<owner>.forApp.agent.<conn-id>.> — activation,
+//     revocation events, operation responses for this connection
+//   - JetStream consumer ops (so the agent can create ephemeral consumers
+//     for reading its own invite and any persistent feed deliveries)
+//
+// SECURITY: scoped to a single connection_id. The agent cannot publish
+// or subscribe on behalf of any other connection. Mirrors
+// GenerateDeviceCredentials but uses the `agent.` subject leg instead
+// of `device.` so device and agent traffic don't collide on a vault that
+// has both kinds of connections active.
+func GenerateAgentCredentials(accountSeed, ownerSpace, connectionID string, expiresAt time.Time) (string, error) {
+	accountKP, err := nkeys.FromSeed([]byte(accountSeed))
+	if err != nil {
+		return "", fmt.Errorf("failed to parse account seed: %w", err)
+	}
+	defer accountKP.Wipe()
+
+	accountPubKey, err := accountKP.PublicKey()
+	if err != nil {
+		return "", fmt.Errorf("failed to get account public key: %w", err)
+	}
+
+	userKP, err := nkeys.CreateUser()
+	if err != nil {
+		return "", fmt.Errorf("failed to create user key pair: %w", err)
+	}
+
+	userPubKey, err := userKP.PublicKey()
+	if err != nil {
+		return "", fmt.Errorf("failed to get user public key: %w", err)
+	}
+
+	userSeed, err := userKP.Seed()
+	if err != nil {
+		return "", fmt.Errorf("failed to get user seed: %w", err)
+	}
+	defer func() {
+		for i := range userSeed {
+			userSeed[i] = 0
+		}
+	}()
+
+	claims := jwt.NewUserClaims(userPubKey)
+	claims.IssuerAccount = accountPubKey
+	claims.Expires = expiresAt.Unix()
+
+	// SECURITY: scoped to this connection_id only.
+	claims.Pub.Allow = jwt.StringList{
+		fmt.Sprintf("MessageSpace.%s.forOwner.agent.%s.>", ownerSpace, connectionID),
+		"$JS.API.CONSUMER.>",
+	}
+	claims.Sub.Allow = jwt.StringList{
+		fmt.Sprintf("MessageSpace.%s.forApp.agent.%s.>", ownerSpace, connectionID),
+		"$JS.API.CONSUMER.>",
+		"$JS.API.STREAM.INFO.>",
+	}
+
+	token, err := claims.Encode(accountKP)
+	if err != nil {
+		return "", fmt.Errorf("failed to encode user JWT: %w", err)
+	}
+
+	creds := formatNATSCredentials(token, userSeed)
+
+	log.Debug().
+		Str("owner_space", ownerSpace).
+		Str("connection_id", connectionID).
+		Str("user_pub", userPubKey).
+		Time("expires", expiresAt).
+		Msg("Generated agent NATS credentials")
+
+	return creds, nil
+}
+
 // GenerateFullAppCredentials creates NATS credentials with full app permissions.
 // These are the "real" credentials issued by the vault after PIN verification.
 // The vault is the sole authority for full OwnerSpace/MessageSpace access.

@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"crypto/rand"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -631,8 +630,10 @@ type ConnectionRecord struct {
 	Capabilities *ConnectionCapabilities `json:"capabilities,omitempty"`
 
 	// Agent-specific fields (only set when ConnectionType == "agent")
-	AgentMetadata *AgentMetadata      `json:"agent_metadata,omitempty"`
-	Contract      *ConnectionContract `json:"contract,omitempty"`
+	AgentMetadata    *AgentMetadata     `json:"agent_metadata,omitempty"`
+	Contract         *ConnectionContract `json:"contract,omitempty"`
+	AgentSession     *AgentSession      `json:"agent_session,omitempty"`
+	AgentPendingAuth *AgentPendingAuth  `json:"agent_pending_auth,omitempty"`
 
 	// Device-specific fields (only set when ConnectionType == "device")
 	DeviceMetadata    *DeviceMetadata    `json:"device_metadata,omitempty"`
@@ -692,13 +693,53 @@ type DeviceSession struct {
 
 // AgentMetadata holds registration details for an AI agent connection.
 // Collected by the Agent Connector during registration and sent to the vault.
+// The new pairing flow (see vettid-agent/docs/AGENT-PAIRING-FLOW.md) extends
+// this with OS / version / first-seen fields so the phone's authorization
+// screen can render a richer identity card; older callers leaving the new
+// fields at zero still work.
 type AgentMetadata struct {
-	AgentType          string `json:"agent_type"`           // coding_assistant, data_pipeline, etc.
+	AgentType          string `json:"agent_type"`           // operator-declared, e.g. "claude-code", "cursor", "self-hosted-llm"
 	BinaryFingerprint  string `json:"binary_fingerprint"`   // SHA-256 of connector binary
 	MachineFingerprint string `json:"machine_fingerprint"`  // HMAC-SHA256 of machine attributes
-	IPAddress          string `json:"ip_address"`
-	Hostname           string `json:"hostname"`
-	Platform           string `json:"platform"`             // linux/amd64, darwin/arm64, etc.
+	IPAddress          string `json:"ip_address,omitempty"`
+	Hostname           string `json:"hostname,omitempty"`
+	Platform           string `json:"platform,omitempty"`             // linux/amd64, darwin/arm64, etc.
+	OSName             string `json:"os_name,omitempty"`              // Fedora, macOS, Windows, ...
+	OSVersion          string `json:"os_version,omitempty"`           // 43, 14.4, 11, ...
+	AppVersion         string `json:"app_version,omitempty"`          // vettid-agent semver
+	FirstSeenAt        int64  `json:"first_seen_at,omitempty"`        // unix seconds, set on the first request-session
+}
+
+// AgentPendingAuth tracks a stage-2 agent pairing request awaiting user
+// approval. Created when the agent publishes agent.request-session and
+// cleared when the app publishes agent.authorize-session. Mirrors
+// DevicePendingAuth in shape but carries the agent's *requested* scope,
+// approval mode, and duration — the phone treats these as hints and the
+// final values written into record.Contract are whatever the owner picks
+// on the authorization screen.
+type AgentPendingAuth struct {
+	ApprovalToken           string   `json:"approval_token"`               // hex, 32 bytes — set by agent, verified by phone
+	AgentPubKey             []byte   `json:"agent_pubkey"`                 // agent's stage-2 ephemeral X25519 pubkey (32 bytes)
+	RequestedAt             int64    `json:"requested_at"`                 // unix seconds
+	ExpiresAt               int64    `json:"expires_at"`                   // unix seconds — stage-2 window (e.g. 10 min)
+	RequestedScope          []string `json:"requested_scope,omitempty"`    // hint — phone may narrow
+	RequestedApprovalMode   string   `json:"requested_approval_mode,omitempty"` // "always_ask" | "auto_within_contract"
+	RequestedDurationSecs   int64    `json:"requested_duration_s,omitempty"`    // hint — phone caps at MaxSessionDurationSeconds
+}
+
+// AgentSession tracks the time-limited session for an authorized AI agent.
+// Symmetric to DeviceSession but the per-call permission tier comes from
+// record.Contract.Scope (formal scope vocabulary, see AGENT-PAIRING-FLOW.md
+// §"Locked decisions" #2), not from a runtime SecretsUnlockedUntil grant.
+type AgentSession struct {
+	SessionID        string `json:"session_id"`         // uuid
+	Status           string `json:"status"`             // "active" | "expired" | "revoked"
+	CreatedAt        int64  `json:"created_at"`         // unix seconds
+	ExpiresAt        int64  `json:"expires_at"`         // unix seconds
+	LastActiveAt     int64  `json:"last_active_at"`     // unix seconds
+	DurationSeconds  int64  `json:"duration_seconds"`   // owner-approved duration (≤ 24h)
+	KeyRotationCount int    `json:"key_rotation_count"` // incremented on each extend
+	SessionKeyID     string `json:"session_key_id"`     // opaque handle so the vault can match the agent's current key
 }
 
 // ConnectionContract defines the permissions and limits for an agent connection.
@@ -968,19 +1009,27 @@ type ActivitySummaryResponse struct {
 	LastActivityType string `json:"last_activity_type,omitempty"`
 }
 
-// CreateAgentInviteRequest is the payload for connection.agent.create-invite
+// CreateAgentInviteRequest is the payload for agent.create-invite.
+// The user invokes this from the app when they want to pair a new agent.
 type CreateAgentInviteRequest struct {
-	Label string `json:"label"` // Optional name for this agent slot
+	Label string `json:"label,omitempty"` // Optional placeholder; final name is set at authorize time
 }
 
-// CreateAgentInviteResponse returns data the app needs to call POST /vault/agent/shortlink
+// CreateAgentInviteResponse returns the short code the user types into
+// `vettid-agent init <code>`. See vettid-agent/docs/AGENT-PAIRING-FLOW.md
+// §Stage 1. Mirrors CreateDeviceInviteResponse — same shape so a single
+// invite-resolution helper on the agent side can be used for both flows.
 type CreateAgentInviteResponse struct {
-	ConnectionID   string `json:"connection_id"`
-	InvitationID   string `json:"invitation_id"`
-	InviteToken    string `json:"invite_token"`     // 32 bytes, base64url
-	OwnerGUID      string `json:"owner_guid"`
-	VaultPublicKey string `json:"vault_public_key"` // Hex X25519 public key
-	ExpiresAt      string `json:"expires_at"`
+	ConnectionID string `json:"connection_id"`
+	InviteCode   string `json:"invite_code"`   // 12-char ambiguity-safe code, displayed as ABCD-EFGH-JKLM
+	NATSEndpoint string `json:"nats_endpoint"`
+	ExpiresAt    string `json:"expires_at"`    // ISO 8601 — 2 min from now
+}
+
+// CancelAgentInviteRequest tears down an in-flight agent pairing invite
+// before any agent has claimed it.
+type CancelAgentInviteRequest struct {
+	ConnectionID string `json:"connection_id"`
 }
 
 // CreateDeviceInviteRequest is the payload for device.create-invite.
@@ -1988,91 +2037,113 @@ func (h *ConnectionsHandler) HandlePeerConnectionRejected(ctx context.Context, m
 	return &OutgoingMessage{Type: MessageTypeResponse, Payload: json.RawMessage(`{"ack":true}`)}, nil
 }
 
-// HandleCreateAgentInvite handles connection.agent.create-invite messages.
-// Creates a connection + invitation for an AI agent connector and returns
-// the details the app needs to call POST /vault/agent/shortlink.
+// HandleCreateAgentInvite handles agent.create-invite messages.
+//
+// Stage 1 of the agent pairing flow (see vettid-agent/docs/AGENT-PAIRING-FLOW.md):
+//  1. Generate 12-char ambiguity-safe invite code, 2-minute expiry
+//  2. Generate scoped NATS credentials bound to a new connection_id
+//  3. Publish the full invite payload to the INVITATIONS JetStream subject
+//     invite.<code> — the agent, using guest creds minted by the public
+//     bootstrap Lambda, reads this to obtain the scoped creds
+//  4. Create a connection record in "pending_pairing" status
+//  5. Return the code + endpoint to the app for display
+//
+// No ConnectionRecord-held ephemeral keys at this stage. Key exchange happens
+// later during stage 2 (agent.authorize-session) using fresh ephemeral keys
+// so the stage-1 NATS creds, even if leaked, cannot decrypt session data.
+//
+// Mirrors HandleCreateDeviceInvite — the two flows share the same INVITATIONS
+// stream and rely on the `type` payload field (`vettid_agent` vs `vettid_device`)
+// for the client to recognize what kind of invite it resolved. Subject-scope
+// isolation between the two is not enforceable at the NATS layer (see Phase 0
+// audit in AGENT-PAIRING-FLOW.md) — the security boundary is the unguessable
+// 12-char code + 2-min invite TTL.
 func (h *ConnectionsHandler) HandleCreateAgentInvite(msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req CreateAgentInviteRequest
 	if err := unmarshalRequest(msg.Payload, &req, "HandleCreateAgentInvite"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
 	}
 
-	label := req.Label
-	if label == "" {
-		label = "Agent"
+	if h.natsProxy == nil || h.publisher == nil {
+		return h.errorResponse(msg.GetID(), "NATS unavailable — cannot create agent invite")
 	}
 
-	// Generate connection ID
 	idBytes := make([]byte, 16)
 	rand.Read(idBytes)
 	connectionID := fmt.Sprintf("conn-%x", idBytes)
 
-	// Agent invitations expire in 24 hours (shorter than peer's 30 days)
-	expiresAt := time.Now().Add(24 * time.Hour)
+	// 2-minute pairing window. Matches device flow — the agent operator
+	// has to paste the code into `vettid-agent init <code>` within this
+	// window; the owner approves the resulting request-session separately
+	// with its own 10-minute window (DevicePendingAuthTTL).
+	expiresAt := time.Now().Add(2 * time.Minute)
 
-	// Generate X25519 key pair for E2E encryption
-	localPrivate := make([]byte, 32)
-	rand.Read(localPrivate)
-
-	localPublic, err := curve25519.X25519(localPrivate, curve25519.Basepoint)
+	accountSeed, err := h.loadAccountSeed()
 	if err != nil {
-		return h.errorResponse(msg.GetID(), "Failed to derive public key")
+		log.Warn().Err(err).Msg("Failed to load NATS account seed for agent invite")
+		return h.errorResponse(msg.GetID(), "Failed to generate invitation credentials")
+	}
+	creds, err := GenerateAgentCredentials(accountSeed, h.ownerSpace, connectionID, expiresAt)
+	if err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to generate agent credentials")
+	}
+	jwtStr, seedStr := extractCredsComponents(creds)
+
+	inviteCode := generateShortCode()
+	brokerPayload := map[string]interface{}{
+		"type":          "vettid_agent",
+		"connection_id": connectionID,
+		"jwt":           jwtStr,
+		"seed":          seedStr,
+		"owner_space":   h.ownerSpace,
+		"message_space": fmt.Sprintf("MessageSpace.%s.forApp.agent.%s.>", h.ownerSpace, connectionID),
+		"expires_at":    expiresAt.Format(time.RFC3339),
+		"label":         req.Label,
+	}
+	payloadBytes, _ := json.Marshal(brokerPayload)
+	subject := fmt.Sprintf("invite.%s", inviteCode)
+	if err := h.publisher.PublishRaw(subject, payloadBytes); err != nil {
+		log.Error().Err(err).Str("subject", subject).Msg("Failed to publish agent invite to broker")
+		return h.errorResponse(msg.GetID(), "Failed to publish invitation")
 	}
 
-	// Generate invite token (32 bytes, base64url-encoded)
-	tokenBytes := make([]byte, 32)
-	rand.Read(tokenBytes)
-	inviteToken := base64.RawURLEncoding.EncodeToString(tokenBytes)
-
-	// Store the outbound agent connection record
 	record := ConnectionRecord{
 		ConnectionID:      connectionID,
 		ConnectionType:    ConnectionTypeAgent,
-		PeerAlias:         label,
+		PeerAlias:         req.Label, // hint; phone may rename at authorize time
 		CredentialsType:   "outbound",
-		MessageSpaceTopic: fmt.Sprintf("MessageSpace.%s.forOwner.>", h.ownerSpace),
-		Status:            "invited",
+		MessageSpaceTopic: fmt.Sprintf("MessageSpace.%s.forOwner.agent.%s.>", h.ownerSpace, connectionID),
+		Status:            "pending_pairing",
 		CreatedAt:         time.Now(),
 		ExpiresAt:         expiresAt,
-		LocalPublicKey:    localPublic,
-		LocalPrivateKey:   localPrivate,
+		InviteCode:        inviteCode,
 	}
-
-	// SECURITY (#35): record holds LocalPrivateKey — route through
-	// helper so the marshalled buffer is zeroed before GC sees it.
-	storageKey := "connections/" + connectionID
-	if err := h.putConnectionRecord(storageKey, &record); err != nil {
+	if err := h.putConnectionRecord("connections/"+connectionID, &record); err != nil {
 		return h.errorResponse(msg.GetID(), "Failed to store connection")
 	}
-
 	h.addToConnectionIndex(connectionID)
 
-	// Create invitation record
-	invitationID, err := h.createAgentInvitation(connectionID, label, inviteToken, expiresAt)
-	if err != nil {
-		return h.errorResponse(msg.GetID(), "Failed to create invitation")
+	if h.eventHandler != nil {
+		h.eventHandler.LogConnectionEvent(context.Background(), EventTypeConnectionCreated, connectionID, "", "Agent pairing invite created")
 	}
 
-	// Log connection created event for audit
-	if h.eventHandler != nil {
-		h.eventHandler.LogConnectionEvent(context.Background(), EventTypeConnectionCreated, connectionID, "", "Agent invitation created")
+	natsEndpoint := ""
+	if h.natsProxy != nil {
+		natsEndpoint = h.natsProxy.GetNATSEndpoint()
 	}
 
 	log.Info().
 		Str("connection_id", connectionID).
-		Str("invitation_id", invitationID).
-		Msg("Agent invitation created")
+		Str("invite_code", inviteCode).
+		Msg("Agent invite created and published to broker")
 
 	resp := CreateAgentInviteResponse{
-		ConnectionID:   connectionID,
-		InvitationID:   invitationID,
-		InviteToken:    inviteToken,
-		OwnerGUID:      h.ownerSpace,
-		VaultPublicKey: fmt.Sprintf("%x", localPublic),
-		ExpiresAt:      expiresAt.Format(time.RFC3339),
+		ConnectionID: connectionID,
+		InviteCode:   inviteCode,
+		NATSEndpoint: natsEndpoint,
+		ExpiresAt:    expiresAt.Format(time.RFC3339),
 	}
 	respBytes, _ := json.Marshal(resp)
-
 	return &OutgoingMessage{
 		RequestID: msg.GetID(),
 		Type:      MessageTypeResponse,
@@ -2080,55 +2151,65 @@ func (h *ConnectionsHandler) HandleCreateAgentInvite(msg *IncomingMessage) (*Out
 	}, nil
 }
 
-// createAgentInvitation creates an invitation record for an agent connection.
-func (h *ConnectionsHandler) createAgentInvitation(connectionID, label, inviteToken string, expiresAt time.Time) (string, error) {
-	idBytes := make([]byte, 16)
-	rand.Read(idBytes)
-	invitationID := fmt.Sprintf("inv-%x", idBytes)
-
-	record := InvitationRecord{
-		InvitationID:   invitationID,
-		ConnectionID:   connectionID,
-		Status:         "pending",
-		DeliveryMethod: "shortlink",
-		Label:          label,
-		InviteToken:    inviteToken,
-		CreatedAt:      time.Now(),
-		ExpiresAt:      expiresAt,
+// HandleCancelAgentInvite tears down an in-flight agent pairing invite
+// before any agent has claimed it. Symmetric to HandleCancelDeviceInvite —
+// the user dismissed the pairing screen or let the on-screen code time
+// out, and the ConnectionRecord (status="pending_pairing") should be
+// cancelled cleanly rather than left to linger in the connections list.
+func (h *ConnectionsHandler) HandleCancelAgentInvite(msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req CancelAgentInviteRequest
+	if err := unmarshalRequest(msg.Payload, &req, "HandleCancelAgentInvite"); err != nil {
+		return h.errorResponse(msg.GetID(), "Invalid request format")
+	}
+	if req.ConnectionID == "" {
+		return h.errorResponse(msg.GetID(), "connection_id is required")
 	}
 
-	data, err := json.Marshal(record)
+	data, err := h.storage.Get("connections/" + req.ConnectionID)
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal invitation: %w", err)
+		return h.errorResponse(msg.GetID(), "Connection not found")
+	}
+	var record ConnectionRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		return h.errorResponse(msg.GetID(), "Failed to read connection")
+	}
+	if !record.IsAgent() {
+		return h.errorResponse(msg.GetID(), "Connection is not an agent")
+	}
+	// Only cancel records that haven't yet completed pairing. An activated
+	// agent should be torn down through agent.revoke, which also wipes
+	// session keys + notifies the agent.
+	if record.Status != "pending_pairing" {
+		return h.errorResponse(msg.GetID(), "Invite is no longer pending — cannot cancel")
 	}
 
-	if err := h.storage.Put("invitations/"+invitationID, data); err != nil {
-		return "", fmt.Errorf("failed to store invitation: %w", err)
+	// SECURITY (#35): zero any ephemeral key material before persisting.
+	zeroBytes(record.SharedSecret)
+	record.SharedSecret = nil
+	zeroBytes(record.LocalPrivateKey)
+	record.LocalPrivateKey = nil
+
+	record.Status = "cancelled"
+	record.AgentPendingAuth = nil
+	_ = h.putConnectionRecord("connections/"+req.ConnectionID, &record)
+
+	if h.eventHandler != nil {
+		h.eventHandler.LogConnectionEvent(context.Background(), EventTypeConnectionRevoked, req.ConnectionID, "",
+			"Agent pairing invite cancelled")
 	}
 
-	// Add to invitation index
-	var index []string
-	indexData, err := h.storage.Get("invitations/_index")
-	if err == nil {
-		json.Unmarshal(indexData, &index)
-	}
+	log.Info().Str("connection_id", req.ConnectionID).Msg("Agent pairing invite cancelled")
 
-	for _, id := range index {
-		if id == invitationID {
-			return invitationID, nil
-		}
-	}
-
-	index = append(index, invitationID)
-	newIndexData, _ := json.Marshal(index)
-	h.storage.Put("invitations/_index", newIndexData)
-
-	log.Info().
-		Str("invitation_id", invitationID).
-		Str("connection_id", connectionID).
-		Msg("Agent invitation record created")
-
-	return invitationID, nil
+	resp := struct {
+		Success      bool   `json:"success"`
+		ConnectionID string `json:"connection_id"`
+	}{Success: true, ConnectionID: req.ConnectionID}
+	respBytes, _ := json.Marshal(resp)
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
 }
 
 // HandleStoreCredentials handles connection.store-credentials messages
@@ -4464,9 +4545,15 @@ func (h *ConnectionsHandler) HandleListAgentConnections(ctx context.Context, msg
 }
 
 // HandleRevokeAgent revokes an agent connection and clears its shared secret.
+//
+// Symmetric to HandleRevokeDevice: wipes the AgentSession key from storage,
+// zeros any ephemeral key material on the record, flips Status to "revoked",
+// and publishes an `agent.session.revoked` notification on
+// forApp.agent.<conn>.revoked so the agent can clear local state immediately.
 func (h *ConnectionsHandler) HandleRevokeAgent(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	var req struct {
 		ConnectionID string `json:"connection_id"`
+		Reason       string `json:"reason,omitempty"`
 	}
 	if err := unmarshalRequest(msg.Payload, &req, "HandleRevokeAgent"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
@@ -4491,25 +4578,56 @@ func (h *ConnectionsHandler) HandleRevokeAgent(ctx context.Context, msg *Incomin
 		return h.errorResponse(msg.GetID(), "Not an agent connection")
 	}
 
-	// SECURITY: Zero shared secret + private key before saving.
-	// LocalPrivateKey was omitted in the original revoke; agents do an
-	// X25519 handshake at activation, so the record carries it too.
+	// Wipe the session key from storage (best-effort) before we flip status.
+	if record.AgentSession != nil && record.AgentSession.SessionKeyID != "" {
+		keyPath := fmt.Sprintf("agent_session_keys/%s/%s", record.ConnectionID, record.AgentSession.SessionKeyID)
+		if err := h.storage.Delete(keyPath); err != nil {
+			log.Warn().Err(err).Str("path", keyPath).Msg("Failed to delete agent session key during revoke (non-fatal)")
+		}
+	}
+
+	// SECURITY (#35): zero any session-related key material on the record
+	// before persisting the revoked state.
 	zeroBytes(record.SharedSecret)
 	record.SharedSecret = nil
 	zeroBytes(record.LocalPrivateKey)
 	record.LocalPrivateKey = nil
+
 	record.Status = "revoked"
+	if record.AgentSession != nil {
+		record.AgentSession.Status = "revoked"
+	}
+	record.AgentPendingAuth = nil
 
 	if err := h.putConnectionRecord(storageKey, &record); err != nil {
 		return h.errorResponse(msg.GetID(), "Failed to revoke agent")
 	}
 
+	// Notify the agent so it can wipe local credentials immediately
+	// (the agent subscribes to forApp.agent.<conn>.revoked at stage 2).
+	if h.publisher != nil {
+		revokeNotif := map[string]interface{}{
+			"type":          "agent.session.revoked",
+			"connection_id": record.ConnectionID,
+			"reason":        req.Reason,
+		}
+		notifBytes, _ := json.Marshal(revokeNotif)
+		subject := fmt.Sprintf("MessageSpace.%s.forApp.agent.%s.revoked", h.ownerSpace, record.ConnectionID)
+		if err := h.publisher.PublishRaw(subject, notifBytes); err != nil {
+			log.Warn().Err(err).Str("subject", subject).Msg("Failed to publish agent revocation (non-fatal)")
+		}
+	}
+
 	if h.eventHandler != nil {
-		h.eventHandler.LogConnectionEvent(ctx, EventTypeConnectionRevoked, req.ConnectionID, "",
+		h.eventHandler.LogConnectionEvent(ctx, EventTypeAgentSessionRevoked, req.ConnectionID, "",
 			fmt.Sprintf("Agent connection revoked: %s", record.PeerAlias))
 	}
 
-	log.Info().Str("connection_id", req.ConnectionID).Str("agent", record.PeerAlias).Msg("Agent connection revoked")
+	log.Info().
+		Str("connection_id", req.ConnectionID).
+		Str("agent", record.PeerAlias).
+		Str("reason", req.Reason).
+		Msg("Agent connection revoked")
 
 	resp := map[string]interface{}{
 		"success":       true,

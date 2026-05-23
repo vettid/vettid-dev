@@ -118,6 +118,12 @@ const (
 	EventTypeAgentApprovalRequested EventType = "agent.approval.requested"
 	EventTypeAgentApprovalResponded EventType = "agent.approval.responded"
 
+	// Agent session events (stage-2 pairing flow — see vettid-agent/docs/AGENT-PAIRING-FLOW.md)
+	EventTypeAgentSessionCreated  EventType = "agent.session.created"
+	EventTypeAgentSessionExtended EventType = "agent.session.extended"
+	EventTypeAgentSessionExpired  EventType = "agent.session.expired"
+	EventTypeAgentSessionRevoked  EventType = "agent.session.revoked"
+
 	// Device connection events
 	EventTypeDeviceConnectionRequest   EventType = "device.connection.request"
 	EventTypeDeviceConnectionApproved  EventType = "device.connection.approved"
@@ -402,6 +408,12 @@ var eventClassifications = map[EventType]EventClassification{
 	EventTypeDeviceSessionExpired:   {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
 	EventTypeDeviceSessionRevoked:   {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
 	EventTypeDeviceSessionSuspended: {FeedStatusActive, ActionTypeAcknowledge, PriorityNormal, RetentionStandard},
+
+	// Agent session events — same feed treatment as device equivalents
+	EventTypeAgentSessionCreated:  {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
+	EventTypeAgentSessionExtended: {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
+	EventTypeAgentSessionExpired:  {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
+	EventTypeAgentSessionRevoked:  {FeedStatusHidden, ActionTypeNone, PriorityNormal, RetentionStandard},
 
 	// Device approval events
 	EventTypeDeviceApprovalRequested: {FeedStatusActive, ActionTypeAcceptDecline, PriorityHigh, RetentionPermanent},

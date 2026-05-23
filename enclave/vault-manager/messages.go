@@ -1475,20 +1475,43 @@ func (mh *MessageHandler) handleAgentOperation(ctx context.Context, msg *Incomin
 
 	switch opType {
 	case "approval":
-		// App approves or denies a pending agent request
+		// App approves or denies a pending per-operation agent request
+		// (NOT the stage-2 session authorization — that's authorize-session).
 		return mh.agentHandler.HandleAppApprovalResponse(ctx, msg)
 	case "list":
 		// List active agent connections
 		return mh.connectionsHandler.HandleListAgentConnections(ctx, msg)
 	case "revoke":
-		// Revoke an agent connection
+		// Revoke an agent connection (from app admin or agent shutdown)
 		return mh.connectionsHandler.HandleRevokeAgent(ctx, msg)
 	case "update-contract":
 		// Update an agent's contract (scope, approval mode, rate limit)
+		// without re-running the full session authorization round-trip.
 		return mh.connectionsHandler.HandleUpdateAgentContract(ctx, msg)
-	case "create-invitation":
-		// Create an invitation for a new agent (already exists in connections handler)
+	case "create-invite":
+		// Stage 1: app creates a pairing invite for a new agent
+		// (see vettid-agent/docs/AGENT-PAIRING-FLOW.md §Stage 1).
 		return mh.connectionsHandler.HandleCreateAgentInvite(msg)
+	case "cancel-invite":
+		// User cancelled the pairing invite from the phone before it
+		// was claimed by an agent.
+		return mh.connectionsHandler.HandleCancelAgentInvite(msg)
+	case "request-session":
+		// Stage 2 (agent → vault): request session authorization
+		return mh.connectionsHandler.HandleAgentRequestSession(ctx, msg)
+	case "authorize-session":
+		// Stage 2 (app → vault): owner approves the session with
+		// final scope / approval_mode / rate_limit / duration.
+		return mh.connectionsHandler.HandleAgentAuthorizeSession(ctx, msg)
+	case "extend-session":
+		// Owner re-approves an extension request from the agent — rotates
+		// keys and extends the session.
+		return mh.connectionsHandler.HandleAgentExtendSession(ctx, msg)
+	case "end-session":
+		// Soft end-session: wipe session key + flip AgentSession to
+		// expired, but keep the connection so the agent can restart
+		// a session without re-pairing.
+		return mh.connectionsHandler.HandleAgentEndSession(ctx, msg)
 	case "message-reply":
 		// User replies to an agent message
 		return mh.agentHandler.HandleAgentMessageReply(ctx, msg)

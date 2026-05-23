@@ -553,19 +553,39 @@ func (h *ConnectionsHandler) HandleDeviceExtendSession(ctx context.Context, msg 
 // Helpers
 // ---------------------------------------------------------------------------
 
-// deriveDeviceSessionKey derives a 32-byte symmetric key from a shared secret.
-// Must match the desktop client's derivation exactly.
-func deriveDeviceSessionKey(sharedSecret []byte, connectionID, sessionID string) ([]byte, error) {
+// deriveSessionKey derives a 32-byte symmetric key from a shared secret.
+//
+// HKDF-SHA256:
+//   salt = connection_id
+//   info = "<domain>|<session_id>"
+//   ikm  = shared_secret (X25519 result)
+//
+// Both device and agent pairing flows call this with their own domain
+// constant. Caller must match the client side exactly:
+//   - DomainDeviceSession ("vettid-device-session-v1") → desktop
+//   - DomainAgentSession  ("vettid-agent-session-v1")  → agent
+//
+// Different domains produce different keys from the same shared secret, so a
+// session key from one flow can never accidentally decrypt traffic from the
+// other.
+func deriveSessionKey(domain string, sharedSecret []byte, connectionID, sessionID string) ([]byte, error) {
 	if len(sharedSecret) != 32 {
 		return nil, fmt.Errorf("shared secret must be 32 bytes, got %d", len(sharedSecret))
 	}
-	info := []byte(DomainDeviceSession + "|" + sessionID)
+	info := []byte(domain + "|" + sessionID)
 	r := hkdf.New(sha256.New, sharedSecret, []byte(connectionID), info)
 	key := make([]byte, 32)
 	if _, err := io.ReadFull(r, key); err != nil {
 		return nil, fmt.Errorf("HKDF expand: %w", err)
 	}
 	return key, nil
+}
+
+// deriveDeviceSessionKey is the device-flow wrapper around deriveSessionKey.
+// Kept as a thin wrapper so existing call sites in this file stay unchanged.
+// Must match the desktop client's derivation exactly.
+func deriveDeviceSessionKey(sharedSecret []byte, connectionID, sessionID string) ([]byte, error) {
+	return deriveSessionKey(DomainDeviceSession, sharedSecret, connectionID, sessionID)
 }
 
 // HandleDeviceEndSession is the soft counterpart to HandleRevokeDevice:
