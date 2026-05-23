@@ -192,6 +192,10 @@ type MessageHandler struct {
 	agentHandler        *AgentHandler
 	agentSecretsHandler *AgentSecretsHandler
 
+	// LEASH token issuer (scoped, time-bound, version-bound delegation
+	// JWTs for agent connections — see docs/LEASH-TOKEN-FORMAT.md).
+	leashHandler *LeashHandler
+
 	// Device handler (desktop device connections)
 	deviceHandler *DeviceHandler
 
@@ -530,6 +534,9 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 	// Create device handler
 	deviceHandler := NewDeviceHandler(ownerSpace, storage, publisher, eventHandler, connectionsHandler)
 
+	// Create LEASH handler (agent delegation JWT issuer)
+	leashHandler := NewLeashHandler(ownerSpace, storage, vaultState)
+
 	mh := &MessageHandler{
 		ownerSpace:           ownerSpace,
 		storage:              storage,
@@ -608,6 +615,7 @@ func NewMessageHandler(ownerSpace string, storage *EncryptedStorage, publisher *
 
 		// Device handler
 		deviceHandler: deviceHandler,
+		leashHandler:  leashHandler,
 
 		// Bitcoin wallet handler
 		walletHandler: NewWalletHandler(ownerSpace, storage, vaultState, eventHandler, publisher, httpProxy),
@@ -1457,6 +1465,11 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 	case "agent":
 		// Agent management operations (from mobile app)
 		return mh.handleAgentOperation(ctx, msg, parts[opIndex+1:])
+	case "leash":
+		// LEASH token issuance for agent delegation (see
+		// docs/LEASH-TOKEN-FORMAT.md). Only `attest` is wired in
+		// Sprint 1; revocation + status land in Sprint 2.
+		return mh.handleLeashOperation(ctx, msg, parts[opIndex+1:])
 	case "device":
 		// Device management operations (from mobile app)
 		return mh.handleDeviceOperation(ctx, msg, parts[opIndex+1:])
@@ -1561,6 +1574,37 @@ func (mh *MessageHandler) handleAgentOperation(ctx context.Context, msg *Incomin
 		return mh.agentHandler.HandleAgentMessageReply(ctx, msg)
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown agent operation: %s", opType))
+	}
+}
+
+// handleLeashOperation routes LEASH token issuance operations.
+// Format: forVault.leash.{sub-operation}
+//
+// Sprint 1 wires only `attest`. Sprint 2 adds:
+//   - `revoke` — owner revokes a previously-issued leash by jti
+//   - `status` — internal lookup used by the public Lambda
+//   - `list` — owner sees outstanding leashes
+//
+// All leash ops are owner-only (phone-required at the device tier) —
+// nobody but the user should be able to mint leashes on the user's
+// behalf or look up what was minted.
+func (mh *MessageHandler) handleLeashOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
+	if len(opParts) < 2 {
+		return mh.errorResponse(msg.GetID(), "missing leash operation type")
+	}
+
+	opType := opParts[1]
+
+	log.Debug().
+		Str("owner_space", mh.ownerSpace).
+		Str("leash_operation", opType).
+		Msg("Routing leash operation")
+
+	switch opType {
+	case "attest":
+		return mh.leashHandler.HandleGrantAttest(ctx, msg)
+	default:
+		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown leash operation: %s", opType))
 	}
 }
 
