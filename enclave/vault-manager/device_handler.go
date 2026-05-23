@@ -87,6 +87,17 @@ func DeviceIndependentCapabilities() []string {
 		// Device list — desktop can see "what desktops are paired to
 		// my vault" without a phone round-trip.
 		"device.list",
+		// Call surface — desktop can browse history, fetch short-lived
+		// TURN credentials at session init, and clear the
+		// missed-call badge. None of these reveal call content
+		// (signaling is e2e-encrypted; TURN creds are time-scoped
+		// HMACs that only let webrtc traverse NATs). Without these
+		// rows, every desktop call would block on a phone approval
+		// just to set up media — defeats the point of having calls
+		// on desktop at all.
+		"call.history",
+		"call.turn-credentials",
+		"call.mark-seen",
 	}
 }
 
