@@ -83,7 +83,12 @@ func DeviceIndependentCapabilities() []string {
 		"wallet.list",
 		"wallet.get-balance",
 		"wallet.get-address",
-		"wallet.get-transaction-history",
+		// Vault dispatch is `wallet.get-history` (see
+		// handleWalletOperation). The earlier `get-transaction-history`
+		// entry was a typo that left desktop tx-history fetches
+		// falling through to the phone-required path — every history
+		// tap triggered an approval prompt for what's a public read.
+		"wallet.get-history",
 		// Device list — desktop can see "what desktops are paired to
 		// my vault" without a phone round-trip.
 		"device.list",
