@@ -1241,11 +1241,32 @@ export class InfrastructureStack extends cdk.Stack {
     new cognito.CfnUserPoolGroup(this, 'AdminGroup', { userPoolId: adminUserPool.userPoolId, groupName: 'admin' });
 
     // SECURITY (#87): scope PostAuthentication's AdminUpdateUserAttributes
-    // grant to the admin user pool only — was previously `userpool/*`
-    // because the Lambda was constructed before the pool ARN was known.
+    // grant as tightly as the CloudFormation dependency graph allows.
+    //
+    // The intent of #87 was to pin to `adminUserPool.userPoolArn` (one
+    // specific pool). That referenced the L2 construct and created a
+    // cycle: AdminUserPool → lambdaTriggers.postAuthentication → role
+    // → policy → AdminUserPool. CloudFormation rejected the deploy on
+    // every attempt (silently — caught for the first time when LEASH
+    // Sprint 2 tried to deploy 2026-05-23).
+    //
+    // The achievable tightening without a custom-resource trigger
+    // rewire: pattern the ARN with the regional pool-ID prefix
+    // (`{region}_*`) using only Aws pseudo-parameters. This grants
+    // AdminUpdateUserAttributes on every user pool in THIS region +
+    // account, which still rules out cross-account or cross-region
+    // misuse but no longer pins to a single pool. Original
+    // `userpool/*` (any region, any pool) was broader still.
+    //
+    // To recover the strict per-pool scope, the proper fix is an
+    // AwsCustomResource that attaches the trigger AFTER both the pool
+    // and the Lambda's policy are settled, breaking the dependency
+    // edge. Tracked as follow-up; not required for the demo timeline.
     postAuthentication.addToRolePolicy(new iam.PolicyStatement({
       actions: ['cognito-idp:AdminUpdateUserAttributes'],
-      resources: [adminUserPool.userPoolArn],
+      resources: [
+        `arn:aws:cognito-idp:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:userpool/${cdk.Aws.REGION}_*`,
+      ],
     }));
 
     // Custom UI for admin Cognito hosted UI - matches VettID branding

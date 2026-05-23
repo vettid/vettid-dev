@@ -538,95 +538,30 @@ const webAcl = new wafv2.CfnWebACL(this, 'WebAcl', {
       };
     }
 
-    // SECURITY (#38): WAF for HTTP API v2.
+    // SECURITY (#38): WAF for the HTTP API — REMOVED 2026-05-23.
     //
-    // AWS added direct WAFv2 support for API Gateway HTTP APIs at re:Invent 2024
-    // (the outdated note that lived here previously claimed only REST APIs were
-    // supported — that's no longer true). We attach a REGIONAL WebACL with the
-    // same AWS-managed rule sets as the CLOUDFRONT WebACL above plus a
-    // request-rate limiter, then associate it with the API's default stage.
-    // Clients hitting api.vettid.dev directly (mobile apps, server-to-server)
-    // bypass CloudFront, so this is the WAF that protects those paths.
-    const apiWebAcl = new wafv2.CfnWebACL(this, 'ApiWebAcl', {
-      scope: 'REGIONAL',
-      defaultAction: { allow: {} },
-      visibilityConfig: {
-        cloudWatchMetricsEnabled: true,
-        metricName: 'VettIDApiWebAcl',
-        sampledRequestsEnabled: true,
-      },
-      rules: [
-        // Per-IP rate limit at the API edge — 1000/5min covers a busy
-        // mobile session while still bounding scrapers + naive flood.
-        // Stricter per-route limits remain on the CloudFront WebACL.
-        {
-          name: 'ApiGeneralRateLimit',
-          priority: 1,
-          statement: {
-            rateBasedStatement: { limit: 1000, aggregateKeyType: 'IP' },
-          },
-          action: { block: {} },
-          visibilityConfig: {
-            cloudWatchMetricsEnabled: true,
-            metricName: 'ApiGeneralRateLimit',
-            sampledRequestsEnabled: true,
-          },
-        },
-        // AWS Managed: Core Rule Set (OWASP Top 10 patterns).
-        {
-          name: 'AWSManagedRulesCommonRuleSet',
-          priority: 2,
-          statement: {
-            managedRuleGroupStatement: { vendorName: 'AWS', name: 'AWSManagedRulesCommonRuleSet' },
-          },
-          overrideAction: { none: {} },
-          visibilityConfig: {
-            cloudWatchMetricsEnabled: true,
-            metricName: 'ApiAWSManagedRulesCommonRuleSet',
-            sampledRequestsEnabled: true,
-          },
-        },
-        // AWS Managed: Known Bad Inputs (web shells, CVEs, etc.).
-        {
-          name: 'AWSManagedRulesKnownBadInputsRuleSet',
-          priority: 3,
-          statement: {
-            managedRuleGroupStatement: { vendorName: 'AWS', name: 'AWSManagedRulesKnownBadInputsRuleSet' },
-          },
-          overrideAction: { none: {} },
-          visibilityConfig: {
-            cloudWatchMetricsEnabled: true,
-            metricName: 'ApiAWSManagedRulesKnownBadInputsRuleSet',
-            sampledRequestsEnabled: true,
-          },
-        },
-        // AWS Managed: IP Reputation List (known malicious IPs).
-        {
-          name: 'AWSManagedRulesAmazonIpReputationList',
-          priority: 4,
-          statement: {
-            managedRuleGroupStatement: { vendorName: 'AWS', name: 'AWSManagedRulesAmazonIpReputationList' },
-          },
-          overrideAction: { none: {} },
-          visibilityConfig: {
-            cloudWatchMetricsEnabled: true,
-            metricName: 'ApiAWSManagedRulesAmazonIpReputationList',
-            sampledRequestsEnabled: true,
-          },
-        },
-      ],
-    });
-
-    new wafv2.CfnWebACLAssociation(this, 'ApiWebAclAssociation', {
-      webAclArn: apiWebAcl.attrArn,
-      // HTTP API stage ARNs follow: arn:aws:apigateway:<region>::/apis/<api-id>/stages/<stage-name>
-      resourceArn: cdk.Stack.of(this).formatArn({
-        service: 'apigateway',
-        account: '',
-        resource: 'apis',
-        resourceName: `${this.httpApi.apiId}/stages/$default`,
-      }),
-    });
+    // The original commit (2141ba3) attached a REGIONAL WAFv2 WebACL to
+    // the HTTP API Gateway v2 stage. The note claimed re:Invent 2024
+    // added WAFv2 support for HTTP APIs; that turned out not to be the
+    // case. WAFv2's CfnWebACLAssociation only supports ALB, REST API
+    // (v1) stages, AppSync GraphQL, Cognito user pools, App Runner,
+    // Verified Access, and Amplify — not HTTP API v2 stages.
+    // Attempting to deploy returned `Wafv2: The ARN isn't valid.` for
+    // every ARN shape we tried; the deploy could not succeed.
+    //
+    // Production protection of the HTTP API still happens at the
+    // CloudFront WebACL ("WebAcl" above, lines 231-…) — clients are
+    // expected to reach the API through CloudFront, which enforces
+    // the AWS-managed rule sets and per-IP rate limit there.
+    //
+    // Follow-up #38 needs to be redesigned around either:
+    //   - migrating the API to REST (v1) so WAFv2 can attach, or
+    //   - building an API-side limiter via Lambda authorizer or
+    //     per-route throttling, or
+    //   - mandating CloudFront-only ingress and blocking direct
+    //     API Gateway hits at the network edge.
+    // None of those are in scope for the LEASH demo workstream that
+    // discovered this; tracking as deploy-debt instead.
 
 // CloudFront Function: Add security headers to all responses with specific API URL
 const securityHeadersFn = new cloudfront.Function(this, 'SecurityHeadersFn', {
@@ -1213,6 +1148,24 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
     });
     tables.leashIssued.grantReadData(getLeashStatusFn);
 
+    // LEASH full verifier — runs the entire verification algorithm
+    // server-side (sig, expiry, PoP, scope, revocation) and returns
+    // a structured verification chain. Used by the demo page and any
+    // third-party who wants to delegate verification rather than
+    // implement RFC 8725 JWT verification themselves.
+    const verifyLeashFn = new lambdaNode.NodejsFunction(this, 'VerifyLeashFn', {
+      entry: 'lambda/handlers/public/verifyLeash.ts',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      environment: {
+        TABLE_LEASH_ATTEST_KEYS: tables.leashAttestKeys.tableName,
+        TABLE_LEASH_ISSUED: tables.leashIssued.tableName,
+      },
+      timeout: cdk.Duration.seconds(10),
+      description: 'Public endpoint — verify a LEASH JWT envelope end-to-end',
+    });
+    tables.leashAttestKeys.grantReadData(verifyLeashFn);
+    tables.leashIssued.grantReadData(verifyLeashFn);
+
     const closeExpiredProposals = new lambdaNode.NodejsFunction(this, 'CloseExpiredProposalsFn', {
       entry: 'lambda/handlers/scheduled/closeExpiredProposals.ts',
       runtime: lambda.Runtime.NODEJS_22_X,
@@ -1742,6 +1695,11 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
       path: '/v1/public/leash/status/{jti}',
       methods: [apigw.HttpMethod.GET],
       integration: new integrations.HttpLambdaIntegration('GetLeashStatusInt', getLeashStatusFn),
+    });
+    this.httpApi.addRoutes({
+      path: '/v1/public/leash/verify',
+      methods: [apigw.HttpMethod.POST, apigw.HttpMethod.OPTIONS],
+      integration: new integrations.HttpLambdaIntegration('VerifyLeashInt', verifyLeashFn),
     });
 
     // NOTE: Profile handlers moved to VaultStack. Connection/messaging are vault-to-vault via NATS.

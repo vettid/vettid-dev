@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LEASH Verifier — VettID</title>
+<meta name="description" content="Verify a LEASH token (scoped, time-bound, version-bound delegation JWT) end-to-end against published attestation keys.">
+<link rel="icon" type="image/x-icon" href="/assets/favicon.ico">
+<link rel="stylesheet" href="/assets/fonts.css">
+<link rel="stylesheet" href="/shared/nav.css">
+<style>
+  :root {
+    --accent: #ffc125;
+    --accent-hover: #ffd940;
+    --bg-dark: #0a0908;
+    --bg-card: #12110f;
+    --bg-elevated: #1a1816;
+    --text: #f5f5f4;
+    --text-muted: #a8a29e;
+    --text-subtle: #78716c;
+    --border: #2a2826;
+    --pass: #58c272;
+    --fail: #e5604a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: 'Inter', system-ui, sans-serif;
+    background: var(--bg-dark);
+    color: var(--text);
+    line-height: 1.5;
+  }
+  main.container {
+    max-width: 1100px;
+    margin: 80px auto 40px;
+    padding: 0 24px;
+  }
+  h1 { font-family: 'Plus Jakarta Sans', sans-serif; font-size: 2rem; margin: 0 0 6px; }
+  .subtitle { color: var(--text-muted); margin: 0 0 28px; font-size: 1rem; }
+  .panel {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px;
+    margin-bottom: 16px;
+  }
+  .panel h2 {
+    margin: 0 0 12px;
+    font-size: 1.05rem;
+    font-weight: 600;
+    color: var(--accent);
+    letter-spacing: 0.02em;
+  }
+  label { display: block; font-size: 0.85rem; color: var(--text-muted); margin: 12px 0 4px; }
+  textarea, input[type="text"] {
+    width: 100%;
+    background: var(--bg-elevated);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.85rem;
+    resize: vertical;
+  }
+  textarea { min-height: 80px; }
+  textarea.jwt { min-height: 110px; font-size: 0.78rem; line-height: 1.4; word-break: break-all; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  button.verify {
+    margin-top: 16px;
+    background: var(--accent);
+    color: #000;
+    border: 0;
+    padding: 12px 22px;
+    font-weight: 600;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.95rem;
+  }
+  button.verify:hover { background: var(--accent-hover); }
+  button.verify:disabled { background: var(--text-subtle); cursor: wait; }
+
+  .result-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+  }
+  .verdict {
+    font-family: 'Plus Jakarta Sans', sans-serif;
+    font-weight: 700;
+    font-size: 1.15rem;
+    padding: 6px 14px;
+    border-radius: 999px;
+  }
+  .verdict.pass { background: rgba(88,194,114,0.15); color: var(--pass); }
+  .verdict.fail { background: rgba(229,96,74,0.15); color: var(--fail); }
+
+  ol.checks { padding-left: 0; list-style: none; }
+  ol.checks li {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    align-items: start;
+    gap: 12px;
+    padding: 8px 0;
+    border-bottom: 1px dashed var(--border);
+  }
+  ol.checks li:last-child { border-bottom: 0; }
+  .marker { width: 22px; height: 22px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; }
+  .marker.pass { background: rgba(88,194,114,0.18); color: var(--pass); }
+  .marker.fail { background: rgba(229,96,74,0.18); color: var(--fail); }
+  .check-name { font-weight: 600; }
+  .check-detail { font-size: 0.85rem; color: var(--text-muted); margin-top: 2px; }
+
+  dl.kv {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 4px 16px;
+    margin: 0;
+    font-size: 0.85rem;
+  }
+  dl.kv dt { color: var(--text-muted); }
+  dl.kv dd { margin: 0; font-family: 'JetBrains Mono', monospace; word-break: break-all; }
+
+  .hint { color: var(--text-subtle); font-size: 0.8rem; margin-top: 4px; }
+  .error-banner {
+    background: rgba(229,96,74,0.1);
+    border: 1px solid var(--fail);
+    color: var(--fail);
+    padding: 10px 14px;
+    border-radius: 6px;
+    margin-top: 12px;
+    font-size: 0.9rem;
+  }
+  #resultPanel { display: none; }
+</style>
+</head>
+<body>
+
+<header class="site-header">
+  <a href="/" class="header-logo">
+    <img src="/assets/logo.jpg" alt="VettID Logo">
+    <span>VETTID</span>
+  </a>
+</header>
+
+<main class="container">
+  <h1>LEASH Verifier</h1>
+  <p class="subtitle">Paste a LEASH token + envelope and the validator returns the full verification chain. No login. No data stored.</p>
+
+  <div class="panel">
+    <h2>Envelope</h2>
+    <label for="leash">LEASH (compact JWT, 3 segments separated by <code>.</code>)</label>
+    <textarea id="leash" class="jwt" placeholder="eyJhbGciOiJFZERTQSI…"></textarea>
+
+    <div class="row">
+      <div>
+        <label for="action">Request scope token (e.g. <code>profile.email:read</code>)</label>
+        <input type="text" id="action" placeholder="profile.email:read">
+      </div>
+      <div>
+        <label for="nonce">Nonce (16+ bytes, base64url)</label>
+        <input type="text" id="nonce" value="dGVzdC1ub25jZS0xMjM0NTY3OA">
+      </div>
+    </div>
+
+    <label for="agent_sig">Agent signature (base64url EdDSA over the canonical envelope)</label>
+    <textarea id="agent_sig" placeholder="EdDSA signature over canonical_json({leash, request, nonce, timestamp})"></textarea>
+    <p class="hint">In production this is produced by the agent's private key. For manual testing the easiest path is the <code>vettid-agent demo validate</code> CLI (Sprint 4) — it builds the envelope, signs it, and posts here.</p>
+
+    <button id="verifyBtn" class="verify">Verify</button>
+    <div id="errorBanner" class="error-banner" style="display:none;"></div>
+  </div>
+
+  <div id="resultPanel" class="panel">
+    <div class="result-header">
+      <h2 style="margin:0;">Result</h2>
+      <span id="verdict" class="verdict"></span>
+    </div>
+
+    <ol id="checks" class="checks"></ol>
+
+    <h3 style="margin: 20px 0 8px; font-size: 0.95rem;">Detail</h3>
+    <dl id="detail" class="kv"></dl>
+  </div>
+</main>
+
+<script>
+const API = window.location.hostname === 'localhost'
+  ? 'http://localhost:3000'  // for local dev — overridden by hardcoded prod below
+  : 'https://api.vettid.dev';
+
+async function verify() {
+  const leash = document.getElementById('leash').value.trim();
+  const action = document.getElementById('action').value.trim();
+  const nonce = document.getElementById('nonce').value.trim();
+  const agentSig = document.getElementById('agent_sig').value.trim();
+  const errBanner = document.getElementById('errorBanner');
+  const resultPanel = document.getElementById('resultPanel');
+  const btn = document.getElementById('verifyBtn');
+
+  errBanner.style.display = 'none';
+  resultPanel.style.display = 'none';
+
+  if (!leash || !action || !nonce || !agentSig) {
+    errBanner.textContent = 'All four fields are required.';
+    errBanner.style.display = 'block';
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = 'Verifying…';
+
+  try {
+    const resp = await fetch(`${API}/v1/public/leash/verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        leash,
+        request: { action },
+        nonce,
+        timestamp: Math.floor(Date.now() / 1000),
+        agent_sig: agentSig,
+      }),
+    });
+    const body = await resp.json();
+    if (resp.status >= 400 && !body.checks) {
+      errBanner.textContent = body.error || `HTTP ${resp.status}`;
+      errBanner.style.display = 'block';
+      return;
+    }
+    renderResult(body);
+  } catch (e) {
+    errBanner.textContent = `Network error: ${e.message}`;
+    errBanner.style.display = 'block';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Verify';
+  }
+}
+
+function renderResult(body) {
+  const verdict = document.getElementById('verdict');
+  const checks = document.getElementById('checks');
+  const detail = document.getElementById('detail');
+
+  verdict.textContent = body.verified ? '✓ VERIFIED' : '✗ REJECTED';
+  verdict.className = `verdict ${body.verified ? 'pass' : 'fail'}`;
+
+  checks.innerHTML = '';
+  for (const c of body.checks || []) {
+    const li = document.createElement('li');
+    const m = c.status === 'pass' ? '✓' : '✗';
+    li.innerHTML = `
+      <span class="marker ${c.status}">${m}</span>
+      <div>
+        <div class="check-name">${esc(c.name)}</div>
+        <div class="check-detail">${esc(c.detail)}</div>
+      </div>`;
+    checks.appendChild(li);
+  }
+
+  const pairs = [
+    ['Issuer', body.issuer],
+    ['Subject', body.subject],
+    ['Scope used', body.scope_matched],
+    ['Scopes granted', (body.scopes_granted || []).join(', ')],
+    ['Time remaining', body.time_remaining_secs != null ? `${body.time_remaining_secs}s` : null],
+    ['Grant version', body.grant_version],
+    ['Profile version at grant', body.profile_version_at_grant],
+    ['Signing key id', body.evidence?.jwt_pubkey_kid],
+    ['Agent pubkey', body.evidence?.agent_pubkey_used],
+    ['Rejection reason', body.rejection_reason],
+    ['Checked at', body.checked_at ? new Date(body.checked_at * 1000).toISOString() : null],
+  ];
+  detail.innerHTML = '';
+  for (const [k, v] of pairs) {
+    if (v == null || v === '') continue;
+    const dt = document.createElement('dt'); dt.textContent = k;
+    const dd = document.createElement('dd'); dd.textContent = String(v);
+    detail.appendChild(dt); detail.appendChild(dd);
+  }
+
+  document.getElementById('resultPanel').style.display = 'block';
+}
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  })[c]);
+}
+
+document.getElementById('verifyBtn').addEventListener('click', verify);
+</script>
+
+</body>
+</html>
