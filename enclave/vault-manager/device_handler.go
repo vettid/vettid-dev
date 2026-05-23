@@ -103,6 +103,19 @@ func DeviceIndependentCapabilities() []string {
 		"call.history",
 		"call.turn-credentials",
 		"call.mark-seen",
+		// Call control — start/accept/reject/end/signal. The vault
+		// generates the X25519 keypair, encrypts peer signaling on
+		// the wire, and holds the per-call shared secret; none of
+		// these ops disclose call content or persistent state. Without
+		// them, every desktop call setup would block on a phone tap
+		// just to send an SDP offer — same security profile as the
+		// read-side call ops above. Required for the desktop's vault-
+		// routed call flow (`commands/calls.rs`'s `execute()` path).
+		"call.start",
+		"call.accept",
+		"call.reject",
+		"call.end",
+		"call.signal",
 	}
 }
 
