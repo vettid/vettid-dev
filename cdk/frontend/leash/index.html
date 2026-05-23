@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>LEASH — VettID's verifiable agent delegation</title>
+<title>LEASH Demo — VettID</title>
 <meta name="description" content="Try to break a scoped, time-bound, version-bound delegation token. The validator rejects every attack — see exactly why.">
 <link rel="icon" type="image/x-icon" href="/assets/favicon.ico">
 <link rel="stylesheet" href="/assets/fonts.css">
@@ -12,30 +12,50 @@
 </head>
 <body>
 
+<!-- Fixed Header — matches votes/pcr -->
 <header class="site-header">
   <a href="/" class="header-logo">
     <img src="/assets/logo.jpg" alt="VettID Logo">
     <span>VETTID</span>
   </a>
+  <button class="nav-toggle" aria-label="Toggle menu" aria-expanded="false">
+    <span></span>
+    <span></span>
+    <span></span>
+  </button>
 </header>
+<!-- Navigation Menu (outside header to avoid backdrop-filter containing block) -->
+<div class="nav-menu" id="navMenu" style="display:none;position:fixed;top:0;right:0;width:280px;height:100%;background:#1a1816;padding:80px 20px 40px;z-index:1005;flex-direction:column;gap:8px;">
+  <a href="/" style="display:block;color:#d4d4d4;text-decoration:none;padding:12px 16px;font-size:1rem;">Home</a>
+  <a href="/help" style="display:block;color:#d4d4d4;text-decoration:none;padding:12px 16px;font-size:1rem;">Help Us</a>
+  <a href="/donate" style="display:block;color:#d4d4d4;text-decoration:none;padding:12px 16px;font-size:1rem;">Donate</a>
+  <a href="/pcr" style="display:block;color:#d4d4d4;text-decoration:none;padding:12px 16px;font-size:1rem;">PCR</a>
+  <a href="/votes" style="display:block;color:#d4d4d4;text-decoration:none;padding:12px 16px;font-size:1rem;">Votes</a>
+  <a href="/leash" style="display:block;color:#ffc125;text-decoration:none;padding:12px 16px;font-size:1rem;font-weight:600;">LEASH Demo</a>
+  <a href="https://github.com/vettid/vettid-agent" target="_blank" rel="noopener noreferrer" style="display:block;color:#d4d4d4;text-decoration:none;padding:12px 16px;font-size:1rem;">Agents</a>
+  <a href="/signin" style="display:block;color:#d4d4d4;text-decoration:none;padding:12px 16px;font-size:1rem;">Sign In</a>
+  <a href="/register" style="display:block;background:#ffc125;color:#000;text-decoration:none;padding:12px 16px;font-size:1rem;text-align:center;margin-top:16px;border-radius:6px;">Register</a>
+</div>
+<div class="nav-overlay" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);z-index:1000;"></div>
 
 <main class="container">
+  <!-- Hero -->
   <div class="page-header">
-    <h1>LEASH — try to break it</h1>
-    <p class="lede">
-      A LEASH is a signed, scoped, time-bound delegation. The AI agent gets only what
-      you grant — never the underlying secret. Mint one for Demo Alice's agent,
-      then throw the worst you've got at it. The validator rejects every attack
-      and tells you why.
+    <div class="hero-badge">Live Demo — Position Paper §3</div>
+    <h1>LEASH</h1>
+    <p class="hero-tagline">Lightweight Encrypted Agent Secret Handling</p>
+    <p class="hero-desc">
+      A scoped, time-bound, version-bound delegation token. AI agents act on your
+      behalf using only what you grant — never the underlying secret. Mint one for
+      Demo Alice's agent, then throw the worst you've got at it. The validator
+      rejects every attack and tells you why.
     </p>
   </div>
 
-  <!-- ============================================================== -->
-  <!-- Mode tabs                                                       -->
-  <!-- ============================================================== -->
+  <!-- Mode tabs -->
   <div class="tab-row">
-    <button class="tab active" data-mode="sandbox">Sandbox (Demo Alice)</button>
-    <button class="tab" data-mode="live">Test your agent →</button>
+    <button class="tab active" data-mode="sandbox">Sandbox — Demo Alice</button>
+    <button class="tab" data-mode="live">Test your own agent →</button>
   </div>
 
   <!-- ============================================================== -->
@@ -44,47 +64,51 @@
   <section id="sandboxMode" class="mode-panel">
 
     <!-- Step 1: choose scope + duration, mint -->
-    <div class="panel">
-      <h2>1. Issue a LEASH</h2>
+    <div class="card">
+      <div class="step-num">1</div>
+      <h2>Issue a LEASH</h2>
       <p class="muted">Pick the capabilities Alice grants her agent, then mint.</p>
 
       <div class="scope-grid" id="scopeGrid"></div>
 
-      <label class="duration-row">
-        Expires in
-        <select id="durationSel">
-          <option value="60">60 seconds</option>
-          <option value="120" selected>2 minutes</option>
-          <option value="300">5 minutes</option>
-          <option value="600">10 minutes</option>
-        </select>
-      </label>
-
-      <button id="mintBtn" class="primary">Mint LEASH for Demo Alice's agent</button>
-      <p id="mintErr" class="error-banner" style="display:none;"></p>
+      <div class="control-row">
+        <label class="control-label">
+          Expires in
+          <select id="durationSel">
+            <option value="60">60 seconds</option>
+            <option value="120" selected>2 minutes</option>
+            <option value="300">5 minutes</option>
+            <option value="600">10 minutes</option>
+          </select>
+        </label>
+        <button id="mintBtn" class="btn btn-primary">Mint LEASH</button>
+      </div>
+      <p id="mintErr" class="error-msg" style="display:none;"></p>
     </div>
 
     <!-- Step 2: the live LEASH + countdown -->
-    <div id="leashPanel" class="panel" style="display:none;">
-      <div class="panel-head">
-        <h2>2. Live LEASH</h2>
+    <div id="leashPanel" class="card" style="display:none;">
+      <div class="step-num">2</div>
+      <div class="card-head">
+        <h2>Live LEASH</h2>
         <span class="countdown-pill" id="countdown">⏱ —</span>
       </div>
+      <dl class="claims-kv" id="claimsKv"></dl>
       <details class="jwt-detail">
-        <summary>Show JWT</summary>
+        <summary>Show full JWT</summary>
         <pre class="jwt-block" id="jwtBlock"></pre>
       </details>
-      <dl class="claims-kv" id="claimsKv"></dl>
     </div>
 
     <!-- Step 3: red-team attacks -->
-    <div id="attackPanel" class="panel" style="display:none;">
-      <h2>3. Try to break it</h2>
-      <p class="muted">Each button runs the attack against the validator. Watch every one fail.</p>
+    <div id="attackPanel" class="card" style="display:none;">
+      <div class="step-num">3</div>
+      <h2>Try to break it</h2>
+      <p class="muted">Each button runs the attack against the live validator. Watch every one fail.</p>
       <div class="attack-grid">
-        <button class="attack" data-attack="goodVerify">
+        <button class="attack good" data-attack="goodVerify">
           <span class="ax-label">✓ Verify honestly</span>
-          <span class="ax-desc">Baseline: same agent, same scope, real signature → should PASS.</span>
+          <span class="ax-desc">Baseline: same agent, same scope, real signature.</span>
         </button>
         <button class="attack" data-attack="widenScope">
           <span class="ax-label">Widen scope</span>
@@ -100,7 +124,7 @@
         </button>
         <button class="attack" data-attack="staleEnvelope">
           <span class="ax-label">Replay an old envelope</span>
-          <span class="ax-desc">Send a verify with a 5-minute-old timestamp.</span>
+          <span class="ax-desc">Send a verify with a 2-minute-old timestamp.</span>
         </button>
         <button class="attack" data-attack="revokeAndReplay">
           <span class="ax-label">Revoke, then replay</span>
@@ -110,8 +134,9 @@
     </div>
 
     <!-- Step 4: verification chain results -->
-    <div id="resultsPanel" class="panel" style="display:none;">
-      <h2>4. Verification chain</h2>
+    <div id="resultsPanel" class="card" style="display:none;">
+      <div class="step-num">4</div>
+      <h2>Verification chain</h2>
       <div id="resultsList"></div>
     </div>
   </section>
@@ -120,21 +145,22 @@
   <!-- Live mode                                                       -->
   <!-- ============================================================== -->
   <section id="liveMode" class="mode-panel" style="display:none;">
-    <div class="panel">
+    <div class="card">
       <h2>Test your own agent against the live validator</h2>
       <p class="muted">
-        Click below to spawn a 30-minute session. Then run the printed command
-        in your terminal — your agent will sign a verification envelope with its
-        Ed25519 key and post it to the validator. The result appears here.
+        Spawn a 30-minute session. The page gives you a CLI one-liner — run it in
+        your terminal and your agent will sign a verification envelope with its
+        Ed25519 key and post it here. Verification chain appears below in real
+        time.
       </p>
       <p class="muted">
-        You'll need a real LEASH JWT from your VettID vault (mint one via the
-        desktop or mobile app — Sprint 5 in the LEASH demo workstream).
+        You'll need a real LEASH JWT from your VettID vault (mint via the desktop
+        or mobile app — coming after the next enclave deploy).
       </p>
-      <button id="liveSpawnBtn" class="primary">Spawn live session</button>
+      <button id="liveSpawnBtn" class="btn btn-primary">Spawn live session</button>
     </div>
 
-    <div id="liveSessionPanel" class="panel" style="display:none;">
+    <div id="liveSessionPanel" class="card" style="display:none;">
       <h2>Session active</h2>
       <dl class="claims-kv">
         <dt>Session token</dt>
@@ -142,18 +168,30 @@
         <dt>Expires</dt>
         <dd><span id="liveExpiry"></span></dd>
       </dl>
-      <h3 style="margin-top:18px;">Run in your terminal</h3>
+      <h3 class="subheading">Run in your terminal</h3>
       <pre class="jwt-block" id="liveCliHint"></pre>
-      <p class="muted">Waiting for your agent's verification request… (auto-polls every 2s)</p>
+      <p class="muted small">Waiting for your agent's verification request… (polls every 2s)</p>
     </div>
 
-    <div id="liveResultsPanel" class="panel" style="display:none;">
+    <div id="liveResultsPanel" class="card" style="display:none;">
       <h2>Verification results</h2>
       <div id="liveResultsList"></div>
     </div>
   </section>
 </main>
 
+<footer class="site-footer">
+  <p>
+    <a href="/">VettID</a> &middot;
+    <a href="/leash">LEASH</a> &middot;
+    <a href="/pcr">PCR Verification</a> &middot;
+    <a href="https://github.com/vettid/LEASH" target="_blank" rel="noopener noreferrer">Position Paper</a> &middot;
+    <a href="mailto:support@vettid.dev">Support</a>
+  </p>
+  <p class="copyright">&copy; 2026 VettID Cooperative. All rights reserved.</p>
+</footer>
+
+<script src="/shared/js/nav.js"></script>
 <script src="/leash/leash.js"></script>
 </body>
 </html>
