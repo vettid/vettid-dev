@@ -25,6 +25,24 @@ the old enclave is retired automatically.
 
 ## Update log
 
+### 2026-05-23-v1 — Desktop calls and transaction history
+
+**Deadline:** 2026-05-26
+
+Reduces phone-approval friction for two desktop flows that the new
+VettID desktop app needs:
+
+- **Voice and video calls from desktop** — fetching the relay
+  credentials your call uses, viewing your call history, and marking
+  missed calls as seen no longer require a phone tap each time.
+- **Bitcoin transaction history on desktop** — listing the wallet
+  transactions you have already approved no longer falls through to
+  a phone-approval prompt.
+
+No change to which operations require phone approval for sensitive
+actions: sending Bitcoin, revealing a secret, sharing personal data,
+and granting a new connection still prompt on your phone.
+
 ### 2026-04-20-v1 — Per-connection interaction history
 
 **Deadline:** 2026-04-23
