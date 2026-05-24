@@ -338,6 +338,27 @@ func (h *ConnectionsHandler) HandleAgentAuthorizeSession(ctx context.Context, ms
 			log.Error().Err(err).Str("subject", subject).Msg("Failed to publish agent activation")
 			return h.errorResponse(msg.GetID(), "Failed to notify agent")
 		}
+
+		// Also publish to the broad forApp.connection bus so the owner
+		// app's connection list refreshes immediately. The peer-pair
+		// path emits this from HandleRespond when status flips to
+		// active; the agent path was only emitting the agent-specific
+		// subject above (which the agent receives, not the owner app).
+		// Without this, the connection list showed the Stage-1
+		// placeholder label until some other event happened to trigger
+		// a refresh — observed ~30s lag in testing on 2026-05-24.
+		// PeerGUID is empty for agent connections; the activated
+		// payload's peer_alias is now the owner-edited name from
+		// authorize-session.
+		appNotif := map[string]interface{}{
+			"type":          "connection.activated",
+			"connection_id": record.ConnectionID,
+			"peer_alias":    record.PeerAlias,
+		}
+		appNotifBytes, _ := json.Marshal(appNotif)
+		if err := h.publisher.PublishToApp(ctx, "connection.activated", appNotifBytes); err != nil {
+			log.Warn().Err(err).Msg("Failed to publish connection.activated for agent (non-fatal)")
+		}
 	}
 
 	if h.eventHandler != nil {
