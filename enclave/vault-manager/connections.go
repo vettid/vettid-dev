@@ -4477,17 +4477,22 @@ func (h *ConnectionsHandler) HandleListAgentConnections(ctx context.Context, msg
 		json.Unmarshal(indexData, &connectionIDs)
 	}
 
+	// Response shape per docs/AGENT-PAIRED-CONTRACT-MODEL.md: agents
+	// are paired-or-revoked, no session expiry, no key-rotation count.
+	// The Contract fields (scope / approval_mode / rate_limit) are the
+	// authoritative description of what the agent can do.
 	type AgentInfo struct {
-		ConnectionID string             `json:"connection_id"`
-		AgentName    string             `json:"agent_name"`
-		AgentType    string             `json:"agent_type"`
-		Status       string             `json:"status"`
-		ApprovalMode string             `json:"approval_mode"`
-		Scope        []string           `json:"scope"`
-		ConnectedAt  string             `json:"connected_at"`
-		LastActiveAt string             `json:"last_active_at,omitempty"`
-		Hostname     string             `json:"hostname,omitempty"`
-		Platform     string             `json:"platform,omitempty"`
+		ConnectionID string    `json:"connection_id"`
+		AgentName    string    `json:"agent_name"`
+		AgentType    string    `json:"agent_type"`
+		Status       string    `json:"status"` // "paired" | "revoked"
+		ApprovalMode string    `json:"approval_mode"`
+		Scope        []string  `json:"scope"`
+		RateLimit    RateLimit `json:"rate_limit"`
+		PairedAt     string    `json:"paired_at"`
+		LastActiveAt string    `json:"last_active_at,omitempty"`
+		Hostname     string    `json:"hostname,omitempty"`
+		Platform     string    `json:"platform,omitempty"`
 	}
 
 	agents := make([]AgentInfo, 0)
@@ -4506,16 +4511,32 @@ func (h *ConnectionsHandler) HandleListAgentConnections(ctx context.Context, msg
 			continue
 		}
 
+		// Filter out pending-invite records — those are mid-pairing,
+		// not actual agents. Item #28 (move expired invites to history)
+		// also wants them off the main list.
+		if record.Status == "pending" {
+			continue
+		}
+
+		// Map storage state to the user-facing two-state vocabulary.
+		// Anything that isn't "revoked" is "paired" — there is no
+		// session-expired state for agents in the new model.
+		status := "paired"
+		if record.Status == "revoked" {
+			status = "revoked"
+		}
+
 		info := AgentInfo{
 			ConnectionID: record.ConnectionID,
 			AgentName:    record.PeerAlias,
-			Status:       record.Status,
-			ConnectedAt:  record.CreatedAt.UTC().Format(time.RFC3339),
+			Status:       status,
+			PairedAt:     record.CreatedAt.UTC().Format(time.RFC3339),
 		}
 
 		if record.Contract != nil {
 			info.ApprovalMode = record.Contract.ApprovalMode
 			info.Scope = record.Contract.Scope
+			info.RateLimit = record.Contract.RateLimit
 		}
 
 		if record.AgentMetadata != nil {

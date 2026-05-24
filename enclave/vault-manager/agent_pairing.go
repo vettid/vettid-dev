@@ -542,6 +542,13 @@ func (h *ConnectionsHandler) HandleAgentExtendSession(ctx context.Context, msg *
 // Called either from the agent (operator stopped the daemon) or from
 // the phone (owner tapped "Lock now" on the agent's connection detail).
 func (h *ConnectionsHandler) HandleAgentEndSession(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	// AGENT-PAIRED-CONTRACT-MODEL: end-session is a no-op now. Agents
+	// are paired-or-revoked; there is no session to "end" short of
+	// revocation. We keep the wire op so older agent clients that
+	// still call it on shutdown don't see an error, log the request
+	// to the audit trail for visibility, and return success.
+	// Callers that actually want to terminate a pairing should use
+	// agent.revoke.
 	var req AgentEndSessionRequest
 	if err := unmarshalRequest(msg.Payload, &req, "HandleAgentEndSession"); err != nil {
 		return h.errorResponse(msg.GetID(), "Invalid request format")
@@ -561,50 +568,16 @@ func (h *ConnectionsHandler) HandleAgentEndSession(ctx context.Context, msg *Inc
 	if !record.IsAgent() {
 		return h.errorResponse(msg.GetID(), "Connection is not an agent")
 	}
-	if record.Status == "revoked" {
-		return h.errorResponse(msg.GetID(), "Connection revoked")
-	}
-	if record.AgentSession == nil || record.AgentSession.Status != "active" {
-		return h.errorResponse(msg.GetID(), "No active session to end")
-	}
-
-	keyPath := fmt.Sprintf("agent_session_keys/%s/%s", record.ConnectionID, record.AgentSession.SessionKeyID)
-	if err := h.storage.Delete(keyPath); err != nil {
-		log.Warn().Err(err).Str("path", keyPath).Msg("Failed to delete session key during end-session (non-fatal)")
-	}
-
-	now := time.Now().Unix()
-	record.AgentSession.Status = "expired"
-	record.AgentSession.LastActiveAt = now
-	record.AgentPendingAuth = nil
-
-	connBytes, _ := json.Marshal(&record)
-	if err := h.storage.Put("connections/"+record.ConnectionID, connBytes); err != nil {
-		return h.errorResponse(msg.GetID(), "Failed to persist session end")
-	}
-
-	if h.publisher != nil {
-		endNotif := map[string]interface{}{
-			"type":          "agent.session.ended",
-			"connection_id": record.ConnectionID,
-			"reason":        req.Reason,
-		}
-		notifBytes, _ := json.Marshal(endNotif)
-		subject := fmt.Sprintf("MessageSpace.%s.forApp.agent.%s.ended", h.ownerSpace, record.ConnectionID)
-		if err := h.publisher.PublishRaw(subject, notifBytes); err != nil {
-			log.Warn().Err(err).Str("subject", subject).Msg("Failed to publish agent.session.ended (non-fatal)")
-		}
-	}
 
 	if h.eventHandler != nil {
 		h.eventHandler.LogConnectionEvent(ctx, EventTypeAgentSessionExpired, record.ConnectionID, "",
-			fmt.Sprintf("Agent session ended (%s)", req.Reason))
+			fmt.Sprintf("Agent end-session call received (no-op in paired/contract model; reason=%s)", req.Reason))
 	}
 
 	log.Info().
 		Str("connection_id", record.ConnectionID).
 		Str("reason", req.Reason).
-		Msg("Agent session ended (connection kept)")
+		Msg("Agent end-session received — no-op (paired/contract model)")
 
 	resp := struct {
 		Success      bool   `json:"success"`
