@@ -810,11 +810,32 @@ func (h *AgentHandler) HandleAgentMessageReply(ctx context.Context, msg *Incomin
 
 	responseBytes, _ := json.Marshal(agentResponse)
 
-	// Derive connection key and encrypt
-	connKey, err2 := deriveConnectionKey(conn.SharedSecret)
-	if err2 != nil {
-		return errorResponse(msg.GetID(), "failed to derive key"), nil
+	// Encrypt with the right key for the connection type:
+	//   - Agent connections: AgentSession.SessionKey (loaded from
+	//     agent_session_keys storage by SessionKeyID). Agents don't
+	//     have a peer SharedSecret — the prior unconditional
+	//     deriveConnectionKey(SharedSecret) returned "shared secret
+	//     must not be empty" for every agent reply, surfacing on the
+	//     phone as "Message failed" (vettid-dev 2026-05-24 hunt).
+	//   - Future peer-equivalent uses (none today): SharedSecret via
+	//     deriveConnectionKey. Kept as the fallback so this stays
+	//     safe if the caller surface ever broadens.
+	var connKey []byte
+	if conn.AgentSession != nil && conn.AgentSession.SessionKeyID != "" {
+		keyPath := fmt.Sprintf("agent_session_keys/%s/%s", conn.ConnectionID, conn.AgentSession.SessionKeyID)
+		sessionKey, err := h.storage.Get(keyPath)
+		if err != nil || len(sessionKey) == 0 {
+			return errorResponse(msg.GetID(), "agent session key not found (extend or re-pair required)"), nil
+		}
+		connKey = sessionKey
+	} else {
+		ck, err := deriveConnectionKey(conn.SharedSecret)
+		if err != nil {
+			return errorResponse(msg.GetID(), "failed to derive key"), nil
+		}
+		connKey = ck
 	}
+	defer zeroBytes(connKey)
 	topic := fmt.Sprintf("MessageSpace.%s.forOwner.agent.%s", h.ownerSpace, conn.ConnectionID)
 	h.publishAgentResponse(connKey, conn.ConnectionID, AgentMsgMessageResponse, responseBytes, topic)
 
