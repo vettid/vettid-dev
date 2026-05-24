@@ -25,11 +25,10 @@ import {
   putAudit,
   secureCompare,
 } from '../../common/util';
+import { loadTestApiKey } from '../../common/testApiKey';
 
 const ddb = new DynamoDBClient({});
 
-// Environment configuration
-const TEST_API_KEY = process.env.TEST_API_KEY;
 const TABLE_INVITES = process.env.TABLE_INVITES!;
 const TABLE_ENROLLMENT_SESSIONS = process.env.TABLE_ENROLLMENT_SESSIONS!;
 const TABLE_NATS_ACCOUNTS = process.env.TABLE_NATS_ACCOUNTS!;
@@ -44,11 +43,13 @@ interface CleanupRequest {
 }
 
 /**
- * Validate test API key from request headers
+ * Validate test API key. Expected value is loaded lazily from Secrets
+ * Manager (cached per container).
  */
-function validateTestApiKey(event: APIGatewayProxyEventV2): boolean {
-  if (!TEST_API_KEY) {
-    console.error('TEST_API_KEY not configured - test endpoints disabled');
+async function validateTestApiKey(event: APIGatewayProxyEventV2): Promise<boolean> {
+  const expected = await loadTestApiKey();
+  if (!expected) {
+    console.error('test api key not configured or unreadable - test endpoints disabled');
     return false;
   }
 
@@ -56,7 +57,7 @@ function validateTestApiKey(event: APIGatewayProxyEventV2): boolean {
   if (!apiKey) return false;
   // SECURITY: constant-time compare prevents byte-by-byte key
   // discovery via response-time analysis.
-  return secureCompare(apiKey, TEST_API_KEY);
+  return secureCompare(apiKey, expected);
 }
 
 /**
@@ -157,7 +158,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
 
   try {
     // Validate test API key
-    if (!validateTestApiKey(event)) {
+    if (!(await validateTestApiKey(event))) {
       return forbidden('Invalid or missing test API key', origin);
     }
 

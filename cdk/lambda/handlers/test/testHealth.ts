@@ -10,21 +10,23 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { DynamoDBClient, DescribeTableCommand } from '@aws-sdk/client-dynamodb';
 import { ok, forbidden, internalError, secureCompare } from '../../common/util';
+import { loadTestApiKey } from '../../common/testApiKey';
 
 const ddb = new DynamoDBClient({});
 
-// Environment configuration
-const TEST_API_KEY = process.env.TEST_API_KEY;
 const TABLE_ENROLLMENT_SESSIONS = process.env.TABLE_ENROLLMENT_SESSIONS!;
 const TABLE_NATS_ACCOUNTS = process.env.TABLE_NATS_ACCOUNTS!;
 const TABLE_INVITES = process.env.TABLE_INVITES!;
 
 /**
- * Validate test API key from request headers
+ * Validate test API key from request headers. The expected value is
+ * loaded lazily from Secrets Manager on first call (cached per
+ * container) — env var TEST_API_KEY_SECRET_ARN points at the secret.
  */
-function validateTestApiKey(event: APIGatewayProxyEventV2): boolean {
-  if (!TEST_API_KEY) {
-    console.error('TEST_API_KEY not configured - test endpoints disabled');
+async function validateTestApiKey(event: APIGatewayProxyEventV2): Promise<boolean> {
+  const expected = await loadTestApiKey();
+  if (!expected) {
+    console.error('test api key not configured or unreadable - test endpoints disabled');
     return false;
   }
 
@@ -32,7 +34,7 @@ function validateTestApiKey(event: APIGatewayProxyEventV2): boolean {
   if (!apiKey) return false;
   // SECURITY: constant-time compare prevents an attacker from
   // inferring the test API key one byte at a time via timing.
-  return secureCompare(apiKey, TEST_API_KEY);
+  return secureCompare(apiKey, expected);
 }
 
 export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> => {
@@ -40,7 +42,7 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
 
   try {
     // Validate test API key
-    if (!validateTestApiKey(event)) {
+    if (!(await validateTestApiKey(event))) {
       return forbidden('Invalid or missing test API key', origin);
     }
 

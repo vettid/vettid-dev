@@ -8,6 +8,7 @@ import {
   aws_apigatewayv2 as apigw,
   aws_apigatewayv2_authorizers as authorizers,
   aws_apigatewayv2_integrations as integrations,
+  aws_secretsmanager as secretsmanager,
   aws_ssm as ssm,
   aws_ec2 as ec2,
   custom_resources as cr,
@@ -1395,41 +1396,48 @@ export class VaultStack extends cdk.Stack {
     grantAuditAppend(tables.audit, this.deleteByovVault);
 
     // ===== TEST AUTOMATION ENDPOINTS =====
-    // SECURITY (#24): test endpoints are now build-flag gated, not
-    // just runtime-key gated. Before, the Lambda functions deployed
-    // to every environment and relied on an empty TEST_API_KEY to
-    // refuse traffic at runtime — which still left the IAM grants
-    // (write to invites/audit/natsAccounts) attached. Now nothing
-    // ships unless VETTID_DEPLOY_TEST_ENDPOINTS=true is explicitly
-    // set at synth time. Production deploys never set it; CI test
-    // environments opt in.
+    // SECURITY (#24): test endpoints are build-flag gated — nothing
+    // ships unless VETTID_DEPLOY_TEST_ENDPOINTS=true is set at synth
+    // time. Production deploys never set it; CI test environments opt
+    // in. Both the Lambda code AND the IAM grants are conditional, so
+    // production has no test-endpoint blast surface at all.
     //
-    // Defense in depth: when deployed, the handler still requires
-    // VETTID_TEST_API_KEY (from Secrets Manager) and rejects any
-    // request without the matching x-test-api-key header (#71).
+    // SECURITY (test-key rotation): the API key now lives in Secrets
+    // Manager (auto-generated on first deploy). Handlers fetch + cache
+    // it at cold start via common/testApiKey.ts; the env var carries
+    // the secret ARN, never the key itself. Rotate with:
+    //   aws secretsmanager update-secret --secret-id <arn> \
+    //     --secret-string "$(openssl rand -hex 32)"
+    // The CDK deploy no longer needs VETTID_TEST_API_KEY in env.
     const deployTestEndpoints = process.env.VETTID_DEPLOY_TEST_ENDPOINTS === 'true';
     if (!deployTestEndpoints) {
       console.log('VETTID_DEPLOY_TEST_ENDPOINTS not set — skipping test endpoints (production-safe default)');
     }
 
-    // SECURITY: Require explicit configuration - no fallback to prevent accidental exposure
-    const testApiKey = process.env.VETTID_TEST_API_KEY;
-    if (deployTestEndpoints && !testApiKey) {
-      console.warn('VETTID_TEST_API_KEY not set - test endpoints will be disabled');
-    }
-
    if (deployTestEndpoints) {
 
-    // SECURITY: Test endpoints use Secrets Manager for API key, not environment variables
-    // This prevents accidental exposure in CloudWatch logs, console, or error messages
+    // Auto-generated random key, lives only in Secrets Manager.
+    // Test runners fetch the value with `aws secretsmanager
+    // get-secret-value --secret-id <arn>` and pass it back as the
+    // x-test-api-key header.
+    const testApiKeySecret = new secretsmanager.Secret(this, 'TestApiKeySecret', {
+      description: 'Shared secret between vettid-dev test endpoints and vettid-test-harness. Auto-generated on first deploy; rotate via aws secretsmanager update-secret.',
+      generateSecretString: {
+        excludePunctuation: true,
+        passwordLength: 48,
+        requireEachIncludedType: false,
+      },
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
     const testEnv = {
       ...defaultEnv,
       TABLE_NATS_ACCOUNTS: tables.natsAccounts.tableName,
-      // SECURITY: API key validated in handler from Secrets Manager or env var
-      // Empty string disables test endpoints (handler returns 403)
-      TEST_API_KEY: testApiKey || '',
-      // SECURITY: API URL must be passed via stack props or SSM, not hardcoded
-      // Using placeholder that must be replaced during deployment
+      // Handlers load the actual value from Secrets Manager at cold
+      // start (common/testApiKey.ts). ARN-only here so the literal
+      // never appears in CloudWatch logs, Lambda console, or error
+      // messages.
+      TEST_API_KEY_SECRET_ARN: testApiKeySecret.secretArn,
       API_URL: process.env.VETTID_API_URL || 'https://api.vettid.dev',
     };
 
@@ -1472,6 +1480,13 @@ export class VaultStack extends cdk.Stack {
     tables.natsAccounts.grantReadWriteData(this.testCleanup);
     tables.actionTokens.grantReadWriteData(this.testCleanup);
     grantAuditAppend(tables.audit, this.testCleanup);
+
+    // Each test handler reads the shared API key from Secrets Manager
+    // at cold start. Scoped grant ensures only these three Lambdas can
+    // pull the value — not any other Lambda in the stack.
+    testApiKeySecret.grantRead(this.testHealth);
+    testApiKeySecret.grantRead(this.testCreateInvitation);
+    testApiKeySecret.grantRead(this.testCleanup);
     } // end deployTestEndpoints block
 
     // Note: Ledger (Protean Credential System) section removed
