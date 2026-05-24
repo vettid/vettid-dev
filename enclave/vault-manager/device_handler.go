@@ -116,6 +116,55 @@ func DeviceIndependentCapabilities() []string {
 		"call.reject",
 		"call.end",
 		"call.signal",
+		// Messaging — text send + mark-read. Sending a message reveals
+		// no vault secret (it's user-typed text encrypted for the peer
+		// connection's e2e key). The desktop is already authorized via
+		// the device session — same trust level as composing on the
+		// paired phone. Previously falling through to phone-required
+		// meant every desktop text triggered an approval prompt on the
+		// owner's phone (the user just *sent* the text from — bizarre
+		// loop). message.mark-read fires read-receipts and was equally
+		// non-sensitive.
+		"message.send",
+		"message.mark-read",
+		// Wallet payment requests — the requestor is asking the peer
+		// to send funds; no signing happens here. The signing op
+		// (wallet.send) stays phone-required. Symmetric with how
+		// Android handles the request side.
+		"wallet.request-payment",
+		// Outgoing-side grant ops — request, cancel, list-my-requests.
+		// The owner of the requested item still approves on their own
+		// vault; from this desktop's vault perspective, these are
+		// purely outbound-state changes (the requestor's queue) and
+		// reveal nothing new vs what message.send already exposes.
+		// list-my-requests is the read-only fetch the Profile tab
+		// uses; without it on this list, opening Profile triggered a
+		// 30s phone-approval timeout and the UI appeared hung.
+		"grant.request",
+		"grant.cancel-request",
+		"grant.list-my-requests",
+		"grant.list-outbound",
+		"grant.list-inbound",
+		"grant.list-pending",
+		// Verify-state reads + initiation. .get returns a cached
+		// boolean + timestamp; .request publishes a signed nonce
+		// challenge to the peer (cryptographic, no secret material
+		// disclosed locally). The verify pill on the Profile tab
+		// reads .get on mount — same as the grant list-my-requests
+		// case above.
+		"connection-authenticate.get",
+		"connection-authenticate.list",
+		"connection-authenticate.request",
+		// Share-policy read — fetching one's own auto-allow rules
+		// for a peer. No secret material; just policy metadata. The
+		// `set` companion stays phone-required since it changes what
+		// future requests will skip approval.
+		"share-policy.get",
+		// Presence-override read — fetching the current visibility
+		// override for a peer. The `set` counterpart stays
+		// phone-required so changing visibility still needs explicit
+		// approval.
+		"presence-override.get",
 	}
 }
 
