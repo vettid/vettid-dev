@@ -129,6 +129,15 @@ h1, h2, h3, h4, h5, h6 {
   text-transform: uppercase;
   margin-bottom: 24px;
 }
+.hero-badge a {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-color: rgba(255, 193, 37, 0.4);
+  text-underline-offset: 2px;
+}
+.hero-badge a:hover {
+  text-decoration-color: currentColor;
+}
 .page-header h1 {
   font-size: clamp(2.75rem, 7vw, 4.5rem);
   font-weight: 800;
