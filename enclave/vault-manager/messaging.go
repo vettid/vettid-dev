@@ -485,6 +485,30 @@ func (h *MessagingHandler) HandleList(msg *IncomingMessage) (*OutgoingMessage, e
 		connKey, _ = deriveConnectionKey(conn.SharedSecret)
 	}
 
+	// Resolve the `before` cursor (a message_id from a prior page) to
+	// its CreatedAt before we touch the index, so we can short-circuit
+	// the decrypt loop on every newer message. The previous version
+	// parsed `before` from the request but never applied it — every
+	// loadOlder call from the desktop returned the same page, so any
+	// conversation longer than `limit` was effectively un-paginable.
+	// Strictly older than the cursor (exclusive) so the desktop never
+	// receives the same row twice across pages.
+	var beforeTime time.Time
+	var hasBefore bool
+	if req.Before != "" {
+		cursorKey := fmt.Sprintf("messages/%s/%s", req.ConnectionID, req.Before)
+		cursorData, err := h.storage.Get(cursorKey)
+		if err != nil {
+			return h.errorResponse(msg.GetID(), "before cursor not found")
+		}
+		var cursor MessageRecord
+		if err := json.Unmarshal(cursorData, &cursor); err != nil {
+			return h.errorResponse(msg.GetID(), "before cursor malformed")
+		}
+		beforeTime = cursor.CreatedAt
+		hasBefore = true
+	}
+
 	// Load message index for this connection
 	indexKey := fmt.Sprintf("messages/%s/_index", req.ConnectionID)
 	var messageIDs []string
@@ -512,6 +536,20 @@ func (h *MessagingHandler) HandleList(msg *IncomingMessage) (*OutgoingMessage, e
 		}
 		var record MessageRecord
 		if json.Unmarshal(data, &record) != nil {
+			continue
+		}
+
+		// Apply the `before` cursor: only rows strictly older than the
+		// cursor message survive. Compare on time.Time (nanosecond
+		// precision) rather than the RFC3339 second-truncated string
+		// returned to the client — two messages in the same second
+		// would otherwise both be excluded or both kept.
+		if hasBefore && !record.CreatedAt.Before(beforeTime) {
+			continue
+		}
+		// Defensive: exclude the cursor itself even if a same-instant
+		// timestamp slips through.
+		if hasBefore && record.MessageID == req.Before {
 			continue
 		}
 
