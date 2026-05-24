@@ -4294,6 +4294,18 @@ func (h *ConnectionsHandler) loadAccountSeed() (string, error) {
 	return seed, nil
 }
 
+// isPlaceholderName returns true if the stored label is one of the
+// generic defaults the old invite UI fell back to when the owner
+// didn't enter a name ("Agent", "Desktop", or empty). Item #33's
+// auto-derive logic uses this to know when to compute a friendlier
+// display name from hostname / agent_type instead of showing the
+// placeholder. Owner-set labels (anything other than empty + the
+// known defaults) are preserved as-is.
+func isPlaceholderName(name, defaultLabel string) bool {
+	name = strings.TrimSpace(name)
+	return name == "" || name == defaultLabel
+}
+
 // HandleListDeviceConnections returns all device connections with session status.
 func (h *ConnectionsHandler) HandleListDeviceConnections(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
 	indexData, err := h.storage.Get("connections/_index")
@@ -4331,9 +4343,32 @@ func (h *ConnectionsHandler) HandleListDeviceConnections(ctx context.Context, ms
 			continue
 		}
 
+		// Filter pending-invite records — they're mid-pairing rather
+		// than actual paired desktops. Item #28 wants these in the
+		// connection-history surface rather than the live device list.
+		if record.Status == "pending" {
+			continue
+		}
+
+		// Auto-derive a display name when the invite didn't carry an
+		// owner-set label (item #33). Fall back to the device's
+		// hostname when available, then a generic "Desktop". Owner-
+		// provided labels still take precedence so anything the user
+		// explicitly named stays as named.
+		deviceName := record.PeerAlias
+		if isPlaceholderName(deviceName, "Desktop") {
+			deviceName = ""
+		}
+		if deviceName == "" && record.DeviceMetadata != nil {
+			deviceName = record.DeviceMetadata.Hostname
+		}
+		if deviceName == "" {
+			deviceName = "Desktop"
+		}
+
 		info := DeviceInfo{
 			ConnectionID: record.ConnectionID,
-			DeviceName:   record.PeerAlias,
+			DeviceName:   deviceName,
 			Status:       record.Status,
 			ConnectedAt:  record.CreatedAt.Format(time.RFC3339),
 		}
@@ -4526,23 +4561,53 @@ func (h *ConnectionsHandler) HandleListAgentConnections(ctx context.Context, msg
 			status = "revoked"
 		}
 
+		// Pull metadata up first so the auto-name derivation below
+		// can use it.
+		agentType := ""
+		hostname := ""
+		platform := ""
+		if record.AgentMetadata != nil {
+			agentType = record.AgentMetadata.AgentType
+			hostname = record.AgentMetadata.Hostname
+			platform = record.AgentMetadata.Platform
+		}
+
+		// Auto-derive a display name when the invite didn't carry an
+		// owner-set label (item #33). Prefer "agent-type @ hostname"
+		// because that's what the AgentManagementScreen historically
+		// showed; fall back to hostname alone, then agent_type, then
+		// the generic "Agent". Owner-provided labels stay as set.
+		agentName := record.PeerAlias
+		if isPlaceholderName(agentName, "Agent") {
+			agentName = ""
+		}
+		if agentName == "" {
+			switch {
+			case agentType != "" && hostname != "":
+				agentName = agentType + " @ " + hostname
+			case hostname != "":
+				agentName = hostname
+			case agentType != "":
+				agentName = agentType
+			default:
+				agentName = "Agent"
+			}
+		}
+
 		info := AgentInfo{
 			ConnectionID: record.ConnectionID,
-			AgentName:    record.PeerAlias,
+			AgentName:    agentName,
 			Status:       status,
 			PairedAt:     record.CreatedAt.UTC().Format(time.RFC3339),
+			AgentType:    agentType,
+			Hostname:     hostname,
+			Platform:     platform,
 		}
 
 		if record.Contract != nil {
 			info.ApprovalMode = record.Contract.ApprovalMode
 			info.Scope = record.Contract.Scope
 			info.RateLimit = record.Contract.RateLimit
-		}
-
-		if record.AgentMetadata != nil {
-			info.AgentType = record.AgentMetadata.AgentType
-			info.Hostname = record.AgentMetadata.Hostname
-			info.Platform = record.AgentMetadata.Platform
 		}
 
 		if record.LastActiveAt != nil {
