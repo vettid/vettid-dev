@@ -5,8 +5,7 @@ client with a phone, independent of the enclave persist wedge.
 
 ## Symptoms
 
-Observed pairing the desktop with mesmer (`af44310d`, Pixel 7
-`28121FDH2009C5`):
+Observed pairing the desktop with mesmer (`af44310d`, Pixel 7):
 
 1. **No device details** — hostname, OS, IP of the pairing desktop are
    not shown (the phone's authorize screen has nothing to display).
@@ -26,8 +25,8 @@ of the three failures to a specific hop, then fix.
 - Desktop: fresh `cargo tauri dev`, capture stdout (Rust log). Confirm
   `Connected to NATS` before starting — the desktop has had repeated
   stale-NATS-client bugs today; rule that out first.
-- Phone (mesmer, Pixel 7 `28121FDH2009C5`): `adb -s 28121FDH2009C5
-  logcat -c`, then capture `-v threadtime`.
+- Phone (mesmer, Pixel 7): `adb -s <pixel-7-serial> logcat -c`, then
+  capture `-v threadtime`.
 - Enclave: `aws ssm` journal pull for owner-space `af44310d` over the
   attempt window.
 

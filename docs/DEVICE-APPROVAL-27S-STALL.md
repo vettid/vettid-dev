@@ -360,8 +360,8 @@ not a wedge — but also unverified: confirm the watchdog still works).
 - `// DIAG` instrumentation is LIVE in v3 — **keep it** until this is
   fixed.
 - Enclave journal: SSM `aws ssm send-command` to `i-090355f5f1a8c2d4c`,
-  unit `vettid-parent`. Pixel 9 = `4B081FDAP004V0` (al / `eb8472f6`),
-  Pixel 7 = `28121FDH2009C5` (mesmer / `af44310d`). `af44310d` never
+  unit `vettid-parent`. Pixel 9 (al / `eb8472f6`),
+  Pixel 7 (mesmer / `af44310d`). `af44310d` never
   stalls (no desktop → no `forOwner.device` burst).
 - Code map: `supervisor/vault_lifecycle.go` `ProcessMessage` (procMu
   ~432, select ~493); `vault-manager/main.go` main loop (the `0aa49e9`
