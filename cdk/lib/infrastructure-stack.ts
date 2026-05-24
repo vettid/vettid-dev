@@ -11,6 +11,7 @@ import {
   aws_s3 as s3,
   aws_secretsmanager as secretsmanager,
   aws_kms as kms,
+  custom_resources as cr,
 } from 'aws-cdk-lib';
 
 /**
@@ -1251,7 +1252,8 @@ export class InfrastructureStack extends cdk.Stack {
       },
       lambdaTriggers: {
         preTokenGeneration: preTokenGeneration,
-        postAuthentication: postAuthentication,
+        // PostAuthentication is attached post-creation via AwsCustomResource
+        // below to break a CloudFormation dependency cycle. See SECURITY (#87).
       },
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
@@ -1260,33 +1262,75 @@ export class InfrastructureStack extends cdk.Stack {
     new cognito.CfnUserPoolGroup(this, 'AdminGroup', { userPoolId: adminUserPool.userPoolId, groupName: 'admin' });
 
     // SECURITY (#87): scope PostAuthentication's AdminUpdateUserAttributes
-    // grant as tightly as the CloudFormation dependency graph allows.
+    // grant to the specific admin pool ARN, breaking the previous
+    // CloudFormation cycle (AdminUserPool → lambdaTriggers.postAuth →
+    // role → policy → AdminUserPool) by installing the trigger
+    // out-of-band with an AwsCustomResource.
     //
-    // The intent of #87 was to pin to `adminUserPool.userPoolArn` (one
-    // specific pool). That referenced the L2 construct and created a
-    // cycle: AdminUserPool → lambdaTriggers.postAuthentication → role
-    // → policy → AdminUserPool. CloudFormation rejected the deploy on
-    // every attempt (silently — caught for the first time when LEASH
-    // Sprint 2 tried to deploy 2026-05-23).
-    //
-    // The achievable tightening without a custom-resource trigger
-    // rewire: pattern the ARN with the regional pool-ID prefix
-    // (`{region}_*`) using only Aws pseudo-parameters. This grants
-    // AdminUpdateUserAttributes on every user pool in THIS region +
-    // account, which still rules out cross-account or cross-region
-    // misuse but no longer pins to a single pool. Original
-    // `userpool/*` (any region, any pool) was broader still.
-    //
-    // To recover the strict per-pool scope, the proper fix is an
-    // AwsCustomResource that attaches the trigger AFTER both the pool
-    // and the Lambda's policy are settled, breaking the dependency
-    // edge. Tracked as follow-up; not required for the demo timeline.
+    // The pool is created without a PostAuthentication trigger; once
+    // both the pool and the Lambda's policy + invoke-permission are
+    // settled, a one-shot AwsCustomResource calls UpdateUserPool to
+    // wire the trigger in. The custom resource also re-asserts the
+    // PreTokenGeneration trigger because UpdateUserPool replaces the
+    // entire LambdaConfig — leaving PreTokenGeneration off here would
+    // strip what the L2 set.
     postAuthentication.addToRolePolicy(new iam.PolicyStatement({
       actions: ['cognito-idp:AdminUpdateUserAttributes'],
-      resources: [
-        `arn:aws:cognito-idp:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:userpool/${cdk.Aws.REGION}_*`,
-      ],
+      resources: [adminUserPool.userPoolArn],
     }));
+    // Cognito needs explicit InvokeFunction permission to fire the
+    // trigger — the L2 lambdaTriggers prop adds this for triggers
+    // declared inline, but we're installing this one after the fact.
+    postAuthentication.addPermission('AllowCognitoInvoke', {
+      principal: new iam.ServicePrincipal('cognito-idp.amazonaws.com'),
+      action: 'lambda:InvokeFunction',
+      sourceArn: adminUserPool.userPoolArn,
+    });
+    // Attach PostAuthentication (and re-assert PreTokenGeneration so
+    // it doesn't get cleared by UpdateUserPool's full-replacement
+    // semantics on LambdaConfig).
+    new cr.AwsCustomResource(this, 'AdminUserPoolPostAuthTrigger', {
+      resourceType: 'Custom::CognitoLambdaTriggerWire',
+      onCreate: {
+        service: 'CognitoIdentityServiceProvider',
+        action: 'updateUserPool',
+        parameters: {
+          UserPoolId: adminUserPool.userPoolId,
+          LambdaConfig: {
+            PreTokenGeneration: preTokenGeneration.functionArn,
+            PostAuthentication: postAuthentication.functionArn,
+          },
+        },
+        physicalResourceId: cr.PhysicalResourceId.of(
+          `${adminUserPool.userPoolId}-postauth-trigger`,
+        ),
+      },
+      onUpdate: {
+        service: 'CognitoIdentityServiceProvider',
+        action: 'updateUserPool',
+        parameters: {
+          UserPoolId: adminUserPool.userPoolId,
+          LambdaConfig: {
+            PreTokenGeneration: preTokenGeneration.functionArn,
+            PostAuthentication: postAuthentication.functionArn,
+          },
+        },
+        physicalResourceId: cr.PhysicalResourceId.of(
+          `${adminUserPool.userPoolId}-postauth-trigger`,
+        ),
+      },
+      // No onDelete: when the pool is destroyed (removalPolicy.DESTROY
+      // on the L2) the trigger goes with it; explicit clear is a no-op.
+      policy: cr.AwsCustomResourcePolicy.fromStatements([
+        new iam.PolicyStatement({
+          actions: ['cognito-idp:UpdateUserPool', 'cognito-idp:DescribeUserPool'],
+          resources: [adminUserPool.userPoolArn],
+        }),
+        // UpdateUserPool requires iam:PassRole-equivalent access via
+        // a service-linked lambda invoke permission — already granted
+        // on the Lambda above. The CR itself just needs UpdateUserPool.
+      ]),
+    });
 
     // Custom UI for admin Cognito hosted UI - matches VettID branding
     // Note: Cognito only allows specific CSS classes without pseudo-selectors
