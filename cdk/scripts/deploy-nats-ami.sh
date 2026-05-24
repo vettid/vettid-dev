@@ -318,9 +318,20 @@ max_connections: 10000
 max_payload: 1MB
 max_pending: 64MB
 
-# Note: TLS disabled for internal connections
-# Data is already encrypted at the application layer (Protean Credential)
-# and NATS is only accessible within the private VPC
+# TLS — advertised but not required. The NLB terminates TLS for
+# external clients using its public ACM cert and forwards plain TCP
+# to this listener, so requiring TLS at the listener would break
+# NLB → backend. allow_non_tls (top-level, not inside the tls block)
+# keeps the NLB path working while still advertising tls_available=true
+# in the server INFO message — without that, clients that opt into
+# TLS (e.g. Go's nats.go nats.Secure() check) reject the connection
+# because INFO doesn't mention TLS.
+tls {
+    cert_file: /etc/nats/certs/server.crt
+    key_file: /etc/nats/certs/server.key
+    timeout: 2
+}
+allow_non_tls: true
 CONFEOF
 
 # Add operator/resolver config if available
