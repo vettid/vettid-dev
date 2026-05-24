@@ -232,6 +232,17 @@ Four buckets being filled in as we triage:
 36. **M16** S3 buckets using SSE-S3 instead of SSE-KMS CMK (8 buckets).
 37. **M17** DynamoDB `removalPolicy: DESTROY` on all tables — `infrastructure-stack.ts`.
 38. **M18** WAF cannot protect HTTP API v2 directly — `vettid-stack.ts`.
+    **Blocked (2026-05-24)** on api-base-URL client migration. The
+    preferred fix (CloudFront-only ingress + shared origin secret) is
+    the right architecture but requires Android, iOS, desktop, and
+    agent CLI to switch their base URL from `https://api.vettid.dev/...`
+    to `https://vettid.dev/api/...` so all traffic transits the
+    CloudFront WebACL. Direct api.vettid.dev hits would 403. That
+    client migration is a coordinated rollout in its own right; pick
+    this back up when it's on deck. Public protection today still
+    comes from the CloudFront WebACL on `/api/*` for traffic that
+    already routes that way (the gamified leash page does); other
+    clients rely on Cognito + route-level limits.
 39. **M19** Member Cognito user pool has no MFA — `infrastructure-stack.ts`.
 40. **M20** SNS security alert topic has no subscribers — `vettid-stack.ts`.
 
