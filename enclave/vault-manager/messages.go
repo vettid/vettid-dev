@@ -1466,9 +1466,8 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 		// Agent management operations (from mobile app)
 		return mh.handleAgentOperation(ctx, msg, parts[opIndex+1:])
 	case "leash":
-		// LEASH token issuance for agent delegation (see
-		// docs/LEASH-TOKEN-FORMAT.md). Only `attest` is wired in
-		// Sprint 1; revocation + status land in Sprint 2.
+		// LEASH token issuance + revocation for agent delegation (see
+		// docs/LEASH-TOKEN-FORMAT.md).
 		return mh.handleLeashOperation(ctx, msg, parts[opIndex+1:])
 	case "device":
 		// Device management operations (from mobile app)
@@ -1577,13 +1576,12 @@ func (mh *MessageHandler) handleAgentOperation(ctx context.Context, msg *Incomin
 	}
 }
 
-// handleLeashOperation routes LEASH token issuance operations.
+// handleLeashOperation routes LEASH token issuance + revocation.
 // Format: forVault.leash.{sub-operation}
 //
-// Sprint 1 wires only `attest`. Sprint 2 adds:
-//   - `revoke` — owner revokes a previously-issued leash by jti
-//   - `status` — internal lookup used by the public Lambda
-//   - `list` — owner sees outstanding leashes
+// Wired: `attest` (mint), `revoke` (owner pulls back a previously-
+// issued leash by jti — re-publishes the DDB row so public verifiers
+// see `revoked=true` on their next status check).
 //
 // All leash ops are owner-only (phone-required at the device tier) —
 // nobody but the user should be able to mint leashes on the user's
@@ -1603,6 +1601,8 @@ func (mh *MessageHandler) handleLeashOperation(ctx context.Context, msg *Incomin
 	switch opType {
 	case "attest":
 		return mh.leashHandler.HandleGrantAttest(ctx, msg)
+	case "revoke":
+		return mh.leashHandler.HandleRevoke(ctx, msg)
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown leash operation: %s", opType))
 	}

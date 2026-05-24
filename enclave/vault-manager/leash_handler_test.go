@@ -417,6 +417,119 @@ func TestLeash_Reject_NonAgentConnection(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Revoke tests
+// ---------------------------------------------------------------------------
+
+func invokeRevoke(t *testing.T, h *LeashHandler, req RevokeRequest) (*RevokeResponse, map[string]interface{}) {
+	t.Helper()
+	body, _ := json.Marshal(req)
+	msg := &IncomingMessage{Type: MessageTypeVaultOp, Payload: body}
+	out, err := h.HandleRevoke(context.Background(), msg)
+	if err != nil {
+		t.Fatalf("HandleRevoke: %v", err)
+	}
+	if out == nil {
+		t.Fatalf("HandleRevoke returned nil")
+	}
+	var resp RevokeResponse
+	_ = json.Unmarshal(out.Payload, &resp)
+	var generic map[string]interface{}
+	_ = json.Unmarshal(out.Payload, &generic)
+	return &resp, generic
+}
+
+func TestLeash_Revoke_MarksRecordRevoked(t *testing.T) {
+	h, encStorage, cleanup := setupLeashHandler(t)
+	defer cleanup()
+
+	connID := "agent-conn-revoke"
+	seedAgentConnection(t, encStorage, connID)
+	_, agentPubB64 := freshAgentEd25519(t)
+	_, attestResp, _ := invokeAttest(t, h, GrantAttestRequest{
+		ConnectionID: connID,
+		AgentPubkey:  agentPubB64,
+		Scope:        []string{"profile.email:read"},
+		DurationSecs: 600,
+	})
+
+	resp, _ := invokeRevoke(t, h, RevokeRequest{JTI: attestResp.JTI, Reason: "owner revoked from app"})
+	if !resp.Revoked {
+		t.Fatalf("revoke response should report Revoked=true, got %#v", resp)
+	}
+	if resp.JTI != attestResp.JTI {
+		t.Errorf("jti mismatch: revoke=%q attest=%q", resp.JTI, attestResp.JTI)
+	}
+	if resp.RevokedAt == 0 {
+		t.Errorf("revoked_at should be set, got 0")
+	}
+	if resp.Reason != "owner revoked from app" {
+		t.Errorf("reason mismatch: got %q", resp.Reason)
+	}
+
+	rec, ok, err := h.IssuedRecord(attestResp.JTI)
+	if err != nil || !ok {
+		t.Fatalf("issuance record gone after revoke (err=%v ok=%v)", err, ok)
+	}
+	if !rec.Revoked {
+		t.Errorf("persisted record not marked revoked")
+	}
+	if rec.RevokedAt == 0 {
+		t.Errorf("persisted record missing revoked_at")
+	}
+	if rec.Reason != "owner revoked from app" {
+		t.Errorf("persisted reason mismatch: got %q", rec.Reason)
+	}
+}
+
+func TestLeash_Revoke_IsIdempotent(t *testing.T) {
+	h, encStorage, cleanup := setupLeashHandler(t)
+	defer cleanup()
+
+	connID := "agent-conn-revoke-2x"
+	seedAgentConnection(t, encStorage, connID)
+	_, agentPubB64 := freshAgentEd25519(t)
+	_, attestResp, _ := invokeAttest(t, h, GrantAttestRequest{
+		ConnectionID: connID,
+		AgentPubkey:  agentPubB64,
+		Scope:        []string{"profile.email:read"},
+		DurationSecs: 600,
+	})
+
+	first, _ := invokeRevoke(t, h, RevokeRequest{JTI: attestResp.JTI, Reason: "first"})
+	if !first.Revoked {
+		t.Fatalf("first revoke should succeed")
+	}
+	second, _ := invokeRevoke(t, h, RevokeRequest{JTI: attestResp.JTI, Reason: "second"})
+	if !second.Revoked {
+		t.Fatalf("second revoke should report revoked=true (idempotent), got %#v", second)
+	}
+	// Idempotent path returns the stored timestamp + reason from the
+	// original revoke — second call must not overwrite.
+	if second.RevokedAt != first.RevokedAt {
+		t.Errorf("revoked_at changed on second revoke: first=%d second=%d", first.RevokedAt, second.RevokedAt)
+	}
+	if second.Reason != "first" {
+		t.Errorf("second revoke overwrote reason: got %q want %q", second.Reason, "first")
+	}
+}
+
+func TestLeash_Revoke_UnknownJTI(t *testing.T) {
+	h, _, cleanup := setupLeashHandler(t)
+	defer cleanup()
+
+	_, generic := invokeRevoke(t, h, RevokeRequest{JTI: "leash-does-not-exist"})
+	expectError(t, generic, "not found")
+}
+
+func TestLeash_Revoke_RejectsEmptyJTI(t *testing.T) {
+	h, _, cleanup := setupLeashHandler(t)
+	defer cleanup()
+
+	_, generic := invokeRevoke(t, h, RevokeRequest{JTI: ""})
+	expectError(t, generic, "jti")
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 

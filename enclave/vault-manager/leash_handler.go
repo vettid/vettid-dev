@@ -109,6 +109,20 @@ type GrantAttestResponse struct {
 	ExpiresAt  int64  `json:"expires_at"`
 }
 
+// RevokeRequest is the payload of a `leash.revoke` op.
+type RevokeRequest struct {
+	JTI    string `json:"jti"`              // jti of the leash to revoke
+	Reason string `json:"reason,omitempty"` // optional human-readable reason
+}
+
+// RevokeResponse is what the vault returns after marking a LEASH revoked.
+type RevokeResponse struct {
+	JTI       string `json:"jti"`
+	Revoked   bool   `json:"revoked"`
+	RevokedAt int64  `json:"revoked_at"`
+	Reason    string `json:"reason,omitempty"`
+}
+
 // LeashHandler owns the user's attestation key + issued-leash records.
 type LeashHandler struct {
 	ownerSpace  string
@@ -303,6 +317,102 @@ func (h *LeashHandler) HandleGrantAttest(ctx context.Context, msg *IncomingMessa
 		IssuedAt:  issuedAt,
 		ExpiresAt: expiresAt,
 	}
+	respBytes, _ := json.Marshal(resp)
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// HandleRevoke marks a previously-issued LEASH as revoked. Authorization
+// is implicit: the per-user issuance record only exists in the minting
+// vault, so a caller can only revoke leashes they personally minted.
+// The DDB row is re-published with `revoked=true` so public verifiers
+// see the new state on their next status check.
+//
+// This op MUST be phone-required at the device-handler tier for the
+// same reason HandleGrantAttest is — revoking is an owner-level decision
+// about an outstanding delegation.
+//
+// Idempotent: revoking an already-revoked leash returns the existing
+// record without writing again.
+func (h *LeashHandler) HandleRevoke(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req RevokeRequest
+	if err := unmarshalRequest(msg.Payload, &req, "HandleRevoke"); err != nil {
+		return h.errorResponse(msg.GetID(), "invalid request format")
+	}
+	if req.JTI == "" {
+		return h.errorResponse(msg.GetID(), "jti is required")
+	}
+
+	rec, ok, err := h.IssuedRecord(req.JTI)
+	if err != nil {
+		log.Error().Err(err).Str("jti", req.JTI).Msg("Failed to read leash issuance record")
+		return h.errorResponse(msg.GetID(), "issuance record unreadable")
+	}
+	if !ok {
+		return h.errorResponse(msg.GetID(), "jti not found in this vault")
+	}
+
+	if rec.Revoked {
+		resp := RevokeResponse{JTI: rec.JTI, Revoked: true, RevokedAt: rec.RevokedAt, Reason: rec.Reason}
+		respBytes, _ := json.Marshal(resp)
+		return &OutgoingMessage{
+			RequestID: msg.GetID(),
+			Type:      MessageTypeResponse,
+			Payload:   respBytes,
+		}, nil
+	}
+
+	now := time.Now().Unix()
+	rec.Revoked = true
+	rec.RevokedAt = now
+	rec.Reason = req.Reason
+
+	recBytes, err := json.Marshal(rec)
+	if err != nil {
+		log.Error().Err(err).Str("jti", req.JTI).Msg("marshal revoked record")
+		return h.errorResponse(msg.GetID(), "record encoding failed")
+	}
+	if err := h.storage.Put(leashIssuedRecordStorageKeyPrefix+req.JTI, recBytes); err != nil {
+		log.Error().Err(err).Str("jti", req.JTI).Msg("persist revoked record")
+		return h.errorResponse(msg.GetID(), "persist failed")
+	}
+
+	if h.sealerProxy != nil {
+		publicRow := map[string]interface{}{
+			"jti":            rec.JTI,
+			"subject":        rec.Subject,
+			"scope":          rec.Scope,
+			"issued_at":      rec.IssuedAt,
+			"expires_at":     rec.ExpiresAt,
+			"expires_at_ttl": rec.ExpiresAt,
+			"iss":            "did:vettid:" + h.ownerSpace,
+			"revoked":        true,
+			"revoked_at":     now,
+		}
+		if req.Reason != "" {
+			publicRow["reason"] = req.Reason
+		}
+		pubBytes, perr := json.Marshal(publicRow)
+		if perr != nil {
+			log.Error().Err(perr).Str("jti", req.JTI).Msg("marshal public revoked leash row")
+			return h.errorResponse(msg.GetID(), "leash revoke encoding failed")
+		}
+		if perr := h.sealerProxy.PublishLeashIssued(pubBytes); perr != nil {
+			log.Error().Err(perr).Str("jti", req.JTI).Msg("publish revoked leash to DDB")
+			return h.errorResponse(msg.GetID(), "leash revoke publish failed")
+		}
+	}
+
+	log.Info().
+		Str("owner_space", h.ownerSpace).
+		Str("jti", req.JTI).
+		Str("reason", req.Reason).
+		Msg("LEASH revoked")
+
+	resp := RevokeResponse{JTI: rec.JTI, Revoked: true, RevokedAt: now, Reason: req.Reason}
 	respBytes, _ := json.Marshal(resp)
 	return &OutgoingMessage{
 		RequestID: msg.GetID(),
