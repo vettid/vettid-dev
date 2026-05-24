@@ -362,8 +362,14 @@ func (h *ConnectionsHandler) HandleAgentAuthorizeSession(ctx context.Context, ms
 	}
 
 	if h.eventHandler != nil {
+		// "Connection created" rather than "session created" — Stage-2
+		// authorize is the moment a brand-new agent connection becomes
+		// usable; the session inside it is just the time-bounded key.
+		// Future renewals (HandleAgentExtendSession) keep the "session
+		// extended" wording since they're renewing the key on an
+		// existing connection.
 		h.eventHandler.LogConnectionEvent(ctx, EventTypeAgentSessionCreated, record.ConnectionID, "",
-			fmt.Sprintf("Agent session created (%s, %ds, %d scope tokens)", record.PeerAlias, duration, len(req.GrantedScope)))
+			fmt.Sprintf("Agent connection created (%s, %ds, %d scope tokens)", record.PeerAlias, duration, len(req.GrantedScope)))
 	}
 
 	log.Info().
