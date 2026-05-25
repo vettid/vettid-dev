@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -101,19 +100,11 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	startJournalForwarding(s.SendLog)
 
 	// Stall watchdog: dumps every supervisor goroutine stack to the
-	// parent journal if a vault op runs past supervisorOpStallThreshold,
-	// and SIGUSR1s the stalled owner's subprocess so it dumps its own
-	// goroutines too (the supervisor dump cannot see inside the
-	// vault-manager). See stall_watchdog.go.
-	go runSupervisorStallWatchdog(ctx, s.SendLog, func(ownerSpace string) {
-		if err := s.vaults.SignalSubprocess(ownerSpace, syscall.SIGUSR1); err != nil {
-			log.Debug().Err(err).Str("owner_space", ownerSpace).
-				Msg("stall watchdog: could not SIGUSR1 subprocess")
-		} else {
-			log.Warn().Str("owner_space", ownerSpace).
-				Msg("stall watchdog: sent SIGUSR1 to subprocess for goroutine dump")
-		}
-	})
+	// parent journal if a vault op runs past supervisorOpStallThreshold.
+	// The subprocess goroutine-dump-on-SIGUSR1 path was stripped for
+	// tech preview — the supervisor dump alone covers procMu / pipe
+	// stalls, which are the cases the watchdog flags in practice.
+	go runSupervisorStallWatchdog(ctx, s.SendLog, func(ownerSpace string) {})
 
 	// Accept connections in a loop
 	for {

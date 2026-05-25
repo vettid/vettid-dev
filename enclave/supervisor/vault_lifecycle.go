@@ -428,15 +428,8 @@ func newPipeID() string {
 // serviced without stalling. Ops for other users use other
 // VaultProcess instances and run fully in parallel.
 func (vp *VaultProcess) ProcessMessage(ctx context.Context, msg *Message) (*Message, error) {
-	procMuWaitStart := time.Now() // DIAG: measure per-user procMu contention
 	vp.procMu.Lock()
 	defer vp.procMu.Unlock()
-	if waited := time.Since(procMuWaitStart); waited > 100*time.Millisecond { // DIAG
-		log.Debug().
-			Str("owner_space", vp.OwnerSpace).
-			Dur("procmu_wait", waited).
-			Msg("DIAG: ProcessMessage acquired procMu after contention")
-	}
 
 	vp.touch()
 
@@ -472,7 +465,6 @@ func (vp *VaultProcess) ProcessMessage(ctx context.Context, msg *Message) (*Mess
 		vp.pendingMu.Unlock()
 	}()
 
-	writeStart := time.Now() // DIAG
 	if err := conn.WriteMessage(msg); err != nil {
 		log.Error().
 			Err(err).
@@ -480,14 +472,6 @@ func (vp *VaultProcess) ProcessMessage(ctx context.Context, msg *Message) (*Mess
 			Msg("Failed to send message to vault-manager subprocess")
 		return nil, fmt.Errorf("vault-manager send error: %w", err)
 	}
-	log.Debug(). // DIAG: op handed to the subprocess; the gap from here to
-		// the response is in-subprocess time (covered by the vault-manager
-		// watchdog); a long gap before here is supervisor-side.
-		Str("owner_space", vp.OwnerSpace).
-		Str("pipe_id", pipeID).
-		Str("subject", msg.Subject).
-		Dur("write_dur", time.Since(writeStart)).
-		Msg("DIAG: ProcessMessage wrote op to subprocess; awaiting response")
 
 	const opTimeout = 30 * time.Second
 	select {

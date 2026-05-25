@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"os"
 	"strings"
 	"sync"
@@ -19,10 +20,9 @@ import (
 // stall-watchdog dump — was invisible in production. The 2026-05-21
 // device-approval stall investigation needed supervisor visibility.
 //
-// PREVIEW NOTE: this forwards EVERY level, including DEBUG, which is
-// high volume over the mux. Before tech-preview either remove this tee
-// or gate it to WARN+ (keep DEBUG console-only). It is otherwise
-// genuine, keepable observability — not throwaway // DIAG scaffolding.
+// Journal forwarding is gated at WARN+ (see journalMinLevel) so DEBUG
+// chatter stays console-only and doesn't flood the mux. Bump back to
+// DEBUG via this constant only when actively investigating something.
 //
 // Forwarding is asynchronous and lossy by design: Write does a
 // non-blocking enqueue and drops on a full queue, so logging never
@@ -31,6 +31,30 @@ import (
 // item drained by the single forwarder goroutine.
 
 const journalLogQueueSize = 512
+
+// journalMinLevel is the minimum zerolog level forwarded to the parent
+// journal. Below this stays console-only.
+const journalMinLevel = zerolog.WarnLevel
+
+// leveledLevelWriter is a zerolog.LevelWriter that drops events below
+// journalMinLevel before they reach the inner writer. The unfiltered
+// Write path is required so direct io.Writer use (e.g. internal zerolog
+// bookkeeping) compiles, but the per-event log path always routes
+// through WriteLevel — which is where the filtering happens.
+type leveledLevelWriter struct {
+	inner io.Writer
+}
+
+func (w *leveledLevelWriter) Write(p []byte) (int, error) {
+	return w.inner.Write(p)
+}
+
+func (w *leveledLevelWriter) WriteLevel(level zerolog.Level, p []byte) (int, error) {
+	if level < journalMinLevel {
+		return len(p), nil
+	}
+	return w.inner.Write(p)
+}
 
 // journalLogWriter is an io.Writer that hands formatted log lines to an
 // async forwarder goroutine.
@@ -73,7 +97,8 @@ func newSupervisorLogger() zerolog.LevelWriter {
 	})
 	stderrConsole := zerolog.ConsoleWriter{Out: os.Stderr, NoColor: true}
 	journalConsole := zerolog.ConsoleWriter{Out: supervisorJournal, NoColor: true}
-	return zerolog.MultiLevelWriter(stderrConsole, journalConsole)
+	filteredJournal := &leveledLevelWriter{inner: journalConsole}
+	return zerolog.MultiLevelWriter(stderrConsole, filteredJournal)
 }
 
 // startJournalForwarding launches the forwarder goroutine once a parent
