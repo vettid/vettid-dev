@@ -154,9 +154,22 @@
         time.
       </p>
       <p class="muted">
-        You'll need a real LEASH JWT from your VettID vault (mint via the desktop
-        or mobile app — coming after the next enclave deploy).
+        You'll need a real LEASH JWT from your VettID vault. Two ways to mint one:
       </p>
+      <ul class="muted">
+        <li>
+          <strong>Agent-initiated</strong> (recommended):
+          <code>vettid-agent leash mint --scope profile.email:read</code> on a paired
+          agent will publish an approval request to your phone; tap Approve and the
+          JWT lands in the CLI's stdout — nothing to copy by hand.
+        </li>
+        <li>
+          <strong>Phone-initiated</strong>: in the VettID app, open
+          Settings → Agent Connections → your agent → <em>Mint LEASH</em>,
+          paste the agent's Ed25519 pubkey (from <code>vettid-agent leash pubkey</code>),
+          pick scopes, hit Mint.
+        </li>
+      </ul>
       <button id="liveSpawnBtn" class="btn btn-primary">Spawn live session</button>
     </div>
 
