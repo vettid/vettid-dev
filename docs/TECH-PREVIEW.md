@@ -17,8 +17,11 @@ A few things to know up front:
 
 - **Data loss is possible**, though not expected. Treat anything you put
   in the vault during the preview as recoverable from another source.
-  **Use the Backup feature** in Settings (mobile) — it produces an
-  encrypted blob you can re-import if a reset is needed.
+  A Backup feature exists in Settings (mobile) — it produces an encrypted
+  blob and a recovery codeword — but the **end-to-end restore path
+  hasn't been verified through the tech-preview cycle yet**, so don't
+  treat it as a guaranteed safety net. Verification of the restore
+  flow is itself an open preview workstream; reports welcome.
 - **This is the result of one person working in their spare time**
   alongside a full-time job. The cryptographic primitives and enclave
   isolation are solid; the surrounding UX has rough edges. Expect to
@@ -128,12 +131,26 @@ attestation).
 ### Agent connector (Linux / macOS)
 
 For programmatic access from an AI agent or scripting host. Pre-built
-binaries ship on the
+binaries are posted on the
 [vettid-agent releases](https://github.com/vettid/vettid-agent/releases)
-page for `linux/amd64`, `linux/arm64`, and `darwin/arm64`.
+page **when available** — the release pipeline is currently manual
+(GitHub Actions doesn't have the build environment we need for the
+cross-compile path), so a release might lag a few days behind the
+mobile + desktop builds. If the release page doesn't have a binary
+for your platform yet, build from source:
 
 ```bash
-# After download:
+git clone https://github.com/vettid/vettid-agent
+cd vettid-agent
+make build   # produces ./vettid-agent for your current platform
+# or `make release` for the cross-platform set
+./vettid-agent init <invite-code> --type my-agent
+./vettid-agent start
+```
+
+Requires Go 1.22+. From a downloaded release:
+
+```bash
 chmod +x vettid-agent
 ./vettid-agent init <invite-code> --type my-agent
 ./vettid-agent start
@@ -141,7 +158,7 @@ chmod +x vettid-agent
 
 Invite codes are minted from the phone (Settings → Agent Connections →
 Create Invitation). See the `vettid-agent leash` subcommand for
-delegated capability tokens.
+delegated capability tokens (LEASH JWTs scoped to specific resources).
 
 ---
 
@@ -155,7 +172,8 @@ delegated capability tokens.
 | Secret storage + retrieval (minor secrets) | **Stable** |
 | Critical secrets (seed phrases, signing keys) | **Stable** |
 | BTC wallet | **Stable** |
-| Backup + restore | **Stable** |
+| Backup creation | **Beta** |
+| Backup restore | **Beta** — end-to-end restore flow not yet verified through a preview cycle; please don't rely on it as a sole copy until it has been |
 | Audio calling | **Beta** — works, occasional reconnect issues |
 | Agent connector pairing | **Beta** — recent refactor; expect breaking changes |
 | Agent → owner chat | **Beta** |
