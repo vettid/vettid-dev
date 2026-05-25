@@ -286,6 +286,21 @@ func (h *ConnectionsHandler) HandleAgentAuthorizeSession(ctx context.Context, ms
 
 	now := time.Now()
 	expiresAt := now.Add(time.Duration(duration) * time.Second)
+
+	// On extend (phone re-auths an active connection via the same
+	// agent.request-session → agent.authorize-session round-trip the
+	// initial pair uses), preserve KeyRotationCount and the existing
+	// Contract for any field the request didn't supply. Empty Scope in
+	// particular: the agent's POST /v1/pair/extend body can omit
+	// requested_scope (default for the AI agent caller), the phone's
+	// AuthorizeAgentScreen seeds its toggles from that, and the user
+	// approves with no boxes ticked — net effect on the prior code path
+	// was clobbering a previously-granted scope down to []. Treat empty
+	// GrantedScope as "no change" rather than "revoke all".
+	rotationCount := 0
+	if record.AgentSession != nil {
+		rotationCount = record.AgentSession.KeyRotationCount + 1
+	}
 	record.AgentSession = &AgentSession{
 		SessionID:        sessionID,
 		Status:           "active",
@@ -293,19 +308,31 @@ func (h *ConnectionsHandler) HandleAgentAuthorizeSession(ctx context.Context, ms
 		ExpiresAt:        expiresAt.Unix(),
 		LastActiveAt:     now.Unix(),
 		DurationSeconds:  duration,
-		KeyRotationCount: 0,
+		KeyRotationCount: rotationCount,
 		SessionKeyID:     sessionID,
 	}
 	record.Status = "active"
 	if req.AgentName != "" {
 		record.PeerAlias = req.AgentName
 	}
-	// Phone is the sole authority that writes Contract.
+	// Phone is the sole authority that writes Contract. On extend, fall
+	// back to the prior Contract field-by-field when the request leaves
+	// the field at its zero value. On initial auth, record.Contract is
+	// nil so every field comes from the request.
+	prior := record.Contract
+	newScope := req.GrantedScope
+	if len(newScope) == 0 && prior != nil {
+		newScope = prior.Scope
+	}
+	newRateLimit := req.RateLimit
+	if newRateLimit.Max == 0 && prior != nil {
+		newRateLimit = prior.RateLimit
+	}
 	record.Contract = &ConnectionContract{
 		AgentName:    record.PeerAlias,
-		Scope:        req.GrantedScope,
+		Scope:        newScope,
 		ApprovalMode: approvalMode,
-		RateLimit:    req.RateLimit,
+		RateLimit:    newRateLimit,
 	}
 	record.AgentPendingAuth = nil // one-shot
 
