@@ -694,17 +694,29 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, conn *ConnectionR
 		agentType = conn.AgentMetadata.AgentType
 	}
 
-	// Store message in the connection's message namespace
-	messageRecord := map[string]interface{}{
-		"message_id":    msg.MessageID,
-		"connection_id": conn.ConnectionID,
-		"direction":     "incoming",
-		"content":       msg.Content,
-		"content_type":  msg.ContentType,
-		"status":        "delivered",
-		"created_at":    time.Now().Unix(),
+	// Store message in the connection's message namespace. Use the
+	// proper MessageRecord struct so time.Time fields serialize as
+	// RFC3339 strings — the prior map literal stamped created_at as
+	// time.Now().Unix() (int), which then failed to unmarshal back
+	// into MessageRecord.CreatedAt (time.Time) when HandleList read
+	// it, silently dropping the record. Result: message.list returned
+	// empty for every agent conversation regardless of how many
+	// messages had been exchanged — observed during 2026-05-25 v8
+	// validation.
+	contentType := msg.ContentType
+	if contentType == "" {
+		contentType = "text"
 	}
-	recordBytes, _ := json.Marshal(messageRecord)
+	rec := MessageRecord{
+		MessageID:    msg.MessageID,
+		ConnectionID: conn.ConnectionID,
+		Direction:    MessageDirectionIncoming,
+		ContentType:  contentType,
+		Status:       MessageStatusDelivered,
+		Content:      msg.Content,
+		CreatedAt:    time.Now().UTC(),
+	}
+	recordBytes, _ := json.Marshal(rec)
 	storageKey := fmt.Sprintf("messages/%s/%s", conn.ConnectionID, msg.MessageID)
 	if err := h.storage.Put(storageKey, recordBytes); err != nil {
 		log.Warn().Err(err).Msg("Failed to store agent message")
@@ -832,21 +844,23 @@ func (h *AgentHandler) HandleAgentMessageReply(ctx context.Context, msg *Incomin
 	// Generate message ID
 	replyID := fmt.Sprintf("reply-%d", time.Now().UnixNano())
 
-	// Store outgoing message
-	messageRecord := map[string]interface{}{
-		"message_id":    replyID,
-		"connection_id": conn.ConnectionID,
-		"direction":     "outgoing",
-		"content":       req.Content,
-		"content_type":  "text",
-		"action":        req.Action,
-		"status":        "sent",
-		"created_at":    time.Now().Unix(),
+	// Store outgoing message. Use the proper MessageRecord struct so
+	// time.Time serializes as RFC3339 — the prior map literal stored
+	// created_at as time.Now().Unix() (int) which broke unmarshal back
+	// into MessageRecord.CreatedAt (time.Time) on the read path. The
+	// `action` and `reply_to` fields aren't on the struct; if we ever
+	// surface those on the conversation pane we'll add them. For now
+	// they're audit-log-only via the LogEvent call below.
+	rec := MessageRecord{
+		MessageID:    replyID,
+		ConnectionID: conn.ConnectionID,
+		Direction:    MessageDirectionOutgoing,
+		ContentType:  "text",
+		Status:       MessageStatusSent,
+		Content:      req.Content,
+		CreatedAt:    time.Now().UTC(),
 	}
-	if req.MessageID != "" {
-		messageRecord["reply_to"] = req.MessageID
-	}
-	recordBytes, _ := json.Marshal(messageRecord)
+	recordBytes, _ := json.Marshal(rec)
 	storageKey := fmt.Sprintf("messages/%s/%s", conn.ConnectionID, replyID)
 	h.storage.Put(storageKey, recordBytes)
 	h.addToMessageIndex(conn.ConnectionID, replyID)

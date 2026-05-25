@@ -140,6 +140,16 @@ func DeviceIndependentCapabilities() []string {
 		// non-sensitive.
 		"message.send",
 		"message.mark-read",
+		// agent.message-reply is what send_agent_message (desktop) and
+		// the Android ConversationViewModel agent branch dispatch when
+		// the owner sends a chat to their own agent connection. Same
+		// risk profile as message.send: it's the user's own message
+		// being typed on the user's own device, going to the user's
+		// own paired agent — no third-party disclosure. Gating it
+		// behind phone-approval popped a prompt every time the user
+		// hit Send to the agent from the desktop, defeating the point
+		// of the desktop being a secondary surface.
+		"agent.message-reply",
 		// Wallet payment requests — the requestor is asking the peer
 		// to send funds; no signing happens here. The signing op
 		// (wallet.send) stays phone-required. Symmetric with how
