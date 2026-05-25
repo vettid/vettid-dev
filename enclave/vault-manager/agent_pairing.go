@@ -287,16 +287,8 @@ func (h *ConnectionsHandler) HandleAgentAuthorizeSession(ctx context.Context, ms
 	now := time.Now()
 	expiresAt := now.Add(time.Duration(duration) * time.Second)
 
-	// On extend (phone re-auths an active connection via the same
-	// agent.request-session → agent.authorize-session round-trip the
-	// initial pair uses), preserve KeyRotationCount and the existing
-	// Contract for any field the request didn't supply. Empty Scope in
-	// particular: the agent's POST /v1/pair/extend body can omit
-	// requested_scope (default for the AI agent caller), the phone's
-	// AuthorizeAgentScreen seeds its toggles from that, and the user
-	// approves with no boxes ticked — net effect on the prior code path
-	// was clobbering a previously-granted scope down to []. Treat empty
-	// GrantedScope as "no change" rather than "revoke all".
+	// Increment rotation count on extend (preserves the running total
+	// across renewals); reset to 0 on initial pair.
 	rotationCount := 0
 	if record.AgentSession != nil {
 		rotationCount = record.AgentSession.KeyRotationCount + 1
@@ -315,14 +307,25 @@ func (h *ConnectionsHandler) HandleAgentAuthorizeSession(ctx context.Context, ms
 	if req.AgentName != "" {
 		record.PeerAlias = req.AgentName
 	}
-	// Phone is the sole authority that writes Contract. On extend, fall
-	// back to the prior Contract field-by-field when the request leaves
-	// the field at its zero value. On initial auth, record.Contract is
-	// nil so every field comes from the request.
+
+	// Phone is the sole authority that writes Contract. Resolve each
+	// field with the right fallback for the call type:
+	//   - Initial pair (prior Contract is nil): empty GrantedScope means
+	//     the phone didn't grant anything explicit → use the
+	//     DefaultAgentCapabilities so the agent has the minimum useful
+	//     set out of the gate.
+	//   - Extend (prior Contract present): empty GrantedScope means "no
+	//     change" → preserve the previously-granted capabilities. To
+	//     reduce scope on extend the owner must explicitly grant a
+	//     subset, never an empty list.
 	prior := record.Contract
 	newScope := req.GrantedScope
-	if len(newScope) == 0 && prior != nil {
-		newScope = prior.Scope
+	if len(newScope) == 0 {
+		if prior != nil {
+			newScope = prior.Scope
+		} else {
+			newScope = append([]string(nil), DefaultAgentCapabilities...)
+		}
 	}
 	newRateLimit := req.RateLimit
 	if newRateLimit.Max == 0 && prior != nil {

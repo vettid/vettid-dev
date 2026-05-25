@@ -92,7 +92,7 @@ func createTestAgentConnection(t *testing.T, encStorage *EncryptedStorage, conne
 		SharedSecret:    sharedSecret,
 		Contract: &ConnectionContract{
 			AgentName:    "Test Agent",
-			Scope:        []string{"api_keys", "ssh_keys"},
+			Scope:        append([]string(nil), DefaultAgentCapabilities...),
 			ApprovalMode: "auto_within_contract",
 			RateLimit:    RateLimit{Max: 60, Per: "hour"},
 		},
@@ -102,6 +102,40 @@ func createTestAgentConnection(t *testing.T, encStorage *EncryptedStorage, conne
 	encStorage.Put("connections/"+connectionID, data)
 
 	return agentPrivate, &record
+}
+
+// seedMinorSecret writes a SecretRecord directly into the minor-secrets
+// storage namespace and appends it to secrets/_index. Used by tests that
+// need the agent catalog / GetSecret path to find an item — replaces the
+// removed agent-secrets.share machinery.
+func seedMinorSecret(t *testing.T, storage *EncryptedStorage, id, name, category, value string, disc Discoverability) {
+	t.Helper()
+	rec := SecretRecord{
+		ID:              id,
+		Name:            name,
+		Category:        category,
+		Value:           value,
+		Discoverability: disc,
+		CreatedAt:       time.Now().Unix(),
+		UpdatedAt:       time.Now().Unix(),
+	}
+	body, err := json.Marshal(rec)
+	if err != nil {
+		t.Fatalf("marshal secret: %v", err)
+	}
+	key := secretFieldKey(id, "")
+	if err := storage.Put("secrets/"+key, body); err != nil {
+		t.Fatalf("put secret: %v", err)
+	}
+	var keys []string
+	if idx, err := storage.Get("secrets/_index"); err == nil && len(idx) > 0 {
+		json.Unmarshal(idx, &keys)
+	}
+	keys = append(keys, key)
+	idxBody, _ := json.Marshal(keys)
+	if err := storage.Put("secrets/_index", idxBody); err != nil {
+		t.Fatalf("put index: %v", err)
+	}
 }
 
 func TestAgentHandler_DecryptEncryptCycle(t *testing.T) {
@@ -161,15 +195,11 @@ func TestAgentHandler_SecretRequest_AutoApprove(t *testing.T) {
 	// Create a test connection
 	agentPrivate, conn := createTestAgentConnection(t, encStorage, "test-conn-1")
 
-	// Share a secret
-	createPayload, _ := json.Marshal(ShareSecretRequest{
-		SecretID:       "secret-1",
-		Name:           "OpenAI Key",
-		Category:       "api_keys",
-		Value:          "sk-test-key",
-		AllowedActions: []string{"retrieve"},
-	})
-	secretsHandler.HandleShareSecret(&IncomingMessage{RequestID: "create", Payload: createPayload})
+	// Seed a minor secret with Discoverability=cataloged so the agent
+	// catalog and GetSecret can find it. Replaces the prior
+	// HandleShareSecret path (removed with the agent-secrets namespace).
+	_ = secretsHandler
+	seedMinorSecret(t, encStorage, "secret-1", "OpenAI Key", "API_KEY", "sk-test-key", DiscoverabilityPublic)
 
 	// Build a secret request
 	secretReq := AgentSecretRequest{
@@ -270,31 +300,21 @@ func TestAgentHandler_SecretRequest_AutoApprove(t *testing.T) {
 	zeroBytes(connKey)
 }
 
-func TestAgentHandler_SecretRequest_OutOfScope(t *testing.T) {
-	handler, secretsHandler, encStorage, _, cleanup := setupAgentHandler(t)
+func TestAgentHandler_SecretRequest_CapabilityMissing(t *testing.T) {
+	handler, _, encStorage, tp, cleanup := setupAgentHandler(t)
 	defer cleanup()
 
-	// Create connection with limited scope (only api_keys)
-	_, conn := createTestAgentConnection(t, encStorage, "test-conn-2")
-	conn.Contract.Scope = []string{"api_keys"}
+	// Connection with no secrets.get capability (only catalog read).
+	agentPriv, conn := createTestAgentConnection(t, encStorage, "test-conn-2")
+	conn.Contract.Scope = []string{CapSecretsCatalogRead}
 	data, _ := json.Marshal(conn)
 	encStorage.Put("connections/test-conn-2", data)
 
-	// Share a secret in a different category
-	createPayload, _ := json.Marshal(ShareSecretRequest{
-		SecretID:       "secret-out-of-scope",
-		Name:           "SSH Key",
-		Category:       "database", // Not in scope
-		Value:          "private-key",
-		AllowedActions: []string{"retrieve"},
-	})
-	secretsHandler.HandleShareSecret(&IncomingMessage{RequestID: "create", Payload: createPayload})
+	seedMinorSecret(t, encStorage, "secret-x", "Some Key", "API_KEY", "value-x", DiscoverabilityPublic)
 
-	// Request the out-of-scope secret
 	secretReq := AgentSecretRequest{
-		RequestID: "req-oos",
-		SecretID:  "secret-out-of-scope",
-		Purpose:   "Need database password",
+		RequestID: "req-missing-cap",
+		SecretID:  "secret-x",
 		Action:    "retrieve",
 	}
 	reqBytes, _ := json.Marshal(secretReq)
@@ -304,43 +324,48 @@ func TestAgentHandler_SecretRequest_OutOfScope(t *testing.T) {
 
 	encrypted, _ := encryptXChaCha20(connKey, reqBytes)
 	encPayloadJSON, _ := json.Marshal(encrypted)
-
 	envelope := AgentEnvelope{
-		Type:      AgentMsgSecretRequest,
-		KeyID:     "test-conn-2",
-		Payload:   encPayloadJSON,
-		Timestamp: time.Now().UTC(),
-		Sequence:  1,
+		Type: AgentMsgSecretRequest, KeyID: "test-conn-2",
+		Payload: encPayloadJSON, Timestamp: time.Now().UTC(), Sequence: 1,
 	}
 	envBytes, _ := json.Marshal(envelope)
-
-	msg := &IncomingMessage{
-		RequestID: "msg-2",
-		Type:      MessageTypeVaultOp,
-		Payload:   envBytes,
-	}
+	msg := &IncomingMessage{RequestID: "msg-cap", Type: MessageTypeVaultOp, Payload: envBytes}
 
 	handler.HandleAgentMessage(nil, msg)
 
-	// The response should be "denied"
-	// (checking via publisher output would require parsing, but the test above
-	//  already validated the full decrypt cycle, so here we just verify no crash)
+	if len(tp.published) == 0 {
+		t.Fatal("Expected denial response")
+	}
+	var respEnv AgentEnvelope
+	json.Unmarshal(tp.published[0].payload, &respEnv)
+	var encResp []byte
+	json.Unmarshal(respEnv.Payload, &encResp)
+	pt, err := decryptXChaCha20(connKey, encResp)
+	if err != nil {
+		t.Fatalf("decrypt response: %v", err)
+	}
+	var resp AgentSecretResponse
+	json.Unmarshal(pt, &resp)
+	if resp.Status != "denied" {
+		t.Errorf("expected status denied, got %q (reason: %s)", resp.Status, resp.Reason)
+	}
+	if resp.SecretValue != "" {
+		t.Errorf("denied response leaked secret value")
+	}
+
+	_ = agentPriv
 }
 
 func TestAgentHandler_CatalogRequest(t *testing.T) {
-	handler, secretsHandler, encStorage, tp, cleanup := setupAgentHandler(t)
+	handler, _, encStorage, tp, cleanup := setupAgentHandler(t)
 	defer cleanup()
 
 	_, conn := createTestAgentConnection(t, encStorage, "test-conn-cat")
 
-	// Share some secrets
-	for _, s := range []ShareSecretRequest{
-		{SecretID: "cat-1", Name: "Key 1", Category: "api_keys", Value: "v1", AllowedActions: []string{"retrieve"}},
-		{SecretID: "cat-2", Name: "Key 2", Category: "ssh_keys", Value: "v2", AllowedActions: []string{"use"}},
-	} {
-		payload, _ := json.Marshal(s)
-		secretsHandler.HandleShareSecret(&IncomingMessage{RequestID: "create", Payload: payload})
-	}
+	// Two cataloged secrets + one private (should NOT appear).
+	seedMinorSecret(t, encStorage, "cat-1", "Key 1", "API_KEY", "v1", DiscoverabilityPublic)
+	seedMinorSecret(t, encStorage, "cat-2", "Key 2", "SSH", "v2", DiscoverabilityCataloged)
+	seedMinorSecret(t, encStorage, "cat-private", "Hidden", "API_KEY", "v3", DiscoverabilityPrivate)
 
 	// Request catalog
 	catReq := AgentCatalogRefreshRequest{CurrentVersion: 0}

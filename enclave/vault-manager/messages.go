@@ -1456,9 +1456,6 @@ func (mh *MessageHandler) handleVaultOp(ctx context.Context, msg *IncomingMessag
 	case "enrollment":
 		// Enrollment operations (identity mismatch reports)
 		return mh.handleEnrollmentOperation(ctx, msg, parts[opIndex+1:])
-	case "agent-secrets":
-		// Agent-shared secret management (from mobile app)
-		return mh.handleAgentSecretsOperation(ctx, msg, parts[opIndex+1:])
 	case "handlers":
 		// Handler listing (read-only introspection of vault capabilities)
 		return mh.handleHandlersOperation(ctx, msg, parts[opIndex+1:])
@@ -3733,44 +3730,6 @@ func (mh *MessageHandler) handleHandlersOperation(ctx context.Context, msg *Inco
 		return mh.successResponse(msg.GetID(), respBytes)
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown handlers operation: %s", opParts[1]))
-	}
-}
-
-// handleAgentSecretsOperation routes agent-secrets operations from the mobile app.
-// These are vault owner operations to share/update/revoke secrets for agent access.
-func (mh *MessageHandler) handleAgentSecretsOperation(ctx context.Context, msg *IncomingMessage, opParts []string) (*OutgoingMessage, error) {
-	if len(opParts) < 2 {
-		return mh.errorResponse(msg.GetID(), "missing agent-secrets operation type")
-	}
-
-	opType := opParts[1]
-
-	switch opType {
-	case "share":
-		response, err := mh.agentSecretsHandler.HandleShareSecret(msg)
-		if err != nil {
-			return response, err
-		}
-		mh.persistVaultStateToS3()
-		return response, nil
-	case "update":
-		response, err := mh.agentSecretsHandler.HandleUpdateSharedSecret(msg)
-		if err != nil {
-			return response, err
-		}
-		mh.persistVaultStateToS3()
-		return response, nil
-	case "revoke":
-		response, err := mh.agentSecretsHandler.HandleRevokeSharedSecret(msg)
-		if err != nil {
-			return response, err
-		}
-		mh.persistVaultStateToS3()
-		return response, nil
-	case "list":
-		return mh.agentSecretsHandler.HandleListSharedSecrets(msg)
-	default:
-		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown agent-secrets operation: %s", opType))
 	}
 }
 

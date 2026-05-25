@@ -437,20 +437,22 @@ func (h *AgentHandler) handleSecretRequest(ctx context.Context, conn *Connection
 		return data, AgentMsgSecretResponse, nil
 	}
 
-	// Check scope
-	if conn.Contract != nil && !InScope(secret.Category, conn.Contract.Scope) {
-		h.eventHandler.LogConnectionEvent(ctx, EventTypeAgentSecretDenied, conn.ConnectionID, "", fmt.Sprintf("Secret %s out of scope", secret.SecretID))
-
+	// Check capability — secrets.get gates the whole retrieve path.
+	if conn.Contract == nil || !HasCapability(conn.Contract.Scope, CapSecretsGet) {
+		h.eventHandler.LogConnectionEvent(ctx, EventTypeAgentSecretDenied, conn.ConnectionID, "",
+			fmt.Sprintf("secrets.get capability not granted (secret %s)", secret.SecretID))
 		resp := AgentSecretResponse{
 			RequestID: req.RequestID,
 			Status:    "denied",
-			Reason:    "Secret category not in scope",
+			Reason:    "Capability secrets.get not granted",
 		}
 		data, _ := json.Marshal(resp)
 		return data, AgentMsgSecretResponse, nil
 	}
 
-	// Check allowed actions
+	// Check per-secret allowed actions. Minor secrets currently expose
+	// "retrieve" only; future per-secret action allowlists (sign, derive)
+	// would gate here.
 	if !HasAction("retrieve", secret.AllowedActions) {
 		resp := AgentSecretResponse{
 			RequestID: req.RequestID,
@@ -551,21 +553,20 @@ func (h *AgentHandler) handleActionRequest(ctx context.Context, conn *Connection
 		return data, AgentMsgActionResponse, nil
 	}
 
-	// Check scope
-	if conn.Contract != nil && !InScope(secret.Category, conn.Contract.Scope) {
+	// Check capability — secrets.action gates use-with operations.
+	if conn.Contract == nil || !HasCapability(conn.Contract.Scope, CapSecretsAction) {
 		h.eventHandler.LogConnectionEvent(ctx, EventTypeAgentActionDenied, conn.ConnectionID, "",
-			fmt.Sprintf("Action denied: secret %s out of scope", secret.SecretID))
-
+			fmt.Sprintf("secrets.action capability not granted (secret %s)", secret.SecretID))
 		resp := AgentActionResponse{
 			RequestID: req.RequestID,
 			Status:    "denied",
-			Reason:    "Secret category not in scope",
+			Reason:    "Capability secrets.action not granted",
 		}
 		data, _ := json.Marshal(resp)
 		return data, AgentMsgActionResponse, nil
 	}
 
-	// Check allowed actions
+	// Per-secret action allowlist
 	if !HasAction("use", secret.AllowedActions) {
 		resp := AgentActionResponse{
 			RequestID: req.RequestID,
@@ -649,10 +650,25 @@ func (h *AgentHandler) handleActionRequest(ctx context.Context, conn *Connection
 }
 
 // handleCatalogRequest processes a catalog refresh request from an agent.
+// The catalog returned is the same one peers see via the profile (minor
+// secrets with Discoverability != private) — see agent_secrets.go
+// BuildCatalog. Capability secrets.catalog.read gates the call.
 func (h *AgentHandler) handleCatalogRequest(ctx context.Context, conn *ConnectionRecord, plaintext []byte) ([]byte, string, error) {
 	var req AgentCatalogRefreshRequest
 	if err := json.Unmarshal(plaintext, &req); err != nil {
 		return nil, "", fmt.Errorf("invalid catalog request: %w", err)
+	}
+
+	if conn.Contract == nil || !HasCapability(conn.Contract.Scope, CapSecretsCatalogRead) {
+		log.Info().
+			Str("connection_id", conn.ConnectionID).
+			Msg("Catalog refresh denied — secrets.catalog.read not granted")
+		// Return an empty catalog rather than an error envelope so the
+		// agent still has a defined response shape. A capability-denied
+		// agent that polls the catalog gets a steady-state empty answer.
+		empty := &AgentSecretCatalog{Entries: []AgentSecretCatalogEntry{}}
+		data, _ := json.Marshal(empty)
+		return data, AgentMsgCatalogResponse, nil
 	}
 
 	log.Info().
@@ -660,12 +676,7 @@ func (h *AgentHandler) handleCatalogRequest(ctx context.Context, conn *Connectio
 		Uint64("current_version", req.CurrentVersion).
 		Msg("Agent catalog refresh request")
 
-	scope := []string{}
-	if conn.Contract != nil {
-		scope = conn.Contract.Scope
-	}
-
-	catalog := h.secretsHandler.BuildCatalog(scope)
+	catalog := h.secretsHandler.BuildCatalog()
 
 	data, err := json.Marshal(catalog)
 	if err != nil {
@@ -1262,27 +1273,24 @@ func (h *AgentHandler) executeSign(params json.RawMessage, secretValue string) (
 
 // --- Secret resolution ---
 
-// resolveSecret finds a secret by ID, type+name fallback, or name.
+// resolveSecret finds a secret by ID, type+name fallback, or name. The
+// type+name fallback walks the catalog (same visibility surface peers
+// see) and resolves the first match to its full record.
 func (h *AgentHandler) resolveSecret(req AgentSecretRequest) (*AgentSharedSecret, error) {
-	// Prefer direct ID lookup
 	if req.SecretID != "" {
 		return h.secretsHandler.GetSecret(req.SecretID)
 	}
 
-	// Fallback: search by category + name
-	index := h.secretsHandler.getIndex()
-	for _, id := range index {
-		secret, err := h.secretsHandler.GetSecret(id)
-		if err != nil {
+	catalog := h.secretsHandler.BuildCatalog()
+	for _, entry := range catalog.Entries {
+		if req.SecretType != "" && entry.Category == req.SecretType {
+			if req.SecretName == "" || entry.Name == req.SecretName {
+				return h.secretsHandler.GetSecret(entry.SecretID)
+			}
 			continue
 		}
-		if req.SecretType != "" && secret.Category == req.SecretType {
-			if req.SecretName == "" || secret.Name == req.SecretName {
-				return secret, nil
-			}
-		}
-		if req.SecretName != "" && secret.Name == req.SecretName {
-			return secret, nil
+		if req.SecretName != "" && entry.Name == req.SecretName {
+			return h.secretsHandler.GetSecret(entry.SecretID)
 		}
 	}
 
@@ -1304,55 +1312,6 @@ func (h *AgentHandler) getConnection(connectionID string) (*ConnectionRecord, er
 	}
 
 	return &record, nil
-}
-
-// --- Catalog push ---
-
-// PushCatalogToAgent builds and pushes the secret catalog to an active agent connection.
-func (h *AgentHandler) PushCatalogToAgent(conn *ConnectionRecord) error {
-	if len(conn.SharedSecret) == 0 {
-		return fmt.Errorf("connection has no shared secret")
-	}
-
-	scope := []string{}
-	if conn.Contract != nil {
-		scope = conn.Contract.Scope
-	}
-
-	catalog := h.secretsHandler.BuildCatalog(scope)
-
-	catalogBytes, err := json.Marshal(catalog)
-	if err != nil {
-		return fmt.Errorf("marshal catalog: %w", err)
-	}
-
-	// Derive connection key and encrypt
-	connKey, err := deriveConnectionKey(conn.SharedSecret)
-	if err != nil {
-		return fmt.Errorf("derive connection key: %w", err)
-	}
-	defer zeroBytes(connKey)
-
-	encrypted, err := encryptXChaCha20(connKey, catalogBytes)
-	if err != nil {
-		return fmt.Errorf("encrypt catalog: %w", err)
-	}
-	zeroBytes(catalogBytes)
-
-	// Build envelope
-	encPayloadJSON, _ := json.Marshal(encrypted)
-	envBytes, err := json.Marshal(AgentEnvelope{
-		Type:      AgentMsgCatalogResponse,
-		KeyID:     conn.ConnectionID,
-		Payload:   encPayloadJSON,
-		Timestamp: time.Now().UTC(),
-	})
-	if err != nil {
-		return fmt.Errorf("marshal envelope: %w", err)
-	}
-
-	topic := fmt.Sprintf("MessageSpace.%s.forOwner.agent.%s", h.ownerSpace, conn.ConnectionID)
-	return h.publisher.PublishRaw(topic, envBytes)
 }
 
 // --- Crypto helpers ---
