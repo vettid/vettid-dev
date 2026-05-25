@@ -31,9 +31,11 @@ A few things to know up front:
   journal default is WARN+; the on-call can elevate to debug for
   incident triage. The enclave itself logs nothing externally.
 - **Security findings: do NOT file public issues.** Email
-  `security@vettid.org` (PGP key on the [security page](https://vettid.dev/security)).
-  Responsible disclosure is required for anything that affects
-  confidentiality, integrity, or availability of user data.
+  `security@vettid.org`. PGP encryption is supported — fingerprint
+  `E23A 83D6 7828 2CD7 9E95 E5F7 1523 8C03 B404 DAEB`, full ASCII-armored
+  key on the [security page](https://vettid.dev/security). Responsible
+  disclosure is required for anything that affects confidentiality,
+  integrity, or availability of user data.
 
 ---
 
