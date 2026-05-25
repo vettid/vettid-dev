@@ -103,7 +103,14 @@ const (
 	AgentMsgCatalogResponse    = "agent_secret_catalog"
 	AgentMsgConnectionApproved = "agent_connection_approved"
 	AgentMsgConnectionDenied   = "agent_connection_denied"
-	AgentMsgMessageResponse    = "agent_message_response"
+	AgentMsgMessageResponse    = "agent_message_response" // owner reply to agent (has reply_content)
+	// AgentMsgMessageAck is the vault's delivery confirmation for a
+	// message the agent itself sent. Distinct from AgentMsgMessageResponse
+	// so the agent can tell "owner replied" from "vault saw my send" —
+	// they land on the same forOwner.agent.<conn> subject. Older agents
+	// that don't recognize the type log it under "Ignoring unknown
+	// NATS message type" and drop it, which is the desired behavior.
+	AgentMsgMessageAck = "agent_message_ack"
 )
 
 // --- Request/Response types (matching vettid-agent) ---
@@ -810,12 +817,13 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, conn *ConnectionR
 		h.publisher.PublishToApp(ctx, eventType, notifBytes)
 	}
 
-	// Ack to agent
+	// Ack to agent. Distinct envelope type from AgentMsgMessageResponse
+	// so the agent doesn't echo this ack into the owner-reply log.
 	ack, _ := json.Marshal(map[string]interface{}{
 		"message_id": msg.MessageID,
 		"status":     "delivered",
 	})
-	return ack, AgentMsgMessageResponse, nil
+	return ack, AgentMsgMessageAck, nil
 }
 
 // HandleAgentMessageReply processes a user's reply to an agent message.
