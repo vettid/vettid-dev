@@ -70,6 +70,13 @@ type LeashAttestKey struct {
 	// generated. Currently unused (no rotation in Sprint 1) but reserved
 	// so the schema doesn't change when rotation lands.
 	RotatedAt int64 `json:"rotated_at,omitempty"`
+	// PublishedAt is the unix timestamp of the most recent successful
+	// publish to the public LeashAttestKeys DDB table. Zero means the
+	// key has never been replicated externally — ensureAttestationKey
+	// retries the publish on every call until this is non-zero, so a
+	// publish failure (e.g. table-not-configured during a misconfigured
+	// first mint) doesn't strand the key in enclave-local-only state.
+	PublishedAt int64 `json:"published_at,omitempty"`
 }
 
 // LeashIssuedRecord tracks one issued LEASH for revocation lookup.
@@ -470,7 +477,13 @@ func (h *LeashHandler) IssuedRecord(jti string) (*LeashIssuedRecord, bool, error
 }
 
 // ensureAttestationKey loads the persisted key, or generates and stores
-// a new one on first use. Thread-safe via keyMu.
+// a new one on first use. Always retries the public DDB publish if the
+// key has never been replicated externally (PublishedAt == 0) — without
+// this, a first-mint hit before leash_attest_keys_table was wired up
+// in the parent config left the key stranded in enclave-local-only
+// state, and every subsequent verify failed with issuer-unknown
+// because the verifier Lambda had no DDB row to resolve the kid.
+// Thread-safe via keyMu.
 func (h *LeashHandler) ensureAttestationKey() (*LeashAttestKey, error) {
 	h.keyMu.Lock()
 	defer h.keyMu.Unlock()
@@ -479,6 +492,11 @@ func (h *LeashHandler) ensureAttestationKey() (*LeashAttestKey, error) {
 		var key LeashAttestKey
 		if err := json.Unmarshal(data, &key); err == nil {
 			if len(key.Private) == ed25519.PrivateKeySize && len(key.Public) == ed25519.PublicKeySize {
+				if key.PublishedAt == 0 {
+					if err := h.publishAndMarkAttestKey(&key); err != nil {
+						return nil, err
+					}
+				}
 				return &key, nil
 			}
 			log.Warn().Str("owner_space", h.ownerSpace).Msg("Persisted leash attest key is malformed — regenerating")
@@ -506,26 +524,8 @@ func (h *LeashHandler) ensureAttestationKey() (*LeashAttestKey, error) {
 		return nil, fmt.Errorf("persist leash attest key: %w", err)
 	}
 
-	// Publish the public half to DynamoDB so external verifiers can
-	// fetch it. Failure here means the vault has a usable key but the
-	// public verifier can't resolve it — surface as a hard error so
-	// the caller can retry or fall back. (Without this, leashes would
-	// be unverifiable until next mint attempt — confusing for testers.)
-	if h.sealerProxy != nil {
-		pubPayload := map[string]interface{}{
-			"user_guid":  h.ownerSpace,
-			"kid":        key.Kid,
-			"alg":        key.Algorithm,
-			"pubkey":     base64.RawURLEncoding.EncodeToString(key.Public),
-			"created_at": key.CreatedAt,
-		}
-		pubBytes, err := json.Marshal(pubPayload)
-		if err != nil {
-			return nil, fmt.Errorf("marshal leash attest key publish payload: %w", err)
-		}
-		if err := h.sealerProxy.PublishLeashAttestKey(pubBytes); err != nil {
-			return nil, fmt.Errorf("publish leash attest key: %w", err)
-		}
+	if err := h.publishAndMarkAttestKey(key); err != nil {
+		return nil, err
 	}
 
 	log.Info().
@@ -533,6 +533,53 @@ func (h *LeashHandler) ensureAttestationKey() (*LeashAttestKey, error) {
 		Str("kid", key.Kid).
 		Msg("Generated LEASH attestation key")
 	return key, nil
+}
+
+// publishAndMarkAttestKey replicates the public half to the
+// LeashAttestKeys DDB table via the sealer proxy and, on success,
+// stamps PublishedAt on the stored record so subsequent
+// ensureAttestationKey calls don't republish on the hot path.
+// Idempotent at the DDB layer (PutItem overwrites).
+func (h *LeashHandler) publishAndMarkAttestKey(key *LeashAttestKey) error {
+	if h.sealerProxy == nil {
+		// Unit-test path — no external publish; treat as no-op success.
+		key.PublishedAt = time.Now().Unix()
+		return nil
+	}
+
+	pubPayload := map[string]interface{}{
+		"user_guid":  h.ownerSpace,
+		"kid":        key.Kid,
+		"alg":        key.Algorithm,
+		"pubkey":     base64.RawURLEncoding.EncodeToString(key.Public),
+		"created_at": key.CreatedAt,
+	}
+	pubBytes, err := json.Marshal(pubPayload)
+	if err != nil {
+		return fmt.Errorf("marshal leash attest key publish payload: %w", err)
+	}
+	if err := h.sealerProxy.PublishLeashAttestKey(pubBytes); err != nil {
+		return fmt.Errorf("publish leash attest key: %w", err)
+	}
+
+	key.PublishedAt = time.Now().Unix()
+	out, err := json.Marshal(key)
+	if err != nil {
+		// Soft failure — the publish succeeded, just couldn't mark
+		// it. Next call will re-publish (idempotent) and try the
+		// mark again. Log + continue rather than fail the mint.
+		log.Warn().Err(err).Str("owner_space", h.ownerSpace).
+			Msg("Failed to re-marshal leash attest key after publish; will retry mark next call")
+		return nil
+	}
+	if err := h.storage.Put(leashAttestKeyStorageKey, out); err != nil {
+		log.Warn().Err(err).Str("owner_space", h.ownerSpace).
+			Msg("Failed to persist PublishedAt mark; will retry next call")
+	} else {
+		log.Info().Str("owner_space", h.ownerSpace).Str("kid", key.Kid).
+			Msg("LEASH attestation key published to DDB")
+	}
+	return nil
 }
 
 // nextGrantVersion increments the per-(user, agent) monotonic counter

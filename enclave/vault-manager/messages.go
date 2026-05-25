@@ -1574,6 +1574,14 @@ func (mh *MessageHandler) handleAgentOperation(ctx context.Context, msg *Incomin
 		// delivers the resulting JWT back to the agent over its NATS
 		// subscription, encrypted with the active AgentSession key.
 		return mh.HandleAgentLeashApprove(ctx, msg)
+	case "leash-pending-list":
+		// Phone polls this on resume / launch to recover any pending
+		// LEASH mint requests it missed while backgrounded. The
+		// forApp.agent.leash-mint-pending push is NATS core (not
+		// JetStream), so a request published while the app was offline
+		// is invisible until the app explicitly asks. Empty list = no
+		// pending; the phone proceeds normally.
+		return mh.HandleAgentLeashPendingList(ctx, msg)
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown agent operation: %s", opType))
 	}
@@ -1618,6 +1626,7 @@ func (mh *MessageHandler) HandleAgentLeashApprove(ctx context.Context, msg *Inco
 	}
 	if time.Now().Unix() > pending.ExpiresAt {
 		_ = mh.storage.Delete(storageKey)
+		_ = mh.storage.RemoveFromIndex(leashPendingIndexKey, req.RequestID)
 		return mh.errorResponse(msg.GetID(), "leash request expired")
 	}
 
@@ -1626,6 +1635,7 @@ func (mh *MessageHandler) HandleAgentLeashApprove(ctx context.Context, msg *Inco
 	// retry from the phone (e.g. timeout + re-approve) hits the
 	// "not found" branch instead of silently double-issuing.
 	_ = mh.storage.Delete(storageKey)
+	_ = mh.storage.RemoveFromIndex(leashPendingIndexKey, req.RequestID)
 
 	// Look up the connection's AgentSession key for the agent-side
 	// envelope encryption. If the session has rotated or expired since
@@ -1708,6 +1718,91 @@ func (mh *MessageHandler) HandleAgentLeashApprove(ctx context.Context, msg *Inco
 		"expires_at": out.ExpiresAt,
 	}
 	respBytes, _ := json.Marshal(resp)
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
+
+// HandleAgentLeashPendingList returns the live PendingLeashRequest
+// rows for this owner. The phone polls this on resume / launch to
+// recover requests it missed while backgrounded (the forApp
+// leash-mint-pending push is NATS-core, lost when no subscriber is
+// live). Empty list = nothing pending.
+//
+// Expired rows are pruned inline — TTL is 5 min from publish, so a
+// request the owner ignored long enough won't keep showing up. The
+// expiry sweep here doubles as the only cleanup path for orphaned
+// rows from clients that never came back.
+func (mh *MessageHandler) HandleAgentLeashPendingList(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	ids, err := mh.storage.GetIndex(leashPendingIndexKey)
+	if err != nil {
+		return mh.errorResponse(msg.GetID(), "read leash pending index: "+err.Error())
+	}
+
+	now := time.Now().Unix()
+	type pendingItem struct {
+		RequestID      string   `json:"request_id"`
+		ConnectionID   string   `json:"connection_id"`
+		AgentName      string   `json:"agent_name,omitempty"`
+		AgentType      string   `json:"agent_type,omitempty"`
+		RequestedScope []string `json:"requested_scope"`
+		DurationSecs   int64    `json:"duration_secs"`
+		Reason         string   `json:"reason,omitempty"`
+		CreatedAt      int64    `json:"created_at"`
+		ExpiresAt      int64    `json:"expires_at"`
+	}
+	out := make([]pendingItem, 0, len(ids))
+
+	for _, id := range ids {
+		key := "agent_leash_pending/" + id
+		data, err := mh.storage.Get(key)
+		if err != nil {
+			// Row disappeared but index still has it — drop from index.
+			_ = mh.storage.RemoveFromIndex(leashPendingIndexKey, id)
+			continue
+		}
+		var p PendingLeashRequest
+		if err := json.Unmarshal(data, &p); err != nil {
+			_ = mh.storage.Delete(key)
+			_ = mh.storage.RemoveFromIndex(leashPendingIndexKey, id)
+			continue
+		}
+		if now > p.ExpiresAt {
+			// Expired — clean up.
+			_ = mh.storage.Delete(key)
+			_ = mh.storage.RemoveFromIndex(leashPendingIndexKey, id)
+			continue
+		}
+
+		item := pendingItem{
+			RequestID:      p.RequestID,
+			ConnectionID:   p.ConnectionID,
+			RequestedScope: p.RequestedScope,
+			DurationSecs:   p.DurationSecs,
+			Reason:         p.Reason,
+			CreatedAt:      p.CreatedAt,
+			ExpiresAt:      p.ExpiresAt,
+		}
+		// Enrich with agent display info so the phone doesn't need a
+		// second op call to render the approval screen.
+		if connData, err := mh.storage.Get("connections/" + p.ConnectionID); err == nil {
+			var conn ConnectionRecord
+			if json.Unmarshal(connData, &conn) == nil {
+				item.AgentName = conn.PeerAlias
+				if conn.AgentMetadata != nil {
+					item.AgentType = conn.AgentMetadata.AgentType
+				}
+			}
+		}
+
+		out = append(out, item)
+	}
+
+	respBytes, _ := json.Marshal(map[string]interface{}{
+		"pending": out,
+	})
 	return &OutgoingMessage{
 		RequestID: msg.GetID(),
 		Type:      MessageTypeResponse,

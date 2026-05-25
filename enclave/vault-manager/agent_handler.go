@@ -925,6 +925,13 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, conn *ConnectionR
 // publish the JWT back to the agent.
 const leashRequestTTL = 5 * time.Minute
 
+// leashPendingIndexKey is the index of all live PendingLeashRequest
+// row IDs for this owner. Used by HandleAgentLeashPendingList so the
+// phone can poll on resume and recover any requests it missed while
+// backgrounded (forApp.agent.leash-mint-pending is NATS core, not
+// JetStream — dropped if no subscriber was live at publish time).
+const leashPendingIndexKey = "agent_leash_pending/_index"
+
 func (h *AgentHandler) handleLeashMintRequest(ctx context.Context, conn *ConnectionRecord, fallbackRequestID string, raw json.RawMessage) ([]byte, string, error) {
 	if len(raw) == 0 {
 		return nil, "", fmt.Errorf("leash_mint_request payload is required")
@@ -965,6 +972,12 @@ func (h *AgentHandler) handleLeashMintRequest(ctx context.Context, conn *Connect
 	storageKey := "agent_leash_pending/" + req.RequestID
 	if err := h.storage.Put(storageKey, body); err != nil {
 		return nil, "", fmt.Errorf("persist pending leash request: %w", err)
+	}
+	if err := h.storage.AddToIndex(leashPendingIndexKey, req.RequestID); err != nil {
+		// Non-fatal — the row exists, the index is just for the
+		// resume-recovery list op. Log and continue.
+		log.Warn().Err(err).Str("request_id", req.RequestID).
+			Msg("Failed to add pending leash request to index (resume recovery may miss this)")
 	}
 
 	if h.publisher != nil {
