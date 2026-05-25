@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Security — VettID</title>
+  <meta name="description" content="VettID security policy, vulnerability disclosure, and PGP key for encrypted reports." />
+  <link rel="icon" type="image/jpeg" href="/assets/favicon.ico" />
+  <link rel="stylesheet" href="/assets/fonts.css" />
+  <link rel="stylesheet" href="/shared/nav.css" />
+  <style>
+    :root {
+      --bg-dark: #0a0908;
+      --bg-card: #12110f;
+      --bg-input: #0d0c0a;
+      --border: #2a2622;
+      --border-accent: rgba(255, 193, 37, 0.2);
+      --accent: #ffc125;
+      --accent-hover: #ffd940;
+      --text: #f5f5f4;
+      --text-muted: #a8a29e;
+      --text-subtle: #78716c;
+      --success: #22c55e;
+      --warn: #f59e0b;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      background: var(--bg-dark);
+      color: var(--text);
+      line-height: 1.6;
+    }
+
+    body::before {
+      content: '';
+      position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+      pointer-events: none; opacity: 0.025; z-index: -1;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+    }
+
+    h1, h2, h3 {
+      font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    }
+
+    header {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 16px 32px; background: rgba(0,0,0,0.9);
+      position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+      backdrop-filter: blur(10px);
+      border-bottom: 1px solid rgba(255,193,37,0.1);
+    }
+    .header-logo { display: flex; align-items: center; gap: 12px; text-decoration: none; }
+    .header-logo img { height: 36px; width: 36px; border-radius: 4px; }
+    .header-logo span { color: var(--text); font-weight: 800; letter-spacing: 0.05em; font-size: 1.1rem; }
+
+    .wrap {
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 120px 24px 80px;
+    }
+
+    .hero {
+      margin-bottom: 48px;
+    }
+    .hero-badge {
+      display: inline-block;
+      padding: 6px 12px;
+      background: rgba(245, 158, 11, 0.1);
+      color: var(--warn);
+      border: 1px solid rgba(245, 158, 11, 0.3);
+      border-radius: 16px;
+      font-size: 0.85rem;
+      font-weight: 500;
+      margin-bottom: 16px;
+    }
+    h1 {
+      font-size: 2.5rem;
+      margin-bottom: 12px;
+      background: linear-gradient(135deg, var(--text) 0%, var(--accent) 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .subtitle {
+      font-size: 1.15rem;
+      color: var(--text-muted);
+    }
+
+    section {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 28px 32px;
+      margin-bottom: 24px;
+    }
+    section h2 {
+      font-size: 1.4rem;
+      margin-bottom: 12px;
+      color: var(--accent);
+    }
+    section h3 {
+      font-size: 1.05rem;
+      margin: 20px 0 8px;
+      color: var(--text);
+    }
+    section p { color: var(--text-muted); margin-bottom: 12px; }
+    section ul { color: var(--text-muted); padding-left: 22px; margin-bottom: 12px; }
+    section ul li { margin-bottom: 6px; }
+    section a { color: var(--accent); text-decoration: none; }
+    section a:hover { color: var(--accent-hover); }
+
+    .contact-box {
+      background: var(--bg-input);
+      border: 1px solid var(--border-accent);
+      border-radius: 8px;
+      padding: 16px 20px;
+      margin: 16px 0;
+    }
+    .contact-box .label {
+      font-size: 0.8rem;
+      color: var(--text-subtle);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 4px;
+    }
+    .contact-box .value {
+      font-family: 'JetBrains Mono', 'SF Mono', Monaco, monospace;
+      font-size: 1rem;
+      color: var(--text);
+      word-break: break-all;
+    }
+
+    pre.pgp-block {
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+      overflow-x: auto;
+      font-family: 'JetBrains Mono', 'SF Mono', Monaco, monospace;
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      line-height: 1.4;
+      white-space: pre;
+    }
+
+    .warn-banner {
+      background: rgba(245, 158, 11, 0.08);
+      border: 1px solid rgba(245, 158, 11, 0.3);
+      border-radius: 8px;
+      padding: 14px 18px;
+      margin-bottom: 24px;
+      color: var(--text);
+    }
+    .warn-banner strong { color: var(--warn); }
+
+    footer {
+      text-align: center;
+      padding: 40px 24px;
+      color: var(--text-subtle);
+      font-size: 0.85rem;
+      border-top: 1px solid var(--border);
+    }
+    footer a { color: var(--text-muted); text-decoration: none; }
+    footer a:hover { color: var(--accent); }
+  </style>
+</head>
+<body>
+
+<!-- Header -->
+<header>
+  <a href="/" class="header-logo">
+    <img src="/assets/logo.jpg" alt="VettID">
+    <span>VETTID</span>
+  </a>
+  <button class="nav-toggle" aria-label="Toggle menu" aria-expanded="false">
+    <span></span><span></span><span></span>
+  </button>
+</header>
+<div class="nav-menu" id="navMenu" style="display:none;position:fixed;top:0;right:0;width:280px;height:100%;background:#1a1816;padding:80px 20px 40px;z-index:1005;flex-direction:column;gap:8px;">
+  <a href="/" style="display:block;color:#d4d4d4;text-decoration:none;padding:12px 16px;font-size:1rem;">Home</a>
+  <a href="/help" style="display:block;color:#d4d4d4;text-decoration:none;padding:12px 16px;font-size:1rem;">Help Us</a>
+  <a href="/donate" style="display:block;color:#d4d4d4;text-decoration:none;padding:12px 16px;font-size:1rem;">Donate</a>
+  <a href="/pcr" style="display:block;color:#d4d4d4;text-decoration:none;padding:12px 16px;font-size:1rem;">PCR</a>
+  <a href="/votes" style="display:block;color:#d4d4d4;text-decoration:none;padding:12px 16px;font-size:1rem;">Votes</a>
+  <a href="/leash" style="display:block;color:#ffc125;text-decoration:none;padding:12px 16px;font-size:1rem;font-weight:600;">LEASH Demo</a>
+  <a href="/security" style="display:block;color:#d4d4d4;text-decoration:none;padding:12px 16px;font-size:1rem;">Security</a>
+  <a href="/signin" style="display:block;color:#d4d4d4;text-decoration:none;padding:12px 16px;font-size:1rem;">Sign In</a>
+  <a href="/register" style="display:block;background:#ffc125;color:#000;text-decoration:none;padding:12px 16px;font-size:1rem;text-align:center;margin-top:16px;border-radius:6px;">Register</a>
+</div>
+<div class="nav-overlay" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);z-index:1000;"></div>
+
+<div class="wrap">
+
+  <div class="hero">
+    <span class="hero-badge">Responsible Disclosure</span>
+    <h1>Security at VettID</h1>
+    <p class="subtitle">If you've found a vulnerability, please tell us before you tell the world.</p>
+  </div>
+
+  <div class="warn-banner">
+    <strong>Please do not file public GitHub issues for security findings.</strong>
+    Public disclosure of a confidentiality, integrity, or attestation defect can compromise live users. Use the encrypted channel below.
+  </div>
+
+  <section>
+    <h2>How to report</h2>
+    <p>Email us at the address below. Encrypt with the PGP key further down if your report contains exploit details, user identifiers, or anything you wouldn't want in a mailbox compromise.</p>
+
+    <div class="contact-box">
+      <div class="label">Email</div>
+      <div class="value">security@vettid.org</div>
+    </div>
+
+    <p>Acknowledgement target: <strong>72 hours</strong>. Triage + fix timeline depends on severity — see below.</p>
+
+    <h3>What to include</h3>
+    <ul>
+      <li>What you found — type of issue, affected component, version / git SHA if you have one.</li>
+      <li>How you found it — steps to reproduce, proof-of-concept if available.</li>
+      <li>What an attacker could do with it — your read on impact.</li>
+      <li>Any thoughts on remediation (optional but appreciated).</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Scope</h2>
+    <p>In scope for disclosure:</p>
+    <ul>
+      <li>The enclave (vault-manager, supervisor, parent process) and its attestation chain.</li>
+      <li>The mobile app (Android, iOS) — credential handling, pairing, session crypto, key storage.</li>
+      <li>The desktop app (Tauri) — session establishment, capability gating, IPC.</li>
+      <li>The agent connector — pairing flow, LEASH signing, message encryption.</li>
+      <li>API endpoints under <code>api.vettid.dev</code> and JetStream messaging at <code>nats.vettid.dev</code>.</li>
+      <li>The web surfaces at <code>vettid.dev</code>.</li>
+    </ul>
+    <p>Out of scope:</p>
+    <ul>
+      <li>Denial-of-service issues against unmoderated public endpoints.</li>
+      <li>Findings that require physical access to an already-unlocked device.</li>
+      <li>Social engineering of operators or other users.</li>
+      <li>Issues in third-party dependencies that don't materially affect VettID's threat model — report those upstream first, then us if there's a VettID-specific configuration issue.</li>
+      <li>Reports generated by automated scanners without a verified impact analysis.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Severity and response</h2>
+    <ul>
+      <li><strong>Critical</strong> (remote key extraction, attestation bypass, owner-data exposure): immediate triage, hotfix within days.</li>
+      <li><strong>High</strong> (privilege escalation, capability bypass, session key compromise vectors): triage in 72 hours, fix in days.</li>
+      <li><strong>Medium</strong> (incomplete isolation, sensitive metadata leakage, auth quality issues): triage in a week, fix in the next deploy cycle.</li>
+      <li><strong>Low</strong> (defense-in-depth gaps, hardening): triage on a best-effort basis.</li>
+    </ul>
+    <p>We will keep you in the loop through triage, fix, and deploy. If you want public credit on a published advisory, say so in your report.</p>
+  </section>
+
+  <section>
+    <h2>Safe harbor</h2>
+    <p>We will not pursue legal action against researchers who:</p>
+    <ul>
+      <li>Make a good-faith effort to avoid privacy violations, service interruption, or data destruction during research.</li>
+      <li>Give us a reasonable window to remediate before public disclosure.</li>
+      <li>Don't access, modify, or destroy data belonging to other users.</li>
+      <li>Don't run automated tooling that materially affects service availability.</li>
+    </ul>
+    <p>If you're not sure whether something you want to try falls within these guidelines, email us first.</p>
+  </section>
+
+  <section>
+    <h2>PGP key</h2>
+    <p>The fingerprint and full ASCII-armored block are below. The same key is published to <a href="https://keys.openpgp.org/search?q=security%40vettid.org">keys.openpgp.org</a> for verification.</p>
+
+    <div class="contact-box">
+      <div class="label">Fingerprint</div>
+      <div class="value">REPLACE_WITH_ACTUAL_FINGERPRINT_BEFORE_PUBLISHING</div>
+    </div>
+
+    <p style="margin-top:16px;"><em>The ASCII-armored block has not yet been pasted into this page. Until it is, request the key via <a href="https://keys.openpgp.org/search?q=security%40vettid.org">keys.openpgp.org</a> or the Proton key directory.</em></p>
+
+    <pre class="pgp-block">-----BEGIN PGP PUBLIC KEY BLOCK-----
+(placeholder — the ASCII-armored public key for security@vettid.org
+ will be inserted here. Until then, fetch from keys.openpgp.org or
+ Proton's key directory.)
+-----END PGP PUBLIC KEY BLOCK-----</pre>
+  </section>
+
+  <section>
+    <h2>What we log</h2>
+    <p>Honest disclosure of what the operator side can see:</p>
+    <ul>
+      <li><strong>Host journal</strong> (AWS EC2 parent process): NATS routing metadata — your <code>owner_space</code> GUID, operation subjects, message types, response sizes, timing. <strong>No payload content.</strong> Default level is WARN+; the on-call can elevate to DEBUG for incident triage.</li>
+      <li><strong>Enclave</strong> (where your plaintext lives): no external logging. Goroutine-stack diagnostics only on detected stalls; they do not contain buffer contents.</li>
+      <li><strong>DynamoDB tables</strong>: enrollment metadata (pseudonymous), proposal/vote records (anonymized for published artifacts), LEASH attestation pubkeys (public by design), LEASH issuance log (jti + scope + expiry for revocation lookup).</li>
+      <li><strong>S3</strong>: encrypted vault databases (one per user; opaque to operator).</li>
+    </ul>
+    <p>What the operator cannot see: any decrypted payload, your vault contents, your session keys, your credential values. The enclave's attestation chain is what makes this enforceable rather than a promise.</p>
+  </section>
+
+</div>
+
+<footer>
+  <p>VettID — <a href="/">Home</a> · <a href="/help">Help us</a> · <a href="/security">Security</a></p>
+</footer>
+
+<script src="/shared/js/nav.js"></script>
+</body>
+</html>
