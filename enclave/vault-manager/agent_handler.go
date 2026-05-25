@@ -246,19 +246,45 @@ func (h *AgentHandler) HandleAgentMessage(ctx context.Context, msg *IncomingMess
 		return nil, nil
 	}
 
-	// Ensure we have a shared secret
-	if len(conn.SharedSecret) == 0 {
-		log.Warn().
-			Str("connection_id", conn.ConnectionID).
-			Msg("Agent connection has no shared secret")
-		return nil, nil
-	}
-
-	// Derive connection key from shared secret
-	connKey, err := deriveConnectionKey(conn.SharedSecret)
-	if err != nil {
-		log.Error().Err(err).Str("connection_id", conn.ConnectionID).Msg("Failed to derive connection key")
-		return nil, nil
+	// Load the encryption key for this connection. Agent connections
+	// don't have a peer SharedSecret — every agent op (secret request,
+	// catalog refresh, action request, owner→agent reply path) crypto
+	// is keyed on AgentSession.SessionKey, sealed at Stage-2 pairing
+	// under agent_session_keys/<conn>/<sessionKeyID>. The prior code
+	// required SharedSecret unconditionally, which silently dropped
+	// EVERY agent message (returned nil, nil from this handler with a
+	// warn log) — observed during the 2026-05-24 chat-test hunt:
+	// catalog refreshes accepted by the local /v1/secrets/refresh
+	// endpoint never round-tripped to the vault, /v1/secrets stayed
+	// empty forever, /v1/messages/send silently lost messages. Fix
+	// mirrors HandleAgentMessageReply: prefer AgentSession key when
+	// present; fall back to deriveConnectionKey for any non-agent
+	// caller this entrypoint ever picks up.
+	var connKey []byte
+	if conn.AgentSession != nil && conn.AgentSession.SessionKeyID != "" {
+		keyPath := fmt.Sprintf("agent_session_keys/%s/%s", conn.ConnectionID, conn.AgentSession.SessionKeyID)
+		sessionKey, err := h.storage.Get(keyPath)
+		if err != nil || len(sessionKey) == 0 {
+			log.Warn().
+				Str("connection_id", conn.ConnectionID).
+				Str("session_key_id", conn.AgentSession.SessionKeyID).
+				Msg("Agent session key not found in storage (extend or re-pair required)")
+			return nil, nil
+		}
+		connKey = sessionKey
+	} else {
+		if len(conn.SharedSecret) == 0 {
+			log.Warn().
+				Str("connection_id", conn.ConnectionID).
+				Msg("Agent connection has neither AgentSession nor SharedSecret")
+			return nil, nil
+		}
+		ck, err := deriveConnectionKey(conn.SharedSecret)
+		if err != nil {
+			log.Error().Err(err).Str("connection_id", conn.ConnectionID).Msg("Failed to derive connection key")
+			return nil, nil
+		}
+		connKey = ck
 	}
 	defer zeroBytes(connKey)
 
