@@ -162,27 +162,47 @@ func (h *LeashHandler) HandleGrantAttest(ctx context.Context, msg *IncomingMessa
 	if err := unmarshalRequest(msg.Payload, &req, "HandleGrantAttest"); err != nil {
 		return h.errorResponse(msg.GetID(), "invalid request format")
 	}
+	resp, leashErr := h.MintLeash(req)
+	if leashErr != nil {
+		return h.errorResponse(msg.GetID(), leashErr.Error())
+	}
+	respBytes, _ := json.Marshal(resp)
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
+}
 
+// MintLeash performs the validation + signing + persistence for a LEASH
+// issuance. Extracted from HandleGrantAttest so the agent-initiated
+// flow (HandleAgentLeashApprove in messages.go) can call into the same
+// path after the owner approves a leash_mint_request from an agent.
+//
+// Returns a structured error (the caller decides how to surface it —
+// HandleGrantAttest wraps it in errorResponse, the agent flow wraps it
+// in an AgentMsgLeashDenied envelope).
+func (h *LeashHandler) MintLeash(req GrantAttestRequest) (*GrantAttestResponse, error) {
 	if req.ConnectionID == "" {
-		return h.errorResponse(msg.GetID(), "connection_id is required")
+		return nil, fmt.Errorf("connection_id is required")
 	}
 	if len(req.Scope) < minScopeTokens {
-		return h.errorResponse(msg.GetID(), "at least one scope token is required")
+		return nil, fmt.Errorf("at least one scope token is required")
 	}
 	for _, s := range req.Scope {
 		if s == "" {
-			return h.errorResponse(msg.GetID(), "empty scope token rejected")
+			return nil, fmt.Errorf("empty scope token rejected")
 		}
 		if s == "*:*" {
 			// The spec says verifiers SHOULD reject; reject at the mint
 			// too so a misconfigured agent never holds an unscoped JWT.
-			return h.errorResponse(msg.GetID(), "unscoped leash (*:*) refused at issuance")
+			return nil, fmt.Errorf("unscoped leash (*:*) refused at issuance")
 		}
 	}
 
 	agentPubkey, err := base64.RawURLEncoding.DecodeString(req.AgentPubkey)
 	if err != nil || len(agentPubkey) != ed25519.PublicKeySize {
-		return h.errorResponse(msg.GetID(), "agent_pubkey must be base64url-encoded 32-byte Ed25519 key")
+		return nil, fmt.Errorf("agent_pubkey must be base64url-encoded 32-byte Ed25519 key")
 	}
 
 	// Validate the connection exists and is an agent. Reading it here
@@ -190,17 +210,17 @@ func (h *LeashHandler) HandleGrantAttest(ctx context.Context, msg *IncomingMessa
 	// crypto that can't be used.
 	connData, err := h.storage.Get("connections/" + req.ConnectionID)
 	if err != nil {
-		return h.errorResponse(msg.GetID(), "connection not found")
+		return nil, fmt.Errorf("connection not found")
 	}
 	var conn ConnectionRecord
 	if err := json.Unmarshal(connData, &conn); err != nil {
-		return h.errorResponse(msg.GetID(), "connection record unreadable")
+		return nil, fmt.Errorf("connection record unreadable")
 	}
 	if !conn.IsAgent() {
-		return h.errorResponse(msg.GetID(), "connection is not an agent")
+		return nil, fmt.Errorf("connection is not an agent")
 	}
 	if conn.Status == "revoked" || conn.Status == "expired" {
-		return h.errorResponse(msg.GetID(), fmt.Sprintf("connection is %s", conn.Status))
+		return nil, fmt.Errorf("connection is %s", conn.Status)
 	}
 
 	// Clamp duration.
@@ -216,7 +236,7 @@ func (h *LeashHandler) HandleGrantAttest(ctx context.Context, msg *IncomingMessa
 	attestKey, err := h.ensureAttestationKey()
 	if err != nil {
 		log.Error().Err(err).Str("owner_space", h.ownerSpace).Msg("Failed to ensure leash attestation key")
-		return h.errorResponse(msg.GetID(), "attestation key unavailable")
+		return nil, fmt.Errorf("attestation key unavailable")
 	}
 
 	// Increment the (user, agent) grant version. Stored under a
@@ -225,7 +245,7 @@ func (h *LeashHandler) HandleGrantAttest(ctx context.Context, msg *IncomingMessa
 	grantVersion, err := h.nextGrantVersion(req.ConnectionID)
 	if err != nil {
 		log.Error().Err(err).Str("connection_id", req.ConnectionID).Msg("Failed to increment grant version")
-		return h.errorResponse(msg.GetID(), "grant version unavailable")
+		return nil, fmt.Errorf("grant version unavailable")
 	}
 
 	// Profile version is informational in v1 — read what's current, use
@@ -253,7 +273,7 @@ func (h *LeashHandler) HandleGrantAttest(ctx context.Context, msg *IncomingMessa
 	token, err := signLeashJWT(attestKey, claims)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to sign LEASH JWT")
-		return h.errorResponse(msg.GetID(), "leash signing failed")
+		return nil, fmt.Errorf("leash signing failed")
 	}
 
 	// Persist the issuance record locally so revocation lookups via
@@ -293,11 +313,11 @@ func (h *LeashHandler) HandleGrantAttest(ctx context.Context, msg *IncomingMessa
 		pubBytes, perr := json.Marshal(publicRow)
 		if perr != nil {
 			log.Error().Err(perr).Str("jti", jti).Msg("marshal public leash issued row")
-			return h.errorResponse(msg.GetID(), "leash publish encoding failed")
+			return nil, fmt.Errorf("leash publish encoding failed")
 		}
 		if perr := h.sealerProxy.PublishLeashIssued(pubBytes); perr != nil {
 			log.Error().Err(perr).Str("jti", jti).Msg("publish leash issued to DDB")
-			return h.errorResponse(msg.GetID(), "leash publish failed")
+			return nil, fmt.Errorf("leash publish failed")
 		}
 	}
 
@@ -310,18 +330,12 @@ func (h *LeashHandler) HandleGrantAttest(ctx context.Context, msg *IncomingMessa
 		Int("scope_count", len(req.Scope)).
 		Msg("LEASH issued")
 
-	resp := GrantAttestResponse{
+	return &GrantAttestResponse{
 		Leash:     token,
 		JTI:       jti,
 		Kid:       attestKey.Kid,
 		IssuedAt:  issuedAt,
 		ExpiresAt: expiresAt,
-	}
-	respBytes, _ := json.Marshal(resp)
-	return &OutgoingMessage{
-		RequestID: msg.GetID(),
-		Type:      MessageTypeResponse,
-		Payload:   respBytes,
 	}, nil
 }
 

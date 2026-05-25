@@ -1568,9 +1568,151 @@ func (mh *MessageHandler) handleAgentOperation(ctx context.Context, msg *Incomin
 	case "message-reply":
 		// User replies to an agent message
 		return mh.agentHandler.HandleAgentMessageReply(ctx, msg)
+	case "leash-approve":
+		// Owner approved (or denied) an agent-initiated LEASH mint request.
+		// Vault calls into the leash handler's MintLeash internally and
+		// delivers the resulting JWT back to the agent over its NATS
+		// subscription, encrypted with the active AgentSession key.
+		return mh.HandleAgentLeashApprove(ctx, msg)
 	default:
 		return mh.errorResponse(msg.GetID(), fmt.Sprintf("unknown agent operation: %s", opType))
 	}
+}
+
+// AgentLeashApproveRequest is the phone-side payload for owner approval
+// of an agent-initiated LEASH mint request. The phone supplies the final
+// scope / duration (which may differ from what the agent requested if
+// the owner narrowed things on LeashApprovalScreen) and a boolean
+// approval flag.
+type AgentLeashApproveRequest struct {
+	RequestID     string   `json:"request_id"`
+	Approved      bool     `json:"approved"`
+	GrantedScope  []string `json:"granted_scope,omitempty"`
+	DurationSecs  int64    `json:"duration_secs,omitempty"`
+	DenyReason    string   `json:"deny_reason,omitempty"`
+}
+
+// HandleAgentLeashApprove handles forVault.agent.leash-approve. Looks
+// up the PendingLeashRequest stored by handleLeashMintRequest, branches
+// on approved/denied, and delivers an AgentMsgLeashGranted (with the
+// freshly minted JWT) or AgentMsgLeashDenied envelope back to the agent
+// via its forOwner.agent.<conn> subscription, encrypted with the active
+// AgentSession key.
+func (mh *MessageHandler) HandleAgentLeashApprove(ctx context.Context, msg *IncomingMessage) (*OutgoingMessage, error) {
+	var req AgentLeashApproveRequest
+	if err := unmarshalRequest(msg.Payload, &req, "HandleAgentLeashApprove"); err != nil {
+		return mh.errorResponse(msg.GetID(), "invalid request format")
+	}
+	if req.RequestID == "" {
+		return mh.errorResponse(msg.GetID(), "request_id is required")
+	}
+
+	storageKey := "agent_leash_pending/" + req.RequestID
+	pendingBytes, err := mh.storage.Get(storageKey)
+	if err != nil {
+		return mh.errorResponse(msg.GetID(), "leash request not found or already resolved")
+	}
+	var pending PendingLeashRequest
+	if err := json.Unmarshal(pendingBytes, &pending); err != nil {
+		return mh.errorResponse(msg.GetID(), "pending leash request unreadable")
+	}
+	if time.Now().Unix() > pending.ExpiresAt {
+		_ = mh.storage.Delete(storageKey)
+		return mh.errorResponse(msg.GetID(), "leash request expired")
+	}
+
+	// Always consume the pending row regardless of outcome — one approval
+	// op per request, even on denial. Delete BEFORE the publish so a
+	// retry from the phone (e.g. timeout + re-approve) hits the
+	// "not found" branch instead of silently double-issuing.
+	_ = mh.storage.Delete(storageKey)
+
+	// Look up the connection's AgentSession key for the agent-side
+	// envelope encryption. If the session has rotated or expired since
+	// the request was filed, we can't deliver the JWT to the agent —
+	// fail the approve so the owner sees the error rather than minting
+	// a leash that the agent never receives.
+	connData, err := mh.storage.Get("connections/" + pending.ConnectionID)
+	if err != nil {
+		return mh.errorResponse(msg.GetID(), "connection not found")
+	}
+	var conn ConnectionRecord
+	if err := json.Unmarshal(connData, &conn); err != nil {
+		return mh.errorResponse(msg.GetID(), "connection record unreadable")
+	}
+	if conn.AgentSession == nil || conn.AgentSession.SessionKeyID == "" {
+		return mh.errorResponse(msg.GetID(), "agent has no active session — request a fresh extend before approving")
+	}
+	keyPath := fmt.Sprintf("agent_session_keys/%s/%s", pending.ConnectionID, conn.AgentSession.SessionKeyID)
+	sessionKey, err := mh.storage.Get(keyPath)
+	if err != nil || len(sessionKey) == 0 {
+		return mh.errorResponse(msg.GetID(), "agent session key not found")
+	}
+
+	topic := fmt.Sprintf("MessageSpace.%s.forOwner.agent.%s", mh.ownerSpace, pending.ConnectionID)
+
+	if !req.Approved {
+		reason := req.DenyReason
+		if reason == "" {
+			reason = "denied by owner"
+		}
+		deniedBytes, _ := json.Marshal(AgentLeashDeniedPayload{
+			RequestID: pending.RequestID,
+			Reason:    reason,
+		})
+		mh.agentHandler.publishAgentResponse(sessionKey, pending.ConnectionID, AgentMsgLeashDenied, deniedBytes, topic)
+		return createSuccessResponse(msg.GetID(), true, "denied")
+	}
+
+	// Approved — fall back to the agent-requested values when the owner
+	// didn't narrow them on the approval screen.
+	scope := req.GrantedScope
+	if len(scope) == 0 {
+		scope = pending.RequestedScope
+	}
+	duration := req.DurationSecs
+	if duration <= 0 {
+		duration = pending.DurationSecs
+	}
+
+	out, mintErr := mh.leashHandler.MintLeash(GrantAttestRequest{
+		ConnectionID: pending.ConnectionID,
+		AgentPubkey:  pending.AgentPubkey,
+		Scope:        scope,
+		DurationSecs: duration,
+	})
+	if mintErr != nil {
+		log.Warn().Err(mintErr).Str("request_id", pending.RequestID).Msg("LEASH mint failed during approve")
+		deniedBytes, _ := json.Marshal(AgentLeashDeniedPayload{
+			RequestID: pending.RequestID,
+			Reason:    "mint failed: " + mintErr.Error(),
+		})
+		mh.agentHandler.publishAgentResponse(sessionKey, pending.ConnectionID, AgentMsgLeashDenied, deniedBytes, topic)
+		return mh.errorResponse(msg.GetID(), mintErr.Error())
+	}
+
+	grantedBytes, _ := json.Marshal(AgentLeashGrantedPayload{
+		RequestID: pending.RequestID,
+		Leash:     out.Leash,
+		JTI:       out.JTI,
+		Kid:       out.Kid,
+		IssuedAt:  out.IssuedAt,
+		ExpiresAt: out.ExpiresAt,
+	})
+	mh.agentHandler.publishAgentResponse(sessionKey, pending.ConnectionID, AgentMsgLeashGranted, grantedBytes, topic)
+
+	resp := map[string]interface{}{
+		"success":    true,
+		"request_id": pending.RequestID,
+		"jti":        out.JTI,
+		"expires_at": out.ExpiresAt,
+	}
+	respBytes, _ := json.Marshal(resp)
+	return &OutgoingMessage{
+		RequestID: msg.GetID(),
+		Type:      MessageTypeResponse,
+		Payload:   respBytes,
+	}, nil
 }
 
 // handleLeashOperation routes LEASH token issuance + revocation.

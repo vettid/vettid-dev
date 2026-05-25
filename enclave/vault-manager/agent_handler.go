@@ -111,7 +111,61 @@ const (
 	// that don't recognize the type log it under "Ignoring unknown
 	// NATS message type" and drop it, which is the desired behavior.
 	AgentMsgMessageAck = "agent_message_ack"
+
+	// AgentMsgLeashGranted carries a successfully-approved LEASH JWT back
+	// to the agent. Payload: AgentLeashGrantedPayload (compact JWT + jti +
+	// kid + expires_at). Lands on forOwner.agent.<conn> alongside chat
+	// messages; the agent demuxes by Type and resolves the in-flight
+	// mint tracker entry.
+	AgentMsgLeashGranted = "agent_leash_granted"
+
+	// AgentMsgLeashDenied tells the agent its mint request was rejected
+	// by the owner (or auto-denied by the vault for protocol reasons).
+	// Payload: AgentLeashDeniedPayload (request_id + reason).
+	AgentMsgLeashDenied = "agent_leash_denied"
 )
+
+// AgentLeashGrantedPayload carries a minted LEASH back to the agent that
+// requested it via the leash_mint_request flow.
+type AgentLeashGrantedPayload struct {
+	RequestID string `json:"request_id"`
+	Leash     string `json:"leash"`
+	JTI       string `json:"jti"`
+	Kid       string `json:"kid"`
+	IssuedAt  int64  `json:"issued_at"`
+	ExpiresAt int64  `json:"expires_at"`
+}
+
+// AgentLeashDeniedPayload tells the agent its mint request was denied.
+type AgentLeashDeniedPayload struct {
+	RequestID string `json:"request_id"`
+	Reason    string `json:"reason"`
+}
+
+// AgentLeashMintRequest is the payload of an agent.message with
+// content_type=leash_mint_request — the agent asking the owner to mint a
+// LEASH bound to its Ed25519 pubkey.
+type AgentLeashMintRequest struct {
+	RequestID      string   `json:"request_id"`     // dedup + correlation
+	AgentPubkey    string   `json:"agent_pubkey"`   // base64url Ed25519 pubkey to bind
+	RequestedScope []string `json:"requested_scope"` // hint; phone is the authority
+	DurationSecs   int64    `json:"duration_secs"`  // hint; phone may shorten
+	Reason         string   `json:"reason,omitempty"`
+}
+
+// PendingLeashRequest stored at agent_leash_pending/{request_id} while the
+// owner decides. Separate from PendingApproval (per-op secret approvals)
+// because the payload + downstream action (HandleGrantAttest) differ.
+type PendingLeashRequest struct {
+	RequestID      string   `json:"request_id"`
+	ConnectionID   string   `json:"connection_id"`
+	AgentPubkey    string   `json:"agent_pubkey"`
+	RequestedScope []string `json:"requested_scope"`
+	DurationSecs   int64    `json:"duration_secs"`
+	Reason         string   `json:"reason,omitempty"`
+	CreatedAt      int64    `json:"created_at"`
+	ExpiresAt      int64    `json:"expires_at"` // request-side TTL; owner has this long to decide
+}
 
 // --- Request/Response types (matching vettid-agent) ---
 
@@ -687,13 +741,23 @@ func (h *AgentHandler) handleCatalogRequest(ctx context.Context, conn *Connectio
 }
 
 // handleAgentMessage processes a text message or approval request from an agent.
-// Stores the message, creates a feed event, and notifies the app.
+// Stores the message, creates a feed event, and notifies the app. Gated on
+// the agent having the message.send capability.
 func (h *AgentHandler) handleAgentMessage(ctx context.Context, conn *ConnectionRecord, plaintext []byte) ([]byte, string, error) {
+	if conn.Contract == nil || !HasCapability(conn.Contract.Scope, CapMessageSend) {
+		log.Info().
+			Str("connection_id", conn.ConnectionID).
+			Msg("agent message dropped — message.send capability not granted")
+		ack, _ := json.Marshal(map[string]interface{}{"status": "denied", "reason": "capability message.send not granted"})
+		return ack, AgentMsgMessageAck, nil
+	}
+
 	var msg struct {
-		MessageID   string          `json:"message_id"`
-		ContentType string          `json:"content_type"` // "text" or "approval_request"
-		Content     string          `json:"content"`
-		Approval    json.RawMessage `json:"approval,omitempty"`
+		MessageID         string          `json:"message_id"`
+		ContentType       string          `json:"content_type"` // "text", "approval_request", or "leash_mint_request"
+		Content           string          `json:"content"`
+		Approval          json.RawMessage `json:"approval,omitempty"`
+		LeashMintRequest  json.RawMessage `json:"leash_mint_request,omitempty"`
 	}
 	if err := json.Unmarshal(plaintext, &msg); err != nil {
 		return nil, "", fmt.Errorf("invalid agent message: %w", err)
@@ -701,6 +765,15 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, conn *ConnectionR
 
 	if msg.MessageID == "" {
 		msg.MessageID = fmt.Sprintf("amsg-%d", time.Now().UnixNano())
+	}
+
+	// LEASH mint requests are a transactional side-channel ask, not chat
+	// content. Branch out before the chat-message storage path so the
+	// request doesn't pollute the conversation thread and the response
+	// flow can deliver the JWT directly to the agent via a distinct
+	// envelope type (AgentMsgLeashGranted).
+	if msg.ContentType == "leash_mint_request" {
+		return h.handleLeashMintRequest(ctx, conn, msg.MessageID, msg.LeashMintRequest)
 	}
 
 	agentName := conn.PeerAlias
@@ -837,6 +910,110 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, conn *ConnectionR
 	return ack, AgentMsgMessageAck, nil
 }
 
+// handleLeashMintRequest accepts an agent-initiated request to mint a
+// LEASH bound to its own Ed25519 pubkey. The flow:
+//
+//  1. Decode + validate the request payload.
+//  2. Persist a PendingLeashRequest under agent_leash_pending/{request_id}.
+//  3. Push a forApp.agent.leash-mint-pending notification so the owner's
+//     phone auto-navigates to LeashApprovalScreen.
+//  4. Return an ack to the agent (no JWT yet — that arrives later via
+//     AgentMsgLeashGranted/Denied once the owner approves or denies).
+//
+// Approval lands later via HandleAgentLeashApprove (the phone publishes
+// agent.leash-approve); that's where we mint via HandleGrantAttest and
+// publish the JWT back to the agent.
+const leashRequestTTL = 5 * time.Minute
+
+func (h *AgentHandler) handleLeashMintRequest(ctx context.Context, conn *ConnectionRecord, fallbackRequestID string, raw json.RawMessage) ([]byte, string, error) {
+	if len(raw) == 0 {
+		return nil, "", fmt.Errorf("leash_mint_request payload is required")
+	}
+	var req AgentLeashMintRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return nil, "", fmt.Errorf("invalid leash_mint_request payload: %w", err)
+	}
+
+	if req.RequestID == "" {
+		req.RequestID = fallbackRequestID
+	}
+	if req.AgentPubkey == "" {
+		return nil, "", fmt.Errorf("agent_pubkey is required (base64url Ed25519 pubkey)")
+	}
+	if len(req.RequestedScope) == 0 {
+		return nil, "", fmt.Errorf("at least one requested_scope token is required")
+	}
+	if req.DurationSecs <= 0 {
+		req.DurationSecs = 1800 // 30m default — matches the demo session length used by vettid.dev/leash
+	}
+
+	now := time.Now()
+	pending := PendingLeashRequest{
+		RequestID:      req.RequestID,
+		ConnectionID:   conn.ConnectionID,
+		AgentPubkey:    req.AgentPubkey,
+		RequestedScope: req.RequestedScope,
+		DurationSecs:   req.DurationSecs,
+		Reason:         req.Reason,
+		CreatedAt:      now.Unix(),
+		ExpiresAt:      now.Add(leashRequestTTL).Unix(),
+	}
+	body, err := json.Marshal(&pending)
+	if err != nil {
+		return nil, "", fmt.Errorf("marshal pending leash request: %w", err)
+	}
+	storageKey := "agent_leash_pending/" + req.RequestID
+	if err := h.storage.Put(storageKey, body); err != nil {
+		return nil, "", fmt.Errorf("persist pending leash request: %w", err)
+	}
+
+	if h.publisher != nil {
+		agentName := conn.PeerAlias
+		if agentName == "" {
+			agentName = "Agent"
+		}
+		agentType := ""
+		if conn.AgentMetadata != nil {
+			agentType = conn.AgentMetadata.AgentType
+		}
+		notif := map[string]interface{}{
+			"type":            "agent.leash-mint-pending",
+			"request_id":      req.RequestID,
+			"connection_id":   conn.ConnectionID,
+			"agent_name":      agentName,
+			"agent_type":      agentType,
+			"agent_pubkey":    req.AgentPubkey,
+			"requested_scope": req.RequestedScope,
+			"duration_secs":   req.DurationSecs,
+			"reason":          req.Reason,
+			"expires_at":      pending.ExpiresAt,
+		}
+		notifBytes, _ := json.Marshal(notif)
+		if err := h.publisher.PublishToApp(ctx, "agent.leash-mint-pending", notifBytes); err != nil {
+			log.Warn().Err(err).Msg("Failed to publish agent.leash-mint-pending (non-fatal)")
+		}
+	}
+
+	if h.eventHandler != nil {
+		h.eventHandler.LogConnectionEvent(ctx, EventTypeAgentSessionCreated, conn.ConnectionID, "",
+			fmt.Sprintf("Agent requested LEASH mint (%d scope tokens, %ds)", len(req.RequestedScope), req.DurationSecs))
+	}
+
+	log.Info().
+		Str("connection_id", conn.ConnectionID).
+		Str("request_id", req.RequestID).
+		Int("scope_count", len(req.RequestedScope)).
+		Int64("duration_secs", req.DurationSecs).
+		Msg("LEASH mint request stored; awaiting owner approval")
+
+	ack, _ := json.Marshal(map[string]interface{}{
+		"status":     "pending",
+		"request_id": req.RequestID,
+		"expires_at": pending.ExpiresAt,
+	})
+	return ack, AgentMsgMessageAck, nil
+}
+
 // HandleAgentMessageReply processes a user's reply to an agent message.
 // Called from the app via forVault.agent.message-reply.
 // Encrypts the reply and publishes to the agent's NATS response topic.
@@ -858,6 +1035,14 @@ func (h *AgentHandler) HandleAgentMessageReply(ctx context.Context, msg *Incomin
 	conn, err := h.getConnection(req.ConnectionID)
 	if err != nil {
 		return errorResponse(msg.GetID(), "connection not found"), nil
+	}
+
+	// Agent connections require the message.recv capability for the
+	// vault to deliver owner replies. Peer connections (non-agent) use
+	// their own visibility model and don't have an agent Contract; let
+	// them through unchanged.
+	if conn.IsAgent() && (conn.Contract == nil || !HasCapability(conn.Contract.Scope, CapMessageRecv)) {
+		return errorResponse(msg.GetID(), "agent lacks message.recv capability"), nil
 	}
 
 	// Generate message ID

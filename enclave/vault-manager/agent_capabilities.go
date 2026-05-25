@@ -32,14 +32,14 @@ const (
 	// approval gate as CapSecretsGet.
 	CapSecretsAction = "secrets.action"
 
-	// CapMessagesSend lets the agent post messages to the owner via
+	// CapMessageSend lets the agent post messages to the owner via
 	// agent.message (chat content and approval-request envelopes).
-	CapMessagesSend = "messages.send"
+	CapMessageSend = "message.send"
 
-	// CapMessagesRecv lets the agent receive owner replies on the
+	// CapMessageRecv lets the agent receive owner replies on the
 	// forOwner.agent.<conn> subject. An agent without recv can
 	// still send (push-only).
-	CapMessagesRecv = "messages.recv"
+	CapMessageRecv = "message.recv"
 )
 
 // DefaultAgentCapabilities is the minimum useful capability set used
@@ -51,8 +51,8 @@ var DefaultAgentCapabilities = []string{
 	CapSecretsCatalogRead,
 	CapSecretsGet,
 	CapSecretsAction,
-	CapMessagesSend,
-	CapMessagesRecv,
+	CapMessageSend,
+	CapMessageRecv,
 }
 
 // HasCapability reports whether the connection's Contract grants the
