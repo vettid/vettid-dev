@@ -3,7 +3,8 @@
 VettID is a privacy-first digital identity platform. Your data lives in an
 AWS Nitro Enclave — a hardware-isolated environment that even the operator
 (this dev) cannot see into. Sensitive operations happen inside the enclave,
-attested by hardware. Your phone is your root of trust.
+attested by hardware. Your **vault is your root of trust** — you
+control it using your phone and your credential.
 
 The **Technical Preview** is the first round of external testing. You'll
 pair your phone, optionally a desktop or AI agent, exchange data with
@@ -75,8 +76,12 @@ page.
 1. Download the latest `vettid-app-production-debug.apk` from
    the release.
 2. Sideload to your phone (Play Store distribution is not yet wired up).
-3. Open the app, scan the QR code from your registration email, and
-   follow the enrollment wizard.
+3. On any browser, go to **[vettid.dev/register](https://vettid.dev/register)**,
+   enter your registration code, and create your account. This kicks
+   off vault enrollment.
+4. When the registration flow asks you to continue on your phone, open
+   the installed app and follow the enrollment wizard the rest of the
+   way through.
 
 Tested on Pixel 7+ running Android 14+. Older devices may work; not
 verified.
@@ -178,8 +183,8 @@ delegated capability tokens (LEASH JWTs scoped to specific resources).
 | Agent connector pairing | **Beta** — recent refactor; expect breaking changes |
 | Agent → owner chat | **Beta** |
 | LEASH delegation tokens | **Alpha** — new flow; mint + verify works, scope vocabulary may still shift |
-| Video calling | **Not yet** |
-| Cross-device sync (multi-phone) | **Not yet** |
+| Video calling (phone ↔ phone) | **Beta** — works; desktop client not yet wired |
+| Cross-device sync (multi-phone) | **Not planned** — a single phone is the control point by design |
 
 If a capability marked Beta or Alpha breaks for you, that's a useful
 report — file it. If a Stable capability breaks, that's a higher-priority
@@ -245,7 +250,9 @@ attributes, and a handful of attestation primitives. If you've worked
 with Groth16 / PLONK / Bulletproofs / Halo2 / proof-carrying data and
 want to land a new scheme inside the enclave, please open a Discussion.
 The integration contract is roughly: implement the prover/verifier in
-Go (or WASM-callable), register as an enclave handler, expose via NATS.
+Go as an enclave handler and bundle it into the enclave build —
+handlers are Go-only today and ship as part of the attested enclave
+image, not as runtime-loadable plugins.
 
 See [Zero-Knowledge-Trust](https://github.com/vettid/Zero-Knowledge-Trust)
 for the design notes.
