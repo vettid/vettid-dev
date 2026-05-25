@@ -60,17 +60,28 @@ const (
 
 // MessageRecord represents a stored message
 type MessageRecord struct {
-	MessageID        string           `json:"message_id"`
-	ConnectionID     string           `json:"connection_id"`
-	PeerGUID         string           `json:"peer_guid,omitempty"`
-	Direction        MessageDirection `json:"direction"`
-	ContentType      string           `json:"content_type"`
-	Status           MessageStatus    `json:"status"`
-	EncryptedContent string           `json:"encrypted_content"`
-	Nonce            string           `json:"nonce,omitempty"`
-	CreatedAt        time.Time        `json:"created_at"`
-	DeliveredAt      *time.Time       `json:"delivered_at,omitempty"`
-	ReadAt           *time.Time       `json:"read_at,omitempty"`
+	MessageID    string           `json:"message_id"`
+	ConnectionID string           `json:"connection_id"`
+	PeerGUID     string           `json:"peer_guid,omitempty"`
+	Direction    MessageDirection `json:"direction"`
+	ContentType  string           `json:"content_type"`
+	Status       MessageStatus    `json:"status"`
+	// Peer-message path: content encrypted under the connection's
+	// SharedSecret (derived via deriveConnectionKey). EncryptedContent
+	// + Nonce are populated together; HandleList decrypts both.
+	EncryptedContent string `json:"encrypted_content,omitempty"`
+	Nonce            string `json:"nonce,omitempty"`
+	// Agent-message path: agent connections have no peer SharedSecret,
+	// so the agent_handler writes the message content as plaintext
+	// here. Storage-at-rest is still encrypted under the vault DEK,
+	// so this isn't a security regression — it's the application-
+	// layer wire encryption (SharedSecret-derived) that doesn't
+	// apply for agent connections. HandleList falls back to this
+	// field when EncryptedContent is empty.
+	Content     string     `json:"content,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+	DeliveredAt *time.Time `json:"delivered_at,omitempty"`
+	ReadAt      *time.Time `json:"read_at,omitempty"`
 }
 
 // --- Request/Response types ---
@@ -553,7 +564,15 @@ func (h *MessagingHandler) HandleList(msg *IncomingMessage) (*OutgoingMessage, e
 			continue
 		}
 
-		// Decrypt content
+		// Decrypt content. Peer messages: EncryptedContent + Nonce
+		// under deriveConnectionKey(SharedSecret). Agent messages:
+		// stored as plaintext in record.Content (agent connections
+		// have no peer SharedSecret; storage-at-rest is still
+		// encrypted under the vault DEK). Until this fix, agent
+		// conversations returned empty content for every row —
+		// HandleAgentMessageReply / handleAgentMessage stored under
+		// "content" but the struct had no Content field, so the JSON
+		// unmarshal dropped it on the floor.
 		content := ""
 		if connKey != nil && record.EncryptedContent != "" && record.Nonce != "" {
 			nonceBytes, err1 := base64.StdEncoding.DecodeString(record.Nonce)
@@ -564,6 +583,8 @@ func (h *MessagingHandler) HandleList(msg *IncomingMessage) (*OutgoingMessage, e
 					content = string(plaintext)
 				}
 			}
+		} else if record.Content != "" {
+			content = record.Content
 		}
 
 		senderGUID := ""
