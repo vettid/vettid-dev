@@ -356,12 +356,21 @@ func (h *AgentHandler) HandleAgentMessage(ctx context.Context, msg *IncomingMess
 	}
 	zeroBytes(responseBytes)
 
-	// Build response envelope
+	// Build response envelope. Sequence is time.Now().UnixNano() rather
+	// than echoing envelope.Sequence — the agent's EnvelopeValidator
+	// (messages.go) keeps a SINGLE global lastSeqSeen across every
+	// inbound envelope on the connection, so the vault has to emit a
+	// monotonically-increasing sequence across ALL response paths
+	// (this one + publishAgentResponse). Echoing the request sequence
+	// here would conflict with the unsolicited publishes (chat replies
+	// etc.) that have no request to echo — those use UnixNano too.
+	// UnixNano is non-zero, monotonic across vault restarts, and
+	// distinct from anything the agent has seen before.
 	respEnvelope := AgentEnvelope{
 		Type:      responseType,
 		KeyID:     conn.ConnectionID,
 		Timestamp: time.Now().UTC(),
-		Sequence:  envelope.Sequence,
+		Sequence:  uint64(time.Now().UnixNano()),
 	}
 
 	// Marshal the encrypted payload as JSON bytes for the envelope
@@ -887,6 +896,26 @@ func (h *AgentHandler) HandleAgentMessageReply(ctx context.Context, msg *Incomin
 	topic := fmt.Sprintf("MessageSpace.%s.forOwner.agent.%s", h.ownerSpace, conn.ConnectionID)
 	h.publishAgentResponse(connKey, conn.ConnectionID, AgentMsgMessageResponse, responseBytes, topic)
 
+	// Publish a forApp event so the OWNER's other surfaces (e.g.
+	// desktop viewing the same conversation, or another paired phone)
+	// refresh the conversation thread. Mirrors the agent.message.received
+	// notification handleAgentMessage emits for the opposite direction.
+	// Without this push, the surface that DIDN'T send the message
+	// (the desktop here) has stale state until the user forces a
+	// refresh — observed in the 2026-05-25 v6 validation pass.
+	if h.publisher != nil {
+		appNotif := map[string]interface{}{
+			"message_id":    replyID,
+			"connection_id": conn.ConnectionID,
+			"direction":     "outgoing",
+			"content":       req.Content,
+			"content_type":  "text",
+			"sent_at":       time.Now().Unix(),
+		}
+		appNotifBytes, _ := json.Marshal(appNotif)
+		_ = h.publisher.PublishToApp(ctx, "agent.message.sent", appNotifBytes)
+	}
+
 	// Log event
 	if h.eventHandler != nil {
 		h.eventHandler.LogEvent(ctx, &Event{
@@ -1071,6 +1100,13 @@ func (h *AgentHandler) publishAgentResponse(connKey []byte, connectionID, respon
 		KeyID:     connectionID,
 		Payload:   encPayloadJSON,
 		Timestamp: time.Now().UTC(),
+		// Non-zero monotonic sequence — agent's EnvelopeValidator
+		// rejects zero ("envelope sequence missing") and any value
+		// not strictly greater than lastSeqSeen. UnixNano gives both
+		// guarantees in one shot, with no need for a per-handler
+		// counter or persisted state. Must align with HandleAgentMessage's
+		// inline response envelope which uses the same source.
+		Sequence: uint64(time.Now().UnixNano()),
 	})
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to marshal agent approval response envelope")
