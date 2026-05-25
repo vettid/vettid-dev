@@ -57,6 +57,19 @@ func DeviceIndependentCapabilities() []string {
 		"connection.audit.search",
 		"message.list",
 		"message.read",
+		// `message.read-receipt` is what mark_message_read on the
+		// desktop and the equivalent Android path call when the user
+		// opens an unread conversation — it's a fire-and-forget
+		// acknowledgement that gets relayed to the peer's vault
+		// (or, for agent connections, stamped locally). Gating it
+		// behind phone approval meant the desktop fired an approval
+		// prompt every time the user opened an unread thread, which
+		// the user noticed during the 2026-05-25 agent-chat test.
+		// `message.read` and `message.mark-read` were already here
+		// but neither matches the actual op name dispatched by
+		// handleMessageOperation (`read-receipt`); this row closes
+		// that name-match gap.
+		"message.read-receipt",
 		// Agent + secret-catalog reads (catalog is metadata only).
 		"agent.list",
 		"secrets.catalog",
