@@ -34,6 +34,25 @@ type Config struct {
 
 	// DynamoDB configuration for NATS account seed access
 	DynamoDB DynamoDBConfig `yaml:"dynamodb"`
+
+	// Logging configuration
+	Logging LoggingConfig `yaml:"logging"`
+}
+
+// LoggingConfig controls zerolog's verbosity. Default is "warn" — see
+// the comment in main.go's applyLogLevel for the runtime-escalation
+// hatch (SIGUSR1).
+type LoggingConfig struct {
+	// Level is one of: trace, debug, info, warn, error. Defaults to
+	// "warn" if unset or unrecognized. Tech preview ships with warn so
+	// the journal doesn't accumulate per-user op cadence (owner_space
+	// GUID + NATS subject + timing) — that's metadata leakage
+	// addressable only by raising the floor for what reaches stderr →
+	// systemd journal.
+	Level string `yaml:"level"`
+	// Format is reserved for a future console / json toggle; currently
+	// the parent always uses zerolog.ConsoleWriter on stderr.
+	Format string `yaml:"format"`
 }
 
 // KMSConfig holds KMS settings for Nitro sealing

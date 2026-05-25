@@ -714,6 +714,14 @@ export class NitroStack extends cdk.Stack {
       // inclusion proof (the proof never round-trips through the app).
       props.infrastructure.publishedVotesBucket.grantRead(this.enclaveInstanceRole);
 
+      // ===== LEASH TABLE ACCESS =====
+      // Parent writes the per-user attestation pubkey on first
+      // leash.attest, and one row per issued leash for revocation
+      // lookup. Verifier Lambdas read from both, but the parent's
+      // role only needs write here — read goes through the Lambdas.
+      props.infrastructure.tables.leashAttestKeys.grantWriteData(this.enclaveInstanceRole);
+      props.infrastructure.tables.leashIssued.grantWriteData(this.enclaveInstanceRole);
+
       // Store proposals/votes table names + published-votes bucket in SSM for
       // parent process configuration consumption.
       new ssm.StringParameter(this, 'ProposalsTableParameter', {
@@ -732,6 +740,27 @@ export class NitroStack extends cdk.Stack {
         parameterName: '/vettid/nitro/published-votes-bucket',
         description: 'S3 bucket holding Merkle artifacts for vote inclusion proofs',
         stringValue: props.infrastructure.publishedVotesBucket.bucketName,
+        tier: ssm.ParameterTier.STANDARD,
+      });
+
+      // LEASH attestation keys table — parent publishes the user's
+      // attestation pubkey here on first leash.attest issuance. Without
+      // this SSM param the parent.yaml field is empty and
+      // PublishLeashAttestKey returns "leash_attest_keys_table not
+      // configured" — every first-mint for a user fails before signing.
+      new ssm.StringParameter(this, 'LeashAttestKeysTableParameter', {
+        parameterName: '/vettid/nitro/leash-attest-keys-table',
+        description: 'DynamoDB table for per-user LEASH attestation pubkeys',
+        stringValue: props.infrastructure.tables.leashAttestKeys.tableName,
+        tier: ssm.ParameterTier.STANDARD,
+      });
+      // LEASH issuance log — one row per mint, used by the public
+      // revocation-status endpoint. Same wiring story as the
+      // attest-keys table.
+      new ssm.StringParameter(this, 'LeashIssuedTableParameter', {
+        parameterName: '/vettid/nitro/leash-issued-table',
+        description: 'DynamoDB table for issued-leash status (revocation)',
+        stringValue: props.infrastructure.tables.leashIssued.tableName,
         tier: ssm.ParameterTier.STANDARD,
       });
 
@@ -1378,11 +1407,15 @@ export class NitroStack extends cdk.Stack {
       'PROPOSALS_TABLE=$(aws ssm get-parameter --name /vettid/nitro/proposals-table --region $REGION --query Parameter.Value --output text 2>/dev/null || echo "")',
       'VOTES_TABLE=$(aws ssm get-parameter --name /vettid/nitro/votes-table --region $REGION --query Parameter.Value --output text 2>/dev/null || echo "")',
       'PUBLISHED_VOTES_BUCKET=$(aws ssm get-parameter --name /vettid/nitro/published-votes-bucket --region $REGION --query Parameter.Value --output text 2>/dev/null || echo "")',
+      'LEASH_ATTEST_KEYS_TABLE=$(aws ssm get-parameter --name /vettid/nitro/leash-attest-keys-table --region $REGION --query Parameter.Value --output text 2>/dev/null || echo "")',
+      'LEASH_ISSUED_TABLE=$(aws ssm get-parameter --name /vettid/nitro/leash-issued-table --region $REGION --query Parameter.Value --output text 2>/dev/null || echo "")',
       'echo "NATS accounts table: $NATS_ACCOUNTS_TABLE"',
       'echo "NATS seed key ARN: $NATS_SEED_KEY_ARN"',
       'echo "Proposals table: $PROPOSALS_TABLE"',
       'echo "Votes table: $VOTES_TABLE"',
       'echo "Published votes bucket: $PUBLISHED_VOTES_BUCKET"',
+      'echo "LEASH attest keys table: $LEASH_ATTEST_KEYS_TABLE"',
+      'echo "LEASH issued table: $LEASH_ISSUED_TABLE"',
       '',
       '# Update parent config to use NATS credentials and KMS',
       'cat > /etc/vettid/parent.yaml << EOF',
@@ -1426,10 +1459,18 @@ export class NitroStack extends cdk.Stack {
       '  proposals_table: $PROPOSALS_TABLE',
       '  votes_table: $VOTES_TABLE',
       '  published_votes_bucket: $PUBLISHED_VOTES_BUCKET',
+      '  leash_attest_keys_table: $LEASH_ATTEST_KEYS_TABLE',
+      '  leash_issued_table: $LEASH_ISSUED_TABLE',
       '  region: $REGION',
       '',
       'logging:',
-      '  level: info',
+      // Tech-preview default: WARN+. INFO leaks per-user op cadence
+      // (owner_space GUID + NATS subject + timing) into the host
+      // journal even though no payload content is ever logged. On-call
+      // operators can elevate at runtime without restart via
+      // `pkill -USR1 vettid-parent` (cycles configured → debug →
+      // trace → configured); see parent/main.go runLogLevelEscalator.
+      '  level: warn',
       '  format: json',
       'EOF',
       'chmod 644 /etc/vettid/parent.yaml',
