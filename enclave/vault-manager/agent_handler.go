@@ -179,6 +179,26 @@ type AgentCatalogRefreshRequest struct {
 	CurrentVersion uint64 `json:"current_version"`
 }
 
+// addToMessageIndex appends a message ID to the per-connection index
+// at messages/<conn>/_index. Without this, message.list returns empty
+// for agent conversations even after messages have been stored — the
+// list handler iterates the index, not the messages/<conn>/* keyspace
+// directly. Mirrors MessagingHandler.addToMessageIndex but lives here
+// because the agent handler doesn't hold a MessagingHandler reference
+// (only a *EncryptedStorage), and inlining at every store-site would
+// be three copies of the same five lines.
+func (h *AgentHandler) addToMessageIndex(connectionID, messageID string) {
+	indexKey := fmt.Sprintf("messages/%s/_index", connectionID)
+	var index []string
+	if data, err := h.storage.Get(indexKey); err == nil {
+		_ = json.Unmarshal(data, &index)
+	}
+	index = append(index, messageID)
+	if data, err := json.Marshal(index); err == nil {
+		_ = h.storage.Put(indexKey, data)
+	}
+}
+
 // --- Main message handler ---
 
 // HandleAgentMessage processes an incoming message from an agent connector.
@@ -680,6 +700,7 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, conn *ConnectionR
 	if err := h.storage.Put(storageKey, recordBytes); err != nil {
 		log.Warn().Err(err).Msg("Failed to store agent message")
 	}
+	h.addToMessageIndex(conn.ConnectionID, msg.MessageID)
 
 	// Create feed event based on content type
 	if msg.ContentType == "approval_request" {
@@ -819,6 +840,7 @@ func (h *AgentHandler) HandleAgentMessageReply(ctx context.Context, msg *Incomin
 	recordBytes, _ := json.Marshal(messageRecord)
 	storageKey := fmt.Sprintf("messages/%s/%s", conn.ConnectionID, replyID)
 	h.storage.Put(storageKey, recordBytes)
+	h.addToMessageIndex(conn.ConnectionID, replyID)
 
 	// Build response for agent
 	agentResponse := map[string]interface{}{
