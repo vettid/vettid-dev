@@ -54,8 +54,27 @@ for field in new_pcrs valid_from version; do
     fi
 done
 
-# Create canonical JSON for signing (sorted keys, no extra whitespace, without signature)
-CANONICAL=$(echo "$CONFIG" | jq -cS 'del(.signature)')
+# Create canonical JSON for signing.
+#
+# CRITICAL: must produce byte-for-byte the same output as the
+# verifier's signedPayload() in enclave/migration/pcr_config.go. The
+# verifier:
+#   1. Sorts keys (we use jq -cS).
+#   2. Drops the signature field (`del(.signature)`).
+#   3. OMITS optional fields when their value is empty/zero — summary,
+#      details_url, expires_at, published_at, mandatory_after.
+#
+# Step 3 is the subtle one. If the input JSON has `"details_url": ""`,
+# the signer's canonical bytes contain that empty key but the
+# verifier's don't — every signature fails ECDSA verify and migration
+# silently no-ops. Surfaced 2026-05-26 deploying the security-review
+# fixes (operator-generated config with `details_url: ""` produced an
+# unverifiable signature).
+#
+# Fix: drop top-level keys whose value is `""` before sorting. We use
+# `with_entries(select(.value != ""))` to skip empty-string fields;
+# non-string values (objects, arrays) are kept as-is.
+CANONICAL=$(echo "$CONFIG" | jq -cS 'del(.signature) | with_entries(select(.value != ""))')
 
 # Hash the canonical JSON with SHA-256
 HASH=$(echo -n "$CANONICAL" | openssl dgst -sha256 -binary | base64 -w 0)
