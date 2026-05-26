@@ -1567,8 +1567,15 @@ export class InfrastructureStack extends cdk.Stack {
             'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com',
           },
           StringLike: {
-            // Allow from mesmerverse repos (adjust as needed)
-            'token.actions.githubusercontent.com:sub': 'repo:mesmerverse/*:*',
+            // SECURITY: pin to a specific repo + branch. The previous
+            // wildcard `repo:mesmerverse/*:*` accepted ANY repo in the
+            // org and ANY ref (branch/tag/PR/environment), which let a
+            // workflow on any fork or new repo assume this role and read
+            // the enclave handler-signing key. We're on the `vettid` org
+            // now; pin to vettid/vettid-dev main only. Add additional
+            // entries here if a sibling repo legitimately needs to ship
+            // handlers. See SECURITY-REVIEW-2026-05-25.md C-HIGH-2.
+            'token.actions.githubusercontent.com:sub': 'repo:vettid/vettid-dev:ref:refs/heads/main',
           },
         },
         'sts:AssumeRoleWithWebIdentity'
