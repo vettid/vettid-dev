@@ -1,4 +1,4 @@
-import { grantAuditAppend } from './audit-grants';
+import { grantAuditAppend, grantRateLimitWrite } from './audit-grants';
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import {
@@ -695,6 +695,7 @@ export class VaultStack extends cdk.Stack {
 
     // Grant audit table permissions for vault functions
     grantAuditAppend(tables.audit, this.enrollFinalize);
+    grantRateLimitWrite(tables.audit, this.enrollFinalize); // checkRateLimit UpdateItem on RATELIMIT#*
 
     // ===== DEVICE ATTESTATION PERMISSIONS (Phase 2) =====
     tables.enrollmentSessions.grantReadWriteData(this.verifyAndroidAttestation);
@@ -705,6 +706,7 @@ export class VaultStack extends cdk.Stack {
     // Unified device attestation handler permissions (QR code enrollment flow)
     tables.enrollmentSessions.grantReadWriteData(this.verifyDeviceAttestation);
     grantAuditAppend(tables.audit, this.verifyDeviceAttestation);
+    grantRateLimitWrite(tables.audit, this.verifyDeviceAttestation); // checkRateLimit UpdateItem on RATELIMIT#*
     // Grant access to enrollment JWT verification secret
     this.verifyDeviceAttestation.addToRolePolicy(new iam.PolicyStatement({
       actions: ['secretsmanager:GetSecretValue'],

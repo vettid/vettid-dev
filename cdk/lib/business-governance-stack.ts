@@ -1,4 +1,4 @@
-import { grantAuditAppend } from './audit-grants';
+import { grantAuditAppend, grantRateLimitWrite } from './audit-grants';
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import {
@@ -520,6 +520,7 @@ export class BusinessGovernanceStack extends cdk.Stack {
     });
 
     tables.audit.grantReadData(getAuditLog);
+    grantRateLimitWrite(tables.audit, getAuditLog); // checkRateLimit UpdateItem on RATELIMIT#*
 
     this.getAuditLog = getAuditLog;
 

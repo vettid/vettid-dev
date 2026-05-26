@@ -30,3 +30,39 @@ export function grantAuditAppend(
     resourceArns: [auditTable.tableArn],
   });
 }
+
+/**
+ * Grants the per-action rate-limit counter UpdateItem on the audit
+ * table, constrained to items whose primary key starts with
+ * `RATELIMIT#`.
+ *
+ * Why this exists separately from grantAuditAppend:
+ *   checkRateLimit() (lambda/common/util.ts) atomically increments a
+ *   counter via UpdateItem + ConditionExpression. UpdateItem is NOT in
+ *   grantAuditAppend (by design — that helper is append-only so a
+ *   compromised audit writer can't tamper with prior entries). Without
+ *   this grant, the conditional UpdateItem throws AccessDeniedException
+ *   → checkRateLimit's catch fails-closed → every request hits 429.
+ *   That's exactly the silent system-wide outage we shipped under
+ *   SECURITY #29's fail-closed change.
+ *
+ * The IAM condition restricts UpdateItem to items keyed `RATELIMIT#*`
+ * so a compromised rate-limit user still cannot touch real audit rows.
+ */
+export function grantRateLimitWrite(
+  auditTable: dynamodb.ITable,
+  grantee: iam.IGrantable,
+): iam.Grant {
+  return iam.Grant.addToPrincipal({
+    grantee,
+    actions: [
+      'dynamodb:UpdateItem',
+    ],
+    resourceArns: [auditTable.tableArn],
+    conditions: {
+      'ForAllValues:StringLike': {
+        'dynamodb:LeadingKeys': ['RATELIMIT#*'],
+      },
+    },
+  });
+}

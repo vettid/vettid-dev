@@ -1,4 +1,4 @@
-import { grantAuditAppend } from './audit-grants';
+import { grantAuditAppend, grantRateLimitWrite } from './audit-grants';
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import {
@@ -1328,10 +1328,12 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
     tables.registrations.grantReadWriteData(submitRegistration);
     tables.waitlist.grantReadWriteData(submitWaitlist);
     grantAuditAppend(tables.audit, submitWaitlist); // For rate limiting
+    grantRateLimitWrite(tables.audit, submitWaitlist); // checkRateLimit UpdateItem on RATELIMIT#*
     tables.notificationPreferences.grantReadData(submitWaitlist); // For admin notifications
     tables.supportedServices.grantReadData(listPublicServices); // Public services list
     tables.helpRequests.grantReadWriteData(submitHelpRequest); // Help request submissions
     grantAuditAppend(tables.audit, submitHelpRequest); // For rate limiting
+    grantRateLimitWrite(tables.audit, submitHelpRequest); // checkRateLimit UpdateItem on RATELIMIT#*
     tables.registrations.grantReadWriteData(cancelAccount);
     tables.subscriptions.grantReadWriteData(cancelAccount);
     tables.registrations.grantReadWriteData(cleanupExpiredAccounts);
@@ -1353,6 +1355,7 @@ new glue.CfnTable(this, 'CloudFrontLogsTable', {
     tables.votes.grantReadData(proposalStreamFn); // Read votes for auto-publish
     props.infrastructure.publishedVotesBucket.grantReadWrite(proposalStreamFn); // Write results to S3 on auto-publish
     grantAuditAppend(tables.audit, submitRegistration);
+    grantRateLimitWrite(tables.audit, submitRegistration); // checkRateLimit UpdateItem on RATELIMIT#*
     grantAuditAppend(tables.audit, registrationStreamFn);
     grantAuditAppend(tables.audit, cancelAccount);
     grantAuditAppend(tables.audit, cleanupExpiredAccounts);

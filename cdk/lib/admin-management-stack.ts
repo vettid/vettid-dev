@@ -1,4 +1,4 @@
-import { grantAuditAppend } from './audit-grants';
+import { grantAuditAppend, grantRateLimitWrite } from './audit-grants';
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import {
@@ -443,6 +443,24 @@ export class AdminManagementStack extends cdk.Stack {
     tables.pendingAdmins.grantReadWriteData(resendAdminVerification);
     grantAuditAppend(tables.audit, activateAdmin);
     grantAuditAppend(tables.audit, cancelPendingAdmin);
+
+    // SECURITY: rate-limit counter UpdateItem on audit table for every
+    // Lambda that calls checkRateLimit(). grantAuditAppend is PutItem-
+    // only by design; without this grant the conditional UpdateItem
+    // throws AccessDenied and the fail-closed catch returns 429 to
+    // every caller. See cdk/lib/audit-grants.ts and
+    // SECURITY-REVIEW-2026-05-25 follow-up.
+    [
+      approveRegistration,
+      createInvite,
+      deleteUser,
+      addAdmin,
+      resetAdminPassword,
+      changePassword,
+      inviteAdmin,
+      activateAdmin,
+      resendAdminVerification,
+    ].forEach(fn => grantRateLimitWrite(tables.audit, fn));
 
     // Cognito permissions for activation
     activateAdmin.addToRolePolicy(cognitoAdminPolicy);
