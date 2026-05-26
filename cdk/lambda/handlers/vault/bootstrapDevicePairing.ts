@@ -184,8 +184,11 @@ export const handler = async (event: APIGatewayProxyEventV2): Promise<APIGateway
       origin,
     );
   } catch (err: unknown) {
+    // SECURITY: log the raw error to CloudWatch only. Returning the
+    // SDK exception text to the unauthenticated caller leaks Secrets
+    // Manager secret IDs, NATS account internals, and AWS request IDs.
+    // See SECURITY-REVIEW-2026-05-25.md C-HIGH-4.
     console.error('[pair-bootstrap] failed', err);
-    const msg = err instanceof Error ? err.message : String(err);
-    return internalError(`failed to mint credentials: ${msg}`, origin);
+    return internalError('failed to mint credentials', origin);
   }
 };

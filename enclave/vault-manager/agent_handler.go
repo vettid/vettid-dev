@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -48,14 +49,21 @@ type PendingApproval struct {
 // Responses are published directly via VsockPublisher to the agent's
 // response topic, not through the standard reply path.
 type AgentHandler struct {
-	ownerSpace       string
-	storage          *EncryptedStorage
-	publisher        *VsockPublisher
-	eventHandler     *EventHandler
-	connHandler      *ConnectionsHandler
-	secretsHandler   *AgentSecretsHandler
-	pendingApprovals map[string]*PendingApproval // keyed by request_id
-	rateLimiter      *agentRateLimiter           // per-connection DoS guard (#32)
+	ownerSpace     string
+	storage        *EncryptedStorage
+	publisher      *VsockPublisher
+	eventHandler   *EventHandler
+	connHandler    *ConnectionsHandler
+	secretsHandler *AgentSecretsHandler
+	// pendingApprovals is the request_id-keyed map of outstanding
+	// owner-side approval rows. Guarded by `mu` — three insert paths
+	// (secret/action/approval-request) hit this concurrently in
+	// principle, and the goroutine cleanup walks it. See
+	// SECURITY-REVIEW-2026-05-25.md V-HIGH-3 and V-LOW-3.
+	mu               sync.Mutex
+	pendingApprovals map[string]*PendingApproval
+	stopCleanup      chan struct{}
+	rateLimiter      *agentRateLimiter // per-connection DoS guard (#32)
 }
 
 // NewAgentHandler creates a new agent handler.
@@ -67,7 +75,7 @@ func NewAgentHandler(
 	connHandler *ConnectionsHandler,
 	secretsHandler *AgentSecretsHandler,
 ) *AgentHandler {
-	return &AgentHandler{
+	ah := &AgentHandler{
 		ownerSpace:       ownerSpace,
 		storage:          storage,
 		publisher:        publisher,
@@ -75,7 +83,72 @@ func NewAgentHandler(
 		connHandler:      connHandler,
 		secretsHandler:   secretsHandler,
 		pendingApprovals: make(map[string]*PendingApproval),
+		stopCleanup:      make(chan struct{}),
 		rateLimiter:      newAgentRateLimiter(),
+	}
+	// Sweep abandoned pending approvals (agent requested, owner never
+	// answered) so the map can't grow without bound. Mirrors
+	// DeviceHandler.cleanExpiredSessions. V-HIGH-3.
+	go ah.cleanExpiredApprovalsLoop()
+	return ah
+}
+
+// addPendingApproval inserts an entry, refusing to clobber a row
+// that already exists under the same RequestID. Three call sites
+// (secret/action/approval-request) share the same key namespace —
+// without this guard, a confused or hostile agent could overwrite
+// its own pending row (V-LOW-3) and the lock-free insert pattern
+// would also race with cleanup (V-HIGH-3).
+func (h *AgentHandler) addPendingApproval(p *PendingApproval) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if _, exists := h.pendingApprovals[p.RequestID]; exists {
+		return false
+	}
+	h.pendingApprovals[p.RequestID] = p
+	return true
+}
+
+// claimPendingApproval atomically looks up and removes a pending
+// approval. Returns the entry plus a `found` flag. Used by the
+// owner-app response path so the read+delete pair can't race with
+// cleanup or a duplicate response.
+func (h *AgentHandler) claimPendingApproval(id string) (*PendingApproval, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	p, ok := h.pendingApprovals[id]
+	if !ok {
+		return nil, false
+	}
+	delete(h.pendingApprovals, id)
+	return p, true
+}
+
+// cleanExpiredApprovalsLoop drives CleanExpiredApprovals on a ticker
+// for the lifetime of the AgentHandler. Mirrors
+// DeviceHandler.cleanExpiredSessions.
+func (h *AgentHandler) cleanExpiredApprovalsLoop() {
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+	const maxAge = 10 * time.Minute
+	for {
+		select {
+		case <-ticker.C:
+			h.CleanExpiredApprovals(maxAge)
+		case <-h.stopCleanup:
+			return
+		}
+	}
+}
+
+// Stop releases the cleanup goroutine. Idempotent — safe to call
+// from a graceful-shutdown path.
+func (h *AgentHandler) Stop() {
+	select {
+	case <-h.stopCleanup:
+		// already closed
+	default:
+		close(h.stopCleanup)
 	}
 }
 
@@ -544,14 +617,17 @@ func (h *AgentHandler) handleSecretRequest(ctx context.Context, conn *Connection
 		return data, AgentMsgSecretResponse, nil
 
 	default: // "always_ask"
-		// Store pending approval so we can fulfill it when the app responds
-		h.pendingApprovals[req.RequestID] = &PendingApproval{
+		// Store pending approval so we can fulfill it when the app responds.
+		if !h.addPendingApproval(&PendingApproval{
 			RequestID:    req.RequestID,
 			ConnectionID: conn.ConnectionID,
 			SecretID:     secret.SecretID,
 			Action:       "retrieve",
 			Purpose:      req.Purpose,
 			CreatedAt:    time.Now(),
+		}) {
+			log.Warn().Str("request_id", req.RequestID).Msg("Duplicate pending approval rejected (secret)")
+			return nil, "", fmt.Errorf("duplicate request_id")
 		}
 
 		// Send approval request to mobile app
@@ -638,8 +714,8 @@ func (h *AgentHandler) handleActionRequest(ctx context.Context, conn *Connection
 	}
 
 	if approvalMode == "always_ask" {
-		// Store pending approval so we can fulfill it when the app responds
-		h.pendingApprovals[req.RequestID] = &PendingApproval{
+		// Store pending approval so we can fulfill it when the app responds.
+		if !h.addPendingApproval(&PendingApproval{
 			RequestID:    req.RequestID,
 			ConnectionID: conn.ConnectionID,
 			SecretID:     req.SecretID,
@@ -647,6 +723,9 @@ func (h *AgentHandler) handleActionRequest(ctx context.Context, conn *Connection
 			Purpose:      req.Purpose,
 			Params:       req.Params,
 			CreatedAt:    time.Now(),
+		}) {
+			log.Warn().Str("request_id", req.RequestID).Msg("Duplicate pending approval rejected (action)")
+			return nil, "", fmt.Errorf("duplicate request_id")
 		}
 
 		// Send approval request to mobile app
@@ -829,13 +908,15 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, conn *ConnectionR
 			title = fmt.Sprintf("%s requests approval", agentName)
 		}
 
-		// Store as pending approval for the app to act on
-		h.pendingApprovals[msg.MessageID] = &PendingApproval{
+		// Store as pending approval for the app to act on.
+		if !h.addPendingApproval(&PendingApproval{
 			RequestID:    msg.MessageID,
 			ConnectionID: conn.ConnectionID,
 			Action:       "approval_request",
 			Purpose:      approval.Description,
 			CreatedAt:    time.Now(),
+		}) {
+			log.Warn().Str("message_id", msg.MessageID).Msg("Duplicate pending approval rejected (approval_request)")
 		}
 
 		if h.eventHandler != nil {
@@ -1191,15 +1272,14 @@ func (h *AgentHandler) HandleAppApprovalResponse(ctx context.Context, msg *Incom
 		return createSuccessResponse(msg.GetID(), false, "missing request_id")
 	}
 
-	// Look up pending approval
-	pending, ok := h.pendingApprovals[payload.RequestID]
+	// Atomically look up + remove the pending approval. claimPendingApproval
+	// holds the mutex across the read/delete so a duplicate response or the
+	// cleanup goroutine can't race here.
+	pending, ok := h.claimPendingApproval(payload.RequestID)
 	if !ok {
 		log.Warn().Str("request_id", payload.RequestID).Msg("No pending approval found")
 		return createSuccessResponse(msg.GetID(), false, "no pending request found")
 	}
-
-	// Clean up regardless of outcome
-	delete(h.pendingApprovals, payload.RequestID)
 
 	// Look up connection
 	conn, err := h.getConnection(pending.ConnectionID)
@@ -1387,9 +1467,13 @@ func createSuccessResponse(requestID string, success bool, message string) (*Out
 	}, nil
 }
 
-// CleanExpiredApprovals removes pending approvals older than the given duration.
+// CleanExpiredApprovals removes pending approvals older than maxAge.
+// Holds h.mu for the duration of the walk; safe to call from any
+// goroutine including the cleanExpiredApprovalsLoop ticker.
 func (h *AgentHandler) CleanExpiredApprovals(maxAge time.Duration) {
 	cutoff := time.Now().Add(-maxAge)
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	for id, pending := range h.pendingApprovals {
 		if pending.CreatedAt.Before(cutoff) {
 			delete(h.pendingApprovals, id)
