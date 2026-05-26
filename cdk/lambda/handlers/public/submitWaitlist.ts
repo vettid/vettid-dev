@@ -8,8 +8,13 @@ import { validateEmail, validateName, checkRateLimit, hashIdentifier, getClientI
 const ddb = new DynamoDBClient({});
 const ses = new SESClient({});
 
-// Rate limit: 5 waitlist submissions per IP per hour
-const RATE_LIMIT_MAX_REQUESTS = 5;
+// Rate limit: 30 waitlist submissions per IP per hour. Higher than the
+// 5/hr default because the waitlist is a public sign-up form and IPs
+// are routinely shared (CGNAT, household NAT, corporate egress, campus
+// wifi); a 5-bucket locked out the 5th legit user. 30 still deflects
+// scripted abuse and the bucket is per-action, so other endpoints'
+// limits are unaffected.
+const RATE_LIMIT_MAX_REQUESTS = 30;
 const RATE_LIMIT_WINDOW_MINUTES = 60;
 
 const TABLE_WAITLIST = process.env.TABLE_WAITLIST!;
