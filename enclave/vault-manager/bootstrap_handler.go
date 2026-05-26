@@ -19,13 +19,27 @@ import (
 
 // SECURITY: Secret for verifying attestation binding tokens
 // Must match the secret used by verifyNitroAttestation Lambda
+const defaultDevBindingSecret = "default-dev-secret-replace-in-production"
+
 var attestationBindingSecret = getAttestationBindingSecret()
 
 func getAttestationBindingSecret() string {
 	if secret := os.Getenv("ATTESTATION_BINDING_SECRET"); secret != "" {
 		return secret
 	}
-	return "default-dev-secret-replace-in-production"
+	return defaultDevBindingSecret
+}
+
+// isProductionBootstrap reports whether the bootstrap handler must
+// fail-closed on missing or failing attestation-binding verification.
+// True when VETTID_PRODUCTION=true (matches the supervisor's
+// production gate in vsock.go). In production, the dev-default
+// binding secret is also rejected at startup-warning level so a
+// misconfigured deploy can't silently downgrade every bootstrap to
+// MITM-vulnerable legacy mode. See SECURITY-REVIEW-2026-05-25.md
+// V-HIGH-2.
+func isProductionBootstrap() bool {
+	return strings.EqualFold(os.Getenv("VETTID_PRODUCTION"), "true")
 }
 
 // BootstrapHandler handles vault bootstrap operations
@@ -89,24 +103,43 @@ func (h *BootstrapHandler) HandleBootstrap(ctx context.Context, msg *IncomingMes
 		}
 	}
 
-	// SECURITY: Verify attestation binding if provided
-	// This prevents MITM attacks on the key exchange by binding it to attestation verification
+	// SECURITY: Verify attestation binding to prevent MITM on key
+	// exchange. In production (VETTID_PRODUCTION=true), every bootstrap
+	// MUST carry binding fields AND verify successfully — anything else
+	// is fail-closed. Outside production the legacy/dev path is still
+	// permitted so local-dev flows that haven't wired binding yet keep
+	// working. See SECURITY-REVIEW-2026-05-25.md V-HIGH-2.
+	prod := isProductionBootstrap()
+	if prod && attestationBindingSecret == defaultDevBindingSecret {
+		log.Error().Msg("SECURITY: VETTID_PRODUCTION=true but ATTESTATION_BINDING_SECRET unset — refusing bootstrap")
+		return h.errorResponse(msg.GetID(), "attestation binding misconfigured")
+	}
 	bindingVerified := false
-	if req.SessionID != "" && req.AppPublicKey != "" && req.BindingToken != "" && req.PCRHash != "" {
-		if verifyBindingToken(req.SessionID, req.AppPublicKey, req.PCRHash, req.BindingToken) {
-			bindingVerified = true
-			log.Info().
-				Str("session_id", req.SessionID).
-				Msg("Attestation binding verified - key exchange is MITM-protected")
-		} else {
+	hasBindingFields := req.SessionID != "" && req.AppPublicKey != "" && req.BindingToken != "" && req.PCRHash != ""
+	switch {
+	case hasBindingFields && verifyBindingToken(req.SessionID, req.AppPublicKey, req.PCRHash, req.BindingToken):
+		bindingVerified = true
+		log.Info().
+			Str("session_id", req.SessionID).
+			Msg("Attestation binding verified - key exchange is MITM-protected")
+	case hasBindingFields:
+		log.Warn().
+			Str("session_id", req.SessionID).
+			Bool("production", prod).
+			Msg("SECURITY: Attestation binding verification FAILED - possible MITM attempt")
+		if prod {
+			return h.errorResponse(msg.GetID(), "attestation binding verification failed")
+		}
+	default:
+		if prod {
 			log.Warn().
 				Str("session_id", req.SessionID).
-				Msg("SECURITY: Attestation binding verification FAILED - possible MITM attempt")
-			// Don't fail the request - app may be using legacy flow without binding
-			// But log prominently for security monitoring
+				Msg("SECURITY: Bootstrap missing attestation-binding fields in production — refusing")
+			return h.errorResponse(msg.GetID(), "attestation binding required")
 		}
-	} else if req.SessionID != "" {
-		log.Debug().Str("session_id", req.SessionID).Msg("Bootstrap request missing binding fields (legacy flow)")
+		if req.SessionID != "" {
+			log.Debug().Str("session_id", req.SessionID).Msg("Bootstrap request missing binding fields (legacy flow)")
+		}
 	}
 
 	h.state.mu.Lock()

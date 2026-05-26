@@ -207,8 +207,20 @@ build {
       "echo \"PCR1: $PCR1\"",
       "echo \"PCR2: $PCR2\"",
 
-      "echo '=== Cleaning up ==='",
+      "echo '=== Cleaning up (SECURITY: scrub vsock secret from staging + docker cache) ==='",
+      "# SECURITY: the vsock shared secret was fetched into /tmp and COPY'd",
+      "# into the docker image so it could be baked into the EIF. The EIF",
+      "# is the intended carrier (the enclave loads the secret at runtime).",
+      "# The staging copy under /tmp and the docker overlay layers are NOT",
+      "# — without this scrub they persist on the AMI's /var/lib/docker and",
+      "# can be recovered by anyone with SSM session access to the",
+      "# enclave-host EC2 or its instance-role credentials.",
+      "# See SECURITY-REVIEW-2026-05-25.md C-HIGH-3.",
+      "if [ -f /tmp/enclave/vsock-secret.hex ]; then sudo shred -uz /tmp/enclave/vsock-secret.hex; fi",
       "sudo docker rmi vettid-enclave:latest || true",
+      "sudo docker image prune -af || true",
+      "sudo docker builder prune -af || true",
+      "sudo docker system prune -af --volumes || true",
       "rm -rf /tmp/enclave",
     ]
   }

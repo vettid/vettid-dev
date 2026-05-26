@@ -576,6 +576,15 @@ func (vp *VaultProcess) failAllPending(cause error) {
 func (vp *VaultProcess) handlePipeSealer(msg *Message) {
 	var resp *Message
 	if vp.sealerHandler != nil {
+		// SECURITY: enforce per-subprocess isolation at the trust
+		// boundary. The supervisor spawns one vault-manager per
+		// owner bound to vp.OwnerSpace; trusting the subprocess-
+		// supplied req.OwnerSpace would let a compromised or buggy
+		// subprocess read or overwrite ANY user's sealed material
+		// (S3 keys vaults/{ownerSpace}/...). Rewrite the wire field
+		// to the supervisor's authoritative value before dispatch.
+		// See SECURITY-REVIEW-2026-05-25.md V-CRIT-1.
+		enforceTrustedOwnerSpace(msg, vp.OwnerSpace)
 		resp = vp.sealerHandler.HandleSealerRequest(msg)
 	} else {
 		log.Warn().Str("owner_space", vp.OwnerSpace).

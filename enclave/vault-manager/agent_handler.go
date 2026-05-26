@@ -1208,11 +1208,35 @@ func (h *AgentHandler) HandleAppApprovalResponse(ctx context.Context, msg *Incom
 		return createSuccessResponse(msg.GetID(), false, "connection not found")
 	}
 
-	// Derive connection key
-	connKey, err := deriveConnectionKey(conn.SharedSecret)
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to derive connection key for approval response")
-		return createSuccessResponse(msg.GetID(), false, "internal error")
+	// Derive the connection key. Agent connections key crypto on
+	// AgentSession.SessionKey (sealed at Stage-2 pairing under
+	// agent_session_keys/<conn>/<sessionKeyID>); they have no peer
+	// SharedSecret. The 2026-05-25 chat fix cluster patched
+	// HandleAgentMessage + HandleAgentMessageReply but missed this
+	// handler — every owner approve/deny of an agent secret/action
+	// request silently failed key derivation, the handler returned
+	// success to the app, and the agent never received the response.
+	// Mirrors the HandleAgentMessageReply pattern. See
+	// SECURITY-REVIEW-2026-05-25.md V-HIGH-1.
+	var connKey []byte
+	if conn.AgentSession != nil && conn.AgentSession.SessionKeyID != "" {
+		keyPath := fmt.Sprintf("agent_session_keys/%s/%s", conn.ConnectionID, conn.AgentSession.SessionKeyID)
+		sessionKey, err := h.storage.Get(keyPath)
+		if err != nil || len(sessionKey) == 0 {
+			log.Warn().
+				Str("connection_id", conn.ConnectionID).
+				Str("session_key_id", conn.AgentSession.SessionKeyID).
+				Msg("Agent session key not found for approval response (extend or re-pair required)")
+			return createSuccessResponse(msg.GetID(), false, "agent session key not found")
+		}
+		connKey = sessionKey
+	} else {
+		ck, err := deriveConnectionKey(conn.SharedSecret)
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to derive connection key for approval response")
+			return createSuccessResponse(msg.GetID(), false, "internal error")
+		}
+		connKey = ck
 	}
 	defer zeroBytes(connKey)
 

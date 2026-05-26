@@ -237,6 +237,45 @@ type SealerResponse struct {
 	ConditionFailed bool   `json:"condition_failed,omitempty"`
 }
 
+// enforceTrustedOwnerSpace rewrites the subprocess-supplied owner_space
+// in a sealer request payload with the supervisor's authoritative value.
+//
+// SECURITY: the vault-manager subprocess is bound to one owner; the
+// supervisor — not the subprocess — owns that binding. Trusting the
+// subprocess-supplied req.OwnerSpace would let a compromised or buggy
+// subprocess pivot to any user's S3 keys (vaults/{ownerSpace}/...).
+// Any mismatch is logged at error level so a real spoof attempt is
+// not silent. The function mutates msg.Payload in place; if the
+// payload can't be parsed it is left untouched and HandleSealerRequest
+// will return its own error (fail-closed at the dispatch layer).
+func enforceTrustedOwnerSpace(msg *Message, trustedOwnerSpace string) {
+	if msg == nil || trustedOwnerSpace == "" {
+		return
+	}
+	var req SealerRequest
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		return
+	}
+	if req.OwnerSpace != "" && req.OwnerSpace != trustedOwnerSpace {
+		log.Error().
+			Str("subprocess_owner_space", req.OwnerSpace).
+			Str("trusted_owner_space", trustedOwnerSpace).
+			Str("operation", string(req.Operation)).
+			Msg("SECURITY: vault-manager subprocess attempted to spoof owner_space — overridden")
+	}
+	if req.OwnerSpace == trustedOwnerSpace {
+		return
+	}
+	req.OwnerSpace = trustedOwnerSpace
+	rewritten, err := json.Marshal(req)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to remarshal sealer request after owner_space rewrite")
+		return
+	}
+	msg.Payload = rewritten
+	msg.OwnerSpace = trustedOwnerSpace
+}
+
 // HandleSealerRequest processes a sealer request from vault-manager
 func (sh *SealerHandler) HandleSealerRequest(msg *Message) *Message {
 	var req SealerRequest
