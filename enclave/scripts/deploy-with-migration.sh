@@ -180,9 +180,17 @@ do_deploy() {
     "$SCRIPT_DIR/deploy-enclave.sh" --skip-refresh
 
     log_step "3/7 Getting new PCR values"
-    # deploy-enclave.sh updates SSM with new PCR values
+    # deploy-enclave.sh --skip-refresh STAGES new PCRs to
+    # /vettid/enclave/pcr/staged-* and leaves /vettid/enclave/pcr/current
+    # alone (staged → live promotion happens later when the new instance
+    # is healthy and routes are reclaimed). Read from staged-current
+    # here — reading current again would yield the OLD value and we'd
+    # bail out with "no migration needed" on a clean rebuild. (Bug
+    # surfaced 2026-05-26 when the 2026-05-25 security-fix migration
+    # was aborted at step 3 because of this.)
     local new_pcrs_json new_pcr0
-    new_pcrs_json=$(get_current_pcrs)
+    new_pcrs_json=$(aws ssm get-parameter --name "/vettid/enclave/pcr/staged-current" \
+        --query 'Parameter.Value' --output text --region "$REGION")
     new_pcr0=$(echo "$new_pcrs_json" | jq -r '.PCR0')
     local new_pcr1 new_pcr2
     new_pcr1=$(echo "$new_pcrs_json" | jq -r '.PCR1')

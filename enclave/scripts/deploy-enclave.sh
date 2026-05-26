@@ -827,42 +827,56 @@ else
     log_warn "No enclave ASG found. You may need to manually update launch template."
 fi
 
-# Update KMS key policy with new PCR0
-log_info "Updating KMS key policy with new PCR0..."
-KMS_KEY_ID=$(aws kms list-aliases --query 'Aliases[?AliasName==`alias/vettid-enclave-sealing`].TargetKeyId' --output text --region "$REGION")
-
-if [ -n "$KMS_KEY_ID" ] && [ "$KMS_KEY_ID" != "None" ]; then
-    log_info "Found KMS key: $KMS_KEY_ID"
-
-    # Get current policy
-    CURRENT_POLICY=$(aws kms get-key-policy --key-id "$KMS_KEY_ID" --policy-name default --query 'Policy' --output text --region "$REGION")
-
-    # Update PCR0 in the policy using jq
-    # The policy has a condition like: "kms:RecipientAttestation:PCR0": "old_pcr0_value"
-    UPDATED_POLICY=$(echo "$CURRENT_POLICY" | jq --arg pcr0 "$PCR0_VALUE" '
-        .Statement = [.Statement[] |
-            if .Sid == "AllowEnclaveDecrypt" then
-                .Condition."StringEqualsIgnoreCase"."kms:RecipientAttestation:PCR0" = $pcr0
-            else
-                .
-            end
-        ]
-    ')
-
-    if [ -n "$UPDATED_POLICY" ]; then
-        # Put the updated policy
-        echo "$UPDATED_POLICY" | aws kms put-key-policy \
-            --key-id "$KMS_KEY_ID" \
-            --policy-name default \
-            --policy file:///dev/stdin \
-            --region "$REGION"
-
-        log_info "KMS key policy updated with PCR0: ${PCR0_VALUE:0:32}..."
-    else
-        log_warn "Failed to update KMS policy - jq parsing failed"
-    fi
+# Update KMS key policy with new PCR0 — ONLY in the standalone path.
+#
+# SECURITY: in --skip-refresh mode the old instance is still running
+# under its old PCR0. If we replaced the policy's PCR0 here, the old
+# instance immediately stops being able to decrypt KMS-sealed material
+# and the entire vault breaks. The migration orchestrator
+# (deploy-with-migration.sh) sets BOTH old and new PCR0 in an AnyOf-
+# style array; we must NOT clobber that. Surfaced 2026-05-26 when the
+# 2026-05-25 security-fix migration nearly broke prod because this
+# block ran during --skip-refresh and replaced the array with a
+# single-value entry.
+if [[ "$SKIP_REFRESH" == "true" ]]; then
+    log_info "Skipping KMS key-policy update (--skip-refresh — migration orchestrator owns the policy)"
 else
-    log_warn "KMS sealing key not found (alias/vettid-enclave-sealing)"
+    log_info "Updating KMS key policy with new PCR0..."
+    KMS_KEY_ID=$(aws kms list-aliases --query 'Aliases[?AliasName==`alias/vettid-enclave-sealing`].TargetKeyId' --output text --region "$REGION")
+
+    if [ -n "$KMS_KEY_ID" ] && [ "$KMS_KEY_ID" != "None" ]; then
+        log_info "Found KMS key: $KMS_KEY_ID"
+
+        # Get current policy
+        CURRENT_POLICY=$(aws kms get-key-policy --key-id "$KMS_KEY_ID" --policy-name default --query 'Policy' --output text --region "$REGION")
+
+        # Update PCR0 in the policy using jq
+        # The policy has a condition like: "kms:RecipientAttestation:PCR0": "old_pcr0_value"
+        UPDATED_POLICY=$(echo "$CURRENT_POLICY" | jq --arg pcr0 "$PCR0_VALUE" '
+            .Statement = [.Statement[] |
+                if .Sid == "AllowEnclaveDecrypt" then
+                    .Condition."StringEqualsIgnoreCase"."kms:RecipientAttestation:PCR0" = $pcr0
+                else
+                    .
+                end
+            ]
+        ')
+
+        if [ -n "$UPDATED_POLICY" ]; then
+            # Put the updated policy
+            echo "$UPDATED_POLICY" | aws kms put-key-policy \
+                --key-id "$KMS_KEY_ID" \
+                --policy-name default \
+                --policy file:///dev/stdin \
+                --region "$REGION"
+
+            log_info "KMS key policy updated with PCR0: ${PCR0_VALUE:0:32}..."
+        else
+            log_warn "Failed to update KMS policy - jq parsing failed"
+        fi
+    else
+        log_warn "KMS sealing key not found (alias/vettid-enclave-sealing)"
+    fi
 fi
 
 log_info "=== Deployment Complete ==="
