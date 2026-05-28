@@ -184,11 +184,23 @@ delegated capability tokens (LEASH JWTs scoped to specific resources).
 | Agent → owner chat | **Beta** |
 | LEASH delegation tokens | **Alpha** — new flow; mint + verify works, scope vocabulary may still shift |
 | Video calling (phone ↔ phone) | **Beta** — works; desktop client not yet wired |
+| Background notifications (iOS) | **Not in preview** — on iOS, calls/messages/alerts only arrive while the app is open and connected; background push wake is planned for after the preview (see note below). Android is unaffected. |
 | Cross-device sync (multi-phone) | **Not planned** — a single phone is the control point by design |
 
 If a capability marked Beta or Alpha breaks for you, that's a useful
 report — file it. If a Stable capability breaks, that's a higher-priority
 report.
+
+**iOS testers, please note:** the preview validates the security model
+(enrollment, attestation, PIN unlock, credential creation, vault warming,
+end-to-end crypto), all of which you exercise with the app open. iOS does
+**not** yet deliver notifications in the background — an incoming call,
+message, or alert will only reach you while the VettID app is open and
+connected. To test those flows, keep the app foregrounded on both devices
+(and open the app to check for new activity). This is an expected
+preview limitation, not a bug — background push delivery is a planned
+post-preview feature. (Android keeps a background service alive, so it is
+not affected.)
 
 ---
 
