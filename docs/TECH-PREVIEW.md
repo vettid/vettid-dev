@@ -119,19 +119,14 @@ build it yourself.
 
 ### iOS
 
-Build from source via Xcode. Pre-built `.ipa` is not available during
-the preview (TestFlight pipeline not yet set up).
-
-```bash
-git clone https://github.com/vettid/vettid-ios
-cd vettid-ios
-open VettID.xcodeproj
-# In Xcode: set your team in Signing & Capabilities, target your device,
-# Cmd-R to run.
-```
-
-iOS Simulator runs the UI but cannot pair (no Keystore-equivalent hardware
-attestation).
+**Not part of this tech preview.** The iOS app is a work in progress and
+isn't at the quality bar I want before putting it in front of testers.
+The plan is full parity with the Android app — same enrollment, vault,
+messaging, secrets, BTC wallet, calling, and agent-connector
+functionality — and it will be added to a future preview cycle once it's
+ready. If iOS-only is a blocker for you, please hold off and watch the
+release notes; if you can test on Android in the meantime, that's the
+most useful path forward.
 
 ### Agent connector (Linux / macOS)
 
