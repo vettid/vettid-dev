@@ -128,6 +128,13 @@ ready. If iOS-only is a blocker for you, please hold off and watch the
 release notes; if you can test on Android in the meantime, that's the
 most useful path forward.
 
+Alongside the app work, an Apple Developer Program account will be set
+up before iOS joins a preview cycle. That unlocks **PushKit / APNs** for
+background call and message wake-up (closing the background-notification
+gap called out in the capabilities table) and **TestFlight** for
+distribution, so iOS testers can install a signed build directly instead
+of cloning the repo and building from Xcode.
+
 ### Agent connector (Linux / macOS)
 
 For programmatic access from an AI agent or scripting host. Pre-built
