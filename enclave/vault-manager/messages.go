@@ -2018,11 +2018,20 @@ func (mh *MessageHandler) handleCallOperation(ctx context.Context, msg *Incoming
 	// app-side handler), and handleCallAccept — which pushes call.accepted to
 	// the caller's app — never runs, so the caller hangs in "Calling..." forever.
 	var peek struct {
-		EventType string `json:"event_type"`
+		EventType      string `json:"event_type"`
+		FromOwnerSpace string `json:"from_owner_space"`
 	}
+	// #61: relayed peer events are ENCRYPTED envelopes (EncryptedPeerEnvelope:
+	// from_owner_space/nonce/encrypted_payload) — event_type lives inside the
+	// ciphertext, so peeking for a plaintext event_type always misses. That
+	// mis-routed a relayed peer "accept"/"reject"/"end" to the local app
+	// handler (HandleAcceptCall et al.) instead of the decrypt -> HandleCallEvent
+	// -> PublishToApp("call.accepted") path, so the caller never received the
+	// SDP answer and calls never connected. Detect the envelope by its
+	// plaintext from_owner_space marker as well.
 	isPeerEvent := len(msg.Payload) > 0 &&
 		unmarshalRequest(msg.Payload, &peek, "handleCallOperation") == nil &&
-		peek.EventType != ""
+		(peek.EventType != "" || peek.FromOwnerSpace != "")
 
 	if !isPeerEvent {
 		// App-initiated operations (requests from the mobile app)
