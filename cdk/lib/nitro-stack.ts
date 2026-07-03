@@ -83,7 +83,9 @@ export class NitroStack extends cdk.Stack {
     this.vpc = new ec2.Vpc(this, 'EnclaveVpc', {
       vpcName: 'vettid-enclave-vpc',
       maxAzs: 2,
-      natGateways: 1, // Single NAT Gateway to reduce cost
+      // COST-PAUSE 2026-07-03: natGateways 1 -> 0 while VettID is paused
+      // (see docs/PAUSE-2026-07-03.md). Revert this commit to restore.
+      natGateways: 0,
       ipAddresses: ec2.IpAddresses.cidr(NitroStack.VPC_CIDR),
       subnetConfiguration: [
         {
@@ -288,26 +290,30 @@ export class NitroStack extends cdk.Stack {
       'Allow HTTPS from enclave instances'
     );
 
-    // SSM endpoint - for Systems Manager API calls
-    this.vpc.addInterfaceEndpoint('SsmEndpoint', {
-      service: ec2.InterfaceVpcEndpointAwsService.SSM,
-      securityGroups: [vpcEndpointSg],
-      subnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
-    });
+    // COST-PAUSE 2026-07-03: the 4 interface endpoints (SSM, SSM_MESSAGES,
+    // EC2_MESSAGES, CLOUDWATCH_LOGS) are commented out while VettID is
+    // paused (~$29/mo). Revert this commit to restore. The free S3 gateway
+    // endpoint below stays.
+    // // SSM endpoint - for Systems Manager API calls
+    // this.vpc.addInterfaceEndpoint('SsmEndpoint', {
+    //   service: ec2.InterfaceVpcEndpointAwsService.SSM,
+    //   securityGroups: [vpcEndpointSg],
+    //   subnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+    // });
 
-    // SSM Messages endpoint - for Session Manager connections
-    this.vpc.addInterfaceEndpoint('SsmMessagesEndpoint', {
-      service: ec2.InterfaceVpcEndpointAwsService.SSM_MESSAGES,
-      securityGroups: [vpcEndpointSg],
-      subnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
-    });
+    // // SSM Messages endpoint - for Session Manager connections
+    // this.vpc.addInterfaceEndpoint('SsmMessagesEndpoint', {
+    //   service: ec2.InterfaceVpcEndpointAwsService.SSM_MESSAGES,
+    //   securityGroups: [vpcEndpointSg],
+    //   subnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+    // });
 
-    // EC2 Messages endpoint - for EC2 Run Command
-    this.vpc.addInterfaceEndpoint('Ec2MessagesEndpoint', {
-      service: ec2.InterfaceVpcEndpointAwsService.EC2_MESSAGES,
-      securityGroups: [vpcEndpointSg],
-      subnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
-    });
+    // // EC2 Messages endpoint - for EC2 Run Command
+    // this.vpc.addInterfaceEndpoint('Ec2MessagesEndpoint', {
+    //   service: ec2.InterfaceVpcEndpointAwsService.EC2_MESSAGES,
+    //   securityGroups: [vpcEndpointSg],
+    //   subnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+    // });
 
     // S3 Gateway endpoint (for vault data access without internet)
     this.vpc.addGatewayEndpoint('S3Endpoint', {
@@ -315,12 +321,12 @@ export class NitroStack extends cdk.Stack {
       subnets: [{ subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS }],
     });
 
-    // CloudWatch Logs endpoint (for Session Manager logging)
-    this.vpc.addInterfaceEndpoint('CloudWatchLogsEndpoint', {
-      service: ec2.InterfaceVpcEndpointAwsService.CLOUDWATCH_LOGS,
-      securityGroups: [vpcEndpointSg],
-      subnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
-    });
+    // // CloudWatch Logs endpoint (for Session Manager logging)
+    // this.vpc.addInterfaceEndpoint('CloudWatchLogsEndpoint', {
+    //   service: ec2.InterfaceVpcEndpointAwsService.CLOUDWATCH_LOGS,
+    //   securityGroups: [vpcEndpointSg],
+    //   subnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+    // });
 
     // ===== SESSION MANAGER LOGGING =====
     // Create CloudWatch Log Group for Session Manager audit logs
@@ -830,9 +836,11 @@ export class NitroStack extends cdk.Stack {
         subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS,
       },
       launchTemplate,
-      minCapacity: 1, // Single instance for dev
+      // COST-PAUSE 2026-07-03: minCapacity 1 -> 0, desiredCapacity 1 -> 0
+      // while VettID is paused. Revert this commit to restore capacity 1.
+      minCapacity: 0,
       maxCapacity: 3, // Scale up to 3 for production
-      desiredCapacity: 1,
+      desiredCapacity: 0,
       healthCheck: autoscaling.HealthCheck.ec2({
         grace: cdk.Duration.minutes(5),
       }),
@@ -845,7 +853,8 @@ export class NitroStack extends cdk.Stack {
         // window on CFN-driven enclave swaps. (Migration-finalize is a
         // separate path that intentionally cycles via custom events;
         // this only affects the standard rolling-update path.)
-        minInstancesInService: 1,
+        // COST-PAUSE 2026-07-03: 1 -> 0 while desiredCapacity is 0.
+        minInstancesInService: 0,
         pauseTime: cdk.Duration.minutes(5),
       }),
       // SECURITY: Prevent instances from being terminated without explicit permission
