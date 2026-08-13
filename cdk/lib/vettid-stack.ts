@@ -630,13 +630,50 @@ const corsAwareCachePolicy = new cloudfront.CachePolicy(this, 'CorsAwareCachePol
   enableAcceptEncodingBrotli: true,
 });
 
+// --- Cutover redirect (vettid.dev -> vettid.org) ---
+// Deploy with `-c cutoverRedirect=true` at cutover time. Every request to
+// any vettid.dev web surface (apex, www, admin) then gets a permanent 301
+// to https://vettid.org/ (blanket to root, contentless: no app, no assets,
+// nothing to harvest; avoids handing scanners a route map). Leave enabled
+// indefinitely so search engines fully reassign equity to vettid.org.
+const cutoverRedirect =
+  this.node.tryGetContext('cutoverRedirect') === true ||
+  this.node.tryGetContext('cutoverRedirect') === 'true';
+const cutoverRedirectFn = cutoverRedirect
+  ? new cloudfront.Function(this, 'CutoverRedirectFn', {
+      code: cloudfront.FunctionCode.fromInline(`
+function handler(event) {
+  return {
+    statusCode: 301,
+    statusDescription: 'Moved Permanently',
+    headers: {
+      'location': { value: 'https://vettid.org/' },
+      'cache-control': { value: 'max-age=86400' }
+    }
+  };
+}
+`),
+      comment: 'Permanent blanket redirect of all vettid.dev traffic to https://vettid.org/',
+    })
+  : undefined;
+const cutoverBehavior = cutoverRedirectFn
+  ? {
+      origin: siteOrigin,
+      viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+      cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
+      functionAssociations: [
+        { eventType: cloudfront.FunctionEventType.VIEWER_REQUEST, function: cutoverRedirectFn },
+      ],
+    }
+  : undefined;
+
 // CloudFront distribution for vettid.dev with path-based routing
 const rootDist = new cloudfront.Distribution(this, 'RootDist', {
   webAclId: webAcl.attrArn,
   domainNames: ['vettid.dev'],
   certificate: cert,
   defaultRootObject: 'index.html',
-  defaultBehavior: {
+  defaultBehavior: cutoverBehavior ?? {
     origin: siteOrigin,
     cachePolicy: corsAwareCachePolicy,
     // Forward Origin header to S3 for CORS support (fonts, cross-subdomain requests)
@@ -646,7 +683,7 @@ const rootDist = new cloudfront.Distribution(this, 'RootDist', {
       { eventType: cloudfront.FunctionEventType.VIEWER_RESPONSE, function: securityHeadersFn }
     ],
   },
-  additionalBehaviors: {
+  additionalBehaviors: cutoverRedirect ? {} : {
     // Enrollment deep link handler needs query strings forwarded
     // The ?data= parameter contains the enrollment session token
     // Note: Need both patterns - '/enroll' for exact match and '/enroll/*' for subpaths
@@ -704,7 +741,7 @@ const wwwDist = new cloudfront.Distribution(this, 'WwwDist', {
   webAclId: webAcl.attrArn,
   domainNames: ['www.vettid.dev'],
   certificate: cert,
-  defaultBehavior: {
+  defaultBehavior: cutoverBehavior ?? {
     origin: siteOrigin, // never reached; redirect happens at viewer request
     viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
     functionAssociations: [
@@ -724,7 +761,7 @@ const adminDist = new cloudfront.Distribution(this, 'AdminDist', {
   domainNames: ['admin.vettid.dev'],
   certificate: cert,
   defaultRootObject: 'index.html',
-  defaultBehavior: {
+  defaultBehavior: cutoverBehavior ?? {
     origin: adminOrigin,
     viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
     cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED, // No caching for admin for security
