@@ -228,7 +228,14 @@ const apiOriginRequestPolicy = cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_
 
 // WAF Web ACL for CloudFront protection against scanning and probing
 // IMPORTANT: Must be created in us-east-1 (CLOUDFRONT scope)
-const webAcl = new wafv2.CfnWebACL(this, 'WebAcl', {
+const cutoverRedirect =
+  this.node.tryGetContext('cutoverRedirect') === true ||
+  this.node.tryGetContext('cutoverRedirect') === 'true';
+
+// No WAF on redirect-only distributions (saves the WebACL fee)
+let webAcl: wafv2.CfnWebACL | undefined;
+if (!cutoverRedirect) {
+webAcl = new wafv2.CfnWebACL(this, 'WebAcl', {
   scope: 'CLOUDFRONT',
   defaultAction: { allow: {} },
   visibilityConfig: {
@@ -402,6 +409,8 @@ const webAcl = new wafv2.CfnWebACL(this, 'WebAcl', {
     },
   ],
 });
+}
+
 
     // ===== API GATEWAY (created early so security headers can reference endpoint) =====
 
@@ -636,9 +645,6 @@ const corsAwareCachePolicy = new cloudfront.CachePolicy(this, 'CorsAwareCachePol
 // to https://vettid.org/ (blanket to root, contentless: no app, no assets,
 // nothing to harvest; avoids handing scanners a route map). Leave enabled
 // indefinitely so search engines fully reassign equity to vettid.org.
-const cutoverRedirect =
-  this.node.tryGetContext('cutoverRedirect') === true ||
-  this.node.tryGetContext('cutoverRedirect') === 'true';
 const cutoverRedirectFn = cutoverRedirect
   ? new cloudfront.Function(this, 'CutoverRedirectFn', {
       code: cloudfront.FunctionCode.fromInline(`
@@ -669,7 +675,7 @@ const cutoverBehavior = cutoverRedirectFn
 
 // CloudFront distribution for vettid.dev with path-based routing
 const rootDist = new cloudfront.Distribution(this, 'RootDist', {
-  webAclId: webAcl.attrArn,
+  webAclId: webAcl?.attrArn,
   domainNames: ['vettid.dev'],
   certificate: cert,
   defaultRootObject: 'index.html',
@@ -730,15 +736,17 @@ const rootDist = new cloudfront.Distribution(this, 'RootDist', {
       ],
     },
   },
-  enableLogging: true,
-  logBucket: logBucket,
-  logFilePrefix: 'cloudfront-logs/root/',
-  logIncludesCookies: true,
+  ...(cutoverRedirect ? {} : {
+    enableLogging: true,
+    logBucket: logBucket,
+    logFilePrefix: 'cloudfront-logs/root/',
+    logIncludesCookies: true,
+  }),
 });
 
 // CloudFront distribution for www that issues a 301 redirect to apex
 const wwwDist = new cloudfront.Distribution(this, 'WwwDist', {
-  webAclId: webAcl.attrArn,
+  webAclId: webAcl?.attrArn,
   domainNames: ['www.vettid.dev'],
   certificate: cert,
   defaultBehavior: cutoverBehavior ?? {
@@ -749,15 +757,17 @@ const wwwDist = new cloudfront.Distribution(this, 'WwwDist', {
     ],
   },
   // No defaultRootObject since we're redirecting everything
-  enableLogging: true,
-  logBucket: logBucket,
-  logFilePrefix: 'cloudfront-logs/www/',
-  logIncludesCookies: true,
+  ...(cutoverRedirect ? {} : {
+    enableLogging: true,
+    logBucket: logBucket,
+    logFilePrefix: 'cloudfront-logs/www/',
+    logIncludesCookies: true,
+  }),
 });
 
 // CloudFront distribution for admin.vettid.dev (secure admin subdomain)
 const adminDist = new cloudfront.Distribution(this, 'AdminDist', {
-  webAclId: webAcl.attrArn,
+  webAclId: webAcl?.attrArn,
   domainNames: ['admin.vettid.dev'],
   certificate: cert,
   defaultRootObject: 'index.html',
@@ -770,10 +780,12 @@ const adminDist = new cloudfront.Distribution(this, 'AdminDist', {
       { eventType: cloudfront.FunctionEventType.VIEWER_RESPONSE, function: securityHeadersFn }
     ],
   },
-  enableLogging: true,
-  logBucket: logBucket,
-  logFilePrefix: 'cloudfront-logs/admin/',
-  logIncludesCookies: true,
+  ...(cutoverRedirect ? {} : {
+    enableLogging: true,
+    logBucket: logBucket,
+    logFilePrefix: 'cloudfront-logs/admin/',
+    logIncludesCookies: true,
+  }),
 });
 
 
